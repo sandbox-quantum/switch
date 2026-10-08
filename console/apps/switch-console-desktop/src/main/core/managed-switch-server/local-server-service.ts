@@ -257,6 +257,8 @@ export class LocalServerService {
         onUpgrade: (owed) => this.setStatus({ upgrade: upgradeState(owed, true) }),
         signal: this.startAbort.signal,
         checkoutRoot,
+        // Nobody else shares the local stack, so there is nothing to lock.
+        lease: null,
       });
       if (result.kind === 'docker-unavailable') {
         this.setStatus({ phase: 'error', error: result.detail });
@@ -325,7 +327,7 @@ export class LocalServerService {
     const host: ServerHost = new LocalServerHost();
     try {
       this.setStatus({ phase: 'stopping', message: 'Stopping containers…' });
-      await stopStack(host);
+      await stopStack(host, null);
       const upgrade = this.status.upgrade;
       this.setStatus({
         phase: 'stopped',
@@ -364,7 +366,7 @@ export class LocalServerService {
       const server = await getManagedServer();
       if (server) await deleteAgentsForServer(server.id);
       this.setStatus({ phase: 'stopping', message: 'Destroying containers and data…' });
-      await resetStack(host);
+      await resetStack(host, null);
       this.setStatus({
         phase: 'stopped',
         message: null,

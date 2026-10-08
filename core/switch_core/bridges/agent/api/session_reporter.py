@@ -16,11 +16,11 @@ import asyncio
 import logging
 import time
 
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
+    AgentConnection,
+    AgentConnectionRegistry,
     CloseCode,
-    Connection,
-    ConnectionRegistry,
 )
 from switch_core.db.models import Agent
 from switch_core.telemetry import TelemetryService, emit_safely
@@ -56,17 +56,17 @@ class SessionReporter:
     def __init__(
         self,
         telemetry: TelemetryService | None,
-        connections: ConnectionRegistry | None = None,
+        connections: AgentConnectionRegistry | None = None,
     ) -> None:
         self._telemetry = telemetry
         self._connections = connections
-        # Connection ids whose stream was actually handed back. A connection
+        # AgentConnection ids whose stream was actually handed back. A connection
         # closed before that — a rejected room claim — is not part of any
         # session and must not end one.
         self._streaming: set[str] = set()
         self._sessions: dict[str, _Session] = {}
 
-    async def started(self, agent: Agent, conn: Connection) -> None:
+    async def started(self, agent: Agent, conn: AgentConnection) -> None:
         """A stream is about to be returned on `conn`."""
         self._streaming.add(conn.id)
         session = self._sessions.get(conn.agent_id)
@@ -89,7 +89,7 @@ class SessionReporter:
                 "first_session_started", known_agent_type=runtime
             )
 
-    def on_close(self, conn: Connection) -> None:
+    def on_close(self, conn: AgentConnection) -> None:
         """The registry's close listener, for every path that closes."""
         if conn.id not in self._streaming:
             # A refused room claim closed it on the way out; nothing began.

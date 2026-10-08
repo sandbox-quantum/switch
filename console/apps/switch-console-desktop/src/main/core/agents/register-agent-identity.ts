@@ -7,7 +7,6 @@ export type RegisterAgentInput = {
   name: string;
   description: string;
   repoDir: string;
-  autoSession?: boolean;
   /** Gateway known-agent type; derive from the provider via
    * `knownAgentTypeForProvider`. Required — an omitted type would silently
    * register the agent as Claude Code whatever it actually runs (CHOO-1436). */
@@ -30,10 +29,10 @@ export type RegisterAgentInput = {
  * repository-defined agent (CHOO-1440). Shared by the local and remote create
  * flows so the option mapping stays identical.
  *
- * Channels are always enabled: Switch Console keeps the agent's session live (and
- * auto-spawns one on notify), so it is session-addressable regardless of the
- * underlying model provider — there is no user-facing "how do you run Claude"
- * choice.
+ * Channels are always enabled and the agent is always `auto_session`: Switch
+ * Console keeps the agent's connection and starts a session whenever it is
+ * addressed, whatever the underlying model provider — there is no user-facing
+ * "how do you run Claude" choice, and no opting out of automatic sessions.
  */
 export async function registerAgentIdentity(
   server: SwitchServer,
@@ -49,7 +48,7 @@ export async function registerAgentIdentity(
       options: {
         channels_enabled: true,
         repo_dir: input.repoDir,
-        ...(input.autoSession ? { auto_session: true } : {}),
+        auto_session: true,
       },
     });
     return { kind: 'created', id: registered.id, apiKey: registered.apiKey };

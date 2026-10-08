@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
@@ -24,7 +24,7 @@ from switch_core.bridges.collaboration.telegram.adapter import (
 def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noqa: ANN202
     notices: list[tuple[str, str, str | None]] = []
     room = SimpleNamespace(
-        id="room-uuid", tenant_id="tenant-1", matrix_room_id="!m:switch.local"
+        id="room-uuid", tenant_id="tenant-1", transport_room_id="!m:switch.local"
     )
 
     class _Adapter:
@@ -56,7 +56,7 @@ def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noq
         return agent_ids
 
     def add_room_mapping(
-        room_id: str, matrix_room_id: str, channel_id: str, tenant_id: str
+        room_id: str, transport_room_id: str, channel_id: str, tenant_id: str
     ) -> None:
         pass
 
@@ -81,7 +81,7 @@ def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noq
 async def test_agentless_auto_create_posts_notice() -> None:
     bridge = _fake_bridge(agent_ids=[])
 
-    result = await BridgeCore._create_room_for_channel(
+    result = await CollaborationCore._create_room_for_channel(
         bridge,
         channel_id="C0BGC39BFSR",
         channel_type="channel_public",
@@ -107,7 +107,7 @@ async def test_notice_carries_this_bridge_s_own_slash_syntax() -> None:
         slash_hint="`/invite-agent agent:agent-name` — the Discord slash command",
     )
 
-    await BridgeCore._create_room_for_channel(
+    await CollaborationCore._create_room_for_channel(
         bridge,
         channel_id="C1",
         channel_type="channel_public",
@@ -125,7 +125,7 @@ async def test_notice_omits_the_slash_form_where_there_is_none() -> None:
     # would point the user at something that does not exist.
     bridge = _fake_bridge(agent_ids=[], slash_hint=None)
 
-    await BridgeCore._create_room_for_channel(
+    await CollaborationCore._create_room_for_channel(
         bridge,
         channel_id="C1",
         channel_type="channel_public",
@@ -173,7 +173,7 @@ def test_each_adapter_advertises_a_syntax_it_actually_accepts() -> None:
 async def test_auto_create_with_agents_posts_no_notice() -> None:
     bridge = _fake_bridge(agent_ids=["a1"])
 
-    result = await BridgeCore._create_room_for_channel(
+    result = await CollaborationCore._create_room_for_channel(
         bridge,
         channel_id="C0BGC39BFSR",
         channel_type="channel_public",

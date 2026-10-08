@@ -380,7 +380,9 @@ async def test_baseline_idles_at_session_count(
         )
         lines.append(
             f"{rooms} idle session(s) over {watched:.1f}s: "
-            f"watcher heartbeats {requests['agents/connection/beat']}, "
+            # Heartbeats ride the connection's WebSocket now, so they are no
+            # longer requests; anything left on this route is an old client.
+            f"heartbeat requests {requests.get('agents/connection/beat', 0)}, "
             f"session host requests {reports}, "
             f"all requests {sum(requests.values())} ({routes}); "
             f"{statements} database statements; CPU driver "

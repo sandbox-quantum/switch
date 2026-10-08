@@ -46,7 +46,7 @@ async def _seed_agent(
 
         client = Client(
             tenant_id=tenant_id,
-            matrix_user_id="@bearer-agent:test",
+            transport_user_id="@bearer-agent:test",
             display_name="bearer-agent",
             type="agent",
         )

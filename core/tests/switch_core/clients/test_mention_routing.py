@@ -8,9 +8,9 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.commands import _addressed_by_name_or_role
-from switch_core.clients.agent_client import (
+from switch_core.clients.agent_consumer import (
     _STARTING_SESSION_MESSAGE,
-    AgentClient,
+    AgentConsumer,
     _role_elsewhere_message,
 )
 from switch_core.delivery.addressing import (
@@ -36,6 +36,7 @@ def _no_connections(
     declared it will start a session for this room.
     """
     return SimpleNamespace(
+        controllers=SimpleNamespace(is_bound=lambda _agent_id: False),
         live_connection_ids=lambda: set(),
         is_live=lambda _agent_id: connected,
         live_in_room=lambda _agent_id, _room_id: False,
@@ -74,12 +75,12 @@ def _resolver(**attrs: object) -> SimpleNamespace:
 
 
 def _client(name: str) -> SimpleNamespace:
-    """An AgentClient-shaped double: an agent, an mxid, and a resolver."""
+    """An AgentConsumer-shaped double: an agent, an mxid, and a resolver."""
     return SimpleNamespace(
         agent=SimpleNamespace(name=name),
-        matrix_user_id=f"@switch-agent-{name}:switch.local",
+        transport_user_id=f"@switch-agent-{name}:switch.local",
         _addressing=_resolver(),
-        _as_incoming=AgentClient._as_incoming,
+        _as_incoming=AgentConsumer._as_incoming,
     )
 
 
@@ -87,7 +88,7 @@ def _is_mentioned(name: str, body: str) -> bool:
     return AddressingResolver.mentions_name(
         _resolver(),
         agent=SimpleNamespace(name=name),  # type: ignore[arg-type]
-        agent_matrix_id=f"@switch-agent-{name}:switch.local",
+        agent_user_id=f"@switch-agent-{name}:switch.local",
         message=_event(body),
     )
 
@@ -98,7 +99,9 @@ async def _command_addresses(name: str, args: str) -> bool:
     client = SimpleNamespace(
         agent=SimpleNamespace(name=name), session_factory=_session_factory
     )
-    client._args_tag_my_name = lambda text: AgentClient._args_tag_my_name(client, text)
+    client._args_tag_my_name = lambda text: AgentConsumer._args_tag_my_name(
+        client, text
+    )
 
     async def _no(_session: object, _text: str, _room_id: str) -> bool:
         return False
@@ -157,7 +160,7 @@ class TestTruePositives:
             body="hello",
             formatted_body='<a href="...@switch-agent-cc-bug-fixing:switch.local">x</a>',
         )
-        assert AgentClient._is_mentioned(client, event) is True
+        assert AgentConsumer._is_mentioned(client, event) is True
 
 
 class TestMediaEventWithoutFormattedBody:
@@ -173,19 +176,19 @@ class TestMediaEventWithoutFormattedBody:
         media_event = SimpleNamespace(
             body="@cc-bug-fixing look at this", content={}, sender="@u:test"
         )
-        assert AgentClient._is_mentioned(client, media_event) is True
+        assert AgentConsumer._is_mentioned(client, media_event) is True
 
     def test_media_without_mention_not_addressed(self) -> None:
         client = _client("cc-bug-fixing")
         media_event = SimpleNamespace(body="cat.png", content={}, sender="@u:test")
-        assert AgentClient._is_mentioned(client, media_event) is False
+        assert AgentConsumer._is_mentioned(client, media_event) is False
 
 
 class TestStripMention:
     def test_strips_exact_mention_only(self) -> None:
         client = _client("cc-bug-fixing")
         # Should strip its own mention...
-        assert AgentClient._strip_mention(client, "@cc-bug-fixing hello").strip() == (
+        assert AgentConsumer._strip_mention(client, "@cc-bug-fixing hello").strip() == (
             "hello"
         )
 
@@ -193,7 +196,7 @@ class TestStripMention:
         client = _client("cc-bug-fixing")
         # ...but must not partially strip a longer agent's mention.
         assert (
-            AgentClient._strip_mention(client, "@cc-bug-fixing-2 hello")
+            AgentConsumer._strip_mention(client, "@cc-bug-fixing-2 hello")
             == "@cc-bug-fixing-2 hello"
         )
 
@@ -224,7 +227,7 @@ class TestRoleMentionRouting:
     async def test_role_holder_is_addressed(self) -> None:
         client = _role_client("ephemeral-cc", held_role="manager")
         assert (
-            await AgentClient._text_tags_my_role(
+            await AgentConsumer._text_tags_my_role(
                 client, None, "@manager review", "room-1"
             )
             is True
@@ -234,7 +237,7 @@ class TestRoleMentionRouting:
         # This agent holds no role, so an @manager tag does not reach it.
         client = _role_client("ephemeral-cc", held_role=None)
         assert (
-            await AgentClient._text_tags_my_role(
+            await AgentConsumer._text_tags_my_role(
                 client, None, "@manager review", "room-1"
             )
             is False
@@ -244,7 +247,7 @@ class TestRoleMentionRouting:
         # Holds "worker" but "@manager" is tagged → not addressed.
         client = _role_client("ephemeral-cc", held_role="worker")
         assert (
-            await AgentClient._text_tags_my_role(
+            await AgentConsumer._text_tags_my_role(
                 client, None, "@manager review", "room-1"
             )
             is False
@@ -254,7 +257,7 @@ class TestRoleMentionRouting:
         # Boundary safety: holding "lead" must not match "@lead-dev".
         client = _role_client("ephemeral-cc", held_role="lead")
         assert (
-            await AgentClient._text_tags_my_role(
+            await AgentConsumer._text_tags_my_role(
                 client, None, "@lead-dev ping", "room-1"
             )
             is False
@@ -263,7 +266,7 @@ class TestRoleMentionRouting:
     async def test_no_at_short_circuits(self) -> None:
         client = _role_client("ephemeral-cc", held_role="manager")
         assert (
-            await AgentClient._text_tags_my_role(client, None, "no at here", "room-1")
+            await AgentConsumer._text_tags_my_role(client, None, "no at here", "room-1")
             is False
         )
 
@@ -290,7 +293,7 @@ class TestAliasMentionRouting:
     async def test_alias_addresses_agent(self) -> None:
         client = _alias_client("claude-code.aq-switch-2", {"room-1": "fixer"})
         assert (
-            await AgentClient._text_tags_my_alias(
+            await AgentConsumer._text_tags_my_alias(
                 client, None, "@fixer please look", "room-1"
             )
             is True
@@ -299,7 +302,7 @@ class TestAliasMentionRouting:
     async def test_alias_case_insensitive(self) -> None:
         client = _alias_client("claude-code.aq-switch-2", {"room-1": "fixer"})
         assert (
-            await AgentClient._text_tags_my_alias(client, None, "@FIXER hi", "room-1")
+            await AgentConsumer._text_tags_my_alias(client, None, "@FIXER hi", "room-1")
             is True
         )
 
@@ -307,14 +310,14 @@ class TestAliasMentionRouting:
         # Alias set in room-1 only — tagging it in room-2 does not address us.
         client = _alias_client("claude-code.aq-switch-2", {"room-1": "fixer"})
         assert (
-            await AgentClient._text_tags_my_alias(client, None, "@fixer hi", "room-2")
+            await AgentConsumer._text_tags_my_alias(client, None, "@fixer hi", "room-2")
             is False
         )
 
     async def test_no_alias_not_addressed(self) -> None:
         client = _alias_client("claude-code.aq-switch-2", {})
         assert (
-            await AgentClient._text_tags_my_alias(client, None, "@fixer hi", "room-1")
+            await AgentConsumer._text_tags_my_alias(client, None, "@fixer hi", "room-1")
             is False
         )
 
@@ -322,14 +325,18 @@ class TestAliasMentionRouting:
         # Boundary safety: alias "fix" must not match "@fixer".
         client = _alias_client("claude-code.aq-switch-2", {"room-1": "fix"})
         assert (
-            await AgentClient._text_tags_my_alias(client, None, "@fixer ping", "room-1")
+            await AgentConsumer._text_tags_my_alias(
+                client, None, "@fixer ping", "room-1"
+            )
             is False
         )
 
     async def test_no_at_short_circuits(self) -> None:
         client = _alias_client("claude-code.aq-switch-2", {"room-1": "fixer"})
         assert (
-            await AgentClient._text_tags_my_alias(client, None, "no at here", "room-1")
+            await AgentConsumer._text_tags_my_alias(
+                client, None, "no at here", "room-1"
+            )
             is False
         )
 
@@ -344,21 +351,21 @@ class TestCommandRoleTargeting:
     async def test_holder_targeted_by_role(self) -> None:
         client = _role_client("ephemeral-cc", held_role="manager")
         assert (
-            await AgentClient._text_tags_my_role(client, None, "@manager", "room-1")
+            await AgentConsumer._text_tags_my_role(client, None, "@manager", "room-1")
             is True
         )
 
     async def test_non_holder_not_targeted(self) -> None:
         client = _role_client("ephemeral-cc", held_role=None)
         assert (
-            await AgentClient._text_tags_my_role(client, None, "@manager", "room-1")
+            await AgentConsumer._text_tags_my_role(client, None, "@manager", "room-1")
             is False
         )
 
     async def test_role_prefix_not_targeted(self) -> None:
         client = _role_client("ephemeral-cc", held_role="lead")
         assert (
-            await AgentClient._text_tags_my_role(client, None, "@lead-dev", "room-1")
+            await AgentConsumer._text_tags_my_role(client, None, "@lead-dev", "room-1")
             is False
         )
 
@@ -460,7 +467,7 @@ class TestUnavailableHereReply:
     ) -> None:
         # Holds a role here, but its assuming session is attending room-B.
         client = _unavailable_client(live_rooms=["room-B"], role_here=True)
-        msg = await AgentClient._reply_when_unavailable_here(
+        msg = await AgentConsumer._reply_when_unavailable_here(
             client, db, client.agent, _here(), "asker"
         )
         assert msg == _role_elsewhere_message("Room room-B")
@@ -471,7 +478,7 @@ class TestUnavailableHereReply:
         # Defers to the known-agent reply (paste-ready connect command) with
         # the other rooms threaded in, rather than the role-flavoured wording.
         client = _unavailable_client(live_rooms=["room-B", "room-C"], role_here=False)
-        msg = await AgentClient._reply_when_unavailable_here(
+        msg = await AgentConsumer._reply_when_unavailable_here(
             client, db, client.agent, _here(), "asker"
         )
         assert msg == "ELSEWHERE: Room room-B, Room room-C"
@@ -482,7 +489,7 @@ class TestUnavailableHereReply:
         # The only live session is the addressed room itself → nothing elsewhere.
         client = _unavailable_client(live_rooms=["room-A"], role_here=False)
         assert (
-            await AgentClient._reply_when_unavailable_here(
+            await AgentConsumer._reply_when_unavailable_here(
                 client, db, client.agent, _here(), "asker"
             )
             == "OFFLINE"
@@ -491,7 +498,7 @@ class TestUnavailableHereReply:
     async def test_no_live_sessions_is_offline(self, db: AsyncSession) -> None:
         client = _unavailable_client(live_rooms=[], role_here=False)
         assert (
-            await AgentClient._reply_when_unavailable_here(
+            await AgentConsumer._reply_when_unavailable_here(
                 client, db, client.agent, _here(), "asker"
             )
             == "OFFLINE"
@@ -506,14 +513,14 @@ class TestConnectedNotLive:
         self, db: AsyncSession
     ) -> None:
         client = _unavailable_client(live_rooms=[], role_here=False, bound_here=True)
-        msg = await AgentClient._reply_when_unavailable_here(
+        msg = await AgentConsumer._reply_when_unavailable_here(
             client, db, client.agent, _here(), "asker"
         )
         assert msg == "NOT_LIVE"
 
     async def test_no_binding_is_offline(self, db: AsyncSession) -> None:
         client = _unavailable_client(live_rooms=[], role_here=False, bound_here=False)
-        msg = await AgentClient._reply_when_unavailable_here(
+        msg = await AgentConsumer._reply_when_unavailable_here(
             client, db, client.agent, _here(), "asker"
         )
         assert msg == "OFFLINE"
@@ -528,7 +535,7 @@ class TestConnectedNotLive:
             connection_model="session_passive",
             bound_here=True,
         )
-        msg = await AgentClient._reply_when_unavailable_here(
+        msg = await AgentConsumer._reply_when_unavailable_here(
             client, db, client.agent, _here(), "asker"
         )
         assert msg == "OFFLINE"
@@ -541,7 +548,7 @@ class TestConnectedNotLive:
         # not live → connected-not-live, not a confusing same-name pointer.
         # _here() is room-A / "Room A"; room id "A" → name "Room A" (collision).
         client = _unavailable_client(live_rooms=["A"], role_here=False, bound_here=True)
-        msg = await AgentClient._reply_when_unavailable_here(
+        msg = await AgentConsumer._reply_when_unavailable_here(
             client, db, client.agent, _here(), "asker"
         )
         assert msg == "NOT_LIVE"
@@ -553,7 +560,7 @@ class TestConnectedNotLive:
         client = _unavailable_client(
             live_rooms=["room-B"], role_here=False, bound_here=True
         )
-        msg = await AgentClient._reply_when_unavailable_here(
+        msg = await AgentConsumer._reply_when_unavailable_here(
             client, db, client.agent, _here(), "asker"
         )
         assert msg == "ELSEWHERE: Room room-B"
@@ -568,7 +575,7 @@ class TestStartingASessionIsAPromise:
         client = _unavailable_client(
             live_rooms=[], role_here=False, connection_model="auto_session", spawns=True
         )
-        msg = await AgentClient._reply_when_unavailable_here(
+        msg = await AgentConsumer._reply_when_unavailable_here(
             client, db, client.agent, _here(), "asker"
         )
         assert msg == _STARTING_SESSION_MESSAGE
@@ -583,7 +590,7 @@ class TestStartingASessionIsAPromise:
             connection_model="auto_session",
             watching=True,
         )
-        msg = await AgentClient._reply_when_unavailable_here(
+        msg = await AgentConsumer._reply_when_unavailable_here(
             client, db, client.agent, _here(), "asker"
         )
         assert msg == _STARTING_SESSION_MESSAGE
@@ -604,7 +611,7 @@ class TestStartingASessionIsAPromise:
             connection_model="auto_session",
             connected=True,
         )
-        msg = await AgentClient._reply_when_unavailable_here(
+        msg = await AgentConsumer._reply_when_unavailable_here(
             client, db, client.agent, _here(), "asker"
         )
         assert msg == "OFFLINE"

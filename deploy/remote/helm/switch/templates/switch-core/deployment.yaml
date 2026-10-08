@@ -1,5 +1,5 @@
 {{- if ne (int .Values.switchCore.replicaCount) 1 }}
-{{- fail "switchCore.replicaCount must be 1: switch-core keeps live Matrix sync sessions in memory and cannot be horizontally scaled (a second replica would duplicate every client and split session state)." }}
+{{- fail "switchCore.replicaCount must be 1: switch-core keeps the per-agent event buffer, the invite bus, the presence bus and the message listener's subscriber registry in memory, so a second replica would never hear signals raised in the first." }}
 {{- end }}
 {{- include "switch.validateDbTls" . }}
 {{- include "switch.validateLogging" . }}
@@ -13,8 +13,8 @@ metadata:
     {{- include "switch.selectorLabels" (dict "Release" .Release "component" "switch-core") | nindent 4 }}
 spec:
   replicas: {{ .Values.switchCore.replicaCount }}
-  # switch-core is a singleton (live Matrix sync + collaboration-bridge sessions
-  # in memory). A rolling update would briefly run two pods whose bridge/client
+  # switch-core is a singleton (in-process delivery state + collaboration-bridge
+  # sessions in memory). A rolling update would briefly run two pods whose bridge/client
   # sessions collide and leave bridges stuck; Recreate tears the old pod down
   # before starting the new one.
   strategy:
@@ -33,6 +33,22 @@ spec:
       {{- end }}
       initContainers:
         {{- include "switch.waitFor" (dict "name" "postgres" "host" (include "switch.postgresHost" .) "port" (include "switch.postgresPort" .)) | nindent 8 }}
+        # Migrates and re-issues grants as the schema owner, so the serving
+        # container below never holds the owner's password. Covers a fresh
+        # install, where the pre-upgrade Job does not run; on an upgrade it
+        # finds nothing pending.
+        - name: migrate
+          image: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
+          imagePullPolicy: {{ .Values.switchCore.imagePullPolicy }}
+          command: ["switch-migrate"]
+          env:
+            {{- include "switch.coreEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.switchCore.resources | nindent 12 }}
+          {{- if include "switch.dbCaBundleConfigMap" . }}
+          volumeMounts:
+            {{- include "switch.dbCaBundleVolumeMount" . | nindent 12 }}
+          {{- end }}
       containers:
         - name: switch-core
           image: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
@@ -51,7 +67,23 @@ spec:
               protocol: TCP
             {{- end }}
           env:
-            {{- include "switch.coreEnv" . | nindent 12 }}
+            {{- if .Values.switchCore.hostedControllerSecret }}
+            - name: HOSTED_CONTROLLER_CONFIG_PATH
+              value: /etc/switch-hosted/controller.json
+            - name: HOSTED_PROVIDER_VERIFICATION_ENABLED
+              value: {{ .Values.switchCore.hostedProviderVerificationEnabled | quote }}
+            - name: HOSTED_LAUNCH_CAPACITY
+              value: {{ .Values.switchCore.hostedLaunchCapacity | quote }}
+            - name: HOSTED_DISK_RETENTION_DAYS
+              value: {{ .Values.switchCore.hostedDiskRetentionDays | quote }}
+            - name: HOSTED_IDLE_STOP_MINUTES
+              value: {{ .Values.switchCore.hostedIdleStopMinutes | quote }}
+            {{- end }}
+            {{- if .Values.switchCore.githubConnectionsSecret }}
+            - name: HOSTED_GITHUB_CONFIG_PATH
+              value: /etc/switch-github/github.json
+            {{- end }}
+            {{- include "switch.coreEnv" (merge (dict "omitOwnerCredentials" true) .) | nindent 12 }}
           # Readiness checks the database; liveness deliberately does not.
           # There is one replica, so a failing readiness probe empties the
           # Service rather than shifting traffic — which is right while the
@@ -75,11 +107,37 @@ spec:
             periodSeconds: 30
           resources:
             {{- toYaml .Values.switchCore.resources | nindent 12 }}
-          {{- if include "switch.dbCaBundleConfigMap" . }}
+          {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.hostedControllerSecret }}
           volumeMounts:
+            {{- if .Values.switchCore.hostedControllerSecret }}
+            - name: hosted-controller
+              mountPath: /etc/switch-hosted
+              readOnly: true
+            {{- end }}
+            {{- if .Values.switchCore.githubConnectionsSecret }}
+            - name: github-connections
+              mountPath: /etc/switch-github
+              readOnly: true
+            {{- end }}
+            {{- if include "switch.dbCaBundleConfigMap" . }}
             {{- include "switch.dbCaBundleVolumeMount" . | nindent 12 }}
+            {{- end }}
           {{- end }}
-      {{- if include "switch.dbCaBundleConfigMap" . }}
+      {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.hostedControllerSecret }}
       volumes:
+        {{- if .Values.switchCore.hostedControllerSecret }}
+        - name: hosted-controller
+          secret:
+            secretName: {{ .Values.switchCore.hostedControllerSecret | quote }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if .Values.switchCore.githubConnectionsSecret }}
+        - name: github-connections
+          secret:
+            secretName: {{ .Values.switchCore.githubConnectionsSecret | quote }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if include "switch.dbCaBundleConfigMap" . }}
         {{- include "switch.dbCaBundleVolume" . | nindent 8 }}
+        {{- end }}
       {{- end }}

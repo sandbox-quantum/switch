@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db.models import ApprovalRequest, User
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_session_factory
-from switch_core.session_activity.service import SessionActivityService, SwitchUser
+from switch_core.session_activity.service import AgentSessionActivityService, SwitchUser
 from switch_core.sessions.contract import (
     Answer,
     ApprovalResult,
@@ -162,7 +162,7 @@ async def open_approvals(
     user: CurrentUser, factory: Factory
 ) -> list[ApprovalRequestView]:
     """Open requests of the agents the signed-in person owns."""
-    rows = await SessionActivityService(factory).open_for_owner(user.id)
+    rows = await AgentSessionActivityService(factory).open_for_owner(user.id)
     return [ApprovalRequestView.of(row) for row in rows]
 
 
@@ -178,7 +178,7 @@ async def answer_approval(
     user: CurrentUser,
     factory: Factory,
 ) -> ApprovalRequestView:
-    row = await SessionActivityService(factory).answer_approval(
+    row = await AgentSessionActivityService(factory).answer_approval(
         agent_id,
         session_id,
         request_id,

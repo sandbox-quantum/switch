@@ -20,11 +20,11 @@ from typing import Any
 from switch_core.bridges.agent.operations.definitions import (
     bind_room_for_connectionless_caller,
 )
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
     Closure,
-    ConnectionRegistry,
 )
 
 AGENT = "agent-1"
@@ -42,7 +42,7 @@ class _RecordingSessionStore:
         self.writes.append(kwargs)
 
 
-def _open(registry: ConnectionRegistry, connection_id: str) -> Any:
+def _open(registry: AgentConnectionRegistry, connection_id: str) -> Any:
     return registry.open(
         agent_id=AGENT,
         connection_id=connection_id,
@@ -65,7 +65,7 @@ async def _write_binding_row_if_needed(protocol: Any, key: str) -> bool:
     )
 
 
-def _protocol(registry: ConnectionRegistry, store: _RecordingSessionStore) -> Any:
+def _protocol(registry: AgentConnectionRegistry, store: _RecordingSessionStore) -> Any:
     class _Db:
         async def __aenter__(self) -> Any:
             return self
@@ -84,7 +84,7 @@ def _protocol(registry: ConnectionRegistry, store: _RecordingSessionStore) -> An
 
 
 async def test_no_row_is_written_for_a_connection_backed_caller() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     _open(registry, CONN)
     store = _RecordingSessionStore()
 
@@ -96,7 +96,7 @@ async def test_no_row_is_written_for_a_connection_backed_caller() -> None:
 async def test_the_row_is_still_written_for_an_mcp_transport_session() -> None:
     # No connection was ever opened for this key, so the row is the only thing
     # that can resolve the caller's room.
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     store = _RecordingSessionStore()
 
     await _write_binding_row_if_needed(_protocol(registry, store), "mcp-session-1")
@@ -109,7 +109,7 @@ async def test_the_row_is_still_written_for_an_mcp_transport_session() -> None:
 async def test_a_closed_connection_falls_back_to_writing_the_row() -> None:
     # A runtime reusing a key whose connection has expired is indistinguishable
     # from an MCP transport session, and resolves the same way.
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     _open(registry, CONN)
     registry.close(CONN, Closure(code="closed", message="gone", room_id=None))
     store = _RecordingSessionStore()

@@ -35,6 +35,8 @@ export const roomMessageSchema = z.object({
   missed: z
     .object({ count: z.number().int().nonnegative().nullable(), reason: z.string().nullable() })
     .nullish(),
+  /** Carried over from the session-table worker at the cutover, and named apart from a live delivery. */
+  cutover: z.literal(true).optional(),
 });
 export type RoomMessage = z.infer<typeof roomMessageSchema>;
 
@@ -49,6 +51,24 @@ function uuidFrom(text: string): string {
 /** The command id a room message runs under: the same however often it is handed over. */
 export function roomCommandId(agentId: string, roomId: string, messageId: string): string {
   return uuidFrom(`switch-room:${agentId}:${roomId}:${messageId}`);
+}
+
+/**
+ * The command id of a room message imported at the cutover. A session the
+ * old worker left may already hold the live id for it, as a command it
+ * accepted and will report unknown rather than run again.
+ */
+export function cutoverCommandId(agentId: string, roomId: string, messageId: string): string {
+  return uuidFrom(`switch-room-cutover:${agentId}:${roomId}:${messageId}`);
+}
+
+/** The fresh start a room message triggers on a conversation that cannot continue: once per message. */
+export function roomFreshStartCommandId(
+  agentId: string,
+  roomId: string,
+  messageId: string
+): string {
+  return uuidFrom(`switch-room-fresh-start:${agentId}:${roomId}:${messageId}`);
 }
 
 const MIME_ALIASES: Record<string, string> = {
@@ -118,6 +138,8 @@ export function roomCommand(input: {
   message: RoomMessage;
   surface: Surface;
   attachments: PlannedAttachment[];
+  /** Said before the message, such as that the agent's instructions changed; null for nothing. */
+  preface: string | null;
 }): Command {
   const { payload } = input.message;
   const attachments: Attachment[] = input.attachments
@@ -142,6 +164,7 @@ export function roomCommand(input: {
   const marker = randomBytes(8).toString('hex');
   const senderName = payload.sender_name.split(/\s+/).filter(Boolean).join(' ');
   const text =
+    (input.preface === null ? '' : `${input.preface}\n\n`) +
     `[Switch] ${senderName} addressed you in room ${input.roomId} (message_id ${payload.message_id}, thread_id ${payload.thread_id ?? 'none'}):\n` +
     `BEGIN SWITCH MESSAGE ${marker}\n` +
     `${payload.body}\n` +
@@ -151,7 +174,11 @@ export function roomCommand(input: {
     unreadNotice(input.message.missed);
   return {
     contractVersion: 1,
-    commandId: roomCommandId(input.agentId, input.roomId, payload.message_id),
+    commandId: (input.message.cutover ? cutoverCommandId : roomCommandId)(
+      input.agentId,
+      input.roomId,
+      payload.message_id
+    ),
     sessionId: input.sessionId,
     epoch: input.epoch,
     origin: {

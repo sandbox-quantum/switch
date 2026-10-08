@@ -1,9 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
 import { rpc } from '@renderer/lib/ipc';
-import { Field, FieldDescription, FieldTitle } from '@renderer/lib/ui/field';
 import { Switch } from '@renderer/lib/ui/switch';
 import { log } from '@renderer/utils/logger';
+import { SettingRow } from './setting-row';
 
 /**
  * Per-agent "bypass permissions" toggle. When on, Switch Console launches this
@@ -35,28 +34,17 @@ export function AutoApproveSettingsSection({
   const single = list.length === 1 ? list[0] : null;
 
   return (
-    <Field>
-      <div className="flex items-center justify-between gap-3">
-        <FieldTitle>
-          <span className="flex items-center gap-1.5">
-            Bypass permissions
-            <InfoTooltip
-              label="More info about bypassing permissions"
-              content="Sessions start with the provider's auto-approve flag, including ones started automatically. Turn it on only for agents you trust to run unattended."
-            />
-          </span>
-        </FieldTitle>
-        {single && (
+    <AutoApproveRow
+      control={
+        single && (
           <AutoApproveSwitch
             agentId={single.id}
             enabled={single.autoApprove}
             locationId={locationId}
           />
-        )}
-      </div>
-      <FieldDescription className="text-foreground-muted">
-        Run this agent&apos;s sessions without permission prompts.
-      </FieldDescription>
+        )
+      }
+    >
       {!single && (
         <div className="flex flex-col gap-2">
           {list.map((agent) => (
@@ -74,7 +62,31 @@ export function AutoApproveSettingsSection({
           ))}
         </div>
       )}
-    </Field>
+    </AutoApproveRow>
+  );
+}
+
+/** The "Bypass permissions" row itself, whatever holds the value its switch shows. */
+export function AutoApproveRow({
+  control,
+  children,
+}: {
+  control: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  return (
+    <SettingRow
+      title="Bypass permissions"
+      info={{
+        label: 'More info about bypassing permissions',
+        content:
+          "Sessions start with the provider's auto-approve flag, including ones started automatically. Turn it on only for agents you trust to run unattended.",
+      }}
+      description="Run this agent's sessions without permission prompts."
+      control={control}
+    >
+      {children}
+    </SettingRow>
   );
 }
 

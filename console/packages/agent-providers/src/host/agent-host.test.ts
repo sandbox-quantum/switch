@@ -1,0 +1,2742 @@
+import type { ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type * as runtime from '@sandboxaq/switch-agent-runtime';
+import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
+import { afterEach, expect, it, vi } from 'vitest';
+import {
+  MAX_HOST_RESTARTS,
+  type OpenAgentStream,
+  stopSupersededSessions,
+  openSwitchStream,
+  runAgentHost,
+  AgentHostAssignments,
+  definitionChanged,
+  supersededSessions,
+  withDefinitionOf,
+} from './agent-host';
+import { AttachmentTransfers } from './attachment-transfers';
+import { WorkerObsoleteError } from './exit-codes';
+import type { Handoff } from './handoff';
+import { FAILED_HOLD_MS, HostedWorker } from './hosted-worker';
+import { ensureSharedProcess, type Supervision } from './launch';
+import { type SessionRequest, SessionLinks } from './session-channel';
+import { sharedConfigSchema } from './shared-config';
+import { clearTakenOver, recordTakenOver } from './taken-over';
+import { SESSION_STARTING_MESSAGE, WatcherControl } from './watcher-tools';
+
+const paths = vi.hoisted(() => ({ root: '' }));
+const supervisors = vi.hoisted(() => new Map<string, { build: unknown }>());
+// Longer than `eventually` waits, so a slow machine fails on what it waited for, not the clock.
+vi.setConfig({ testTimeout: 20_000 });
+
+vi.mock('./launch', () => ({
+  sharedSessionRoot: (id: string) => join(paths.root, id),
+  sharedSessionsBase: () => paths.root,
+  liveSupervisor: (root: string) => Promise.resolve(supervisors.get(root) ?? null),
+  ensureSharedProcess: vi.fn(),
+}));
+const streams = vi.hoisted(() => [] as SwitchEventStreamDeps[]);
+const declarations = vi.hoisted(() => [] as boolean[]);
+/** Every placements map the watcher stated to Switch, in order. */
+const published = vi.hoisted(() => [] as Record<string, string>[]);
+const placementsRefusal = vi.hoisted(() => ({ error: null as Error | null }));
+/** A hosted worker's up-calls, and how Switch answers them. */
+const upcalls = vi.hoisted(() => ({
+  calls: [] as { path: string; body: Record<string, unknown> }[],
+  answer: (_path: string): unknown => ({}),
+}));
+vi.mock('@sandboxaq/switch-agent-runtime', async (importOriginal) => {
+  const original = await importOriginal<typeof runtime>();
+  return {
+    ...original,
+    SwitchEventStream: class {
+      constructor(private readonly deps: SwitchEventStreamDeps) {
+        streams.push(deps);
+        declarations.push(deps.spawnCapable === true);
+      }
+      start(): void {}
+      setSpawnCapable(capable: boolean): void {
+        declarations.push(capable);
+      }
+      async replacePlacements(placements: Record<string, string>): Promise<void> {
+        published.push(structuredClone(placements));
+        if (placementsRefusal.error) throw placementsRefusal.error;
+      }
+      async workerCall(path: string, body: Record<string, unknown>): Promise<unknown> {
+        upcalls.calls.push({ path, body });
+        if (path.endsWith('/connection/idle'))
+          return { queued_operations: [], credential_revision: 'r1' };
+        return upcalls.answer(path);
+      }
+    },
+  };
+});
+
+const roots: string[] = [];
+afterEach(async () => {
+  streams.length = 0;
+  declarations.length = 0;
+  published.length = 0;
+  placementsRefusal.error = null;
+  upcalls.calls.length = 0;
+  upcalls.answer = () => ({});
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  supervisors.clear();
+  vi.mocked(ensureSharedProcess).mockReset();
+  vi.restoreAllMocks();
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
+
+type HostChild = EventEmitter & {
+  connected: boolean;
+  send: (message: unknown, callback: (error: Error | null) => void) => boolean;
+};
+
+/**
+ * The session hosts a watcher is the parent of, as it sees them over IPC. A
+ * host is attached to its link when `start` is called — what the supervisor
+ * does on spawning one — says it is ready straight away, and records every
+ * request it is sent. It answers each one unless told to `drop` them, in which
+ * case it stops before answering, as a host that crashed would.
+ */
+function sessionHosts() {
+  const links = new SessionLinks();
+  const children = new Map<string, HostChild>();
+  const requests: { root: string; request: SessionRequest }[] = [];
+  const answers: { id: number; ok: boolean; value?: unknown; error?: string }[] = [];
+  let nextAsk = 0;
+  const hosts = {
+    links,
+    requests,
+    drop: false,
+    /**
+     * When set, each host started fails before it is ready, recording this
+     * as why — what a host whose provider CLI is not signed in does.
+     */
+    fail: null as string | null,
+    supervision: {
+      build: 'build',
+      start: async () => {},
+      stop: async () => {},
+      links,
+    } as Supervision,
+    /** Starts a host at `root` unless one is running there already. */
+    start: async (root: string): Promise<{ created: boolean }> => {
+      if (links.ready(root)) return { created: false };
+      const child = new EventEmitter() as HostChild;
+      child.connected = true;
+      child.send = (message, callback) => {
+        callback(null);
+        if ((message as { kind: string }).kind === 'answer') {
+          answers.push(message as (typeof answers)[number]);
+          return true;
+        }
+        const { id, request } = message as { id: number; request: SessionRequest };
+        requests.push({ root, request });
+        setImmediate(() => {
+          if (hosts.drop) child.emit('exit', null, 'SIGKILL');
+          else child.emit('message', { kind: 'reply', id, ok: true, value: null });
+        });
+        return true;
+      };
+      children.set(root, child);
+      links.attach(root, child as unknown as ChildProcess);
+      const failure = hosts.fail;
+      if (failure !== null) {
+        await mkdir(join(root, 'supervisor'), { recursive: true });
+        await writeFile(
+          join(root, 'supervisor', 'failure.json'),
+          JSON.stringify({ message: failure })
+        );
+        setImmediate(() => child.emit('exit', 1, null));
+        return { created: true };
+      }
+      child.emit('message', { kind: 'ready' });
+      return { created: true };
+    },
+    /**
+     * The host at `root` says which session it runs, then asks its parent, as
+     * its MCP server does for a tool call; answers what the watcher said.
+     */
+    ask: async (
+      root: string,
+      identity: { agentId: string; sessionId: string },
+      ask: { type: 'tools' } | { type: 'tool'; name: string; arguments: Record<string, unknown> }
+    ) => {
+      const child = children.get(root)!;
+      child.emit('message', {
+        kind: 'identity',
+        identity: { ...identity, hostId: 'host', epoch: 'epoch' },
+      });
+      const id = nextAsk++;
+      child.emit('message', { kind: 'ask', id, ask });
+      await eventually(() => answers.some((answer) => answer.id === id));
+      return answers.find((answer) => answer.id === id)!;
+    },
+    /** The host at `root` exits. */
+    exit: (root: string) => children.get(root)?.emit('exit', 0, null),
+    /** The host at `root` says whether it is in the middle of a turn. */
+    busy: (root: string, busy: boolean) =>
+      children.get(root)?.emit('message', {
+        kind: 'busy',
+        busy,
+        reasons: busy ? [{ kind: 'turn_running', count: 1 }] : [],
+      }),
+    /** What the host at `root` was asked, in order. */
+    to: (root: string) => requests.filter((entry) => entry.root === root).map((e) => e.request),
+  };
+  vi.mocked(ensureSharedProcess).mockImplementation(({ root }) => hosts.start(root));
+  return hosts;
+}
+
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
+  'keeps %s room assignments across a crash before launch and duplicate delivery',
+  async (provider) => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-watch-test-'));
+    roots.push(root);
+    paths.root = root;
+    const template = sharedConfigSchema.parse({
+      session: {
+        sessionId: 'watcher',
+        agentId: randomUUID(),
+        hostId: 'host',
+        epoch: 'initial',
+        provider,
+        status: 'starting',
+        connectivity: 'online',
+        pendingRequestIds: [],
+        capabilities: {
+          input: 'queue',
+          approvals: true,
+          questions: true,
+          interrupt: true,
+          reset: false,
+          compact: false,
+          modelChange: false,
+          attachmentMimeTypes: [],
+        },
+      },
+      start: {
+        provider,
+        input: {
+          sessionId: 'watcher',
+          cwd: root,
+          runtimeMode: 'approval-required',
+          env: { TEST_SETTING: 'preserved', SWITCHDASH_SESSION_ID: 'watcher' },
+          mcpServers: {},
+        },
+      },
+      roomConnection: { connectionId: 'watcher' },
+    });
+    const event = { sequence: 7, roomId: 'room', messageId: 'message' };
+    const opened = await AgentHostAssignments.open(root);
+    const first = await opened.assign(template, event);
+    await opened.handled(event.sequence);
+    const restarted = await AgentHostAssignments.open(root);
+    expect(restarted.cursor).toBe(7);
+    // The same delivery served again is the session it was already given, not a
+    // second one started to answer the same message.
+    expect(await restarted.assign(template, event)).toEqual(first);
+    expect(restarted.sessions()).toHaveLength(1);
+    // Every session an agent has is reached over the one connection the
+    // controller holds, so an assignment inherits it rather than minting one.
+    expect(first.roomConnection).toEqual(template.roomConnection);
+    // Nothing to claim from Switch: the controller's journal is the record.
+    expect(first.grant).toBeUndefined();
+    expect(first.start.input.env).toEqual({
+      TEST_SETTING: 'preserved',
+      SWITCHDASH_SESSION_ID: first.session.sessionId,
+    });
+    await expect(restarted.assign(template, { ...event, messageId: 'forged' })).rejects.toThrow(
+      'identity'
+    );
+    const another = await restarted.assign(template, {
+      ...event,
+      sequence: 8,
+      roomId: 'another',
+      messageId: 'second',
+    });
+    expect(another.session.sessionId).not.toBe(first.session.sessionId);
+    await restarted.handled(8);
+    expect(restarted.cursor).toBe(8);
+    expect(restarted.sessions()).toHaveLength(2);
+  }
+);
+
+function template(root: string) {
+  return sharedConfigSchema.parse({
+    session: {
+      sessionId: 'watcher',
+      agentId: randomUUID(),
+      hostId: 'host',
+      epoch: 'initial',
+      provider: 'codex',
+      status: 'starting',
+      connectivity: 'online',
+      pendingRequestIds: [],
+      capabilities: {
+        input: 'queue',
+        approvals: true,
+        questions: true,
+        interrupt: true,
+        reset: false,
+        compact: false,
+        modelChange: false,
+        attachmentMimeTypes: [],
+      },
+    },
+    start: {
+      provider: 'codex',
+      input: {
+        sessionId: 'watcher',
+        cwd: root,
+        runtimeMode: 'approval-required',
+        env: {},
+        mcpServers: {},
+      },
+    },
+    roomConnection: { connectionId: 'watcher' },
+  });
+}
+
+function watchable(root: string) {
+  const config = template(root);
+  config.execution = {
+    credentialsPath: join(root, 'credentials.json'),
+    inheritEnv: [],
+    mcpRuntime: 'runtime',
+    codexConfig: '',
+    skill: '',
+    context: '',
+  };
+  return config;
+}
+
+/** A session of the same agent on disk, which the server can then be said to have holding a room. */
+async function existing(
+  root: string,
+  config: ReturnType<typeof watchable>
+): Promise<{ sessionId: string; sessionRoot: string }> {
+  const saved = structuredClone(config);
+  saved.session = { ...saved.session, sessionId: randomUUID() };
+  const sessionRoot = join(root, saved.session.sessionId);
+  await mkdir(sessionRoot, { recursive: true });
+  await writeFile(join(sessionRoot, 'config.json'), JSON.stringify(saved));
+  return { sessionId: saved.session.sessionId, sessionRoot };
+}
+
+/** Records in the controller's journal that `sessionId` serves `roomId`. */
+async function assignTo(
+  root: string,
+  config: ReturnType<typeof watchable>,
+  sequence: number,
+  roomId: string,
+  sessionId: string
+): Promise<void> {
+  const saved = structuredClone(config);
+  saved.session = { ...saved.session, sessionId };
+  saved.start.input.sessionId = sessionId;
+  await writeFile(
+    join(root, 'assignments.jsonl'),
+    JSON.stringify({ sequence, roomId, messageId: `seed-${sequence}`, config: saved }) +
+      '\n' +
+      JSON.stringify({ handled: sequence }) +
+      '\n',
+    { flag: 'a' }
+  );
+}
+
+it('stays down while a takeover marker says another client holds the connection', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-taken-over-'));
+  roots.push(root);
+  paths.root = root;
+  await writeFlags(root, { enabled: true, spawn: true });
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const { supervision } = sessionHosts();
+
+  await recordTakenOver(root, {
+    at: '2026-01-01T00:00:00.000Z',
+    reason: 'another stream attached to this connection',
+    connectionId: 'watcher',
+  });
+  // Returns instead of reading the credentials it would need to connect: the
+  // watcher never gets as far as reopening the connection it lost.
+  await expect(
+    runAgentHost(
+      root,
+      watchable(root),
+      new AbortController().signal,
+      supervision,
+      new WatcherControl(),
+      null,
+      openSwitchStream
+    )
+  ).resolves.toBeUndefined();
+  expect(warning.mock.calls[0]?.[0]).toContain('stood down at 2026-01-01T00:00:00.000Z');
+
+  // Cleared by the explicit restart, and the watcher tries to connect again —
+  // failing here only because this test gave it no credentials to read.
+  await clearTakenOver(root);
+  await expect(
+    runAgentHost(
+      root,
+      watchable(root),
+      new AbortController().signal,
+      supervision,
+      new WatcherControl(),
+      null,
+      openSwitchStream
+    )
+  ).rejects.toThrow('credentials.json');
+});
+
+it('asks again for an event it assigned but died before routing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-unrouted-'));
+  roots.push(root);
+  paths.root = root;
+  const config = template(root);
+  const assignments = await AgentHostAssignments.open(root);
+  const routed = await assignments.assign(config, {
+    sequence: 4,
+    roomId: 'room',
+    messageId: 'four',
+  });
+  await assignments.handled(4);
+  // Assigned, and then the watcher dies before the session is handed the event.
+  const unrouted = await assignments.assign(config, {
+    sequence: 6,
+    roomId: 'other',
+    messageId: 'six',
+  });
+
+  const restarted = await AgentHostAssignments.open(root);
+  expect(restarted.cursor).toBe(4);
+  // Redelivery finds the same session, so the event is routed where it was
+  // always going rather than to a second one.
+  expect(
+    await restarted.assign(config, { sequence: 6, roomId: 'other', messageId: 'six' })
+  ).toEqual(unrouted);
+  await restarted.handled(6);
+  expect(restarted.cursor).toBe(6);
+  expect(restarted.sessions().map((entry) => entry.session.sessionId)).toEqual([
+    routed.session.sessionId,
+    unrouted.session.sessionId,
+  ]);
+});
+
+it('resumes a journal written before routing was recorded at its last complete event', async () => {
+  // Every assignment in an existing journal is unrouted by this reading, and
+  // taking that literally would reopen at the start of the stream — one silent
+  // missed session per agent on the upgrade meant to make delivery stronger.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-legacy-'));
+  roots.push(root);
+  paths.root = root;
+  const config = template(root);
+  const older = await AgentHostAssignments.open(root);
+  for (const [sequence, roomId] of [
+    [4, 'room'],
+    [6, 'other'],
+    [7, 'third'],
+  ] as const)
+    await older.assign(config, { sequence, roomId, messageId: `m${sequence}` });
+
+  // Six, because the watcher only assigns the next event once the one before it
+  // has been routed — so only the last record is still owed.
+  expect((await AgentHostAssignments.open(root)).cursor).toBe(6);
+});
+
+it('resumes at the server head after its numbering restarts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-restart-'));
+  roots.push(root);
+  paths.root = root;
+  const config = template(root);
+  const assignments = await AgentHostAssignments.open(root);
+  const before = await assignments.assign(config, {
+    sequence: 13,
+    roomId: 'room',
+    messageId: 'before',
+  });
+  await assignments.handled(13);
+  expect(assignments.cursor).toBe(13);
+
+  await assignments.restart();
+
+  // A saved position from the old numbering would be asked for again on every
+  // reconnect, so the watcher must forget it rather than stall behind head.
+  expect(assignments.cursor).toBe(0);
+  const reloaded = await AgentHostAssignments.open(root);
+  expect(reloaded.cursor).toBe(0);
+
+  // Low sequence numbers are fresh events now, not duplicates of old ones.
+  const after = await reloaded.assign(config, { sequence: 2, roomId: 'other', messageId: 'after' });
+  expect(after.session.sessionId).not.toBe(before.session.sessionId);
+  await reloaded.handled(2);
+  expect(reloaded.cursor).toBe(2);
+  expect(reloaded.sessions().map((entry) => entry.session.sessionId)).toEqual([
+    before.session.sessionId,
+    after.session.sessionId,
+  ]);
+});
+
+it('keeps a mailbox delivery out of the stream position, and knows it again after a restart', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-wake-position-'));
+  roots.push(root);
+  paths.root = root;
+  const config = template(root);
+  const assignments = await AgentHostAssignments.open(root);
+  const woken = { sequence: 1, roomId: 'room', messageId: 'woken' };
+  await assignments.park(woken, true, true);
+  // Assigned, and then the watcher dies before the session takes it.
+  const wakeConfig = await assignments.assign(config, woken);
+  // A stream event on the number the wake was handed is a different message.
+  const streamed = await assignments.assign(config, {
+    sequence: 1,
+    roomId: 'other',
+    messageId: 'streamed',
+  });
+  expect(streamed.session.sessionId).not.toBe(wakeConfig.session.sessionId);
+  expect(assignments.cursor).toBe(0);
+
+  await assignments.restart();
+  const restarted = await AgentHostAssignments.open(root);
+  expect(restarted.known(woken)).toBe(true);
+  expect(await restarted.assign(config, woken)).toEqual(wakeConfig);
+  expect(restarted.cursor).toBe(0);
+});
+
+/** The rename both Console and the SSH inline script use to replace the file. */
+async function writeFlags(root: string, flags: { enabled: boolean; spawn: boolean }) {
+  const temporary = join(root, 'watch.json.tmp');
+  await writeFile(temporary, JSON.stringify(flags));
+  await rename(temporary, join(root, 'watch.json'));
+}
+
+async function spawning(root: string) {
+  const config = watchable(root);
+  await writeFlags(root, { enabled: true, spawn: true });
+  await writeFile(join(root, 'config.json'), JSON.stringify(config));
+  await writeFile(
+    join(root, 'credentials.json'),
+    JSON.stringify({
+      env: {
+        SWITCH_API_ENDPOINT: 'http://127.0.0.1/agent',
+        SWITCH_API_TOKEN: 'placeholder-token',
+        SWITCH_AGENT_ID: config.session.agentId,
+      },
+    })
+  );
+  return config;
+}
+
+async function stopSpawning(root: string) {
+  await writeFlags(root, { enabled: true, spawn: false });
+}
+
+/** Polls: what is waited on crosses a file watch or a queue, not a call. */
+/** Up to 10 s: the watcher sees a rewritten file through fs events, which a loaded machine delivers late. */
+async function eventually(reached: () => boolean | Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 2000; attempt++) {
+    if (await reached()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('The watcher never reached the state this test was waiting for.');
+}
+
+/** Whether every event the watcher parked has been taken by its session. */
+async function settled(root: string): Promise<boolean> {
+  return (await AgentHostAssignments.open(root)).pending().length === 0;
+}
+
+const addressed = (sequence: number, roomId: string): AgentBridgeEvent => ({
+  type: 'message',
+  room_id: roomId,
+  sequence,
+  payload: {
+    addressed: true,
+    sender: '@owner:example.test',
+    sender_name: 'Owner',
+    message_id: `message-${sequence}`,
+    body: 'Run the check',
+    timestamp: sequence,
+  },
+});
+
+/** The same event, as asked in a thread. */
+const threaded = (event: AgentBridgeEvent, threadId: string): AgentBridgeEvent => ({
+  ...event,
+  payload: { ...event.payload, thread_id: threadId } as AgentBridgeEvent['payload'],
+});
+
+it('starts no saved session at startup; each waits until it is needed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-lazy-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const saved = structuredClone(config);
+  saved.session = { ...saved.session, sessionId: randomUUID() };
+  await writeFile(
+    join(root, 'assignments.jsonl'),
+    JSON.stringify({ sequence: 1, roomId: 'room', messageId: 'first', config: saved }) +
+      '\n' +
+      JSON.stringify({ handled: 1 }) +
+      '\n'
+  );
+  const { supervision } = sessionHosts();
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+it('leaves an event queued behind earlier work unstarted once spawning is turned off', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-queued-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const started: string[] = [];
+  let admit: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    admit = resolve;
+  });
+  const hosts = sessionHosts();
+  const { supervision } = hosts;
+  vi.mocked(ensureSharedProcess).mockImplementation(
+    async ({ root: sessionRoot, config: launched }) => {
+      started.push(launched.session.sessionId);
+      if (started.length === 1) await held;
+      return hosts.start(sessionRoot);
+    }
+  );
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    const stream = streams[0]!;
+    void stream.onEvent!(addressed(1, 'room'));
+    await eventually(() => started.length >= 1);
+
+    // Admitted while spawning was on, and still waiting on the session before
+    // it when the setting changes.
+    const queued = stream.onEvent!(addressed(2, 'other'));
+    await stopSpawning(root);
+    await eventually(() => declarations.includes(false));
+    admit();
+    await queued;
+  } finally {
+    // A failed assertion must not leave the directory watch open behind it: the
+    // next test then opens its own and the file handles run out.
+    admit();
+    abort.abort();
+    await run;
+  }
+
+  const journal = await AgentHostAssignments.open(root);
+  const sessions = journal.sessions().map((assigned) => assigned.session.sessionId);
+  expect(sessions).toHaveLength(2);
+  expect(started).toEqual([sessions[0]]);
+});
+
+it('gives one room one session however close together its first messages arrive', async () => {
+  // Two people addressing a quiet room at once must not each get a session of
+  // their own: the second would answer from a context the first never had.
+  // The first starts the room's session and the second is routed to it.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-concurrent-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const started: string[] = [];
+  const hosts = sessionHosts();
+  const { supervision } = hosts;
+  vi.mocked(ensureSharedProcess).mockImplementation(
+    async ({ root: sessionRoot, config: launched }) => {
+      started.push(launched.session.sessionId);
+      return hosts.start(sessionRoot);
+    }
+  );
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await Promise.all([
+      streams[0]!.onEvent!(addressed(1, 'room')),
+      streams[0]!.onEvent!(addressed(2, 'room')),
+    ]);
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  const journal = await AgentHostAssignments.open(root);
+  expect(journal.sessions()).toHaveLength(1);
+  expect(new Set(started).size).toBe(1);
+  expect(journal.pending()).toEqual([]);
+  expect(
+    hosts
+      .to(join(root, journal.sessions()[0]!.session.sessionId))
+      .map((request) => request.type === 'room' && request.handoff.messageId)
+  ).toEqual(['message-1', 'message-2']);
+});
+
+it('routes a room that has a session to that session, and starts no other', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-owner-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const owner = await existing(root, config);
+  await assignTo(root, config, 1, 'room', owner.sessionId);
+  const hosts = sessionHosts();
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(2, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  expect(hosts.to(owner.sessionRoot)).toMatchObject([
+    {
+      type: 'room',
+      handoff: {
+        sequence: 2,
+        roomId: 'room',
+        messageId: 'message-2',
+        event: { type: 'message', payload: { body: 'Run the check' } },
+      },
+    },
+  ]);
+  // Only the room's own session was ever started.
+  expect(
+    new Set(
+      vi.mocked(ensureSharedProcess).mock.calls.map((call) => call[0].config.session.sessionId)
+    )
+  ).toEqual(new Set([owner.sessionId]));
+  const journal = await AgentHostAssignments.open(root);
+  expect(journal.sessions()).toHaveLength(1);
+  // Recorded as taken, so a watcher restarted here reopens past it rather than
+  // handing the same event over again.
+  expect(journal.cursor).toBe(2);
+});
+
+it('routes to the session Console moved the room to, and tells Switch where every session is', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-placed-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const placed = await existing(root, config);
+  const hosts = sessionHosts();
+  const control = new WatcherControl();
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    control,
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    expect(await control.place(placed.sessionId, 'room')).toEqual({
+      sessionId: placed.sessionId,
+      roomId: 'room',
+      previous: null,
+      displaced: null,
+    });
+    expect(published.at(-1)).toEqual({ [placed.sessionId]: 'room' });
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+    await eventually(() => settled(root));
+    // Stated again whenever the stream (re)connects: Switch keeps it in memory only.
+    const before = published.length;
+    streams[0]!.onConnected!();
+    await eventually(() => published.length === before + 1);
+    expect(published.at(-1)).toEqual({ [placed.sessionId]: 'room' });
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  expect(hosts.to(placed.sessionRoot)).toMatchObject([
+    { type: 'room', handoff: { sequence: 1, roomId: 'room', messageId: 'message-1' } },
+  ]);
+  // The room was served without the watcher minting a session for it.
+  expect((await AgentHostAssignments.open(root)).sessions()).toEqual([]);
+  // And a watcher started again routes where this one did.
+  expect(JSON.parse(await readFile(join(root, 'placements.json'), 'utf8'))).toEqual({
+    placements: { [placed.sessionId]: 'room' },
+  });
+});
+
+it('puts a move Console asked for back when Switch refuses it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-place-refused-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const first = await existing(root, config);
+  const second = await existing(root, config);
+  const hosts = sessionHosts();
+  const control = new WatcherControl();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    control,
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await control.place(first.sessionId, 'room');
+    placementsRefusal.error = new Error('HTTP 403: not a member');
+    await expect(control.place(second.sessionId, 'room')).rejects.toThrow('not a member');
+    placementsRefusal.error = null;
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+    await eventually(() => settled(root));
+    await expect(control.place(randomUUID(), 'room')).rejects.toThrow('not one of this agent');
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(hosts.to(first.sessionRoot)).toMatchObject([{ type: 'room' }]);
+  expect(hosts.to(second.sessionRoot)).toEqual([]);
+  await expect(control.place(first.sessionId, 'room')).rejects.toThrow('not running');
+});
+
+/** A Switch answering the operation list and `connect_to_room`, refusing when told to. */
+function switchOps(refuse: { connect: boolean }) {
+  const calls: { path: string; headers: Record<string, string>; body: unknown }[] = [];
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const path = new URL(url).pathname;
+    calls.push({
+      path,
+      headers: (init.headers ?? {}) as Record<string, string>,
+      body: typeof init.body === 'string' ? JSON.parse(init.body) : null,
+    });
+    if (path.endsWith('/ops'))
+      return Response.json({
+        operations: {
+          connect_to_room: { description: 'Connect.', input_schema: { type: 'object' } },
+          post_message: { description: 'Post.', input_schema: { type: 'object' } },
+        },
+      });
+    if (path.endsWith('/ops/connect_to_room'))
+      return refuse.connect
+        ? new Response('not a member of that room', { status: 403 })
+        : Response.json({ result: { room_id: 'room', warning: null } });
+    return Response.json({ result: 'posted' });
+  });
+  return calls;
+}
+
+it('answers its sessions’ tool calls as the calling session, placing the room it connects to', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-tools-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const earlier = await existing(root, config);
+  const caller = await existing(root, config);
+  await assignTo(root, config, 1, 'room', earlier.sessionId);
+  const hosts = sessionHosts();
+  await hosts.start(caller.sessionRoot);
+  const refuse = { connect: false };
+  const calls = switchOps(refuse);
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const identity = { agentId: config.session.agentId, sessionId: caller.sessionId };
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    const tools = await hosts.ask(caller.sessionRoot, identity, { type: 'tools' });
+    expect((tools.value as { name: string }[]).map((tool) => tool.name)).toEqual([
+      'connect_to_room',
+      'post_message',
+      'download_attachment',
+      'send_attachment',
+    ]);
+
+    // Refused by Switch: the room stays with the session that had it.
+    refuse.connect = true;
+    const refused = await hosts.ask(caller.sessionRoot, identity, {
+      type: 'tool',
+      name: 'connect_to_room',
+      arguments: { room_id: 'room' },
+    });
+    expect(refused.value).toMatchObject({ isError: true });
+    expect(published).toEqual([]);
+
+    refuse.connect = false;
+    const connected = await hosts.ask(caller.sessionRoot, identity, {
+      type: 'tool',
+      name: 'connect_to_room',
+      arguments: { room_id: 'room' },
+    });
+    const result = connected.value as {
+      content: { text: string }[];
+      structuredContent: { warning: string };
+    };
+    // The session it took the room from is named, in words the agent can pass on.
+    expect(result.structuredContent.warning).toContain(earlier.sessionId);
+    expect(result.content.at(-1)!.text).toContain('no longer receives the room');
+    expect(published.at(-1)).toEqual({ [caller.sessionId]: 'room' });
+
+    await streams[0]!.onEvent!(addressed(2, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  const connect = calls.filter((call) => call.path.endsWith('/ops/connect_to_room')).at(-1)!;
+  expect(connect.headers).toMatchObject({
+    Authorization: 'Bearer placeholder-token',
+    'X-Switch-Connection-Id': 'watcher',
+    'X-Switch-Session-Id': caller.sessionId,
+    'X-Switch-Session-Host-Id': 'host',
+    'X-Switch-Session-Epoch': 'epoch',
+  });
+  expect(hosts.to(caller.sessionRoot)).toMatchObject([
+    { type: 'room', handoff: { messageId: 'message-2' } },
+  ]);
+  expect(hosts.to(earlier.sessionRoot)).toEqual([]);
+});
+
+it('forgets a room another connection took over, and a session that was stopped', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-released-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  await stopSpawning(root);
+  const taken = await existing(root, config);
+  const stopping = await existing(root, config);
+  await assignTo(root, config, 1, 'room', taken.sessionId);
+  await assignTo(root, config, 2, 'other', stopping.sessionId);
+  const hosts = sessionHosts();
+  await hosts.start(stopping.sessionRoot);
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onRoomReleased!({ roomId: 'room', sessionId: taken.sessionId });
+    expect(published.at(-1)).toEqual({ [stopping.sessionId]: 'other' });
+
+    // With nothing placed there and starting sessions off, the room's message waits.
+    await streams[0]!.onEvent!(addressed(3, 'room'));
+    expect((await AgentHostAssignments.open(root)).pending()).toMatchObject([
+      { roomId: 'room', messageId: 'message-3' },
+    ]);
+    expect(hosts.to(taken.sessionRoot)).toEqual([]);
+
+    // A session that exits having been stopped gives its room up.
+    await hosts
+      .ask(
+        stopping.sessionRoot,
+        { agentId: config.session.agentId, sessionId: stopping.sessionId },
+        { type: 'tools' }
+      )
+      .catch(() => null);
+    await writeFile(
+      join(stopping.sessionRoot, 'inbox.jsonl'),
+      JSON.stringify({ type: 'stopped' }) + '\n'
+    );
+    hosts.exit(stopping.sessionRoot);
+    await eventually(
+      () => published.at(-1) !== undefined && Object.keys(published.at(-1)!).length === 0
+    );
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(JSON.parse(await readFile(join(root, 'placements.json'), 'utf8'))).toEqual({
+    placements: {},
+  });
+});
+
+it('still owes an event its session never acknowledged', async () => {
+  // The watcher's journal is the only copy of the event once the stream has
+  // moved past it. Releasing it before the host has taken it would step the
+  // watcher over it on restart, and nothing would be holding it.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-unacknowledged-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const assignments = await AgentHostAssignments.open(root);
+  const assigned = await assignments.assign(config, {
+    sequence: 1,
+    roomId: 'room',
+    messageId: 'first',
+  });
+  await assignments.handled(1);
+  const sessionRoot = join(root, assigned.session.sessionId);
+  const hosts = sessionHosts();
+  // Every host stops before it answers.
+  hosts.drop = true;
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(2, 'room'));
+    await eventually(() => hosts.to(sessionRoot).length >= 1);
+    await eventually(() =>
+      warn.mock.calls.some((call) => String(call[0]).includes('did not take message message-2'))
+    );
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  const journal = await AgentHostAssignments.open(root);
+  expect(journal.pending()).toMatchObject([
+    { sequence: 2, roomId: 'room', messageId: 'message-2', event: { type: 'message' } },
+  ]);
+  expect(journal.cursor).toBe(1);
+});
+
+it('restarts only the live sessions of this agent left on a superseded build', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-superseded-'));
+  roots.push(root);
+  paths.root = root;
+  const agentId = randomUUID();
+  const save = async (name: string, sessionId: string, owner: string) => {
+    const config = template(root);
+    config.session = { ...config.session, sessionId, agentId: owner };
+    config.start.input.sessionId = sessionId;
+    // What a config saved before the agent had one inbound connection looks
+    // like: the session's own, which it stops opening once it is restarted
+    // from this build.
+    config.roomConnection = { connectionId: `own-${sessionId}` };
+    await mkdir(join(root, name), { recursive: true });
+    await writeFile(join(root, name, 'config.json'), JSON.stringify(config));
+    return join(root, name);
+  };
+  const superseded = await save('superseded', 'superseded-session', agentId);
+  const current = await save('current', 'current-session', agentId);
+  const other = await save('other', 'other-session', randomUUID());
+  await save('idle', 'idle-session', agentId);
+  supervisors.set(superseded, { build: '/host/shared-host-old.mjs' });
+  supervisors.set(current, { build: '/host/shared-host-new.mjs' });
+  supervisors.set(other, { build: '/host/shared-host-old.mjs' });
+
+  const newer: Supervision = {
+    build: '/host/shared-host-new.mjs',
+    start: vi.fn(),
+    stop: vi.fn(),
+    links: null,
+  };
+  await stopSupersededSessions(await supersededSessions(agentId, newer), newer);
+
+  // Stopped, and left to start under this build when it is next needed.
+  expect(vi.mocked(newer.stop).mock.calls.map(([root]) => root)).toEqual([superseded]);
+  expect(ensureSharedProcess).not.toHaveBeenCalled();
+});
+
+// The sweep reads every session on the machine and only then asks whether each
+// one belongs to this agent, so a directory left by an older build — naming a
+// provider that no longer exists — used to abort the call and take auto-start
+// down for an agent that had nothing to do with it.
+it('steps over a neighbour whose saved config no longer parses', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-stale-'));
+  roots.push(root);
+  paths.root = root;
+  supervisors.clear();
+  vi.mocked(ensureSharedProcess).mockClear();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const agentId = randomUUID();
+
+  // A provider this build has never heard of: exactly what `fde4e217` left on
+  // disk for anyone who had a gemini/droid/amp agent before it was removed.
+  const stale = template(root);
+  stale.session = { ...stale.session, sessionId: 'stale-session', agentId: randomUUID() };
+  await mkdir(join(root, 'stale'), { recursive: true });
+  await writeFile(
+    join(root, 'stale', 'config.json'),
+    JSON.stringify({ ...stale, start: { ...stale.start, provider: 'gemini' } })
+  );
+  // And one that is not even JSON, which must not be fatal either.
+  await mkdir(join(root, 'corrupt'), { recursive: true });
+  await writeFile(join(root, 'corrupt', 'config.json'), '{ truncated');
+
+  const mine = template(root);
+  mine.session = { ...mine.session, sessionId: 'my-session', agentId };
+  mine.start.input.sessionId = 'my-session';
+  await mkdir(join(root, 'mine'), { recursive: true });
+  await writeFile(join(root, 'mine', 'config.json'), JSON.stringify(mine));
+  supervisors.set(join(root, 'mine'), { build: '/host/shared-host-old.mjs' });
+
+  const newer = { build: '/host/shared-host-new.mjs', start: vi.fn(), stop: vi.fn(), links: null };
+  await expect(
+    stopSupersededSessions(await supersededSessions(agentId, newer), newer)
+  ).resolves.toBeUndefined();
+
+  // This agent's own session is still picked up, which is the whole point.
+  expect(newer.stop.mock.calls.map(([stopped]) => stopped)).toEqual([join(root, 'mine')]);
+  // Skipped, but never in silence.
+  expect(warn.mock.calls.map(String).join('\n')).toContain('stale');
+  warn.mockRestore();
+});
+
+it('hands a session it has just created the event that created it', async () => {
+  // Nothing else carries that message: the session has no connection of its
+  // own, and it is being started precisely because somebody addressed the room.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-first-event-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  const started: { sessionId: string; parked: unknown[] }[] = [];
+  vi.mocked(ensureSharedProcess).mockImplementation(
+    async ({ root: sessionRoot, config: launched }) => {
+      // Parked in the watcher's journal before the session is started, so a
+      // watcher that dies here still has the event to hand over.
+      started.push({
+        sessionId: launched.session.sessionId,
+        parked: (await AgentHostAssignments.open(root)).pending(),
+      });
+      return hosts.start(sessionRoot);
+    }
+  );
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  const [assigned] = (await AgentHostAssignments.open(root)).sessions();
+  expect(started.map((entry) => entry.sessionId)).toEqual([assigned!.session.sessionId]);
+  expect(started[0]!.parked).toMatchObject([
+    { sequence: 1, roomId: 'room', messageId: 'message-1' },
+  ]);
+  // Started because the room addressed the agent, which its host reports.
+  expect(vi.mocked(ensureSharedProcess).mock.calls[0]![0].startSource).toBe('room');
+  expect(hosts.to(join(root, assigned!.session.sessionId))).toMatchObject([
+    {
+      type: 'room',
+      handoff: {
+        sequence: 1,
+        roomId: 'room',
+        messageId: 'message-1',
+        event: { type: 'message', payload: { message_id: 'message-1' } },
+      },
+    },
+  ]);
+});
+
+it('tells the room it is starting a session when its stream leaves that to it, before handing the message over', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-starting-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  vi.mocked(ensureSharedProcess).mockImplementation(async ({ root: sessionRoot }) =>
+    hosts.start(sessionRoot)
+  );
+  const calls = switchOperations({ owner: 'ada' });
+  const opened: SwitchEventStreamDeps[] = [];
+  const controllerStream: OpenAgentStream = (deps) => {
+    opened.push(deps);
+    return {
+      announcesSessionStarts: true,
+      start: () => {},
+      setSpawnCapable: () => {},
+      replacePlacements: async (placements) => void published.push(structuredClone(placements)),
+      workerCall: () => Promise.reject(new Error('not a worker')),
+    };
+  };
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    controllerStream
+  );
+  try {
+    await eventually(() => opened.length === 1);
+    await opened[0]!.onEvent(threaded(addressed(1, 'room'), 'thread-1'));
+    await eventually(() => settled(root));
+    // A second message for the room it now has a session in says nothing.
+    await opened[0]!.onEvent(addressed(2, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  const [assigned] = (await AgentHostAssignments.open(root)).sessions();
+  const notices = calls.filter((call) => call.name === 'post_message');
+  expect(notices).toEqual([
+    {
+      name: 'post_message',
+      body: { body: SESSION_STARTING_MESSAGE, thread_id: 'thread-1' },
+      session: assigned!.session.sessionId,
+    },
+  ]);
+  expect(hosts.to(join(root, assigned!.session.sessionId))).toHaveLength(2);
+});
+
+it('leaves telling the room to Switch on its own connection', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-not-starting-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  vi.mocked(ensureSharedProcess).mockImplementation(async ({ root: sessionRoot }) =>
+    hosts.start(sessionRoot)
+  );
+  const calls = switchOperations({ owner: 'ada' });
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(calls.filter((call) => call.name === 'post_message')).toEqual([]);
+});
+
+it('holds a room nothing can take while starting sessions is off, and delivers once it is on', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-held-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  await stopSpawning(root);
+  const { supervision } = sessionHosts();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+    expect((await AgentHostAssignments.open(root)).pending()).toMatchObject([
+      { sequence: 1, roomId: 'room', messageId: 'message-1', spawning: false },
+    ]);
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+
+    await writeFlags(root, { enabled: true, spawn: true });
+    await eventually(() => vi.mocked(ensureSharedProcess).mock.calls.length >= 1);
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  const journal = await AgentHostAssignments.open(root);
+  expect(journal.pending()).toEqual([]);
+  expect(journal.sessions()).toHaveLength(1);
+});
+
+it('keeps a held event, content and all, across a controller restart', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-held-restart-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  await stopSpawning(root);
+  const hosts = sessionHosts();
+  const { supervision } = hosts;
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const first = new AbortController();
+  const running = runAgentHost(
+    root,
+    config,
+    first.signal,
+    supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+  } finally {
+    first.abort();
+    await running;
+  }
+
+  await writeFlags(root, { enabled: true, spawn: true });
+  const second = new AbortController();
+  const restarted = runAgentHost(
+    root,
+    config,
+    second.signal,
+    supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => hosts.requests.length >= 1);
+    await eventually(() => settled(root));
+  } finally {
+    second.abort();
+    await restarted;
+  }
+  const [assigned] = (await AgentHostAssignments.open(root)).sessions();
+  expect(hosts.to(join(root, assigned!.session.sessionId))).toMatchObject([
+    {
+      type: 'room',
+      handoff: { messageId: 'message-1', event: { payload: { body: 'Run the check' } } },
+    },
+  ]);
+});
+
+it('starts the session serving a room again when its host has gone, instead of a second one', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-revive-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const owner = await existing(root, config);
+  await assignTo(root, config, 1, 'room', owner.sessionId);
+  const started: string[] = [];
+  const hosts = sessionHosts();
+  vi.mocked(ensureSharedProcess).mockImplementation(
+    async ({ root: sessionRoot, config: launched }) => {
+      started.push(launched.session.sessionId);
+      return hosts.start(sessionRoot);
+    }
+  );
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    started.length = 0;
+    hosts.exit(owner.sessionRoot);
+    await streams[0]!.onEvent!(addressed(2, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(started).toEqual([owner.sessionId]);
+  expect(hosts.to(owner.sessionRoot)).toMatchObject([
+    { type: 'room', handoff: { messageId: 'message-2' } },
+  ]);
+  expect((await AgentHostAssignments.open(root)).sessions()).toHaveLength(1);
+});
+
+it('takes the model, approval mode, instructions and advanced configuration from the template, and nothing else', () => {
+  const root = '/state';
+  const edited = watchable(root);
+  edited.start.input.model = { id: 'claude-sonnet-4-6', options: { effort: 'high' } };
+  edited.start.input.runtimeMode = 'full-access';
+  edited.start.input.agentName = 'scout';
+  edited.start.input.agentDefinition = {
+    description: 'scout',
+    prompt: 'Answer in one word.',
+    permissionMode: 'plan',
+  };
+  edited.execution!.context = 'Answer in one word.';
+  edited.execution!.codexConfig = 'model_verbosity = "low"\n';
+  const saved = watchable(root);
+  saved.session = { ...saved.session, agentId: edited.session.agentId, sessionId: 'room-session' };
+  saved.start.input.sessionId = 'room-session';
+  saved.start.input.model = { id: 'haiku' };
+  saved.start.input.resume = { nativeSessionId: 'native' };
+
+  const refreshed = withDefinitionOf(saved, edited);
+
+  expect(definitionChanged(saved, edited)).toBe(true);
+  expect(definitionChanged(refreshed, edited)).toBe(false);
+  expect(refreshed.start.input).toMatchObject({
+    sessionId: 'room-session',
+    model: { id: 'claude-sonnet-4-6', options: { effort: 'high' } },
+    runtimeMode: 'full-access',
+    agentName: 'scout',
+    agentDefinition: {
+      description: 'scout',
+      prompt: 'Answer in one word.',
+      permissionMode: 'plan',
+    },
+    resume: { nativeSessionId: 'native' },
+  });
+  expect(refreshed.execution).toMatchObject({
+    context: 'Answer in one word.',
+    codexConfig: 'model_verbosity = "low"\n',
+  });
+  expect(refreshed.session.sessionId).toBe('room-session');
+  delete edited.start.input.model;
+  delete edited.start.input.agentName;
+  delete edited.start.input.agentDefinition;
+  const cleared = withDefinitionOf(refreshed, edited);
+  expect(cleared.start.input.model).toBeUndefined();
+  expect(cleared.start.input).not.toHaveProperty('agentName');
+  expect(cleared.start.input).not.toHaveProperty('agentDefinition');
+});
+
+it('gives a session the credentials and binary of whoever runs its watcher now', () => {
+  const root = '/state';
+  const controller = watchable(root);
+  controller.execution!.credentialsPath = '/data/agents/agent-1/credentials.json';
+  controller.execution!.binaryPath = '/usr/local/bin/claude';
+  const saved = watchable(root);
+  saved.session = {
+    ...saved.session,
+    agentId: controller.session.agentId,
+    sessionId: 'room-session',
+  };
+  saved.execution!.credentialsPath = '/work/agent/.switch/agents/agent.json';
+  delete saved.execution!.binaryPath;
+
+  const refreshed = withDefinitionOf(saved, controller);
+
+  expect(definitionChanged(saved, controller)).toBe(true);
+  expect(refreshed.execution).toMatchObject({
+    credentialsPath: '/data/agents/agent-1/credentials.json',
+    binaryPath: '/usr/local/bin/claude',
+  });
+});
+
+it('leaves a session that runs as a definition file on disk as the agent it runs as', () => {
+  const root = '/state';
+  const edited = watchable(root);
+  edited.start.input.agentName = 'parent';
+  edited.start.input.agentDefinition = { description: 'parent', prompt: 'Lead.' };
+  const saved = watchable(root);
+  saved.session = {
+    ...saved.session,
+    agentId: edited.session.agentId,
+    sessionId: 'helper-session',
+  };
+  saved.execution!.agentDefinition = { name: 'helper', path: '.claude/agents/helper.md' };
+
+  const refreshed = withDefinitionOf(saved, edited);
+
+  expect(refreshed.start.input).not.toHaveProperty('agentName');
+  expect(refreshed.start.input).not.toHaveProperty('agentDefinition');
+  expect(refreshed.execution!.agentDefinition).toEqual({
+    name: 'helper',
+    path: '.claude/agents/helper.md',
+  });
+});
+
+it('restarts a room’s session under its agent’s edited definition, resuming the same session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-redefined-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const before = structuredClone(config);
+  before.start.input.model = { id: 'haiku' };
+  before.execution!.context = 'Old instructions.';
+  config.start.input.model = { id: 'claude-sonnet-4-6' };
+  config.execution!.context = 'New instructions.';
+  await writeFile(join(root, 'config.json'), JSON.stringify(config));
+  const stale = await existing(root, before);
+  const current = await existing(root, config);
+  await assignTo(root, before, 1, 'room', stale.sessionId);
+  await assignTo(root, config, 2, 'elsewhere', current.sessionId);
+  supervisors.set(stale.sessionRoot, { build: 'build' });
+  supervisors.set(current.sessionRoot, { build: 'build' });
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const hosts = sessionHosts();
+  const stoppedRoots: string[] = [];
+  hosts.supervision.stop = async (sessionRoot) => {
+    stoppedRoots.push(sessionRoot);
+    supervisors.delete(sessionRoot);
+  };
+  const launched: { sessionId: string; model: unknown; context: unknown }[] = [];
+  vi.mocked(ensureSharedProcess).mockImplementation(
+    async ({ root: sessionRoot, config: started }) => {
+      launched.push({
+        sessionId: started.session.sessionId,
+        model: started.start.input.model,
+        context: started.execution?.context,
+      });
+      return hosts.start(sessionRoot);
+    }
+  );
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(3, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  // Only the session saved under the earlier definition was stopped.
+  expect(stoppedRoots).toEqual([stale.sessionRoot]);
+  expect(warn.mock.calls.map(String).join('\n')).toContain('earlier definition');
+  // Started again as the same session, under the current definition.
+  expect(launched).toEqual([
+    {
+      sessionId: stale.sessionId,
+      model: { id: 'claude-sonnet-4-6' },
+      context: 'New instructions.',
+    },
+  ]);
+  expect(hosts.to(stale.sessionRoot)).toMatchObject([
+    { type: 'room', handoff: { messageId: 'message-3' } },
+  ]);
+});
+
+it('brings live sessions in step with a rewritten definition, each once its turn has ended', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-live-redefined-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const working = await existing(root, config);
+  const idle = await existing(root, config);
+  await assignTo(root, config, 1, 'room', working.sessionId);
+  await assignTo(root, config, 2, 'elsewhere', idle.sessionId);
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const hosts = sessionHosts();
+  await hosts.start(working.sessionRoot);
+  await hosts.start(idle.sessionRoot);
+  hosts.busy(working.sessionRoot, true);
+  hosts.busy(idle.sessionRoot, false);
+  const restarted: { root: string; model: unknown; context: unknown; resuming: boolean }[] = [];
+  vi.mocked(ensureSharedProcess).mockImplementation(
+    async ({ root: sessionRoot, config: started, resuming }) => {
+      restarted.push({
+        root: sessionRoot,
+        model: started.start.input.model,
+        context: started.execution?.context,
+        resuming,
+      });
+      await writeFile(join(sessionRoot, 'config.json'), JSON.stringify(started));
+      return { created: false };
+    }
+  );
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    const edited = structuredClone(config);
+    edited.start.input.model = { id: 'claude-sonnet-4-6' };
+    edited.execution!.context = 'New instructions.';
+    await writeFile(join(root, 'config.json.next'), JSON.stringify(edited));
+    await rename(join(root, 'config.json.next'), join(root, 'config.json'));
+    await eventually(() => restarted.length === 1);
+    // The session in the middle of a turn is left to finish it.
+    expect(restarted).toEqual([
+      {
+        root: idle.sessionRoot,
+        model: { id: 'claude-sonnet-4-6' },
+        context: 'New instructions.',
+        resuming: true,
+      },
+    ]);
+    hosts.busy(working.sessionRoot, false);
+    await eventually(() => restarted.length === 2);
+    expect(restarted[1]).toMatchObject({
+      root: working.sessionRoot,
+      model: { id: 'claude-sonnet-4-6' },
+      resuming: true,
+    });
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(restarted).toHaveLength(2);
+});
+
+it('gives a room a new session once the one serving it has been stopped', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-stopped-owner-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const owner = await existing(root, config);
+  await assignTo(root, config, 1, 'room', owner.sessionId);
+  await writeFile(
+    join(owner.sessionRoot, 'inbox.jsonl'),
+    JSON.stringify({ type: 'stopped' }) + '\n'
+  );
+  const hosts = sessionHosts();
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(2, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  const sessions = (await AgentHostAssignments.open(root)).sessions();
+  expect(sessions).toHaveLength(2);
+  expect(sessions.at(-1)!.session.sessionId).not.toBe(owner.sessionId);
+  expect(hosts.to(owner.sessionRoot)).toEqual([]);
+  // The room is the new session's now, and Switch was told.
+  expect(published.at(-1)).toEqual({ [sessions.at(-1)!.session.sessionId]: 'room' });
+  expect(hosts.to(join(root, sessions.at(-1)!.session.sessionId))).toMatchObject([
+    { type: 'room', handoff: { messageId: 'message-2' } },
+  ]);
+});
+
+it('forgets a session Console deleted, so its room starts a new one', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-deleted-owner-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const owner = await existing(root, config);
+  await assignTo(root, config, 1, 'room', owner.sessionId);
+  const hosts = sessionHosts();
+  const control = new WatcherControl();
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    control,
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await control.forget(owner.sessionId);
+    await expect(stat(owner.sessionRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+    await streams[0]!.onEvent!(addressed(2, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  const sessions = (await AgentHostAssignments.open(root)).sessions();
+  const fresh = sessions.at(-1)!.session.sessionId;
+  expect(fresh).not.toBe(owner.sessionId);
+  expect(hosts.to(owner.sessionRoot)).toEqual([]);
+  expect(published.at(-1)).toEqual({ [fresh]: 'room' });
+  expect(hosts.to(join(root, fresh))).toMatchObject([
+    { type: 'room', handoff: { messageId: 'message-2' } },
+  ]);
+});
+
+it('passes an approval answer to the session it is for, and only that one', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-approvals-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const own = await existing(root, config);
+  const otherConfig = structuredClone(config);
+  otherConfig.session.agentId = randomUUID();
+  const other = await existing(root, otherConfig);
+  const hosts = sessionHosts();
+  // Both running, so what keeps the other agent's session out is whose it is.
+  await hosts.start(own.sessionRoot);
+  await hosts.start(other.sessionRoot);
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  const outcome = (sessionId: string) => ({
+    session_id: sessionId,
+    request_id: 'permission',
+    state: 'answered' as const,
+    answer: '0',
+    answered_by: '@person:test',
+    answered_at: null,
+  });
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onApprovalOutcome!(outcome(own.sessionId));
+    await streams[0]!.onApprovalOutcome!(outcome(other.sessionId));
+    await streams[0]!.onApprovalOutcome!(outcome(randomUUID()));
+    expect(hosts.to(own.sessionRoot)).toEqual([{ type: 'approvals' }]);
+    expect(hosts.to(other.sessionRoot)).toEqual([]);
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+it('hands a relayed command to the session it names, and only if it runs here', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-relay-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const own = await existing(root, config);
+  const idle = await existing(root, config);
+  const otherConfig = structuredClone(config);
+  otherConfig.session.agentId = randomUUID();
+  const other = await existing(root, otherConfig);
+  const hosts = sessionHosts();
+  await hosts.start(own.sessionRoot);
+  await hosts.start(other.sessionRoot);
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  const command = (sessionId: string) => ({ sessionId, commandId: `command-${sessionId}` });
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onSessionCommand!(command(own.sessionId));
+    await streams[0]!.onSessionCommand!(command(other.sessionId));
+    // This agent's, but with nothing running it: dropped and said, not started.
+    await streams[0]!.onSessionCommand!(command(idle.sessionId));
+    expect(hosts.to(own.sessionRoot)).toEqual([
+      { type: 'command', command: command(own.sessionId), requesterName: null },
+    ]);
+    expect(hosts.to(other.sessionRoot)).toEqual([]);
+    expect(hosts.to(idle.sessionRoot)).toEqual([]);
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+    const dropped = warn.mock.calls.map((call) => String(call[0]));
+    expect(
+      dropped.some((line) => line.includes(`Dropped command command-${other.sessionId}`))
+    ).toBe(true);
+    expect(dropped.some((line) => line.includes(`Dropped command command-${idle.sessionId}`))).toBe(
+      true
+    );
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+it('hands a room control to the session working in its room, when Switch names only the room', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-room-control-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const placed = await existing(root, config);
+  await writeFile(
+    join(root, 'placements.json'),
+    JSON.stringify({ placements: { [placed.sessionId]: 'room-a' } })
+  );
+  const hosts = sessionHosts();
+  await hosts.start(placed.sessionRoot);
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onSessionCommand!({ sessionId: null, roomId: 'room-a', commandId: 'c1' });
+    await streams[0]!.onSessionCommand!({ sessionId: null, roomId: 'room-z', commandId: 'c2' });
+    expect(hosts.to(placed.sessionRoot)).toEqual([
+      {
+        type: 'command',
+        command: { sessionId: placed.sessionId, commandId: 'c1' },
+        requesterName: null,
+      },
+    ]);
+    expect(
+      warn.mock.calls.some((call) =>
+        String(call[0]).includes(
+          'Dropped command c2: no session of this agent works in room room-z'
+        )
+      )
+    ).toBe(true);
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+it('refuses to run without being the parent of its sessions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-detached-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const detached: Supervision = {
+    build: 'build',
+    start: async () => {},
+    stop: async () => {},
+    links: null,
+  };
+  await expect(
+    runAgentHost(
+      root,
+      config,
+      new AbortController().signal,
+      detached,
+      new WatcherControl(),
+      null,
+      openSwitchStream
+    )
+  ).rejects.toThrow('parent of its sessions');
+});
+
+it('hands a message to its session over the IPC pipe and releases it once taken', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-ipc-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+    await eventually(() => hosts.requests.length === 1);
+    await eventually(async () =>
+      (await readFile(join(root, 'assignments.jsonl'), 'utf8')).includes('released')
+    );
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  expect(hosts.requests.map((entry) => entry.request)).toMatchObject([
+    {
+      type: 'room',
+      handoff: {
+        sequence: 1,
+        roomId: 'room',
+        messageId: 'message-1',
+        event: { type: 'message', payload: { body: 'Run the check' } },
+      },
+    },
+  ]);
+  const journal = await AgentHostAssignments.open(root);
+  // Released on the host's acknowledgement, so nothing is left to route again.
+  expect(journal.pending()).toEqual([]);
+  expect(journal.cursor).toBe(1);
+});
+
+it('reports its connection and placements as they change, and why it stopped', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-health-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const placed = await existing(root, config);
+  const hosts = sessionHosts();
+  const control = new WatcherControl();
+  const heard: { state: string; detail: string | null; placements: Record<string, string> }[] = [];
+  control.onHealth(({ state, detail, placements }) => heard.push({ state, detail, placements }));
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const run = runAgentHost(
+    root,
+    config,
+    new AbortController().signal,
+    hosts.supervision,
+    control,
+    null,
+    openSwitchStream
+  );
+  await eventually(() => streams.length === 1);
+  expect(control.health()).toMatchObject({ state: 'connecting', placements: {} });
+  streams[0]!.onConnected!();
+  await control.place(placed.sessionId, 'room');
+  streams[0]!.onDisconnected!({ error: 'HTTP 502: bad gateway' });
+  streams[0]!.onConnected!();
+  streams[0]!.onEvicted({ code: 'taken_over', reason: 'another client attached', roomId: null });
+  await run;
+
+  expect(heard).toEqual([
+    { state: 'connecting', detail: null, placements: {} },
+    { state: 'connected', detail: null, placements: {} },
+    { state: 'connected', detail: null, placements: { [placed.sessionId]: 'room' } },
+    {
+      state: 'disconnected',
+      detail: 'HTTP 502: bad gateway',
+      placements: { [placed.sessionId]: 'room' },
+    },
+    { state: 'connected', detail: null, placements: { [placed.sessionId]: 'room' } },
+    { state: 'taken-over', detail: 'another client attached', placements: {} },
+  ]);
+});
+
+it('reports a room connection that is turned off, and a watcher that failed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-health-off-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  const control = new WatcherControl();
+
+  const run = runAgentHost(
+    root,
+    config,
+    new AbortController().signal,
+    hosts.supervision,
+    control,
+    null,
+    openSwitchStream
+  );
+  await eventually(() => streams.length === 1);
+  await writeFlags(root, { enabled: false, spawn: false });
+  await run;
+  expect(control.health()).toMatchObject({ state: 'disabled', detail: null, placements: {} });
+
+  await writeFlags(root, { enabled: true, spawn: true });
+  await rm(join(root, 'credentials.json'));
+  await expect(
+    runAgentHost(
+      root,
+      config,
+      new AbortController().signal,
+      hosts.supervision,
+      control,
+      null,
+      openSwitchStream
+    )
+  ).rejects.toThrow('credentials.json');
+  expect(control.health().state).toBe('not-running');
+  expect(control.health().detail).toContain('credentials.json');
+});
+
+/** Answers the Switch operations the watcher calls as a session, recording each. */
+function switchOperations(answers: { owner: string | null; refuseTargeted?: boolean }) {
+  const calls: { name: string; body: Record<string, unknown>; session: string | null }[] = [];
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const name = String(url).split('/ops/')[1] ?? '';
+    const headers = init.headers as Record<string, string>;
+    calls.push({
+      name,
+      body: JSON.parse(String(init.body ?? '{}')),
+      session: headers['X-Switch-Session-Id'] ?? null,
+    });
+    if (name === 'get_agent_detail')
+      return new Response(JSON.stringify({ result: { owner_name: answers.owner } }));
+    if (name === 'send_targeted_message' && answers.refuseTargeted)
+      return new Response('Targets not in room: ada', { status: 400 });
+    return new Response(JSON.stringify({ result: { event_id: 'posted' } }));
+  });
+  return calls;
+}
+
+const SIGN_IN = 'Sign in on the execution machine with claude auth login.';
+
+it('stops starting a session whose host failed, keeps its message, and tells its owner once', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-failed-start-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  hosts.fail = SIGN_IN;
+  const calls = switchOperations({ owner: 'ada' });
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    const first = addressed(1, 'room');
+    (first.payload as { thread_id?: string }).thread_id = 'thread-root';
+    const started = Date.now();
+    await streams[0]!.onEvent!(first);
+    await eventually(() => calls.some((call) => call.name === 'send_targeted_message'));
+    // Told at once rather than after the wait for a host to come up.
+    expect(Date.now() - started).toBeLessThan(5000);
+    const sessionId = placementsOf(published).room!;
+    expect(calls.map((call) => call.name)).toEqual(['get_agent_detail', 'send_targeted_message']);
+    expect(calls[1]).toEqual({
+      name: 'send_targeted_message',
+      session: sessionId,
+      body: {
+        body: `I couldn't start a session, and it needs you to fix it: ${SIGN_IN} Then address me again.`,
+        target_names: ['ada'],
+        thread_id: 'thread-root',
+      },
+    });
+    // No retry loop: nothing starts the host again on its own.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(vi.mocked(ensureSharedProcess)).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls.some((call) => String(call[0]).includes(SIGN_IN))).toBe(true);
+
+    // A later message tries once more, and that message is answered too.
+    await streams[0]!.onEvent!(addressed(2, 'room'));
+    await eventually(() => vi.mocked(ensureSharedProcess).mock.calls.length === 2);
+    await eventually(
+      () => calls.filter((call) => call.name === 'send_targeted_message').length === 2
+    );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(vi.mocked(ensureSharedProcess)).toHaveBeenCalledTimes(2);
+    expect(calls.filter((call) => call.name === 'send_targeted_message')).toHaveLength(2);
+
+    // Both messages are still owed.
+    expect((await AgentHostAssignments.open(root)).pending().map((e) => e.messageId)).toEqual([
+      'message-1',
+      'message-2',
+    ]);
+
+    // Started from Console once it is fixed: the waiting messages go to it.
+    hosts.fail = null;
+    await hosts.start(join(root, sessionId));
+    await eventually(() => settled(root));
+    expect(
+      hosts.to(join(root, sessionId)).map((request) => (request as { handoff: Handoff }).handoff)
+    ).toMatchObject([{ messageId: 'message-1' }, { messageId: 'message-2' }]);
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+it('tells the room without addressing anyone when the owner cannot be addressed, and survives a refused post', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-failed-owner-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  hosts.fail = SIGN_IN;
+  const calls = switchOperations({ owner: 'ada', refuseTargeted: true });
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+    await eventually(() => calls.some((call) => call.name === 'post_message'));
+    expect(calls.find((call) => call.name === 'post_message')!.body).toEqual({
+      body: `I couldn't start a session, and my owner (ada) needs to fix it: ${SIGN_IN} Then address me again.`,
+    });
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('Targets not in room'))).toBe(
+      true
+    );
+
+    // A different failure is news, and a post Switch refuses is logged, not fatal.
+    hosts.fail = 'The provider executable is missing.';
+    vi.stubGlobal('fetch', async () => new Response('down', { status: 503 }));
+    await streams[0]!.onEvent!(addressed(2, 'room'));
+    await eventually(() =>
+      error.mock.calls.some((call) =>
+        String(call[0]).includes('Could not tell room room that session')
+      )
+    );
+    expect(streams).toHaveLength(1);
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+/** The last placements map the watcher stated to Switch, room → session. */
+function placementsOf(maps: Record<string, string>[]): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(maps.at(-1) ?? {}).map(([session, room]) => [room, session])
+  );
+}
+
+/** A hosted watcher over `hosts`, whose sessions write the config a real launch would. */
+async function hostedWatcher(
+  root: string,
+  config: ReturnType<typeof watchable>,
+  hosts: ReturnType<typeof sessionHosts>,
+  credential: { revoked: boolean }
+) {
+  vi.mocked(ensureSharedProcess).mockImplementation(
+    async ({ root: sessionRoot, config: launched }) => {
+      await mkdir(sessionRoot, { recursive: true });
+      await writeFile(join(sessionRoot, 'config.json'), JSON.stringify(launched));
+      return hosts.start(sessionRoot);
+    }
+  );
+  const control = new WatcherControl();
+  const hosted = new HostedWorker(
+    root,
+    {
+      capability: 'capability-placeholder',
+      bootId: 'boot',
+      instanceId: 'instance',
+      stateVersion: 1,
+    },
+    {
+      agentId: config.session.agentId,
+      links: hosts.links,
+      ensure: async () => ({ created: false }),
+      watcher: control,
+      transfers: new AttachmentTransfers(root),
+    },
+    {
+      fetch: async () => ({
+        revoked: credential.revoked,
+        revision: credential.revoked ? null : 'r1',
+        apply: async () => {},
+      }),
+    }
+  );
+  await hosted.open();
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    control,
+    hosted,
+    openSwitchStream
+  );
+  await eventually(() => streams.length === 1);
+  const stream = streams[0]!;
+  const attach = async (overrides: Record<string, unknown>) => {
+    await stream.onWorkerFrame!('worker_attached', {
+      launch_revision: 1,
+      limits: { sessions_per_agent: 8 },
+      idle: { report_every_s: 30, fresh_for_s: 75 },
+      credential_revision: 'r1',
+      queued_operations: [],
+      relay_fence: 0,
+      cancelled: [],
+      ...overrides,
+    });
+  };
+  return { stream, run, abort, attach, hosted };
+}
+
+/** Every mailbox ack a hosted watcher sent, as `outcome:message`. */
+function acks(): string[] {
+  return upcalls.calls
+    .filter((call) => call.path.endsWith('/connection/mailbox/ack'))
+    .flatMap((call) =>
+      (call.body.entries as { message_id: string; outcome: string }[]).map(
+        (entry) => `${entry.outcome}:${entry.message_id}`
+      )
+    );
+}
+
+function notices(): string[] {
+  return upcalls.calls
+    .filter((call) => call.path.endsWith('/room-notices'))
+    .map((call) => `${call.body.reason}:${call.body.message_id}`);
+}
+
+const wakeEntry = (messageId: string, roomId: string, origin: 'live' | 'cutover' = 'live') => ({
+  room_id: roomId,
+  message_id: messageId,
+  thread_id: null,
+  origin,
+  event: {
+    type: 'message',
+    payload: { addressed: true, sender: '@owner:example.test', message_id: messageId, body: 'hi' },
+    missed: 0,
+  },
+});
+
+it('journals a hosted delivery, acks it through admission and answers a second copy as duplicate', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-hosted-wake-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  const watcher = await hostedWatcher(root, config, hosts, { revoked: false });
+  try {
+    await watcher.attach({});
+    await watcher.stream.onWorkerFrame!('wake', { entries: [wakeEntry('woken', 'room')] });
+    await eventually(() => acks().includes('admitted:woken'));
+    expect(acks().slice(0, 2)).toEqual(['journaled:woken', 'admitted:woken']);
+    await watcher.stream.onEvent!(addressed(1, 'room'));
+    await eventually(() => acks().includes('admitted:message-1'));
+    await watcher.stream.onWorkerFrame!('wake', { entries: [wakeEntry('message-1', 'room')] });
+    await eventually(() => acks().includes('duplicate:message-1'));
+    const sessionId = placementsOf(published).room!;
+    expect(
+      hosts.to(join(root, sessionId)).map((request) => (request as { handoff: Handoff }).handoff)
+    ).toMatchObject([{ messageId: 'woken' }, { messageId: 'message-1' }]);
+  } finally {
+    watcher.abort.abort();
+    await watcher.run;
+  }
+});
+
+it('hands a message imported at the cutover to its session marked as such', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-hosted-cutover-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  const watcher = await hostedWatcher(root, config, hosts, { revoked: false });
+  try {
+    await watcher.attach({});
+    await watcher.stream.onWorkerFrame!('wake', {
+      entries: [wakeEntry('carried', 'room', 'cutover')],
+    });
+    await eventually(() => acks().includes('admitted:carried'));
+    const sessionId = placementsOf(published).room!;
+    expect(
+      hosts.to(join(root, sessionId)).map((request) => (request as { handoff: Handoff }).handoff)
+    ).toMatchObject([{ messageId: 'carried', event: { cutover: true } }]);
+  } finally {
+    watcher.abort.abort();
+    await watcher.run;
+  }
+});
+
+it('admits nothing from its journal until it has settled what Switch cancelled', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-hosted-cancel-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const assignments = await AgentHostAssignments.open(root);
+  for (const messageId of ['stopped', 'kept'])
+    await assignments.park(
+      { sequence: 1, roomId: 'room', messageId, event: wakeEntry(messageId, 'room').event },
+      true,
+      true
+    );
+  const hosts = sessionHosts();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const watcher = await hostedWatcher(root, config, hosts, { revoked: false });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+    await watcher.attach({
+      cancelled: [
+        { room_id: 'room', message_id: 'stopped', reason: 'stopped' },
+        { room_id: 'room', message_id: 'never-seen', reason: 'expired' },
+      ],
+    });
+    await eventually(() => acks().includes('admitted:kept'));
+    expect(acks()).toEqual(
+      expect.arrayContaining(['cancelled:stopped', 'cancelled:never-seen', 'admitted:kept'])
+    );
+    const sessionId = placementsOf(published).room!;
+    expect(
+      hosts.to(join(root, sessionId)).map((request) => (request as { handoff: Handoff }).handoff)
+    ).toMatchObject([{ messageId: 'kept' }]);
+    // A cancel for what a session already took says so.
+    await watcher.stream.onWorkerFrame!('mailbox_cancel', {
+      entries: [{ room_id: 'room', message_id: 'kept' }],
+    });
+    await eventually(() => acks().filter((ack) => ack === 'admitted:kept').length === 2);
+  } finally {
+    watcher.abort.abort();
+    await watcher.run;
+  }
+});
+
+/** Writes what a session host had durably recorded of `messageId` when its watcher died. */
+async function hostRecorded(
+  sessionRoot: string,
+  config: ReturnType<typeof watchable>,
+  messageId: string,
+  furthest: 'dispatched' | 'finished'
+) {
+  const commandId = randomUUID();
+  await writeFile(
+    join(sessionRoot, 'room-inbox.jsonl'),
+    `${JSON.stringify({ type: 'handoff', sequence: 1, roomId: 'room', messageId, event: wakeEntry(messageId, 'room').event })}\n`
+  );
+  const records = [
+    {
+      type: 'accepted',
+      command: {
+        contractVersion: 1,
+        commandId,
+        sessionId: config.session.sessionId,
+        epoch: 'epoch',
+        origin: {
+          surface: 'slack',
+          actorId: '@owner:example.test',
+          roomId: 'room',
+          threadId: null,
+          messageId,
+        },
+        body: { type: 'message.send', text: 'hi', attachments: [], delivery: 'queue' },
+      },
+    },
+    { type: 'dispatched', commandId },
+    ...(furthest === 'finished' ? [{ type: 'finished', commandId }] : []),
+  ];
+  await writeFile(
+    join(sessionRoot, 'inbox.jsonl'),
+    records.map((record) => `${JSON.stringify(record)}\n`).join('')
+  );
+}
+
+it.each(['dispatched', 'finished'] as const)(
+  'answers a Stop for a message its host had %s before the watcher crashed as admitted',
+  async (furthest) => {
+    const root = await mkdtemp(join(tmpdir(), `shared-watch-hosted-cancel-${furthest}-`));
+    roots.push(root);
+    paths.root = root;
+    const config = await spawning(root);
+    const assignments = await AgentHostAssignments.open(root);
+    await assignments.park(
+      { sequence: 1, roomId: 'room', messageId: 'taken', event: wakeEntry('taken', 'room').event },
+      true,
+      true
+    );
+    const { sessionRoot } = await existing(root, config);
+    await hostRecorded(sessionRoot, config, 'taken', furthest);
+    const hosts = sessionHosts();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const watcher = await hostedWatcher(root, config, hosts, { revoked: false });
+    try {
+      await watcher.attach({
+        cancelled: [{ room_id: 'room', message_id: 'taken', reason: 'stopped' }],
+      });
+      await eventually(() => acks().includes('admitted:taken'));
+      expect(acks()).not.toContain('cancelled:taken');
+      expect(hosts.requests).toEqual([]);
+      expect(
+        (await AgentHostAssignments.open(root)).deliveryState({
+          roomId: 'room',
+          messageId: 'taken',
+        })
+      ).toEqual({ state: 'released', reason: null });
+    } finally {
+      watcher.abort.abort();
+      await watcher.run;
+    }
+  }
+);
+
+it('still answers a Stop for a journaled message no host took as cancelled', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-hosted-cancel-unstarted-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const assignments = await AgentHostAssignments.open(root);
+  await assignments.park(
+    {
+      sequence: 1,
+      roomId: 'room',
+      messageId: 'waiting',
+      event: wakeEntry('waiting', 'room').event,
+    },
+    true,
+    true
+  );
+  const { sessionRoot } = await existing(root, config);
+  await hostRecorded(sessionRoot, config, 'other', 'finished');
+  const hosts = sessionHosts();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const watcher = await hostedWatcher(root, config, hosts, { revoked: false });
+  try {
+    await watcher.attach({
+      cancelled: [{ room_id: 'room', message_id: 'waiting', reason: 'stopped' }],
+    });
+    await eventually(() => acks().includes('cancelled:waiting'));
+    expect(acks()).not.toContain('admitted:waiting');
+    expect(hosts.requests).toEqual([]);
+  } finally {
+    watcher.abort.abort();
+    await watcher.run;
+  }
+});
+
+it('leaves a Stop unanswered, loudly, when a host record it would need is unreadable', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-hosted-cancel-unreadable-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const assignments = await AgentHostAssignments.open(root);
+  await assignments.park(
+    {
+      sequence: 1,
+      roomId: 'room',
+      messageId: 'unclear',
+      event: wakeEntry('unclear', 'room').event,
+    },
+    true,
+    true
+  );
+  const { sessionRoot } = await existing(root, config);
+  await writeFile(join(sessionRoot, 'inbox.jsonl'), '{"type":"accepted","comm');
+  const hosts = sessionHosts();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const watcher = await hostedWatcher(root, config, hosts, { revoked: false });
+  try {
+    await expect(
+      watcher.attach({
+        cancelled: [{ room_id: 'room', message_id: 'unclear', reason: 'stopped' }],
+      })
+    ).rejects.toThrow(/Cannot tell whether session .* took message unclear/);
+    expect(acks()).toEqual([]);
+    expect(
+      (await AgentHostAssignments.open(root)).deliveryState({
+        roomId: 'room',
+        messageId: 'unclear',
+      })
+    ).toEqual({ state: 'journaled' });
+  } finally {
+    watcher.abort.abort();
+    await watcher.run.catch(() => {});
+  }
+});
+
+it('refuses a new session past the limit, and admits exactly one of two starts at the edge', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-hosted-limit-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  upcalls.answer = (path) => {
+    const id = path.match(/operations\/([^/]+)\/claim$/)?.[1];
+    return id
+      ? { id, session_id: `session-${id}`, action: 'start', state: 'claimed', error: null }
+      : {};
+  };
+  const watcher = await hostedWatcher(root, config, hosts, { revoked: false });
+  try {
+    await watcher.attach({ limits: { sessions_per_agent: 2 } });
+    await watcher.stream.onEvent!(addressed(1, 'room'));
+    await eventually(() => acks().includes('admitted:message-1'));
+    await Promise.all([
+      watcher.stream.onWorkerFrame!('operation', { id: 'a' }),
+      watcher.stream.onWorkerFrame!('operation', { id: 'b' }),
+    ]);
+    const results = () =>
+      upcalls.calls
+        .filter((call) => call.path.endsWith('/result'))
+        .map((call) => call.body as { state: string; error: string | null });
+    await eventually(() => results().length === 2);
+    expect(
+      results()
+        .map((result) => result.state)
+        .sort()
+    ).toEqual(['applied', 'failed']);
+    expect(results().find((result) => result.state === 'failed')!.error).toBe('session limit');
+    await watcher.stream.onEvent!(addressed(2, 'another'));
+    await eventually(() => acks().includes('refused:message-2'));
+    expect(notices()).toEqual(['capacity:message-2']);
+    expect(await settled(root)).toBe(true);
+  } finally {
+    watcher.abort.abort();
+    await watcher.run;
+  }
+});
+
+it('tells the room once when its host fails, and acks its messages held when the hold ends', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'Date'] });
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-hosted-held-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  hosts.fail = SIGN_IN;
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  const watcher = await hostedWatcher(root, config, hosts, { revoked: false });
+  try {
+    await watcher.attach({});
+    await watcher.stream.onEvent!(addressed(1, 'room'));
+    await eventually(() => notices().includes('startup:message-1'));
+    watcher.hosted.report(true);
+    await eventually(() =>
+      upcalls.calls.some(
+        (call) =>
+          call.path.endsWith('/connection/idle') &&
+          JSON.stringify(call.body.reasons).includes('failed_holding')
+      )
+    );
+    expect(acks()).not.toContain('held:message-1');
+    const idleCallsBefore = upcalls.calls.filter((call) =>
+      call.path.endsWith('/connection/idle')
+    ).length;
+    await vi.advanceTimersByTimeAsync(FAILED_HOLD_MS + 30_000);
+    await eventually(() => acks().includes('held:message-1'));
+    await eventually(
+      () =>
+        upcalls.calls.filter((call) => call.path.endsWith('/connection/idle')).length >
+        idleCallsBefore
+    );
+    const last = upcalls.calls.filter((call) => call.path.endsWith('/connection/idle')).at(-1)!;
+    expect(JSON.stringify(last.body.reasons)).not.toContain('failed_holding');
+    expect(notices()).toEqual(['startup:message-1']);
+  } finally {
+    watcher.abort.abort();
+    await watcher.run;
+  }
+});
+
+it('refuses addressed messages while the provider is disconnected', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-hosted-revoked-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  const watcher = await hostedWatcher(root, config, hosts, { revoked: true });
+  try {
+    await watcher.attach({});
+    await eventually(() => watcher.hosted.revoked);
+    await watcher.stream.onEvent!(addressed(1, 'room'));
+    await eventually(() => acks().includes('refused:message-1'));
+    expect(notices()).toEqual(['revoked:message-1']);
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+  } finally {
+    watcher.abort.abort();
+    await watcher.run;
+  }
+});
+
+it('stops as obsolete when its launch moved to a newer revision', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-hosted-obsolete-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const watcher = await hostedWatcher(root, config, sessionHosts(), { revoked: false });
+  watcher.stream.onEvicted({ code: 'launch_superseded', reason: 'revision 2', roomId: null });
+  await expect(watcher.run).rejects.toBeInstanceOf(WorkerObsoleteError);
+});
+
+it('answers an addressed message in the room when auto-start is off', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-hosted-spawn-off-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  await writeFlags(root, { enabled: true, spawn: false });
+  const watcher = await hostedWatcher(root, config, sessionHosts(), { revoked: false });
+  try {
+    await watcher.attach({});
+    await watcher.stream.onEvent!(addressed(1, 'room'));
+    await eventually(() => acks().includes('refused:message-1'));
+    await eventually(() => notices().length === 1);
+    expect(notices()).toEqual(['auto_start_off:message-1']);
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+  } finally {
+    watcher.abort.abort();
+    await watcher.run;
+  }
+});
+
+it('tells the room once a session keeps not taking a message, instead of starting it forever', async () => {
+  // A host that is up but never takes the message — it hung up its pipe and
+  // stayed alive — used to be started again every few seconds, for ever,
+  // with nobody told.
+  vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-restart-cap-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  hosts.drop = true;
+  const calls = switchOperations({ owner: 'ada' });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    null,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+    // Bounded by real time, not by a count of fake seconds: each restart reads
+    // the agent's template from disk, which advancing fake time does not wait for.
+    const deadline = performance.now() + 20_000;
+    while (
+      !calls.some((call) => call.name === 'send_targeted_message') &&
+      performance.now() < deadline
+    ) {
+      await vi.advanceTimersByTimeAsync(1000);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const told = calls.filter((call) => call.name === 'send_targeted_message');
+    expect(told).toHaveLength(1);
+    expect(String((told[0]!.body as { body: string }).body)).toContain(
+      `after being started ${MAX_HOST_RESTARTS} times`
+    );
+    expect(error.mock.calls.some((call) => String(call[0]).includes('stay queued'))).toBe(true);
+
+    // And it stops: nothing starts the host again on its own.
+    const starts = vi.mocked(ensureSharedProcess).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(vi.mocked(ensureSharedProcess).mock.calls.length).toBe(starts);
+    // The message is still owed, for when the session can take it.
+    expect((await AgentHostAssignments.open(root)).pending().map((e) => e.messageId)).toEqual([
+      'message-1',
+    ]);
+  } finally {
+    abort.abort();
+    await run;
+    vi.useRealTimers();
+  }
+});

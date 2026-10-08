@@ -56,6 +56,24 @@ def _input_schema(fn: OperationFn) -> dict[str, Any]:
 
 _REGISTRY: dict[str, Operation] = {}
 
+# Operations declared in a group that is off until something enables it: the
+# operations of an optional module that exist only while that module runs.
+# Declared at import like every other operation, so their names are reserved
+# and checked for duplicates; listed and dispatched only once enabled.
+_GATED: dict[str, dict[str, Operation]] = {}
+
+
+def _build(fn: OperationFn) -> Operation:
+    name = fn.__name__
+    if name in _REGISTRY or any(name in group for group in _GATED.values()):
+        raise RuntimeError(f"operation {name!r} is already registered")
+    return Operation(
+        name=name,
+        fn=fn,
+        description=(fn.__doc__ or "").strip(),
+        input_schema=_input_schema(fn),
+    )
+
 
 def operation(fn: OperationFn) -> OperationFn:
     """Register an agent operation under its own function name.
@@ -64,20 +82,54 @@ def operation(fn: OperationFn) -> OperationFn:
     MCP and what appears in `POST /ops/{operation}`. One vocabulary, so a
     translating runtime needs no mapping table.
     """
-    name = fn.__name__
-    if name in _REGISTRY:
-        raise RuntimeError(f"operation {name!r} is already registered")
-    _REGISTRY[name] = Operation(
-        name=name,
-        fn=fn,
-        description=(fn.__doc__ or "").strip(),
-        input_schema=_input_schema(fn),
-    )
+    _REGISTRY[fn.__name__] = _build(fn)
     return fn
 
 
+def gated_operation(group: str) -> Callable[[OperationFn], OperationFn]:
+    """Declare an operation that exists only while `group` is enabled.
+
+    Named and described exactly as `operation` does, but on neither front
+    door until `enable_operation_group(group)`.
+    """
+
+    def declare(fn: OperationFn) -> OperationFn:
+        _GATED.setdefault(group, {})[fn.__name__] = _build(fn)
+        return fn
+
+    return declare
+
+
+def _gated_group(group: str) -> dict[str, Operation]:
+    operations = _GATED.get(group)
+    if operations is None:
+        raise KeyError(f"no operations are declared in group {group!r}")
+    return operations
+
+
+def enable_operation_group(group: str) -> None:
+    """Put every operation declared in `group` on the front doors."""
+    _REGISTRY.update(_gated_group(group))
+
+
+def disable_operation_group(group: str) -> None:
+    """Take every operation declared in `group` off the front doors again."""
+    for name in _gated_group(group):
+        _REGISTRY.pop(name, None)
+
+
 def all_operations() -> dict[str, Operation]:
+    """Every operation that exists now: the ungated ones, and those of the
+    groups that are enabled."""
     return dict(_REGISTRY)
+
+
+def declared_operations() -> dict[str, Operation]:
+    """Every operation declared, enabled or not."""
+    declared = dict(_REGISTRY)
+    for group in _GATED.values():
+        declared.update(group)
+    return declared
 
 
 def get_operation(name: str) -> Operation | None:

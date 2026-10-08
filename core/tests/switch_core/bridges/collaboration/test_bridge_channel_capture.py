@@ -3,9 +3,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 
-# On startup BridgeCore hands the adapter the bridge's channels so channel
+# On startup CollaborationCore hands the adapter the bridge's channels so channel
 # capture can self-heal (Teams recreates Graph subscriptions; other adapters
 # no-op). Only rows with both an external channel id and a channel type are
 # forwarded.
@@ -52,7 +52,7 @@ async def test_ensure_channel_captures_forwards_valid_channels() -> None:
         _bridge_tenant_id="tenant-1",
     )
 
-    await BridgeCore._ensure_channel_captures(bridge)
+    await CollaborationCore._ensure_channel_captures(bridge)
 
     assert passed == [
         [
@@ -83,6 +83,6 @@ async def test_ensure_channel_captures_noop_without_channels() -> None:
         _bridge_tenant_id="tenant-1",
     )
 
-    await BridgeCore._ensure_channel_captures(bridge)
+    await CollaborationCore._ensure_channel_captures(bridge)
 
     assert calls == []

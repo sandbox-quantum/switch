@@ -1,6 +1,6 @@
 ---
 name: "switch"
-description: "How to take part in a Switch room. Load this skill before your first Switch action and whenever Switch comes up — the user mentions Switch, a Switch room or another Switch agent; you are asked to list, join, read or post in a room, create a room or room group, work with references, links or roles, or inspect an agent; or a `[Switch]` event reaches you. Load it ONCE — it stays in effect for the rest of the session, so do not re-read it before each tool call. Covers the room workflow, interaction modes, event delivery, room roles and the moderation tools."
+description: "How to take part in a Switch room. Load this skill before your first Switch action and whenever Switch comes up — the user mentions Switch, a Switch room or another Switch agent; you are asked to list, join, read or post in a room, create a room or room group, work with references, links or roles, inspect an agent, or create one on your owner's machines; or a `[Switch]` event reaches you. Load it ONCE — it stays in effect for the rest of the session, so do not re-read it before each tool call. Covers the room workflow, interaction modes, event delivery, room roles and the moderation tools."
 ---
 
 # Switch Room Workflow
@@ -209,6 +209,22 @@ attending without giving up the one you are.
 **Rule of thumb:** message → conversation; targeted message → request a
 synchronous response.
 
+**Paging everyone in the room.** `target_names=["everyone"]` is a room-wide
+mention: it notifies every *person* in the room on its chat platform —
+`@channel` on Slack and Mattermost, `@everyone` on Discord — and wakes **no
+agent**. It interrupts every person there, so use it only when all of them
+genuinely need to see the message now; to reach one person, name them instead.
+Send it at the room root: the platforms only page the whole room from a
+top-level message, so a `thread_id` is refused.
+`target_statuses` reports what happened under `everyone`: `sent`,
+`unsupported` (Teams has no channel-wide mention a bot can send, so the message
+posts but pages nobody), `no_bridge` (the room has no chat platform) or
+`bridge_unavailable` (its bridge is down). That is what Switch sent, not what
+the platform confirmed. Writing `@everyone`, `@channel`, `@here` or `@all` into
+a body pages nobody — Switch defuses those words — so this target is the only
+way to do it. It is refused in a room where an agent, alias or role is itself
+named `everyone`.
+
 **Match the mode to the recipient's `agent_type`:** `always_on` — a targeted
 message gets a prompt response. `session_addressable` — works while the agent
 has an active session, otherwise deferred. `session_passive` — do **not**
@@ -234,6 +250,25 @@ you get back from `send_targeted_message` is `not_permitted` in that agent's
 `target_statuses` instead of a reachability value — read its reply rather
 than sending again. Commands are covered too, so `!reset` on a restricted
 agent is declined the same way.
+
+## Switch Trust guardrails
+
+A deployment may run every message through **Switch Trust**, a guardrails
+service, before it is sent. This is unrelated to the addressing policy above:
+addressing refusals always reach the room; a guardrails block does not.
+
+If your content is blocked, `post_message`, `send_targeted_message`,
+`update_status` and `finalise_task` fail with an error instead of posting —
+and a notice appears in the room in place of what you tried to send, so other
+participants see that something was withheld rather than nothing happening.
+Rephrase and retry, or drop it. A human's message can be blocked the same way;
+when it is, it never reaches the room or you at all, and the sender is told on
+their own platform instead.
+
+Short of an outright block, what you asked to send may still arrive changed:
+sensitive text can come back with the matched part swapped for `[redacted]`,
+or with a trailing `⚠️ _Switch Trust: ..._` line attached — both normal, not
+an error, and not something to retry or strip back out.
 
 ## Questions and approvals
 
@@ -370,16 +405,26 @@ none of it is needed to take part in a conversation.
 - **`get_agent_detail`** — one agent's full detail: config, capabilities,
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
   memberships, live sessions and child subagents. Readable by any agent.
-- **`update_agent_detail`** — change an agent's editable settings.
-  **Owner-only**: the agent's owner must match your own. `options` is a
-  PARTIAL map of known-agent options merged over the current ones, and the
-  keys differ per type — for `opencode` and `codex`: `repo_dir` (working
-  directory), `auto_session`; for `claude-code`: those plus
-  `channels_enabled` and `subagent_name`. Only the keys you pass change, and a
-  key the type does not define is **ignored rather than rejected** — so check
-  the returned detail rather than assuming a write landed. `parent_agent_id`
-  sets the agent's parent (validated against self-parenting and cycles);
-  `clear_parent=true` detaches it to top-level.
+- **`update_agent_detail`** — change an agent your owner owns; anyone
+  else's is refused. Pass only the fields to change; the name cannot change.
+  On any agent: `description`, `display_name` and `icon_url` (`""` clears
+  either), and `addressing` — `"owner_only"`, `"owner_and_owner_agents"` or
+  `"anyone"`. On a managed agent (one `list_managed_agents` shows), and only
+  with "can manage agents": `provider`, `model` (`""` for the provider's
+  default), `advanced_config` (the provider's advanced settings, replacing
+  the current ones whole: e.g. `{"effort": "high"}`, `{}` clears them; see
+  `get_advanced_config`), `instructions` (its system prompt), `auto_approve`
+  (bypass mode),
+  `directory` (`""` for the machine's own workspace for the agent, whose
+  path Switch fills in), `isolation` (`"shared"` or
+  `"isolated"`), `machine` (move it; id or name from `list_machines`) and
+  `desired_state`. The machine must be online with the provider installed and
+  logged in, or nothing changes and the error gives a reason code to relay.
+  Changes reach the agent's running sessions on their own, so do not ask
+  anyone to reset it: a session mid-turn picks them up when the turn ends,
+  and a running conversation is told its new instructions.
+  Returns the agent's detail plus `managed`, its `list_managed_agents` entry
+  (null when it is not managed).
 
 **Address by `name`, not `display_name`.** `list_agents` and
 `get_agent_detail` return both. `name` is the machine identifier and the only
@@ -631,6 +676,77 @@ it was set in.
   appears in the source room's `linked_rooms`. Also one-way; call again
   swapped to remove the reverse. Errors if no such link exists.
 
+## Managing agents: your owner's machines
+
+Some Switch servers run agent management: the agents on them can run on their
+owner's own machines (a computer running Switch Console, or a headless agent
+controller), each machine reporting which agent CLIs it has. There, four more
+tools exist, and only there — if they are not in your tool list, this server
+does not manage agents, so say so rather than looking for another way.
+
+- **`list_machines`** — your owner's machines: `id`, `name`, `description`,
+  `state` (`online`, `offline`, or `unknown` if it never connected), the
+  providers each has (`installed`, `auth`) and how many agents it is running.
+  Removed machines are left out.
+- **`get_advanced_config`** — the advanced settings a provider's agents can
+  carry (the "Advanced configuration" Switch Console shows): each field's
+  `key`, `label`, `type` (`text`, `textarea`, `number`, `boolean`, `list` of
+  strings, or `select`), `help`, and a select's `options`. Call it before
+  setting `advanced_config`.
+- **`create_agent`** — create a new agent for your owner on one of those
+  machines: `name`, `description`, `machine` (its id, or its exact name),
+  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`), and
+  optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
+  `get_advanced_config`), `instructions`, `directory`, `auto_approve`,
+  `display_name`, `icon_url`, and `start=false` to create it stopped. Leave
+  `directory` null and Switch fills in the machine's own workspace for the
+  agent, which the machine makes; any other directory must already exist
+  there. Change it later with `update_agent_detail`.
+- **`list_managed_agents`** — your owner's managed agents, with the machine
+  each runs on, what your owner wants (`desired_state`) and what the machine
+  last reported (`actual.process`, and `actual.reason` when it crashed or
+  failed), and its working directory (`directory`; `actual.directory` is
+  where it runs).
+
+**You act for your owner, on your owner's machines only.** The agent you
+create belongs to your owner, not to you; only your owner can address it at
+first; and it does not get your ability to manage agents. Other people's
+machines are invisible to you.
+
+**Advanced settings are checked.** Switch holds each provider's settings to
+its own list: a key the provider does not have, a value of the wrong type, or
+a select value not among its options is refused, naming the setting. Leave a
+setting out to leave it unset; never send `null`, `""` or `[]`. Changing
+`provider` with settings the new one does not take is refused too: pass its
+own `advanced_config` (or `{}`) with it.
+
+**It takes a capability your owner grants.** All four tools need "can manage
+agents", which is off for every agent until its owner turns it on, on the
+agent's page in the Switch gateway. Without it each call is refused with a
+sentence saying so: relay it to the person asking ("ask my owner to enable
+'can manage agents' for me") rather than retrying.
+
+**Use it when you are asked for a new agent**, or when a job needs one that
+does not exist yet and the person agrees. Before calling `create_agent`,
+check `list_machines` for a machine that is `online` with the provider
+installed and `auth` not `missing` or `expired`, then **propose the name,
+machine, provider and what the agent is for, and get explicit confirmation**:
+it starts a real agent on someone's computer.
+
+**Relay a refusal as it is.** When the machine cannot take the agent, nothing
+is created and the error says why, with a reason code: `controller_offline`
+(the machine has not reported recently), `controller_revoked`,
+`provider_not_installed`, `provider_login_missing` or `provider_login_expired`
+(someone has to install or log in to the CLI on that machine). A machine name
+shared by several machines is refused with the candidates; pass the id.
+
+**Check that it came up.** `create_agent` returns the new agent's id and
+`desired_state`. Call `list_managed_agents` straight away and look at
+`actual.process`; while `actual` is still null, `pending` or `starting`,
+check again every 2 seconds, for at most a minute, before telling anyone the
+agent is ready. An agent created without an `icon_url` gets the icon its name
+generates.
+
 ## Room roles (assumable)
 
 A room can define **room-scoped roles** — named, assumable instruction bundles
@@ -783,7 +899,7 @@ Every Switch tool you call in normal operation, one line each.
 - `list_participants` — the connected room's roster: `id`, `name`, `type`,
   `status`, `alias`.
 - `post_message` — broadcast to the room.
-- `send_targeted_message` — broadcast addressed to names and/or roles.
+- `send_targeted_message` — broadcast addressed to names, roles, or `everyone` (the room's people).
 - `send_attachment` — post one or more files to the room.
 - `download_attachment` — fetch a file seen in history, by `mxc`.
 - `list_roles` — the room's assumable roles and who holds them.
@@ -823,6 +939,10 @@ Every Switch tool you call in normal operation, one line each.
 - `list_agents` — every agent on the instance, with optional filters.
 - `get_agent_detail` — one agent's config, capabilities and sessions.
 - `update_agent_detail` — change an agent you own.
+- `list_machines` — your owner's machines, where agent management runs.
+- `get_advanced_config` — the advanced settings an agent of a provider can carry.
+- `create_agent` — create an agent for your owner on one of their machines. Confirm with the user first.
+- `list_managed_agents` — your owner's managed agents and whether each is up.
 - `list_reference_types` — the Reference types and their value schemas.
 - `create_reference` — register an external Reference.
 - `attach_reference_to_room` — attach an existing Reference to a room.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import MethodType, SimpleNamespace
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundCommand
 from switch_core.transport import SendResult, TransportError
 
@@ -29,10 +29,10 @@ def _cmd(
 def _fake_bridge(
     send_result: SendResult | TransportError,
     *,
-    external_to_matrix: dict[str, str] | None = None,
+    external_to_room: dict[str, str] | None = None,
     translate_inbound: object = None,
 ) -> SimpleNamespace:
-    """A minimal BridgeCore stand-in for _handle_inbound_command.
+    """A minimal CollaborationCore stand-in for _handle_inbound_command.
 
     `external_to_matrix` seeds the (external post -> Matrix event) lookup so we
     can exercise the "thread root already bridged" branch.
@@ -40,13 +40,13 @@ def _fake_bridge(
     recorded: list[dict[str, str]] = []
     sent_content: list[dict] = []
     pending: dict[str, str] = {}
-    lookup = external_to_matrix or {}
+    lookup = external_to_room or {}
     translate = translate_inbound or (lambda raw: raw)
 
-    def _prerecord_message_map(matrix_event_id: str, external_post_id: str) -> None:
-        pending[matrix_event_id] = external_post_id
+    def _prerecord_message_map(transport_event_id: str, external_post_id: str) -> None:
+        pending[transport_event_id] = external_post_id
 
-    async def _ensure_user_in_matrix_room(**_kw: object) -> SimpleNamespace:
+    async def _ensure_human_in_room(**_kw: object) -> SimpleNamespace:
         async def _send_event(_room_id: str, _type: str, content: dict) -> str:
             sent_content.append(content)
             if isinstance(send_result, TransportError):
@@ -54,12 +54,12 @@ def _fake_bridge(
             return send_result.event_id
 
         return SimpleNamespace(
-            matrix_user_id="@puppet:switch.local",
-            client_id="puppet-1",
+            transport_user_id="@human actor:switch.local",
+            client_id="human-actor-1",
             send_event=_send_event,
         )
 
-    async def _matrix_event_for_external_post(external_post_id: str) -> str | None:
+    async def _event_for_external_post(external_post_id: str) -> str | None:
         return lookup.get(external_post_id)
 
     async def _record_message_map(**kwargs: str) -> None:
@@ -68,8 +68,8 @@ def _fake_bridge(
     bridge = SimpleNamespace(
         _channel_to_room={"chan-1": ("room-uuid", "!matrix:switch.local")},
         _adapter=SimpleNamespace(translate_inbound=translate),
-        _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
-        _matrix_event_for_external_post=_matrix_event_for_external_post,
+        _ensure_human_in_room=_ensure_human_in_room,
+        _event_for_external_post=_event_for_external_post,
         _record_message_map=_record_message_map,
         _prerecord_message_map=_prerecord_message_map,
         _pending_message_maps=pending,
@@ -88,7 +88,9 @@ class TestCommandThreadMapping:
                 event_id="$cmd-event", event_type="com.switch.command", content={}
             )
         )
-        await BridgeCore._handle_inbound_command(bridge, _cmd(message_ref="mm-post-1"))
+        await CollaborationCore._handle_inbound_command(
+            bridge, _cmd(message_ref="mm-post-1")
+        )
 
         assert bridge.recorded == [
             {
@@ -108,9 +110,9 @@ class TestCommandThreadMapping:
             SendResult(
                 event_id="$cmd-event", event_type="com.switch.command", content={}
             ),
-            external_to_matrix={"mm-root": "$matrix-root"},
+            external_to_room={"mm-root": "$matrix-root"},
         )
-        await BridgeCore._handle_inbound_command(
+        await CollaborationCore._handle_inbound_command(
             bridge, _cmd(message_ref="mm-reply", root_id="mm-root")
         )
 
@@ -128,7 +130,7 @@ class TestCommandThreadMapping:
                 event_id="$cmd-event", event_type="com.switch.command", content={}
             )
         )
-        await BridgeCore._handle_inbound_command(
+        await CollaborationCore._handle_inbound_command(
             bridge, _cmd(message_ref="mm-reply", root_id="mm-root")
         )
 
@@ -148,14 +150,16 @@ class TestCommandThreadMapping:
                 event_id="$cmd-event", event_type="com.switch.command", content={}
             )
         )
-        await BridgeCore._handle_inbound_command(bridge, _cmd(message_ref=None))
+        await CollaborationCore._handle_inbound_command(bridge, _cmd(message_ref=None))
 
         assert bridge.recorded == []
 
     async def test_no_mapping_when_send_fails(self) -> None:
         err = TransportError("boom")
         bridge = _fake_bridge(err)
-        await BridgeCore._handle_inbound_command(bridge, _cmd(message_ref="mm-post-1"))
+        await CollaborationCore._handle_inbound_command(
+            bridge, _cmd(message_ref="mm-post-1")
+        )
 
         assert bridge.recorded == []
 
@@ -172,7 +176,7 @@ class TestCommandThreadMapping:
                 "<!subteam^S123>", "@switch-onboarder"
             ),
         )
-        await BridgeCore._handle_inbound_command(
+        await CollaborationCore._handle_inbound_command(
             bridge,
             _cmd(
                 message_ref="mm-post-1",
@@ -195,10 +199,10 @@ class TestCommandResultThreadingRace:
         bridge = SimpleNamespace(
             _pending_message_maps={"$cmd-event": "chan-1:100.1"},
             _bridge_id="b",
-            _bridge_message_map_store=SimpleNamespace(get_by_matrix_event_id=_boom),
+            _bridge_message_map_store=SimpleNamespace(get_by_transport_event_id=_boom),
             _session_factory=_boom,
         )
-        got = await BridgeCore._external_post_for_matrix_event(bridge, "$cmd-event")
+        got = await CollaborationCore._external_post_for_event(bridge, "$cmd-event")
         assert got == "chan-1:100.1"
 
     async def test_top_level_command_result_threads_during_db_write(self) -> None:
@@ -208,16 +212,16 @@ class TestCommandResultThreadingRace:
         # resolve the command's thread root, and is popped once the write returns.
         resolved: dict[str, str | None] = {}
 
-        async def _ensure_user_in_matrix_room(**_kw: object) -> SimpleNamespace:
+        async def _ensure_human_in_room(**_kw: object) -> SimpleNamespace:
             async def _send_event(_room_id: str, _type: str, _content: dict) -> str:
                 return "$cmd-event"
 
             return SimpleNamespace(
-                matrix_user_id="@puppet:switch.local",
+                transport_user_id="@human actor:switch.local",
                 send_event=_send_event,
             )
 
-        async def _matrix_event_for_external_post(_post: str) -> str | None:
+        async def _event_for_external_post(_post: str) -> str | None:
             return None  # top-level command: its own post is not yet bridged
 
         async def _get_none(*_a: object, **_k: object) -> None:
@@ -239,14 +243,14 @@ class TestCommandResultThreadingRace:
                 get_by_transport_event_id=_get_none
             ),
             _session_factory=lambda: _NullSession(),
-            _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
-            _matrix_event_for_external_post=_matrix_event_for_external_post,
+            _ensure_human_in_room=_ensure_human_in_room,
+            _event_for_external_post=_event_for_external_post,
         )
         bridge._prerecord_message_map = MethodType(
-            BridgeCore._prerecord_message_map, bridge
+            CollaborationCore._prerecord_message_map, bridge
         )
-        bridge._external_post_for_matrix_event = MethodType(
-            BridgeCore._external_post_for_matrix_event, bridge
+        bridge._external_post_for_event = MethodType(
+            CollaborationCore._external_post_for_event, bridge
         )
 
         async def _record_message_map(
@@ -254,13 +258,11 @@ class TestCommandResultThreadingRace:
         ) -> None:
             # Simulate the reply's outbound relay resolving the thread root while
             # this write is still in flight.
-            resolved["mid"] = await bridge._external_post_for_matrix_event(
-                transport_event_id
-            )
+            resolved["mid"] = await bridge._external_post_for_event(transport_event_id)
 
         bridge._record_message_map = _record_message_map
 
-        await BridgeCore._handle_inbound_command(
+        await CollaborationCore._handle_inbound_command(
             bridge, _cmd(message_ref="chan-1:100.1", command="help")
         )
 
@@ -269,4 +271,4 @@ class TestCommandResultThreadingRace:
         # ...and it is cleared once the write returns...
         assert bridge._pending_message_maps == {}
         # ...after which resolution falls through to the DB (empty here).
-        assert await bridge._external_post_for_matrix_event("$cmd-event") is None
+        assert await bridge._external_post_for_event("$cmd-event") is None

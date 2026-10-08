@@ -88,8 +88,11 @@ export function describeFailure(error: unknown, fallback: string): FailureDescri
       case 'HostUnreachableError':
         return describeHostUnreachable(error, fallback);
       case 'ManagedServerStoppedError':
-        // Already a modeled, actionable sentence naming the server and the page
-        // to fix it on.
+      case 'ServerBusyError':
+      case 'MovedAgentsHereError':
+        // Already a modeled, actionable sentence: the server and the page to
+        // fix it on, who is changing the server and when to try again, or
+        // which agents to bring back first.
         return { headline: error.message, detail: null };
     }
   }

@@ -75,12 +75,81 @@ async def test_a_hostile_request_id_cannot_forge_log_lines() -> None:
     assert len(context.request_id) == 64
 
 
+async def test_a_request_without_console_headers_is_unattributed() -> None:
+    app = _Recorder()
+
+    context = await _call(app, [])
+
+    assert context.console_id is None
+    assert context.console_name is None
+
+
+async def test_the_sending_console_is_bound() -> None:
+    app = _Recorder()
+
+    context = await _call(
+        app,
+        [
+            (b"x-switch-console-id", b"3f2a9c1e-5b7d-4e8f-a1b2-c3d4e5f6a7b8"),
+            (b"x-switch-console-name", b"alice@alice-laptop.local"),
+        ],
+    )
+
+    assert context.console_id == "3f2a9c1e-5b7d-4e8f-a1b2-c3d4e5f6a7b8"
+    assert context.console_name == "alice@alice-laptop.local"
+
+
+async def test_hostile_console_headers_cannot_forge_log_lines() -> None:
+    app = _Recorder()
+
+    context = await _call(
+        app,
+        [
+            (b"x-switch-console-id", b"abc\nERROR forged " + b"f" * 100),
+            (b"x-switch-console-name", b"eve@host user_id=admin\n" + b"x" * 200),
+        ],
+    )
+
+    assert context.console_id is not None
+    assert context.console_name is not None
+    for value in (context.console_id, context.console_name):
+        assert "\n" not in value
+        assert " " not in value
+        assert "=" not in value
+    assert len(context.console_id) == 36
+    assert len(context.console_name) == 64
+    assert context.console_name.startswith("eve@hostuser_idadmin")
+
+
+async def test_a_console_header_with_nothing_usable_is_unattributed() -> None:
+    app = _Recorder()
+
+    context = await _call(
+        app,
+        [
+            (b"x-switch-console-id", b"zzzz ###"),
+            (b"x-switch-console-name", b"\n\t ;;"),
+        ],
+    )
+
+    assert context.console_id is None
+    assert context.console_name is None
+
+
 async def test_the_context_is_unbound_after_the_request() -> None:
     app = _Recorder()
 
-    await _call(app, [])
+    await _call(
+        app,
+        [
+            (b"x-switch-console-id", b"3f2a9c1e"),
+            (b"x-switch-console-name", b"alice@laptop"),
+        ],
+    )
 
     assert current_log_context().request_id is None
+    assert current_log_context().console_id is None
+    assert current_log_context().console_name is None
 
 
 async def test_the_context_is_unbound_when_the_app_raises() -> None:

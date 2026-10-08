@@ -2,6 +2,7 @@ import { BrowserWindow, session as electronSession } from 'electron';
 import { log } from '@main/lib/logger';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { reauthenticateManagedServer } from './auth';
+import { consoleIdentityHeaders } from './console-identity';
 import { getSessionCookie } from './servers-store';
 
 const SWITCH_AUTH_COOKIE = 'switch_auth';
@@ -56,6 +57,15 @@ export async function openAuthenticatedGatewayPage(
         cause: cause instanceof Error ? cause.message : String(cause),
       });
     }
+  }
+
+  // Tag the dashboard's requests with this Console too, confined to the
+  // gateway's origin for the same reason as the cookie.
+  const identity = await consoleIdentityHeaders(server);
+  if (Object.keys(identity).length > 0) {
+    ses.webRequest.onBeforeSendHeaders({ urls: [`${gatewayOrigin}/*`] }, (details, callback) => {
+      callback({ requestHeaders: { ...details.requestHeaders, ...identity } });
+    });
   }
 
   const win = new BrowserWindow({

@@ -1,4 +1,5 @@
 import type { TelemetrySettingKey } from '@main/core/telemetry/events';
+import { launchInstallKind } from '@main/core/telemetry/launch-history';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import type { TelemetrySettings } from '@shared/core/app-settings';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -16,14 +17,16 @@ import { appSettingsService, type AppSettings, type AppSettingsKey } from './set
  *
  * Nothing is reported when the answer has not changed, so re-saving an unrelated
  * part of the settings does not look like a fresh agreement.
+ *
+ * Waits for this launch's kind, which boot records without waiting, so the
+ * first-run notice can be answered first. Never rejects.
  */
-function reportConsent(previous: TelemetrySettings, next: TelemetrySettings): void {
+async function reportConsent(previous: TelemetrySettings, next: TelemetrySettings): Promise<void> {
   if (!next.enabled || next.askedAt === null) return;
   if (previous.enabled && previous.askedAt !== null) return;
 
-  trackEvent('telemetry_consent_changed', {
-    source: previous.askedAt === null ? 'first_run' : 'settings',
-  });
+  const source = previous.askedAt === null ? 'first_run' : 'settings';
+  trackEvent('telemetry_consent_changed', { source, install_kind: await launchInstallKind() });
 }
 
 export const appSettingsController = createRPCController({
@@ -49,7 +52,7 @@ export const appSettingsController = createRPCController({
     await appSettingsService.update(key, value);
 
     trackEvent('setting_changed', { setting_key: key as TelemetrySettingKey });
-    if (previousTelemetry) reportConsent(previousTelemetry, value as TelemetrySettings);
+    if (previousTelemetry) void reportConsent(previousTelemetry, value as TelemetrySettings);
   },
 
   /**

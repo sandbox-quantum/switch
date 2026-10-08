@@ -17,12 +17,12 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
-from switch_core.bridges.agent.api.handlers import poll_events
+from switch_core.bridges.agent.api.handlers import _open_connection
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 
@@ -32,8 +32,8 @@ CONN_ID = "conn-1"
 
 class _Protocol:
     def __init__(self) -> None:
-        self.event_buffer = EventBuffer()
-        self.connections = ConnectionRegistry()
+        self.event_buffer = EventBuffer(sequence_base=0)
+        self.connections = AgentConnectionRegistry()
         # No approval outcomes: these tests are about opening the stream.
         self.approval_outcomes = None
         # Every stream a client is handed goes past the session reporter; one
@@ -62,15 +62,20 @@ def _attach(protocol: _Protocol) -> Any:
 
 
 async def _reopen(protocol: _Protocol, expected_generation: int | None) -> Any:
-    return await poll_events(
-        AGENT_ID,
-        SimpleNamespace(id=AGENT_ID, metadata_={}),  # type: ignore[arg-type]
-        protocol,  # type: ignore[arg-type]
-        accept="text/event-stream",
+    conn, _frames = await _open_connection(
+        config=None,  # type: ignore[arg-type]
+        agent=SimpleNamespace(id=AGENT_ID, metadata_={}),  # type: ignore[arg-type]
+        protocol=protocol,  # type: ignore[arg-type]
         connection_id=CONN_ID,
-        protocol_version=PROTOCOL_VERSION,
+        scope="single",
+        event_filter="all",
+        start_from="head",
+        spawn_capable=False,
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        rooms=None,
         expected_generation=expected_generation,
     )
+    return conn
 
 
 async def test_a_reattach_claiming_a_superseded_incarnation_is_refused() -> None:

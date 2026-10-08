@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from switch_core.clients.agent_client import AgentClient, _offline_owner_message
+from switch_core.clients.agent_consumer import AgentConsumer, _offline_owner_message
 
 """The reply an auto_session agent gives when it is addressed and nothing is
 there to bring it online (CHOO-2344).
@@ -54,7 +54,7 @@ def _client(owner_handle: str | None) -> SimpleNamespace:
 async def _reply(
     client: SimpleNamespace, agent: SimpleNamespace, **kwargs: object
 ) -> str:
-    return await AgentClient._unavailable_reply(
+    return await AgentConsumer._unavailable_reply(
         client,
         None,
         _meta(),

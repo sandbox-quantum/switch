@@ -1,7 +1,7 @@
 """End-to-end test for the agent self-join greeting over the real transport.
 
 Drives the genuine path: RoomService creates a room and invites the agent →
-the agent's AgentClient sees the invite → auto-joins → on_self_join posts the
+the agent's AgentConsumer sees the invite → auto-joins → on_self_join posts the
 greeting. The assertion reads the room timeline back out of the messages table,
 so nothing is inferred from in-process state.
 """
@@ -20,14 +20,14 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")
 
 
 async def _wait_joined(
-    client: object, matrix_room_id: str, timeout: float = 30
+    client: object, transport_room_id: str, timeout: float = 30
 ) -> None:
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
-        if matrix_room_id in client.room_join_times:  # type: ignore[attr-defined]
+        if transport_room_id in client.room_join_times:  # type: ignore[attr-defined]
             return
         await asyncio.sleep(0.25)
-    raise AssertionError(f"client never joined {matrix_room_id} within {timeout}s")
+    raise AssertionError(f"client never joined {transport_room_id} within {timeout}s")
 
 
 async def _timeline_messages(
@@ -72,14 +72,14 @@ async def test_agent_posts_greeting_on_join(
             agent_ids=[agent.agent_id],
         )
     )
-    matrix_room_id = result.room.matrix_room_id
-    await _wait_joined(client, matrix_room_id)
+    transport_room_id = result.room.transport_room_id
+    await _wait_joined(client, transport_room_id)
 
     greeting = await _wait_for_message_from(
         harness,
         session_env,
         result.room.id,
-        client.matrix_user_id.split(":")[0].lstrip("@"),
+        client.transport_user_id.split(":")[0].lstrip("@"),
     )
 
     assert greeting is not None, (
@@ -104,8 +104,8 @@ async def test_no_greeting_when_the_bridge_has_them_disabled(
             agent_ids=[host.agent_id],
         )
     )
-    matrix_room_id = result.room.matrix_room_id
-    await _wait_joined(harness.client_for(host.agent_id), matrix_room_id)
+    transport_room_id = result.room.transport_room_id
+    await _wait_joined(harness.client_for(host.agent_id), transport_room_id)
 
     # Point the room at a connection with greetings turned off. Done after
     # creation because the harness runs no collaboration bridge — the join path
@@ -129,13 +129,13 @@ async def test_no_greeting_when_the_bridge_has_them_disabled(
     await harness.room_service.add_agents_to_room(
         result.room.id, agent_ids=[joiner.agent_id]
     )
-    await _wait_joined(joiner_client, matrix_room_id)
+    await _wait_joined(joiner_client, transport_room_id)
 
     greeting = await _wait_for_message_from(
         harness,
         session_env,
         result.room.id,
-        joiner_client.matrix_user_id.split(":")[0].lstrip("@"),
+        joiner_client.transport_user_id.split(":")[0].lstrip("@"),
         timeout=8,
     )
 

@@ -8,14 +8,24 @@ from typing import Any
 
 import httpx
 
+from switch_core.outbound import OutboundPolicy, guarded_async_client
+
 logger = logging.getLogger(__name__)
 
 
 class OpenCodeClient:
     """HTTP client for the OpenCode server REST API."""
 
-    def __init__(self, server_url: str, username: str, password: str) -> None:
-        self._http = httpx.AsyncClient(
+    def __init__(
+        self,
+        server_url: str,
+        username: str,
+        password: str,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
+        self._outbound_policy = outbound_policy
+        self._http = guarded_async_client(
+            outbound_policy,
             base_url=server_url.rstrip("/"),
             auth=httpx.BasicAuth(username, password),
             timeout=300,
@@ -85,7 +95,8 @@ class OpenCodeClient:
     @asynccontextmanager
     async def subscribe_events(self) -> AsyncIterator[AsyncIterator[dict[str, Any]]]:
         """Subscribe to the SSE event stream. Yields parsed events."""
-        stream_client = httpx.AsyncClient(
+        stream_client = guarded_async_client(
+            self._outbound_policy,
             base_url=str(self._http._base_url),
             auth=self._http._auth,
             timeout=None,

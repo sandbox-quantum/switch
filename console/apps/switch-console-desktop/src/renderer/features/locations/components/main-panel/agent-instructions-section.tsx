@@ -32,7 +32,6 @@ export function AgentInstructionsSection({
   agentId: string | undefined;
 }) {
   const queryClient = useQueryClient();
-  const fieldId = useId();
 
   const { data: saved, error: readError } = useQuery({
     queryKey: ['agent-instructions', agentId],
@@ -81,21 +80,6 @@ export function AgentInstructionsSection({
   const savedValue = saved ?? '';
   const [value, setValue] = useState('');
   const [expanded, setExpanded] = useState(false);
-  const boxRef = useRef<HTMLTextAreaElement>(null);
-  const [clipped, setClipped] = useState(false);
-
-  // Whether the box is actually holding more than it can show. Measured rather
-  // than guessed from the text's length: how much fits depends on how the lines
-  // wrap, so it changes with the width of the page as well as with the text.
-  useLayoutEffect(() => {
-    const box = boxRef.current;
-    if (!box) return;
-    const measure = () => setClipped(box.scrollHeight > box.clientHeight + 1);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(box);
-    return () => observer.disconnect();
-  }, [value, expanded]);
 
   // Re-seed when the stored value changes — after a save, and when the page
   // swaps to a different agent without remounting. No refetch fires while
@@ -159,24 +143,72 @@ export function AgentInstructionsSection({
   }
 
   return (
+    <AgentInstructionsField
+      value={value}
+      onChange={setValue}
+      expanded={expanded}
+      onExpandedChange={setExpanded}
+      actions={
+        origin &&
+        templateOriginExists(origin) && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            disabled={refreshing}
+            onClick={() => void refreshFromTemplate()}
+            title={`This agent was created from the "${origin.name}" template`}
+          >
+            {refreshing ? 'Loading…' : `Update from "${origin.name}"`}
+          </Button>
+        )
+      }
+    />
+  );
+}
+
+/**
+ * The instructions box itself, whatever holds the text: a label, an Expand
+ * control once the text outgrows the box, and room for actions beside it.
+ */
+export function AgentInstructionsField({
+  value,
+  onChange,
+  expanded,
+  onExpandedChange,
+  actions,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+  actions: React.ReactNode;
+}) {
+  const fieldId = useId();
+  const boxRef = useRef<HTMLTextAreaElement>(null);
+  const [clipped, setClipped] = useState(false);
+
+  // Whether the box is actually holding more than it can show. Measured rather
+  // than guessed from the text's length: how much fits depends on how the lines
+  // wrap, so it changes with the width of the page as well as with the text.
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const measure = () => setClipped(box.scrollHeight > box.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [value, expanded]);
+
+  return (
     <Field>
       <div className="flex items-center justify-between gap-2">
         <FieldLabel htmlFor={fieldId}>
           Agent instructions <span className="text-foreground-muted">(optional)</span>
         </FieldLabel>
         <span className="flex items-center gap-3">
-          {origin && templateOriginExists(origin) && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="xs"
-              disabled={refreshing}
-              onClick={() => void refreshFromTemplate()}
-              title={`This agent was created from the "${origin.name}" template`}
-            >
-              {refreshing ? 'Loading…' : `Update from "${origin.name}"`}
-            </Button>
-          )}
+          {actions}
           {/* Offered only once there is something being withheld, so a two-line
             instruction does not carry a control that would do nothing. */}
           {(clipped || expanded) && (
@@ -184,7 +216,7 @@ export function AgentInstructionsSection({
               type="button"
               aria-expanded={expanded}
               aria-controls={fieldId}
-              onClick={() => setExpanded((open) => !open)}
+              onClick={() => onExpandedChange(!expanded)}
               className="cursor-pointer text-sm text-foreground-muted hover:text-foreground"
             >
               {expanded ? 'Collapse' : 'Expand'}
@@ -198,7 +230,7 @@ export function AgentInstructionsSection({
         rows={4}
         placeholder="How this agent should work"
         value={value}
-        onChange={(event) => setValue(event.target.value)}
+        onChange={(event) => onChange(event.target.value)}
         className={expanded ? 'max-h-none' : undefined}
       />
     </Field>

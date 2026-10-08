@@ -24,16 +24,20 @@ from switch_core.bridges.agent.dependencies import (
 from switch_core.db.models import Agent, ApprovalRequest
 from switch_core.session_activity.service import (
     MAX_DETAIL_CHARS,
+    MAX_MODEL_CHARS,
+    MAX_MODELS_PER_TURN,
     MAX_OPTIONS,
     MAX_QUESTION_OPTIONS,
     MAX_QUESTIONS,
     MAX_TEXT_CHARS,
     MAX_TITLE_CHARS,
+    MAX_TOKENS,
+    AgentSessionActivityService,
     ApprovalOption,
     Decision,
     Question,
     QuestionOption,
-    SessionActivityService,
+    TokenSpend,
 )
 from switch_core.telemetry import TelemetryService
 from switch_core.telemetry.session_start import (
@@ -50,14 +54,6 @@ Limiter = Annotated[SessionStartLimiter, Depends(get_session_start_limiter)]
 
 _Id = Annotated[str, Field(min_length=1, max_length=200)]
 
-# Per-tenant usage metering was removed, but shipped Switch Console 0.37 still
-# posts a `usage` array on every activity report and `ActivityReport` forbids
-# extra fields, so the schema is kept only to accept those reports; the value
-# is validated and then discarded.
-_MAX_MODEL_CHARS = 200
-_MAX_MODELS_PER_TURN = 50
-_MAX_TOKENS = 2**53 - 1
-
 
 class SessionStart(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -72,11 +68,11 @@ class SessionStartReceipt(BaseModel):
 
 class TokenUsageIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    model: str = Field(max_length=_MAX_MODEL_CHARS)
-    input_tokens: int = Field(ge=0, le=_MAX_TOKENS)
-    output_tokens: int = Field(ge=0, le=_MAX_TOKENS)
-    cache_read_tokens: int = Field(ge=0, le=_MAX_TOKENS)
-    cache_write_tokens: int = Field(ge=0, le=_MAX_TOKENS)
+    model: str = Field(max_length=MAX_MODEL_CHARS)
+    input_tokens: int = Field(ge=0, le=MAX_TOKENS)
+    output_tokens: int = Field(ge=0, le=MAX_TOKENS)
+    cache_read_tokens: int = Field(ge=0, le=MAX_TOKENS)
+    cache_write_tokens: int = Field(ge=0, le=MAX_TOKENS)
 
 
 class ActivityReport(BaseModel):
@@ -95,9 +91,9 @@ class ActivityReport(BaseModel):
     thread_id: _Id | None
     message_id: _Id | None
     occurred_at: datetime
-    # Accepted from Switch Console 0.37 and ignored; see the note above.
+    # Hosts that predate usage reporting do not send it.
     usage: list[TokenUsageIn] = Field(
-        default_factory=list, max_length=_MAX_MODELS_PER_TURN
+        default_factory=list, max_length=MAX_MODELS_PER_TURN
     )
 
 
@@ -203,7 +199,7 @@ async def report_started(
 async def report_activity(
     session_id: _Id, body: ActivityReport, agent: AuthenticatedAgent, factory: Factory
 ) -> ActivityReceipt:
-    recorded = await SessionActivityService(factory).report_item(
+    recorded = await AgentSessionActivityService(factory).report_item(
         agent.id,
         session_id,
         turn_id=body.turn_id,
@@ -218,6 +214,16 @@ async def report_activity(
         thread_id=body.thread_id,
         message_id=body.message_id,
         occurred_at=body.occurred_at,
+        usage=[
+            TokenSpend(
+                model=u.model,
+                input_tokens=u.input_tokens,
+                output_tokens=u.output_tokens,
+                cache_read_tokens=u.cache_read_tokens,
+                cache_write_tokens=u.cache_write_tokens,
+            )
+            for u in body.usage
+        ],
     )
     return ActivityReceipt(recorded=recorded)
 
@@ -226,7 +232,7 @@ async def report_activity(
 async def open_approval(
     session_id: _Id, body: ApprovalOpen, agent: AuthenticatedAgent, factory: Factory
 ) -> ApprovalView:
-    row = await SessionActivityService(factory).open_approval(
+    row = await AgentSessionActivityService(factory).open_approval(
         agent.id,
         session_id,
         request_id=body.request_id,
@@ -259,7 +265,7 @@ async def open_approval(
 async def close_approval(
     session_id: _Id, request_id: _Id, agent: AuthenticatedAgent, factory: Factory
 ) -> ApprovalView:
-    row = await SessionActivityService(factory).close_approval(
+    row = await AgentSessionActivityService(factory).close_approval(
         agent.id, session_id, request_id
     )
     return ApprovalView.of(row)
@@ -271,7 +277,7 @@ async def close_approval(
 async def mark_delivered(
     session_id: _Id, request_id: _Id, agent: AuthenticatedAgent, factory: Factory
 ) -> ApprovalView:
-    row = await SessionActivityService(factory).mark_delivered(
+    row = await AgentSessionActivityService(factory).mark_delivered(
         agent.id, session_id, request_id
     )
     return ApprovalView.of(row)
@@ -282,5 +288,5 @@ async def undelivered_outcomes(
     agent: AuthenticatedAgent, factory: Factory
 ) -> list[ApprovalView]:
     """Answers and expiries the agent has not acknowledged, oldest first."""
-    rows = await SessionActivityService(factory).undelivered_outcomes(agent.id)
+    rows = await AgentSessionActivityService(factory).undelivered_outcomes(agent.id)
     return [ApprovalView.of(row) for row in rows]

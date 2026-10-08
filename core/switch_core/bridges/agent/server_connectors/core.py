@@ -23,7 +23,7 @@ from switch_core.bridges.agent.server_connectors.base import (
 from switch_core.tenant_context import no_tenant, tenant_scope
 
 if TYPE_CHECKING:
-    from switch_core.bridges.agent.protocol.service import ProtocolService
+    from switch_core.bridges.agent.protocol.agent_core import AgentCore
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +42,9 @@ class _AgentHandle:
 
 
 class _ProtocolReporter(ConnectorReporter):
-    """Reporter implementation backed by an in-process ProtocolService call."""
+    """Reporter implementation backed by an in-process AgentCore call."""
 
-    def __init__(self, protocol: ProtocolService, handle: _AgentHandle) -> None:
+    def __init__(self, protocol: AgentCore, handle: _AgentHandle) -> None:
         self._protocol = protocol
         self._handle = handle
 
@@ -67,11 +67,11 @@ class ConnectorCore:
     """Runtime orchestrator for a single server-side connector.
 
     Discovers agents on the external platform, registers them through the
-    in-process ProtocolService, and runs per-agent poll loops that forward
+    in-process AgentCore, and runs per-agent poll loops that forward
     messages and tasks between the connector and Switch.
 
     Server-side connectors live in the same process as Switch core, so they
-    do not need HTTP — they call ``ProtocolService`` directly. (External
+    do not need HTTP — they call ``AgentCore`` directly. (External
     agent integrations are the ones that go over the HTTP agent bridge.)
     """
 
@@ -83,7 +83,7 @@ class ConnectorCore:
         connector_type: str,
         connector: ServerSideConnector,
         registration_token: str,
-        protocol: ProtocolService,
+        protocol: AgentCore,
     ) -> None:
         self._connector_id = connector_id
         # The tenant of the connector's own row. Held, never bound for the

@@ -2,7 +2,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import type { LocationStore } from '@renderer/features/locations/stores/location';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
-import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
@@ -20,22 +20,26 @@ import type { AgentIconBackfill } from '@shared/core/switch-servers/switch-serve
 export type AgentEntry = { agent: Agent; location: LocationStore };
 
 /**
- * A location's agents that the active server's tree should draw.
+ * A location's agents that the active workspace's tree should draw.
  *
- * A location is in scope when *some* of its agents are on the active server, but a
- * directory can hold agents for several servers at once — so scope has to be
+ * A location is in scope when *some* of its agents are in the active workspace,
+ * but a directory can hold agents for several at once — so scope has to be
  * re-applied per agent here. Taking the location's whole list instead drew agents
- * belonging to another server under this one, which read as "onboarding brought
+ * belonging to another workspace under this one, which read as "onboarding brought
  * them across" when nothing had been onboarded at all (CHOO-2044).
+ *
+ * The workspace and not its server: two workspaces on one server are two separate
+ * trees, and scoping on the server would draw both of them under whichever name
+ * the sidebar is showing.
  */
 function agentsAtLocationInScope(location: LocationStore): Agent[] {
-  const activeServerId = switchServersStore.activeServerId;
-  if (!activeServerId) return agentsStore.byLocation.get(location.id) ?? [];
-  return agentsStore.agentsOnServerAtLocation(location.id, activeServerId);
+  const activeWorkspaceId = workspacesStore.activeId;
+  if (!activeWorkspaceId) return agentsStore.byLocation.get(location.id) ?? [];
+  return agentsStore.agentsInWorkspaceAtLocation(location.id, activeWorkspaceId);
 }
 
 /**
- * The flat list of agents in the active-server scope. Switch Console shows agents
+ * The flat list of agents in the active-workspace scope. Switch Console shows agents
  * as a flat list — not grouped by directory (CHOO-1440).
  *
  * Newest first, then overlaid with the user's manual drag order: an agent they
@@ -57,7 +61,7 @@ export function scopedAgents(): AgentEntry[] {
 }
 
 /**
- * Every agent on the active server, ignoring the agent filters.
+ * Every agent in the active workspace, ignoring the agent filters.
  *
  * Room membership is a fact about a room, so the agents a room lists — and the
  * agents whose membership is fetched at all — must not depend on which filters
@@ -88,14 +92,14 @@ export function agentSessions(entry: AgentEntry): SessionStore[] {
   );
 }
 
-/** Every agent on the active server that has a Switch identity, as
+/** Every agent in the active scope that has a Switch identity, as
  * membership-lookup keys. Unfiltered on purpose — see
  * {@link agentsInActiveScope}. */
-export function switchIdentities(): { serverId: string; switchAgentId: string }[] {
-  const identities: { serverId: string; switchAgentId: string }[] = [];
+export function switchIdentities(): { workspaceId: string; switchAgentId: string }[] {
+  const identities: { workspaceId: string; switchAgentId: string }[] = [];
   for (const { agent } of agentsInActiveScope()) {
-    if (agent.serverId && agent.switchAgentId) {
-      identities.push({ serverId: agent.serverId, switchAgentId: agent.switchAgentId });
+    if (agent.workspaceId && agent.switchAgentId) {
+      identities.push({ workspaceId: agent.workspaceId, switchAgentId: agent.switchAgentId });
     }
   }
   return identities;
@@ -151,7 +155,7 @@ export async function refreshSidebarRoomStateAfterOnboarding(): Promise<void> {
 
 /**
  * Fill in the avatar of any of this user's agents registered before icons
- * existed (CHOO-2171). The main process does it once per server per run, so
+ * existed (CHOO-2171). The main process does it once per workspace per run, so
  * calling it on every refresh costs nothing after the first.
  *
  * Not awaited by the caller and never allowed to throw: the sidebar must paint
@@ -164,13 +168,13 @@ export async function refreshSidebarRoomStateAfterOnboarding(): Promise<void> {
  * lettered picture with nothing explaining why.
  */
 async function giveExistingAgentsAnIcon(): Promise<void> {
-  const serverIds = new Set(switchIdentities().map((identity) => identity.serverId));
-  for (const serverId of serverIds) {
+  const workspaceIds = new Set(switchIdentities().map((identity) => identity.workspaceId));
+  for (const workspaceId of workspaceIds) {
     try {
-      reportBackfill(serverId, await rpc.switchServers.backfillAgentIcons(serverId));
+      reportBackfill(workspaceId, await rpc.workspaces.backfillAgentIcons(workspaceId));
     } catch (cause) {
-      log.warn('could not give existing agents their icons', { serverId, cause });
-      reportOnce(serverId, 'failed', {
+      log.warn('could not give existing agents their icons', { workspaceId, cause });
+      reportOnce(workspaceId, 'failed', {
         title: 'Agent icons could not be saved',
         description:
           'Your agents show a generated icon here, but the Switch server has not stored it — so they keep their old picture in Slack and the other chat apps.',
@@ -181,13 +185,14 @@ async function giveExistingAgentsAnIcon(): Promise<void> {
 }
 
 /**
- * What each server was last told to the user about, so an unresolved condition
- * is not re-announced on every refresh.
+ * What each workspace was last told to the user about, so an unresolved
+ * condition is not re-announced on every refresh.
  *
  * The caller runs on first paint, window focus, sign-in, the background
- * reconcile, the retry button and every membership-changing mutation. A server
- * that is signed out or too old to store icons fails all of them, which turned
- * one standing problem into a toast every few seconds (CHOO-2344).
+ * reconcile, the retry button and every membership-changing mutation. A
+ * workspace whose server is signed out or too old to store icons fails all of
+ * them, which turned one standing problem into a toast every few seconds
+ * (CHOO-2344).
  *
  * Keyed by outcome, not a bare "said something already": if the situation
  * changes — a signed-out server starts answering and turns out to be too old —
@@ -196,15 +201,15 @@ async function giveExistingAgentsAnIcon(): Promise<void> {
  */
 const reportedBackfill = new Map<string, string>();
 
-function reportOnce(serverId: string, outcome: string, notice: Parameters<typeof toast>[0]) {
-  if (reportedBackfill.get(serverId) === outcome) return;
-  reportedBackfill.set(serverId, outcome);
+function reportOnce(workspaceId: string, outcome: string, notice: Parameters<typeof toast>[0]) {
+  if (reportedBackfill.get(workspaceId) === outcome) return;
+  reportedBackfill.set(workspaceId, outcome);
   toast(notice);
 }
 
-function reportBackfill(serverId: string, outcome: AgentIconBackfill): void {
+function reportBackfill(workspaceId: string, outcome: AgentIconBackfill): void {
   if (outcome.kind === 'unsupported') {
-    reportOnce(serverId, 'unsupported', {
+    reportOnce(workspaceId, 'unsupported', {
       title: 'This Switch server does not support agent icons yet',
       description:
         'Your agents show a generated icon here, but it cannot be saved, so they keep their old picture in Slack and the other chat apps. Updating the server fixes it.',
@@ -213,7 +218,7 @@ function reportBackfill(serverId: string, outcome: AgentIconBackfill): void {
     return;
   }
   if (outcome.kind === 'partial') {
-    reportOnce(serverId, `partial:${outcome.failed}`, {
+    reportOnce(workspaceId, `partial:${outcome.failed}`, {
       title: `${outcome.failed} agent${outcome.failed === 1 ? '' : 's'} kept the old icon`,
       description:
         'Their icon could not be saved to the Switch server, so it will not show in Slack or the other chat apps.',
@@ -221,5 +226,5 @@ function reportBackfill(serverId: string, outcome: AgentIconBackfill): void {
     });
     return;
   }
-  reportedBackfill.delete(serverId);
+  reportedBackfill.delete(workspaceId);
 }

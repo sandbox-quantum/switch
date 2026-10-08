@@ -1,3 +1,4 @@
+import { listManagedAgentRecords } from '@main/core/agent-migration/managed-agents-store';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgents } from '@main/core/agents/getAgents';
 import { listStoppedControllerAgentIds } from '@main/core/switch-rooms/auto-session-store';
@@ -7,18 +8,20 @@ import { redactSecrets } from '@main/lib/file-logger';
 import { log } from '@main/lib/logger';
 import { roomHealthChangedChannel } from '@shared/core/switch-rooms/switchRoomEvents';
 import { ConnectionHealthMonitor } from './connection-health-monitor';
-import { remoteWatcherStatus } from './diagnostics';
+import { hostWatcherStatus } from './host-watcher-snapshot';
 import { localWatcherControl } from './local-host';
-import { sidecarControl } from './sidecar-control';
 
-/** How often a sidecar that could not be reached is tried again. */
-const SIDECAR_RETRY_MS = 10_000;
+/** How often each remote agent's host is read for its watchers' state. */
+const REMOTE_POLL_MS = 5_000;
 
 const monitor = new ConnectionHealthMonitor({
+  // A moved agent's Console watcher is off by design: its controller runs it,
+  // so it is not this Console's connection to report on.
   linkedAgents: async (serverId) => {
     if (!(await getServer(serverId))) throw new Error('Switch server not found.');
+    const moved = new Set((await listManagedAgentRecords()).map((record) => record.agentId));
     return (await getAgents()).flatMap((agent) =>
-      agent.serverId === serverId && agent.switchAgentId
+      agent.serverId === serverId && agent.switchAgentId && !moved.has(agent.id)
         ? [
             {
               id: agent.id,
@@ -33,13 +36,12 @@ const monitor = new ConnectionHealthMonitor({
   isRemote: async (agent) => !!(await getAgentLocation(agent)).sshHost,
   stoppedAgentIds: listStoppedControllerAgentIds,
   local: localWatcherControl,
-  remote: sidecarControl,
-  remoteStatus: remoteWatcherStatus,
+  remoteWatcher: hostWatcherStatus,
   emit: (serverId, snapshot) => events.emit(roomHealthChangedChannel, snapshot, serverId),
   redact: redactSecrets,
   logError: (message, context) => log.error(message, context),
   now: () => Date.now(),
-  retryMs: SIDECAR_RETRY_MS,
+  pollMs: REMOTE_POLL_MS,
 });
 
 /**

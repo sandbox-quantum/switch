@@ -1,0 +1,10 @@
+{
+  "proof": { "kind": "enrollment_code", "code": "swce_example_not_a_real_code" },
+  "controller": {
+    "kind": "daemon",
+    "name": "build-box",
+    "description": "The build box in the office",
+    "platform": { "os": "linux", "arch": "x64", "os_version": "6.1.0" },
+    "version": "0.1.0"
+  }
+}

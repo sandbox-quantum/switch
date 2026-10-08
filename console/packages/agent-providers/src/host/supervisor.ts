@@ -5,9 +5,10 @@ import { mkdir, open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
-import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
+import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
+import { pipeRedactedHostedLogs } from './hosted-log';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
-import { fenceDeadOwner } from './process-fence';
+import { fenceDeadOwner, killProcessTree } from './process-fence';
 import type { SessionLinks } from './session-channel';
 
 function alive(pid: number): boolean {
@@ -32,6 +33,13 @@ async function ownerPid(path: string): Promise<number | null> {
   }
 }
 
+/**
+ * How long a supervised host asked to stop is given before it and what it
+ * started are killed. Shorter than the launcher's `STOP_GRACE_MS`, so a chain
+ * — a watcher's supervisor, the watcher, its session hosts — comes down inside
+ * the time a replacement waits for it.
+ */
+export const CHILD_STOP_GRACE_MS = 10_000;
 export async function superviseSharedHost(input: {
   root: string;
   executable: string;
@@ -47,6 +55,8 @@ export async function superviseSharedHost(input: {
    * process does, and the host is then started without one.
    */
   links: SessionLinks | null;
+  /** Exact values scrubbed from the host's output before it reaches worker.log. */
+  logRedactions: string[];
 }): Promise<void> {
   const directory = join(input.root, 'supervisor');
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -67,15 +77,42 @@ export async function superviseSharedHost(input: {
         continue;
       }
       const log = await open(join(directory, 'worker.log'), 'a', 0o600);
+      const redacting = input.logRedactions.length > 0;
+      const output = redacting ? 'pipe' : log.fd;
       const child = spawn(input.executable, input.args, {
         detached: true,
         env: input.env,
-        stdio: input.links ? ['ignore', log.fd, log.fd, 'ipc'] : ['ignore', log.fd, log.fd],
+        stdio: input.links ? ['ignore', output, output, 'ipc'] : ['ignore', output, output],
       });
       input.links?.attach(input.root, child);
       const exited = once(child, 'exit');
-      await log.close();
-      const stop = () => child.kill('SIGTERM');
+      const logged = redacting
+        ? pipeRedactedHostedLogs([child.stdout!, child.stderr!], log, input.logRedactions).catch(
+            (error: unknown) => {
+              child.kill('SIGKILL');
+              throw error;
+            }
+          )
+        : log.close();
+      logged.catch(() => {});
+      // Asked first. A host that has not gone `CHILD_STOP_GRACE_MS` later is
+      // waiting on something that will not finish — a session host that hung
+      // up and stayed alive, say — and is killed with everything it started,
+      // so that stopping this supervisor cannot hang on it.
+      let escalation: ReturnType<typeof setTimeout> | null = null;
+      const stop = () => {
+        child.kill('SIGTERM');
+        escalation ??= setTimeout(() => {
+          if (child.exitCode !== null || child.signalCode !== null || !child.pid) return;
+          console.warn(
+            `The shared host at ${input.root} did not stop within ${CHILD_STOP_GRACE_MS / 1000} s of being asked; killing it and everything it started.`
+          );
+          killProcessTree(child.pid).catch((error: unknown) =>
+            console.error(`Could not kill the shared host at ${input.root}: ${String(error)}`)
+          );
+        }, CHILD_STOP_GRACE_MS);
+        escalation.unref?.();
+      };
       input.signal.addEventListener('abort', stop, { once: true });
       if (input.signal.aborted) stop();
       let code: number | null;
@@ -84,6 +121,7 @@ export async function superviseSharedHost(input: {
         [code, signal] = await exited;
       } finally {
         input.signal.removeEventListener('abort', stop);
+        if (escalation) clearTimeout(escalation);
       }
       if (child.pid) {
         await fenceDeadOwner(child.pid, child.pid);
@@ -95,13 +133,16 @@ export async function superviseSharedHost(input: {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         }
       }
+      if (redacting)
+        try {
+          await logged;
+        } finally {
+          await log.close();
+        }
       if (input.signal.aborted) return;
       if (code === 0) return;
-      if (code === LEASE_EXPIRED_EXIT_CODE) {
-        console.warn('Shared SDK host lease expired; relaunching from saved state after fencing.');
-        await delay(1000, undefined, { signal: input.signal });
-        continue;
-      }
+      if (code === OBSOLETE_BUNDLE_EXIT_CODE)
+        throw new WorkerObsoleteError('the watcher was refused as obsolete and stopped.');
       if (code !== null) {
         try {
           await readFile(join(directory, 'failure.json'));

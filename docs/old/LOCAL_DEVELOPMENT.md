@@ -26,9 +26,10 @@ just gateway-install     # install gateway frontend deps (first time only)
 
 `just init-env` copies `.env.example` to `.env` and fills every secret field
 that ships blank — `DB_PASSWORD`, `DB_OWNER_PASSWORD`,
-`AGENT_REGISTRATION_TOKEN`, `JWT_SECRET_KEY`, `GATEWAY_ADMIN_PASSWORD`,
+`AGENT_REGISTRATION_TOKEN`, `GATEWAY_ADMIN_PASSWORD`,
 `MATTERMOST_ADMIN_PASSWORD`, `MATTERMOST_USER_PASSWORD` — with a freshly
-generated `openssl rand -hex 24` value, then prints the gateway admin login
+generated `openssl rand -hex 24` value, sets `SECRET_KEYS` to one generated
+key (`local:<64 hex characters>`), then prints the gateway admin login
 it just set. The fields ship blank on purpose: it means no default
 credential (the old `admin`/`admin`) can ever reach a running stack by
 accident. The recipe refuses to touch an existing `.env`, so re-running it
@@ -36,6 +37,12 @@ never rotates secrets out from under a stack that's already up — delete
 `.env` first if you actually want to regenerate everything. `just` loads
 `.env` automatically for every recipe below (`set dotenv-load := true` in
 the justfile), so nothing else needs to source it.
+
+An `.env` from before `SECRET_KEYS` existed makes `just run` fail at startup
+naming the missing setting. Add `SECRET_KEYS=local:$(openssl rand -hex 32)`
+(the generated value, not the command) and leave `JWT_SECRET_KEY` as it is:
+the first boot re-encrypts what it encrypted, and it keeps your current login
+valid. [key-rotation.md](key-rotation.md) explains both.
 
 ### Two database roles, not one
 
@@ -86,6 +93,13 @@ that provisions the Mattermost team/bot/admin accounts named by the
 start the gateway frontend — you run both of those yourself, in their own
 terminals, so each gets hot-reload while you work. `just down` stops the
 stack; `just reset` also wipes its volumes (Postgres data included).
+
+switch-core refuses to connect to a private address at a URL a bridge or
+connector config names, unless `OUTBOUND_ALLOWED_PRIVATE_HOSTS` lists it. The
+`.env.example` default, `localhost`, covers the local Mattermost and an OpenCode
+server on your machine. An `.env` from before that setting existed lacks it, and
+the Mattermost bridge then refuses to start with a message naming the variable:
+add the line from `.env.example`.
 
 `just migrate` runs `alembic upgrade head` against the Postgres started by
 `just up`. Run it once after the stack is up and again after pulling any
@@ -177,10 +191,49 @@ and enter `http://localhost:5173` as the Gateway URL and
 `http://localhost:8000` as the API URL — with `just gateway-dev` already
 running.
 
+## A local Switch Cloud
+
+A shared deployment runs whatever was last deployed to it, which is often
+older than the branch you are testing. Switch Console can instead treat a
+server run from your checkout as **Switch Cloud**, so the first-run Cloud
+path, invite links and invitation e-mails can all be tried against your
+code:
+
+```bash
+just up                  # Postgres and the rest, as usual
+just local-cloud         # switch-core on :8000, plus a mail catcher
+just local-cloud-console # the Console, with Switch Cloud at http://localhost:8000
+```
+
+- **Sign-in** is by password. The gateway admin from `.env` works, and
+  `just local-cloud-user <email> "<name>" <password>` adds more accounts.
+  Every account made this way joins the admin's workspace; create another
+  workspace in the Console to invite people into, or to open to a domain.
+- **Invitation e-mails** are sent to Mailpit, which keeps them rather than
+  delivering them: read them at `http://localhost:8025`. Their links point at
+  `http://localhost:8000`, so pasting one into the Console's "Paste your
+  invite link" finds the local Cloud. That comes from `FRONTEND_BASE_URL`,
+  which `just local-cloud` sets to `:8000`. The dashboard's own links follow
+  it, so in this mode they open switch-core's JSON rather than the dashboard.
+- **Joining by domain** is offered only for the domain of the admin's own
+  address: `switch.local` for the default admin. Give test accounts
+  addresses there.
+- **The Cloud address** must be https, except for `localhost`, `127.0.0.1`
+  and `[::1]`, which may be plain http for exactly this. The Console matches
+  its Switch Cloud entry by address, so an install that has signed in to the
+  real Cloud gets a second "Switch Cloud" server for the local one rather
+  than reusing it.
+- **The Console's data** (servers, sign-ins, its database) lives in its own
+  directory, `switchdash-local-cloud` under the system's app-data folder,
+  rather than the one every other dev build shares. Branches that number
+  their migrations differently cannot break each other's database this
+  way. Delete that directory to start the Console from scratch.
+
 ## Other useful recipes
 
 | Command | What it does |
 | --- | --- |
+| `just local-cloud` / `just local-cloud-console` | Run switch-core as a stand-in for Switch Cloud, and the Console pointed at it (see above) |
 | `just format` / `just check` | Format with ruff / lint-check in CI mode (no changes) |
 | `just typecheck` | mypy over `core/switch_core/` and `connectors/` |
 | `just test` / `just test -k name` | Run the test suite / a single test |

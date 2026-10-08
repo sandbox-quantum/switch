@@ -13,7 +13,7 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 
 OLD_ID = "-4912345678"
 NEW_ID = "-1009876543210"
@@ -57,8 +57,8 @@ class _Session:
         return None
 
 
-def _make_bridge(rooms: dict[str, SimpleNamespace]) -> BridgeCore:
-    bridge = BridgeCore.__new__(BridgeCore)
+def _make_bridge(rooms: dict[str, SimpleNamespace]) -> CollaborationCore:
+    bridge = CollaborationCore.__new__(CollaborationCore)
     bridge._bridge_id = "bridge-1"
     bridge._bridge_tenant_id = "tenant-1"
     bridge._room_tenants = {}
@@ -73,7 +73,7 @@ def _make_bridge(rooms: dict[str, SimpleNamespace]) -> BridgeCore:
 
 def _room(room_id: str = "room-uuid") -> SimpleNamespace:
     return SimpleNamespace(
-        id=room_id, tenant_id="tenant-1", matrix_room_id=f"!{room_id}:switch.local"
+        id=room_id, tenant_id="tenant-1", transport_room_id=f"!{room_id}:switch.local"
     )
 
 
@@ -87,6 +87,9 @@ def test_the_handler_is_installed_before_the_adapter_starts() -> None:
     class _Adapter:
         def set_channel_migration_handler(self, handler: Any) -> None:
             installed.append(handler)
+
+        def set_channel_type_handler(self, handler: Any) -> None:
+            return None
 
         def set_agent_presentation_resolver(self, resolver: Any) -> None:
             # Not what this test is about; present so the stub satisfies what
@@ -104,11 +107,12 @@ def test_the_handler_is_installed_before_the_adapter_starts() -> None:
         return None
 
     bridge._load_channel_map = _noop  # type: ignore[assignment,method-assign]
-    bridge._load_existing_puppets = _noop  # type: ignore[assignment,method-assign]
+    bridge._load_existing_human_actors = _noop  # type: ignore[assignment,method-assign]
     bridge._ensure_channel_captures = _noop  # type: ignore[assignment,method-assign]
+    bridge._refresh_channel_types = _noop  # type: ignore[assignment,method-assign]
     bridge._create_agent_identities = _noop  # type: ignore[assignment,method-assign]
 
-    asyncio.run(BridgeCore.start(bridge))
+    asyncio.run(CollaborationCore.start(bridge))
 
     assert started == ["started"]
     assert installed == [bridge._handle_channel_migrated]
@@ -117,24 +121,24 @@ def test_the_handler_is_installed_before_the_adapter_starts() -> None:
 def test_the_room_moves_onto_the_new_channel_id() -> None:
     room = _room()
     bridge = _make_bridge({OLD_ID: room})
-    bridge._channel_to_room[OLD_ID] = (room.id, room.matrix_room_id)
-    bridge._room_to_channel[(room.id, room.matrix_room_id)] = OLD_ID
+    bridge._channel_to_room[OLD_ID] = (room.id, room.transport_room_id)
+    bridge._room_to_channel[(room.id, room.transport_room_id)] = OLD_ID
 
-    asyncio.run(BridgeCore._handle_channel_migrated(bridge, OLD_ID, NEW_ID))
+    asyncio.run(CollaborationCore._handle_channel_migrated(bridge, OLD_ID, NEW_ID))
 
     store: Any = bridge._room_store
     assert store.repoints == [(room.id, NEW_ID)]
     # The in-memory routing table is what inbound traffic is matched against,
     # so a committed row alone would not fix anything until the next restart.
-    assert bridge._channel_to_room == {NEW_ID: (room.id, room.matrix_room_id)}
-    assert bridge._room_to_channel == {(room.id, room.matrix_room_id): NEW_ID}
+    assert bridge._channel_to_room == {NEW_ID: (room.id, room.transport_room_id)}
+    assert bridge._room_to_channel == {(room.id, room.transport_room_id): NEW_ID}
 
 
 def test_the_chat_is_told_its_room_followed_it() -> None:
     room = _room()
     bridge = _make_bridge({OLD_ID: room})
 
-    asyncio.run(BridgeCore._handle_channel_migrated(bridge, OLD_ID, NEW_ID))
+    asyncio.run(CollaborationCore._handle_channel_migrated(bridge, OLD_ID, NEW_ID))
 
     adapter: Any = bridge._adapter
     assert [channel for channel, _ in adapter.notices] == [NEW_ID]
@@ -143,7 +147,7 @@ def test_the_chat_is_told_its_room_followed_it() -> None:
 def test_a_migration_of_an_unbridged_channel_is_a_no_op() -> None:
     bridge = _make_bridge({})
 
-    asyncio.run(BridgeCore._handle_channel_migrated(bridge, OLD_ID, NEW_ID))
+    asyncio.run(CollaborationCore._handle_channel_migrated(bridge, OLD_ID, NEW_ID))
 
     store: Any = bridge._room_store
     adapter: Any = bridge._adapter
@@ -159,7 +163,7 @@ def test_a_new_id_another_room_already_holds_is_refused() -> None:
     occupant = _room("room-new")
     bridge = _make_bridge({OLD_ID: old_room, NEW_ID: occupant})
 
-    asyncio.run(BridgeCore._handle_channel_migrated(bridge, OLD_ID, NEW_ID))
+    asyncio.run(CollaborationCore._handle_channel_migrated(bridge, OLD_ID, NEW_ID))
 
     store: Any = bridge._room_store
     adapter: Any = bridge._adapter

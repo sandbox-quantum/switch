@@ -17,6 +17,7 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { PageHeader } from '@renderer/lib/components/page-header';
+import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -31,6 +32,7 @@ import { deriveHostStatus, type HostStatus } from '@shared/core/remote-hosts/hos
 import type { HostSetupPlan } from '@shared/core/remote-hosts/setup';
 import { SWITCH_DOCS_REMOTE_HOSTING_URL } from '@shared/urls';
 import { hostReachabilityStore } from '../host-reachability-store';
+import { removeHostFailureToast } from '../remove-host-failure';
 import { useAllHostSetupPlans } from '../setup/use-host-setup';
 
 export const REMOTE_HOSTS_QUERY_KEY = ['remote-hosts'];
@@ -291,7 +293,11 @@ function RemoveHostButton({
 
   const mutation = useMutation({
     mutationFn: () => rpc.remoteHosts.removeHost(sshHost),
-    onError: (error) => log.error('Failed to remove remote host', { sshHost, error }),
+    onError: (error) => {
+      log.error('Failed to remove remote host', { sshHost, error });
+      setConfirming(false);
+      toast(removeHostFailureToast(name, error));
+    },
     onSuccess: () => {
       setConfirming(false);
       onRemoved();
@@ -342,6 +348,10 @@ function RemoveHostButton({
  */
 export const remoteHostsView = {
   MainPanel: RemoteHostsSettingsPage,
+  // A host is somewhere agents run, not something a server owns, so the page
+  // stands up with no server registered — as does the Settings tab it forwards
+  // to.
+  worksWithoutServer: true,
   canActivate: (): GuardResult => ({
     ok: false,
     redirect: 'settings',

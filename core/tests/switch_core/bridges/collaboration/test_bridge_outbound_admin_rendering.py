@@ -1,7 +1,7 @@
 """Who renders an admin/system message on its way out of Matrix.
 
 `admin_message` takes Switch Markdown and renders it itself, because most of
-its callers are notices composed in `bridge_core` with no adapter in reach. The
+its callers are notices composed in `collaboration_core` with no adapter in reach. The
 relay path here has to respect that and pass the body unrendered.
 
 It did not, and the two halves each did the conversion: a `!list-agents` reply
@@ -14,7 +14,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from switch_core.bridges.collaboration.bridge_core import ADMIN_MARKER, BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import (
+    ADMIN_MARKER,
+    CollaborationCore,
+)
 from switch_core.transport import InboundMessage, RoomRef
 
 BODY = "**Agents in this room:**\n- **scout** — Claude Code"
@@ -59,17 +62,19 @@ class _RecordingAdapter:
         sender_name: str,
         content: str,
         thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
     ) -> str | None:
         self.message_calls.append(content)
         return "ref-msg"
 
 
-def _bridge(adapter: _RecordingAdapter) -> BridgeCore:
-    core = object.__new__(BridgeCore)
+def _bridge(adapter: _RecordingAdapter) -> CollaborationCore:
+    core = object.__new__(CollaborationCore)
     core._bridge_type = "slack"  # type: ignore[attr-defined]
     core._adapter = adapter  # type: ignore[assignment]
-    core._puppet_matrix_ids = set()  # type: ignore[assignment]
-    core._bridge_client_matrix_user_id = "@bridge:switch.local"  # type: ignore[assignment]
+    core._human_user_ids = set()  # type: ignore[assignment]
+    core._workspace_consumer_transport_user_id = "@bridge:switch.local"  # type: ignore[assignment]
     core._find_channel = lambda **_kwargs: "C1"  # type: ignore[assignment]
     core._channel_to_room = {"C1": ("room-uuid", "!r:switch.local")}  # type: ignore[assignment]
     core._room_tenant = _tenant  # type: ignore[assignment]

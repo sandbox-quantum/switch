@@ -114,6 +114,24 @@ describe('describeFailure', () => {
       detail: null,
     });
   });
+
+  it('passes a refusal naming who is changing a shared server straight through', () => {
+    const message =
+      'bob@desk (as bob) is starting the server on vm-1 right now, so nothing was changed. Try ' +
+      'again once they are done.';
+    expect(describeFailure(rpcError('ServerBusyError', message), 'Could not stop.')).toEqual({
+      headline: message,
+      detail: null,
+    });
+  });
+
+  it('passes a refusal to remove a machine running moved agents straight through', () => {
+    const message =
+      'build-box runs builder as managed agents for this Console, so it cannot be removed yet. Delete those agents first.';
+    expect(describeFailure(rpcError('MovedAgentsHereError', message), 'Could not remove.')).toEqual(
+      { headline: message, detail: null }
+    );
+  });
 });
 
 describe('failureText', () => {

@@ -9,16 +9,23 @@ const mocks = vi.hoisted(() => ({
   setStopped: vi.fn(),
   teardown: vi.fn(async () => ({ success: true })),
 }));
-vi.mock('./getAgentById', () => ({
-  getAgentById: async () => ({ id: 'local', serverId: 'server', switchAgentId: 'agent' }),
+// Console runs every agent here; none was moved to a managed machine.
+vi.mock('@main/core/agent-migration/managed-agents-store', () => ({
+  managedRecordFor: vi.fn(async () => null),
+  forgetManagedAgent: vi.fn(async () => {}),
+  AgentManagedByControllerError: class AgentManagedByControllerError extends Error {},
 }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({
-  getServer: async () => ({ id: 'server' }),
+vi.mock('./getAgentById', () => ({
+  getAgentById: async () => ({ id: 'local', workspaceId: 'workspace', switchAgentId: 'agent' }),
+}));
+vi.mock('@main/core/workspaces/workspace-session', () => ({
+  withWorkspaceSession: (_workspaceId: string, fn: (server: { id: string }) => Promise<unknown>) =>
+    fn({ id: 'server' }),
 }));
 vi.mock('@main/core/sdk-host/host-sessions', () => ({ listHostSessions: mocks.list }));
 vi.mock('@main/core/sdk-host/shared-agent-runtime', () => ({ stopSharedSession: mocks.stop }));
-vi.mock('@main/core/sdk-host/shared-watcher', () => ({
-  configureSharedWatcher: mocks.disable,
+vi.mock('@main/core/sdk-host/agent-host', () => ({
+  configureAgentHost: mocks.disable,
   applyControllerState: mocks.restart,
 }));
 // Sidecar management is deliberately left real: it owns the Start transition,
@@ -81,7 +88,7 @@ it('stops all server-owned sessions for this agent before removing local views',
   );
   expect(mocks.stop).toHaveBeenCalledExactlyOnceWith('local', 'remote-only');
   expect(mocks.remove).toHaveBeenCalledTimes(1);
-  expect(mocks.restart).toHaveBeenCalledWith('local', 'explicit');
+  expect(mocks.restart).toHaveBeenCalledWith('local', 'explicit', 'host');
 });
 it('brings back a controller somebody had stopped by hand', async () => {
   // Being stopped is durable and survives a reset, so putting the controller
@@ -91,7 +98,7 @@ it('brings back a controller somebody had stopped by hand', async () => {
   mocks.list.mockResolvedValue([session]);
   await resetRemoteAgent('local');
   expect(mocks.setStopped).toHaveBeenCalledWith('local', false);
-  expect(mocks.restart).toHaveBeenCalledWith('local', 'explicit');
+  expect(mocks.restart).toHaveBeenCalledWith('local', 'explicit', 'host');
 });
 it('keeps local state and auto-start disabled when stop has an unknown outcome', async () => {
   mocks.list.mockResolvedValue([session]);

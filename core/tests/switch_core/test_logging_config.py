@@ -25,7 +25,7 @@ BASE_ENV = {
     "DB_NAME": "switch",
     "MATRIX_SERVER_NAME": "switch.local",
     "AGENT_REGISTRATION_TOKEN": "token",
-    "JWT_SECRET_KEY": "jwt",
+    "SECRET_KEYS": "test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
     "GATEWAY_ADMIN_EMAIL": "admin@example.com",
     "GATEWAY_ADMIN_PASSWORD": "pw",
 }
@@ -251,14 +251,37 @@ def test_filter_stamps_every_field(monkeypatch: pytest.MonkeyPatch) -> None:
     record = logging.LogRecord(
         "x", logging.INFO, __file__, 1, "m", args=(), exc_info=None
     )
+    fields = {name: f"{name}-value" for name in CONTEXT_FIELDS if name != "tenant_id"}
 
-    with log_context(request_id="r", agent_id="a", user_id="u"):
+    with log_context(**fields):
         LogContextFilter("acme").filter(record)
 
     assert record.tenant_id == "acme"
-    assert record.request_id == "r"
-    assert record.agent_id == "a"
-    assert record.user_id == "u"
+    for name, value in fields.items():
+        assert getattr(record, name) == value, name
+
+
+def test_the_bridge_side_reaches_a_json_line(json_lines) -> None:
+    logger, lines = json_lines
+
+    with log_context(bridge="collaboration", platform="slack"):
+        logger.info("[BRIDGE-IN] message")
+
+    entry = _one(lines)
+    assert entry["bridge"] == "collaboration"
+    assert entry["platform"] == "slack"
+
+
+def test_the_console_rides_alongside_the_user_in_json(json_lines) -> None:
+    logger, lines = json_lines
+
+    with log_context(user_id="admin", console_id="c-1", console_name="bob@vm"):
+        logger.info("stopped the stack")
+
+    entry = _one(lines)
+    assert entry["user_id"] == "admin"
+    assert entry["console_id"] == "c-1"
+    assert entry["console_name"] == "bob@vm"
 
 
 def test_bound_tenant_beats_the_deployment_default() -> None:
@@ -329,3 +352,28 @@ class TestTheLogAgreesWithTheDatabase:
         """Naming tenant zero here would file every unattributed line under a
         real customer's id, which is worse than saying nothing at all."""
         assert SwitchConfig.model_fields["tenant_id"].default != TENANT_ZERO_ID
+
+
+@pytest.mark.parametrize("format", ["text", "json"])
+def test_access_logs_remove_authorization_query_parameters(monkeypatch, format):
+    config = _config(monkeypatch, LOG_FORMAT=format)
+    capture = _Capture(build_handler(config, None))
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        "",
+        0,
+        '%s - "%s %s HTTP/%s" %d',
+        (
+            "127.0.0.1",
+            "GET",
+            "/gateway/provider-connections/github/callback?code=SYNTHETIC-CODE&state=SYNTHETIC-STATE",
+            "1.1",
+            200,
+        ),
+        None,
+    )
+    capture.handle(record)
+    assert len(capture.lines) == 1
+    assert "/gateway/provider-connections/github/callback" in capture.lines[0]
+    assert "SYNTHETIC" not in capture.lines[0]

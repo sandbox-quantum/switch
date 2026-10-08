@@ -37,7 +37,11 @@ from dataclasses import dataclass
 
 from switch_core.bridges.agent.protocol.types import AgentEvent
 from switch_core.logging_context import log_context
-from switch_core.observability.catalogue import AGENT_EVENTS_DROPPED
+from switch_core.observability.catalogue import (
+    AGENT_BUFFER_SCAN_DURATION,
+    AGENT_BUFFER_SCANNED,
+    AGENT_EVENTS_DROPPED,
+)
 from switch_core.observability.metrics import metrics
 
 logger = logging.getLogger(__name__)
@@ -51,6 +55,13 @@ DEFAULT_MAX_EVENTS_PER_AGENT = 2000
 # reconnects within it recovers every event it missed, and one that reconnects
 # later is told it has a gap rather than handed a partial stream.
 DEFAULT_RETENTION_SECONDS = 15 * 60
+
+# An agent past the cap drops an event on every enqueue, and a warning per drop
+# is a log line per delivered message. One per agent per interval says the same.
+OVERFLOW_WARNING_INTERVAL_SECONDS = 60.0
+
+_READ = {"operation": "read"}
+_UNREAD = {"operation": "unread"}
 
 # Why an unread count is absent or incomplete. Never a bare zero: a reader that
 # is told nothing went by must be able to trust it.
@@ -162,7 +173,14 @@ class EventBuffer:
         self,
         max_events_per_agent: int = DEFAULT_MAX_EVENTS_PER_AGENT,
         retention_seconds: float = DEFAULT_RETENTION_SECONDS,
+        *,
+        sequence_base: int,
     ) -> None:
+        # Each boot numbers from its own base, above every earlier boot's, so a
+        # sequence number is never reused and a cursor from a previous boot is
+        # recognisably below this one's floor.
+        self.sequence_floor = sequence_base + 1
+        self.boot = sequence_base >> 32
         self._max_events = max_events_per_agent
         self._retention_seconds = retention_seconds
         self._events: dict[str, deque[BufferedEvent]] = {}
@@ -197,6 +215,10 @@ class EventBuffer:
         # restart is gone from the buffer, so a count taken from what is left
         # would be a floor presented as a total.
         self._restarted: set[str] = set()
+        # agent -> when its last overflow warning was logged, and how many
+        # overflow drops have gone unlogged since.
+        self._overflow_warned_at: dict[str, float] = {}
+        self._overflow_unlogged: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Producing
@@ -204,7 +226,11 @@ class EventBuffer:
 
     def enqueue(self, agent_id: str, room_id: str, event: AgentEvent) -> int:
         """Append an event for an agent and return its sequence number."""
-        seq = self._next_seq.get(agent_id, 1)
+        seq = self._next_seq.get(agent_id, self.sequence_floor)
+        if seq >= self.sequence_floor - 1 + (1 << 32):
+            raise RuntimeError(
+                "Agent event sequence range exhausted; restart the server."
+            )
         self._next_seq[agent_id] = seq + 1
 
         events = self._events.setdefault(agent_id, deque())
@@ -253,11 +279,14 @@ class EventBuffer:
         readable when its window ends is relied on to decide how long a record
         about it has to be kept.
         """
+        started = time.perf_counter()
         self._trim(agent_id)
         self._check_cursor(agent_id, after_seq)
 
         out: list[BufferedEvent] = []
-        for item in self._events.get(agent_id, ()):
+        events = self._events.get(agent_id, ())
+        scanned = len(events)
+        for index, item in enumerate(events):
             if item.seq <= after_seq:
                 continue
             if rooms is not None and item.room_id not in rooms:
@@ -266,7 +295,9 @@ class EventBuffer:
                 continue
             out.append(item)
             if limit is not None and len(out) >= limit:
+                scanned = index + 1
                 break
+        self._record_scan(_READ, scanned, started)
         return out
 
     async def wait(self, agent_id: str, timeout: float) -> None:
@@ -293,8 +324,8 @@ class EventBuffer:
         return self._notify.setdefault(agent_id, asyncio.Event())
 
     def head(self, agent_id: str) -> int:
-        """The sequence number of the most recent event (0 if none)."""
-        return self._next_seq.get(agent_id, 1) - 1
+        """The sequence number of the most recent event (the floor less one if none)."""
+        return self._next_seq.get(agent_id, self.sequence_floor) - 1
 
     def oldest_retained(self, agent_id: str) -> int:
         """Sequence number of the oldest retained event (0 if the buffer is empty)."""
@@ -458,14 +489,17 @@ class EventBuffer:
         if baseline is None:
             return Unread(count=None, reason=RESTARTED)
 
+        started = time.perf_counter()
+        events = self._events.get(agent_id, ())
         count = sum(
             1
-            for item in self._events.get(agent_id, ())
+            for item in events
             if item.room_id == room_id
             and baseline < item.seq <= through_seq
             and item.event.type == "message"
             and not item.notifiable
         )
+        self._record_scan(_UNREAD, len(events), started)
         dropped = self._dropped_through.get(agent_id, {}).get(room_id, 0)
         if dropped > baseline:
             return Unread(count=count, reason=COUNTED_FROM_A_HOLE)
@@ -496,12 +530,13 @@ class EventBuffer:
 
     def remove(self, agent_id: str) -> None:
         self._events.pop(agent_id, None)
-        self._next_seq.pop(agent_id, None)
         self._notify.pop(agent_id, None)
         self._cursors.pop(agent_id, None)
         self._dropped_through.pop(agent_id, None)
         self._counting.pop(agent_id, None)
         self._restarted.discard(agent_id)
+        self._overflow_warned_at.pop(agent_id, None)
+        self._overflow_unlogged.pop(agent_id, None)
 
     def _begin(
         self, agent_id: str, room_id: str, occupant: Reader, baseline: int
@@ -715,6 +750,16 @@ class EventBuffer:
     # Internals
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _record_scan(operation: dict[str, str], scanned: int, started: float) -> None:
+        registry = metrics()
+        registry.observe(
+            AGENT_BUFFER_SCAN_DURATION,
+            operation,
+            (time.perf_counter() - started) * 1000.0,
+        )
+        registry.observe(AGENT_BUFFER_SCANNED, operation, scanned)
+
     def _wake(self, agent_id: str) -> None:
         notify = self._notify.get(agent_id)
         if notify is not None:
@@ -756,23 +801,44 @@ class EventBuffer:
                 item = events.popleft()
                 dropped[item.room_id] = item.seq
             metrics().increment(AGENT_EVENTS_DROPPED, {"reason": "overflow"}, overflow)
-            # The agent is a field as well as being in the message: this fires
-            # from the buffer's own bookkeeping rather than from anything the
-            # agent called, so there is no request context to inherit it from,
-            # and "which agent is falling behind" is the only question this
-            # line is ever read to answer.
-            with log_context(agent_id=agent_id):
-                logger.warning(
-                    "[EVENT-BUF] agent=%s exceeded %s buffered events; dropped "
-                    "through seq=%s in rooms %s — readers resuming from before "
-                    "this will be told they missed events",
-                    agent_id,
-                    self._max_events,
-                    max(dropped.values()),
-                    ", ".join(sorted(dropped)),
-                )
+            self._warn_overflow(agent_id, overflow, dropped)
 
         if dropped:
             markers = self._dropped_through.setdefault(agent_id, {})
             for room_id, seq in dropped.items():
                 markers[room_id] = max(seq, markers.get(room_id, 0))
+
+    def _warn_overflow(
+        self, agent_id: str, overflow: int, dropped: dict[str, int]
+    ) -> None:
+        """Log that the cap forced events out, at most once per interval per agent.
+
+        The drops in between are not lost: the metric still counts each one, and
+        the next line says how many went unlogged.
+        """
+        now = time.monotonic()
+        last = self._overflow_warned_at.get(agent_id)
+        if last is not None and now - last < OVERFLOW_WARNING_INTERVAL_SECONDS:
+            self._overflow_unlogged[agent_id] = (
+                self._overflow_unlogged.get(agent_id, 0) + overflow
+            )
+            return
+        unlogged = self._overflow_unlogged.pop(agent_id, 0)
+        self._overflow_warned_at[agent_id] = now
+        # The agent is a field as well as being in the message: this fires
+        # from the buffer's own bookkeeping rather than from anything the
+        # agent called, so there is no request context to inherit it from,
+        # and "which agent is falling behind" is the only question this
+        # line is ever read to answer.
+        with log_context(agent_id=agent_id):
+            logger.warning(
+                "[EVENT-BUF] agent=%s exceeded %s buffered events; dropped "
+                "through seq=%s in rooms %s, plus %s dropped since the last "
+                "warning; readers resuming from before this will be told they "
+                "missed events",
+                agent_id,
+                self._max_events,
+                max(dropped.values()),
+                ", ".join(sorted(dropped)),
+                unlogged,
+            )

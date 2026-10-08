@@ -1,4 +1,4 @@
-import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
+import type { RepoAgentAttributes, RepoAgentField } from '@switch-console/core/agents/plugins';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
@@ -10,11 +10,11 @@ import {
   advancedFields,
   attributesFromForm,
   DefinitionFieldInput,
-  emptyForm,
+  formFromAttributes,
   type FormState,
   type FormValue,
 } from '../agent-definition-fields';
-import { fieldCatalogueState } from '../agent-model-catalogue';
+import { fieldCatalogueState, type ModelCatalogueResult } from '../agent-model-catalogue';
 
 /**
  * Collapsed "Advanced configuration" section for the add-agent modal. Renders the
@@ -25,22 +25,34 @@ import { fieldCatalogueState } from '../agent-model-catalogue';
  */
 export function AgentAdvancedConfig({
   providerId,
+  cloud,
   sshHost,
   dir,
+  initial,
   onChange,
 }: {
   providerId: AgentProviderId | null;
+  cloud: boolean;
   sshHost: string | null;
   dir: string;
+  /** The attributes the form starts from; pass a stable value, a new one resets the form. */
+  initial: RepoAgentAttributes;
   onChange: (attributes: RepoAgentAttributes) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const { data: catalogue } = useQuery({
     queryKey: ['agent-model-catalogue', providerId, sshHost ?? 'local', dir],
     queryFn: () => rpc.agents.modelCatalogue({ providerId: providerId!, sshHost, dir }),
     enabled: !!providerId && !!dir.trim(),
     staleTime: 60000,
   });
+  const executionCatalogue = dir.trim()
+    ? catalogue
+    : {
+        kind: 'unavailable' as const,
+        reason: cloud
+          ? 'Model suggestions are unavailable before the cloud worker starts. You can enter a model alias or ID.'
+          : 'No execution directory is configured yet. You can enter a model alias or ID.',
+      };
   const { data: allFields } = useQuery({
     queryKey: ['agentDefinitionFields', providerId],
     queryFn: () => (providerId ? rpc.agents.definitionFields({ providerId }) : Promise.resolve([])),
@@ -55,10 +67,10 @@ export function AgentAdvancedConfig({
   // changes, so switching agent type does not carry stale values. `onChange` is a
   // stable callback from the modal, so including it does not re-run this.
   useEffect(() => {
-    const initial = emptyForm(fields);
-    setState(initial);
-    onChange(attributesFromForm(fields, initial));
-  }, [fields, onChange]);
+    const form = formFromAttributes(fields, initial);
+    setState(form);
+    onChange(attributesFromForm(fields, form));
+  }, [fields, initial, onChange]);
 
   if (!providerId || fields.length === 0) return null;
 
@@ -70,6 +82,36 @@ export function AgentAdvancedConfig({
     });
   };
 
+  return (
+    <AdvancedConfigSection
+      providerLabel={providerLabel}
+      fields={fields}
+      form={state}
+      catalogue={executionCatalogue}
+      onFieldChange={setField}
+    />
+  );
+}
+
+/**
+ * The collapsed section itself, whatever supplies its fields: the provider's own
+ * definition fields for an agent this Console runs, the server's schema for a
+ * managed one.
+ */
+export function AdvancedConfigSection({
+  providerLabel,
+  fields,
+  form,
+  catalogue,
+  onFieldChange,
+}: {
+  providerLabel: string | null;
+  fields: RepoAgentField[];
+  form: FormState;
+  catalogue: ModelCatalogueResult | undefined;
+  onFieldChange: (key: string, value: FormValue) => void;
+}) {
+  const [open, setOpen] = useState(false);
   return (
     <div>
       <DisclosureRow
@@ -84,28 +126,29 @@ export function AgentAdvancedConfig({
       />
       {open && (
         <div className="flex flex-col gap-4 pt-3">
-          {fields.map((field) => (
-            <Field key={field.key}>
-              <FieldLabel htmlFor={`agent-advanced-${field.key}`}>
-                {field.label}
-                {field.required || field.type === 'boolean' ? '' : ' (optional)'}
-              </FieldLabel>
-              <DefinitionFieldInput
-                suggestions={fieldCatalogueState(field, state, catalogue).suggestions}
-                field={field}
-                value={state[field.key] ?? (field.type === 'boolean' ? false : '')}
-                onChange={(value) => setField(field.key, value)}
-              />
-              {fieldCatalogueState(field, state, catalogue).note && (
-                <FieldDescription>
-                  {fieldCatalogueState(field, state, catalogue).note}
-                </FieldDescription>
-              )}
-              {field.help && (
-                <FieldDescription className="text-foreground-muted">{field.help}</FieldDescription>
-              )}
-            </Field>
-          ))}
+          {fields.map((field) => {
+            const catalogueState = fieldCatalogueState(field, form, catalogue);
+            return (
+              <Field key={field.key}>
+                <FieldLabel htmlFor={`agent-advanced-${field.key}`}>
+                  {field.label}
+                  {field.required || field.type === 'boolean' ? '' : ' (optional)'}
+                </FieldLabel>
+                <DefinitionFieldInput
+                  suggestions={catalogueState.suggestions}
+                  field={field}
+                  value={form[field.key] ?? (field.type === 'boolean' ? false : '')}
+                  onChange={(value) => onFieldChange(field.key, value)}
+                />
+                {catalogueState.note && <FieldDescription>{catalogueState.note}</FieldDescription>}
+                {field.help && (
+                  <FieldDescription className="text-foreground-muted">
+                    {field.help}
+                  </FieldDescription>
+                )}
+              </Field>
+            );
+          })}
         </div>
       )}
     </div>

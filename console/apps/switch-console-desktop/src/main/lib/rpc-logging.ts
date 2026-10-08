@@ -1,4 +1,7 @@
-import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
+import {
+  ManagedServerStoppedError,
+  ServerBusyError,
+} from '@shared/core/managed-switch-server/managed-switch-server';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import type { RPCInvocationWrapper } from '@shared/lib/ipc/rpc';
 import { serializeLogValue, type LogContext } from '@shared/logger';
@@ -48,13 +51,14 @@ export const withRPCLogContext: RPCInvocationWrapper = (channel, args, invoke) =
   });
 
 function logRPCFailure(channel: string, error: unknown) {
-  // An unreachable host — or a managed stack the user has stopped — is a
-  // modeled, displayed state, not a fault of the call: every view scoped to it
-  // refuses in the same way, so logging each one as an error buries real
-  // failures under a repeating wall of the same fact. The state's own
-  // transition is logged once, where it belongs.
+  // An unreachable host, a stopped managed stack, or one another Console is
+  // changing is a modeled, displayed state, not a fault of the call: every view
+  // scoped to it refuses the same way, so logging each as an error buries real
+  // failures. The state's own transition is logged once, where it belongs.
   const modeled =
-    error instanceof HostUnreachableError || error instanceof ManagedServerStoppedError;
+    error instanceof HostUnreachableError ||
+    error instanceof ManagedServerStoppedError ||
+    error instanceof ServerBusyError;
   const level = modeled ? 'debug' : 'error';
   log[level]('RPC handler failed', {
     event: 'rpc_failed',

@@ -29,7 +29,7 @@ async def _agent(session: AsyncSession) -> Agent:
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{name}:test",
+        transport_user_id=f"@{name}:test",
         display_name=name,
         type="agent",
     )

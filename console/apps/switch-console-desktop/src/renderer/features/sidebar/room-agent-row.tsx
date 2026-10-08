@@ -14,7 +14,7 @@ import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
-import { useAgentIconUrl } from '@renderer/lib/stores/use-remote-agents';
+import { useAgentIconUrl } from '@renderer/lib/stores/use-workspace-agents';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -24,7 +24,9 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { Agent } from '@shared/core/agents/agents';
+import { AgentStatusSlot } from './agent-status-slot';
 import { DiscoveryFailureIndicator } from './discovery-failure-indicator';
+import { MigrationProblemIndicator } from './migration-problem-indicator';
 import { SidebarItemMiniButton, SidebarMenuAction, SidebarMenuRow } from './sidebar-primitives';
 import { depthIndent, roomAgentGroupKey } from './sidebar-store';
 
@@ -63,7 +65,7 @@ export const RoomAgentRow = observer(function RoomAgentRow({
   // This is a Switch room's member list, so the Switch identity is what matters
   // — and that is the stored name: it is what was registered on the server.
   const label = agent.name || 'Unnamed agent';
-  const iconUrl = useAgentIconUrl(agent.serverId, agent.switchAgentId);
+  const iconUrl = useAgentIconUrl(agent.workspaceId, agent.switchAgentId);
 
   const expandKey = roomAgentGroupKey(roomId, agent.id);
   const expanded = sidebarStore.isGroupExpanded(expandKey);
@@ -83,12 +85,12 @@ export const RoomAgentRow = observer(function RoomAgentRow({
   if (!location) return null;
 
   const removeFromRoom = () => {
-    const serverId = switchRoomsStore.roomServerId(roomId);
-    if (!serverId || !agent.switchAgentId) return;
+    const workspaceId = switchRoomsStore.roomWorkspaceId(roomId);
+    if (!workspaceId || !agent.switchAgentId) return;
     const roomLabel = switchRoomsStore.roomNameById(roomId) ?? 'the room';
     void toastPromise(
-      rpc.switchServers
-        .removeRoomAgent({ serverId, roomId, agentId: agent.switchAgentId })
+      rpc.workspaces
+        .removeRoomAgent({ workspaceId, roomId, agentId: agent.switchAgentId })
         .then(() => switchRoomsStore.refreshRoomState()),
       {
         loading: `Removing ${label} from ${roomLabel}…`,
@@ -136,27 +138,35 @@ export const RoomAgentRow = observer(function RoomAgentRow({
                   ) : (
                     <Bot className="h-3 w-3 shrink-0 text-foreground-muted" />
                   ))}
-                {/* Same agent, same host problem — this row used to show
-                    nothing, so whether you saw it depended on which grouping
-                    the sidebar happened to be in. */}
-                <HostTroubleIndicator
-                  sshHost={location.data?.sshHost ?? null}
-                  agentId={agent.providerId ?? null}
-                />
-                <DiscoveryFailureIndicator agentId={agent.id} label={label} />
-                {agent.providerId && (
-                  <ProviderIssueIndicator
-                    providerId={agent.providerId}
+                <AgentStatusSlot>
+                  {/* Same agent, same host problem — this row used to show
+                      nothing, so whether you saw it depended on which grouping
+                      the sidebar happened to be in. */}
+                  <HostTroubleIndicator
                     sshHost={location.data?.sshHost ?? null}
-                    hostReachable={!hostReachabilityStore.isBlocked(location.data?.sshHost ?? null)}
-                    onOpen={() =>
-                      navigate('location', { locationId: agent.locationId, agentName: agent.name })
-                    }
+                    agentId={agent.providerId ?? null}
                   />
-                )}
+                  <AgentConnectionIndicator agent={agent} />
+                  <DiscoveryFailureIndicator agentId={agent.id} label={label} />
+                  <MigrationProblemIndicator agentId={agent.id} label={label} />
+                  {agent.providerId && (
+                    <ProviderIssueIndicator
+                      providerId={agent.providerId}
+                      sshHost={location.data?.sshHost ?? null}
+                      hostReachable={
+                        !hostReachabilityStore.isBlocked(location.data?.sshHost ?? null)
+                      }
+                      onOpen={() =>
+                        navigate('location', {
+                          locationId: agent.locationId,
+                          agentName: agent.name,
+                        })
+                      }
+                    />
+                  )}
+                </AgentStatusSlot>
               </span>
             </SidebarMenuAction>
-            <AgentConnectionIndicator agent={agent} />
           </div>
           <Tooltip>
             <TooltipTrigger

@@ -60,9 +60,9 @@ def _config(token: str, *, admin_email: str = ADMIN_EMAIL) -> SwitchConfig:
         db_user="unused",
         db_password="unused",
         db_name="unused",
-        matrix_server_name="test",
+        id_server_name="test",
         agent_registration_token=token,
-        jwt_secret_key="test-jwt-secret",
+        secret_keys="test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         gateway_admin_email=admin_email,
         gateway_admin_password="unused",
     )
@@ -83,9 +83,9 @@ def _config_for(postgres_url: str) -> SwitchConfig:
         db_user=url.username,
         db_password=url.password,
         db_name=url.database,
-        matrix_server_name="test",
+        id_server_name="test",
         agent_registration_token="unused",
-        jwt_secret_key="test-jwt-secret",
+        secret_keys="test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         gateway_admin_email=ADMIN_EMAIL,
         gateway_admin_password="unused",
     )
@@ -113,7 +113,9 @@ async def _make_agent_owned_by(
     session_factory: async_sessionmaker[AsyncSession], *, owner_id: str, name: str
 ) -> None:
     async with session_factory() as session:
-        client = Client(matrix_user_id=f"@{name}:test", display_name=name, type="agent")
+        client = Client(
+            transport_user_id=f"@{name}:test", display_name=name, type="agent"
+        )
         session.add(client)
         await session.flush()
         key = ApiKey(

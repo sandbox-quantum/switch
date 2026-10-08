@@ -46,12 +46,12 @@ async def _make_user(session: AsyncSession, name: str) -> User:
 
 
 async def _make_client(
-    session: AsyncSession, tenant_id: str, matrix_user_id: str
+    session: AsyncSession, tenant_id: str, transport_user_id: str
 ) -> Client:
     client = Client(
         tenant_id=tenant_id,
-        matrix_user_id=matrix_user_id,
-        display_name=matrix_user_id,
+        transport_user_id=transport_user_id,
+        display_name=transport_user_id,
         type="agent",
     )
     session.add(client)
@@ -152,7 +152,7 @@ class TestPerTenantUniqueness:
             assert agent_a.id != agent_b.id
             assert agent_a.name == agent_b.name == "reviewer"
 
-    async def test_same_matrix_user_id_in_two_tenants(
+    async def test_same_transport_user_id_in_two_tenants(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         async with session_factory() as session:
@@ -164,9 +164,13 @@ class TestPerTenantUniqueness:
             await session.commit()
 
             assert client_a.id != client_b.id
-            assert client_a.matrix_user_id == client_b.matrix_user_id == "@shared:test"
+            assert (
+                client_a.transport_user_id
+                == client_b.transport_user_id
+                == "@shared:test"
+            )
 
-    async def test_same_matrix_room_id_in_two_tenants(
+    async def test_same_transport_room_id_in_two_tenants(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         async with session_factory() as session:
@@ -175,13 +179,13 @@ class TestPerTenantUniqueness:
 
             room_a = Room(
                 tenant_id=tenant_a.id,
-                matrix_room_id="!shared:test",
+                transport_room_id="!shared:test",
                 name="room",
                 description="room desc",
             )
             room_b = Room(
                 tenant_id=tenant_b.id,
-                matrix_room_id="!shared:test",
+                transport_room_id="!shared:test",
                 name="room",
                 description="room desc",
             )
@@ -189,7 +193,9 @@ class TestPerTenantUniqueness:
             await session.commit()
 
             assert room_a.id != room_b.id
-            assert room_a.matrix_room_id == room_b.matrix_room_id == "!shared:test"
+            assert (
+                room_a.transport_room_id == room_b.transport_room_id == "!shared:test"
+            )
 
     async def test_each_tenant_can_have_its_own_default_bridge(
         self, session_factory: async_sessionmaker[AsyncSession]

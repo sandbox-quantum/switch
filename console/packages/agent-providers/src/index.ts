@@ -53,13 +53,34 @@ export type { SharedHostOptions } from './host/shared-host';
 export {
   detachedSupervision,
   ensureSharedProcess,
+  inProcessSupervision,
   liveSupervisor,
   sharedSessionRoot,
 } from './host/launch';
 export type { Supervision } from './host/launch';
 export { hostStartSources, type HostStartSource } from './host/session-start';
-export { runSharedWatcher } from './host/shared-watcher';
+export {
+  type AgentEventStream,
+  type OpenAgentStream,
+  openSwitchStream,
+  runAgentHost,
+} from './host/agent-host';
+export {
+  HUB_CLOSE,
+  HUB_PATH,
+  HUB_PROTOCOL,
+  type HubClientMessage,
+  hubClientMessageSchema,
+  type HubServerMessage,
+  openHubStream,
+} from './host/hub-stream';
 export { clearTakenOver, readTakenOver, type TakenOver } from './host/taken-over';
+export {
+  recordWatcherHealth,
+  WATCHER_HEALTH_FILE,
+  type WatcherHealthFile,
+  watcherHealthFileSchema,
+} from './host/watcher-health-file';
 export {
   readWatchFlags,
   WATCH_FLAGS_FILE,
@@ -67,6 +88,8 @@ export {
   watchFlagsSchema,
 } from './host/watch-flags';
 export { superviseSharedHost } from './host/supervisor';
+export { controllerConnectionId } from './host/connection-id';
+export { EXECUTION_INHERIT_ENV } from './host/agent-env';
 export {
   SessionHostFailedError,
   SessionLinks,
@@ -82,9 +105,19 @@ export {
 } from './host/watcher-tools';
 
 export { prepareCodexSessionHome } from './codex/home';
-export { sharedConfigSchema } from './host/shared-config';
+export { readSharedCredentials, sharedConfigSchema } from './host/shared-config';
 export type { SharedHostConfig } from './host/shared-config';
 
 export { providerReadinessSchema } from './host/provider-readiness';
 export type { ProviderReadiness } from './host/provider-readiness';
 export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './host/control';
+export {
+  CloudRelayClient,
+  CloudRelayClosedError,
+  CloudRelayError,
+  RELAY_TIMEOUT_MS,
+  type RelayFetch,
+} from './host/cloud-relay-client';
+export { hostSessions, hostSessionsByAgent, LIST_SCRIPT } from './host/session-list';
+export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';
+export { openCodeConsoleCredentialSchema } from './opencode/console-credential';

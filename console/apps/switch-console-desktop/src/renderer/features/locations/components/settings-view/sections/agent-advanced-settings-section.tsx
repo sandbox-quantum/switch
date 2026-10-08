@@ -5,17 +5,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   advancedFields,
   attributesFromForm,
-  DefinitionFieldInput,
   emptyForm,
   formFromAttributes,
   type FormState,
   type FormValue,
 } from '@renderer/features/locations/components/agent-definition-fields';
-import {
-  fieldCatalogueState,
-  fieldWithCatalogue,
-  type ModelCatalogueResult,
-} from '@renderer/features/locations/components/agent-model-catalogue';
+import { type ModelCatalogueResult } from '@renderer/features/locations/components/agent-model-catalogue';
 import { useAgentEdit } from '@renderer/features/locations/components/main-panel/agent-edits';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { isProvisioned } from '@renderer/features/sessions/stores/session-store';
@@ -23,10 +18,8 @@ import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
-import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
-import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
 import { log } from '@renderer/utils/logger';
-import { cn } from '@renderer/utils/utils';
+import { AdvancedConfigDisclosure, summariseValues } from './advanced-config-disclosure';
 
 /**
  * Per-agent "Advanced configuration" in the Settings tab: the model, reasoning
@@ -48,7 +41,6 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
   agentId: string | undefined;
 }) {
   const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
 
   const { data: agents } = useQuery({
     queryKey: ['location-agents', locationId],
@@ -223,103 +215,43 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
   const showStaleNotice = restartable && staleSessionIds.length > 0 && (dirty || save.isSuccess);
 
   return (
-    <div>
-      <DisclosureRow
-        open={open}
-        title="Advanced configuration"
-        summary={summariseValues(fields, savedForm)}
-        meta={`${fields.length} ${fields.length === 1 ? 'setting' : 'settings'}`}
-        onToggle={() => setOpen((v) => !v)}
-      />
-      <div className={cn('flex flex-col gap-4 pt-3', !open && 'hidden')}>
-        <FieldDescription className="text-foreground-muted">
-          The agent&apos;s model, reasoning effort and tools. Its instructions are above, and its
-          name is fixed.
-        </FieldDescription>
-        {fields.map((field) => {
-          const catalogueState = fieldCatalogueState(field, form, catalogue);
-          const rendered = fieldWithCatalogue(field, catalogueState);
-          return (
-            <Field key={field.key}>
-              <FieldLabel htmlFor={`agent-advanced-${field.key}`}>
-                {field.label}
-                {field.required || field.type === 'boolean' ? '' : ' (optional)'}
-              </FieldLabel>
-              <DefinitionFieldInput
-                field={rendered}
-                value={form[field.key] ?? (field.type === 'boolean' ? false : '')}
-                disabled={catalogueState.disabled}
-                suggestions={catalogueState.suggestions}
-                onChange={(value) => setField(field.key, value)}
-              />
-              {field.help && (
-                <FieldDescription className="text-foreground-muted">{field.help}</FieldDescription>
-              )}
-              {catalogueState.note && (
-                <FieldDescription
-                  className={
-                    catalogueState.warning ? 'text-foreground-warning' : 'text-foreground-muted'
-                  }
-                >
-                  {catalogueState.note}
-                </FieldDescription>
-              )}
-            </Field>
-          );
-        })}
-        {showStaleNotice && (
-          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
-            <p className="text-xs text-foreground-muted">
-              {staleSessionIds.length === 1
-                ? 'A session is running'
-                : `${staleSessionIds.length} sessions are running`}{' '}
-              on the previous configuration — it is read only when a session starts.{' '}
-              {dirty
-                ? 'Save, then Restart to apply it now.'
-                : 'It applies to the next session — or use Restart to apply it now (the conversation is resumed).'}
-            </p>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={dirty || restart.isPending}
-              onClick={() => restart.mutate()}
-            >
-              {restart.isPending ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <RefreshCw className="size-3.5" />
-              )}
-              {restartFailed.length > 0 ? 'Retry restart' : 'Restart'}
-            </Button>
-          </div>
-        )}
-      </div>
-    </div>
+    <AdvancedConfigDisclosure
+      fields={fields}
+      form={form}
+      summary={summariseValues(fields, savedForm)}
+      catalogue={catalogue}
+      intro="The agent's model, reasoning effort and tools. Its instructions are above, and its name is fixed."
+      onFieldChange={setField}
+    >
+      {showStaleNotice && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
+          <p className="text-xs text-foreground-muted">
+            {staleSessionIds.length === 1
+              ? 'A session is running'
+              : `${staleSessionIds.length} sessions are running`}{' '}
+            on the previous configuration — it is read only when a session starts.{' '}
+            {dirty
+              ? 'Save, then Restart to apply it now.'
+              : 'It applies to the next session — or use Restart to apply it now (the conversation is resumed).'}
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={dirty || restart.isPending}
+            onClick={() => restart.mutate()}
+          >
+            {restart.isPending ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="size-3.5" />
+            )}
+            {restartFailed.length > 0 ? 'Retry restart' : 'Restart'}
+          </Button>
+        </div>
+      )}
+    </AdvancedConfigDisclosure>
   );
 });
-
-/**
- * What the section is holding, read off the saved values rather than the form —
- * a collapsed row has to say what is set without being opened, and the form may
- * be mid-edit.
- *
- * Values, not labels: "claude-opus-4-6 · high" reads as configuration where
- * "Model claude-opus-4-6 · Reasoning effort high" reads as a table of contents.
- */
-function summariseValues(fields: { key: string; label: string }[], saved: FormState): string {
-  const set = fields
-    .map((field) => {
-      const value = saved[field.key];
-      if (value === true) return field.label.toLowerCase();
-      if (typeof value === 'string' && value.trim().length > 0) return value.trim();
-      return null;
-    })
-    .filter((v): v is string => v !== null);
-
-  if (set.length === 0) return 'defaults';
-  const shown = set.slice(0, 2).join(' · ');
-  return set.length > 2 ? `${shown} · +${set.length - 2}` : shown;
-}
 
 /**
  * The agent's sessions that already started a conversation, and so are running

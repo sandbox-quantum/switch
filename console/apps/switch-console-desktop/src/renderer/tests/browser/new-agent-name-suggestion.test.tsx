@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 /**
  * The offer made to someone who typed a name Switch will not accept.
  *
@@ -42,14 +43,21 @@ afterEach(async () => {
 
 function Fields() {
   form = useConfigureAgentForm();
-  return <AgentIdentityFields form={form} />;
+  return <AgentIdentityFields form={form} serverId={null} />;
 }
 
 async function renderFields(): Promise<HTMLDivElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  await act(async () => root!.render(<Fields />));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  await act(async () =>
+    root!.render(
+      <QueryClientProvider client={client}>
+        <Fields />
+      </QueryClientProvider>
+    )
+  );
   return container;
 }
 

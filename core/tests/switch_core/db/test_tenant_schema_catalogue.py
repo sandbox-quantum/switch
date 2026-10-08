@@ -108,6 +108,10 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             "deployment_identity",
             "telemetry_milestones",
             "telemetry_snapshot_watermark",
+            # Each switch-core process's lease. A process holds controller
+            # sockets for every tenant at once, and the row says only that it
+            # is alive.
+            "switch_core_processes",
         }
 
     async def test_scoped_is_everything_else(self) -> None:

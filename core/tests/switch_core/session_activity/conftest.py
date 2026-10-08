@@ -22,8 +22,8 @@ from switch_core.db.models import (
     User,
     room_agents,
 )
-from switch_core.session_activity.listener import Change, SessionActivityListener
-from switch_core.session_activity.service import SessionActivityService
+from switch_core.session_activity.listener import AgentSessionActivityListener, Change
+from switch_core.session_activity.service import AgentSessionActivityService
 from switch_core.sessions.contract import ApprovalResult
 from switch_core.tenant_context import current_tenant_id
 
@@ -53,7 +53,9 @@ async def make_agent(
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{agent_id}:example.test", display_name=agent_id, type="agent"
+        transport_user_id=f"@{agent_id}:example.test",
+        display_name=agent_id,
+        type="agent",
     )
     db.add_all([key, client])
     await db.flush()
@@ -77,7 +79,9 @@ async def make_agent(
 
 async def make_room(db, *, member: str | None) -> str:
     suffix = uuid.uuid4().hex[:8]
-    room = Room(matrix_room_id=f"!{suffix}:test", name=f"room-{suffix}", description="")
+    room = Room(
+        transport_room_id=f"!{suffix}:test", name=f"room-{suffix}", description=""
+    )
     db.add(room)
     await db.flush()
     if member is not None:
@@ -88,16 +92,19 @@ async def make_room(db, *, member: str | None) -> str:
 async def make_person(db, *, claimed_by: str | None) -> str:
     """A person on a messaging platform; returns the Switch identity they answer as."""
     suffix = uuid.uuid4().hex[:8]
-    bridge_client = Client(
-        matrix_user_id=f"@bridge-{suffix}:test", display_name="bridge", type="bridge"
+    workspace_consumer = Client(
+        transport_user_id=f"@bridge-{suffix}:test", display_name="bridge", type="bridge"
     )
     person = Client(
-        matrix_user_id=f"@person-{suffix}:test", display_name="person", type="user"
+        transport_user_id=f"@person-{suffix}:test", display_name="person", type="user"
     )
-    db.add_all([bridge_client, person])
+    db.add_all([workspace_consumer, person])
     await db.flush()
     bridge = CollaborationBridge(
-        type="slack", display_name="Slack", client_id=bridge_client.id, status="active"
+        type="slack",
+        display_name="Slack",
+        client_id=workspace_consumer.id,
+        status="active",
     )
     db.add(bridge)
     await db.flush()
@@ -112,7 +119,7 @@ async def make_person(db, *, claimed_by: str | None) -> str:
     if claimed_by is not None:
         db.add(ExternalUserClaim(external_user_id=account.id, user_id=claimed_by))
         await db.flush()
-    return person.matrix_user_id
+    return person.transport_user_id
 
 
 @dataclass(frozen=True)
@@ -132,8 +139,8 @@ async def people(session_factory) -> People:
 
 
 @pytest.fixture
-async def service(session_factory, people) -> SessionActivityService:
-    return SessionActivityService(session_factory)
+async def service(session_factory, people) -> AgentSessionActivityService:
+    return AgentSessionActivityService(session_factory)
 
 
 class Recorder:
@@ -165,7 +172,7 @@ class Recorder:
 async def changes(postgres_url) -> AsyncIterator[Recorder]:
     tenant = current_tenant_id()
     assert tenant is not None
-    listener = SessionActivityListener(
+    listener = AgentSessionActivityListener(
         lambda: create_async_engine(postgres_url, poolclass=NullPool)
     )
     recorder = Recorder()

@@ -1,11 +1,13 @@
+import { useQuery } from '@tanstack/react-query';
 import { Pencil, RotateCw, X } from 'lucide-react';
 import { useState } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
 import { Input } from '@renderer/lib/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { cn } from '@renderer/utils/utils';
-import { agentAvatarChoices } from '@shared/core/agents/agent-avatar';
 
 type PickerTab = 'generated' | 'url';
 
@@ -24,12 +26,15 @@ const TABS: readonly { value: PickerTab; label: string }[] = [
  * name to draw from.
  */
 export function AgentIconPicker({
+  serverId,
   name,
   iconUrl,
   onChange,
   size = 84,
   disabled = false,
 }: {
+  /** The Switch server whose generated icons are offered. */
+  serverId: string | null;
   /** The agent's name, which seeds the generated avatars. */
   name: string;
   /** The current choice, or null for "whatever the name generates". */
@@ -47,7 +52,15 @@ export function AgentIconPicker({
   // An unnamed agent still needs something to seed the grid, or every tile is
   // the same bot drawn from the empty string.
   const seedName = name.trim() || 'agent';
-  const choices = agentAvatarChoices(seedName, round);
+  // The server generates the icons on offer, so every client offers the same
+  // ones and an agent created anywhere looks the same.
+  const { data: choices = [], error: choicesError } = useQuery({
+    queryKey: ['agent-icon-choices', serverId, seedName, round],
+    queryFn: () =>
+      rpc.switchServers.agentIconChoices({ serverId: serverId!, name: seedName, page: round }),
+    enabled: serverId !== null,
+    staleTime: Infinity,
+  });
 
   const commitUrl = () => {
     const trimmed = urlDraft.trim();
@@ -119,9 +132,13 @@ export function AgentIconPicker({
               })}
             </div>
             <p className="text-xs text-foreground-muted">
-              {round === 0
-                ? "First is generated from the agent's name."
-                : 'Shuffled — keep going for more.'}
+              {serverId === null
+                ? 'Choose a Switch server to see the icons it offers.'
+                : choicesError
+                  ? `The server's icons could not be loaded: ${failureText(choicesError, 'try again')}`
+                  : round === 0
+                    ? "First is generated from the agent's name."
+                    : 'Shuffled — keep going for more.'}
             </p>
             <button
               type="button"

@@ -24,7 +24,7 @@ from sqlalchemy import func, select
 
 from switch_core.addressing import can_address, parse_policy
 from switch_core.agent_refusals import AgentRefused
-from switch_core.clients.admin_client import AdminClient
+from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.clients.mentions import mention_regex, strip_emphasis
 
@@ -452,16 +452,18 @@ class RunService:
             return
         try:
             await admin.send_platform_message(
-                room.matrix_room_id, text, on_behalf_of=OnBehalfOf(user_id, user_name)
+                room.transport_room_id,
+                text,
+                on_behalf_of=OnBehalfOf(user_id, user_name),
             )
         except Exception:  # noqa: BLE001 - the run is running either way
             logger.warning("Could not wake the agent in %s", room.id, exc_info=True)
 
-    def _admin(self, room: Room) -> AdminClient | None:
+    def _admin(self, room: Room) -> SystemActor | None:
         if self._client_lifecycle is None:
             return None
         admins = self._client_lifecycle.get_by_type("admin", room.tenant_id)
-        return next((c for c in admins if isinstance(c, AdminClient)), None)
+        return next((c for c in admins if isinstance(c, SystemActor)), None)
 
     async def _notice(self, room: Room, text: str) -> None:
         """Best effort: the state has changed whether or not the note lands."""
@@ -469,6 +471,6 @@ class RunService:
         if admin is None:
             return
         try:
-            await admin.send_notice(room.matrix_room_id, text)
+            await admin.send_notice(room.transport_room_id, text)
         except Exception:  # noqa: BLE001 - a note is not worth failing a stop
             logger.warning("Could not post a run notice in %s", room.id, exc_info=True)

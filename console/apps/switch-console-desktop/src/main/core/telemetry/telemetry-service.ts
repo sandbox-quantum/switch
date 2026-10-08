@@ -5,6 +5,7 @@ import { resolveTelemetryConfig, type TelemetryDisabledReason } from './config';
 import { isTelemetryAllowed } from './consent';
 import type { TelemetryEventMap, TelemetryEventName } from './events';
 import { getInstallId } from './install-id';
+import type { TelemetryInternal } from './internal-account';
 import { buildOtlpPayload, postTelemetryEvent, TelemetrySendError } from './relay-client';
 
 /** OpenTelemetry's names for what `process.platform` calls darwin/win32/linux. */
@@ -17,6 +18,15 @@ const OS_TYPES: Record<string, string> = {
 class TelemetryService {
   private reportedDisabled = new Set<TelemetryDisabledReason>();
   private appVersion: Promise<string> | null = null;
+  /**
+   * Whether the person is staff. Registered at boot rather than imported,
+   * because it reads the servers store, which reports through this service.
+   */
+  private internalSource: () => Promise<TelemetryInternal> = async () => 'unknown';
+
+  setInternalSource(source: () => Promise<TelemetryInternal>): void {
+    this.internalSource = source;
+  }
 
   /**
    * Send one event, if this build can send and the user has said yes.
@@ -48,6 +58,8 @@ class TelemetryService {
       osType: OS_TYPES[process.platform] ?? 'other',
       osVersion: release(),
       build: resolution.config.build,
+      flintEnv: resolution.config.flintEnv,
+      internal: await this.resolveInternal(),
       timeMs,
     });
 
@@ -66,6 +78,17 @@ class TelemetryService {
    */
   async canSend(): Promise<boolean> {
     return resolveTelemetryConfig().enabled && (await isTelemetryAllowed());
+  }
+
+  /** `unknown` when it cannot be read: that is the honest answer, and telemetry
+   * never gets to fail a user's action. */
+  private async resolveInternal(): Promise<TelemetryInternal> {
+    try {
+      return await this.internalSource();
+    } catch (error) {
+      log.warn('telemetry: could not tell whether the account is internal', { error });
+      return 'unknown';
+    }
   }
 
   private resolveVersion(): Promise<string> {

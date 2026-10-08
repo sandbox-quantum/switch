@@ -16,7 +16,7 @@ async def _make_room(
 ) -> Room:
     room = await rooms.create(
         session,
-        Room(matrix_room_id=f"!{name}:test", name=name, description=f"{name} desc"),
+        Room(transport_room_id=f"!{name}:test", name=name, description=f"{name} desc"),
     )
     if group_id is not None:
         await rooms.set_group(session, room.id, group_id)

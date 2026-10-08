@@ -5,9 +5,19 @@ import { SessionHeaderContent } from '@renderer/features/sessions/session-header
 import { Button } from '@renderer/lib/ui/button';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import { Textarea } from '@renderer/lib/ui/textarea';
+import type { CloudAgentPhase } from '@shared/core/cloud-agents/cloud-agents';
 import type { InitialPromptDelivery } from '@shared/core/sessions/session-config';
+import {
+  deliverHeld,
+  type HeldMessage,
+  heldMessages,
+  type HeldWait,
+  heldStatusText,
+  isWakingError,
+  relayRefusalText,
+} from './held-message';
 import { SessionAttachmentList, useSessionAttachments } from './session-attachments';
-import { sessionStatePill } from './session-state';
+import { restartsOnSend, sessionStatePill, type SessionStateTone } from './session-state';
 import { SessionStatePill } from './session-state-pill';
 import { SessionV1Controls } from './session-v1-controls';
 import { SessionV1Request } from './session-v1-request';
@@ -20,13 +30,28 @@ export function SessionV1Chat({
   startup,
   retireHost,
   initialPromptDelivery,
+  hostState,
+  autoWake,
 }: {
   client: SessionChatClient;
+  /** Overrides the session's status while its host cannot be asked. */
+  hostState: { label: string; tone: SessionStateTone } | null;
   initialPromptDelivery?: InitialPromptDelivery;
   restartHost?: () => Promise<void>;
   stopHost?: () => Promise<void>;
   startup?: { status: 'starting' | 'ready' | 'error'; message: string | null } | null;
   retireHost?: (epoch: string) => Promise<void>;
+  /**
+   * A cloud agent's machine, woken by the first message sent while it sleeps.
+   * `blocked` says why a held message will not be delivered without the user.
+   * `machineReady` says a waking agent waits only on its own process.
+   */
+  autoWake?: {
+    phase: CloudAgentPhase | null;
+    machineReady: boolean;
+    blocked: string | null;
+    wake: () => Promise<unknown>;
+  };
 }) {
   const view = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const transcript = useRef<HTMLDivElement>(null);
@@ -88,11 +113,15 @@ export function SessionV1Chat({
       setAction(null);
     }
   };
-  const [draft, setDraft] = useState('');
-  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [held, setHeld] = useState<HeldMessage | null>(() => heldMessages.get(client.sessionId));
+  useEffect(() => heldMessages.set(client.sessionId, held), [client, held]);
+  const [draft, setDraft] = useState(() => held?.text ?? '');
+  const [pendingId, setPendingId] = useState<string | null>(() => held?.commandId ?? null);
   const [sending, setSending] = useState(false);
   const [retireConfirm, setRetireConfirm] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [heldRetryWait, setHeldRetryWait] = useState(false);
+  const delivering = useRef(false);
   useEffect(() => {
     void client.connect();
     return () => client.dispose();
@@ -105,6 +134,21 @@ export function SessionV1Chat({
     view.connected &&
     session?.connectivity === 'online' &&
     (session.status === 'ready' || session.status === 'running');
+  const wakeable = autoWake?.phase === 'sleeping' || autoWake?.phase === 'waking';
+  const machineAwake = !wakeable;
+  const heldWait: HeldWait = machineAwake
+    ? 'session'
+    : autoWake?.phase === 'waking' && autoWake.machineReady
+      ? 'agent'
+      : 'machine';
+  const startable =
+    Boolean(restartHost) &&
+    autoWake?.phase === null &&
+    !autoWake.blocked &&
+    view.connected &&
+    session !== undefined &&
+    restartsOnSend(session);
+  const restartedFor = useRef<string | null>(null);
   const runningTurn = view.snapshot?.turns.find((turn) => turn.status === 'running');
   const lastItems = new Map(view.snapshot?.items.map((item) => [item.turnId, item.itemId]));
   const stoppedTurns = new Map(
@@ -143,24 +187,105 @@ export function SessionV1Chat({
     }
   };
   const send = async () => {
-    if (!available || sending || uploads.blocked || (!draft.trim() && !uploads.attachments.length))
+    if (
+      (!available && !wakeable && !startable) ||
+      held ||
+      sending ||
+      uploads.blocked ||
+      (!draft.trim() && !uploads.attachments.length)
+    )
       return;
     const commandId = pendingId ?? crypto.randomUUID();
+    const message = { commandId, text: draft.trim(), attachments: uploads.attachments };
     setPendingId(commandId);
-    setSending(true);
     setSendError(null);
+    if (!available && autoWake) {
+      setHeld(message);
+      if (autoWake.phase !== 'sleeping') return;
+      try {
+        await autoWake.wake();
+      } catch (error) {
+        setHeld(null);
+        if (!client.hasPendingCommand()) setPendingId(null);
+        setSendError(`Could not wake the machine: ${String(error)}`);
+      }
+      return;
+    }
+    setSending(true);
     try {
-      await client.send(draft.trim(), commandId, uploads.attachments);
+      await client.send(message.text, commandId, message.attachments);
       uploads.clear();
       setDraft('');
       setPendingId(null);
     } catch (error) {
-      setSendError(String(error));
-      if (!client.hasPendingCommand()) setPendingId(null);
+      if (isWakingError(error)) setHeld(message);
+      else {
+        setSendError(relayRefusalText(error) ?? String(error));
+        if (!client.hasPendingCommand()) setPendingId(null);
+      }
     } finally {
       setSending(false);
     }
   };
+  const heldStuck = !held
+    ? null
+    : actionError && restartedFor.current === held.commandId
+      ? `${actionError} Your message was not sent.`
+      : autoWake?.blocked
+        ? `${autoWake.blocked} Your message was not sent.`
+        : autoWake?.phase === null &&
+            view.connected &&
+            (session?.status === 'stopped' || session?.status === 'error')
+          ? 'The machine is awake, but the session is not ready for messages. Your message was not sent.'
+          : null;
+  useEffect(() => {
+    if (!heldStuck || sending) return;
+    restartedFor.current = null;
+    setHeld(null);
+    setHeldRetryWait(false);
+    if (!client.hasPendingCommand()) setPendingId(null);
+    setSendError(heldStuck);
+  }, [heldStuck, sending, client]);
+  useEffect(() => {
+    if (!held || heldStuck || !startable || busy || !restartHost) return;
+    if (restartedFor.current === held.commandId) return;
+    restartedFor.current = held.commandId;
+    void runAction('restart', restartHost);
+  });
+  const cancelHeld = () => {
+    setHeld(null);
+    setHeldRetryWait(false);
+    if (!client.hasPendingCommand()) setPendingId(null);
+  };
+  useEffect(() => {
+    if (!held || heldStuck || !available || heldRetryWait || delivering.current) return;
+    delivering.current = true;
+    setSending(true);
+    void (async () => {
+      try {
+        await deliverHeld(client, held);
+        uploads.clear();
+        setDraft('');
+        setPendingId(null);
+        setHeld(null);
+      } catch (error) {
+        if (isWakingError(error)) setHeldRetryWait(true);
+        else {
+          setHeld(null);
+          setSendError(relayRefusalText(error) ?? String(error));
+          if (!client.hasPendingCommand()) setPendingId(null);
+        }
+      } finally {
+        delivering.current = false;
+        setSending(false);
+      }
+    })();
+  }, [held, heldStuck, available, heldRetryWait, client, uploads]);
+  useEffect(() => {
+    if (!heldRetryWait) return;
+    const timer = setTimeout(() => setHeldRetryWait(false), 5000);
+    return () => clearTimeout(timer);
+  }, [heldRetryWait]);
   const reconcile = async () => {
     setSending(true);
     try {
@@ -179,20 +304,22 @@ export function SessionV1Chat({
     }
   };
 
+  const pill = sessionStatePill({
+    action: busy ? (action ?? 'start') : null,
+    elapsedSeconds: elapsed,
+    host: hostState,
+    failed: Boolean(actionError) || startup?.status === 'error',
+    retired: Boolean(session?.retired),
+    status: session?.status ?? null,
+    connectivity: session?.connectivity ?? null,
+    reachable: available || (view.connected && session?.connectivity === 'online'),
+    startable,
+  });
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
       <SessionHeaderContent slot="left">
-        <SessionStatePill
-          {...sessionStatePill({
-            action: busy ? (action ?? 'start') : null,
-            elapsedSeconds: elapsed,
-            failed: Boolean(actionError) || startup?.status === 'error',
-            retired: Boolean(session?.retired),
-            status: session?.status ?? null,
-            connectivity: session?.connectivity ?? null,
-            reachable: available || (view.connected && session?.connectivity === 'online'),
-          })}
-        />
+        {pill && <SessionStatePill {...pill} />}
       </SessionHeaderContent>
       <SessionHeaderContent slot="right">
         {restartHost && !session?.retired && (
@@ -434,7 +561,7 @@ export function SessionV1Chat({
             )}
           </details>
         )}
-      {!busy && (view.error || !view.connected) && (
+      {!busy && (view.error || (!view.connected && !held)) && (
         <div
           role="status"
           className="flex items-center justify-between gap-3 bg-background-1 px-5 py-2 text-sm"
@@ -454,7 +581,10 @@ export function SessionV1Chat({
             viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 24;
         }}
       >
-        <div ref={transcriptContent} className="mx-auto flex max-w-3xl flex-col gap-5 px-5 py-6">
+        <div
+          ref={transcriptContent}
+          className="mx-auto flex max-w-[720px] flex-col gap-5 px-5 py-6"
+        >
           {noticesAfter(null)}
           {view.snapshot?.items.map((item) => (
             <div key={item.itemId}>
@@ -472,7 +602,7 @@ export function SessionV1Chat({
               ) : item.kind === 'assistant-message' ? (
                 <div className="text-sm leading-relaxed">
                   <MarkdownRenderer variant="compact" content={item.text} />
-                  {item.status === 'in-progress' && (
+                  {item.status === 'in-progress' && !stoppedTurns.has(item.turnId) && (
                     <span
                       aria-label="Still writing"
                       className="inline-block h-3 w-1 animate-pulse bg-foreground-muted"
@@ -482,13 +612,17 @@ export function SessionV1Chat({
               ) : (
                 <details className="rounded-lg border border-border px-3 py-2 text-xs">
                   <summary className="flex cursor-pointer items-center gap-2">
-                    {item.status === 'in-progress' ? (
+                    {item.status === 'in-progress' && !stoppedTurns.has(item.turnId) ? (
                       <Loader2 className="size-3 animate-spin" />
                     ) : (
                       <Wrench className="size-3" />
                     )}
                     <span className="min-w-0 flex-1 break-words">{item.title}</span>
-                    <span>{item.status}</span>
+                    <span>
+                      {item.status === 'in-progress'
+                        ? (stoppedTurns.get(item.turnId) ?? item.status)
+                        : item.status}
+                    </span>
                   </summary>
                   {item.text && <p className="mt-2 whitespace-pre-wrap">{item.text}</p>}
                 </details>
@@ -554,7 +688,16 @@ export function SessionV1Chat({
           )}
         </div>
       </div>
-      <div className="mx-auto w-full max-w-3xl px-5 pb-5">
+      <div className="mx-auto w-full max-w-[720px] px-5 pb-5">
+        {held && (
+          <div role="status" className="mb-2 flex items-center gap-2 text-sm text-foreground-muted">
+            <Loader2 className="size-3 shrink-0 animate-spin" />
+            <span className="min-w-0 flex-1">{heldStatusText(heldWait)}</span>
+            <Button size="sm" variant="ghost" disabled={sending} onClick={cancelHeld}>
+              Cancel
+            </Button>
+          </div>
+        )}
         {sendError && (
           <div role="alert" className="mb-2 text-sm text-foreground-destructive">
             {sendError}
@@ -673,14 +816,21 @@ export function SessionV1Chat({
               size="sm"
               className="ml-auto shrink-0"
               disabled={
-                !available ||
+                (!available && !wakeable && !startable) ||
+                held !== null ||
                 sending ||
                 uploads.blocked ||
                 (!draft.trim() && !uploads.attachments.length)
               }
               onClick={() => void send()}
             >
-              {sending ? 'Sending…' : pendingId ? 'Retry message' : 'Send'}
+              {sending
+                ? 'Sending…'
+                : held
+                  ? { session: 'Connecting…', agent: 'Starting…', machine: 'Waking…' }[heldWait]
+                  : pendingId
+                    ? 'Retry message'
+                    : 'Send'}
             </Button>
           </div>
         </div>

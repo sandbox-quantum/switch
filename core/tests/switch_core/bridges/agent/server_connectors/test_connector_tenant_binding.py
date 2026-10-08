@@ -1,6 +1,6 @@
 """A server-side connector acts as its own row's tenant (CHOO-2623).
 
-A connector runs in-process and calls `ProtocolService` directly, so unlike an
+A connector runs in-process and calls `AgentCore` directly, so unlike an
 external agent there is no bearer token in front of it to resolve a tenant
 from. Its own row is the answer, and `ServerSideConnectorLifecycleService.start`
 reads it unscoped — from boot with nothing bound, and from an HTTP request

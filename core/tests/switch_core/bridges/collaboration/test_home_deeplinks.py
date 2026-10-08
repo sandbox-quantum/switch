@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
@@ -131,7 +131,7 @@ def test_mattermost_home_prefers_the_public_url() -> None:
 def test_base_adapter_offers_no_home_link() -> None:
     # A platform that has not implemented one must return None rather than
     # inherit something wrong — the caller hides the action instead.
-    assert _run(CollaborationAdapter.home_deeplink(object())) is None  # type: ignore[arg-type]
+    assert _run(PlatformAdapter.home_deeplink(object())) is None  # type: ignore[arg-type]
 
 
 def test_no_home_link_carries_a_credential() -> None:
@@ -146,7 +146,7 @@ def test_no_home_link_carries_a_credential() -> None:
 def test_base_adapter_offers_no_install_link() -> None:
     # Most platforms install their app through their own admin UI, and a link
     # invented for them would be a link to nowhere.
-    assert _run(CollaborationAdapter.install_links(object())) == []  # type: ignore[arg-type]
+    assert _run(PlatformAdapter.install_links(object())) == []  # type: ignore[arg-type]
 
 
 def test_no_install_link_carries_a_credential() -> None:
@@ -163,4 +163,4 @@ def test_no_install_link_carries_a_credential() -> None:
 def test_base_adapter_offers_no_install_note() -> None:
     # Most platforms have nothing to add beyond their links, and an empty
     # panel in the dialog would be worse than none.
-    assert _run(CollaborationAdapter.install_note(object())) is None  # type: ignore[arg-type]
+    assert _run(PlatformAdapter.install_note(object())) is None  # type: ignore[arg-type]

@@ -26,10 +26,10 @@ from switch_core.bridges.agent.operations.callctx import (
     set_call_context,
 )
 from switch_core.bridges.agent.operations.definitions import read_context
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import (
     RESTARTED,
@@ -47,9 +47,9 @@ OTHER_ROOM = "room-elsewhere"
 class _Protocol:
     """Just enough protocol to answer a read: a registry and a recorder."""
 
-    def __init__(self, registry: ConnectionRegistry) -> None:
+    def __init__(self, registry: AgentConnectionRegistry) -> None:
         self.connections = registry
-        self.event_buffer = EventBuffer()
+        self.event_buffer = EventBuffer(sequence_base=0)
         self.calls: list[tuple[str, str]] = []
         self.members: set[str] = {CONNECTED_ROOM, OTHER_ROOM}
         self.while_in_flight: list[Callable[[], None]] = []
@@ -67,7 +67,7 @@ class _Protocol:
 
 @pytest.fixture
 def protocol(monkeypatch: pytest.MonkeyPatch) -> _Protocol:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     service = _Protocol(registry)
     monkeypatch.setattr(op_context, "_protocol", service)
     return service

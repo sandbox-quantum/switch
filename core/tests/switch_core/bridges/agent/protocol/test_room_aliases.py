@@ -6,8 +6,8 @@ from typing import Any
 import pytest
 
 from switch_core.aliases import AliasError
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import AgentStatus
 
 
@@ -101,7 +101,7 @@ def _room(**overrides: Any) -> SimpleNamespace:
         "id": "room-1",
         "name": "Feature room",
         "description": "desc",
-        "matrix_room_id": "!abc:switch.local",
+        "transport_room_id": "!abc:switch.local",
         "channel_type": "channel_private",
         "admin_mode": False,
         "instructions": "",
@@ -124,12 +124,12 @@ def _build_service(
     agents: dict[str, Any],
     aliases: dict[str, str] | None = None,
     role_names: list[str] | None = None,
-) -> ProtocolService:
+) -> AgentCore:
     room = _room()
-    svc = object.__new__(ProtocolService)
+    svc = object.__new__(AgentCore)
     # Presence unions the heartbeat rows with the live connections
     # (CHOO-1857); an empty registry means "rows only".
-    svc.connections = ConnectionRegistry()
+    svc.connections = AgentConnectionRegistry()
     svc.session_factory = _session_factory  # type: ignore[assignment]
     svc.room_store = _FakeRoomStore({room.id: room}, agent_ids, aliases or {})  # type: ignore[assignment]
     svc.agent_store = _FakeAgentStore(agents)  # type: ignore[assignment]

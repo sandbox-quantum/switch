@@ -28,7 +28,7 @@ from telegram.error import (
 
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
-    CollaborationAdapter,
+    PlatformAdapter,
     RequestCard,
     RichContentFailed,
     RichContentThrottled,
@@ -125,7 +125,7 @@ def _edited(adapter: TelegramAdapter) -> dict[str, Any]:
 
 
 def test_the_publication_is_the_only_account_of_a_turn() -> None:
-    """There is no second renderer to fall back to, and `bridge_core` reads
+    """There is no second renderer to fall back to, and `collaboration_core` reads
     this flag to decide whether to route sessions here at all — so a platform
     that stopped declaring it would go quiet rather than draw the turn some
     other way."""
@@ -399,7 +399,7 @@ def test_telegram_says_it_cannot_find_a_card_again_rather_than_implying_it_might
     question in the chat that silently refuses the answer it asks for."""
     assert TelegramAdapter.recovers_uncertain_posts is False
     assert (
-        TelegramAdapter.find_request_card is CollaborationAdapter.find_request_card  # noqa: E501 — the base's "nowhere to look"
+        TelegramAdapter.find_request_card is PlatformAdapter.find_request_card  # noqa: E501 — the base's "nowhere to look"
     )
 
 

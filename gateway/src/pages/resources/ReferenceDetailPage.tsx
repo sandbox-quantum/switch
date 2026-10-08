@@ -36,7 +36,7 @@ import UrlsValueForm from "./value_forms/UrlsValueForm";
 export default function ReferenceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, canAdminTenant } = useAuth();
   const { data: types } = useReferenceTypes();
   const [ref, setRef] = useState<ReferenceDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -83,7 +83,7 @@ export default function ReferenceDetailPage() {
   // has. Its only job is the value hint; every label comes from the server.
   const visibleTypeSpec = (types ?? []).find((t) => t.type === ref.type);
   const canMutate =
-    !!user && (user.id === ref.owner_id || user.role === "admin");
+    !!user && (user.id === ref.owner_id || canAdminTenant);
 
   return (
     <Box>

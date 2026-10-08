@@ -64,9 +64,20 @@ _ALLOWED_MODULES = {
     # The runtime-state sweep reads every tenant's stale rows, one tenant at a
     # time; `register_agent_with_token` resolves a registration credential by
     # its globally unique hash, which is the read that produces a tenant.
-    "switch_core.bridges.agent.protocol.service",
+    "switch_core.bridges.agent.protocol.agent_core",
     # Bearer and OIDC authentication: the credential's tenant, before its row.
     "switch_core.bridges.agent.auth",
+    # Agent-controller enrollment and token exchange carry their secret (a
+    # one-time code, a controller credential) in the body rather than as a
+    # bearer token, and both are `api_keys` rows: the same credential-
+    # resolution shape as the line above, through the same `tenant_of_api_key`,
+    # with the row then read scoped to the tenant it produced.
+    "switch_core.management.auth",
+    # Core keeps which controller runs each agent in memory, so at startup
+    # every tenant's placed definitions are read back into it: enumerate the
+    # tenants, then read each one's definitions under its own policy, the same
+    # boot-style fan-out `main` does.
+    "switch_core.management.bindings",
     # The gateway's JWT subject resolves to its membership, and
     # `tenant_members` is scoped, so nothing else can answer it. In the
     # authentication module itself rather than on an injected store: a store
@@ -80,7 +91,7 @@ _ALLOWED_MODULES = {
     "switch_core.bridges.agent.server_connectors.lifecycle",
     # `_room_tenant`'s fallback: which tenant is this room in, asked when the
     # answer is not already cached alongside the channel mapping.
-    "switch_core.bridges.collaboration.bridge_core",
+    "switch_core.bridges.collaboration.collaboration_core",
     # An inbound webhook from an installed workspace: the platform's signature
     # proves the sender and the payload names a workspace, and nothing in
     # either names a tenant. It is the one read that must happen before a
@@ -88,7 +99,7 @@ _ALLOWED_MODULES = {
     # the tenant it produced, so a wrong answer here is a miss rather than a
     # cross-tenant read.
     "switch_core.bridges.collaboration.install_service",
-    # `switch_core.transport.postgres` and `switch_core.clients.agent_client`
+    # `switch_core.transport.postgres` and `switch_core.clients.agent_consumer`
     # came off this list with `tenant_of_client`: both were built from a
     # `clients` row that already named the tenant, so they carry it instead of
     # asking for it.
@@ -116,6 +127,7 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.bridges.agent.dependencies",
     "switch_core.bridges.agent.operations.context",
     "switch_core.bridges.agent.operations.definitions",
+    "switch_core.bridges.agent.operations.agent_management",
     "switch_core.bridges.agent.mediation",
     # Reached only from the gateway's rooms endpoints, so the same holds.
     "switch_core.rooms_yaml",
@@ -125,13 +137,13 @@ _RAW_SESSION_FACTORY_MODULES = {
     # ── Reached only from inside a unit of work that has already bound the
     # tenant of the row it is acting on — an inbound bridge event, a delivery,
     # a sweep row, an authenticated agent operation.
-    "switch_core.bridges.agent.protocol.service",
+    "switch_core.bridges.agent.protocol.agent_core",
     "switch_core.bridges.agent.commands",
-    "switch_core.bridges.collaboration.bridge_core",
+    "switch_core.bridges.collaboration.collaboration_core",
     "switch_core.bridges.collaboration.lifecycle_service",
     "switch_core.bridges.agent.server_connectors.lifecycle",
-    "switch_core.clients.agent_client",
-    "switch_core.clients.admin_client",
+    "switch_core.clients.agent_consumer",
+    "switch_core.clients.command_consumer",
     "switch_core.clients.client_lifecycle_service",
     "switch_core.provisioning.postgres",
     "switch_core.room_service",
@@ -163,6 +175,10 @@ _RAW_SESSION_FACTORY_MODULES = {
     # Its own reads are the per-tenant fan-out above; this is the one global
     # read beside them, the deployment's user count.
     "switch_core.telemetry.snapshot",
+    # This process's lease in `switch_core_processes`, a table with no tenant
+    # and no policy (`rls_ddl.GLOBAL_TABLES`): a process serves every tenant,
+    # so its lease belongs to none. It touches only that table.
+    "switch_core.management.process_lease",
 }
 
 # Calls that end in `session_factory` but hand one back rather than open a

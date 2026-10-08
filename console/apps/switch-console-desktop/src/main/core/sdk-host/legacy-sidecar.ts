@@ -19,11 +19,11 @@ import { log } from '@main/lib/logger';
  * credentials recorded itself under `default` and names no owner; those are
  * left for a deliberate sweep rather than guessed at.
  */
-const STOP_LEGACY_SIDECAR = `
+export const STOP_LEGACY_SIDECAR_FN = `
+function stopLegacySidecar(repoDir, slug) {
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const [repoDir, slug] = process.argv.slice(1);
 const directory = path.join(repoDir, '.switchdash', 'agents', slug);
 const read = (name) => {
   try {
@@ -72,16 +72,28 @@ if (Number.isSafeInteger(pid) && pid > 0 && alive(pid)) {
   if (alive(pid)) throw new Error('Superseded sidecar ' + pid + ' would not stop.');
   stopped.push('sidecar:' + pid);
 }
-console.log(JSON.stringify(stopped));
+return stopped;
+}
 `;
+
+const STOP_LEGACY_SIDECAR = `${STOP_LEGACY_SIDECAR_FN}
+const [repoDir, slug] = process.argv.slice(1);
+console.log(JSON.stringify(stopLegacySidecar(repoDir, slug)));
+`;
+
+/** The name an earlier sidecar deployment recorded this agent under. */
+export function legacySidecarSlug(credentialsPath: string): string {
+  const slug = posix.basename(credentialsPath, '.json');
+  if (!slug) throw new Error('Cannot identify the agent whose superseded sidecar should stop.');
+  return slug;
+}
 
 export async function stopLegacySidecar(
   ctx: IExecutionContext,
   repoDir: string,
   credentialsPath: string
 ): Promise<void> {
-  const slug = posix.basename(credentialsPath, '.json');
-  if (!slug) throw new Error('Cannot identify the agent whose superseded sidecar should stop.');
+  const slug = legacySidecarSlug(credentialsPath);
   const { stdout } = await ctx.exec('node', ['-e', STOP_LEGACY_SIDECAR, repoDir, slug]);
   const stopped: string[] = JSON.parse(stdout.trim() || '[]');
   if (stopped.length)

@@ -7,11 +7,14 @@ import json
 from contextlib import asynccontextmanager
 
 import pytest
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 from switch_core.config import SwitchConfig
 from switch_core.observability.bootstrap import RuntimeProbes, start_observability
 from switch_core.observability.metrics import metrics, uninstall
 from switch_core.observability.pool import PoolStats
+from switch_core.transport.room_cache import RoomCacheStats
 
 BASE_ENV = {
     "DB_HOST": "localhost",
@@ -21,7 +24,7 @@ BASE_ENV = {
     "DB_NAME": "switch",
     "MATRIX_SERVER_NAME": "switch.local",
     "AGENT_REGISTRATION_TOKEN": "token",
-    "JWT_SECRET_KEY": "jwt",
+    "SECRET_KEYS": "test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
     "GATEWAY_ADMIN_EMAIL": "admin@example.com",
     "GATEWAY_ADMIN_PASSWORD": "pw",
 }
@@ -71,11 +74,15 @@ def _probes(**overrides) -> RuntimeProbes:
         bridges_running=lambda: 2,
         bridges_running_by_platform=lambda: {"slack": 1, "mattermost": 1},
         bridges_configured=lambda: 2,
-        clients_running=lambda: 5,
+        consumers_running=lambda: 5,
         connectors_running=lambda: 2,
         connectors_configured=lambda: 2,
-        agents_connected=lambda: 3,
+        agents_connected=lambda: {
+            ("websocket", "agent-runtime"): 2,
+            ("websocket", "unknown"): 1,
+        },
         pool_stats=lambda: PoolStats(in_use=4, size=30, overflow=0),
+        room_cache_stats=lambda: RoomCacheStats(bytes=0, rooms=0, rows=0),
     )
     return RuntimeProbes(**{**defaults, **overrides})
 
@@ -163,8 +170,15 @@ async def test_an_endpoint_installs_the_registry_and_reports_state(monkeypatch):
             for name, payload in payloads.items()
             if payload.numbers and not payload.numbers[0].attributes
         }
-        assert values["switch.agents.connected"] == 3.0
-        assert values["switch.clients.running"] == 5.0
+        connected = {
+            (point.attributes["transport"], point.attributes["client"]): point.value
+            for point in payloads["switch.agents.connected"].numbers
+        }
+        assert connected == {
+            ("websocket", "agent-runtime"): 2.0,
+            ("websocket", "unknown"): 1.0,
+        }
+        assert values["switch.consumers.running"] == 5.0
         assert values["switch.connectors.running"] == 2.0
         assert values["switch.db.pool.in_use"] == 4.0
         assert values["switch.db.pool.size"] == 30.0
@@ -177,6 +191,52 @@ async def test_an_endpoint_installs_the_registry_and_reports_state(monkeypatch):
             for point in payloads["switch.bridges.running"].numbers
         }
         assert running == {"slack": 1.0, "mattermost": 1.0}
+    finally:
+        await observability.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_room_cache_reports_what_it_holds(monkeypatch):
+    config = _config(
+        monkeypatch,
+        OTLP_ENDPOINT="https://collector.example",
+        DEPLOYMENT_ID=DEPLOYMENT_ID,
+        OTLP_EXPORT_INTERVAL_SECONDS="3600",
+    )
+    observability = start_observability(
+        config=config,
+        version="1.0.0",
+        session_factory=_session_factory(),
+        probes=_probes(
+            room_cache_stats=lambda: RoomCacheStats(bytes=4096, rooms=3, rows=12)
+        ),
+    )
+    try:
+        payloads = {p.name: p for p in metrics().collect()}
+        assert payloads["switch.delivery_cache.bytes"].numbers[0].value == 4096.0
+        assert payloads["switch.delivery_cache.rooms"].numbers[0].value == 3.0
+    finally:
+        await observability.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_start_is_counted_once_so_restarts_line_up(monkeypatch):
+    observability = start_observability(
+        config=_config(
+            monkeypatch,
+            OTLP_ENDPOINT="https://collector.example",
+            DEPLOYMENT_ID=DEPLOYMENT_ID,
+            OTLP_EXPORT_INTERVAL_SECONDS="3600",
+        ),
+        version="1.0.0",
+        session_factory=_session_factory(),
+        probes=_probes(),
+    )
+    try:
+        starts = next(
+            p for p in metrics().collect() if p.name == "switch.runtime.starts"
+        )
+        assert [point.value for point in starts.numbers] == [1.0]
     finally:
         await observability.aclose()
 
@@ -262,3 +322,72 @@ async def test_closing_stops_the_loops_and_uninstalls(monkeypatch):
 
     assert metrics().enabled is False
     assert all(task.done() for task in observability._tasks)
+
+
+@pytest.mark.asyncio
+async def test_the_database_sampler_starts_with_the_metrics_exporter(monkeypatch):
+    built: list[object] = []
+
+    def engine():
+        built.append(object())
+        return create_async_engine(
+            "postgresql+asyncpg://u:p@127.0.0.1:1/x", poolclass=NullPool
+        )
+
+    observability = start_observability(
+        config=_config(
+            monkeypatch,
+            OTLP_ENDPOINT="https://collector.example",
+            DEPLOYMENT_ID=DEPLOYMENT_ID,
+            OTLP_EXPORT_INTERVAL_SECONDS="3600",
+        ),
+        version="1.0.0",
+        session_factory=_session_factory(),
+        probes=_probes(),
+        db_server_engine=engine,
+    )
+    try:
+        await asyncio.sleep(0.05)
+        names = {task.get_name() for task in observability._tasks}
+        assert "db-server-sampler" in names
+        assert built, "the sampler never built its engine"
+    finally:
+        await observability.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_connection_kind_that_empties_out_is_reported_as_zero(monkeypatch):
+    """Otherwise the dashboard keeps drawing its last count, which is exactly
+    the line that has to reach zero before an old transport can be removed."""
+    connected = {("websocket", "agent-runtime"): 2, ("detached", "agent-runtime"): 1}
+    observability = start_observability(
+        config=_config(
+            monkeypatch,
+            OTLP_ENDPOINT="https://collector.example",
+            DEPLOYMENT_ID=DEPLOYMENT_ID,
+            OTLP_EXPORT_INTERVAL_SECONDS="3600",
+        ),
+        version="1.0.0",
+        session_factory=_session_factory(),
+        probes=_probes(agents_connected=lambda: dict(connected)),
+    )
+    try:
+
+        def reading() -> dict[tuple[str, str], float]:
+            payload = {p.name: p for p in metrics().collect()}[
+                "switch.agents.connected"
+            ]
+            return {
+                (n.attributes["transport"], n.attributes["client"]): n.value
+                for n in payload.numbers
+            }
+
+        assert reading()[("detached", "agent-runtime")] == 1.0
+        del connected[("detached", "agent-runtime")]
+        assert reading() == {
+            ("websocket", "agent-runtime"): 2.0,
+            ("detached", "agent-runtime"): 0.0,
+            ("websocket", "unknown"): 0.0,
+        }
+    finally:
+        await observability.aclose()

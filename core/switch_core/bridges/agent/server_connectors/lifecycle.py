@@ -6,18 +6,19 @@ import secrets
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.server_connectors.base import (
     ServerSideConnector,
     ServerSideConnectorConfig,
 )
 from switch_core.bridges.agent.server_connectors.core import ConnectorCore
-from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import ApiKey, ServerConnector
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_server_connector
+from switch_core.keys import Keyring
+from switch_core.outbound import OutboundPolicy
 from switch_core.telemetry import TelemetryService, emit_safely
 
 logger = logging.getLogger(__name__)
@@ -42,17 +43,19 @@ class ServerSideConnectorLifecycleService:
         *,
         connector_store: ServerConnectorStore,
         api_key_store: ApiKeyStore,
-        protocol: ProtocolService,
+        protocol: AgentCore,
         session_factory: async_sessionmaker[AsyncSession],
         telemetry: TelemetryService | None = None,
-        encryption_secret: str,
+        keyring: Keyring,
+        outbound_policy: OutboundPolicy,
     ) -> None:
         self._connector_store = connector_store
         self._api_key_store = api_key_store
         self._protocol = protocol
         self._session_factory = session_factory
         self._telemetry = telemetry
-        self._encryption_secret = encryption_secret
+        self._keyring = keyring
+        self._outbound_policy = outbound_policy
 
         self._connector_registry: dict[str, type[ServerSideConnector]] = {}
         self._config_registry: dict[str, type[ServerSideConnectorConfig]] = {}
@@ -117,13 +120,15 @@ class ServerSideConnectorLifecycleService:
             raise ValueError(f"Unknown connector type: {connector_type}")
 
         config_cls.model_validate(connection_config)
+        for url in connector_cls.outbound_urls(connection_config):
+            await self._outbound_policy.check_url(url)
 
         plaintext = secrets.token_urlsafe(32)
         key_hash = hashlib.sha256(plaintext.encode()).hexdigest()
         reg_key = ApiKey(
             user_id=user_id,
             key_hash=key_hash,
-            encrypted_key=encrypt_token(plaintext, self._encryption_secret),
+            encrypted_key=self._keyring.encrypt(plaintext),
             label=f"server-connector:{display_name}",
             type="registration",
         )
@@ -195,12 +200,16 @@ class ServerSideConnectorLifecycleService:
         if connector_cls is None or config_cls is None:
             raise ValueError(f"Unknown connector type: {record.type}")
 
-        registration_token = decrypt_token(
-            reg_key.encrypted_key, self._encryption_secret
-        )
+        registration_token = self._keyring.decrypt(reg_key.encrypted_key)
 
         typed_config = config_cls.model_validate(record.connection_config or {})
-        connector = connector_cls(config=typed_config)  # type: ignore[call-arg]
+        # Again at every start: what the host resolves to can have changed
+        # since the connector was registered.
+        for url in connector_cls.outbound_urls(record.connection_config or {}):
+            await self._outbound_policy.check_url(url)
+        connector = connector_cls(  # type: ignore[call-arg]
+            config=typed_config, outbound_policy=self._outbound_policy
+        )
 
         core = ConnectorCore(
             connector_id=connector_id,

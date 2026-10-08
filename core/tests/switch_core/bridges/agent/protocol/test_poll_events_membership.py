@@ -41,7 +41,7 @@ async def _room(
     session_factory: async_sessionmaker[AsyncSession], name: str, agent_id: str
 ) -> str:
     async with session_factory() as session:
-        room = Room(matrix_room_id=f"!{name}:test", name=name, description="")
+        room = Room(transport_room_id=f"!{name}:test", name=name, description="")
         session.add(room)
         await session.flush()
         await RoomStore().add_agents(session, room.id, [agent_id])
@@ -55,7 +55,7 @@ async def test_events_from_a_room_the_agent_was_removed_from_are_not_returned(
     svc = make_service(session_factory)
     svc.room_store = RoomStore()  # type: ignore[attr-defined]
     svc.agent_session_store = AgentSessionStore()  # type: ignore[attr-defined]
-    svc.event_buffer = EventBuffer()  # type: ignore[attr-defined]
+    svc.event_buffer = EventBuffer(sequence_base=0)  # type: ignore[attr-defined]
 
     owner = await make_owner(session_factory)
     agent_id = await register(svc, "poller", owner)
@@ -86,7 +86,7 @@ async def test_notifications_from_a_room_the_agent_was_removed_from_are_not_retu
     svc = make_service(session_factory)
     svc.room_store = RoomStore()  # type: ignore[attr-defined]
     svc.agent_session_store = AgentSessionStore()  # type: ignore[attr-defined]
-    svc.event_buffer = EventBuffer()  # type: ignore[attr-defined]
+    svc.event_buffer = EventBuffer(sequence_base=0)  # type: ignore[attr-defined]
 
     owner = await make_owner(session_factory)
     agent_id = await register(svc, "watcher", owner)

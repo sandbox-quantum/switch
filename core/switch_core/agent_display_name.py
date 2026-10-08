@@ -23,7 +23,7 @@ from typing import NoReturn
 # that a display name stays a label rather than a sentence.
 MAX_DISPLAY_NAME_LENGTH = 64
 
-_ZERO_WIDTH_SPACE = "\u200b"
+ZERO_WIDTH_SPACE = "\u200b"
 
 
 class InvalidDisplayName(ValueError):
@@ -109,8 +109,8 @@ def defuse_label_markup(label: str) -> str:
     the far end, while a zero-width space is inert in every escaping pipeline
     it may pass through afterwards, so it cannot compound with one.
     """
-    return label.replace("@", "@" + _ZERO_WIDTH_SPACE).replace(
-        "]", "]" + _ZERO_WIDTH_SPACE
+    return label.replace("@", "@" + ZERO_WIDTH_SPACE).replace(
+        "]", "]" + ZERO_WIDTH_SPACE
     )
 
 

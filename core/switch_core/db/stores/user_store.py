@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
+from datetime import timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +23,8 @@ logger = logging.getLogger(__name__)
 # just committed is visible to the retry's lookups, so a second collision
 # would mean something other than the race this exists for.
 _MAX_ATTEMPTS = 2
+
+_LAST_TENANT_KEY = "last_tenant_id"
 
 
 class OidcIdentityConflictError(Exception):
@@ -115,6 +119,23 @@ class UserStore:
     async def get(self, session: AsyncSession, user_id: str) -> User | None:
         return await session.get(User, user_id)
 
+    async def names_by_id(
+        self, session: AsyncSession, user_ids: Collection[str]
+    ) -> dict[str, str]:
+        """Each existing user's name, keyed by id, in one query.
+
+        For the lists that show an owner beside every row: one read for all
+        the owners rather than one per owner. `users` carries no tenant, so
+        what scopes this is the ids, which the caller took from rows its own
+        tenant can see.
+        """
+        if not user_ids:
+            return {}
+        result = await session.execute(
+            select(User.id, User.name).where(User.id.in_(user_ids))
+        )
+        return {user_id: name for user_id, name in result.all()}
+
     async def exists(self, session: AsyncSession, user_id: str) -> bool:
         """Whether this id names a real account, without loading the row.
 
@@ -125,6 +146,26 @@ class UserStore:
         """
         result = await session.execute(select(User.id).where(User.id == user_id))
         return result.first() is not None
+
+    async def created_in_last_hour(self, session: AsyncSession) -> tuple[int, int]:
+        """Users created in the last hour, and whole seconds until the oldest
+        of them leaves that window (0 when there are none).
+
+        Measured on the database clock so every replica sees the same window.
+        """
+        window = timedelta(hours=1)
+        remaining = func.ceil(
+            func.extract("epoch", func.min(User.created_at) + window - func.now())
+        )
+        row = (
+            await session.execute(
+                select(
+                    func.count(),
+                    case((func.count() == 0, 0), else_=func.greatest(remaining, 1)),
+                ).where(User.created_at > func.now() - window)
+            )
+        ).one()
+        return int(row[0]), int(row[1])
 
     async def get_by_email(self, session: AsyncSession, email: str) -> User | None:
         """Case-insensitive: an IdP and a person typing a password don't
@@ -203,9 +244,17 @@ class UserStore:
         name: str,
         sub: str,
         email_verified: bool,
+        join_tenant: bool,
     ) -> User:
         """Resolve an OIDC identity to a gateway user, provisioning on first
         login (JIT).
+
+        `join_tenant` decides whether an account this creates, or links, is
+        given a membership in the tenant bound to the caller's context. With
+        it false, the account is left with none: that is how a deployment with
+        self-service sign-up hands a newcomer to onboarding — create a
+        workspace or accept an invitation — instead of placing them somewhere
+        on its own (`gateway_signup_mode`).
 
         Accounts are keyed on verified email, not on login method: a subject
         already linked to a user is returned as-is (looked up on the
@@ -249,7 +298,11 @@ class UserStore:
                 try:
                     async with session.begin_nested():
                         await self._link_identity(
-                            session, user=existing, iss=iss, sub=sub
+                            session,
+                            user=existing,
+                            iss=iss,
+                            sub=sub,
+                            join_tenant=join_tenant,
                         )
                 except IntegrityError:
                     self._raise_if_exhausted(attempt)
@@ -259,8 +312,18 @@ class UserStore:
             user = User(name=name, email=email.lower(), role="user", password_hash=None)
             try:
                 async with session.begin_nested():
-                    await self.create(session, user)
-                    await self._link_identity(session, user=user, iss=iss, sub=sub)
+                    if join_tenant:
+                        await self.create(session, user)
+                    else:
+                        session.add(user)
+                        await session.flush()
+                    await self._link_identity(
+                        session,
+                        user=user,
+                        iss=iss,
+                        sub=sub,
+                        join_tenant=join_tenant,
+                    )
             except IntegrityError:
                 self._raise_if_exhausted(attempt)
                 continue
@@ -278,7 +341,13 @@ class UserStore:
             )
 
     async def _link_identity(
-        self, session: AsyncSession, *, user: User, iss: str, sub: str
+        self,
+        session: AsyncSession,
+        *,
+        user: User,
+        iss: str,
+        sub: str,
+        join_tenant: bool,
     ) -> None:
         session.add(OidcIdentity(user_id=user.id, iss=iss, sub=sub))
         await session.flush()
@@ -293,8 +362,31 @@ class UserStore:
         # Linking reaches accounts this store did not create, including any
         # that predate memberships — and an account with none can never sign
         # in again. The startup admin seeding repairs the deployment's own
-        # admin; this repairs anyone else who signs in through an IdP.
-        await self.ensure_membership(session, user)
+        # admin; this repairs anyone else who signs in through an IdP. Under
+        # self-service sign-up an account with none is not stranded — it is
+        # sent to onboarding — so there is nothing to repair.
+        if join_tenant:
+            await self.ensure_membership(session, user)
+
+    def last_tenant_id(self, user: User) -> str | None:
+        """The workspace `user` last selected, as recorded by
+        `record_last_tenant`, or None if they never have.
+
+        Only a preference: it names a tenant, it does not grant one. Whoever
+        reads it must check it against the user's current memberships, since
+        they may have been removed since it was written.
+        """
+        metadata = user.metadata_ or {}
+        value = metadata.get(_LAST_TENANT_KEY)
+        return value if isinstance(value, str) else None
+
+    async def record_last_tenant(
+        self, session: AsyncSession, user: User, tenant_id: str
+    ) -> None:
+        """Remember `tenant_id` as the workspace `user` last selected, so the
+        next sign-in lands there rather than asking again."""
+        user.metadata_ = {**(user.metadata_ or {}), _LAST_TENANT_KEY: tenant_id}
+        await session.flush()
 
     async def get_all(self, session: AsyncSession) -> list[User]:
         result = await session.execute(select(User))

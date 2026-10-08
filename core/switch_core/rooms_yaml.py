@@ -42,7 +42,7 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_valid
 from switch_core.agent_runs import AgentOrigin, kickoff_fingerprint
 from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
-from switch_core.clients.admin_client import AdminClient
+from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.room_service import RoleSpec, RoomCreateConfig
 
@@ -1305,13 +1305,13 @@ class RoomYamlService:
             fail("kickoff posting is not configured on this server")
             return
         admins = self._client_lifecycle.get_by_type("admin", room.tenant_id)
-        admin = next((c for c in admins if isinstance(c, AdminClient)), None)
+        admin = next((c for c in admins if isinstance(c, SystemActor)), None)
         if admin is None:
             fail("the platform has no client to post with")
             return
 
         late = await self._wait_for_kickoff_audience(
-            room.matrix_room_id, admin, agent_names
+            room.transport_room_id, admin, agent_names
         )
         if late:
             fail("did not join the room in time to see the kickoff: " + ", ".join(late))
@@ -1328,13 +1328,13 @@ class RoomYamlService:
             headline = f"Template kickoff on behalf of {person.label}"
         try:
             root_id = await admin.send_platform_message(
-                room.matrix_room_id, headline, on_behalf_of=person
+                room.transport_room_id, headline, on_behalf_of=person
             )
             if root_id is None:
                 fail("the platform could not post the kickoff")
                 return
             event_id = await admin.send_platform_message(
-                room.matrix_room_id,
+                room.transport_room_id,
                 text,
                 thread_root_id=root_id,
                 on_behalf_of=person,
@@ -1348,8 +1348,8 @@ class RoomYamlService:
 
     async def _wait_for_kickoff_audience(
         self,
-        matrix_room_id: str,
-        admin: AdminClient,
+        transport_room_id: str,
+        admin: SystemActor,
         agent_names: list[str],
     ) -> list[str]:
         """Wait for the sender and the template's agents to be in the room.
@@ -1360,7 +1360,7 @@ class RoomYamlService:
         miss anything.
         """
         late: list[str] = []
-        if not await admin.wait_joined(matrix_room_id, KICKOFF_JOIN_TIMEOUT):
+        if not await admin.wait_joined(transport_room_id, KICKOFF_JOIN_TIMEOUT):
             late.append("the platform")
         if not agent_names or self._client_lifecycle is None:
             return late
@@ -1371,7 +1371,9 @@ class RoomYamlService:
             if client is None:
                 continue
             try:
-                joined = await client.wait_joined(matrix_room_id, KICKOFF_JOIN_TIMEOUT)
+                joined = await client.wait_joined(
+                    transport_room_id, KICKOFF_JOIN_TIMEOUT
+                )
             except RuntimeError:
                 # Not connected: it is not receiving anything either way.
                 continue

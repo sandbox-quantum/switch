@@ -1,7 +1,7 @@
 """End-to-end test for the room_join event over the real transport.
 
 Drives the genuine path: RoomService adds an agent to a room → the invite reaches
-the joiner → the watcher's AgentClient receive loop sees the arrival →
+the joiner → the watcher's AgentConsumer receive loop sees the arrival →
 on_member_event enqueues a `room_join` AgentEvent → it is read off the event
 buffer. No mocks, no HTTP layer.
 """
@@ -22,15 +22,15 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")
 
 
 async def _wait_joined(
-    client: object, matrix_room_id: str, timeout: float = 30
+    client: object, transport_room_id: str, timeout: float = 30
 ) -> None:
     """Block until the agent's own client has joined the room."""
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
-        if matrix_room_id in client.room_join_times:  # type: ignore[attr-defined]
+        if transport_room_id in client.room_join_times:  # type: ignore[attr-defined]
             return
         await asyncio.sleep(0.25)
-    raise AssertionError(f"client never joined {matrix_room_id} within {timeout}s")
+    raise AssertionError(f"client never joined {transport_room_id} within {timeout}s")
 
 
 async def _drain_room_join(
@@ -59,7 +59,7 @@ async def test_join_emits_room_join_event(harness: Harness) -> None:
     await harness.client_for(joiner.agent_id).wait_ready()
 
     # Room with only the watcher, so the joiner's join is strictly later than the
-    # watcher's own join-time (the AgentClient filters out events predating it).
+    # watcher's own join-time (the AgentConsumer filters out events predating it).
     result = await harness.room_service.create_room(
         RoomCreateConfig(
             name="e2e-room-join",
@@ -70,9 +70,9 @@ async def test_join_emits_room_join_event(harness: Harness) -> None:
         )
     )
     room_id = result.room.id
-    matrix_room_id = result.room.matrix_room_id
+    transport_room_id = result.room.transport_room_id
 
-    await _wait_joined(watcher_client, matrix_room_id)
+    await _wait_joined(watcher_client, transport_room_id)
 
     # Trigger the observed join.
     await harness.room_service.add_agents_to_room(room_id, agent_ids=[joiner.agent_id])
@@ -100,7 +100,7 @@ async def test_self_join_does_not_emit_room_join(harness: Harness) -> None:
             agent_ids=[watcher.agent_id],
         )
     )
-    await _wait_joined(watcher_client, result.room.matrix_room_id)
+    await _wait_joined(watcher_client, result.room.transport_room_id)
 
     # Give the receive loop time to deliver any (erroneous) self-join event.
     event = await _drain_room_join(harness, watcher.agent_id, result.room.id, timeout=8)

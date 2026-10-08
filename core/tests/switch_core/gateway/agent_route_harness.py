@@ -41,7 +41,7 @@ async def add_agent(
 ) -> Agent:
     client = Client(
         type="agent",
-        matrix_user_id=f"@{name}:test",
+        transport_user_id=f"@{name}:test",
         display_name=name,
     )
     session.add(client)

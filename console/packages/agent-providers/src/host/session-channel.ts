@@ -3,7 +3,20 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { serverEventSchema, type ServerEvent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
+
+/**
+ * How long a session host that has finished may take to exit once it has
+ * closed its end of the pipe. It exits by itself within this; see
+ * `HOST_HUNG_UP_MS` for when its parent stops waiting.
+ */
+export const HOST_EXIT_GRACE_MS = 5000;
+
+/**
+ * How long a host that hung up its pipe may stay alive before its parent
+ * kills it. Longer than the host's own grace, so a host that is leaving is
+ * given the chance to leave on its own.
+ */
+export const HOST_HUNG_UP_MS = 15000;
 
 /**
  * The pipe between a session host and the process that started it.
@@ -83,6 +96,14 @@ const answerSchema = z.object({
   error: z.string().optional(),
 });
 
+/** Why a session is busy: one kind per condition, with how many of it. */
+export const busyReasonSchema = z.object({
+  kind: z.enum(['turn_running', 'turn_starting', 'room_pending', 'approval_open', 'reset_waiting']),
+  count: z.number().int().positive(),
+});
+export type BusyReason = z.infer<typeof busyReasonSchema>;
+export type BusyState = { busy: boolean; reasons: BusyReason[] };
+
 const toChildSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('request'),
@@ -90,6 +111,8 @@ const toChildSchema = z.discriminatedUnion('kind', [
     request: sessionRequestSchema,
   }),
   answerSchema,
+  /** Answer `busy` once every command queued before this has been taken or refused. */
+  z.object({ kind: z.literal('busyBarrier'), id: z.number().int().nonnegative() }),
 ]);
 
 const fromChildSchema = z.discriminatedUnion('kind', [
@@ -104,6 +127,12 @@ const fromChildSchema = z.discriminatedUnion('kind', [
   }),
   z.object({ kind: z.literal('identity'), identity: hostIdentitySchema }),
   z.object({ kind: z.literal('ask'), id: z.number().int().nonnegative(), ask: hostAskSchema }),
+  z.object({
+    kind: z.literal('busy'),
+    busy: z.boolean(),
+    reasons: z.array(busyReasonSchema),
+    barrier: z.number().int().nonnegative().optional(),
+  }),
 ]);
 
 /** Raised when a session host is not running, or stopped before it answered. */
@@ -161,6 +190,11 @@ type Link = {
   pending: Map<number, Pending>;
   waiting: (() => void)[];
   subscribers: Set<(event: ServerEvent) => void>;
+  /** What the running host last said about being busy; null before it has. */
+  busy: BusyState | null;
+  barriers: Map<number, Pending>;
+  /** How many hosts here have exited, so a waiting request can tell one did. */
+  exits: number;
 };
 
 /**
@@ -173,6 +207,7 @@ export class SessionLinks {
   private readonly exitListeners = new Set<(root: string, identity: HostIdentity | null) => void>();
   private readonly readyListeners = new Set<(root: string) => void>();
   private readonly failureListeners = new Set<(root: string, failure: string) => void>();
+  private readonly busyListeners = new Set<(root: string) => void>();
 
   private link(root: string): Link {
     let link = this.links.get(root);
@@ -186,6 +221,9 @@ export class SessionLinks {
         pending: new Map(),
         waiting: [],
         subscribers: new Set(),
+        busy: null,
+        barriers: new Map(),
+        exits: 0,
       };
       this.links.set(root, link);
     }
@@ -199,6 +237,7 @@ export class SessionLinks {
     link.ready = false;
     link.identity = null;
     link.failure = null;
+    link.busy = null;
     child.on('message', (raw) => {
       const parsed = fromChildSchema.safeParse(raw);
       if (!parsed.success) {
@@ -214,6 +253,17 @@ export class SessionLinks {
         for (const subscriber of link.subscribers) subscriber(message.event);
       } else if (message.kind === 'identity') {
         link.identity = message.identity;
+      } else if (message.kind === 'busy') {
+        link.busy = { busy: message.busy, reasons: message.reasons };
+        for (const listener of this.busyListeners) listener(root);
+        if (message.barrier !== undefined) {
+          const pending = link.barriers.get(message.barrier);
+          link.barriers.delete(message.barrier);
+          if (pending) {
+            clearTimeout(pending.timer);
+            pending.resolve(link.busy);
+          }
+        }
       } else if (message.kind === 'ask') {
         const answer = (outcome: { ok: true; value: unknown } | { ok: false; error: string }) => {
           if (child.connected)
@@ -235,16 +285,49 @@ export class SessionLinks {
         else pending.reject(new Error(message.error ?? 'The session host refused the request.'));
       }
     });
+    // A host that closes its end of the pipe is leaving, and nothing sent
+    // down the pipe reaches it again. It is gone from here from that moment,
+    // not from the moment it exits: a host that hung up and stays alive —
+    // something it started still running — holds its session's lock, so it
+    // cannot be started again, while every message sent down the pipe fails.
+    // Requests wait for the next host instead, and one that is still alive
+    // after `HOST_HUNG_UP_MS` is killed with everything it started, which
+    // frees the lock and lets its supervisor start it again.
+    let hungUp: ReturnType<typeof setTimeout> | null = null;
+    child.once('disconnect', () => {
+      if (link.child !== child) return;
+      link.ready = false;
+      for (const [id, pending] of link.pending) {
+        clearTimeout(pending.timer);
+        pending.reject(new SessionUnavailableError('The session host hung up before it answered.'));
+        link.pending.delete(id);
+      }
+      for (const [id, pending] of link.barriers) {
+        clearTimeout(pending.timer);
+        pending.reject(new SessionUnavailableError('The session host hung up before it answered.'));
+        link.barriers.delete(id);
+      }
+      hungUp = setTimeout(() => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        console.warn(
+          `The session host at ${root} hung up ${HOST_HUNG_UP_MS / 1000} s ago and has not exited; stopping it and what it started.`
+        );
+        killHostGroup(child);
+      }, HOST_HUNG_UP_MS);
+      hungUp.unref?.();
+    });
     child.once('exit', (code) => {
+      if (hungUp) clearTimeout(hungUp);
       if (link.child !== child) return;
       const identity = link.identity;
       link.child = null;
       link.ready = false;
       link.identity = null;
-      // A non-zero exit other than a lapsed lease is one the supervisor does
-      // not recover from: the host has already written why.
-      if (code !== null && code !== 0 && code !== LEASE_EXPIRED_EXIT_CODE)
-        link.failure = recordedFailure(root, code);
+      link.busy = null;
+      link.exits++;
+      // A non-zero exit is one the supervisor does not recover from: the host
+      // has already written why.
+      if (code !== null && code !== 0) link.failure = recordedFailure(root, code);
       const failure = link.failure;
       for (const [id, pending] of link.pending) {
         clearTimeout(pending.timer);
@@ -255,8 +338,14 @@ export class SessionLinks {
         );
         link.pending.delete(id);
       }
+      for (const [id, pending] of link.barriers) {
+        clearTimeout(pending.timer);
+        pending.reject(new SessionUnavailableError('The session host stopped before it answered.'));
+        link.barriers.delete(id);
+      }
       // A request waiting for this host to come up learns now that it will not.
       for (const wake of link.waiting.splice(0)) wake();
+      for (const listener of this.busyListeners) listener(root);
       for (const listener of this.exitListeners) listener(root, identity);
       if (failure !== null) for (const listener of this.failureListeners) listener(root, failure);
     });
@@ -335,11 +424,30 @@ export class SessionLinks {
    * still starting. Refused with `SessionUnavailableError` when none comes,
    * and with `SessionHostFailedError` as soon as the host stops on a failure.
    */
-  async request(root: string, request: SessionRequest, timeoutMs: number): Promise<unknown> {
+  request(root: string, request: SessionRequest, timeoutMs: number): Promise<unknown> {
+    return this.dispatch(root, request, timeoutMs, () => {});
+  }
+
+  /**
+   * `request`, calling `dispatching` once a host is ready, just before the
+   * request is sent to it. A throw from `dispatching` refuses the request
+   * before it reaches the host.
+   */
+  async dispatch(
+    root: string,
+    request: SessionRequest,
+    timeoutMs: number,
+    dispatching: () => void
+  ): Promise<unknown> {
     const link = this.link(root);
     const deadline = Date.now() + timeoutMs;
+    const exits = link.exits;
     while (!link.ready || !link.child) {
       if (link.failure !== null) throw new SessionHostFailedError(link.failure);
+      // The host this request was waiting on is gone, and nothing here starts
+      // another: say so now, so the caller starts it, rather than at the deadline.
+      if (link.exits !== exits && !link.child)
+        throw new SessionUnavailableError('The session host stopped before it was ready.');
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new SessionUnavailableError('The session host is not running.');
       await new Promise<void>((resolve) => {
@@ -354,6 +462,11 @@ export class SessionLinks {
       });
     }
     const child = link.child;
+    // Belt and braces for the 'disconnect' handler above: a send down a
+    // closed pipe fails anyway, but saying why is clearer than the error.
+    if (!child.connected)
+      throw new SessionUnavailableError('The session host hung up and is on its way out.');
+    dispatching();
     const id = link.nextId++;
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(
@@ -373,11 +486,69 @@ export class SessionLinks {
     });
   }
 
+  /** The roots with a host process running, ready or not. */
+  live(): string[] {
+    return [...this.links].flatMap(([root, link]) => (link.child ? [root] : []));
+  }
+
+  /** Hear each change in what a host says about being busy, and each host exit. */
+  onBusy(listener: (root: string) => void): () => void {
+    this.busyListeners.add(listener);
+    return () => this.busyListeners.delete(listener);
+  }
+
+  /** What the running host at this root last said about being busy; null if none is running or it has not said. */
+  busy(root: string): BusyState | null {
+    return this.links.get(root)?.busy ?? null;
+  }
+
+  /**
+   * Ask the running host for its busy state once every command sent to it
+   * before now has been taken or refused. Refused with
+   * `SessionUnavailableError` when no host is running, it exits first, or it
+   * does not answer within `timeoutMs`.
+   */
+  barrier(root: string, timeoutMs: number): Promise<BusyState> {
+    const link = this.link(root);
+    const child = link.child;
+    if (!child || !link.ready)
+      return Promise.reject(new SessionUnavailableError('The session host is not running.'));
+    const id = link.nextId++;
+    return new Promise<BusyState>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        link.barriers.delete(id);
+        reject(new SessionUnavailableError('The session host did not answer its busy barrier.'));
+      }, timeoutMs);
+      link.barriers.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
+      child.send({ kind: 'busyBarrier', id }, (error) => {
+        if (!error) return;
+        link.barriers.delete(id);
+        clearTimeout(timer);
+        reject(new SessionUnavailableError(`The session host could not be reached: ${error}`));
+      });
+    });
+  }
+
   /** Hear every event the host at this root records from now on. */
   subscribe(root: string, listener: (event: ServerEvent) => void): () => void {
     const link = this.link(root);
     link.subscribers.add(listener);
     return () => link.subscribers.delete(listener);
+  }
+}
+
+/**
+ * Kill a session host and every process in its group. A host is started
+ * detached, so it leads its own group, and the provider processes it starts
+ * are in it too.
+ */
+function killHostGroup(child: ChildProcess): void {
+  if (!child.pid) return;
+  try {
+    if (process.platform === 'win32') child.kill('SIGKILL');
+    else process.kill(-child.pid, 'SIGKILL');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
   }
 }
 
@@ -406,6 +577,10 @@ export type ParentChannel = {
   identify: (identity: HostIdentity) => void;
   /** Ask the parent, rejecting if it does not answer or goes away. */
   ask: (ask: HostAsk) => Promise<unknown>;
+  /** Say whether the session is busy, and why; `barrier` answers a `busyBarrier`. */
+  busy: (state: BusyState, barrier: number | null) => void;
+  /** Answer each `busyBarrier` with this, once it resolves. */
+  onBarrier: (handler: () => Promise<BusyState>) => void;
   /** Stop answering requests, so the parent reads the host as going. */
   close: () => void;
 };
@@ -426,6 +601,7 @@ export function connectParent(port: ParentPort): ParentChannel {
     if (port.connected) port.send!(message);
   };
   let handlers: SessionRequestHandlers | null = null;
+  let barrier: (() => Promise<BusyState>) | null = null;
   let serving = true;
   let nextAsk = 0;
   const asks = new Map<
@@ -450,6 +626,14 @@ export function connectParent(port: ParentPort): ParentChannel {
       clearTimeout(pending.timer);
       if (message.ok) pending.resolve(message.value);
       else pending.reject(new Error(message.error ?? 'The parent refused.'));
+      return;
+    }
+    if (message.kind === 'busyBarrier') {
+      if (!barrier) return;
+      barrier().then(
+        (state) => send({ kind: 'busy', ...state, barrier: message.id }),
+        (error: unknown) => console.warn(`Could not answer a busy barrier: ${String(error)}`)
+      );
       return;
     }
     if (!serving) return;
@@ -486,6 +670,10 @@ export function connectParent(port: ParentPort): ParentChannel {
     ready: () => send({ kind: 'ready' }),
     push: (event) => send({ kind: 'event', event }),
     identify: (identity) => send({ kind: 'identity', identity }),
+    busy: (state, id) => send({ kind: 'busy', ...state, ...(id === null ? {} : { barrier: id }) }),
+    onBarrier: (handler) => {
+      barrier = handler;
+    },
     ask: (ask) => {
       if (!port.connected)
         return Promise.reject(new Error('The parent process is gone, so nothing can answer.'));

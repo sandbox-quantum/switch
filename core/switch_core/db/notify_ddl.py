@@ -1,8 +1,7 @@
 """The database side of message delivery: a trigger that announces new rows.
 
-Delivery used to be the message bus pushing an event at a long-lived sync
-connection. It becomes the table announcing its own inserts, and a listener
-reading the rows back.
+Delivery is the table announcing its own inserts, and a listener reading the
+rows back.
 
 **The notification is a hint, never the payload.** It carries a room, a
 position and a row id, and a consumer reads the row itself. That is what makes
@@ -13,8 +12,8 @@ make the queue authoritative, and Postgres's notification queue is neither
 durable nor replayable.
 
 **It is a trigger rather than a call in the writer** so that it cannot be
-forgotten. Anything that inserts a row — the recorder today, a backfill
-tomorrow, a human with psql — announces it, and the announcement commits with
+forgotten. Anything that inserts a row (a send, a backfill, a human with
+psql) announces it, and the announcement commits with
 the row or not at all. `NOTIFY` is only delivered on commit, so a listener
 never learns about a row it could not then read.
 
@@ -23,7 +22,7 @@ save wakeups, but each one needs a `LISTEN` issued before the first row it
 should catch, which is a race the consumer has to close by reading the table
 anyway — so the correctness machinery is identical and the subscription churn
 is pure cost. See `switch_core/messages/notify.py` for the in-process fan-out
-that replaces it.
+that does the filtering.
 
 The migration that installs this on a real database carries its own verbatim
 copy: a migration is frozen at the moment it was written and must not change

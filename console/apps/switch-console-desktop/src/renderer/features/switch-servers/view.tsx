@@ -16,6 +16,10 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { HostUnreachablePanel } from '@renderer/features/remote-hosts/host-unreachable-panel';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
+import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar';
+import { workspaceTitle } from '@renderer/features/workspaces/workspace-title';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -39,7 +43,6 @@ import { remoteServerStore } from './remote-server-store';
 import { RemoteServerControls } from './RemoteServerControls';
 import { serverIcon } from './server-icon';
 import {
-  ServerAvatar,
   serverDeployedTelemetry,
   serverDrift,
   serverPlacementLabel,
@@ -48,11 +51,20 @@ import {
 } from './server-presentation';
 import { ServerResetSection } from './server-reset-section';
 import { ServerSectionTitlebar } from './server-section-titlebar';
-import { ServerSignInFields, useServerSignIn } from './server-sign-in';
+import {
+  machineUnavailableReason,
+  type SignedIn,
+  ServerSignInFields,
+  useServerSignIn,
+} from './server-sign-in';
 import { ServerStatTiles } from './server-stat-tiles';
+import { useSharedActionConfirm } from './shared-action-confirm';
+import { SharedConsolesSection } from './shared-consoles-section';
+import { isSwitchCloudServer } from './switch-cloud-store';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { TelemetryConsentNotice } from './TelemetryConsentNotice';
+import { loadSwitchCloudOrigin, managedCloudServerId } from './use-cloud-launches';
 import { myIdentitiesQueryKey } from './use-my-identities';
 import { VersionDriftNotice } from './VersionDriftNotice';
 
@@ -93,6 +105,9 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   const serverId = useServerId();
   const store = switchServersStore;
   const server = store.servers.find((s) => s.id === serverId);
+  // A remote server is shared, so restarting it from a notice reaches everyone.
+  const remoteHost = server?.managementKind === 'remote' ? server.sshHost : null;
+  const confirm = useSharedActionConfirm(remoteHost);
   const showEditServerModal = useShowModal('addServerModal');
   const showRenameServerModal = useShowModal('renameServerModal');
   const showDeleteServerModal = useShowModal('deleteServerModal');
@@ -119,12 +134,15 @@ const ServerMainPanel = observer(function ServerMainPanel() {
    */
   const refreshEverything = async (): Promise<void> => {
     setRefreshingPage(true);
+    // The three caches below are keyed by workspace, so a server id would
+    // invalidate nothing and the button would spin over stale cards.
+    const workspaceId = workspacesStore.idOnServerInScope(serverId);
     try {
       await Promise.all([
         store.refreshServer(serverId),
-        queryClient.invalidateQueries({ queryKey: ['remote-bridges', serverId] }),
-        queryClient.invalidateQueries({ queryKey: myIdentitiesQueryKey(serverId) }),
-        queryClient.invalidateQueries({ queryKey: ['owns-owner-addressed-agent', serverId] }),
+        queryClient.invalidateQueries({ queryKey: ['remote-bridges', workspaceId] }),
+        queryClient.invalidateQueries({ queryKey: myIdentitiesQueryKey(workspaceId) }),
+        queryClient.invalidateQueries({ queryKey: ['owns-owner-addressed-agent', workspaceId] }),
         switchRoomsStore.refreshRoomState(),
         agentsStore.load(),
         new Promise((resolve) => setTimeout(resolve, MIN_REFRESH_FEEDBACK_MS)),
@@ -191,6 +209,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   const unreachable = store.isUnreachable(serverId);
   const PlacementIcon = serverIcon(server);
   const drift = serverDrift(server);
+  const title = workspaceTitle(server);
   const stackTransitioning =
     server.managementKind === 'remote' && server.sshHost
       ? remoteServerStore.isTransitioning(server.sshHost) ||
@@ -199,17 +218,28 @@ const ServerMainPanel = observer(function ServerMainPanel() {
 
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
-      <div className="mx-auto w-full max-w-4xl space-y-6 p-6">
+      <div className="mx-auto w-full max-w-[880px] space-y-6 p-6">
         <header className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
-            <ServerAvatar server={server} size="lg" />
-            <h2 className="truncate text-2xl font-semibold text-foreground">{server.name}</h2>
-            {/* Where the server lives, as the icon the switcher and the sidebar
-              already use for it rather than as a second vocabulary in words. */}
-            <PlacementIcon
-              aria-label={serverPlacementLabel(server) ?? 'Reached over the network'}
-              className="size-4 shrink-0 text-foreground-muted"
-            />
+            <WorkspaceAvatar name={title} size="lg" active />
+            <div className="min-w-0">
+              <h2 className="truncate text-2xl font-semibold text-foreground">{title}</h2>
+              {/* The server it is on, said only where the title does not
+                  already: the placeholder before sign-in is named after it. */}
+              <div className="flex min-w-0 items-center gap-1.5 text-xs text-foreground-muted">
+                {/* Where the server lives, as the icon the switcher and the
+                  sidebar already use for it rather than as a second vocabulary
+                  in words. */}
+                <PlacementIcon
+                  aria-label={
+                    serverPlacementLabel(server) ??
+                    (isSwitchCloudServer(server) ? 'Switch Cloud' : 'Reached over the network')
+                  }
+                  className="size-3.5 shrink-0"
+                />
+                {title !== server.name && <span className="truncate">{server.name}</span>}
+              </div>
+            </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {detailsVisible && (
@@ -260,16 +290,25 @@ const ServerMainPanel = observer(function ServerMainPanel() {
                 )}
                 <DropdownMenuSeparator />
                 {/* Only a server Switch Console runs is one it can delete; for
-                    anyone else's, all we can do is let go of it. Both stay red:
-                    either way every agent pointed at this server loses it. */}
+                    anyone else's, all we can do is let go of it. A remote one
+                    offers both, since its host is shared. All stay red: either
+                    way every agent pointed at this server loses it. */}
                 <DropdownMenuItem
                   variant="destructive"
                   onClick={() =>
                     showDeleteServerModal({ serverId, onSuccess: () => navigate('home') })
                   }
                 >
-                  {server.managed ? <Trash2 className="size-4" /> : <Unplug className="size-4" />}
-                  {server.managed ? 'Delete server…' : 'Disconnect from server…'}
+                  {server.managed && server.managementKind !== 'remote' ? (
+                    <Trash2 className="size-4" />
+                  ) : (
+                    <Unplug className="size-4" />
+                  )}
+                  {!server.managed
+                    ? 'Disconnect from server…'
+                    : server.managementKind === 'remote'
+                      ? 'Disconnect or delete…'
+                      : 'Delete server…'}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -290,7 +329,14 @@ const ServerMainPanel = observer(function ServerMainPanel() {
           upgrade={serverUpgrade(server)}
           progress={serverProgress(server)}
           disabled={stackTransitioning}
-          onRestart={() => restartStack(server)}
+          affected={confirm.who}
+          onRestart={() =>
+            // A held update names who it reaches on its own button; a stopped
+            // server reaches nobody.
+            isManagedRunning(server) && serverUpgrade(server)?.state !== 'held'
+              ? confirm.request('restart', () => restartStack(server))
+              : restartStack(server)
+          }
         />
 
         {/* Same placement, and for the same reason: a consent decision that has
@@ -301,10 +347,12 @@ const ServerMainPanel = observer(function ServerMainPanel() {
             running: server.managed && isManagedRunning(server),
             deployed: serverDeployedTelemetry(server),
             consent: telemetry?.enabled ?? true,
+            sharedWithOthers: confirm.shared,
           })}
           disabled={stackTransitioning}
-          onRestart={() => restartStack(server)}
+          onRestart={() => confirm.request('restart', () => restartStack(server))}
         />
+        {confirm.dialog}
 
         {detailsVisible && unreachable && <ServerUnreachableCard serverId={serverId} />}
 
@@ -335,6 +383,10 @@ const ServerMainPanel = observer(function ServerMainPanel() {
           ) : (
             <LocalServerControls />
           ))}
+
+        {server.managed && server.managementKind === 'remote' && server.sshHost && (
+          <SharedConsolesSection sshHost={server.sshHost} />
+        )}
 
         {detailsVisible && !unreachable && (
           <div className="flex items-center justify-between gap-3">
@@ -368,6 +420,8 @@ const ServerMainPanel = observer(function ServerMainPanel() {
                 ? `Reset server on ${server.sshHost}`
                 : 'Reset server on this computer'
             }
+            shared={server.managementKind === 'remote'}
+            affected={confirm.who}
             disabled={stackTransitioning}
             onConfirm={() => {
               if (server.managementKind === 'remote' && server.sshHost) {
@@ -492,6 +546,13 @@ function StatusDot({ connected }: { connected: boolean }) {
 
 const LoginPanel = observer(function LoginPanel({ serverId }: { serverId: string }) {
   const signIn = useServerSignIn(serverId);
+  const onSignedIn = (signedIn: SignedIn) => {
+    void loadSwitchCloudOrigin().then(() => {
+      if (serverId !== managedCloudServerId()) return;
+      const reason = machineUnavailableReason(signedIn);
+      if (reason) toast({ title: 'Your cloud machine is not starting', description: reason });
+    });
+  };
 
   return (
     <div className={`${card} space-y-4`}>
@@ -499,15 +560,17 @@ const LoginPanel = observer(function LoginPanel({ serverId }: { serverId: string
       <ServerSignInFields
         signIn={signIn}
         idPrefix="switch-login"
-        onSignedIn={() => {}}
+        onSignedIn={onSignedIn}
         passwordSubmit={
           <Button
             size="sm"
             className="self-start"
-            disabled={signIn.submitting || !signIn.canSubmitPassword}
-            onClick={() => void signIn.signInWithPassword()}
+            disabled={!signIn.canSubmitForm}
+            onClick={() =>
+              void signIn.submitForm().then((signedIn) => signedIn && onSignedIn(signedIn))
+            }
           >
-            {signIn.submitting ? 'Signing in…' : 'Sign in'}
+            {signIn.submitLabel}
           </Button>
         }
       />

@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import inspect
 import logging
+import time
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.auth import get_agent_from_scope
+from switch_core.bridges.agent.auth import ControllerPrincipal, get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_protocol, get_session_factory
 from switch_core.bridges.agent.operations import all_operations, get_operation
 from switch_core.bridges.agent.operations.callctx import (
@@ -32,9 +33,18 @@ from switch_core.bridges.agent.operations.callctx import (
     CallerSession,
     call_context,
 )
-from switch_core.bridges.agent.protocol.connections import UnknownConnectionError
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import UnknownConnectionError
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.hosted_workers import CodedPermissionError
+from switch_core.budgets import BudgetExceeded
 from switch_core.db.models import Agent
+from switch_core.observability.catalogue import (
+    BRIDGE_CALL_DURATION,
+    BRIDGE_ERRORS,
+    BRIDGE_EVENTS_IN,
+)
+from switch_core.observability.metrics import metrics
+from switch_core.trust.client import GuardrailBlockedError
 
 logger = logging.getLogger(__name__)
 
@@ -109,13 +119,32 @@ async def call_operation(
     if missing:
         raise BadArgumentsError(f"{operation} requires: {', '.join(missing)}")
 
+    # The agent bridge's side of `switch.bridge.*`: every operation an agent
+    # calls is an event in, timed as a call, and counted as an error when it
+    # raises. `event` is the operation's name, bounded by the registry.
+    metrics().increment(
+        BRIDGE_EVENTS_IN, {"bridge": "agent", "platform": "switch", "event": operation}
+    )
+    started = time.perf_counter()
     with call_context(
         CallContext(agent_id=agent_id, session_key=connection_id, session=session)
     ):
-        result = fn(**call_args)
-        if inspect.isawaitable(result):
-            result = await result
-        return result
+        try:
+            result = fn(**call_args)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception:
+            metrics().increment(
+                BRIDGE_ERRORS,
+                {"bridge": "agent", "platform": "switch", "direction": "inbound"},
+            )
+            raise
+    metrics().observe(
+        BRIDGE_CALL_DURATION,
+        {"bridge": "agent", "platform": "switch", "kind": operation},
+        (time.perf_counter() - started) * 1000.0,
+    )
+    return result
 
 
 # ── HTTP router ──────────────────────────────────────────────────────────────
@@ -131,7 +160,7 @@ SESSION_SELECTOR_HEADERS = (
 async def resolve_caller(
     *,
     agent_id: str,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     factory: async_sessionmaker[AsyncSession],
     connection_id: str | None,
     session_id: str | None,
@@ -180,6 +209,38 @@ async def resolve_caller(
     return bound, caller
 
 
+async def resolve_controller_caller(
+    *, agent_id: str, protocol: AgentCore, room_id: str | None
+) -> tuple[str, CallerSession]:
+    """The caller, for a controller acting as one of its agents.
+
+    The controller keeps its agents' sessions to itself, so it names the room
+    the calling session works in with `X-Switch-Room-Id`, and that room stands
+    where a session selector's would. Membership is checked here; without the
+    header an operation that needs a room fails as for any caller in none.
+
+    The caller is the agent's holder id (`ControllerPresence.holder_id`), as
+    both session key and session: it is what a role lease is held under and
+    what reads the agent's unread counts, for every session the controller
+    runs. Connection and session selector headers mean nothing to Switch here
+    — they name the controller's local relay — and are not read.
+    """
+    holder = protocol.connections.controllers.holder_of(agent_id)
+    if holder is None:
+        raise HTTPException(
+            status_code=403,
+            detail=f"agent {agent_id} is no longer run by this controller",
+        )
+    if room_id is not None:
+        try:
+            await protocol.require_room_member(agent_id, room_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return holder, CallerSession(id=holder, host_id="", epoch="", room_id=room_id)
+
+
 router = APIRouter(prefix="/agents", tags=["operations"])
 
 
@@ -194,16 +255,18 @@ async def get_operations(
 
 @router.post("/{agent_id}/ops/{operation}")
 async def post_operation(
+    request: Request,
     agent_id: str,
     operation: str,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
     body: dict[str, Any] | None = None,
     connection_id: Annotated[str | None, Header(alias="x-switch-connection-id")] = None,
     session_id: Annotated[str | None, Header(alias="x-switch-session-id")] = None,
     host_id: Annotated[str | None, Header(alias="x-switch-session-host-id")] = None,
     epoch: Annotated[str | None, Header(alias="x-switch-session-epoch")] = None,
+    room_id: Annotated[str | None, Header(alias="x-switch-room-id")] = None,
 ) -> dict[str, Any]:
     """Run one operation. The body is the operation's arguments.
 
@@ -215,16 +278,26 @@ async def post_operation(
     read from headers rather than the body, and both are checked against the
     calling agent. Only the session selector resolves a room for a caller
     sharing its connection with other sessions.
+
+    A controller acting as the agent sends `X-Switch-Room-Id` instead
+    (`resolve_controller_caller`).
     """
-    session_key, caller = await resolve_caller(
-        agent_id=agent.id,
-        protocol=protocol,
-        factory=factory,
-        connection_id=connection_id,
-        session_id=session_id,
-        host_id=host_id,
-        epoch=epoch,
-    )
+    caller: CallerSession | None
+    session_key: str | None
+    if isinstance(request.scope.get("controller"), ControllerPrincipal):
+        session_key, caller = await resolve_controller_caller(
+            agent_id=agent.id, protocol=protocol, room_id=room_id
+        )
+    else:
+        session_key, caller = await resolve_caller(
+            agent_id=agent.id,
+            protocol=protocol,
+            factory=factory,
+            connection_id=connection_id,
+            session_id=session_id,
+            host_id=host_id,
+            epoch=epoch,
+        )
 
     try:
         result = await call_operation(
@@ -238,6 +311,12 @@ async def post_operation(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except BadArgumentsError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except CodedPermissionError as exc:
+        raise HTTPException(status_code=403, detail=exc.detail) from exc
+    except BudgetExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except GuardrailBlockedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:

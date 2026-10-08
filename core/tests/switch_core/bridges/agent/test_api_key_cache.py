@@ -17,8 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import BearerAuthMiddleware
-from switch_core.bridges.agent.protocol.connections import HEARTBEAT_TTL_SECONDS
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import HEARTBEAT_TTL_SECONDS
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     TaskProtocolConfig,
@@ -27,6 +27,7 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import Agent, ApiKey, Client, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.keys import Keyring
 
 _PROFILE = IntegrationProfile(
     connection_model="session_passive",
@@ -61,7 +62,7 @@ class _FakeClientLifecycle:
     async def create_client(self, *, client_type: str, display_name: str) -> Client:
         async with self._session_factory() as session:
             client = Client(
-                matrix_user_id=f"@{display_name}:test",
+                transport_user_id=f"@{display_name}:test",
                 display_name=display_name,
                 type=client_type,
             )
@@ -125,7 +126,7 @@ async def _seed_agent(
         agent_id = ""
         if with_agent:
             client = Client(
-                matrix_user_id=f"@{name}:test",
+                transport_user_id=f"@{name}:test",
                 display_name=name,
                 type="agent",
             )
@@ -362,7 +363,7 @@ class TestInvalidation:
         await mw._resolve_api_key("tok")
         assert cache.get(_hash("tok")) is not None
 
-        svc = _protocol_service(session_factory, cache)
+        svc = _agent_core(session_factory, cache)
         await svc.delete_agent(agent_id=agent_id)
 
         assert cache.get(_hash("tok")) is None
@@ -380,7 +381,7 @@ class TestInvalidation:
         # invalidation the retired credential keeps authenticating for the
         # whole TTL, which is the failure mode this cache must not introduce.
         cache = ApiKeyCache(ttl_seconds=5, max_entries=8)
-        svc = _protocol_service(session_factory, cache)
+        svc = _agent_core(session_factory, cache)
         async with session_factory() as session:
             owner = User(name="o", email="o@test", role="user", password_hash="x")
             session.add(owner)
@@ -414,10 +415,10 @@ class TestInvalidation:
         assert rotated is not None
 
 
-def _protocol_service(
+def _agent_core(
     session_factory: async_sessionmaker[AsyncSession], cache: ApiKeyCache
-) -> ProtocolService:
-    svc = object.__new__(ProtocolService)
+) -> AgentCore:
+    svc = object.__new__(AgentCore)
     svc.session_factory = session_factory  # type: ignore[attr-defined]
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.api_key_store = ApiKeyStore()  # type: ignore[attr-defined]
@@ -425,7 +426,9 @@ def _protocol_service(
     svc.client_lifecycle = _FakeClientLifecycle(session_factory)  # type: ignore[attr-defined]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[attr-defined]
     svc.event_buffer = SimpleNamespace(remove=lambda _agent_id: None)  # type: ignore[attr-defined]
-    svc.config = SimpleNamespace(jwt_secret_key="test-secret")  # type: ignore[attr-defined]
+    svc.config = SimpleNamespace(
+        keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None)
+    )  # type: ignore[attr-defined]
     return svc
 
 
@@ -435,9 +438,9 @@ _CONFIG_KWARGS = dict(
     db_user="postgres",
     db_password="pw",
     db_name="switch",
-    matrix_server_name="switch.local",
+    id_server_name="switch.local",
     agent_registration_token="token",
-    jwt_secret_key="jwt",
+    secret_keys="test:" + "x" * 40,
     gateway_admin_email="admin@example.com",
     gateway_admin_password="pw",
 )

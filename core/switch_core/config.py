@@ -1,11 +1,17 @@
+import os
 import re
 import ssl
 import uuid
+from functools import cached_property
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from switch_core.keys import Keyring
+from switch_core.outbound import OutboundPolicy
 
 # A Postgres time value: a bare count of milliseconds, or a count with a unit.
 _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
@@ -18,7 +24,7 @@ _DB_ROLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
 
 class SwitchConfig(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="")
+    model_config = SettingsConfigDict(env_prefix="", populate_by_name=True)
 
     db_host: str
     db_port: str
@@ -54,6 +60,12 @@ class SwitchConfig(BaseSettings):
     db_owner_user: str | None = None
     db_owner_password: str | None = None
 
+    # Apply migrations and re-issue grants at boot. Turn off where a separate
+    # step runs `switch-migrate` as the owner before the server starts (the
+    # Helm chart's init container), so the serving process never holds the
+    # owner's password. Boot then only checks the schema is at head.
+    db_migrate_on_boot: bool = True
+
     # Refuse to serve when the runtime connection is not actually subject to
     # the policies — a superuser, a `BYPASSRLS` role, or the owner of the
     # scoped tables. On by default because the failure it catches is silent: a
@@ -61,25 +73,49 @@ class SwitchConfig(BaseSettings):
     # like one that is, right up until a second customer reads the first's
     # rooms.
     #
-    # Set false only for a deployment that has not created its runtime role
-    # yet. Boot then logs at `error` on every start, because that is a
-    # deployment with no tenant isolation in it.
+    # Set false only for a single-tenant deployment that has not created its
+    # runtime role yet. Boot then logs at `error` on every start, because that
+    # is a deployment with no tenant isolation in it. It keeps to one
+    # workspace: refused with open sign-up, refused at boot once more than one
+    # is stored, and no workspace can be created while it runs.
     db_require_restricted_role: bool = True
 
-    # The server half of every client's `@localpart:server` id. Not a
-    # homeserver address — nothing is contacted at it — but the ids are stable
+    # The server half of every member's `@localpart:server` id. Not a
+    # server address — nothing is contacted at it — but the ids are stable
     # public handles, so the shape outlives the homeserver that chose it.
-    matrix_server_name: str
+    # Read from ID_SERVER_NAME; MATRIX_SERVER_NAME, its name until the
+    # lexicon refactor, is still accepted for one release so deployments
+    # and the Console's managed servers keep starting (deprecated).
+    id_server_name: str = Field(
+        validation_alias=AliasChoices("id_server_name", "matrix_server_name")
+    )
     agent_registration_token: str
 
-    # JWT auth
-    jwt_secret_key: str
+    # The server's master keys, `<id>:<secret>` comma-separated, current
+    # first. Every signing and encryption key is derived from these, one per
+    # purpose; older entries only open what they encrypted or signed. See
+    # `keys.py` and docs/old/key-rotation.md.
+    secret_keys: str
+    # Legacy: the one secret everything used before SECRET_KEYS. Set, it opens
+    # stored values and verifies sessions and signatures made with it; boot
+    # re-encrypts those values under the current key. Remove it once that has
+    # run and whatever it signed may stop working.
+    jwt_secret_key: str | None = None
+
+    # Private hosts Switch may reach at a URL a tenant or agent supplied (a
+    # Mattermost server, an OpenCode server, an agent icon): comma-separated
+    # hostnames and CIDRs. Anything else that is not a public address is
+    # refused. Link-local and metadata addresses are refused even when listed.
+    # See `outbound.py`.
+    outbound_allowed_private_hosts: str = ""
 
     # Gateway admin seed
     gateway_admin_email: str
     gateway_admin_password: str
 
-    # OIDC (optional — enables OAuth token validation on the MCP server)
+    # OIDC (optional — enables OAuth token validation on the MCP server).
+    # The audience is required with the issuer: without it, a token the same
+    # IdP minted for any other application would be accepted here.
     oauth_issuer_url: str | None = None
     oauth_audience: str | None = None
     oauth_verify_issuer: bool = True
@@ -127,10 +163,28 @@ class SwitchConfig(BaseSettings):
     gateway_oidc_require_email_verified: bool = True
     # Lets the password login path be disabled (OIDC-only) without code changes.
     gateway_password_login_enabled: bool = True
-    # Sets the Secure flag on the switch_auth cookie. Defaults to False so local
-    # dev over plain HTTP keeps working; deployments serving over HTTPS must set
-    # this true so the JWT session cookie is never sent over an insecure channel.
-    gateway_cookie_secure: bool = False
+    # Open self sign-up with email and password: anyone who can reach the
+    # gateway can create an account in tenant zero. Only takes effect while
+    # password login is enabled and gateway_signup_mode is "default_tenant",
+    # the one mode that lands a new account in tenant zero.
+    gateway_signup_enabled: bool = False
+    # Counts every user created in the last hour (sign-up, admin-created and
+    # OIDC first sign-in alike), read from the users table so it holds across
+    # replicas. Sign-up is refused once the count reaches this.
+    gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
+    hosted_sessions_per_agent: int = Field(default=8, ge=1, le=100)
+    hosted_agents_per_owner: int = Field(default=3, ge=1, le=100)
+    hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
+    hosted_disk_retention_days: int = Field(default=7, ge=1, le=90)
+    hosted_controller_config_path: str | None = None
+    hosted_github_config_path: str | None = None
+    hosted_provider_verification_enabled: bool = False
+    hosted_claude_verifier_path: str | None = None
+    # Sets the Secure flag on the gateway's cookies (the switch_auth session
+    # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
+    # Only a local stack served over http:// should turn it off.
+    gateway_cookie_secure: bool = True
 
     # Off by default: a person who belongs to more than one tenant and has not
     # selected one on their session gets the same 403 a single-tenant
@@ -140,6 +194,23 @@ class SwitchConfig(BaseSettings):
     # against this deployment knows what to do with it. See
     # docs/old/multi-tenancy-phase2-tenants.md, §4.
     gateway_tenant_choice_enabled: bool = False
+
+    # What a person signing in through the IdP for the first time gets.
+    #
+    # "default_tenant": joined to the deployment's one pre-existing workspace,
+    #   tenant zero. Right for a single-organisation deployment, and what every
+    #   deployment did before sign-up existed.
+    # "invite_only": an account and no workspace. They get in by accepting an
+    #   invitation; only an operator may create a workspace.
+    # "open": an account and no workspace, and they may create their own, up to
+    #   gateway_max_workspaces_per_user.
+    #
+    # Who may sign in at all is the IdP's decision, not this one: this only
+    # decides where a new account lands. Accounts an administrator creates
+    # (`POST /users`) always join that administrator's workspace.
+    gateway_signup_mode: Literal["default_tenant", "invite_only", "open"] = (
+        "default_tenant"
+    )
 
     # How many workspaces one person may own here. 0 turns `POST /tenants` into
     # a 403 outright, so this single value is both the cap and the gate.
@@ -157,6 +228,24 @@ class SwitchConfig(BaseSettings):
     # an operator provisioning workspaces for other people is not that.
     # docs/old/multi-tenancy-phase2-tenants.md, §5.
     gateway_max_workspaces_per_user: int = 3
+
+    # Outbound mail for invitations addressed to an e-mail. Setting the host
+    # turns it on; any SMTP relay works. Unset, an addressed invitation is
+    # still created and the admin is told nothing was sent, so they can share
+    # the link themselves. The link is built from `frontend_base_url` — never
+    # from the request's Host header, which the requester controls.
+    gateway_smtp_host: str | None = None
+    gateway_smtp_port: int = 587
+    # "starttls" upgrades a plain connection (port 587), "tls" connects over
+    # TLS from the start (port 465), "none" is for a local relay only.
+    gateway_smtp_tls: Literal["starttls", "tls", "none"] = "starttls"
+    gateway_smtp_username: str | None = None
+    gateway_smtp_password: str | None = None
+    gateway_smtp_from: str | None = None
+    # How many e-mailed invitations one workspace may send in 24 hours. With
+    # sign-up open anyone can own a workspace, so without this the server is
+    # a relay for mail to arbitrary addresses. Operators are not limited.
+    gateway_invite_emails_per_day: int = 50
 
     # ── Logging ──────────────────────────────────────────────────────────────
     # "text" for a terminal, "json" for a log pipeline that parses fields.
@@ -250,6 +339,22 @@ class SwitchConfig(BaseSettings):
     # to how long this process has been up.
     telemetry_snapshot_interval_hours: float = 24.0
 
+    # Which Amplitude project this deployment's usage lands in, sent as
+    # `flint_env`. The relay keeps one project per environment and files an
+    # event naming none, or `prod`, under production — which is what every
+    # customer's deployment is, and why it is the default. Our own non-customer
+    # servers say so here: `dev` for the development deployment, `local` for a
+    # developer's machine (`just init-env` writes it), so their usage never
+    # reads as adoption. Any other value is refused at startup, because the
+    # relay drops an event naming an environment it has no project for.
+    telemetry_environment: Literal["prod", "staging", "dev", "local"] = "prod"
+
+    # Whether this deployment is one of the company's own, sent as
+    # `flint_internal` so staff usage can be told from adoption. A customer's
+    # deployment never sets it. Within a deployment, staff accounts are counted
+    # separately by email domain whether or not this is set.
+    telemetry_internal: bool = False
+
     server_host: str = "0.0.0.0"
     server_port: int = 8000
 
@@ -274,7 +379,9 @@ class SwitchConfig(BaseSettings):
     # `switchdash://` deeplink HTTP redirect (`/deeplink/session`, served on the
     # agent-bridge app) so the "Open in Switch Console" link is clickable on platforms
     # that only linkify http(s) (Discord, and any future http-only bridge). When
-    # unset, the raw `switchdash://` deeplink is posted as-is.
+    # unset, the raw `switchdash://` deeplink is posted as-is. Also the
+    # `--server` an agents controller enrolls against, which the gateway's Add
+    # machine dialog shows; unset, it shows no enrollment command.
     gateway_public_url: str | None = None
 
     # Credentials of the distributed Slack app *we* registered — the one a
@@ -293,6 +400,37 @@ class SwitchConfig(BaseSettings):
     slack_app_client_secret: str | None = None
     slack_app_signing_secret: str | None = None
 
+    # The distributed Discord app (`DISCORD_DISTRIBUTED_APP.md`): the one app
+    # *we* register and a customer adds to their server, distinct from the
+    # self-registered app whose token an operator pastes in.
+    #
+    # Four values and not three, and the shape difference from Slack is the last
+    # one: Discord grants no per-install token, so the bot token is deployment
+    # config that lives *here* and is injected into the one shared Gateway
+    # connection — not captured per install the way a Slack workspace token is.
+    # As with Slack, setting all of them is what enables installs (registration
+    # is the feature flag) and setting some is a startup error.
+    discord_app_client_id: str | None = None
+    discord_app_client_secret: str | None = None
+    discord_app_bot_token: str | None = None
+    discord_app_application_id: str | None = None
+
+    # Whether the shared Gateway connection requests the privileged message-
+    # content intent. Off by default (mention-only): the connection opens
+    # unapproved and agents still see mentions of the bot and its own messages.
+    # Requesting it while unapproved closes the connection past Discord's
+    # ~100-guild verification threshold, so it is a deliberate flag flipped once
+    # the app is verified — not something inferred (decision #5).
+    discord_app_message_content: bool = False
+
+    # Whether the shared Gateway connection requests the privileged server-
+    # members intent. Off by default, and privileged the same way message
+    # content is: requesting it unapproved closes the connection past the
+    # ~100-guild threshold. Off, member lookups fall back to API fetches; on
+    # (once verified), the bot fills its member cache. Its own flag rather than
+    # riding message content's, because the two are approved independently.
+    discord_app_members: bool = False
+
     # Public origin (scheme + host, no path) that a messaging platform reaches
     # Switch on: the base of the OAuth redirect and of the three event URLs
     # under `/messaging`, and the one registered with the app.
@@ -306,6 +444,27 @@ class SwitchConfig(BaseSettings):
     # gateway URL at the internet-facing host to achieve that would silently
     # move every deeplink along with it.
     messaging_public_url: str | None = None
+
+    # Switch Trust: a guardrails service that checks a message against a
+    # policy before it is sent, blocking it on a BLOCKED verdict. Base URL,
+    # no path — `/guardrails/check` (the check-only route added in
+    # https://github.com/sandbox-quantum/hoot/pull/2397) is appended, the same
+    # convention `otlp_endpoint`/`telemetry_endpoint` follow. Defaults to the
+    # company API; override for a different deployment or a local stack.
+    switch_trust_endpoint: str = "https://api.flintai.dev"
+
+    # Authenticates with Switch Trust and names which policy to run. Both
+    # unset (the default) is what turns the whole feature off — see
+    # `trust_enabled` — and setting one without the other is a startup error,
+    # the same all-or-nothing shape as the distributed Slack/Discord app
+    # config above.
+    switch_trust_api_key: str | None = None
+    switch_trust_policy_id: str | None = None
+
+    # How long to wait on a check before giving up and letting the message
+    # through unchecked (fail open — see `trust/client.py`). Short, because
+    # this gates every message Switch sends.
+    switch_trust_timeout_seconds: float = 2.0
 
     # Upper bound on a single attachment an agent may post to a room (and that
     # a collaboration bridge will relay out). Uploads over this raise instead
@@ -346,11 +505,38 @@ class SwitchConfig(BaseSettings):
     # the entry immediately rather than waiting for it to expire. This is the
     # window in which an already-issued credential outlives its revocation, so
     # it is deliberately shorter than the agent heartbeat TTL. Set to 0 to
-    # disable the cache and read the database on every request.
+    # disable the cache and read the database on every request. With agent
+    # management on, the same TTL and bound apply to the separate cache of a
+    # controller access token's reads (its controller row, and the agent row
+    # it acts as), which a revocation or binding change also drops at once.
     agent_auth_cache_ttl_seconds: float = 5.0
     # Bound on the memo. One entry per distinct live token; the oldest is
     # evicted past this, so a flood of tokens cannot grow the process.
     agent_auth_cache_max_entries: int = 4096
+
+    # Agent management: managed agent definitions, the agent controllers that
+    # run them, and the controller-facing routes under /v1/management and
+    # /v1/controllers. Off by default; with it off none of those routes are
+    # mounted and the bearer middleware never treats a token as a controller's.
+    agent_management_enabled: bool = False
+    # Signs controller access tokens. Required (at least 32 characters) when
+    # agent management is on, and deliberately separate from SECRET_KEYS so
+    # rotating one never invalidates the other.
+    controller_token_secret: str | None = None
+    # How often a controller must report status. Sent to controllers as
+    # `report_within_s`; a controller that has not reported for three of these
+    # is shown as unknown and refused new placements.
+    controller_status_interval_seconds: int = 60
+    # Share one read of a room's new messages between every client in it
+    # (`transport/room_cache.py`). Without it, a room of N agents reads each
+    # new page N times, which is what exhausted the pool in a restart burst.
+    # The limits bound memory, not correctness: anything outside them is read
+    # from the database, as every client did before the cache.
+    room_delivery_cache_max_bytes: int = 64 * 1024 * 1024
+    room_delivery_cache_max_rooms: int = 5000
+    # At least one delivery page (200), or a fill could not be held.
+    room_delivery_cache_max_rows_per_room: int = 1000
+    room_delivery_cache_max_age_seconds: float = 300.0
 
     # Postgres terminates a connection that sits inside an open transaction
     # without executing anything for longer than this (a Postgres interval such
@@ -422,6 +608,27 @@ class SwitchConfig(BaseSettings):
             raise ValueError(
                 "AGENT_AUTH_CACHE_MAX_ENTRIES must be at least 1, got "
                 f"{self.agent_auth_cache_max_entries!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_agent_management(self) -> "SwitchConfig":
+        if self.controller_status_interval_seconds < 1:
+            raise ValueError(
+                "CONTROLLER_STATUS_INTERVAL_SECONDS must be at least 1, got "
+                f"{self.controller_status_interval_seconds!r}."
+            )
+        if not self.agent_management_enabled:
+            return self
+        if not self.controller_token_secret:
+            raise ValueError(
+                "CONTROLLER_TOKEN_SECRET is required when AGENT_MANAGEMENT_ENABLED "
+                "is true: it signs the access tokens agent controllers use."
+            )
+        if len(self.controller_token_secret) < 32:
+            raise ValueError(
+                "CONTROLLER_TOKEN_SECRET must be at least 32 characters, got "
+                f"{len(self.controller_token_secret)}."
             )
         return self
 
@@ -612,6 +819,36 @@ class SwitchConfig(BaseSettings):
     def observability_enabled(self) -> bool:
         return self.otlp_endpoint is not None
 
+    @property
+    def invite_email_enabled(self) -> bool:
+        return bool(self.gateway_smtp_host)
+
+    @model_validator(mode="after")
+    def _validate_smtp(self) -> "SwitchConfig":
+        if self.gateway_invite_emails_per_day < 1:
+            raise ValueError(
+                "GATEWAY_INVITE_EMAILS_PER_DAY must be at least 1, got "
+                f"{self.gateway_invite_emails_per_day!r}."
+            )
+        if bool(self.gateway_smtp_username) != bool(self.gateway_smtp_password):
+            raise ValueError(
+                "GATEWAY_SMTP_USERNAME and GATEWAY_SMTP_PASSWORD must be set "
+                "together or not at all."
+            )
+        if not self.invite_email_enabled:
+            return self
+        if not self.gateway_smtp_from:
+            raise ValueError(
+                "GATEWAY_SMTP_FROM is required when GATEWAY_SMTP_HOST is set: "
+                "it is the address invitation e-mails are sent from."
+            )
+        if not self.frontend_base_url:
+            raise ValueError(
+                "FRONTEND_BASE_URL is required when GATEWAY_SMTP_HOST is set: "
+                "invitation e-mails link to the dashboard at that origin."
+            )
+        return self
+
     @model_validator(mode="after")
     def _validate_max_workspaces_per_user(self) -> "SwitchConfig":
         if self.gateway_max_workspaces_per_user < 0:
@@ -621,6 +858,44 @@ class SwitchConfig(BaseSettings):
                 f"{self.gateway_max_workspaces_per_user!r}."
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_secret_keys(self) -> "SwitchConfig":
+        Keyring.parse(self.secret_keys, legacy_secret=self.jwt_secret_key)
+        return self
+
+    @cached_property
+    def keyring(self) -> Keyring:
+        return Keyring.parse(self.secret_keys, legacy_secret=self.jwt_secret_key)
+
+    @model_validator(mode="after")
+    def _validate_oauth_audience(self) -> "SwitchConfig":
+        if self.oauth_issuer_url and not self.oauth_audience:
+            raise ValueError(
+                "OAUTH_AUDIENCE is required when OAUTH_ISSUER_URL is set: "
+                "without it, agent tokens are accepted whatever application "
+                "the IdP issued them for."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_db_require_restricted_role(self) -> "SwitchConfig":
+        if not self.db_require_restricted_role and self.gateway_signup_mode == "open":
+            raise ValueError(
+                "DB_REQUIRE_RESTRICTED_ROLE=false cannot be combined with "
+                "GATEWAY_SIGNUP_MODE=open: anyone may then create a workspace "
+                "on a deployment that does not isolate them from each other."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":
+        OutboundPolicy.parse(self.outbound_allowed_private_hosts)
+        return self
+
+    @property
+    def outbound_policy(self) -> OutboundPolicy:
+        return OutboundPolicy.parse(self.outbound_allowed_private_hosts)
 
     @model_validator(mode="after")
     def _validate_db_user(self) -> "SwitchConfig":
@@ -783,12 +1058,103 @@ class SwitchConfig(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_discord_app(self) -> "SwitchConfig":
+        required = (
+            self.discord_app_client_id,
+            self.discord_app_client_secret,
+            self.discord_app_bot_token,
+            self.discord_app_application_id,
+        )
+        set_count = sum(1 for value in required if value)
+        if 0 < set_count < len(required):
+            raise ValueError(
+                "Partial distributed Discord app config: set all of "
+                "DISCORD_APP_CLIENT_ID / DISCORD_APP_CLIENT_SECRET / "
+                "DISCORD_APP_BOT_TOKEN / DISCORD_APP_APPLICATION_ID, or none "
+                "of them."
+            )
+        # The OAuth redirect is built from the public origin, and Discord checks
+        # it matches the one registered with the app byte for byte. Without the
+        # origin a deployment offering the install button would build the
+        # redirect against nothing, so it is a startup error rather than an
+        # install that fails at Discord with nothing in our logs.
+        if set_count and not self.messaging_public_url:
+            raise ValueError(
+                "A distributed Discord app is configured but MESSAGING_PUBLIC_URL "
+                "is not. The install redirect is built from it, and Discord "
+                "rejects a redirect that does not match the one registered with "
+                "the app."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_switch_trust(self) -> "SwitchConfig":
+        required = (self.switch_trust_api_key, self.switch_trust_policy_id)
+        set_count = sum(1 for value in required if value)
+        if 0 < set_count < len(required):
+            raise ValueError(
+                "Partial Switch Trust config: set both SWITCH_TRUST_API_KEY "
+                "and SWITCH_TRUST_POLICY_ID, or neither."
+            )
+        if self.switch_trust_endpoint != self.switch_trust_endpoint.strip():
+            raise ValueError(
+                "SWITCH_TRUST_ENDPOINT has leading or trailing whitespace: "
+                f"{self.switch_trust_endpoint!r}."
+            )
+        endpoint = urlsplit(self.switch_trust_endpoint)
+        if endpoint.scheme not in ("http", "https"):
+            raise ValueError(
+                "SWITCH_TRUST_ENDPOINT must be an http(s) URL, got "
+                f"{self.switch_trust_endpoint!r}."
+            )
+        if not endpoint.netloc:
+            raise ValueError(
+                "SWITCH_TRUST_ENDPOINT must include a host, got "
+                f"{self.switch_trust_endpoint!r}."
+            )
+        if endpoint.path.strip("/"):
+            raise ValueError(
+                "SWITCH_TRUST_ENDPOINT is the service's base URL and "
+                "/guardrails/check is appended to it, so it must have no path "
+                f"of its own. Got {self.switch_trust_endpoint!r} — drop the "
+                f"{endpoint.path!r}."
+            )
+        if endpoint.query or endpoint.fragment:
+            raise ValueError(
+                "SWITCH_TRUST_ENDPOINT must be a bare base URL: a query or "
+                "fragment is dropped when /guardrails/check is appended, so "
+                f"it would silently never be sent. Got "
+                f"{self.switch_trust_endpoint!r}."
+            )
+        if self.switch_trust_timeout_seconds <= 0:
+            raise ValueError(
+                "SWITCH_TRUST_TIMEOUT_SECONDS must be positive, got "
+                f"{self.switch_trust_timeout_seconds!r}."
+            )
+        return self
+
+    @property
+    def trust_enabled(self) -> bool:
+        return bool(self.switch_trust_api_key and self.switch_trust_policy_id)
+
     @property
     def gateway_oidc_enabled(self) -> bool:
         return bool(
             self.gateway_oidc_issuer_url
             and self.gateway_oidc_client_id
             and self.gateway_oidc_client_secret
+        )
+
+    @property
+    def gateway_signup_open(self) -> bool:
+        # Sign-up does not verify email ownership and an OIDC login links to an
+        # existing user by email, so a signed-up account could pre-claim one.
+        return (
+            self.gateway_signup_enabled
+            and self.gateway_password_login_enabled
+            and not self.gateway_oidc_enabled
+            and self.gateway_signup_mode == "default_tenant"
         )
 
     @property
@@ -846,3 +1212,26 @@ class SwitchConfig(BaseSettings):
         # additionally proves it was issued for the host we asked for.
         context.check_hostname = self.db_ssl_mode == "verify-full"
         return {"ssl": context}
+
+
+def hosted_configured(config: SwitchConfig) -> bool:
+    """Whether this server runs cloud agents: it has a hosted controller or launch capacity."""
+    return (
+        config.hosted_controller_config_path is not None
+        or config.hosted_launch_capacity > 0
+    )
+
+
+def deprecated_env_names() -> list[str]:
+    """Settings read from a name kept only for compatibility, as warnings.
+
+    Checked against the environment rather than the parsed config, which
+    cannot tell which of a field's names supplied it.
+    """
+    warnings = []
+    if "MATRIX_SERVER_NAME" in os.environ and "ID_SERVER_NAME" not in os.environ:
+        warnings.append(
+            "MATRIX_SERVER_NAME is deprecated and will stop being read in a later "
+            "release; set ID_SERVER_NAME instead."
+        )
+    return warnings

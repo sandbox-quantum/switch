@@ -61,7 +61,7 @@ async def _add_user(session: AsyncSession, *, name: str, role: str = "user") -> 
 
 async def _add_private_room(session: AsyncSession, *, owner_id: str) -> Room:
     room = Room(
-        matrix_room_id="!r:test",
+        transport_room_id="!r:test",
         name="r",
         description="d",
         owner_id=owner_id,

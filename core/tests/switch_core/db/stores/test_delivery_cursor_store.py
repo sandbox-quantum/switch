@@ -24,7 +24,7 @@ async def _agent(session: AsyncSession) -> Agent:
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{name}:test",
+        transport_user_id=f"@{name}:test",
         display_name=name,
         type="agent",
     )
@@ -46,7 +46,7 @@ async def _agent(session: AsyncSession) -> Agent:
 
 async def _make_agent_and_room(session: AsyncSession) -> tuple[str, str]:
     room = Room(
-        matrix_room_id=f"!room-{uuid.uuid4().hex[:8]}:test",
+        transport_room_id=f"!room-{uuid.uuid4().hex[:8]}:test",
         name="a room",
         description="",
     )
@@ -60,8 +60,8 @@ class TestPosition:
     async def test_an_agent_that_was_never_delivered_is_at_zero(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Zero, not an error: `seq` starts at 1, so zero already says
-        "behind everything"."""
+        """Zero, not an error: live messages are numbered from 1, so zero
+        already says "behind every live message"."""
         async with session_factory() as session:
             agent_id, room_id = await _make_agent_and_room(session)
             await session.commit()
@@ -134,7 +134,7 @@ class TestAdvancing:
         async with session_factory() as session:
             agent_id, first_room = await _make_agent_and_room(session)
             second_room = Room(
-                matrix_room_id=f"!room-{uuid.uuid4().hex[:8]}:test",
+                transport_room_id=f"!room-{uuid.uuid4().hex[:8]}:test",
                 name="another room",
                 description="",
             )

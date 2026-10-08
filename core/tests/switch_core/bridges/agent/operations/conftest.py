@@ -15,9 +15,9 @@ from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.operations import context as op_context
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.clients.admin_client import AdminClient
+from switch_core.clients.actor import SystemActor
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -65,7 +65,7 @@ class FakeRoomService:
                 agent_ids = [name_to_id[n] for n in config.agent_names]
 
             room = Room(
-                matrix_room_id=f"!{uuid.uuid4().hex}:test.local",
+                transport_room_id=f"!{uuid.uuid4().hex}:test.local",
                 name=config.name,
                 description=config.description,
                 channel_type=config.channel_type or "channel_public",
@@ -103,7 +103,7 @@ async def _make_agent(
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{name}:test.local",
+        transport_user_id=f"@{name}:test.local",
         display_name=name,
         type="agent",
     )
@@ -124,7 +124,7 @@ async def _make_agent(
     return agent
 
 
-class RecordingAdminClient(AdminClient):
+class RecordingSystemActor(SystemActor):
     """Records the platform messages a kickoff sends; has no transport."""
 
     def __init__(self) -> None:  # noqa: D107 - test double, no super().__init__
@@ -151,7 +151,7 @@ class RecordingAdminClient(AdminClient):
 
 
 class FakeLifecycle:
-    def __init__(self, admin: AdminClient) -> None:
+    def __init__(self, admin: SystemActor) -> None:
         self.admin = admin
 
     def get_by_type(self, client_type: str, tenant_id: str) -> list[Any]:
@@ -173,7 +173,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         room_link_store=RoomLinkStore(),
         session_factory=session_factory,
     )
-    admin = RecordingAdminClient()
+    admin = RecordingSystemActor()
     fake_protocol = SimpleNamespace(
         client_lifecycle=FakeLifecycle(admin),
         session_factory=session_factory,
@@ -189,8 +189,8 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         connections={},
     )
     # Runs are the real service's; only its collaborators are fakes.
-    fake_protocol.run_service = partial(ProtocolService.run_service, fake_protocol)
-    # The same wiring `ProtocolService.room_yaml_service` does, over the fakes.
+    fake_protocol.run_service = partial(AgentCore.run_service, fake_protocol)
+    # The same wiring `AgentCore.room_yaml_service` does, over the fakes.
     fake_protocol.room_yaml_service = lambda: RoomYamlService(
         room_service=fake_protocol.room_service,
         resource_service=fake_protocol.resource_service,

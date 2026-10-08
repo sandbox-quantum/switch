@@ -7,7 +7,7 @@ globally unique client id — and then works one room at a time, binding that
 room's tenant per delivery.
 
 `_run_client` unbinds first, and the creator matters here more than anywhere
-else. A puppet client is minted mid-conversation, from inside an inbound
+else. A human actor is minted mid-conversation, from inside an inbound
 bridge event bound to *that* room's tenant, and then reused for every room the
 person it stands for ever speaks in. Whatever the first room was must not
 become the client's identity for the rest of its life.
@@ -35,7 +35,7 @@ class _RecordingClient:
 
     def __init__(self, seen: list[str | None]) -> None:
         self.display_name = "recorded"
-        self.matrix_user_id = "@recorded:test"
+        self.transport_user_id = "@recorded:test"
         self._seen = seen
 
     async def start(self) -> None:
@@ -51,30 +51,32 @@ def _service(
     client_factory: object,
 ) -> ClientLifecycleService:
     return ClientLifecycleService(
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         client_store=ClientStore(),
         tenant_store=TenantStore(),
         client_factory=client_factory,  # type: ignore[arg-type]
         session_factory=session_factory,
         config=MagicMock(),
+        tenants_isolated=True,
     )
 
 
 async def test_a_client_task_runs_with_no_tenant_bound(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """The puppet case, in miniature: created from inside a room's tenant,
+    """The human actor case, in miniature: created from inside a room's tenant,
     and it must not keep it."""
     room_tenant = f"tenant-{uuid.uuid4().hex[:8]}"
     seen: list[str | None] = []
     service = _service(session_factory, MagicMock())
 
     with tenant_scope(room_tenant):
-        service._start_task("client-1", _RecordingClient(seen))  # type: ignore[arg-type]
+        recording = _RecordingClient(seen)
+        service._start_task("client-1", recording, recording)  # type: ignore[arg-type]
         await asyncio.sleep(0)
 
     assert seen == [None], (
-        "the client's task kept the tenant of whatever created it; a puppet "
+        "the client's task kept the tenant of whatever created it; a human actor "
         "reused in a second room would act as the first room's tenant"
     )
 
@@ -83,12 +85,12 @@ async def test_a_client_task_does_not_keep_the_room_it_was_created_in(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """The bridge's inbound handler binds its room as log context, and a
-    puppet minted there must not log as that room for the rest of its life."""
+    human actor minted there must not log as that room for the rest of its life."""
     client = _RecordingClient([])
     service = _service(session_factory, MagicMock())
 
     with log_context(room_id="room-where-it-was-minted"):
-        service._start_task("client-1", client)  # type: ignore[arg-type]
+        service._start_task("client-1", client, client)  # type: ignore[arg-type]
         await asyncio.sleep(0)
 
     assert client.room_seen is None
@@ -111,7 +113,7 @@ async def test_start_all_binds_nothing_around_starting_each_client(
             session.add(
                 Client(
                     tenant_id=tenant_id,
-                    matrix_user_id=f"@agent-{tenant_id}:test",
+                    transport_user_id=f"@agent-{tenant_id}:test",
                     display_name="agent",
                     type="agent",
                 )
@@ -120,7 +122,10 @@ async def test_start_all_binds_nothing_around_starting_each_client(
 
     seen: list[str | None] = []
     client_factory = MagicMock()
-    client_factory.create.side_effect = lambda record: _RecordingClient(seen)
+    client_factory.create.side_effect = lambda record: (
+        (recording := _RecordingClient(seen)),
+        recording,
+    )
 
     service = _service(session_factory, client_factory)
     await service.start_all()

@@ -2,7 +2,7 @@
 
 The DB/auth/registration wiring lives in the gateway route; the name-derivation,
 in-batch dedup, and parent-option inheritance are factored out here so they can
-be unit-tested without a database or a ProtocolService.
+be unit-tested without a database or an AgentCore.
 """
 
 from __future__ import annotations

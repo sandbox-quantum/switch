@@ -21,8 +21,9 @@ from switch_core.bridges.collaboration.mattermost.callback import (
     action_context,
     read_press,
 )
+from switch_core.keys import Keyring
 
-SERVER_SECRET = "server-secret-for-tests"
+SERVER_SECRET = "server-secret-for-tests-server-secret"
 BRIDGE_ID = "bridge-1"
 OTHER_BRIDGE_ID = "bridge-2"
 TOKEN = "tok-1"
@@ -35,7 +36,11 @@ CHANNEL_ID = "channel-abc"
 
 def _key_for(bridge_id: str, secret: str = SERVER_SECRET) -> str:
     """The key a bridge would really be handed, derived the way production does."""
-    ingress = CallbackIngress(host="127.0.0.1", port=0, secret=secret)
+    ingress = CallbackIngress(
+        host="127.0.0.1",
+        port=0,
+        keyring=Keyring.parse(f"test:{secret}", legacy_secret=None),
+    )
     return ingress.endpoint_for("mattermost", bridge_id).key
 
 
@@ -56,7 +61,7 @@ def _body(context: dict[str, Any], **overrides: Any) -> dict[str, Any]:
 
 
 def test_a_signed_press_reads_back_as_what_it_was_built_from() -> None:
-    press = read_press(_key(), _body(action_context(_key(), TOKEN, POSITION)))
+    press = read_press([_key()], _body(action_context(_key(), TOKEN, POSITION)))
 
     assert press is not None
     assert press.token == TOKEN
@@ -84,21 +89,21 @@ def test_the_signature_is_the_same_every_time_it_is_built() -> None:
 
 
 def test_a_body_with_no_context_is_not_ours() -> None:
-    assert read_press(_key(), {"user_id": USER_ID, "post_id": POST_ID}) is None
+    assert read_press([_key()], {"user_id": USER_ID, "post_id": POST_ID}) is None
 
 
 def test_a_context_from_another_integration_is_passed_over() -> None:
-    assert read_press(_key(), _body({"action": "something-else"})) is None
+    assert read_press([_key()], _body({"action": "something-else"})) is None
 
 
 def test_a_context_that_is_not_an_object_is_not_ours() -> None:
-    assert read_press(_key(), _body({CONTEXT_KEY: "answer"})) is None
+    assert read_press([_key()], _body({CONTEXT_KEY: "answer"})) is None
 
 
 def test_an_unsigned_context_is_refused() -> None:
     context = {CONTEXT_KEY: {"token": TOKEN, "position": POSITION}}
 
-    assert read_press(_key(), _body(context)) is None
+    assert read_press([_key()], _body(context)) is None
 
 
 def test_a_position_changed_after_signing_is_refused_and_logged(
@@ -108,7 +113,7 @@ def test_a_position_changed_after_signing_is_refused_and_logged(
     context[CONTEXT_KEY]["position"] = POSITION + 1
 
     with caplog.at_level(logging.WARNING):
-        assert read_press(_key(), _body(context)) is None
+        assert read_press([_key()], _body(context)) is None
 
     assert "signature does not verify" in caplog.text
 
@@ -117,21 +122,21 @@ def test_a_token_changed_after_signing_is_refused() -> None:
     context = action_context(_key(), TOKEN, POSITION)
     context[CONTEXT_KEY]["token"] = "tok-2"
 
-    assert read_press(_key(), _body(context)) is None
+    assert read_press([_key()], _body(context)) is None
 
 
 def test_another_bridges_signature_is_refused() -> None:
     context = action_context(_key_for(OTHER_BRIDGE_ID), TOKEN, POSITION)
 
-    assert read_press(_key(), _body(context)) is None
+    assert read_press([_key()], _body(context)) is None
 
 
 def test_a_signature_from_a_rotated_secret_says_so(caplog: Any) -> None:
-    stale = _key_for(BRIDGE_ID, secret="the-previous-server-secret")
+    stale = _key_for(BRIDGE_ID, secret="the-previous-server-secret-000000")
     context = action_context(stale, TOKEN, POSITION)
 
     with caplog.at_level(logging.WARNING):
-        assert read_press(_key(), _body(context)) is None
+        assert read_press([_key()], _body(context)) is None
 
     assert "rotated" in caplog.text
     assert TOKEN in caplog.text
@@ -140,9 +145,9 @@ def test_a_signature_from_a_rotated_secret_says_so(caplog: Any) -> None:
 def test_a_press_naming_nobody_is_refused() -> None:
     context = action_context(_key(), TOKEN, POSITION)
 
-    assert read_press(_key(), _body(context, user_id="")) is None
-    assert read_press(_key(), _body(context, post_id="")) is None
-    assert read_press(_key(), _body(context, channel_id="")) is None
+    assert read_press([_key()], _body(context, user_id="")) is None
+    assert read_press([_key()], _body(context, post_id="")) is None
+    assert read_press([_key()], _body(context, channel_id="")) is None
 
 
 def test_an_actor_smuggled_into_the_context_is_refused() -> None:
@@ -156,7 +161,7 @@ def test_an_actor_smuggled_into_the_context_is_refused() -> None:
     context = action_context(_key(), TOKEN, POSITION)
     context[CONTEXT_KEY]["user_id"] = "somebody-else"
 
-    assert read_press(_key(), _body(context)) is None
+    assert read_press([_key()], _body(context)) is None
 
 
 def test_a_position_that_is_not_a_counting_number_is_refused() -> None:
@@ -168,7 +173,7 @@ def test_a_position_that_is_not_a_counting_number_is_refused() -> None:
                 "signature": "whatever",
             }
         }
-        assert read_press(_key(), _body(context)) is None
+        assert read_press([_key()], _body(context)) is None
 
 
 def test_a_token_that_is_not_a_string_is_refused() -> None:
@@ -180,4 +185,4 @@ def test_a_token_that_is_not_a_string_is_refused() -> None:
                 "signature": "whatever",
             }
         }
-        assert read_press(_key(), _body(context)) is None
+        assert read_press([_key()], _body(context)) is None

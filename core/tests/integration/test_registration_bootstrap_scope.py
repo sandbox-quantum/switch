@@ -2,7 +2,7 @@
 
 Before this fix, any holder of that one shared secret registered agents owned
 by the seeded admin user. Since room/resource authorization treats "owned by
-an admin" as "acts with admin authority" (`ProtocolService._resolve_acting_identity`),
+an admin" as "acts with admin authority" (`AgentCore._resolve_acting_identity`),
 that made the token a privilege-escalation vector: a colleague given the
 deployment secret to bring up their own agent got an agent that could bypass
 `read_visibility`/`write_visibility` on every room and resource in the

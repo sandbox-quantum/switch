@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import logging
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Literal
 
 import bcrypt
 import jwt
@@ -17,14 +19,24 @@ from switch_core.db.models import Room, Tenant, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.db.tenant_lookup import tenant_of_invitation, tenants_of_user
+from switch_core.db.tenant_lookup import (
+    tenant_of_invitation,
+    tenants_inviting_email,
+    tenants_of_user,
+    tenants_open_to_domain,
+)
 from switch_core.gateway.dependencies import (
     get_config,
     get_session,
     get_session_factory,
     get_user_store,
 )
-from switch_core.gateway.schemas import TenantMembershipResponse
+from switch_core.gateway.schemas import (
+    SessionStateResponse,
+    SessionStateUser,
+    TenantMembershipResponse,
+)
+from switch_core.keys import Keyring, KeyringError, Purpose
 from switch_core.logging_context import log_context
 from switch_core.tenant_context import tenant_scope
 
@@ -57,8 +69,25 @@ def verify_password(password: str, password_hash: str | None) -> bool:
     return result
 
 
+async def hash_password_off_loop(password: str) -> str:
+    """`hash_password` on a worker thread.
+
+    bcrypt is slow on purpose, a few hundred milliseconds of CPU per call, and
+    it holds the event loop for all of it: on the loop, every other request in
+    the process waits behind one login. Call it with no transaction open, too,
+    or the connection waits with them.
+    """
+    return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_off_loop(password: str, password_hash: str | None) -> bool:
+    """`verify_password` on a worker thread, for the same reason as
+    `hash_password_off_loop`."""
+    return await asyncio.to_thread(verify_password, password, password_hash)
+
+
 def create_jwt(
-    user_id: str, email: str, role: str, secret_key: str, tenant_id: str | None
+    user_id: str, email: str, role: str, keyring: Keyring, tenant_id: str | None
 ) -> str:
     """Sign a session JWT. `tenant_id` is the caller's selected tenant, or
     `None` for a session that has not selected one yet (a fresh login, or a
@@ -77,13 +106,18 @@ def create_jwt(
         + datetime.timedelta(hours=JWT_EXPIRY_HOURS),
         "iat": datetime.datetime.now(datetime.UTC),
     }
-    return jwt.encode(payload, secret_key, algorithm=JWT_ALGORITHM)
+    return jwt.encode(
+        payload,
+        keyring.derive(Purpose.SESSION),
+        algorithm=JWT_ALGORITHM,
+        headers={"kid": keyring.current.id},
+    )
 
 
 def set_session_cookie(
     response: Response,
     user: User,
-    secret_key: str,
+    keyring: Keyring,
     secure: bool,
     tenant_id: str | None,
 ) -> None:
@@ -99,7 +133,7 @@ def set_session_cookie(
     `secure` gates the Secure flag: True on HTTPS deployments so the JWT is
     never sent over plain HTTP, False for local dev served over http://.
     """
-    token = create_jwt(user.id, user.email, user.role, secret_key, tenant_id)
+    token = create_jwt(user.id, user.email, user.role, keyring, tenant_id)
     response.set_cookie(
         key="switch_auth",
         value=token,
@@ -111,9 +145,30 @@ def set_session_cookie(
     )
 
 
-def decode_jwt(token: str, secret_key: str) -> dict:
+def _session_key(token: str, keyring: Keyring) -> bytes | str:
+    """The key a session token was signed with, named by its `kid`.
+
+    A token with no `kid` was signed with `JWT_SECRET_KEY` before
+    `SECRET_KEYS`, and verifies only while that is still set.
+    """
+    key_id = jwt.get_unverified_header(token).get("kid")
+    if key_id is None:
+        if keyring.legacy_secret is None:
+            raise jwt.InvalidTokenError("session predates SECRET_KEYS")
+        return keyring.legacy_secret
+    if not isinstance(key_id, str):
+        raise jwt.InvalidTokenError("malformed kid")
     try:
-        return jwt.decode(token, secret_key, algorithms=[JWT_ALGORITHM])
+        return keyring.derive(Purpose.SESSION, key_id)
+    except KeyringError as exc:
+        raise jwt.InvalidTokenError(str(exc)) from exc
+
+
+def decode_jwt(token: str, keyring: Keyring) -> dict:
+    try:
+        return jwt.decode(
+            token, _session_key(token, keyring), algorithms=[JWT_ALGORITHM]
+        )
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
@@ -133,14 +188,26 @@ async def _authenticate(
     honest way to read it. Shared by `get_current_user` (which goes on to bind
     one) and `get_authenticated_user_id` (which deliberately does not).
     """
+    payload = _session_claims(request, config)
+    await _require_user_exists(session_factory, user_store, payload["sub"])
+    return payload
+
+
+def _session_claims(request: Request, config: SwitchConfig) -> dict:
     token = request.cookies.get("switch_auth")
     if token is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    payload = decode_jwt(token, config.jwt_secret_key)
+    return decode_jwt(token, config.keyring)
+
+
+async def _require_user_exists(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+) -> None:
     async with session_factory() as system_session:
-        if not await user_store.exists(system_session, payload["sub"]):
+        if not await user_store.exists(system_session, user_id):
             raise HTTPException(status_code=401, detail="User not found")
-    return payload
 
 
 async def get_authenticated_user_id(
@@ -161,6 +228,36 @@ async def get_authenticated_user_id(
     """
     payload = await _authenticate(request, session_factory, user_store, config)
     return payload["sub"]  # type: ignore[no-any-return]
+
+
+@dataclass(frozen=True)
+class AuthenticatedSession:
+    """An authenticated caller's id and the tenant their session selects, if
+    any — the claim as minted, not yet checked against a membership."""
+
+    user_id: str
+    tenant_claim: str | None
+
+
+async def get_authenticated_session(
+    request: Request,
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> AuthenticatedSession:
+    """Like `get_authenticated_user_id`, plus the session's tenant claim.
+
+    Backs `GET /auth/session`, which reports what tenant resolution *would*
+    do with this session rather than doing it — so it needs the claim that
+    `get_current_user` would resolve, without the 403 or 409 that resolving
+    it can raise.
+    """
+    payload = await _authenticate(request, session_factory, user_store, config)
+    return AuthenticatedSession(
+        user_id=payload["sub"], tenant_claim=payload.get("tenant_id")
+    )
 
 
 @dataclass(frozen=True)
@@ -224,6 +321,31 @@ async def tenant_of_invitation_token(
     than being called from the gateway directly.
     """
     return await tenant_of_invitation(session_factory, token_hash)
+
+
+async def tenants_with_invitations_for(
+    session_factory: async_sessionmaker[AsyncSession], email: str
+) -> list[str]:
+    """Which tenants hold a live invitation addressed to `email`.
+
+    A thin wrapper around `db.tenant_lookup.tenants_inviting_email`, here for
+    the same reason as `tenant_of_invitation_token` above: the exemption is
+    reached through this one module. The only caller passes the signed-in
+    caller's own address, never one taken from a request.
+    """
+    return await tenants_inviting_email(session_factory, email)
+
+
+async def tenants_open_to(
+    session_factory: async_sessionmaker[AsyncSession], domain: str
+) -> list[str]:
+    """Which tenants let anyone at `domain` join them without an invitation.
+
+    A thin wrapper around `db.tenant_lookup.tenants_open_to_domain`, for the
+    same reason as the wrappers above. The only caller passes the domain of
+    the signed-in caller's own address.
+    """
+    return await tenants_open_to_domain(session_factory, domain)
 
 
 async def is_tenant_member(
@@ -305,6 +427,105 @@ async def list_tenant_memberships(
     )
 
 
+async def initial_tenant_claim(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user: User,
+) -> str | None:
+    """The tenant a freshly signed-in session should select, if one is
+    unambiguous: the workspace the user last selected, while they still
+    belong to it; otherwise their only workspace; otherwise none.
+
+    A null claim would ask a person with two workspaces to choose again on
+    every visit. This stays a selection, not a
+    grant — `_resolve_tenant_id` re-checks the claim on every request — and it
+    is checked against current memberships here too, so signing in again is
+    still how a session whose workspace was taken away recovers.
+    """
+    memberships = await tenants_of_user(session_factory, user.id)
+    last = user_store.last_tenant_id(user)
+    if last is not None and last in memberships:
+        return last
+    if len(memberships) == 1:
+        return memberships[0]
+    return None
+
+
+def workspace_creation_refusal(
+    config: SwitchConfig, *, is_operator: bool, workspaces_created: int
+) -> str | None:
+    """Why this caller may not create a workspace, or None if they may.
+
+    Operators always may. Otherwise `invite_only` sign-up refuses outright,
+    and every other mode allows `gateway_max_workspaces_per_user` creations
+    over a person's lifetime — each workspace is work for every per-tenant
+    sweep (`docs/old/multi-tenancy-phase2-tenants.md`, §5). Returned as a
+    message rather than raised so `GET /auth/session` can report the same
+    answer `POST /tenants` enforces.
+    """
+    if is_operator:
+        return None
+    if config.gateway_signup_mode == "invite_only":
+        return (
+            "Creating workspaces is turned off on this server. Ask a "
+            "workspace admin for an invitation."
+        )
+    limit = config.gateway_max_workspaces_per_user
+    if limit == 0:
+        return "Workspace creation is disabled on this deployment"
+    if workspaces_created >= limit:
+        return (
+            f"You have created {workspaces_created} workspaces, and "
+            f"this deployment allows {limit}"
+        )
+    return None
+
+
+def describe_session_state(
+    config: SwitchConfig,
+    user: User,
+    tenant_claim: str | None,
+    tenants: list[TenantMembershipResponse],
+) -> SessionStateResponse:
+    """What `_resolve_tenant_id` would make of this session, as data.
+
+    Follows its order exactly — a claim is honoured only if it names one of
+    `tenants`, and a bad claim is *not* rescued by a sole membership — so a
+    client told "ready" is never refused by the next request, and one told
+    otherwise knows which of `/tenants/{id}/switch`, `POST /tenants` or
+    `/invitations/accept` gets it unstuck.
+    """
+    tenant: TenantMembershipResponse | None = None
+    if tenant_claim is not None:
+        tenant = next((t for t in tenants if t.id == tenant_claim), None)
+    elif len(tenants) == 1:
+        tenant = tenants[0]
+
+    if tenant is not None:
+        state: Literal["ready", "needs_selection", "needs_workspace"] = "ready"
+    elif tenants:
+        state = "needs_selection"
+    else:
+        state = "needs_workspace"
+
+    is_operator = user.role == "admin"
+    return SessionStateResponse(
+        user=SessionStateUser(
+            id=user.id, name=user.name, email=user.email, is_operator=is_operator
+        ),
+        tenant=tenant,
+        tenants=tenants,
+        state=state,
+        can_create_workspace=workspace_creation_refusal(
+            config,
+            is_operator=is_operator,
+            workspaces_created=user.workspaces_created,
+        )
+        is None,
+        invite_email_enabled=config.invite_email_enabled,
+    )
+
+
 async def _resolve_tenant_id(
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
@@ -319,10 +540,10 @@ async def _resolve_tenant_id(
     2. A claim naming a tenant the caller does not belong to → 403
        `tenant_selection_invalid`. The caller can fix this unaided — `GET
        /tenants` and `POST /tenants/{id}/switch` both authenticate without
-       binding a tenant, and signing in again mints a null claim — so the
-       message says so rather than sending them to an administrator. It is
-       not a rare state either: removing a member puts everyone it touches
-       here on their next request.
+       binding a tenant, and signing in again selects only from current
+       memberships — so the message says so rather than sending them to an
+       administrator. It is not a rare state either: removing a member puts
+       everyone it touches here on their next request.
 
        The cookie is not cleared here: it is `lax`, so a cross-site
        navigation can reach this path, and any page resetting someone's
@@ -343,8 +564,14 @@ async def _resolve_tenant_id(
     `tenants_of_user` is read once and used for every case below it, including
     the 409's body, so this is one round trip to the exemption regardless of
     which case answers.
+
+    It also stands in for the account check: a `tenant_members` row references
+    its `users` row, so a caller with a membership exists. Only with none is
+    `users` asked, so a deleted account still gets 401 rather than a 403.
     """
     memberships = await tenants_of_user(session_factory, user_id)
+    if not memberships:
+        await _require_user_exists(session_factory, user_store, user_id)
 
     if tenant_claim is not None:
         if tenant_claim in memberships:
@@ -395,6 +622,35 @@ async def _resolve_tenant_id(
     )
 
 
+@asynccontextmanager
+async def _bound_user(
+    request: Request,
+    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    config: SwitchConfig,
+) -> AsyncIterator[User]:
+    payload = _session_claims(request, config)
+    user_id = payload["sub"]
+    tenant_claim = payload.get("tenant_id")
+
+    tenant_id = await _resolve_tenant_id(
+        session_factory,
+        user_store,
+        user_id,
+        tenant_claim,
+        config.gateway_tenant_choice_enabled,
+    )
+    request.state.tenant_id = tenant_id
+
+    with tenant_scope(tenant_id), log_context(user_id=user_id, tenant_id=tenant_id):
+        user = await user_store.get(session, user_id)
+        if user is None:
+            # Deleted between the two reads; rare, and still not a 500.
+            raise HTTPException(status_code=401, detail="User not found")
+        yield user
+
+
 async def get_current_user(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -419,28 +675,35 @@ async def get_current_user(
     re-mint the cookie carrying it forward — the one mint that has no other
     way to learn which tenant this session had selected.
     """
-    payload = await _authenticate(request, session_factory, user_store, config)
-    user_id = payload["sub"]
-    tenant_claim = payload.get("tenant_id")
-
-    tenant_id = await _resolve_tenant_id(
-        session_factory,
-        user_store,
-        user_id,
-        tenant_claim,
-        config.gateway_tenant_choice_enabled,
-    )
-    request.state.tenant_id = tenant_id
-
-    with tenant_scope(tenant_id), log_context(user_id=user_id, tenant_id=tenant_id):
-        user = await user_store.get(session, user_id)
-        if user is None:
-            # Deleted between the two reads; rare, and still not a 500.
-            raise HTTPException(status_code=401, detail="User not found")
+    async with _bound_user(
+        request, session, session_factory, user_store, config
+    ) as user:
         # Return the auth read's connection before an endpoint borrows another
         # session or waits on external I/O. expire_on_commit=False keeps this
         # User attached and readable; endpoint mutations still commit normally.
         await session.commit()
+        yield user
+
+
+async def get_current_user_in_transaction(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> AsyncIterator[User]:
+    """`get_current_user`, with the user read's transaction left open.
+
+    For a hot endpoint whose next step is one more read on the same session,
+    and which ends the transaction itself before it waits on anything: the
+    read then shares the transaction and connection checkout instead of
+    opening its own. Every check is `get_current_user`'s.
+    """
+    async with _bound_user(
+        request, session, session_factory, user_store, config
+    ) as user:
         yield user
 
 
@@ -471,11 +734,15 @@ async def get_tenant_is_admin(
     should be built from — see ``UserStore.administers`` for what it actually
     checks.
 
-    Also callable directly (not just as a FastAPI dependency) from any
-    handler or service function that already holds a bound `session`, the
-    caller's `User`, and a `UserStore`.
+    Ends the read's transaction before returning, the way `get_current_user`
+    does, so the connection is back in the pool before the route body runs. A
+    route that went on to open a second session, or to call a messaging
+    platform, would otherwise do it holding this one. So it must not be called
+    on a session with writes pending.
     """
-    return await user_store.administers(session, user)
+    is_admin = await user_store.administers(session, user)
+    await session.commit()
+    return is_admin
 
 
 async def get_tenant_is_owner(
@@ -487,9 +754,12 @@ async def get_tenant_is_owner(
 
     Strictly narrower than ``get_tenant_is_admin`` — see
     ``authz.owns_tenant``. A route that changes the ownership set needs both:
-    ``require_tenant_admin`` to get in, this to make the call.
+    ``require_tenant_admin`` to get in, this to make the call. Ends its read's
+    transaction for the same reason ``get_tenant_is_admin`` does.
     """
-    return await user_store.owns(session, user)
+    is_owner = await user_store.owns(session, user)
+    await session.commit()
+    return is_owner
 
 
 async def require_tenant_admin(

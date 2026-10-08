@@ -48,6 +48,6 @@ When adding a provider:
 1. add the plugin under `packages/plugins/src/agents/impl/<id>/index.ts`
 2. add the id to `AGENT_PROVIDER_IDS` and a display entry to `AGENT_PROVIDERS` in
    `src/shared/core/providers/agent-provider-registry.ts`
-3. add any required env passthrough in `src/main/core/sdk-host/agent-env.ts`
+3. add any required env passthrough in `packages/agent-providers/src/host/agent-env.ts`
 4. update renderer surfaces that assume provider metadata
 5. add tests for non-standard spawn or detection behavior

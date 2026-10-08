@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundMessage
 from switch_core.bridges.collaboration.session.form import posted_form
 from switch_core.bridges.collaboration.session.refusal import Refused
@@ -93,7 +93,7 @@ def _run(coro: Any) -> Any:
 def _bridge(approval_answers: Any) -> tuple[Any, list[dict[str, str]]]:
     """A bridge core, and the list of messages that got past the answer path.
 
-    The channel maps to a room and the puppet step records what it was asked
+    The channel maps to a room and the human actor step records what it was asked
     for and then hands back nothing, which is where the relay stops. So a
     message in that list is one the answer path let through on its way to the
     room, and an empty list after a message is a message the room lost.
@@ -109,11 +109,11 @@ def _bridge(approval_answers: Any) -> tuple[Any, list[dict[str, str]]]:
     async def _repair_placeholder_username(*args: Any, **kwargs: Any) -> None:
         return None
 
-    async def _ensure_user_in_matrix_room(**kwargs: str) -> None:
+    async def _ensure_human_in_room(**kwargs: str) -> None:
         relayed.append(kwargs)
         return None
 
-    bridge = BridgeCore.__new__(BridgeCore)
+    bridge = CollaborationCore.__new__(CollaborationCore)
     bridge._channel_to_room = {CHANNEL: ("room-uuid", "!room:test")}
     bridge._channel_locks = {}
     bridge._approval_answers = approval_answers
@@ -122,7 +122,7 @@ def _bridge(approval_answers: Any) -> tuple[Any, list[dict[str, str]]]:
     # Instance attrs shadow the class methods so the DB is never touched.
     bridge._is_registered_agent = _is_registered_agent  # type: ignore[assignment]
     bridge._repair_placeholder_username = _repair_placeholder_username  # type: ignore[assignment]
-    bridge._ensure_user_in_matrix_room = _ensure_user_in_matrix_room  # type: ignore[assignment]
+    bridge._ensure_human_in_room = _ensure_human_in_room  # type: ignore[assignment]
     return bridge, relayed
 
 
@@ -171,7 +171,7 @@ def test_a_message_the_grammar_refuses_still_reaches_the_room(said: str) -> None
             "external_user_id": "U1",
             "external_username": "someone",
             "room_id": "room-uuid",
-            "matrix_room_id": "!room:test",
+            "transport_room_id": "!room:test",
         }
     ]
 

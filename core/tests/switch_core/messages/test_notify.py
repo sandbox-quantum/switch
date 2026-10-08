@@ -59,7 +59,7 @@ async def listener(postgres_url: str) -> AsyncIterator[MessageListener]:
 
 async def _make_room(session: AsyncSession) -> str:
     room = Room(
-        matrix_room_id=f"!room-{uuid.uuid4().hex[:8]}:test",
+        transport_room_id=f"!room-{uuid.uuid4().hex[:8]}:test",
         name="a room",
         description="",
     )

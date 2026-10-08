@@ -1,4 +1,4 @@
-"""`ProtocolService.sweep_runtime_states` (CHOO-2623) spans every tenant by
+"""`AgentCore.sweep_runtime_states` (CHOO-2623) spans every tenant by
 nature: one pass resets every stale runtime-state row anywhere, so the read
 that finds them is unscoped. Each row is itself tenant-scoped, so the rest of
 the work for that row — the liveness check and the reset — binds that row's
@@ -20,8 +20,8 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.models import (
     Agent,
     AgentRuntimeState,
@@ -38,12 +38,12 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.tenant_context import current_tenant_id
 
 
-def _service(session_factory: async_sessionmaker[AsyncSession]) -> ProtocolService:
-    svc = object.__new__(ProtocolService)
+def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
+    svc = object.__new__(AgentCore)
     svc.session_factory = session_factory  # type: ignore[attr-defined]
     # Nothing is registered, so every agent/room pair reads as not live —
     # the sweep's job is exactly to reset those.
-    svc.connections = ConnectionRegistry()  # type: ignore[attr-defined]
+    svc.connections = AgentConnectionRegistry()  # type: ignore[attr-defined]
     svc.agent_session_store = AgentSessionStore()  # type: ignore[attr-defined]
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.room_store = RoomStore()  # type: ignore[attr-defined]
@@ -85,7 +85,7 @@ async def _make_stale_runtime_state(
     )
     client = Client(
         tenant_id=tenant_id,
-        matrix_user_id=f"@agent-{suffix}:test",
+        transport_user_id=f"@agent-{suffix}:test",
         display_name="agent",
         type="agent",
     )
@@ -104,7 +104,7 @@ async def _make_stale_runtime_state(
     session.add(agent)
     room = Room(
         tenant_id=tenant_id,
-        matrix_room_id=f"!room-{suffix}:test",
+        transport_room_id=f"!room-{suffix}:test",
         name="room",
         description="d",
     )

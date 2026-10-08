@@ -50,7 +50,7 @@ class TestDeleteAgentInARoom:
         svc = make_service(session_factory)
         lifecycle = _DeletingClientLifecycle(session_factory)
         svc.client_lifecycle = lifecycle  # type: ignore[assignment]
-        svc.event_buffer = EventBuffer()
+        svc.event_buffer = EventBuffer(sequence_base=0)
 
         owner = await make_owner(session_factory)
         agent_id = await register(svc, "in-a-room", owner)
@@ -59,7 +59,7 @@ class TestDeleteAgentInARoom:
             assert agent is not None
             client_id = agent.client_id
             room = Room(
-                matrix_room_id=f"!{uuid.uuid4().hex[:8]}:test",
+                transport_room_id=f"!{uuid.uuid4().hex[:8]}:test",
                 name="a room",
                 description="somewhere the agent has been",
             )

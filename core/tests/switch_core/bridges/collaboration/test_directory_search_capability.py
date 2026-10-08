@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.discord.adapter import DiscordAdapter
 from switch_core.bridges.collaboration.mattermost.adapter import MattermostAdapter
 from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
@@ -32,7 +32,7 @@ ADAPTERS = [
 
 @pytest.mark.parametrize("adapter_cls", ADAPTERS, ids=lambda c: c.__name__)
 async def test_the_flag_agrees_with_what_the_adapter_actually_does(
-    adapter_cls: type[CollaborationAdapter],
+    adapter_cls: type[PlatformAdapter],
 ) -> None:
     """A platform declaring a directory must implement the search, and one
     declaring none must not — otherwise the flag is decoration and the UI is
@@ -43,8 +43,7 @@ async def test_the_flag_agrees_with_what_the_adapter_actually_does(
     network call is itself the evidence that it was implemented.
     """
     implements = (
-        adapter_cls.search_directory_users
-        is not CollaborationAdapter.search_directory_users
+        adapter_cls.search_directory_users is not PlatformAdapter.search_directory_users
     )
 
     assert adapter_cls.supports_directory_search == implements, (

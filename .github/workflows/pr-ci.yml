@@ -90,6 +90,8 @@ jobs:
             backend:
               - *shared
               - 'core/**'
+              # Tested from core/tests, so a change to it alone still runs them.
+              - 'scripts/check_migration_heads_for_open_prs.py'
             console:
               - *shared
               - 'console/**'
@@ -266,6 +268,9 @@ jobs:
       # `build` runs `tsc -b && vite build`, so it doubles as the typecheck gate.
       - name: Build (tsc + vite)
         run: npm run build
+
+      - name: Test (vitest)
+        run: npm test
 
   migration-heads-on-merge:
     name: Migration heads on merge

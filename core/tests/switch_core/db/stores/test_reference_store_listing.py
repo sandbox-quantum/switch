@@ -64,8 +64,10 @@ async def _make_reference(
     return ref
 
 
-async def _make_room(session: AsyncSession, *, matrix_room_id: str, name: str) -> Room:
-    room = Room(matrix_room_id=matrix_room_id, name=name, description="room")
+async def _make_room(
+    session: AsyncSession, *, transport_room_id: str, name: str
+) -> Room:
+    room = Room(transport_room_id=transport_room_id, name=name, description="room")
     session.add(room)
     await session.flush()
     return room
@@ -394,7 +396,7 @@ class TestAttachToRoomIsIdempotent:
             alice = await _make_user(session, name="alice")
             ref = await _make_reference(session, owner=alice, name="repo")
             room = await _make_room(
-                session, matrix_room_id="!attach-twice:test", name="Attach Twice"
+                session, transport_room_id="!attach-twice:test", name="Attach Twice"
             )
             await session.commit()
 
@@ -425,7 +427,7 @@ class TestAttachToRoomIsIdempotent:
             alice = await _make_user(session, name="alice")
             ref = await _make_reference(session, owner=alice, name="repo")
             room = await _make_room(
-                session, matrix_room_id="!detach:test", name="Detach"
+                session, transport_room_id="!detach:test", name="Detach"
             )
             await session.commit()
 

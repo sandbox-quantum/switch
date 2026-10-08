@@ -189,14 +189,15 @@ when one is missing, not so you can pick and choose:
 | --- | --- |
 | `ChannelMessage.Read.All`<br>(or `ChannelMessage.Read.Group`, see below) | No channel capture. The bridge sees only messages that @mention the bot, so plain channel conversation, and bare `!commands`, never reach Switch. |
 | `Channel.Create` | Adding a room to the bridge fails: Switch cannot provision the room's channel. |
-| `Channel.ReadBasic.All` | Three things, all from the same read. Binding a room to a channel that **already exists** fails (see [Bringing Switch into a channel that already exists](#bringing-switch-into-a-channel-that-already-exists)) — Switch reads the channel to learn whether it is standard or private, and provisions membership differently for each. A room auto-created for a channel is titled after the channel's raw `19:…` id, because Teams often omits the name from the activity. And agents fall back to posts-layout threading in every channel (see [How agents use threads](#how-agents-use-threads)). |
+| `Channel.ReadBasic.All` | Several things, all from the same read. Switch reads a channel to learn whether it is standard or private, and adds people differently to each: to the team for a standard channel, to the channel itself for a private or shared one. It will not guess, so after a restart **nobody can be added to any channel** (each person is reported as not added), and binding a room to a channel that **already exists** fails (see [Bringing Switch into a channel that already exists](#bringing-switch-into-a-channel-that-already-exists)). A room auto-created for a channel is saved as private, and titled after the channel's raw `19:…` id because Teams often omits the name from the activity. And agents fall back to posts-layout threading in every channel (see [How agents use threads](#how-agents-use-threads)). |
 | `TeamMember.ReadWrite.All` | People named on a room are not added to a **standard** channel. A standard channel inherits the team's membership, so they are added to the team. |
 | `ChannelMember.ReadWrite.All` | The same, for a **private** channel, which carries its own membership. |
 | `User.ReadBasic.All` | Nobody can link their Switch account to their Teams account, so no agent can @mention its owner. Switch also cannot resolve a sender's name when Teams omits it — 1:1 chats especially — and falls back to their raw id, which then becomes their name in room titles and in every reply that addresses them. |
 
 Two of these are easy to skip and expensive to omit. **`Channel.ReadBasic.All`**
-looks redundant next to `Channel.Create` and is not: creating a channel and
-adopting an existing one are different paths, and only the second reads.
+looks redundant next to `Channel.Create` and is not: Switch knows a channel's
+privacy when it creates it, but not after a restart or for a channel it did not
+create, and it reads the channel to find out.
 **`User.ReadBasic.All`** looks like it only matters once someone links an
 account, and does not — without it, everyone in Teams is an opaque id to
 Switch from the first message.

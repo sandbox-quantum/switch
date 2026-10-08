@@ -48,3 +48,16 @@ export class SshChannelTimeoutError extends Error {
 export function isSshChannelTimeout(error: unknown): boolean {
   return error instanceof SshChannelTimeoutError;
 }
+
+/**
+ * ssh2's answer to any channel open on a client whose transport is gone:
+ * thrown synchronously by `exec`, `forwardOut` and `sftp` once the socket can
+ * no longer be read. Unlike a refusal or a slow open it is never transient —
+ * the client cannot recover from it, and its own `destroy()` is a no-op by
+ * then, so it may never emit `close` either. Seen on an IAP tunnel whose
+ * stdout ended without the process exiting in error (2026-09-30, dev-vm).
+ */
+export function isSshTransportGone(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message === 'Not connected' || message === 'No response from server';
+}

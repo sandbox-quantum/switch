@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundAppJoin
 
 # CHOO-1660: creating a Slack-bridged room provisions a channel; the bot
@@ -15,12 +15,12 @@ from switch_core.bridges.collaboration.models import InboundAppJoin
 # guard, the idempotent DB adoption, and the unique-constraint backstop.
 
 
-def _make_bridge(**overrides: Any) -> BridgeCore:
-    """A BridgeCore with only the attributes the auto-room-creation path
+def _make_bridge(**overrides: Any) -> CollaborationCore:
+    """A CollaborationCore with only the attributes the auto-room-creation path
     touches, so the real methods run without the full dependency graph."""
     created_configs: list[Any] = []
     room = SimpleNamespace(
-        id="room-uuid", tenant_id="tenant-1", matrix_room_id="!m:switch.local"
+        id="room-uuid", tenant_id="tenant-1", transport_room_id="!m:switch.local"
     )
 
     async def create_room(config: Any) -> SimpleNamespace:
@@ -39,7 +39,7 @@ def _make_bridge(**overrides: Any) -> BridgeCore:
     async def _adopt_existing_room(channel_id: str) -> tuple[str, str] | None:
         return None
 
-    bridge = BridgeCore.__new__(BridgeCore)
+    bridge = CollaborationCore.__new__(CollaborationCore)
     bridge._provisioning_channels = set()
     bridge._channel_to_room = {}
     bridge._room_to_channel = {}
@@ -74,7 +74,7 @@ async def test_provisioning_channel_is_not_re_created() -> None:
     # NOT create a second room; it defers to the in-flight create_room.
     bridge = _make_bridge(_provisioning_channels={"C1"})
 
-    result = await BridgeCore._create_room_for_channel(
+    result = await CollaborationCore._create_room_for_channel(
         bridge,
         channel_id="C1",
         channel_type="channel_public",
@@ -91,7 +91,7 @@ async def test_provisioning_channel_returns_existing_mapping() -> None:
         _channel_to_room={"C1": ("room-x", "!x:switch.local")},
     )
 
-    result = await BridgeCore._create_room_for_channel(
+    result = await CollaborationCore._create_room_for_channel(
         bridge,
         channel_id="C1",
         channel_type="channel_public",
@@ -107,7 +107,7 @@ async def test_existing_db_room_is_adopted_not_recreated() -> None:
 
     bridge = _make_bridge(_adopt_existing_room=_adopt)
 
-    result = await BridgeCore._create_room_for_channel(
+    result = await CollaborationCore._create_room_for_channel(
         bridge,
         channel_id="C1",
         channel_type="channel_public",
@@ -137,7 +137,7 @@ async def test_integrity_error_falls_back_to_existing_room() -> None:
         _room_service=SimpleNamespace(create_room=create_room),
     )
 
-    result = await BridgeCore._create_room_for_channel(
+    result = await CollaborationCore._create_room_for_channel(
         bridge,
         channel_id="C1",
         channel_type="channel_public",
@@ -152,7 +152,7 @@ async def test_app_join_during_provisioning_creates_no_room() -> None:
     # still provisioning the channel. It must not spawn a duplicate room.
     bridge = _make_bridge(_provisioning_channels={"C1"})
 
-    await BridgeCore._handle_app_joined_channel(
+    await CollaborationCore._handle_app_joined_channel(
         bridge,
         InboundAppJoin(
             channel_id="C1",
@@ -168,7 +168,7 @@ async def test_adopt_existing_room_registers_mapping() -> None:
     # The real _adopt_existing_room: a DB hit registers the in-memory mapping
     # and returns the room, so subsequent lookups short-circuit.
     room = SimpleNamespace(
-        id="db-room", tenant_id="tenant-1", matrix_room_id="!db:switch.local"
+        id="db-room", tenant_id="tenant-1", transport_room_id="!db:switch.local"
     )
 
     class _Session:
@@ -184,7 +184,7 @@ async def test_adopt_existing_room_registers_mapping() -> None:
         ) -> Any:
             return room if channel_id == "C1" else None
 
-    bridge = BridgeCore.__new__(BridgeCore)
+    bridge = CollaborationCore.__new__(CollaborationCore)
     bridge._channel_to_room = {}
     bridge._room_to_channel = {}
     bridge._room_tenants = {}

@@ -48,11 +48,24 @@ rendered from this one source and cannot drift from the release's own.
 {{- if not .Values.postgresql.existingSecret }}
 POSTGRES_PASSWORD: {{ required "secrets.postgresPassword is required (unless postgresql.existingSecret is set)" .Values.secrets.postgresPassword | b64enc | quote }}
 {{- end }}
+{{- if and (eq .Values.postgresql.mode "managed") .Values.secrets.dbRuntimePassword (not .Values.postgresql.managed.runtimeExistingSecret) }}
+DB_RUNTIME_PASSWORD: {{ .Values.secrets.dbRuntimePassword | b64enc | quote }}
+{{- end }}
 {{- if and .Values.postgresql.owner.username (not .Values.postgresql.owner.existingSecret) }}
 DB_OWNER_PASSWORD: {{ required "secrets.dbOwnerPassword is required when postgresql.owner.username is set (unless postgresql.owner.existingSecret is set)" .Values.secrets.dbOwnerPassword | b64enc | quote }}
 {{- end }}
 AGENT_REGISTRATION_TOKEN: {{ required "secrets.agentRegistrationToken is required" .Values.secrets.agentRegistrationToken | b64enc | quote }}
-JWT_SECRET_KEY: {{ required "secrets.jwtSecretKey is required" .Values.secrets.jwtSecretKey | b64enc | quote }}
+SECRET_KEYS: {{ required "secrets.secretKeys is required (\"<id>:<secret>\", see values.yaml)" .Values.secrets.secretKeys | b64enc | quote }}
+{{- with .Values.secrets.jwtSecretKey }}
+JWT_SECRET_KEY: {{ . | b64enc | quote }}
+{{- end }}
+{{- if .Values.switchCore.agentManagement.enabled }}
+{{- $controllerSecret := required "secrets.controllerTokenSecret is required when switchCore.agentManagement.enabled" .Values.secrets.controllerTokenSecret }}
+{{- if lt (len $controllerSecret) 32 }}
+{{- fail "secrets.controllerTokenSecret must be at least 32 characters; switch-core refuses to start with a shorter one." }}
+{{- end }}
+CONTROLLER_TOKEN_SECRET: {{ $controllerSecret | b64enc | quote }}
+{{- end }}
 GATEWAY_ADMIN_EMAIL: {{ required "secrets.gatewayAdminEmail is required" .Values.secrets.gatewayAdminEmail | b64enc | quote }}
 GATEWAY_ADMIN_PASSWORD: {{ required "secrets.gatewayAdminPassword is required" .Values.secrets.gatewayAdminPassword | b64enc | quote }}
 {{- if .Values.mattermost.enabled }}
@@ -62,12 +75,19 @@ MATTERMOST_USER_PASSWORD: {{ .Values.secrets.mattermostUserPassword | default .V
 {{- if .Values.switchCore.oidc.enabled }}
 GATEWAY_OIDC_CLIENT_SECRET: {{ required "secrets.gatewayOidcClientSecret is required when switchCore.oidc.enabled" .Values.secrets.gatewayOidcClientSecret | b64enc | quote }}
 {{- end }}
+{{- if and .Values.switchCore.smtp.enabled .Values.switchCore.smtp.username }}
+GATEWAY_SMTP_PASSWORD: {{ required "secrets.gatewaySmtpPassword is required when switchCore.smtp.username is set" .Values.secrets.gatewaySmtpPassword | b64enc | quote }}
+{{- end }}
 {{- if .Values.secrets.otlpHeaders }}
 OTLP_HEADERS: {{ .Values.secrets.otlpHeaders | b64enc | quote }}
 {{- end }}
 {{- if .Values.switchCore.slackApp.enabled }}
 SLACK_APP_CLIENT_SECRET: {{ required "secrets.slackAppClientSecret is required when switchCore.slackApp.enabled" .Values.secrets.slackAppClientSecret | b64enc | quote }}
 SLACK_APP_SIGNING_SECRET: {{ required "secrets.slackAppSigningSecret is required when switchCore.slackApp.enabled" .Values.secrets.slackAppSigningSecret | b64enc | quote }}
+{{- end }}
+{{- if .Values.switchCore.discordApp.enabled }}
+DISCORD_APP_CLIENT_SECRET: {{ required "secrets.discordAppClientSecret is required when switchCore.discordApp.enabled" .Values.secrets.discordAppClientSecret | b64enc | quote }}
+DISCORD_APP_BOT_TOKEN: {{ required "secrets.discordAppBotToken is required when switchCore.discordApp.enabled" .Values.secrets.discordAppBotToken | b64enc | quote }}
 {{- end }}
 {{- end }}
 
@@ -170,6 +190,42 @@ external secret (e.g. one synced by external-secrets / sealed-secrets).
 
 {{- define "switch.postgresSecretKey" -}}
 {{- .Values.postgresql.existingSecretKey | default "POSTGRES_PASSWORD" -}}
+{{- end }}
+
+{{/*
+Where DB_USER's password comes from. In mode: managed the runtime role has a
+password of its own when secrets.dbRuntimePassword or
+postgresql.managed.runtimeExistingSecret is set, and shares the superuser's
+otherwise. In mode: existing DB_USER's password is POSTGRES_PASSWORD, as
+before.
+*/}}
+{{- define "switch.runtimePasswordSeparate" -}}
+{{- if and .Values.secrets.existingSecret .Values.secrets.dbRuntimePassword -}}
+{{- fail "secrets.dbRuntimePassword cannot be used with secrets.existingSecret: the chart renders no Secret to put it in. Store the password in a Secret and name it in postgresql.managed.runtimeExistingSecret (it may be the same Secret as secrets.existingSecret)." -}}
+{{- end -}}
+{{- if and (eq .Values.postgresql.mode "managed") (or .Values.postgresql.managed.runtimeExistingSecret .Values.secrets.dbRuntimePassword) -}}
+true
+{{- end -}}
+{{- end }}
+
+{{- define "switch.runtimeSecretName" -}}
+{{- if not (include "switch.runtimePasswordSeparate" .) -}}
+{{- include "switch.postgresSecretName" . -}}
+{{- else if .Values.postgresql.managed.runtimeExistingSecret -}}
+{{- .Values.postgresql.managed.runtimeExistingSecret -}}
+{{- else -}}
+{{- include "switch.secretName" . -}}
+{{- end -}}
+{{- end }}
+
+{{- define "switch.runtimeSecretKey" -}}
+{{- if not (include "switch.runtimePasswordSeparate" .) -}}
+{{- include "switch.postgresSecretKey" . -}}
+{{- else if .Values.postgresql.managed.runtimeExistingSecret -}}
+{{- .Values.postgresql.managed.runtimeExistingSecretKey | default "DB_RUNTIME_PASSWORD" -}}
+{{- else -}}
+DB_RUNTIME_PASSWORD
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -495,6 +551,11 @@ switch-core container env. Shared by the switch-core Deployment and the
 pre-upgrade migration Job so they always run against the same configuration
 (env.py builds a full SwitchConfig, so the migration Job needs every var too).
 Include with `nindent 12`.
+
+Pass `omitOwnerCredentials: true` in the context for the serving container:
+it gets no DB_OWNER_* and DB_MIGRATE_ON_BOOT=false, because its init container
+has already migrated as the owner. Only the init container and the Job hold
+the owner's password.
 */}}
 {{- define "switch.coreEnv" -}}
 - name: DB_HOST
@@ -506,12 +567,15 @@ Include with `nindent 12`.
 - name: DB_PASSWORD
   valueFrom:
     secretKeyRef:
-      name: {{ include "switch.postgresSecretName" . }}
-      key: {{ include "switch.postgresSecretKey" . }}
+      name: {{ include "switch.runtimeSecretName" . }}
+      key: {{ include "switch.runtimeSecretKey" . }}
 - name: DB_NAME
   value: {{ include "switch.postgresDatabase" . | quote }}
 {{- $ownerUser := include "switch.postgresOwnerUser" . }}
-{{- if $ownerUser }}
+{{- if .omitOwnerCredentials }}
+- name: DB_MIGRATE_ON_BOOT
+  value: "false"
+{{- else if $ownerUser }}
 - name: DB_OWNER_USER
   value: {{ $ownerUser | quote }}
 - name: DB_OWNER_PASSWORD
@@ -557,6 +621,10 @@ Include with `nindent 12`.
   value: {{ .Values.postgresql.migrationLockTimeout | quote }}
 - name: AGENT_AUTH_CACHE_TTL_SECONDS
   value: {{ .Values.switchCore.authCache.ttlSeconds | quote }}
+- name: ID_SERVER_NAME
+  value: {{ .Values.clientIdentity.serverName | quote }}
+{{- /* The old name, for an image released before the rename, which reads only
+this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: MATRIX_SERVER_NAME
   value: {{ .Values.clientIdentity.serverName | quote }}
 - name: AGENT_REGISTRATION_TOKEN
@@ -564,11 +632,30 @@ Include with `nindent 12`.
     secretKeyRef:
       name: {{ include "switch.secretName" . }}
       key: AGENT_REGISTRATION_TOKEN
+- name: SECRET_KEYS
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: SECRET_KEYS
 - name: JWT_SECRET_KEY
   valueFrom:
     secretKeyRef:
       name: {{ include "switch.secretName" . }}
       key: JWT_SECRET_KEY
+      optional: true
+{{- with .Values.switchCore.agentManagement }}
+{{- if .enabled }}
+- name: AGENT_MANAGEMENT_ENABLED
+  value: "true"
+- name: CONTROLLER_TOKEN_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" $ }}
+      key: CONTROLLER_TOKEN_SECRET
+- name: CONTROLLER_STATUS_INTERVAL_SECONDS
+  value: {{ .statusIntervalSeconds | quote }}
+{{- end }}
+{{- end }}
 - name: GATEWAY_ADMIN_EMAIL
   valueFrom:
     secretKeyRef:
@@ -608,6 +695,57 @@ Include with `nindent 12`.
 {{- if not .Values.switchCore.oidc.passwordLoginEnabled }}
 - name: GATEWAY_PASSWORD_LOGIN_ENABLED
   value: "false"
+{{- end }}
+{{- end }}
+- name: GATEWAY_SIGNUP_ENABLED
+  value: {{ .Values.switchCore.signupEnabled | quote }}
+- name: GATEWAY_SIGNUP_MAX_PER_HOUR
+  value: {{ .Values.switchCore.signupMaxPerHour | quote }}
+{{- $signupMode := .Values.switchCore.signup.mode }}
+{{- if not (has $signupMode (list "default_tenant" "invite_only" "open")) }}
+{{- fail (printf "switchCore.signup.mode must be one of default_tenant, invite_only, open. Got %q." $signupMode) }}
+{{- end }}
+- name: GATEWAY_SIGNUP_MODE
+  value: {{ $signupMode | quote }}
+- name: GATEWAY_MAX_WORKSPACES_PER_USER
+  value: {{ .Values.switchCore.signup.maxWorkspacesPerUser | quote }}
+- name: GATEWAY_TENANT_CHOICE_ENABLED
+  value: {{ .Values.switchCore.tenantChoiceEnabled | quote }}
+{{- $outboundHosts := .Values.switchCore.outbound.allowedPrivateHosts }}
+{{- if .Values.mattermost.enabled }}
+{{- $outboundHosts = append $outboundHosts (include "switch.mattermostHost" .) }}
+{{- end }}
+{{- if $outboundHosts }}
+- name: OUTBOUND_ALLOWED_PRIVATE_HOSTS
+  value: {{ join "," $outboundHosts | quote }}
+{{- end }}
+{{- with .Values.switchCore.smtp }}
+{{- if .enabled }}
+{{- if not $.Values.switchCore.frontendBaseUrl }}
+{{- fail "switchCore.frontendBaseUrl is required when switchCore.smtp.enabled — invitation e-mails link to the dashboard at that origin." }}
+{{- end }}
+{{- if not (has .tls (list "starttls" "tls" "none")) }}
+{{- fail (printf "switchCore.smtp.tls must be one of starttls, tls, none. Got %q." .tls) }}
+{{- end }}
+- name: GATEWAY_SMTP_HOST
+  value: {{ required "switchCore.smtp.host is required when smtp.enabled" .host | quote }}
+- name: GATEWAY_SMTP_PORT
+  value: {{ .port | quote }}
+- name: GATEWAY_SMTP_TLS
+  value: {{ .tls | quote }}
+- name: GATEWAY_SMTP_FROM
+  value: {{ required "switchCore.smtp.from is required when smtp.enabled" .from | quote }}
+- name: GATEWAY_INVITE_EMAILS_PER_DAY
+  value: {{ .emailsPerDayPerWorkspace | quote }}
+{{- if .username }}
+- name: GATEWAY_SMTP_USERNAME
+  value: {{ .username | quote }}
+- name: GATEWAY_SMTP_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" $ }}
+      key: GATEWAY_SMTP_PASSWORD
+{{- end }}
 {{- end }}
 {{- end }}
 - name: GATEWAY_COOKIE_SECURE
@@ -656,6 +794,10 @@ Include with `nindent 12`.
   value: {{ .Values.switchCore.telemetry.endpoint | quote }}
 - name: TELEMETRY_SNAPSHOT_INTERVAL_HOURS
   value: {{ .Values.switchCore.telemetry.snapshotIntervalHours | quote }}
+- name: TELEMETRY_ENVIRONMENT
+  value: {{ .Values.switchCore.telemetry.environment | quote }}
+- name: TELEMETRY_INTERNAL
+  value: {{ .Values.switchCore.telemetry.internal | quote }}
 {{- end }}
 # switch-core sits behind the cluster/ALB and enforces its own
 # BearerAuthMiddleware, so fastmcp's browser-oriented DNS-rebinding
@@ -686,6 +828,34 @@ Include with `nindent 12`.
     secretKeyRef:
       name: {{ include "switch.secretName" . }}
       key: SLACK_APP_SIGNING_SECRET
+{{- end }}
+{{- if .Values.switchCore.discordApp.enabled }}
+{{- if not .Values.switchCore.slackApp.enabled }}
+- name: MESSAGING_PUBLIC_URL
+  value: {{ required "switchCore.discordApp.messagingPublicUrl is required when switchCore.discordApp.enabled" .Values.switchCore.discordApp.messagingPublicUrl | quote }}
+{{- end }}
+- name: DISCORD_APP_CLIENT_ID
+  value: {{ required "switchCore.discordApp.clientId is required when switchCore.discordApp.enabled" .Values.switchCore.discordApp.clientId | quote }}
+- name: DISCORD_APP_APPLICATION_ID
+  value: {{ required "switchCore.discordApp.applicationId is required when switchCore.discordApp.enabled" .Values.switchCore.discordApp.applicationId | quote }}
+- name: DISCORD_APP_CLIENT_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: DISCORD_APP_CLIENT_SECRET
+- name: DISCORD_APP_BOT_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: DISCORD_APP_BOT_TOKEN
+{{- if .Values.switchCore.discordApp.messageContent }}
+- name: DISCORD_APP_MESSAGE_CONTENT
+  value: "true"
+{{- end }}
+{{- if .Values.switchCore.discordApp.members }}
+- name: DISCORD_APP_MEMBERS
+  value: "true"
+{{- end }}
 {{- end }}
 {{- end }}
 

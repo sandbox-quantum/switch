@@ -37,6 +37,7 @@ import {
 import { deriveHostStatus } from '@shared/core/remote-hosts/host-status';
 import { isHostBlocked } from '@shared/core/remote-hosts/reachability';
 import { switchServersStore } from '../../switch-servers/switch-servers-store';
+import { workspacesStore } from '../../workspaces/workspaces-store';
 import { hostReachabilityStore } from '../host-reachability-store';
 import { hostSetupStore } from '../host-setup-store';
 import { HostUnreachablePanel } from '../host-unreachable-panel';
@@ -131,6 +132,10 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
     if (managed) return managed.id;
     return activeServer?.id ?? servers[0]?.id ?? null;
   }, [sshHost, servers, activeServer]);
+  // Which of that server's workspaces the discovery below asks. `GET /agents`
+  // answers for one tenant, so without it the list would be whichever workspace
+  // the session last selected.
+  const workspaceId = workspacesStore.idOnServerInScope(serverId);
 
   const status = deriveHostStatus(reachability, plan.data ?? null);
   const { prerequisites, agentTypes } = useMemo(
@@ -311,10 +316,11 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
                   </section>
                 )}
 
-                {serverId && (
+                {serverId && workspaceId && (
                   <LoadExistingAgentsSection
                     sshHost={sshHost}
                     serverId={serverId}
+                    workspaceId={workspaceId}
                     initiallyOpen={justAdded}
                   />
                 )}
@@ -349,6 +355,9 @@ export const remoteHostView = {
   // No titlebar slot: the page header already names the host and repeats the
   // alias underneath it, so a third copy in the title bar was only noise.
   MainPanel: RemoteHostMainPanel,
+  // A host is somewhere agents run, not something a server owns: its page says
+  // the same things with no server registered as with ten.
+  worksWithoutServer: true,
   canActivate: (params: unknown): GuardResult => {
     // Params can come from a snapshot written by an older build, so validate
     // rather than trust: a view with no host to show has nothing to render.

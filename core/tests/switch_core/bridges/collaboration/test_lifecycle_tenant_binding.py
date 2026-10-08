@@ -24,7 +24,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -41,6 +41,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.keys import Keyring
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 from tests.conftest import RLSHarness
 
@@ -54,7 +55,7 @@ def _service(
     config.gateway_public_url = "https://gw.example"
     config.collaboration_callback_host = "127.0.0.1"
     config.collaboration_callback_port = callback_port
-    config.jwt_secret_key = "server-secret-for-tests"
+    config.keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
     return CollaborationBridgeLifecycleService(
         bridge_store=CollaborationBridgeStore(),
         external_user_store=MagicMock(),
@@ -64,7 +65,7 @@ def _service(
         client_store=ClientStore(),
         client_lifecycle=MagicMock(),
         room_service=MagicMock(),
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         session_factory=session_factory,
         config=config,
         client_factory=MagicMock(),
@@ -74,7 +75,7 @@ def _service(
     )
 
 
-class _StubAdapter(CollaborationAdapter):
+class _StubAdapter(PlatformAdapter):
     """Concrete only so `start` can build one; no platform call is made."""
 
     def __init__(self, *, config: Any) -> None:
@@ -94,7 +95,7 @@ class _StubAdapter(CollaborationAdapter):
     async def create_agent_identity(self, *a: Any, **k: Any) -> Any: ...
     async def remove_agent_identity(self, *a: Any, **k: Any) -> Any: ...
     def translate_inbound(self, *a: Any, **k: Any) -> Any: ...
-    def translate_outbound(self, *a: Any, **k: Any) -> Any: ...
+    def _render_outbound(self, *a: Any, **k: Any) -> Any: ...
 
 
 class _StubConfig(BridgeConnectionConfig):
@@ -110,7 +111,7 @@ async def _make_bridge(session: AsyncSession, *, tenant_id: str) -> tuple[str, s
     """A bridge row and its client, in `tenant_id`. Returns (bridge, client)."""
     client = Client(
         tenant_id=tenant_id,
-        matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+        transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
         display_name="bridge client",
         type="bridge",
     )
@@ -244,7 +245,7 @@ async def test_the_bridge_task_unbinds_and_then_binds_per_unit_of_work(
         bridge_id, client_id = await _make_bridge(session, tenant_id=bridge_tenant)
         room = Room(
             tenant_id=bridge_tenant,
-            matrix_room_id=f"!room-{uuid.uuid4().hex[:8]}:test",
+            transport_room_id=f"!room-{uuid.uuid4().hex[:8]}:test",
             name="a bridged room",
             description="",
             bridge_id=bridge_id,
@@ -267,8 +268,8 @@ async def test_the_bridge_task_unbinds_and_then_binds_per_unit_of_work(
         async def start(self) -> None:
             seen["client"] = current_tenant_id()
 
-    bridge_client = _Client()
-    bridge_client.client_id = client_id
+    workspace_consumer = _Client()
+    workspace_consumer.client_id = client_id
 
     leaked: list[str | None] = []
     with tenant_scope(caller_tenant):
@@ -276,7 +277,7 @@ async def test_the_bridge_task_unbinds_and_then_binds_per_unit_of_work(
             bridge_id,
             bridge_tenant,
             _Core(),  # type: ignore[arg-type]
-            bridge_client,  # type: ignore[arg-type]
+            workspace_consumer,  # type: ignore[arg-type]
         )
         leaked.append(current_tenant_id())
 
@@ -338,7 +339,7 @@ async def test_a_host_resource_conflict_is_looked_for_across_every_tenant(
         await _make_tenant(session, newcomer_tenant)
         client = Client(
             tenant_id=incumbent_tenant,
-            matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+            transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
             display_name="bridge client",
             type="bridge",
         )
@@ -376,7 +377,7 @@ async def test_a_host_resource_conflict_is_looked_for_across_every_tenant(
 
     with tenant_scope(newcomer_tenant):
         with pytest.raises(ValueError, match="port:3979 is already claimed"):
-            await service._reject_resource_conflict("teams", {"listen_port": 3979})
+            await service.reject_claim_conflict("teams", {"listen_port": 3979})
 
     assert sorted(seen) == sorted(
         [TENANT_ZERO_ID, incumbent_tenant, newcomer_tenant]
@@ -393,7 +394,7 @@ async def test_a_tenant_scoped_read_of_the_same_data_would_have_missed_the_confl
 ) -> None:
     """The row-visibility half of the test above, made real: the same
     incumbent bridge, read through `CollaborationBridgeStore.get_all` — the
-    exact method `_reject_resource_conflict` calls — but scoped to the
+    exact method `reject_claim_conflict` calls — but scoped to the
     newcomer's tenant instead of left unscoped. It comes back empty, which is
     what would have let a second Teams listener claim the same port undetected
     had the application code above been scoped instead of deliberately
@@ -406,7 +407,7 @@ async def test_a_tenant_scoped_read_of_the_same_data_would_have_missed_the_confl
         await _make_tenant(session, newcomer_tenant)
         client = Client(
             tenant_id=incumbent_tenant,
-            matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+            transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
             display_name="bridge client",
             type="bridge",
         )
@@ -454,7 +455,7 @@ async def test_a_same_tenant_conflict_names_the_incumbent_bridge(
         await _make_tenant(session, tenant)
         client = Client(
             tenant_id=tenant,
-            matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+            transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
             display_name="bridge client",
             type="bridge",
         )
@@ -477,7 +478,7 @@ async def test_a_same_tenant_conflict_names_the_incumbent_bridge(
 
     with tenant_scope(tenant):
         with pytest.raises(ValueError) as excinfo:
-            await service._reject_resource_conflict("teams", {"listen_port": 3979})
+            await service.reject_claim_conflict("teams", {"listen_port": 3979})
 
     assert "Our Existing Teams" in str(excinfo.value)
 
@@ -500,7 +501,7 @@ async def test_a_cross_tenant_conflict_does_not_name_the_incumbent_or_its_tenant
         await _make_tenant(session, newcomer_tenant)
         client = Client(
             tenant_id=incumbent_tenant,
-            matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+            transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
             display_name="Their Secret Teams",
             type="bridge",
         )
@@ -523,7 +524,7 @@ async def test_a_cross_tenant_conflict_does_not_name_the_incumbent_or_its_tenant
 
     with tenant_scope(newcomer_tenant):
         with pytest.raises(ValueError) as excinfo:
-            await service._reject_resource_conflict("teams", {"listen_port": 3979})
+            await service.reject_claim_conflict("teams", {"listen_port": 3979})
 
     message = str(excinfo.value)
     assert "Their Secret Teams" not in message
@@ -549,7 +550,7 @@ async def test_a_conflict_with_nothing_bound_fails_closed_to_the_non_disclosing_
         await _make_tenant(session, incumbent_tenant)
         client = Client(
             tenant_id=incumbent_tenant,
-            matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+            transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
             display_name="Their Secret Teams",
             type="bridge",
         )
@@ -572,9 +573,30 @@ async def test_a_conflict_with_nothing_bound_fails_closed_to_the_non_disclosing_
 
     assert current_tenant_id() is None
     with pytest.raises(ValueError) as excinfo:
-        await service._reject_resource_conflict("teams", {"listen_port": 3979})
+        await service.reject_claim_conflict("teams", {"listen_port": 3979})
 
     message = str(excinfo.value)
     assert "Their Secret Teams" not in message
     assert incumbent_tenant not in message
     assert "already claimed" in message
+
+
+class _RunningBridge:
+    def __init__(self, tenant_id: str) -> None:
+        self.tenant_id = tenant_id
+
+
+@pytest.mark.no_ambient_tenant
+def test_get_hands_a_running_bridge_only_to_its_own_tenant(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc = _service(session_factory)
+    bridge = _RunningBridge("tenant-a")
+    svc._bridges["bridge-a"] = bridge  # type: ignore[assignment]
+
+    with tenant_scope("tenant-a"):
+        assert svc.get("bridge-a") is bridge
+    with tenant_scope("tenant-b"):
+        assert svc.get("bridge-a") is None
+    assert svc.get("bridge-a") is bridge
+    assert svc.get("bridge-missing") is None

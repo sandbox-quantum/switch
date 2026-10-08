@@ -1,4 +1,5 @@
 import React, { useCallback } from 'react';
+import { MigrationSettingsPage } from '@renderer/features/agent-migration/migration-settings-page';
 import { RemoteHostsSettingsPage } from '@renderer/features/remote-hosts/views/remote-hosts-view';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { PageContent, PageLayout, PageSidebarMenu } from '@renderer/lib/components/page-layout';
@@ -7,6 +8,7 @@ import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
 import { AgentsSettingsPage } from '../agents-page/AgentsSettingsPage';
 import NotificationSettingsCard from './NotificationSettingsCard';
 import { OnboardingChecklistRow } from './OnboardingSettingsRow';
+import { ReplayOnboardingRow } from './ReplayOnboardingRow';
 import {
   AutoGenerateSessionNamesRow,
   AutoTrustWorktreesRow,
@@ -24,6 +26,7 @@ export type SettingsPageTab =
   | 'browser'
   | 'interface'
   | 'remote-hosts'
+  | 'managed-agents'
   | 'docs';
 
 // ---------------------------------------------------------------------------
@@ -44,6 +47,7 @@ function GeneralSettingsPage() {
       <PreserveSessionNameCapitalizationRow />
       <NotificationSettingsCard />
       <OnboardingChecklistRow />
+      <ReplayOnboardingRow />
       <TelemetrySettingsCard />
     </div>
   );
@@ -75,6 +79,7 @@ const TAB_CONTENT: Partial<Record<SettingsPageTab, () => React.ReactNode>> = {
   'clis-models': () => <AgentsSettingsPage />,
   interface: () => <InterfaceSettingsPage />,
   'remote-hosts': () => <RemoteHostsSettingsPage />,
+  'managed-agents': () => <MigrationSettingsPage />,
 };
 
 /**
@@ -108,6 +113,7 @@ export function SettingsPage({
     { id: 'general', label: 'General' },
     { id: 'clis-models', label: 'Agent providers' },
     { id: 'remote-hosts', label: 'Remote hosts' },
+    { id: 'managed-agents', label: 'Managed agents' },
     { id: 'interface', label: 'Interface' },
     { id: 'docs', label: 'Docs', isExternal: true },
   ];
@@ -116,6 +122,7 @@ export function SettingsPage({
 
   return (
     <PageLayout
+      width={880}
       sidebar={
         <PageSidebarMenu
           items={tabs}

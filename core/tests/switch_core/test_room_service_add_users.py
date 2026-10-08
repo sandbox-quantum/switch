@@ -30,7 +30,7 @@ class _FakeAdapter:
         return [i for i in user_external_ids if i in self._failing_ids]
 
 
-class _FakeBridgeCore:
+class _FakeCollaborationCore:
     def __init__(self, *, known: dict[str, str], failing_ids: list[str]) -> None:
         self._known = known
         self.adapter = _FakeAdapter(failing_ids=failing_ids)
@@ -43,8 +43,8 @@ class _FakeBridgeCore:
 
 async def _add(
     *, known: dict[str, str], failing_ids: list[str], asked_for: list[str]
-) -> tuple[list[dict[str, Any]], _FakeBridgeCore]:
-    bridge = _FakeBridgeCore(known=known, failing_ids=failing_ids)
+) -> tuple[list[dict[str, Any]], _FakeCollaborationCore]:
+    bridge = _FakeCollaborationCore(known=known, failing_ids=failing_ids)
     failures = await RoomService._add_users_to_channel(
         bridge,  # type: ignore[arg-type]
         "chan-1",
@@ -115,7 +115,7 @@ async def test_both_kinds_of_miss_are_reported_together() -> None:
 async def test_an_unmappable_failure_id_still_gets_reported() -> None:
     # An adapter returning something we did not hand it is a bug, but losing
     # the failure entirely would be worse than reporting it raw.
-    bridge = _FakeBridgeCore(known={"alice": "ext-a"}, failing_ids=[])
+    bridge = _FakeCollaborationCore(known={"alice": "ext-a"}, failing_ids=[])
 
     async def _add_users(
         channel_id: str, user_names: list[str], user_external_ids: list[str]

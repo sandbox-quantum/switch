@@ -10,7 +10,7 @@ from switch_core.db.stores.room_store import RoomStore
 async def _make_room(rooms: RoomStore, session: AsyncSession, name: str) -> Room:
     return await rooms.create(
         session,
-        Room(matrix_room_id=f"!{name}:test", name=name, description=f"{name} desc"),
+        Room(transport_room_id=f"!{name}:test", name=name, description=f"{name} desc"),
     )
 
 

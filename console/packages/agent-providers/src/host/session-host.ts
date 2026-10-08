@@ -27,7 +27,7 @@ import { ChatProjector } from '../session-v1/chat-projector';
 import { ATTACHMENT_MIME_TYPES } from './attachments';
 import { Journal } from './journal';
 
-const recordSchema = z.discriminatedUnion('type', [
+export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
   z.object({ type: z.literal('dispatched'), commandId: z.string() }),
   z.object({
@@ -53,7 +53,7 @@ const recordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('reset-completed') }),
   z.object({ type: z.literal('model'), id: z.string(), options: z.record(z.string(), z.string()) }),
 ]);
-type RecordEntry = z.infer<typeof recordSchema>;
+type RecordEntry = z.infer<typeof hostInboxRecordSchema>;
 export type HostSessionStart = {
   session: Session;
   resumeOperationId?: string;
@@ -192,7 +192,7 @@ export class HostedSession {
       serverEventSchema.parse(input)
     );
     const inbox = await Journal.load(join(root, 'inbox.jsonl'), (input) =>
-      recordSchema.parse(input)
+      hostInboxRecordSchema.parse(input)
     );
     const host = new HostedSession(config, adapter, events, inbox);
     try {
@@ -443,13 +443,27 @@ export class HostedSession {
       type: 'notice',
       level: 'info',
       code: 'ROOM_BACKLOG_DELIVERED',
-      message: `${count} room message(s) received while the conversation needed an explicit reset are now being delivered to the fresh conversation.`,
+      message: `${count} room message(s) received while the conversation could not continue are now being delivered to the fresh conversation.`,
+    });
+  }
+
+  startingFreshForRoom(): Promise<void> {
+    return this.publish({
+      type: 'notice',
+      level: 'warning',
+      code: 'FRESH_START_FOR_ROOM',
+      message: `A room message arrived while the conversation could not continue (${this.decisionCode}). Starting a fresh conversation to answer it; earlier messages stay in the transcript.`,
     });
   }
 
   /** A conversation that cannot continue without an explicit reset. */
   get resetDecisionPending(): boolean {
     return this.decisionPending;
+  }
+
+  /** Work the provider is doing outside any turn, such as background subagents. */
+  get backgroundWorkRunning(): boolean {
+    return this.adapter.hasBackgroundWork?.(this.config.session.sessionId) ?? false;
   }
 
   snapshot(): Snapshot {
@@ -578,6 +592,13 @@ export class HostedSession {
     const command = commandSchema.parse(input);
     const result = this.serial.then(() => this.accept(command));
     this.serial = result.catch(() => {});
+    return result;
+  }
+
+  /** Resolves once every command and outcome queued before it has been taken or refused. */
+  barrier(): Promise<void> {
+    const result = this.serial.then(() => {});
+    this.serial = result;
     return result;
   }
 

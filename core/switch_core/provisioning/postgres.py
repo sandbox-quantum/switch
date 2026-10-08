@@ -99,7 +99,7 @@ class PostgresProvisioning:
                 ClientRoom, {"client_id": client_id, "room_id": switch_room_id}
             )
 
-        # By client id, not `user_id`: `clients.matrix_user_id` is unique per
+        # By client id, not `user_id`: `clients.transport_user_id` is unique per
         # tenant, and every tenant's admin client carries the same one, so
         # waking "the client for @switch-admin" would wake whichever tenant's
         # transport last claimed the slot. `_resolve` above has already turned
@@ -167,10 +167,12 @@ class PostgresProvisioning:
     async def _resolve(
         self, session: AsyncSession, transport_room_id: str, user_id: str
     ) -> tuple[str, str, str]:
-        room = await self._room_store.get_by_matrix_room_id(session, transport_room_id)
+        room = await self._room_store.get_by_transport_room_id(
+            session, transport_room_id
+        )
         if room is None:
             raise ProvisioningError(f"{transport_room_id} is not a Switch room")
-        client = await self._client_store.get_by_matrix_user_id(session, user_id)
+        client = await self._client_store.get_by_transport_user_id(session, user_id)
         if client is None:
             raise ProvisioningError(f"{user_id} is not a Switch client")
         return room.id, client.id, client.display_name

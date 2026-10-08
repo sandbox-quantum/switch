@@ -11,7 +11,7 @@ import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { locationTransport } from '@main/core/locations/location-transport';
 import { getPlugin } from '@main/core/providers/plugin-registry';
-import { deploySharedHost } from '@main/core/sdk-host/shared-host-deployment';
+import { locateSharedHost } from '@main/core/sdk-host/shared-host-deployment';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { log } from '@main/lib/logger';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -171,7 +171,14 @@ export async function getProviderReadiness(
         message: `${plugin.metadata.name} is not installed or its selected executable cannot be found.`,
         models: [],
       };
-    const deployed = await deploySharedHost(transport, params.dir, 'provider-readiness', false);
+    const deployed = await locateSharedHost(transport, params.dir);
+    if (!deployed)
+      return {
+        installed: true,
+        status: 'unknown' as const,
+        message: `Switch is not set up on ${params.sshHost ?? 'this machine'} yet, so ${plugin.metadata.name} cannot be checked there. Start an agent on it, or press Update on one's Room watcher.`,
+        models: [],
+      };
     try {
       const { stdout } = await deployed.ctx.exec(
         'node',

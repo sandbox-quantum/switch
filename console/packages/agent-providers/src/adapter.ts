@@ -145,9 +145,21 @@ export interface ProviderAdapter {
   canCompact?(sessionId: string): Promise<boolean>;
   listModels?(sessionId: string): Promise<ModelChoice[]>;
   setModel?(sessionId: string, model: ModelSelection): Promise<void>;
+  /**
+   * Adds a developer message to the conversation, read by the model before
+   * the next turn with a developer message's weight. Absent means the provider
+   * has no such channel; a caller says it in the next user message instead.
+   */
+  addDeveloperMessage?(sessionId: string, text: string): Promise<void>;
   stopSession(sessionId: string): Promise<void>;
   stopAll(): Promise<void>;
   hasSession(sessionId: string): boolean;
+  /**
+   * Whether the session is still at work outside any turn — subagents started
+   * in the background that outlive the turn that started them. A session with
+   * background work is not idle. Absent means the provider has none to report.
+   */
+  hasBackgroundWork?(sessionId: string): boolean;
 
   /** Events for every session this adapter drives. Returns the unsubscribe. */
   subscribe(listener: (event: ProviderRuntimeEvent) => void): () => void;

@@ -31,7 +31,7 @@ listener:
 
 **Identity model:** a single Azure bot backs every Switch agent (like Slack).
 Each agent's messages render as an **Adaptive Card** headed with the agent's name
-and avatar. Human users map to Matrix puppets keyed on their AAD object id. Both
+and avatar. Human users map to human actors keyed on their AAD object id. Both
 inbound paths funnel through one delivery + de-duplication path (keyed on the
 Teams message id); the bot's own posts are dropped to prevent loops.
 

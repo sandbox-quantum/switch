@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -28,6 +28,7 @@ from switch_core.telemetry.session_start import (
     SessionStartLimiter,
     default_session_start_limiter,
 )
+from switch_core.trust.client import TrustClient
 
 if TYPE_CHECKING:
     from switch_core.session_activity.outcomes import ApprovalOutcomes
@@ -44,7 +45,7 @@ def init_dependencies(
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
     event_buffer: EventBuffer,
-    connections: ConnectionRegistry,
+    connections: AgentConnectionRegistry,
     task_store: TaskStore,
     resource_service: ResourceService,
     api_key_store: ApiKeyStore,
@@ -54,6 +55,7 @@ def init_dependencies(
     session_factory: Any,
     config: Any,
     approval_outcomes: ApprovalOutcomes,
+    trust_client: TrustClient,
     telemetry: TelemetryService | None = None,
 ) -> None:
     _state["agent_store"] = agent_store
@@ -73,9 +75,10 @@ def init_dependencies(
     _state["session_factory"] = session_factory
     _state["config"] = config
     _state["telemetry"] = telemetry
+    _state["trust_client"] = trust_client
     _state["session_start_limiter"] = default_session_start_limiter()
 
-    _state["protocol"] = ProtocolService(
+    _state["protocol"] = AgentCore(
         agent_store=agent_store,
         agent_session_store=agent_session_store,
         room_store=room_store,
@@ -93,6 +96,7 @@ def init_dependencies(
         session_factory=session_factory,
         config=config,
         approval_outcomes=approval_outcomes,
+        trust_client=trust_client,
         telemetry=telemetry,
     )
 
@@ -146,7 +150,7 @@ def get_config() -> SwitchConfig:
     return _state["config"]  # type: ignore[no-any-return]
 
 
-def get_protocol() -> ProtocolService:
+def get_protocol() -> AgentCore:
     return _state["protocol"]  # type: ignore[no-any-return]
 
 

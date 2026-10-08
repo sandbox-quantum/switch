@@ -3,21 +3,21 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.models import Room
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 
 
-def _service(session_factory: async_sessionmaker[AsyncSession]) -> ProtocolService:
+def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
     # These methods only touch session_factory + room_group_store, so we can
     # exercise them on an un-__init__'d instance (matching the other protocol
     # tests) with just those attributes set.
-    svc = object.__new__(ProtocolService)
+    svc = object.__new__(AgentCore)
     # Presence unions the heartbeat rows with the live connections
     # (CHOO-1857); an empty registry means "rows only".
-    svc.connections = ConnectionRegistry()
+    svc.connections = AgentConnectionRegistry()
     svc.session_factory = session_factory  # type: ignore[attr-defined]
     svc.room_group_store = RoomGroupStore()  # type: ignore[attr-defined]
     return svc
@@ -72,7 +72,7 @@ class TestGetRoomGroupDetail:
 
         async with session_factory() as session:
             room = await rooms.create(
-                session, Room(matrix_room_id="!r:test", name="r1", description="d")
+                session, Room(transport_room_id="!r:test", name="r1", description="d")
             )
             await rooms.set_group(session, room.id, parent["id"])
             await session.commit()

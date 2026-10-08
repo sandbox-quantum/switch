@@ -22,4 +22,4 @@ prescriptive about (dates, numbers, empty values, identifiers) live in
 ## Documentation
 
 User-facing documentation for Switch is published at
-[docs.flintai.dev](https://docs.flintai.dev/flintai/switch/getting-started).
+[docs.switchagents.ai](https://docs.switchagents.ai/switch-rooms/getting-started).

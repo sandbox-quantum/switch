@@ -48,7 +48,7 @@ python scripts/otlp_sink.py
 DB_HOST=localhost DB_PORT=55432 DB_USER=postgres DB_PASSWORD=check DB_NAME=switch \
 DB_REQUIRE_RESTRICTED_ROLE=false \
 MATRIX_SERVER_NAME=switch.local \
-AGENT_REGISTRATION_TOKEN=check JWT_SECRET_KEY=check-jwt-secret-key-long-enough \
+AGENT_REGISTRATION_TOKEN=check SECRET_KEYS=check:check-secret-key-long-enough-for-32 \
 GATEWAY_ADMIN_EMAIL=admin@switch.local GATEWAY_ADMIN_PASSWORD=check \
 SERVER_PORT=8099 LOG_FORMAT=json ENVIRONMENT=local \
 OTLP_ENDPOINT=http://localhost:4318 \
@@ -149,7 +149,11 @@ handler — so records from libraries carry them too. A room id is a log field
 and deliberately not a metric attribute: it is unbounded and belongs to one
 tenant, which rules it out of a dashboard label for the reasons under "Why
 there is a catalogue" — and following one room through a failure is the single
-most common thing anyone asks these logs for. Set `LOG_FORMAT=json` to get them as
+most common thing anyone asks these logs for. A request from Switch Console also
+carries `console_id` and `console_name`: on a server a Console runs for its
+user, everyone with access to the host signs in as the one seeded account, so
+`user_id` cannot tell them apart and these can. They are attribution the caller
+supplies, not authentication. Set `LOG_FORMAT=json` to get them as
 fields rather than inside the message text; the default is `text`, which is for
 reading in a terminal, so anywhere the logs are actually collected wants the
 JSON form. With `OTLP_LOGS_ENABLED` the same records are *also* posted to the

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.clients.admin_messages import PLATFORM_MARKER
 from switch_core.transport import InboundMessage, RoomRef
 
@@ -55,12 +55,12 @@ async def _tenant(*_args: Any, **_kwargs: Any) -> str:
     return "tenant-1"
 
 
-def _bridge(adapter: _RecordingAdapter) -> BridgeCore:
-    core = object.__new__(BridgeCore)
+def _bridge(adapter: _RecordingAdapter) -> CollaborationCore:
+    core = object.__new__(CollaborationCore)
     core._bridge_type = "slack"  # type: ignore[attr-defined]
     core._adapter = adapter  # type: ignore[assignment]
-    core._puppet_matrix_ids = set()  # type: ignore[assignment]
-    core._bridge_client_matrix_user_id = "@bridge:switch.local"  # type: ignore[assignment]
+    core._human_user_ids = set()  # type: ignore[assignment]
+    core._workspace_consumer_transport_user_id = "@bridge:switch.local"  # type: ignore[assignment]
     core._find_channel = lambda **_kwargs: "C1"  # type: ignore[assignment]
     core._channel_to_room = {"C1": ("room-uuid", "!r:switch.local")}  # type: ignore[assignment]
     core._room_tenant = _tenant  # type: ignore[assignment]

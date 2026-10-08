@@ -1,22 +1,17 @@
-import type { WatcherHealth } from '@switch-console/agent-providers';
+import { type WatcherHealth, watcherHealthFileSchema } from '@switch-console/agent-providers';
 import {
+  CONNECTION_GRACE_MS,
   type AgentConnectionHealth,
   classifyWatcher,
   type RoomHealthSnapshot,
   type WatcherReport,
 } from '@shared/core/switch-rooms/connection-health';
+import type { HostWatcherStatus } from './host-watchers';
 
 /** A local agent's room watcher, running inside Console. */
 export type LocalHealthSource = {
   health(): WatcherHealth;
   onHealth(listener: (health: WatcherHealth) => void): () => void;
-};
-
-/** A remote agent's room watcher, reached through its sidecar's control port. */
-export type RemoteHealthSource = {
-  health(): Promise<WatcherHealth>;
-  onHealth(listener: (health: WatcherHealth) => void): Promise<() => void>;
-  onClose(listener: (error: Error) => void): () => void;
 };
 
 export type LinkedAgent = {
@@ -34,20 +29,18 @@ export type ConnectionHealthDeps = {
   /** Agents whose room connection a person stopped from Console. */
   stoppedAgentIds: () => Promise<string[]>;
   local: (switchAgentId: string) => LocalHealthSource;
-  remote: (agentId: string) => Promise<RemoteHealthSource>;
   /**
-   * What the sidecar's files on its host say about why it is not answering:
-   * a takeover it stood down for, or the failure it recorded.
+   * What a remote agent's watcher is doing, from its host's files: one read
+   * shared by every agent on the host. Null when the host has no watcher for
+   * the agent; raises when the host cannot be read.
    */
-  remoteStatus: (
-    agentId: string
-  ) => Promise<{ takenOver: { reason: string } | null; failure: string | null } | null>;
+  remoteWatcher: (agentId: string) => Promise<HostWatcherStatus | null>;
   emit: (serverId: string, snapshot: RoomHealthSnapshot) => void;
   redact: (text: string) => string;
   logError: (message: string, context: Record<string, unknown>) => void;
   now: () => number;
-  /** How long after failing to reach a sidecar it is tried again. */
-  retryMs: number;
+  /** How often a remote agent's host is read again. */
+  pollMs: number;
 };
 
 type Source = {
@@ -71,10 +64,11 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
  * Each linked agent's room connection, from the agent's own room watcher.
  *
  * The watcher holds the agent's one connection to Switch and decides which
- * session attends which room, so it is asked directly: in-process for a local
- * agent, through the sidecar's control port for a remote one. Every change it
- * reports is pushed on as the server's whole snapshot. A sidecar that cannot
- * be reached is reported as such, and tried again every `retryMs`.
+ * session attends which room, so its own account is what is shown: in-process
+ * for a local agent, and for a remote one from the state it writes on its
+ * host, read every `pollMs` with the rest of that host's watchers. Every
+ * change is pushed on as the server's whole snapshot. A host that cannot be
+ * read is reported as such, and read again on the next round.
  */
 export class ConnectionHealthMonitor {
   private readonly entries = new Map<string, Entry>();
@@ -153,50 +147,45 @@ export class ConnectionHealthMonitor {
     return source;
   }
 
+  /**
+   * A remote agent's watcher, read from its host every `pollMs`.
+   *
+   * Asked rather than listened to: a connection to the sidecar that dies
+   * without saying so — across an SSH reconnect, say — would otherwise leave
+   * the last thing it carried on screen for good. A read that fails says so,
+   * and the next one tries again.
+   */
   private remoteSource(agent: LinkedAgent): Source {
     let disposed = false;
-    let cleanup: (() => void)[] = [];
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const release = () => {
-      for (const stop of cleanup) stop();
-      cleanup = [];
+    let silentSince: number | null = null;
+    const poll = async () => {
       if (timer) clearTimeout(timer);
       timer = null;
-    };
-    const lost = async (error: unknown) => {
-      release();
-      if (disposed) return;
-      let detail = message(error);
-      let takenOver: string | null = null;
-      try {
-        const status = await this.deps.remoteStatus(agent.id);
-        takenOver = status?.takenOver?.reason ?? null;
-        if (status?.failure) detail = `${detail} The sidecar last stopped with: ${status.failure}`;
-      } catch (statusError) {
-        detail = `${detail} Its state on the host could not be read either: ${message(statusError)}`;
-      }
-      if (disposed) return;
-      source.health = null;
-      source.unreachable = { detail, takenOver };
-      timer = setTimeout(() => void connect(), this.deps.retryMs);
-      this.changed(agent.serverId);
-    };
-    const connect = async () => {
-      release();
       if (disposed) return;
       try {
-        const client = await this.deps.remote(agent.id);
-        const update = (health: WatcherHealth) => {
-          if (disposed) return;
-          source.health = health;
+        const status = await this.deps.remoteWatcher(agent.id);
+        if (disposed) return;
+        const read = healthFromHost(status, silentSince, this.deps.now());
+        silentSince = read.silentSince;
+        if (source.unreachable || !sameHealth(source.health, read.health)) {
+          source.health = read.health;
           source.unreachable = null;
           this.changed(agent.serverId);
-        };
-        cleanup.push(await client.onHealth(update));
-        cleanup.push(client.onClose((error) => void lost(error)));
-        update(await client.health());
+        }
       } catch (error) {
-        await lost(error);
+        if (disposed) return;
+        const detail = `Could not read the agent's state on its host: ${message(error)}`;
+        if (source.health || source.unreachable?.detail !== detail) {
+          source.health = null;
+          source.unreachable = { detail, takenOver: null };
+          this.changed(agent.serverId);
+        }
+      } finally {
+        if (!disposed) {
+          timer = setTimeout(() => void poll(), this.deps.pollMs);
+          timer.unref?.();
+        }
       }
     };
     const source: Source = {
@@ -206,15 +195,15 @@ export class ConnectionHealthMonitor {
       unreachable: null,
       ready: Promise.resolve(),
       retry: () => {
-        source.ready = connect();
+        source.ready = poll();
         return source.ready;
       },
       dispose: () => {
         disposed = true;
-        release();
+        if (timer) clearTimeout(timer);
       },
     };
-    source.ready = connect();
+    source.ready = poll();
     return source;
   }
 
@@ -279,4 +268,76 @@ export class ConnectionHealthMonitor {
       );
     return { agents, placements };
   }
+}
+
+const sameHealth = (a: WatcherHealth | null, b: WatcherHealth): boolean =>
+  a !== null && JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * A remote watcher's health, from what its host's files say.
+ *
+ * The watcher writes its own connection state beside its other files; that is
+ * taken only from the process alive now, so a file a previous watcher left
+ * does not speak for this one. A watcher that is alive but has written
+ * nothing — just started, or a sidecar from before it wrote the file — is
+ * given the usual grace from when it was first seen silent, and then named as
+ * silent rather than guessed at. `silentSince` is carried from one read to the
+ * next by the caller.
+ */
+export function healthFromHost(
+  status: HostWatcherStatus | null,
+  silentSince: number | null,
+  now: number
+): { health: WatcherHealth; silentSince: number | null } {
+  const at = (since: number) => new Date(since).toISOString();
+  if (!status)
+    return {
+      health: {
+        state: 'not-running',
+        detail: 'No room watcher has been set up for this agent on its host.',
+        since: at(0),
+        placements: {},
+      },
+      silentSince: null,
+    };
+  if (status.takenOver || status.stoodDown)
+    return {
+      health: {
+        state: 'taken-over',
+        detail: status.takenOver?.reason ?? "Another client holds this agent's connection.",
+        since: status.takenOver?.at || at(0),
+        placements: {},
+      },
+      silentSince: null,
+    };
+  const written = watcherHealthFileSchema.safeParse(status.health);
+  if (status.workerAlive && written.success && written.data.pid === status.workerPid) {
+    const { pid: _pid, updatedAt: _updatedAt, ...health } = written.data;
+    return { health, silentSince: null };
+  }
+  const since = silentSince ?? now;
+  if (!status.workerAlive)
+    return {
+      health: {
+        state: 'not-running',
+        // A recorded failure is the reason; with none, it may just be
+        // restarting, and the grace below decides.
+        detail: status.failure,
+        since: at(since),
+        placements: {},
+      },
+      silentSince: since,
+    };
+  return {
+    health: {
+      state: 'not-running',
+      detail:
+        now - since < CONNECTION_GRACE_MS
+          ? null
+          : "The agent's room watcher is running but does not report its connection to Switch. Update its sidecar to this Console's build.",
+      since: at(since),
+      placements: {},
+    },
+    silentSince: since,
+  };
 }

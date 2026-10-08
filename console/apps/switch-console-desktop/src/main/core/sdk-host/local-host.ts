@@ -7,7 +7,8 @@ import {
   clearTakenOver,
   ensureSharedProcess,
   type HostStartSource,
-  runSharedWatcher,
+  openSwitchStream,
+  runAgentHost,
   sharedConfigSchema,
   type SharedHostConfig,
   sharedSessionRoot,
@@ -204,6 +205,7 @@ export const consoleSupervision: Supervision = {
           signal,
           build: bundle,
           links: localSessionLinks,
+          logRedactions: [],
         }),
       'Local SDK host supervisor stopped',
       // The supervisor records a worker's own failure under this root already.
@@ -233,6 +235,21 @@ export async function startLocalSession(
 /** Stops a session Console supervises. Does nothing for one it does not. */
 export function stopLocalSession(sessionId: string): Promise<void> {
   return consoleSupervision.stop(sharedSessionRoot(sessionId));
+}
+
+/**
+ * Stops every session Console supervises for one Switch identity, the way
+ * quitting Console stops them: the provider exits and the session is left to
+ * be resumed, not ended. Returns the state roots it stopped.
+ */
+export async function stopLocalSessionsOf(switchAgentId: string): Promise<string[]> {
+  const stopped: string[] = [];
+  for (const root of [...sessions.keys()]) {
+    if (savedAgentId(root) !== switchAgentId) continue;
+    await halt(sessions, root);
+    stopped.push(root);
+  }
+  return stopped;
 }
 
 /** The failure a local host recorded before giving up, or null if it has not. */
@@ -298,12 +315,14 @@ export async function startLocalWatcher(
           watchers,
           prepared,
           (signal) =>
-            runSharedWatcher(
+            runAgentHost(
               prepared,
               written,
               signal,
               consoleSupervision,
-              localWatcherControl(written.session.agentId)
+              localWatcherControl(written.session.agentId),
+              null,
+              openSwitchStream
             ),
           'Local room watcher stopped',
           true

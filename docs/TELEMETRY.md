@@ -36,6 +36,8 @@ abbreviated:
     "service.name": "switch-console",
     "service.version": "0.9.14",
     "flint.client_id": "3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83",
+    "flint_env": "prod",
+    "flint_internal": "false",
     "os.type": "darwin",
     "os.version": "23.6.0"
   },
@@ -72,6 +74,8 @@ machine, in what repository, or what the prompt said.
 | `service.name` | constant | `switch-console` |
 | `service.version` | app version | `0.9.14`, `1.0.2` |
 | `build` | release channel | `dev`, `canary`, `stable` |
+| `flint_env` | which analytics project the event is filed under | `prod` (a released stable build), `staging` (a released canary), `dev` (a packaged build that is not a release), `local` (running from source) |
+| `flint_internal` | whether an account this app is signed in to a Switch server with has a SandboxAQ email address — **only the yes/no is sent, never the address** | `true`, `false`, `unknown` (no account, or only the one a local server signs in with) |
 | `os.type` | OS family | `darwin`, `windows`, `linux`, `other` |
 | `os.version` | OS release string | `23.6.0`, `10.0.22631`, `6.1.0-53-cloud-amd64` |
 | `flint.client_id` | random install UUID | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |
@@ -99,12 +103,12 @@ id, no IP field, no Switch identity.
 
 | Event | Fields, with example values |
 |---|---|
-| `app_launched` | *(no fields)* |
+| `app_launched` | `install_kind`: `new` (the installation's very first launch) / `updated` (the first launch after its version changed) / `same` |
 | `renderer_crashed` | *(no fields)* |
 | `update_checked` | `trigger`: `user` / `startup` / `scheduled` · `result`: `available` / `up_to_date` / `failed` |
 | `update_downloaded` | `outcome`: `success` / `failure` |
 | `update_install_started` | `outcome`: `success` / `failure` |
-| `telemetry_consent_changed` | `source`: `first_run` / `settings` |
+| `telemetry_consent_changed` | `source`: `first_run` / `settings` · `install_kind`: as on `app_launched`, or `unknown` if the launch could not be recorded |
 | `setting_changed` | `setting_key`, one of exactly 15: `theme`, `notifications`, `terminal`, `defaultAgent`, `sessions`, `location`, `localLocation`, `openIn`, `interface`, `browser`, `browserPreview`, `changesViewMode`, `remote`, `onboarding`, `telemetry`. **The new value is never sent** — we learn that someone changed their theme, not to what. |
 | `search_performed` | `status`: `ok` / `recents` / `query-too-short` / `failed` · `result_count`: `0`, `3`, `17`. **The query is never sent.** |
 
@@ -118,7 +122,7 @@ id, no IP field, no Switch identity.
 | `onboarding_step_started` | `step_id`, one of exactly 4: `addServer`, `agentProviders`, `onboardAgents`, `createRoom` |
 | `onboarding_checklist_dismissed` | *(no fields)* |
 | `onboarding_completed` | *(no fields)* |
-| `add_server_step` | `step`: `choose` / `local` / `remoteHost` / `external` / `signIn` / `linkAccounts` · `choice`: `none` / `local` / `remoteHost` / `external` |
+| `add_server_step` | `step`: `choose` / `managedReady` / `managedClaude` / `managedGitHub` / `managedAgent` / `local` / `remoteHost` / `external` / `signIn` / `linkAccounts` · `choice`: `none` / `local` / `remoteHost` / `external` / `cloud` · `first_run`: `true` / `false` — whether the same step was reached on a fresh install rather than from the Add server dialog |
 
 **Agents and sessions**
 
@@ -151,7 +155,7 @@ machine from another.
 |---|---|
 | `server_added` | `server_kind`: `remote_managed` · `outcome`: `success` |
 | `server_removed` | `server_kind`: `external` |
-| `server_sign_in` | `auth_method`: `password` / `oidc` · `server_kind` · `outcome` · `failure_reason`: `none` / `invalid_credentials` / `cancelled` / `failed` / `unreachable` |
+| `server_sign_in` | `auth_method`: `password` / `oidc` / `signup` · `server_kind` · `outcome` · `failure_reason`: `none` / `invalid_credentials` / `cancelled` / `failed` / `unreachable` / `email_taken` / `invalid` / `disabled` / `rate_limited` |
 | `server_sign_out` | `server_kind`: `local` |
 | `managed_server_action` | `action`: `start` / `stop` / `reset` · `target`: `local` / `remote` · `outcome` · `failure_reason`: `none` / `docker_not_installed` / `docker_daemon_down` / `version_downgrade` / `matrix_migration_failed` / `error` · `docker_available`: `available` / `unavailable` / `unknown` |
 
@@ -162,8 +166,8 @@ sign-in records `invalid_credentials` — not the username tried, not the server
 
 | Event | Fields, with example values |
 |---|---|
-| `bridge_connected` | `bridge_platform`: `slack` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `forbidden` / `invalid` / `error` |
-| `bridge_disconnected` | `bridge_platform`: `mattermost` · `outcome` |
+| `bridge_connected` | `bridge`: `collaboration` · `bridge_platform`: `slack` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `forbidden` / `invalid` / `error` |
+| `bridge_disconnected` | `bridge`: `collaboration` · `bridge_platform`: `mattermost` · `outcome` |
 | `bridge_identity_claimed` | `bridge_platform` · `outcome` |
 | `room_created` | `server_kind`: `local` · `bridge_platform`: `slack` · `agent_count`: `3` · `has_instructions`: `true` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `bridge_unavailable` / `invalid` / `unreachable` / `error` |
 | `room_deleted` | `server_kind` · `outcome` |

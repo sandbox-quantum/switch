@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 
 
 class _FakeAdapter:
@@ -21,6 +21,9 @@ class _FakeAdapter:
         self.stopped = False
 
     def set_channel_migration_handler(self, handler: Any) -> None:
+        pass
+
+    def set_channel_type_handler(self, handler: Any) -> None:
         pass
 
     def set_agent_presentation_resolver(self, resolver: Any) -> None:
@@ -36,20 +39,22 @@ class _FakeAdapter:
         self.stopped = True
 
 
-def _core(provision: Any) -> tuple[BridgeCore, _FakeAdapter]:
-    """A BridgeCore with everything start() touches stubbed but the task logic."""
-    core = object.__new__(BridgeCore)
+def _core(provision: Any) -> tuple[CollaborationCore, _FakeAdapter]:
+    """A CollaborationCore with everything start() touches stubbed but the task logic."""
+    core = object.__new__(CollaborationCore)
     adapter = _FakeAdapter()
     core._bridge_type = "slack"  # type: ignore[attr-defined]
     core._adapter = adapter  # type: ignore[attr-defined]
     core._identity_task = None  # type: ignore[attr-defined]
+    core._channel_type_refresh_task = None  # type: ignore[attr-defined]
 
     async def _noop() -> None:
         return None
 
     core._load_channel_map = _noop  # type: ignore[assignment]
-    core._load_existing_puppets = _noop  # type: ignore[assignment]
+    core._load_existing_human_actors = _noop  # type: ignore[assignment]
     core._ensure_channel_captures = _noop  # type: ignore[assignment]
+    core._refresh_channel_types = _noop  # type: ignore[assignment]
     core._handle_channel_migrated = None  # type: ignore[attr-defined]
     core._agent_presentation = None  # type: ignore[attr-defined]
     core._handle_inbound_message = None  # type: ignore[attr-defined]
@@ -132,7 +137,10 @@ async def test_a_failure_is_logged_rather_than_swallowed(
         assert task is not None
         await task
 
-    assert any("stopped unexpectedly" in r.getMessage() for r in caplog.records)
+    assert any(
+        "identity provisioning stopped unexpectedly" in r.getMessage()
+        for r in caplog.records
+    )
     await core.stop()
 
 
@@ -157,3 +165,50 @@ async def test_stop_stops_the_activity_publisher() -> None:
     await core.start()
     await core.stop()
     assert events == ["started", "stopped"]
+
+
+async def test_attach_reprovision_does_not_overwrite_a_running_task() -> None:
+    """A shared bridge re-provisions when its connection attaches, but must not
+    replace a start-time run still in flight: the run spends most of its life in
+    the agent read before the per-agent loop, so an attach then would otherwise
+    spawn a second provisioner (two concurrent create_agent_identity calls can
+    double a role) and orphan the handle stop() cancels."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_provision() -> None:
+        started.set()
+        await release.wait()
+
+    core, _ = _core(_slow_provision)
+    core._identity_task = asyncio.create_task(core._run_agent_identities())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    running = core._identity_task
+
+    core._provision_identities_on_attach()
+
+    assert core._identity_task is running  # not overwritten while live
+    release.set()
+    await core.stop()
+
+
+async def test_attach_reprovision_runs_when_no_task_is_live() -> None:
+    """The usual case: the start-time run has finished (it fails fast while the
+    bridge is unattached), so attaching spawns a fresh provisioning run."""
+    runs = 0
+    done = asyncio.Event()
+
+    async def _provision() -> None:
+        nonlocal runs
+        runs += 1
+        done.set()
+
+    core, _ = _core(_provision)
+    core._identity_task = None
+
+    core._provision_identities_on_attach()
+    await asyncio.wait_for(done.wait(), timeout=1)
+
+    assert runs == 1
+    assert core._identity_task is not None
+    await core.stop()

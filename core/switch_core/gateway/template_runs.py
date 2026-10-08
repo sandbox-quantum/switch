@@ -16,8 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_runs import RunRefused, RunState, run_control
-from switch_core.bridges.agent.protocol.service import ProtocolService
-from switch_core.db.models import Room, SessionActivityItem, User
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.db.models import AgentSessionActivityItem, Room, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
@@ -68,7 +68,7 @@ class TemplateRun(BaseModel):
 
 async def _run(
     session: AsyncSession,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     room_store: RoomStore,
     agent_store: AgentStore,
     root_id: str,
@@ -126,7 +126,7 @@ async def _run(
 
 
 async def _working(
-    session: AsyncSession, protocol: ProtocolService, room_ids: list[str]
+    session: AsyncSession, protocol: AgentCore, room_ids: list[str]
 ) -> bool:
     """Whether a turn is open in any of these rooms, for an agent that is
     still connected: a turn whose session died never records its end."""
@@ -134,12 +134,12 @@ async def _working(
     if not live or not room_ids:
         return False
     open_turn = await session.execute(
-        select(SessionActivityItem.agent_id)
+        select(AgentSessionActivityItem.agent_id)
         .where(
-            SessionActivityItem.room_id.in_(room_ids),
-            SessionActivityItem.item_id == TURN_ITEM_ID,
-            SessionActivityItem.status.not_in(TURN_ENDED),
-            SessionActivityItem.agent_id.in_(live),
+            AgentSessionActivityItem.room_id.in_(room_ids),
+            AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+            AgentSessionActivityItem.status.not_in(TURN_ENDED),
+            AgentSessionActivityItem.agent_id.in_(live),
         )
         .limit(1)
     )
@@ -149,7 +149,7 @@ async def _working(
 @router.get("/template-runs")
 async def list_template_runs(
     session: Annotated[AsyncSession, Depends(get_session)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
@@ -180,7 +180,7 @@ async def _control(
     root_id: str,
     state: RunState,
     session: AsyncSession,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     room_store: RoomStore,
     agent_store: AgentStore,
     user: User,
@@ -199,6 +199,8 @@ async def _control(
                 "template, or an admin can do that."
             ),
         )
+    # Not held across set_state, which opens its own session and posts in every room.
+    await session.commit()
     try:
         await service.set_state(
             root_id,
@@ -225,7 +227,7 @@ async def _control(
 async def stop_template_run(
     root_room_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
@@ -249,7 +251,7 @@ async def stop_template_run(
 async def continue_template_run(
     root_room_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],

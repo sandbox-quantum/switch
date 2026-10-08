@@ -15,8 +15,8 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.agent.protocol.connections import ClientDeclaration
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import ClientDeclaration
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 
 AGENT_ID = "agent-1"
 CONNECTION_ID = "conn-1"
@@ -48,14 +48,14 @@ class _AgentStore:
         self.updates.append(kwargs)
 
 
-def _service(store: _AgentStore) -> ProtocolService:
-    """A ProtocolService with only the two collaborators this path touches.
+def _service(store: _AgentStore) -> AgentCore:
+    """An AgentCore with only the two collaborators this path touches.
 
     Constructed without __init__ on purpose: the real one wires two dozen
     dependencies, none of which this method uses, and threading them all
     through would test the fixture rather than the behaviour.
     """
-    service = ProtocolService.__new__(ProtocolService)
+    service = AgentCore.__new__(AgentCore)
     session = _Session()
 
     @asynccontextmanager

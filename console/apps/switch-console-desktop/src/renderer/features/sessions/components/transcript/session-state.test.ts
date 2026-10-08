@@ -4,11 +4,13 @@ import { sessionStatePill } from './session-state';
 const base = {
   action: null,
   elapsedSeconds: 0,
+  host: null,
   failed: false,
   retired: false,
   status: 'ready',
   connectivity: 'online' as const,
   reachable: true,
+  startable: false,
 };
 
 it('shows the session status when the host is reachable', () => {
@@ -27,6 +29,12 @@ it('reports unreachability rather than a status it cannot stand behind', () => {
     label: 'offline',
     tone: 'bad',
   });
+});
+
+it('says nothing when the next message restarts the session', () => {
+  expect(
+    sessionStatePill({ ...base, reachable: false, connectivity: 'offline', startable: true })
+  ).toBeNull();
 });
 
 it('counts up while Console is acting on the session', () => {
@@ -52,6 +60,15 @@ it('keeps a finished session distinct from a broken one', () => {
 it('says it is connecting while the host comes up', () => {
   expect(sessionStatePill({ ...base, status: 'starting', reachable: false })).toEqual({
     label: 'connecting…',
+    tone: 'busy',
+  });
+});
+
+it("shows the host's state over a stale session status, but not over an action", () => {
+  const host = { label: 'sleeping', tone: 'idle' as const };
+  expect(sessionStatePill({ ...base, host })).toEqual(host);
+  expect(sessionStatePill({ ...base, host, action: 'restart', elapsedSeconds: 2 })).toEqual({
+    label: 'restarting 2s',
     tone: 'busy',
   });
 });

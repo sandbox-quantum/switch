@@ -21,6 +21,7 @@ import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -117,18 +118,18 @@ function summaryLine(s: TemplateSummary): string {
 // template and keeps it for the session.
 const summaryCache = new Map<string, Promise<TemplateSummary>>();
 
-function fetchSummary(serverId: string, item: TemplateListEntry): Promise<TemplateSummary> {
+function fetchSummary(workspaceId: string, item: TemplateListEntry): Promise<TemplateSummary> {
   // The version is part of the key, so an edit made elsewhere refreshes the
   // card as soon as the listing reports it.
-  const key = `${serverId}:${item.id}:${item.server?.version ?? 0}`;
+  const key = `${workspaceId}:${item.id}:${item.server?.version ?? 0}`;
   let pending = summaryCache.get(key);
   if (!pending) {
     pending = (async () => {
       const yamlText =
         item.content ??
         (
-          await rpc.switchServers.getTemplateDetail({
-            serverId,
+          await rpc.workspaces.getTemplateDetail({
+            workspaceId,
             templateId: item.id,
           })
         ).definition;
@@ -140,11 +141,15 @@ function fetchSummary(serverId: string, item: TemplateListEntry): Promise<Templa
   return pending;
 }
 
-function useTemplateSummary(serverId: string, item: TemplateListEntry): TemplateSummary | null {
+function useTemplateSummary(
+  workspaceId: string | null,
+  item: TemplateListEntry
+): TemplateSummary | null {
   const [summary, setSummary] = useState<TemplateSummary | null>(null);
   useEffect(() => {
+    if (workspaceId === null) return;
     let cancelled = false;
-    fetchSummary(serverId, item)
+    fetchSummary(workspaceId, item)
       .then((s) => {
         if (!cancelled) setSummary(s);
       })
@@ -154,7 +159,7 @@ function useTemplateSummary(serverId: string, item: TemplateListEntry): Template
     return () => {
       cancelled = true;
     };
-  }, [serverId, item]);
+  }, [workspaceId, item]);
   return summary;
 }
 
@@ -174,14 +179,14 @@ function OwnerRow({ name, mine }: { name: string; mine: boolean }) {
 }
 
 function TemplateCard({
-  serverId,
+  workspaceId,
   item,
   meId,
   busy,
   onOpen,
   onUse,
 }: {
-  serverId: string;
+  workspaceId: string | null;
   item: TemplateListEntry;
   meId: string | null;
   busy: boolean;
@@ -189,7 +194,7 @@ function TemplateCard({
   onUse: () => void;
 }) {
   const Icon = KIND_ICON[item.kind];
-  const summary = useTemplateSummary(serverId, item);
+  const summary = useTemplateSummary(workspaceId, item);
   const mine = item.server !== null && meId !== null && item.server.ownerId === meId;
   return (
     <div className="group relative flex min-h-[168px] flex-col rounded-[11px] border border-border bg-background transition-colors hover:border-border-1">
@@ -262,6 +267,7 @@ function Section({
  */
 function RecentsSection({
   serverId,
+  workspaceId,
   serverName,
   onWorkspace,
   kind,
@@ -269,6 +275,7 @@ function RecentsSection({
   onSaved,
 }: {
   serverId: string;
+  workspaceId: string | null;
   serverName: string | null;
   /** Names of templates saved on the workspace. A recent with one of these names gets no Save button. */
   onWorkspace: ReadonlySet<string>;
@@ -282,7 +289,7 @@ function RecentsSection({
   // Each recent with its kind, classified by the same parser as the listing.
   const [recents, setRecents] = useState<(RecentTemplate & { kind: TemplateKind })[] | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
-  const { runs, replace: replaceRun } = useTemplateRuns(serverId);
+  const { runs, replace: replaceRun } = useTemplateRuns(workspaceId);
 
   useEffect(() => {
     let cancelled = false;
@@ -360,14 +367,15 @@ function RecentsSection({
           <span>When</span>
           <span />
         </div>
-        {shownRuns.map((run) => (
-          <TemplateRunRow
-            key={run.rootRoomId}
-            serverId={serverId}
-            run={run}
-            onChanged={replaceRun}
-          />
-        ))}
+        {workspaceId !== null &&
+          shownRuns.map((run) => (
+            <TemplateRunRow
+              key={run.rootRoomId}
+              workspaceId={workspaceId}
+              run={run}
+              onChanged={replaceRun}
+            />
+          ))}
         {shown.map((r) => {
           const Icon = KIND_ICON[r.kind];
           const saved = onWorkspace.has(r.name);
@@ -416,6 +424,7 @@ function RecentsSection({
 
 const TemplatesPanel = observer(function TemplatesPanel() {
   const serverId = useServerId();
+  const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const meId = switchServersStore.statusFor(serverId)?.user?.id ?? null;
   const { navigate } = useNavigate();
@@ -439,14 +448,14 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const [searchHits, setSearchHits] = useState<StoredTemplateSummary[] | null>(null);
   useEffect(() => {
     const q = query.trim();
-    if (q.length === 0) {
+    if (q.length === 0 || workspaceId === null) {
       setSearchHits(null);
       return;
     }
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      rpc.switchServers
-        .listTemplates({ serverId, q })
+      rpc.workspaces
+        .listTemplates({ workspaceId, q })
         .then((hits) => {
           if (!cancelled) setSearchHits(hits);
         })
@@ -459,7 +468,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [serverId, query, reloadKey]);
+  }, [workspaceId, query, reloadKey]);
 
   // An agent template needs a coding agent where its agents will run, and
   // this computer is the default run location. Say at the top of the listing
@@ -469,11 +478,19 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const noProvider = availability !== undefined && !availability.some((a) => a.available);
 
   useEffect(() => {
+    // No workspace is an answer, not a wait. The bundled templates below still
+    // render; leaving the spinner up would claim a list is on its way.
+    if (workspaceId === null) {
+      setTemplates([]);
+      setListError('This server has no workspace yet, so its templates cannot be read.');
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setListError(null);
-    rpc.switchServers
-      .listTemplates({ serverId })
+    rpc.workspaces
+      .listTemplates({ workspaceId })
       .then((result) => {
         if (!cancelled) setTemplates(result);
       })
@@ -491,7 +508,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     return () => {
       cancelled = true;
     };
-  }, [serverId, reloadKey]);
+  }, [workspaceId, reloadKey]);
 
   const { builtIn, onWorkspace } = useMemo(() => {
     // A bundled card is always the bundled document. Saving it creates a
@@ -556,7 +573,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const card = (item: TemplateListEntry) => (
     <TemplateCard
       key={item.id}
-      serverId={serverId}
+      workspaceId={workspaceId}
       item={item}
       meId={meId}
       busy={false}
@@ -567,6 +584,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
 
   return (
     <ServerPage
+      width={1000}
       title="Templates"
       description="A template is one YAML document that creates a room, an agent, or a group of them. Use one, fill in its inputs, and everything it describes appears on this workspace."
       action={
@@ -712,6 +730,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
 
             <RecentsSection
               serverId={serverId}
+              workspaceId={workspaceId}
               serverName={server?.name ?? null}
               onWorkspace={new Set(templates.map((t) => t.name))}
               kind={kind}

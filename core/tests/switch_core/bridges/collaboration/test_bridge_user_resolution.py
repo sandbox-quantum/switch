@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import DirectoryUser
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -50,7 +50,7 @@ class _FakeLifecycle:
     ):
         async with self._sf() as session:
             client = Client(
-                matrix_user_id=f"@{localpart}:test.local",
+                transport_user_id=f"@{localpart}:test.local",
                 display_name=display_name,
                 type=client_type,
             )
@@ -59,24 +59,24 @@ class _FakeLifecycle:
 
             class _Handle:
                 client_id = client.id
-                matrix_user_id = client.matrix_user_id
+                transport_user_id = client.transport_user_id
 
             return _Handle()
 
 
 async def _seed_bridge(session_factory) -> str:
     async with session_factory() as session:
-        bridge_client = Client(
-            matrix_user_id="@bridge:test.local",
+        workspace_consumer = Client(
+            transport_user_id="@bridge:test.local",
             display_name="bridge",
             type="collaboration_bridge",
         )
-        session.add(bridge_client)
+        session.add(workspace_consumer)
         await session.flush()
         bridge = CollaborationBridge(
             type="slack",
             display_name="Slack",
-            client_id=bridge_client.id,
+            client_id=workspace_consumer.id,
             status="active",
         )
         session.add(bridge)
@@ -88,8 +88,8 @@ def _core(
     session_factory,
     bridge_id: str,
     adapter: _DirectoryAdapter,
-) -> BridgeCore:
-    core = object.__new__(BridgeCore)
+) -> CollaborationCore:
+    core = object.__new__(CollaborationCore)
     core._bridge_id = bridge_id
     core._bridge_type = "slack"
     core._adapter = adapter
@@ -97,9 +97,9 @@ def _core(
     core._external_user_store = ExternalUserStore()
     core._agent_store = AgentStore()
     core._client_lifecycle = _FakeLifecycle(session_factory)
-    core._user_puppets = {}
-    core._puppet_locks = {}
-    core._puppet_matrix_ids = set()
+    core._human_actors = {}
+    core._human_actor_locks = {}
+    core._human_user_ids = set()
     core._bridge_tenant_id = TENANT_ZERO_ID
     return core
 

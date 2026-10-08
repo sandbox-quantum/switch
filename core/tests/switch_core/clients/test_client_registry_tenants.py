@@ -45,7 +45,7 @@ class _StubClient:
 
     def __init__(self, record: Client) -> None:
         self.client_id = record.id
-        self.matrix_user_id = record.matrix_user_id
+        self.transport_user_id = record.transport_user_id
         self.display_name = record.display_name
         self._stopped = asyncio.Event()
 
@@ -58,19 +58,22 @@ class _StubClient:
 
 class _StubFactory:
     def create(self, record: Client) -> Any:
-        return _StubClient(record)
+        # The stub reads for itself: it is the actor and its own consumer.
+        client = _StubClient(record)
+        return client, client
 
 
 def _service(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> ClientLifecycleService:
     return ClientLifecycleService(
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         client_store=ClientStore(),
         tenant_store=TenantStore(),
         client_factory=_StubFactory(),  # type: ignore[arg-type]
         session_factory=session_factory,
-        config=SimpleNamespace(matrix_server_name="test"),  # type: ignore[arg-type]
+        config=SimpleNamespace(id_server_name="test"),  # type: ignore[arg-type]
+        tenants_isolated=True,
     )
 
 
@@ -78,7 +81,7 @@ def _record(tenant_id: str, client_id: str) -> Client:
     return Client(
         id=client_id,
         tenant_id=tenant_id,
-        matrix_user_id="@switch-admin:test",
+        transport_user_id="@switch-admin:test",
         display_name="admin",
         type="admin",
     )

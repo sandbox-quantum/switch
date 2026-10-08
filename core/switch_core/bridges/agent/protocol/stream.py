@@ -1,13 +1,15 @@
-"""Server-sent event stream for agent connections (CHOO-1857).
+"""The frames of an agent connection (CHOO-1857).
 
-Turns a connection plus the event buffer into a `text/event-stream`: catch-up
+Turns a connection plus the event buffer into a sequence of frames: catch-up
 from the client's cursor, then live delivery as events are appended. The client
-never asks again — it opens once and reads.
+never asks again; it opens once and reads. `api/handlers.py` sends them over
+the WebSocket, or, for a client built before it, as a Server-Sent Events
+stream: both encode the same frames from the same loop, so they cannot drift.
 
-Every event carries its sequence number as the SSE `id`, so a client that
-reconnects sends `Last-Event-ID` and resumes exactly where it stopped. Gaps are
-reported as their own event rather than skipped: a client that has missed
-events must never see a stream that looks complete.
+Every event carries its sequence number, so a client that reconnects names the
+last one it processed and resumes exactly where it stopped. Gaps are reported
+as their own event rather than skipped: a client that has missed events must
+never see a stream that looks complete.
 """
 
 from __future__ import annotations
@@ -16,22 +18,25 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     APPROVAL_OUTCOME_PROTOCOL_REVISION,
     HEARTBEAT_LAPSED,
     PROTOCOL_VERSION,
     TAKEN_OVER,
+    AgentConnection,
+    AgentConnectionRegistry,
     Closure,
-    Connection,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import (
     CursorExpiredError,
     EventBuffer,
 )
+from switch_core.observability.catalogue import BRIDGE_EVENTS_OUT
+from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import current_tenant_id
 from switch_core.version import server_declaration
 
@@ -40,9 +45,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How long to wait for an event before writing a keepalive comment. This exists
-# only to stop proxies dropping an idle connection — liveness comes from the
-# client's heartbeat, never from this.
+# How long the loop waits for work before yielding an idle tick, so whoever
+# reads it gets a chance to do its own periodic work.
 KEEPALIVE_INTERVAL_SECONDS = 15.0
 
 # Cap on how many buffered events are written in one batch, so a large catch-up
@@ -50,16 +54,68 @@ KEEPALIVE_INTERVAL_SECONDS = 15.0
 CATCH_UP_BATCH = 200
 
 
-def _frame(event: str, data: dict[str, Any], *, seq: int | None = None) -> bytes:
+@dataclass(frozen=True)
+class Frame:
+    """One message on an agent's event stream, before it is encoded.
+
+    The loop decides what to send; the transport decides how it is encoded.
+    """
+
+    event: str
+    data: dict[str, Any]
+    seq: int | None = None
+
+
+# Not a message: the loop's signal that it waited a keepalive interval with
+# nothing to send. The WebSocket has its own ping and drops it; the event
+# stream writes a comment, which only stops proxies dropping an idle
+# connection. Liveness comes from the client's beat, never from this.
+KEEPALIVE = Frame("keepalive", {})
+
+
+def _frame(event: str, data: dict[str, Any], *, seq: int | None = None) -> Frame:
+    return Frame(event, data, seq)
+
+
+def encode_ws(frame: Frame) -> dict[str, Any]:
+    """A frame as a WebSocket message. `id` is the event's sequence number,
+    which a reconnecting client passes back as `start_from`."""
+    message: dict[str, Any] = {"event": frame.event, "data": frame.data}
+    if frame.seq is not None:
+        message["id"] = frame.seq
+    return message
+
+
+def encode_sse(frame: Frame) -> bytes:
+    """A frame as a Server-Sent Event. `id` is the event's sequence number,
+    which a reconnecting client sends back as `Last-Event-ID`."""
+    if frame is KEEPALIVE:
+        return b": keepalive\n\n"
     lines = []
-    if seq is not None:
-        lines.append(f"id: {seq}")
-    lines.append(f"event: {event}")
-    lines.append(f"data: {json.dumps(data, separators=(',', ':'))}")
+    if frame.seq is not None:
+        lines.append(f"id: {frame.seq}")
+    lines.append(f"event: {frame.event}")
+    lines.append(f"data: {json.dumps(frame.data, separators=(',', ':'))}")
     return ("\n".join(lines) + "\n\n").encode()
 
 
-def _connection_state(conn: Connection) -> dict[str, Any]:
+async def sse_stream(frames: AsyncGenerator[Frame]) -> AsyncIterator[bytes]:
+    """The connection's frames as a `text/event-stream` body.
+
+    Kept for clients built before the WebSocket (agent-protocol revision 7 and
+    older), for a compatibility window: it goes once
+    `switch.agents.connected{transport:sse}` stays at zero.
+    """
+    try:
+        async for frame in frames:
+            yield encode_sse(frame)
+    finally:
+        # Closed here, so the stream detaches from its connection when the
+        # client goes rather than when the generator is garbage collected.
+        await frames.aclose()
+
+
+def _connection_state(conn: AgentConnection) -> dict[str, Any]:
     """The first frame of every stream, and where the server declares itself.
 
     Version disclosure rides this frame rather than an endpoint of its own
@@ -102,13 +158,14 @@ def _eviction(closure: Closure) -> dict[str, Any]:
     }
 
 
-def event_stream(
+def event_frames(
     *,
-    conn: Connection,
-    registry: ConnectionRegistry,
+    conn: AgentConnection,
+    registry: AgentConnectionRegistry,
     buffer: EventBuffer,
     approvals: ApprovalOutcomes | None,
-) -> AsyncIterator[bytes]:
+) -> AsyncGenerator[Frame]:
+    """The connection's frames, for a transport to encode."""
     return _event_stream(
         conn=conn,
         registry=registry,
@@ -120,13 +177,13 @@ def event_stream(
 
 async def _event_stream(
     *,
-    conn: Connection,
-    registry: ConnectionRegistry,
+    conn: AgentConnection,
+    registry: AgentConnectionRegistry,
     buffer: EventBuffer,
     approvals: ApprovalOutcomes | None,
     generation: int,
-) -> AsyncIterator[bytes]:
-    """Yield SSE frames for a connection until its stream is superseded or it dies."""
+) -> AsyncGenerator[Frame]:
+    """Yield frames for a connection until its stream is superseded or it dies."""
     if conn.stream_generation != generation:
         return
     agent_id = conn.agent_id
@@ -166,13 +223,46 @@ async def _event_stream(
         resync[0] = True
     try:
         yield _frame("connection_state", _connection_state(conn))
+        # A worker's `worker_attached` comes before any gap or buffered event.
+        for event, data in conn.worker_frames.drain():
+            yield _frame(event, data)
 
         # A cursor ahead of everything we hold is a cursor from a previous
         # life of this process: the buffer is in memory, so a restart resets
         # the sequence. Say so. Staying quiet would leave the client believing
         # it is caught up when its numbering no longer means anything.
         head = buffer.head(agent_id)
-        if conn.cursor > head:
+        floor = buffer.sequence_floor
+        if 0 < conn.cursor < floor - 1:
+            # Every boot numbers above the previous one, so a cursor below this
+            # boot's floor is one a restart left behind. The client keeps its
+            # sequence-based dedupe (nothing is reused); what it has lost is
+            # every event the old buffer held.
+            logger.warning(
+                "[STREAM] agent=%s connection=%s resumed from cursor %s of an "
+                "earlier server boot (this boot starts at %s)",
+                agent_id,
+                conn.id,
+                conn.cursor,
+                floor,
+            )
+            previous = conn.cursor
+            conn.cursor = floor - 1
+            buffer.mark_restarted(agent_id)
+            yield _frame(
+                "gap",
+                {
+                    "from_sequence": previous,
+                    "resumed_at": conn.cursor,
+                    "rooms": sorted(conn.rooms),
+                    "all_rooms": True,
+                    "reason": "the server restarted since your last connection; "
+                    "events from before the restart are gone in every room, "
+                    "including any this connection has yet to claim — re-read "
+                    "room context",
+                },
+            )
+        elif conn.cursor > head:
             logger.warning(
                 "[STREAM] agent=%s connection=%s resumed from cursor %s but the "
                 "buffer only reaches %s — treating as a restart",
@@ -237,6 +327,11 @@ async def _event_stream(
                 yield _frame("evicted", _eviction(TAKEN_OVER))
                 return
             if conn.closure is not None:
+                # A Stop's cancel is sent ahead of the eviction it causes, so
+                # the worker can release what it had not started yet.
+                for event, data in conn.worker_frames.drain():
+                    if event == "mailbox_cancel":
+                        yield _frame(event, data)
                 yield _frame("evicted", _eviction(conn.closure))
                 return
             if not conn.is_alive(time.monotonic()):
@@ -256,6 +351,10 @@ async def _event_stream(
                 registry.close(conn.id, HEARTBEAT_LAPSED)
                 yield _frame("evicted", _eviction(HEARTBEAT_LAPSED))
                 return
+
+            if conn.worker_frames:
+                for event, data in conn.worker_frames.drain():
+                    yield _frame(event, data)
 
             if conn.session_commands:
                 relayed = list(conn.session_commands)
@@ -304,7 +403,7 @@ async def _event_stream(
                 # cursor still where it started.
                 conn.wake.clear()
                 if not conn.rooms and not await _wait_for_wake(conn):
-                    yield b": keepalive\n\n"
+                    yield KEEPALIVE
                 continue
 
             # Where counting starts for a room nothing is counting yet. It is
@@ -385,6 +484,10 @@ async def _event_stream(
                 # on its heartbeat, which is the value that governs resume.
                 conn.cursor = item.seq
                 delivered = True
+                metrics().increment(
+                    BRIDGE_EVENTS_OUT,
+                    {"bridge": "agent", "platform": "switch", "kind": item.event.type},
+                )
                 yield _frame(item.event.type, payload, seq=item.seq)
 
             if delivered:
@@ -396,6 +499,7 @@ async def _event_stream(
             # and the clear would otherwise wait for the keepalive timeout.
             if (
                 conn.session_commands
+                or conn.worker_frames
                 or conn.released_rooms
                 or outcomes
                 or resync[0]
@@ -405,14 +509,14 @@ async def _event_stream(
                 continue
 
             if not await _wait_for_work(bell, conn):
-                yield b": keepalive\n\n"
+                yield KEEPALIVE
     finally:
         if unsubscribe_outcomes is not None:
             unsubscribe_outcomes()
         registry.detach_stream(conn, generation)
 
 
-async def _wait_for_wake(conn: Connection) -> bool:
+async def _wait_for_wake(conn: AgentConnection) -> bool:
     """Wait for the connection itself to change — a room claim, or a close.
 
     Deliberately not waiting on the event bell: a parked connection covers
@@ -426,7 +530,7 @@ async def _wait_for_wake(conn: Connection) -> bool:
         return False
 
 
-async def _wait_for_work(bell: asyncio.Event, conn: Connection) -> bool:
+async def _wait_for_work(bell: asyncio.Event, conn: AgentConnection) -> bool:
     """Wait for a new event or a change to the connection itself.
 
     Returns False when neither happened before the keepalive interval, so the

@@ -29,7 +29,7 @@ storm. The database itself stays mostly idle.
   `NOTIFY` triggers carrying the row, fanned out in-process to subscribers
   (agent stream, bridges). Same mechanism as room messages.
 - **Every messaging platform** renders the same neutral model through
-  `CollaborationAdapter` (`post_rich` / `update_rich` / `find_request_card`).
+  `PlatformAdapter` (`post_rich` / `update_rich` / `find_request_card`).
 - **Who may answer an approval = who may address the agent** (the agent's
   addressing policy, judged in the request's room; owner only when no room).
 
@@ -78,7 +78,7 @@ The session status line reuses the existing `agent_runtime_states` table
      `SnapshotRequest`/`RequestCard`, so every platform draws it unchanged
      (answerer shown as `DecidedBy`, with the platform handle when they
      answered on this bridge).
-   - `session_activity/bridge_publisher.py` (`SessionActivityBridgePublisher`):
+   - `session_activity/publisher.py` (`AgentSessionActivityPublisher`):
      one per bridge whose adapter `publishes_sdk_sessions`, subscribed to the
      listener for the bridge's tenant, with its own queue and task. Keys are
      coalesced while queued and handled by reading the rows as they are now.
@@ -94,13 +94,13 @@ The session status line reuses the existing `agent_runtime_states` table
    - `session_activity/bridge_answers.py` (`ApprovalAnswers`): a press (token
      + option id or position) or typed answer (`A3 yes`, `A3 2`, bare yes/no
      as the first reply to the card) → `answer_approval(PlatformPerson(mxid))`;
-     refusals reach the person via `tell_actor`. `BridgeCore` asks it first
+     refusals reach the person via `tell_actor`. `CollaborationCore` asks it first
      and falls through to the old path when it returns None. The typed-handle
      grammar accepts `A` as well as `R`.
    - Transition: `SessionPublisher.publish_pending` skips any session that
      has rows in `approval_requests` or `session_activity_events`, so a host
      reporting both ways does not get every card twice.
-   - Wiring: `main.py` → `CollaborationBridgeLifecycleService` → `BridgeCore`
+   - Wiring: `main.py` → `CollaborationBridgeLifecycleService` → `CollaborationCore`
      (`session_activity_listener`, `session_activity_service`).
    - Not done: taking answered cards off the platform
      (`removes_answered_cards`), and the unconfirmed-card notice the old path
@@ -180,7 +180,7 @@ Compatibility with deployed Consoles is waived (owner's call).
    here, else the latest assignment in its journal). The host builds room
    prompts itself (`room-prompt.ts`), fetches room attachments, reports
    activity and applies approval outcomes. Switch keeps session placement in
-   memory only (`ConnectionRegistry.place_session` / `session_room` /
+   memory only (`AgentConnectionRegistry.place_session` / `session_room` /
    `session_in_room` / `placements`), set by `connect_to_room`, and tags
    delivered events with the placed session's id.
 4. `990fe3c9`: presence and occupancy from the registry only; room controls
@@ -225,7 +225,7 @@ Compatibility with deployed Consoles is waived (owner's call).
    raises: the data cannot be rebuilt.
 
 9. Idle sessions park. A host with a parent that has had nothing to do for
-   `SWITCH_SESSION_PARK_AFTER_MS` (30 minutes by default, `off` to disable)
+   `SWITCH_SESSION_PARK_AFTER_MS` (one day by default, `off` to disable)
    records `parked` in `shared-state.jsonl` and exits. The idle check needs
    no turn running, no open request, no reset decision and no room message
    queued. It stops answering its parent first, so a request that arrives
@@ -480,7 +480,7 @@ declares 5 until it takes `room_released`):
 - `stream.py` no longer tags events. `connect_to_room` still calls
   `place_session`, now with the caller's connection id (or transport session)
   as the placement's owner, and still claims the room with takeover.
-- `ConnectionRegistry.replace_placements(conn, placements)` records each
+- `AgentConnectionRegistry.replace_placements(conn, placements)` records each
   placement against the connection, unplaces the connection's sessions it
   omits and releases their rooms, claims every named room with takeover, and
   returns the `Released(connection_id, room_id, session_id)` entries for other

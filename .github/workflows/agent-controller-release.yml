@@ -1,0 +1,103 @@
+name: switch-agent-controller release
+
+# Builds the installable agents controller (console/packages/agent-controller)
+# and publishes it as a GitHub release: the npm package
+# `switch-agent-controller-<version>.tgz`, installed with
+# `npm install --global <its URL>`, and the `install.sh` that finds and installs
+# the newest one. `switch-agent-controller update` and `install.sh` read these
+# releases, so nothing needs an npm registry or token.
+#
+# Trigger by pushing a tag like `switch-agent-controller-v0.2.0`; the package
+# is built with the tag's version. `workflow_dispatch` builds and tests it
+# without releasing, for verification. See RELEASING.md.
+
+on:
+  push:
+    tags:
+      - 'switch-agent-controller-v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Build, test and release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.5.3
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: console/.nvmrc
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+
+      - name: Resolve version
+        id: version
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          case "$REF" in
+            refs/tags/switch-agent-controller-v*)
+              version="${REF#refs/tags/switch-agent-controller-v}"
+              if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+                echo "::error::The tag's version must be x.y.z, not '$version'."
+                exit 1
+              fi
+              # Stamped on the runner, not committed: the CLI reports the version it was built with.
+              (cd packages/agent-controller && npm pkg set version="$version")
+              echo "release=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              version="$(node -p "require('./packages/agent-controller/package.json').version")"
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the workspace packages
+        run: pnpm -r --filter './packages/**' run build
+
+      - name: Test the controller
+        run: pnpm --filter @switch-console/agent-controller run test
+
+      - name: Package
+        run: pnpm --filter @switch-console/agent-controller run package
+
+      - name: Smoke-test the package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          prefix="$(mktemp -d)"
+          npm install --global --prefix "$prefix" "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz"
+          test "$("$prefix/bin/switch-agent-controller" --version)" = "$VERSION"
+          "$prefix/bin/switch-agent-controller" --help > /dev/null
+
+      - name: Release
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz" \
+            packages/agent-controller/install.sh \
+            --title "switch-agent-controller $VERSION" \
+            --notes "The Switch agents controller $VERSION, for running managed agents on your own Linux or macOS machines.
+
+          Install (Node 22.13 or later): \`npm install --global https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/switch-agent-controller-$VERSION.tgz\`, or run \`install.sh\`. Then enroll with a code from the Machines page and run \`switch-agent-controller install-service\`. An installed controller updates with \`switch-agent-controller update\`." \
+            --latest=false

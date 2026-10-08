@@ -92,6 +92,10 @@ class MessageStore:
     async def _next_seq(self, session: AsyncSession, room_id: str) -> int:
         """The next position in this room, allocated in commit order.
 
+        One above the room's highest, so live positions run 1, 2, 3 with no
+        gaps: a transaction that rolls back takes its number with it, and the
+        next writer gets the same one.
+
         A database sequence — `Identity`, `SERIAL`, `nextval` — is the obvious
         way to number rows and the wrong one here. It hands out a number when
         the INSERT runs, not when the transaction commits, and it does so
@@ -112,9 +116,8 @@ class MessageStore:
         ids collide in the hash serialise against each other needlessly and
         are otherwise unaffected.
 
-        The cost is per-room serialisation of a single INSERT on a path that
-        has already returned to the caller — the send completed before
-        recording began. Rooms do not contend with each other.
+        The cost is per-room serialisation of a single INSERT. Rooms do not
+        contend with each other.
         """
         await session.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:room_id))"),

@@ -9,11 +9,11 @@ from fastapi import HTTPException
 
 from switch_core.bridges.agent.api.handlers import connection_placements
 from switch_core.bridges.agent.api.schemas import ConnectionPlacementsRequest
-from switch_core.bridges.agent.protocol.connections import (
-    ROOM_RELEASED_PROTOCOL_REVISION,
+from switch_core.bridges.agent.protocol.agent_connections import (
+    PROTOCOL_VERSION,
+    AgentConnection,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    Connection,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 
@@ -26,8 +26,8 @@ FOREIGN_ROOM = "room-foreign"
 
 class _Protocol:
     def __init__(self) -> None:
-        self.connections = ConnectionRegistry()
-        self.event_buffer = EventBuffer()
+        self.connections = AgentConnectionRegistry()
+        self.event_buffer = EventBuffer(sequence_base=0)
 
     async def require_room_member(self, agent_id: str, room_id: str) -> None:
         if room_id == FOREIGN_ROOM:
@@ -37,11 +37,12 @@ class _Protocol:
 class _Agent:
     def __init__(self, agent_id: str) -> None:
         self.id = agent_id
+        self.metadata_: dict[str, str] | None = None
 
 
 def _open(
     protocol: _Protocol, connection_id: str, agent_id: str = AGENT_ID
-) -> Connection:
+) -> AgentConnection:
     return protocol.connections.open(
         agent_id=agent_id,
         connection_id=connection_id,
@@ -49,14 +50,14 @@ def _open(
         delivery_filter="all",
         spawn_capable=True,
         cursor=0,
-        declaration=ClientDeclaration(speaks=ROOM_RELEASED_PROTOCOL_REVISION),
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
 
 
 async def _place(
     protocol: _Protocol,
-    conn: Connection,
+    conn: AgentConnection,
     placements: dict[str, str],
     *,
     path_agent: str = AGENT_ID,

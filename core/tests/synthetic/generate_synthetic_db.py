@@ -246,7 +246,7 @@ def _ensure_fake_app_env() -> None:
         "AGENT_REGISTRATION_TOKEN", "synthetic-fake-token-0000000000000000"
     )
     os.environ.setdefault(
-        "JWT_SECRET_KEY", "synthetic-fake-jwt-secret-0000000000000000"
+        "SECRET_KEYS", "synthetic:synthetic-fake-secret-key-0000000000000000"
     )
     os.environ.setdefault("GATEWAY_ADMIN_EMAIL", "admin@synthetic.test")
     os.environ.setdefault("GATEWAY_ADMIN_PASSWORD", "synthetic-fake-admin-pw-0000")

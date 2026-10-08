@@ -20,8 +20,8 @@ value, and a missed one costs a briefly stale indicator rather than data.
 
 **It is in-process, the same limitation `InviteBus` documents**, and it should
 be lifted at the same time and in the same way. A second replica needs a
-cross-process signal for both; until switch-core can run more than one, this is
-no worse than the Matrix sessions it replaces.
+cross-process signal for both, which is why switch-core runs as a single
+replica until then.
 """
 
 from __future__ import annotations

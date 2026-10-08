@@ -1,4 +1,4 @@
-"""`ProtocolService.list_all_references` — the agent-facing reference search.
+"""`AgentCore.list_all_references` — the agent-facing reference search.
 
 The interesting behaviour here is authorization (the agent acts as its owner,
 and an agent owned by a non-admin must never see a stranger's private
@@ -17,8 +17,8 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Reference, Room, User
 from switch_core.db.stores.document_store import DocumentStore
@@ -46,9 +46,9 @@ class _FakeAgentStore:
 def _build_service(
     session_factory: async_sessionmaker[AsyncSession],
     owners: dict[str, str | None],
-) -> ProtocolService:
-    svc = object.__new__(ProtocolService)
-    svc.connections = ConnectionRegistry()
+) -> AgentCore:
+    svc = object.__new__(AgentCore)
+    svc.connections = AgentConnectionRegistry()
     svc.session_factory = session_factory  # type: ignore[assignment]
     svc.agent_store = _FakeAgentStore(owners)  # type: ignore[assignment]
     svc.user_store = UserStore()  # type: ignore[assignment]
@@ -255,9 +255,11 @@ class TestAttachedToCurrentRoom:
             attached = await _make_reference(session, owner=alice, name="attached")
             loose = await _make_reference(session, owner=alice, name="loose")
             room = Room(
-                matrix_room_id="!current:test", name="Current", description="room"
+                transport_room_id="!current:test", name="Current", description="room"
             )
-            other = Room(matrix_room_id="!other:test", name="Other", description="room")
+            other = Room(
+                transport_room_id="!other:test", name="Other", description="room"
+            )
             session.add_all([room, other])
             await session.flush()
             store = ReferenceStore()

@@ -156,9 +156,11 @@ example), leave `tls.enabled` false and annotate.
 
 ## Constraints you cannot configure away
 
-**switch-core runs exactly one replica.** It holds live Matrix sync sessions and
-bridge connections in memory; a second replica would duplicate every client and
-split session state. `switchCore.replicaCount` other than 1 fails the render,
+**switch-core runs exactly one replica.** Four things live in the process
+rather than the database: the per-agent event buffer, the invite bus, the
+presence bus, and the message listener's subscriber registry. A second replica
+would hold its own copy of each, so a signal raised in one would never reach a
+client attached to the other. Bridge connections live in memory too. `switchCore.replicaCount` other than 1 fails the render,
 and the deployment strategy is `Recreate`, so upgrades have a brief outage
 rather than two pods fighting.
 
@@ -182,3 +184,27 @@ required keys are listed above the `secrets:` block in `values.yaml`.
 
 Bridge credentials are **not** among them. Those are entered in the gateway and
 stored in the database.
+
+## Agent management
+
+Managed agents, and the agent controllers that run them on users' machines, are
+off by default. To turn them on:
+
+```yaml
+switchCore:
+  agentManagement:
+    enabled: true
+secrets:
+  controllerTokenSecret: "<openssl rand -hex 32>"
+```
+
+With `secrets.existingSecret`, put the token secret in that Secret as
+`CONTROLLER_TOKEN_SECRET` instead. The chart sets `AGENT_MANAGEMENT_ENABLED`,
+`CONTROLLER_TOKEN_SECRET` and `CONTROLLER_STATUS_INTERVAL_SECONDS` on switch-core
+and its migration Job, so enabling it is one rollout. Controllers enroll and
+connect under `/v1`, which `ingress.agentApiPaths` routes to switch-core by default.
+
+A deployment that set these variables with `kubectl set env` should remove them
+before the first upgrade that renders them (`kubectl set env deployment/<release>-switch-core
+AGENT_MANAGEMENT_ENABLED- CONTROLLER_TOKEN_SECRET-`). Otherwise Helm merges its
+`valueFrom` into the live `value` and the API server rejects the Deployment.

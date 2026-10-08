@@ -1,4 +1,5 @@
 import { evictRemoteDependencyManager } from '@main/core/dependencies/remote-dependency-manager';
+import { hostControllerService } from '@main/core/host-controllers/host-controllers';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { hostBlockedReason, type HostReachability } from '@shared/core/remote-hosts/reachability';
 import type { HostSetupPlan } from '@shared/core/remote-hosts/setup';
@@ -88,6 +89,9 @@ export const remoteHostsController = createRPCController({
    */
   removeHost: async (sshHost: string): Promise<void> => {
     try {
+      // Its agents controllers are revoked first: a host Console forgets would
+      // otherwise go on running agents with nothing left here to stop them.
+      await hostControllerService.forgetHost(sshHost);
       await removeRemoteHost(sshHost);
       await discardSetupPlan(sshHost);
       await deletePersistedReachability(sshHost);

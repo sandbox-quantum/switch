@@ -3,9 +3,11 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.agent_detail import AgentOptionsNotEditable
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.addressing import owner_and_owner_agents_policy, owner_only_policy
+from switch_core.agent_icon import InvalidIconUrl
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
 from switch_core.db.models import Agent, ApiKey, Client, User
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
@@ -15,11 +17,11 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.known_agents import KNOWN_AGENTS
 
 
-def _service(session_factory: async_sessionmaker[AsyncSession]) -> ProtocolService:
-    svc = object.__new__(ProtocolService)
+def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
+    svc = object.__new__(AgentCore)
     # Presence unions the heartbeat rows with the live connections
     # (CHOO-1857); an empty registry means "rows only".
-    svc.connections = ConnectionRegistry()
+    svc.connections = AgentConnectionRegistry()
     svc.session_factory = session_factory  # type: ignore[attr-defined]
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.room_store = RoomStore()  # type: ignore[attr-defined]
@@ -52,7 +54,7 @@ async def _make_agent(
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{name}:test",
+        transport_user_id=f"@{name}:test",
         display_name=name,
         type="agent",
     )
@@ -173,42 +175,106 @@ class TestGetAgentDetail:
             await svc.get_agent_detail("caller", "nope")
 
 
+def _profile(
+    *,
+    description: str | None = None,
+    display_name: str | None = None,
+    icon_url: str | None = None,
+    addressing: str | None = None,
+) -> AgentProfileUpdate:
+    return AgentProfileUpdate.parse(
+        description=description,
+        display_name=display_name,
+        icon_url=icon_url,
+        addressing=addressing,
+    )
+
+
+async def _owned_pair(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> tuple[str, str]:
+    async with session_factory() as session:
+        owner = await _make_user(session, "owner")
+        requester = await _make_agent(session, "req", owner_id=owner.id)
+        target = await _make_agent(session, "target", owner_id=owner.id)
+        await session.commit()
+        return requester.id, target.id
+
+
 class TestUpdateAgentDetail:
-    async def test_merges_options_leaving_others_untouched(
+    async def test_changes_description_display_name_and_icon(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         svc = _service(session_factory)
-        async with session_factory() as session:
-            owner = await _make_user(session, "owner")
-            requester = await _make_agent(session, "req", owner_id=owner.id)
-            target = await _make_agent(session, "target", owner_id=owner.id)
-            await session.commit()
-            req_id, target_id = requester.id, target.id
+        req_id, target_id = await _owned_pair(session_factory)
 
         detail = await svc.update_agent_detail(
-            req_id, target_id, {"repo_dir": "/work/dir"}, None, False
+            req_id,
+            target_id,
+            _profile(
+                description="  Reviews pull requests  ",
+                display_name="Reviewer",
+                icon_url="https://example.com/reviewer.png",
+            ),
         )
-        assert detail.known_agent_options is not None
-        # The changed field is applied...
-        assert detail.known_agent_options["repo_dir"] == "/work/dir"
-        # ...and the untouched fields keep their prior values (partial merge).
-        assert detail.known_agent_options["channels_enabled"] is True
 
-    async def test_options_rebuild_integration_profile(
+        assert detail.description == "Reviews pull requests"
+        assert detail.display_name == "Reviewer"
+        assert detail.icon_url == "https://example.com/reviewer.png"
+
+    async def test_empty_string_clears_display_name_and_icon(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         svc = _service(session_factory)
-        async with session_factory() as session:
-            owner = await _make_user(session, "owner")
-            requester = await _make_agent(session, "req", owner_id=owner.id)
-            target = await _make_agent(session, "target", owner_id=owner.id)
-            await session.commit()
-            req_id, target_id = requester.id, target.id
+        req_id, target_id = await _owned_pair(session_factory)
+        await svc.update_agent_detail(
+            req_id,
+            target_id,
+            _profile(display_name="Reviewer", icon_url="https://example.com/r.png"),
+        )
 
         detail = await svc.update_agent_detail(
-            req_id, target_id, {"channels_enabled": False}, None, False
+            req_id, target_id, _profile(display_name="", icon_url="")
         )
-        assert detail.integration_profile["connection_model"] == "session_passive"
+
+        assert detail.display_name is None
+        assert detail.icon_url is None
+        assert detail.description == "target desc"
+
+    @pytest.mark.parametrize(
+        ("choice", "stored"),
+        [
+            ("owner_only", owner_only_policy([]).model_dump()),
+            ("owner_and_owner_agents", owner_and_owner_agents_policy().model_dump()),
+            ("anyone", None),
+        ],
+    )
+    async def test_addressing_maps_onto_the_policy(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        choice: str,
+        stored: dict | None,
+    ) -> None:
+        svc = _service(session_factory)
+        req_id, target_id = await _owned_pair(session_factory)
+        await svc.update_agent_detail(
+            req_id, target_id, _profile(addressing="owner_only")
+        )
+
+        await svc.update_agent_detail(req_id, target_id, _profile(addressing=choice))
+
+        async with session_factory() as session:
+            agent = await AgentStore().get(session, target_id)
+            assert agent is not None
+            assert agent.addressing_policy == stored
+
+    def test_invalid_values_are_refused_before_anything_is_written(self) -> None:
+        with pytest.raises(ValueError, match="addressing must be one of"):
+            _profile(addressing="everyone")
+        with pytest.raises(InvalidIconUrl):
+            _profile(icon_url="http://localhost/icon.png")
+        with pytest.raises(ValueError, match="description must not be blank"):
+            _profile(description="   ")
 
     async def test_non_owner_is_rejected(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -224,76 +290,9 @@ class TestUpdateAgentDetail:
 
         with pytest.raises(PermissionError):
             await svc.update_agent_detail(
-                req_id, target_id, {"repo_dir": "/x"}, None, False
+                req_id, target_id, _profile(description="mine now")
             )
-
-    async def test_non_known_agent_options_not_editable(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        svc = _service(session_factory)
         async with session_factory() as session:
-            owner = await _make_user(session, "owner")
-            requester = await _make_agent(session, "req", owner_id=owner.id)
-            target = await _make_agent(
-                session, "target", owner_id=owner.id, known=False
-            )
-            await session.commit()
-            req_id, target_id = requester.id, target.id
-
-        with pytest.raises(AgentOptionsNotEditable):
-            await svc.update_agent_detail(
-                req_id, target_id, {"repo_dir": "/x"}, None, False
-            )
-
-    async def test_set_and_clear_parent(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        svc = _service(session_factory)
-        async with session_factory() as session:
-            owner = await _make_user(session, "owner")
-            requester = await _make_agent(session, "req", owner_id=owner.id)
-            target = await _make_agent(session, "target", owner_id=owner.id)
-            parent = await _make_agent(session, "parent", owner_id=owner.id)
-            await session.commit()
-            req_id, target_id, parent_id = requester.id, target.id, parent.id
-
-        detail = await svc.update_agent_detail(
-            req_id, target_id, None, parent_id, False
-        )
-        assert detail.parent_agent_id == parent_id
-
-        detail = await svc.update_agent_detail(req_id, target_id, None, None, True)
-        assert detail.parent_agent_id is None
-
-    async def test_self_parent_rejected(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        svc = _service(session_factory)
-        async with session_factory() as session:
-            owner = await _make_user(session, "owner")
-            requester = await _make_agent(session, "req", owner_id=owner.id)
-            target = await _make_agent(session, "target", owner_id=owner.id)
-            await session.commit()
-            req_id, target_id = requester.id, target.id
-
-        with pytest.raises(ValueError, match="cannot be its own parent"):
-            await svc.update_agent_detail(req_id, target_id, None, target_id, False)
-
-    async def test_cycle_rejected(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        svc = _service(session_factory)
-        async with session_factory() as session:
-            owner = await _make_user(session, "owner")
-            requester = await _make_agent(session, "req", owner_id=owner.id)
-            target = await _make_agent(session, "target", owner_id=owner.id)
-            # `child` is already a descendant of `target`.
-            child = await _make_agent(
-                session, "child", owner_id=owner.id, parent_agent_id=target.id
-            )
-            await session.commit()
-            req_id, target_id, child_id = requester.id, target.id, child.id
-
-        # Re-parenting target under its own descendant would create a cycle.
-        with pytest.raises(ValueError, match="descendant"):
-            await svc.update_agent_detail(req_id, target_id, None, child_id, False)
+            agent = await AgentStore().get(session, target_id)
+            assert agent is not None
+            assert agent.description == "target desc"

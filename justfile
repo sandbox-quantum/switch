@@ -27,11 +27,12 @@ init-env:
     fi
     cp .env.example .env
     for key in DB_PASSWORD DB_OWNER_PASSWORD \
-               AGENT_REGISTRATION_TOKEN JWT_SECRET_KEY GATEWAY_ADMIN_PASSWORD \
+               AGENT_REGISTRATION_TOKEN GATEWAY_ADMIN_PASSWORD \
                MATTERMOST_ADMIN_PASSWORD MATTERMOST_USER_PASSWORD; do
       secret="$(openssl rand -hex 24)"
       sed -i.bak "s|^${key}=.*|${key}=${secret}|" .env
     done
+    sed -i.bak "s|^SECRET_KEYS=.*|SECRET_KEYS=local:$(openssl rand -hex 32)|" .env
     rm -f .env.bak
     echo "✅ Wrote .env with freshly generated secrets."
     echo "   Gateway admin login: $(grep '^GATEWAY_ADMIN_EMAIL=' .env | cut -d= -f2-) / $(grep '^GATEWAY_ADMIN_PASSWORD=' .env | cut -d= -f2-)"
@@ -71,7 +72,43 @@ reset:
 # while keeping the repo root as the working directory. Tool configs are passed explicitly since the repo root no longer
 # holds pyproject.toml / alembic.ini.
 run:
+    GATEWAY_COOKIE_SECURE="${GATEWAY_COOKIE_SECURE:-false}" uv run --project core python -m switch_core.main
+
+# ── Run switch-core as a stand-in for Switch Cloud ────────────────────────────
+# For testing Switch Console against this checkout instead of whatever a shared
+# deployment runs. Needs `just up` first. Invitation e-mails go to the Mailpit
+# catcher, and their links point at :8000 so that pasting one into the Console
+# matches the stand-in. docs/old/LOCAL_DEVELOPMENT.md, "A local Switch Cloud".
+# Run switch-core as Switch Cloud, with invitation e-mail caught at :8025
+local-cloud:
+    docker compose -f deploy/local/docker-compose.yml --project-directory . --profile mail up -d mailpit
+    GATEWAY_SMTP_HOST=127.0.0.1 GATEWAY_SMTP_PORT=1025 GATEWAY_SMTP_TLS=none \
+    GATEWAY_SMTP_USERNAME= GATEWAY_SMTP_PASSWORD= \
+    GATEWAY_SMTP_FROM="Switch <invites@switch.local>" \
+    FRONTEND_BASE_URL=http://localhost:8000 GATEWAY_COOKIE_SECURE=false \
     uv run --project core python -m switch_core.main
+
+# Run Switch Console with "Switch Cloud" pointing at `just local-cloud`, in
+# its own data directory so other dev builds' databases are left alone
+local-cloud-console:
+    cd console && SWITCH_CLOUD_URL=http://localhost:8000 SWITCH_CONSOLE_USER_DATA_DIR=switchdash-local-cloud pnpm dev
+
+# Made by the gateway admin from .env, so it joins the admin's workspace, as
+# every admin-made account does. Use the admin's domain (switch.local by
+# default) for an account that should be able to join by domain.
+#   just local-cloud-user ada@switch.local "Ada Lovelace" <password>
+# Create an account on `just local-cloud` to sign in with
+local-cloud-user email name password:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jar="$(mktemp)"
+    trap 'rm -f "$jar"' EXIT
+    curl -fsS -c "$jar" -H 'Content-Type: application/json' \
+      -d "$(jq -n --arg e "$GATEWAY_ADMIN_EMAIL" --arg p "$GATEWAY_ADMIN_PASSWORD" '{email: $e, password: $p}')" \
+      http://localhost:8000/gateway/auth/login >/dev/null
+    curl -fsS -b "$jar" -H 'Content-Type: application/json' \
+      -d "$(jq -n --arg e '{{ email }}' --arg n '{{ name }}' --arg p '{{ password }}' '{email: $e, name: $n, password: $p}')" \
+      http://localhost:8000/gateway/users | jq .
 
 # ── Format code with ruff ──────────────────────────────────────────────────────
 # Run from the repo root so ruff's hierarchical config discovery applies the
@@ -117,6 +154,15 @@ migrate:
     uv run --project core alembic -c core/alembic.ini upgrade head
 
 
+# ── Upgrade a database that ran hosted agents on the old session tables ─────────
+# Steps: prepare, record <launch-id> <check.json>, status, upgrade (default).
+# Refuses the drop of the old session tables until every retained volume's
+# preflight check is recorded; see the cutover steps in
+# docs/hosted-activity-contracts.md.
+hosted-cutover-upgrade *args:
+    uv run --project core python -m switch_core.hosted_cutover_upgrade {{args}}
+
+
 # ── Generate a new alembic migration ──────────────────────────────────────────
 migration msg:
     uv run --project core alembic -c core/alembic.ini revision --autogenerate -m "{{ msg }}"
@@ -146,6 +192,9 @@ gateway-dev:
 
 gateway-build:
     cd gateway && npm run build
+
+gateway-test:
+    cd gateway && npm test
 
 # ── Standalone deployment (all-in-one Docker, no host toolchain) ──────────────
 # Repo users build from source: the build override re-adds the `build:` blocks

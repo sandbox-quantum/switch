@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from switch_core.bridges.agent.protocol.service import _VALID_NAME_RE
+from switch_core.bridges.agent.protocol.agent_core import _VALID_NAME_RE
 
 
 @pytest.mark.parametrize(

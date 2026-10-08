@@ -1,6 +1,7 @@
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import type { DockerAvailability } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { LocalServerPorts } from '../free-port';
+import type { StackStateHost } from '../stack-state';
 
 /**
  * A host that runs a Switch Console-managed Switch stack via `docker compose`.
@@ -52,6 +53,10 @@ export interface ServerHost {
    * the SSH alias). */
   readonly label: string;
 
+  /** Handle on the stack state every Console sharing this host reads (see
+   * `stack-state.ts`); null for the local stack, which is this desktop's alone. */
+  readonly sharedState: StackStateHost | null;
+
   /** Write `content` to `relPath` under {@link workingDir}, creating parent
    * directories. `mode` (e.g. 0o600 for the secret-bearing `.env`) is enforced
    * when provided. */
@@ -95,6 +100,11 @@ export interface ServerHost {
    * start persistent mirrored port-forward listeners (same number both sides)
    * over the SSH connection, kept alive across reconnects. */
   establishNetworking(ports: LocalServerPorts): Promise<void>;
+
+  /** Throw, saying why, when {@link establishNetworking} could not make `ports`
+   * reachable (e.g. a port taken on the desktop). Asked before a start changes
+   * anything on the host. */
+  checkNetworking(ports: LocalServerPorts): Promise<void>;
 
   /** Tear down any networking started by {@link establishNetworking}. Called on
    * stop/reset and disposal. Idempotent. */

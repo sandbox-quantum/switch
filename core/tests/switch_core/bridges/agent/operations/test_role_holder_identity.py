@@ -24,10 +24,10 @@ from switch_core.bridges.agent.operations.callctx import (
 )
 from switch_core.bridges.agent.operations.context import init_operations_protocol
 from switch_core.bridges.agent.operations.definitions import assume_role
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 
 AGENT = "agent-1"
@@ -44,7 +44,7 @@ def holders():
     async def session_factory():
         yield SimpleNamespace()
 
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     connection = registry.open(
         agent_id=AGENT,
         connection_id=CONNECTION,

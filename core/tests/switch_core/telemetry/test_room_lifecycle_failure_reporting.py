@@ -41,7 +41,7 @@ def _room_service() -> RoomService:
     """Only `_session_factory` and `_telemetry` are exercised by the methods
     under test; everything else is unreachable once the session fails."""
     return RoomService(
-        matrix_admin=None,  # type: ignore[arg-type]
+        provisioning=None,  # type: ignore[arg-type]
         room_store=None,  # type: ignore[arg-type]
         agent_store=None,  # type: ignore[arg-type]
         client_lifecycle=None,  # type: ignore[arg-type]
@@ -49,6 +49,7 @@ def _room_service() -> RoomService:
         collab_bridge_store=None,  # type: ignore[arg-type]
         resource_service=None,  # type: ignore[arg-type]
         session_factory=_broken_session_factory,  # type: ignore[arg-type]
+        room_cache=None,  # type: ignore[arg-type]
         telemetry=object(),  # type: ignore[arg-type]
     )
 

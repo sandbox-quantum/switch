@@ -132,7 +132,7 @@ class _StoppableClientLifecycle:
     async def create_client(self, *, client_type: str, display_name: str) -> Client:
         async with self._session_factory() as session:
             client = Client(
-                matrix_user_id=f"@{display_name}:test",
+                transport_user_id=f"@{display_name}:test",
                 display_name=display_name,
                 type=client_type,
             )
@@ -167,7 +167,7 @@ class TestBridgeIdentityRemovalTenantScope:
             [tenant_a_bridge, tenant_b_bridge]
         )
         svc.client_lifecycle = _StoppableClientLifecycle(session_factory)  # type: ignore[attr-defined]
-        svc.event_buffer = EventBuffer()  # type: ignore[attr-defined]
+        svc.event_buffer = EventBuffer(sequence_base=0)  # type: ignore[attr-defined]
 
         owner = await make_owner(session_factory)
         agent_id = await register(svc, "shared-name", owner)
@@ -191,7 +191,7 @@ class TestBridgeIdentityRemovalTenantScope:
         svc.collab_lifecycle = _MultiTenantBridges([])  # type: ignore[attr-defined]
         lifecycle = _StoppableClientLifecycle(session_factory)
         svc.client_lifecycle = lifecycle  # type: ignore[attr-defined]
-        svc.event_buffer = EventBuffer()  # type: ignore[attr-defined]
+        svc.event_buffer = EventBuffer(sequence_base=0)  # type: ignore[attr-defined]
 
         owner = await make_owner(session_factory)
         agent_id = await register(svc, "still-here", owner)

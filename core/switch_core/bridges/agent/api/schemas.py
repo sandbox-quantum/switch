@@ -139,11 +139,12 @@ class ConnectionPlacementsRequest(BaseModel):
 
 
 class ConnectionBeatRequest(BaseModel):
-    """The single client tick that keeps a connection alive (CHOO-1857).
+    """The heartbeat of a connection held over the event stream (CHOO-1857).
 
-    Replaces /connection/renew, /watch/heartbeat and /leases/renew: it proves
-    the client is alive *and* consuming, and reports how far it has read so the
-    event buffer knows what has been seen.
+    Kept for clients built before the WebSocket, whose socket carries the
+    heartbeat itself, for a compatibility window. Proves the client is alive
+    *and* consuming, and reports how far it has read so the event buffer knows
+    what has been seen.
     """
 
     connection_id: str
@@ -153,7 +154,7 @@ class ConnectionBeatRequest(BaseModel):
     #: been displaced still holds the id and the token, and is otherwise
     #: indistinguishable from the one that replaced it. Null is accepted only
     #: while the connection's holder is a client built before the fence existed
-    #: — unknown, not current; from a holder that declares the revision which
+    #: (unknown, not current); from a holder that declares the revision which
     #: carries it, a tick without one is refused.
     generation: int | None = None
 

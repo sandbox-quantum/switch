@@ -111,6 +111,16 @@ services:
     depends_on:
       - mattermost
 
+  # A mail catcher for invitation e-mails, started by `just local-cloud` only
+  # (the `mail` profile keeps it out of `just up`). It accepts anything on
+  # 1025 and shows it at http://localhost:8025; nothing is delivered onwards.
+  mailpit:
+    image: axllent/mailpit:latest
+    profiles: ["mail"]
+    ports:
+      - "${SWITCH_BIND_ADDR:-127.0.0.1}:1025:1025"
+      - "${SWITCH_BIND_ADDR:-127.0.0.1}:8025:8025"
+
 volumes:
   pgdata:
   mmdata:

@@ -2,7 +2,7 @@
 
 The Switch Core backend — the Python service that powers the Switch AI agent
 orchestration and governance platform. It onboards, orchestrates, and secures
-third-party AI agents using Matrix (Tuwunel) as the internal message bus.
+third-party AI agents, with PostgreSQL as the internal message bus.
 
 This directory is the self-contained Python project (import root `switch_core`,
 distribution name `switch-core`): its `pyproject.toml`, `uv.lock`, and

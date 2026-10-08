@@ -148,6 +148,19 @@ describe('SshExecutionContext.exec', () => {
     expect(isTransportFailure(error)).toBe(true);
   });
 
+  it('wraps ssh2 "Not connected" as a transport failure', async () => {
+    // A dead transport, not a failed command: read as an ordinary failure, a
+    // CLI lookup that hit it reported the CLI as not installed.
+    const ctx = new SshExecutionContext(
+      makeProxy((_command, cb) => {
+        cb(new Error('Not connected'));
+      })
+    );
+
+    const error = await ctx.exec('which', ['claude']).catch((e: unknown) => e);
+    expect(isTransportFailure(error)).toBe(true);
+  });
+
   it('wraps a missing connection as a transport failure', async () => {
     const proxy = {
       getRemoteShellProfile: () => Promise.reject(new Error('SSH connection is not available')),
@@ -174,6 +187,36 @@ describe('SshExecutionContext.exec', () => {
     const error = await ctx.exec('which', ['nope']).catch((e: unknown) => e);
     expect(isTransportFailure(error)).toBe(false);
     expect(error).toMatchObject({ code: 1 });
+  });
+
+  it('never takes a channel that closed without an exit status for a success', async () => {
+    // A dropped `docker ps` yields empty output, which must not read as "no containers".
+    const stream = makeStream();
+    const ctx = new SshExecutionContext(
+      makeProxy((_command, cb) => {
+        cb(undefined, stream);
+        queueMicrotask(() => {
+          stream.emit('data', Buffer.from(`${EXEC_STDOUT_MARKER}\n`));
+          stream.emit('close');
+        });
+      })
+    );
+
+    await expect(ctx.exec('docker', ['ps'])).rejects.toThrow(
+      'The command ended without an exit status; the SSH connection may have dropped.'
+    );
+  });
+
+  it('reports a command killed by a signal as failed', async () => {
+    const stream = makeStream();
+    const ctx = new SshExecutionContext(
+      makeProxy((_command, cb) => {
+        cb(undefined, stream);
+        queueMicrotask(() => stream.emit('close', null, 'SIGTERM'));
+      })
+    );
+
+    await expect(ctx.exec('docker', ['ps'])).rejects.toThrow('The command was killed by SIGTERM.');
   });
 });
 

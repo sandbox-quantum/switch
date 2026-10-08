@@ -60,6 +60,7 @@ export class LocalServerHost implements ServerHost {
   readonly stateDir = localServerDir();
   readonly secretsKey = 'local-switch-server:secrets';
   readonly label = 'this computer';
+  readonly sharedState = null;
   readonly ctx: IExecutionContext = new LocalExecutionContext({ root: this.workingDir });
 
   async writeFile(relPath: string, content: string, mode?: number): Promise<void> {
@@ -138,6 +139,10 @@ export class LocalServerHost implements ServerHost {
 
   pickFreePorts(): Promise<LocalServerPorts> {
     return pickFreePorts();
+  }
+
+  async checkNetworking(): Promise<void> {
+    // Nothing is forwarded, so nothing can be in the way here.
   }
 
   async establishNetworking(): Promise<void> {

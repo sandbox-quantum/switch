@@ -8,10 +8,15 @@ import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock'
 import { fenceDeadOwner, ownProcessGroup } from './process-fence';
 import type { SharedHostOptions } from './shared-host';
 
-const schema = z.discriminatedUnion('type', [
+export const sharedStateRecordSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('identity'),
     session: sessionSchema,
+    /**
+     * The Switch API the host first ran against. Not part of the identity:
+     * the server's address can change (a new port, a new relay) while the
+     * agent, session and conversation stay the same.
+     */
     apiUrl: z.string(),
     cwd: z.string(),
     operationId: z.string(),
@@ -44,7 +49,7 @@ const schema = z.discriminatedUnion('type', [
     throughHostSequence: z.number().int().nonnegative(),
   }),
 ]);
-type Record = z.infer<typeof schema>;
+type Record = z.infer<typeof sharedStateRecordSchema>;
 
 /**
  * Whether the host at `root` last stopped by parking itself, rather than
@@ -62,7 +67,7 @@ export async function hostParked(root: string): Promise<boolean> {
   const last = text
     .split('\n')
     .filter(Boolean)
-    .map((line) => schema.parse(JSON.parse(line)).type)
+    .map((line) => sharedStateRecordSchema.parse(JSON.parse(line)).type)
     .filter((type) => type === 'running' || type === 'parked')
     .at(-1);
   return last === 'parked';
@@ -97,7 +102,7 @@ export class SharedState {
     });
     try {
       const journal = await Journal.load(join(options.root, 'shared-state.jsonl'), (value) =>
-        schema.parse(value)
+        sharedStateRecordSchema.parse(value)
       );
       const first = journal.records[0];
       const apiUrl = new URL(options.agentApiUrl).href;
@@ -105,7 +110,6 @@ export class SharedState {
       if (first) {
         if (
           first.type !== 'identity' ||
-          first.apiUrl !== apiUrl ||
           first.cwd !== cwd ||
           first.session.sessionId !== options.session.sessionId ||
           first.session.agentId !== options.session.agentId ||
@@ -113,6 +117,10 @@ export class SharedState {
           first.session.provider !== options.session.provider
         )
           throw new Error('Shared host saved identity does not match the configuration.');
+        if (first.apiUrl !== apiUrl)
+          console.warn(
+            `Session ${options.session.sessionId} first ran against the Switch API at ${first.apiUrl}; it now uses ${apiUrl}.`
+          );
       } else
         await journal.append({
           type: 'identity',

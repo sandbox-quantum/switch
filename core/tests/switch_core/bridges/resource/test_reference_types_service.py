@@ -75,7 +75,7 @@ async def _shadow_github(session: AsyncSession, owner_id: str) -> ReferenceType:
 
 async def _make_room(session: AsyncSession, name: str) -> Room:
     room = Room(
-        matrix_room_id=f"!{name}:example.invalid",
+        transport_room_id=f"!{name}:example.invalid",
         name=name,
         description="",
     )

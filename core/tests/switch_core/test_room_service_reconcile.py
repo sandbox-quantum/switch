@@ -70,18 +70,20 @@ class _FakeClientLifecycle:
         ]
 
 
-class _FakeMatrix:
+class _FakeProvisioning:
     def __init__(self) -> None:
         self.invited: list[tuple[str, str]] = []
 
-    async def invite_to_room(self, matrix_room_id: str, matrix_user_id: str) -> None:
-        self.invited.append((matrix_room_id, matrix_user_id))
+    async def invite_to_room(
+        self, transport_room_id: str, transport_user_id: str
+    ) -> None:
+        self.invited.append((transport_room_id, transport_user_id))
 
 
 def _admin(tenant_id: str = "tenant-1") -> SimpleNamespace:
     return SimpleNamespace(
         client_id="admin-client",
-        matrix_user_id="@switch-admin:switch.local",
+        transport_user_id="@switch-admin:switch.local",
         tenant_id=tenant_id,
     )
 
@@ -93,9 +95,9 @@ def _build_service(
     client_ids_by_room: dict[str, list[str]],
     by_type: dict[str, list[Any]],
     agent_clients_by_room: dict[str, dict[str, str]] | None = None,
-) -> tuple[RoomService, _FakeRoomStore, _FakeMatrix]:
+) -> tuple[RoomService, _FakeRoomStore, _FakeProvisioning]:
     room_store = _FakeRoomStore(rooms, client_ids_by_room, agent_clients_by_room or {})
-    matrix = _FakeMatrix()
+    matrix = _FakeProvisioning()
 
     # `reconcile_room_clients` now finds its tenants through `all_tenant_ids`,
     # a real query against `tenants` (`db/tenant_lookup.py`) that the fake
@@ -114,7 +116,7 @@ def _build_service(
     svc._session_factory = lambda: _FakeSessionCM()  # type: ignore[assignment]
     svc._room_store = room_store  # type: ignore[assignment]
     svc._client_lifecycle = _FakeClientLifecycle(by_type)  # type: ignore[assignment]
-    svc._matrix_admin = matrix  # type: ignore[assignment]
+    svc._provisioning = matrix  # type: ignore[assignment]
     return svc, room_store, matrix
 
 
@@ -125,7 +127,7 @@ class TestReconcileRoomClients:
         # A room created before the admin client existed: it has the other
         # system clients but not the admin. Reconcile invites + records it.
         room = SimpleNamespace(
-            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+            id="room-1", tenant_id="tenant-1", transport_room_id="!mx:switch.local"
         )
         svc, room_store, matrix = _build_service(
             monkeypatch,
@@ -143,7 +145,7 @@ class TestReconcileRoomClients:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         room = SimpleNamespace(
-            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+            id="room-1", tenant_id="tenant-1", transport_room_id="!mx:switch.local"
         )
         svc, room_store, matrix = _build_service(
             monkeypatch,
@@ -161,7 +163,7 @@ class TestReconcileRoomClients:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         room = SimpleNamespace(
-            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+            id="room-1", tenant_id="tenant-1", transport_room_id="!mx:switch.local"
         )
         svc, room_store, matrix = _build_service(
             monkeypatch,
@@ -180,12 +182,12 @@ class TestReconcileRoomClients:
     ) -> None:
         rooms = [
             SimpleNamespace(
-                id="live", tenant_id="tenant-1", matrix_room_id="!live:switch.local"
+                id="live", tenant_id="tenant-1", transport_room_id="!live:switch.local"
             ),
             SimpleNamespace(
                 id="archived",
                 tenant_id="tenant-1",
-                matrix_room_id="!arch:switch.local",
+                transport_room_id="!arch:switch.local",
             ),
         ]
         svc, room_store, matrix = _build_service(
@@ -206,7 +208,7 @@ class TestReconcileRoomClients:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         room = SimpleNamespace(
-            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+            id="room-1", tenant_id="tenant-1", transport_room_id="!mx:switch.local"
         )
         svc, room_store, matrix = _build_service(
             monkeypatch,
@@ -227,7 +229,7 @@ class TestReconcileRoomClients:
         # `room_clients`. A crash in that window leaves the member with no
         # `room_clients` row, which is exactly what is repaired here.
         room = SimpleNamespace(
-            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+            id="room-1", tenant_id="tenant-1", transport_room_id="!mx:switch.local"
         )
         svc, room_store, matrix = _build_service(
             monkeypatch,
@@ -246,7 +248,7 @@ class TestReconcileRoomClients:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         room = SimpleNamespace(
-            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+            id="room-1", tenant_id="tenant-1", transport_room_id="!mx:switch.local"
         )
         svc, room_store, matrix = _build_service(
             monkeypatch,

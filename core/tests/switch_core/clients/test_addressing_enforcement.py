@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
+from switch_core.budgets import BudgetGuard
 from switch_core.clients.admin_messages import AUTO_REPLY_FLAG
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
-from switch_core.clients.agent_client import AgentClient
+from switch_core.clients.agent_consumer import AgentConsumer
+from switch_core.db.stores.budget_store import BudgetStanding
 from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE as _ADDRESSING_DENIED_MESSAGE,
 )
@@ -66,7 +69,7 @@ class TestResolveSenderPrincipal:
             return list(claimants)
 
         return SimpleNamespace(
-            _client_store=SimpleNamespace(get_by_matrix_user_id=_get_by_mxid),
+            _client_store=SimpleNamespace(get_by_transport_user_id=_get_by_mxid),
             _agent_store=SimpleNamespace(get_by_client_id=_agent_by_client),
             _external_user_store=SimpleNamespace(
                 get_by_client_id=_ext_by_client, claimant_ids=_claimant_ids
@@ -509,12 +512,39 @@ class TestOwnerAgentsAddressing:
         assert (await _decide(client)).refusal == _ADDRESSING_DENIED_MESSAGE
 
 
-def _gate_client(*, allowed: bool, refusal: str = _ADDRESSING_DENIED_MESSAGE):  # type: ignore[no-untyped-def]
+def _standing(*, spent: int) -> BudgetStanding:
+    return BudgetStanding(
+        id="budget-1",
+        agent_id="agent-1",
+        agent_name="fixer",
+        metric="turns",
+        model="",
+        amount_limit=10,
+        period_hours=24,
+        spent=spent,
+        resets_at=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+
+
+class _FakeBudgetStore:
+    def __init__(self, standings: list[BudgetStanding]) -> None:
+        self._standings = standings
+
+    async def standings(self, _session, *, tenant_id, agent_id):  # type: ignore[no-untyped-def]
+        return self._standings
+
+
+def _gate_client(  # type: ignore[no-untyped-def]
+    *,
+    allowed: bool,
+    refusal: str = _ADDRESSING_DENIED_MESSAGE,
+    budgets: list[BudgetStanding] | None = None,
+):
     """Fake client for _gate_addressed and the auto-reply it hands back."""
     sent: list[dict] = []
 
     async def _addressing_allowed(
-        _session, _agent, _matrix_sender, _room_id, _content=None
+        _session, _agent, _sender_user_id, _room_id, _content=None
     ):  # type: ignore[no-untyped-def]
         return _AddressingDecision(allowed=allowed, refusal="" if allowed else refusal)
 
@@ -525,13 +555,15 @@ def _gate_client(*, allowed: bool, refusal: str = _ADDRESSING_DENIED_MESSAGE):  
         return "human"
 
     client = SimpleNamespace(
-        agent=SimpleNamespace(name="fixer"),
+        agent=SimpleNamespace(id="agent-1", name="fixer"),
+        tenant_id="tenant-1",
+        _budget_guard=BudgetGuard(_FakeBudgetStore(budgets or [])),  # type: ignore[arg-type]
         _addressing_allowed=_addressing_allowed,
-        send_message=_send_message,
+        actor=SimpleNamespace(send_message=_send_message),
         _sender_handle=_sender_handle,
-        _triggered_by_auto_reply=AgentClient._triggered_by_auto_reply,
+        _triggered_by_auto_reply=AgentConsumer._triggered_by_auto_reply,
     )
-    client._post_auto_reply = AgentClient._post_auto_reply.__get__(client)
+    client._post_auto_reply = AgentConsumer._post_auto_reply.__get__(client)
     client.sent = sent  # type: ignore[attr-defined]
     return client
 
@@ -544,7 +576,7 @@ async def _gate(client: SimpleNamespace, event: SimpleNamespace):  # type: ignor
     """Run the gate and post whatever refusal it hands back, the way on_message
     does — the gate itself never touches Matrix, so that its caller can close
     the database session first."""
-    outcome = await AgentClient._gate_addressed(
+    outcome = await AgentConsumer._gate_addressed(
         client, None, client.agent, event, _meta()
     )
     if outcome.refusal is not None:
@@ -594,11 +626,37 @@ class TestGateAddressed:
         # session while the gate runs and must close it before talking to
         # Matrix.
         client = _gate_client(allowed=False)
-        outcome = await AgentClient._gate_addressed(
+        outcome = await AgentConsumer._gate_addressed(
             client, None, client.agent, _event(), _meta()
         )
         assert outcome.refusal == _ADDRESSING_DENIED_MESSAGE
         assert client.sent == []
+
+    async def test_an_agent_within_its_budget_stays_addressed(self) -> None:
+        client = _gate_client(allowed=True, budgets=[_standing(spent=9)])
+        outcome = await _gate(client, _event())
+        assert outcome.addressed is True
+        assert client.sent == []
+
+    async def test_an_agent_over_budget_is_demoted_and_says_so(self) -> None:
+        client = _gate_client(allowed=True, budgets=[_standing(spent=10)])
+        outcome = await _gate(client, _event())
+        assert outcome.addressed is False
+        reply = client.sent[0]
+        assert "Agent fixer has reached its budget of 10 turns per 24h" in reply["body"]
+        assert "2026-01-02 00:00 UTC" in reply["body"]
+        assert reply["extra_content"] == {AUTO_REPLY_FLAG: True}
+
+    async def test_an_over_budget_agent_does_not_answer_an_auto_reply(self) -> None:
+        client = _gate_client(allowed=True, budgets=[_standing(spent=10)])
+        outcome = await _gate(client, _event(auto_reply=True))
+        assert outcome.addressed is False
+        assert client.sent == []
+
+    async def test_a_denied_sender_hears_the_policy_not_the_budget(self) -> None:
+        client = _gate_client(allowed=False, budgets=[_standing(spent=10)])
+        await _gate(client, _event())
+        assert _ADDRESSING_DENIED_MESSAGE in client.sent[0]["body"]
 
 
 def _command(
@@ -614,7 +672,7 @@ def _command_client(*, allowed: bool, targets_me: bool):  # type: ignore[no-unty
     replies: list[dict] = []
 
     async def _addressing_allowed(
-        _session, _agent, _matrix_sender, _room_id, _content=None
+        _session, _agent, _sender_user_id, _room_id, _content=None
     ):  # type: ignore[no-untyped-def]
         return _AddressingDecision(
             allowed=allowed, refusal="" if allowed else _ADDRESSING_DENIED_MESSAGE
@@ -649,7 +707,7 @@ class TestGateCommand:
 
     async def test_allowed_passes_through(self) -> None:
         client = _command_client(allowed=True, targets_me=True)
-        result = await AgentClient._gate_command(
+        result = await AgentConsumer._gate_command(
             client, _room(), _command(args="@fixer"), _meta()
         )
         assert result is True
@@ -657,7 +715,7 @@ class TestGateCommand:
 
     async def test_denied_and_explicitly_targeted_replies(self) -> None:
         client = _command_client(allowed=False, targets_me=True)
-        result = await AgentClient._gate_command(
+        result = await AgentConsumer._gate_command(
             client, _room(), _command(args="@fixer"), _meta()
         )
         assert result is False
@@ -671,7 +729,7 @@ class TestGateCommand:
         # `!reset-all-agents` (or a bare `!reset`) makes no claim about this
         # agent; answering every one would flood a room of restricted agents.
         client = _command_client(allowed=False, targets_me=False)
-        result = await AgentClient._gate_command(
+        result = await AgentConsumer._gate_command(
             client, _room(), _command(command="reset-all-agents", args=""), _meta()
         )
         assert result is False
@@ -694,7 +752,7 @@ class TestCommandTargetsMeExplicitly:
             _text_tags_my_alias=_tags_alias,
             _text_tags_my_role=_tags_role,
         )
-        client._args_tag_my_name = lambda text: AgentClient._args_tag_my_name(  # type: ignore[attr-defined]
+        client._args_tag_my_name = lambda text: AgentConsumer._args_tag_my_name(  # type: ignore[attr-defined]
             client, text
         )
         return client
@@ -702,14 +760,16 @@ class TestCommandTargetsMeExplicitly:
     async def test_no_at_token_is_not_explicit(self) -> None:
         client = self._client()
         assert (
-            await AgentClient._command_targets_me_explicitly(client, None, "", "room-1")
+            await AgentConsumer._command_targets_me_explicitly(
+                client, None, "", "room-1"
+            )
             is False
         )
 
     async def test_own_name_is_explicit(self) -> None:
         client = self._client()
         assert (
-            await AgentClient._command_targets_me_explicitly(
+            await AgentConsumer._command_targets_me_explicitly(
                 client, None, "@fixer", "room-1"
             )
             is True
@@ -718,7 +778,7 @@ class TestCommandTargetsMeExplicitly:
     async def test_another_agents_name_is_not_explicit(self) -> None:
         client = self._client()
         assert (
-            await AgentClient._command_targets_me_explicitly(
+            await AgentConsumer._command_targets_me_explicitly(
                 client, None, "@someone-else", "room-1"
             )
             is False
@@ -727,7 +787,7 @@ class TestCommandTargetsMeExplicitly:
     async def test_alias_is_explicit(self) -> None:
         client = self._client(alias=True)
         assert (
-            await AgentClient._command_targets_me_explicitly(
+            await AgentConsumer._command_targets_me_explicitly(
                 client, None, "@nickname", "room-1"
             )
             is True
@@ -736,7 +796,7 @@ class TestCommandTargetsMeExplicitly:
     async def test_held_role_is_explicit(self) -> None:
         client = self._client(role=True)
         assert (
-            await AgentClient._command_targets_me_explicitly(
+            await AgentConsumer._command_targets_me_explicitly(
                 client, None, "@manager", "room-1"
             )
             is True

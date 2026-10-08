@@ -1,35 +1,31 @@
-"""Postgres implementation of `MessageTransport`.
+"""Postgres implementation of `MessageTransport`, and Switch's message bus.
 
-The homeserver's remaining job is to carry an event from the client that sent
-it to the clients that should see it, and to remember it in between. A table
-does all three, and Switch already writes that table: every send is recorded
-into `messages` today, beside the send, so the rows exist and have been
-verified against the bus.
-
-This turns that parallel record into the thing itself. **The write is the
-send.** There is no second store to agree with, which is why the reconciler
-this stack built has no work left once the flip happens — it exists to compare
-two records of the same event, and there is only one.
+A transport carries an event from the client that sent it to the clients that
+should see it, and remembers it in between. Here the `messages` table does all
+of that. **The write is the send.** A send is an INSERT, numbered per room
+under an advisory lock (`MessageStore.create`); the `messages_notify` trigger
+announces it on commit (`db/notify_ddl.py`); one `MessageListener` wakes the
+transports watching that room (`messages/notify.py`); and each transport reads
+the rows after its own cursor, `DELIVERY_PAGE` at a time. There is no second
+store to agree with. Switch used to run on a Matrix homeserver; the
+`matrix_*` column names are what is left of it, kept as stable ids.
 
 Three consequences worth stating up front:
 
-- **A send now fails when the database does.** The recorder deliberately could
-  not fail a send, because a row was a nice-to-have next to a delivered
-  message. Here the row *is* the delivery, so there is nothing left to protect:
-  a write that fails is a message that was not sent, and the caller must hear
-  about it.
-- **Every durable event gets a row, not only the conversation.** The bus
-  carried commands and task events too, and they have to reach their handlers.
-  `recorded_types` therefore stops meaning "what is written" and starts meaning
-  "what a reader is shown" — a projection applied on the way out. The one
+- **A send fails when the database does.** The row *is* the delivery: a write
+  that fails is a message that was not sent, and the caller must hear about
+  it.
+- **Every durable event gets a row, not only the conversation.** Commands and
+  task events travel the same way, and they have to reach their handlers.
+  `recorded_types` therefore means "what a reader is shown", not "what is
+  written": a projection applied on the way out. The one
   category with no row is the genuinely ephemeral: presence-like state whose
   next value replaces it, which is announced and never stored.
 - **Ids are opaque, and these are not `$event` ids.** Nothing in Switch parses
   one; the columns holding them are already named `transport_event_id`.
 
 History is the one method left unimplemented, and deliberately: the read path
-already queries these rows directly, and the only callers left are the walkers
-that exist to compare a bus against them.
+queries these rows directly.
 """
 
 from __future__ import annotations
@@ -40,8 +36,12 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from switch_core.attachments import ATTACHMENT_GROUP_KEY
-from switch_core.db.models import ClientRoom, MediaBlob, Message, MessageAttachment
+from switch_core.db.models import (
+    ClientRoom,
+    MediaBlob,
+    Message,
+    UsageMetric,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.logging_context import log_context
 from switch_core.messages.recorded_types import EPHEMERAL
@@ -59,6 +59,8 @@ from switch_core.transport.content import media_content, message_content
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.port import Handler, TransportHandlers
+from switch_core.transport.room_cache import DELIVERY_PAGE
+from switch_core.transport.stored import to_inbound
 from switch_core.transport.types import (
     DownloadResult,
     HistoryPage,
@@ -66,7 +68,6 @@ from switch_core.transport.types import (
     InboundEvent,
     InboundMedia,
     InboundMembership,
-    InboundMessage,
     MessageFormat,
     RoomRef,
     SendResult,
@@ -80,17 +81,23 @@ if TYPE_CHECKING:
     from switch_core.db.stores.media_store import MediaStore
     from switch_core.db.stores.message_store import MessageStore
     from switch_core.db.stores.room_store import RoomStore
+    from switch_core.db.stores.usage_store import UsageStore
     from switch_core.messages.notify import MessageListener
+    from switch_core.transport.room_cache import RoomDeliveryCache
+    from switch_core.transport.stored import DeliveryAttachments, DeliveryRow
+
+    DeliveryPage = tuple[list[tuple[DeliveryRow, DeliveryAttachments]], bool]
 
 logger = logging.getLogger(__name__)
 
-# How many rows one wake-up reads at a time. A page rather than everything
-# outstanding, so a room that moved a long way while a handler was busy is
-# delivered in bounded steps instead of one unbounded read.
-_DELIVERY_PAGE = 200
-
 # What makes an `m.room.message` a file rather than text.
 _MEDIA_MSGTYPES = frozenset({"m.image", "m.file", "m.video", "m.audio"})
+
+
+# What a tenant is metered for: something a participant said. Custom events
+# are the platform's own bookkeeping — reports, state, receipts — and charging
+# a tenant for them would bill it for how Switch works.
+_METERED_KINDS = frozenset({"message", "media"})
 
 
 def _sent_kind(event_type: str, content: dict[str, object]) -> str:
@@ -147,8 +154,8 @@ def new_event_id() -> str:
 class PostgresTransport:
     """Carries a room's events in the `messages` table.
 
-    One instance per client, as with the Matrix transport: it sends as that
-    client and, once receiving lands, delivers to that client's handlers.
+    One instance per client: it sends as that client and, once it is
+    receiving, delivers to that client's handlers.
     """
 
     def __init__(
@@ -158,16 +165,22 @@ class PostgresTransport:
         client_id: str,
         tenant_id: str,
         display_name: str,
+        actor_role: str,
         session_factory: async_sessionmaker[AsyncSession],
         room_store: RoomStore,
         message_store: MessageStore,
+        usage_store: UsageStore,
         media_store: MediaStore,
         listener: MessageListener,
         invites: InviteBus,
         ephemeral: EphemeralBus,
+        room_cache: RoomDeliveryCache,
     ) -> None:
         self.user_id = user_id
         self.client_id = client_id
+        # Who this client is in message metrics: the writer of what it sends
+        # and the reader of what it is handed. Bounded, never an id.
+        self._actor_role = actor_role
         # The tenant everything this transport reads and writes is scoped to,
         # handed in with the client id rather than looked up from it. Neither
         # this transport's context nor its caller's is the right answer — the
@@ -186,10 +199,16 @@ class PostgresTransport:
         self._session_factory = session_factory
         self._room_store = room_store
         self._message_store = message_store
+        self._usage_store = usage_store
         self._media_store = media_store
         self._listener = listener
         self._invites = invites
         self._ephemeral = ephemeral
+        # Shared with every other transport in the process.
+        self._room_cache = room_cache
+        # When this client was last woken for each room, on the cache's clock.
+        # A shared read only counts for this client if it started after this.
+        self._woken: dict[str, int] = {}
         self._handlers = TransportHandlers()
         # Per-room delivery position, and the transport-side id to hand back
         # to a handler. Both are keyed by the Switch room id, which is what
@@ -238,10 +257,9 @@ class PostgresTransport:
             if not rooms:
                 logger.error(
                     "Client %s is receiving but is a member of no room: it will "
-                    "hear nothing until something adds it to one. Under Matrix "
-                    "membership lived on the homeserver; here it is the "
-                    "client_rooms table, so a client whose rows were never "
-                    "written is silent rather than broken",
+                    "hear nothing until something adds it to one. Membership "
+                    "is the client_rooms table, so a client whose rows were "
+                    "never written is silent rather than broken",
                     self.user_id,
                 )
             delivery = asyncio.create_task(self._deliver_forever())
@@ -301,7 +319,9 @@ class PostgresTransport:
                             # problem, and this loop is the only delivery this
                             # client has. Counted as well as logged: swallowing
                             # it is what makes a stalled room invisible.
-                            metrics().increment(DELIVERY_FAILURES, {})
+                            metrics().increment(
+                                DELIVERY_FAILURES, {"actor": self._actor_role}
+                            )
                             logger.error(
                                 "Delivery failed for client %s in room %s",
                                 self.user_id,
@@ -420,13 +440,13 @@ class PostgresTransport:
             # already undone the claim and there is nothing subscribed to undo.
             return
         self._cursors[room_id] = seq
+        self._room_cache.attach(self.tenant_id, room_id, self)
         self._listener.subscribe(room_id, self._on_room_advanced)
         self._ephemeral.subscribe(transport_room_id, self._on_ephemeral)
         if from_seq is not None:
             # The announcement for anything already written went out before
             # this subscription existed, so nothing will wake the loop for it.
-            self._pending.add(room_id)
-            self._wake.set()
+            self._mark_pending(room_id)
 
     def _unwatch(self, transport_room_id: str) -> None:
         """Stop delivering one room. Not watching it is success.
@@ -454,6 +474,9 @@ class PostgresTransport:
         # A wake-up already queued for this room would otherwise be drained
         # after the subscription was dropped.
         self._pending.discard(room_id)
+        self._woken.pop(room_id, None)
+        # The last member out takes the room's cached rows with it.
+        self._room_cache.detach(self.tenant_id, room_id, self)
 
     def _unwatch_all(self) -> None:
         """Drop every room, through the same path a single removal takes."""
@@ -481,6 +504,15 @@ class PostgresTransport:
         """
         if room_id not in self._watching:
             return
+        self._mark_pending(room_id)
+
+    def _mark_pending(self, room_id: str) -> None:
+        """Queue a room for this client's loop, remembering when.
+
+        The tick is taken here, after the commit that caused the wake, so a
+        shared read that started later is known to have seen it.
+        """
+        self._woken[room_id] = self._room_cache.tick()
         self._pending.add(room_id)
         self._wake.set()
 
@@ -501,6 +533,11 @@ class PostgresTransport:
         Every delivery is a suspension point, so the subscription is re-read
         per row. A removal landing mid-page has to stop the rows it has not
         reached, and must not be undone by a cursor write after it.
+
+        A page comes from the room's one shared read when the cache can vouch
+        for it from this cursor, and from this client's own read when it
+        cannot. Only the read is shared: the rows are still handed over here,
+        one at a time, under the same checks.
         """
         transport_room_id = self._watching.get(room_id)
         if transport_room_id is None:
@@ -512,6 +549,10 @@ class PostgresTransport:
         # row; the map only ever held this value, and two sources for one fact
         # is how they come to disagree.
         tenant_id = self.tenant_id
+        # Taken once per pass: a wake landing during it queues another pass,
+        # which takes the newer one. A room queued without a wake time (no
+        # path does that today) gets "now", which only ever costs a read.
+        woken_at = self._woken.get(room_id) or self._room_cache.tick()
         # Bound for the read *and* the delivery below: a handler (posting to a
         # bridge, gating a command) opens its own sessions rather than reusing
         # this one, and those still need the room's tenant. The contextvar
@@ -522,33 +563,72 @@ class PostgresTransport:
                 cursor = self._cursors.get(room_id)
                 if cursor is None or room_id not in self._watching:
                     return
-                async with tenant_session(self._session_factory, tenant_id) as session:
-                    rows = await self._message_store.list_for_room(
-                        session,
-                        room_id,
-                        after_seq=cursor,
-                        limit=_DELIVERY_PAGE,
-                    )
-                    attachments = await self._message_store.attachments_for(
-                        session, [row.id for row in rows]
-                    )
+                rows, done = await self._read_shared_page(
+                    room_id, tenant_id, cursor, woken_at
+                )
+                if self._cursors.get(room_id) != cursor:
+                    # Removed and put back while waiting on the room's
+                    # shared read: these rows are from the old
+                    # subscription's position, not the new one's.
+                    continue
                 if not rows:
                     return
-                for row in rows:
+                for row, attachments in rows:
                     if room_id not in self._watching:
                         return
                     self._cursors[room_id] = row.seq
-                    await self._deliver(
-                        transport_room_id, row, attachments.get(row.id, [])
-                    )
-                if len(rows) < _DELIVERY_PAGE:
+                    await self._deliver(transport_room_id, row, attachments)
+                if done:
                     return
+
+    async def _read_page(
+        self, room_id: str, tenant_id: str, cursor: int
+    ) -> DeliveryPage:
+        """This client's own read of the next page, for when the room's
+        shared read cannot serve it. `done` when the page came back short."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            rows = await self._message_store.list_for_room(
+                session,
+                room_id,
+                after_seq=cursor,
+                limit=DELIVERY_PAGE,
+            )
+            attachments = await self._message_store.attachments_for(
+                session, [row.id for row in rows]
+            )
+        page: list[tuple[DeliveryRow, DeliveryAttachments]] = [
+            (row, attachments.get(row.id, [])) for row in rows
+        ]
+        return page, len(rows) < DELIVERY_PAGE
+
+    async def _read_shared_page(
+        self, room_id: str, tenant_id: str, cursor: int, woken_at: int
+    ) -> DeliveryPage:
+        """The next page from the room's shared read, or this client's own
+        when the cache cannot vouch for it (cursor behind what it holds,
+        entry dropped while waiting).
+
+        The key is this client's tenant and a room it resolved under that
+        tenant, which is what makes a hit as good as the read it replaces.
+        """
+        page = await self._room_cache.read(
+            tenant_id,
+            room_id,
+            after_seq=cursor,
+            woken_at=woken_at,
+            limit=DELIVERY_PAGE,
+        )
+        if page is None:
+            if room_id not in self._watching:
+                return [], True
+            return await self._read_page(room_id, tenant_id, cursor)
+        return [(row, row.attachments) for row in page.rows], page.done
 
     async def _deliver(
         self,
         transport_room_id: str,
-        row: Message,
-        attachments: list[MessageAttachment],
+        row: DeliveryRow,
+        attachments: DeliveryAttachments,
     ) -> None:
         room = RoomRef(room_id=transport_room_id)
         event = to_inbound(row, attachments, transport_room_id=transport_room_id)
@@ -556,10 +636,14 @@ class PostgresTransport:
         if handler is None:
             return
         kind = _delivered_kind(event)
-        metrics().increment(MESSAGES_DELIVERED, {"kind": kind})
+        metrics().increment(
+            MESSAGES_DELIVERED, {"kind": kind, "actor": self._actor_role}
+        )
         lag_ms = _age_ms(row.sent_at)
         if lag_ms is not None:
-            metrics().observe(DELIVERY_LAG, {"kind": kind}, lag_ms)
+            metrics().observe(
+                DELIVERY_LAG, {"kind": kind, "actor": self._actor_role}, lag_ms
+            )
         await handler(room, event)
 
     def _handler_for(self, event: InboundEvent) -> Handler | None:
@@ -579,6 +663,7 @@ class PostgresTransport:
         body: str,
         *,
         sender_name: str,
+        metered: bool,
         format: MessageFormat = "text",
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
@@ -592,7 +677,9 @@ class PostgresTransport:
             thread_root_id=thread_root_id,
             extra_content=extra_content,
         )
-        return await self._send(room_id, "m.room.message", content, sender_name)
+        return await self._send(
+            room_id, "m.room.message", content, sender_name, metered=metered
+        )
 
     async def send_event(
         self,
@@ -600,7 +687,9 @@ class PostgresTransport:
         event_type: str,
         content: dict[str, object],
     ) -> SendResult:
-        return await self._send(room_id, event_type, content, self.display_name)
+        return await self._send(
+            room_id, event_type, content, self.display_name, metered=False
+        )
 
     async def send_media(
         self,
@@ -611,6 +700,7 @@ class PostgresTransport:
         size: int,
         *,
         sender_name: str,
+        metered: bool,
         msgtype: str,
         caption: str | None = None,
         thread_root_id: str | None = None,
@@ -627,7 +717,9 @@ class PostgresTransport:
             thread_root_id=thread_root_id,
             group=group,
         )
-        return await self._send(room_id, "m.room.message", content, sender_name)
+        return await self._send(
+            room_id, "m.room.message", content, sender_name, metered=metered
+        )
 
     async def _send(
         self,
@@ -635,6 +727,8 @@ class PostgresTransport:
         event_type: str,
         content: dict[str, object],
         sender_name: str,
+        *,
+        metered: bool,
     ) -> SendResult:
         """Write the event, which is what sending it means here.
 
@@ -663,7 +757,9 @@ class PostgresTransport:
                     event_type=event_type,
                 ),
             )
-            metrics().increment(MESSAGES_SENT, {"kind": kind})
+            metrics().increment(
+                MESSAGES_SENT, {"kind": kind, "actor": self._actor_role}
+            )
             return result
 
         try:
@@ -685,14 +781,25 @@ class PostgresTransport:
                 await self._message_store.create(
                     session, message, attachments_in(content)
                 )
+                if metered and kind in _METERED_KINDS:
+                    await self._usage_store.record(
+                        session,
+                        tenant_id=tenant_id,
+                        metric=UsageMetric.MESSAGES,
+                        client_id=self.client_id,
+                        model="",
+                        amount=1,
+                    )
                 await session.commit()
         except Exception:
             # `MESSAGES_SENT` is recorded only after the commit, so without
             # this a database outage reads as silence — and so does a quiet
             # room.
-            metrics().increment(SEND_FAILURES, {"kind": kind})
+            metrics().increment(
+                SEND_FAILURES, {"kind": kind, "actor": self._actor_role}
+            )
             raise
-        metrics().increment(MESSAGES_SENT, {"kind": kind})
+        metrics().increment(MESSAGES_SENT, {"kind": kind, "actor": self._actor_role})
         return result
 
     async def set_typing(self, room_id: str, is_typing: bool) -> None:
@@ -848,7 +955,7 @@ class PostgresTransport:
         """
         async with tenant_session(self._session_factory, self.tenant_id) as session:
             rooms = await self._room_store.get_for_client(session, self.client_id)
-        return [room.matrix_room_id for room in rooms if room.matrix_room_id]
+        return [room.transport_room_id for room in rooms if room.transport_room_id]
 
     async def set_display_name(self, display_name: str) -> None:
         """Held on the client row, which is where every reader already looks."""
@@ -870,7 +977,9 @@ class PostgresTransport:
         cached = self._room_ids.get(transport_room_id)
         if cached is not None:
             return cached
-        room = await self._room_store.get_by_matrix_room_id(session, transport_room_id)
+        room = await self._room_store.get_by_transport_room_id(
+            session, transport_room_id
+        )
         if room is None:
             raise TransportError(f"{transport_room_id} is not a Switch room")
         self._room_ids[transport_room_id] = room.id
@@ -895,90 +1004,5 @@ class PostgresTransport:
         return room_id, tenant_id
 
 
-def to_inbound(
-    row: Message,
-    attachments: list[MessageAttachment],
-    *,
-    transport_room_id: str,
-) -> InboundEvent:
-    """One stored row as the event a handler expects.
-
-    Which of the four inbound shapes a row becomes is read off the row itself,
-    the same way the Matrix transport reads it off the event class: an
-    arrival, a file, a `com.switch.*` payload, or a message. The row keeps the
-    whole content dict, so nothing is reconstructed here that was not sent.
-    """
-    content = dict(row.content)
-    room_id = transport_room_id
-    event_id = row.transport_event_id
-    sender = row.sender_id
-    timestamp = _epoch_ms(row.sent_at)
-
-    if row.event_type == MEMBERSHIP_EVENT_TYPE:
-        return InboundMembership(
-            room_id=room_id,
-            event_id=event_id,
-            sender=sender,
-            timestamp=timestamp,
-            content=content,
-            state_key=row.sender_id,
-            membership=text_field(content.get("membership")) or "join",
-            # Only an arrival is ever written, so there is no previous state
-            # to read back — and a row that carries one is honoured rather
-            # than second-guessed.
-            prev_membership=text_field(content.get("prev_membership")),
-            display_name=row.sender_name,
-        )
-
-    if row.event_type != "m.room.message":
-        return InboundCustomEvent(
-            room_id=room_id,
-            event_id=event_id,
-            sender=sender,
-            timestamp=timestamp,
-            content=content,
-            event_type=row.event_type,
-            thread_root_id=row.thread_root_event_id,
-        )
-
-    if not attachments:
-        return InboundMessage(
-            room_id=room_id,
-            event_id=event_id,
-            sender=sender,
-            timestamp=timestamp,
-            content=content,
-            body=row.body or "",
-            sender_name=row.sender_name,
-            formatted_body=row.formatted_body,
-            msgtype=row.msgtype or "m.text",
-            thread_root_id=row.thread_root_event_id,
-        )
-
-    file = attachments[0]
-    group = content.get(ATTACHMENT_GROUP_KEY)
-    return InboundMedia(
-        room_id=room_id,
-        event_id=event_id,
-        sender=sender,
-        timestamp=timestamp,
-        content=content,
-        body=row.body or "",
-        sender_name=row.sender_name,
-        formatted_body=row.formatted_body,
-        msgtype=row.msgtype or "m.file",
-        thread_root_id=row.thread_root_event_id,
-        uri=file.uri,
-        filename=file.filename,
-        mimetype=file.mimetype,
-        size=file.size,
-        group=group if isinstance(group, dict) else None,
-    )
-
-
 def _now_ms() -> int:
     return int(datetime.now(UTC).timestamp() * 1000)
-
-
-def _epoch_ms(sent_at: Any) -> int:
-    return int(sent_at.timestamp() * 1000)

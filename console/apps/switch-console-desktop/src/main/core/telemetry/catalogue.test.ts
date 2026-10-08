@@ -26,6 +26,8 @@ const CONTEXT: TelemetryContext = {
   osType: 'darwin',
   osVersion: '24.3.0',
   build: 'stable',
+  flintEnv: 'prod',
+  internal: 'false',
   timeMs: 1_700_000_000_000,
 };
 
@@ -46,7 +48,8 @@ function sampleFor(property: string): string | number | boolean {
     property === 'connected_to_room' ||
     property === 'delete_in_switch' ||
     property === 'resolved' ||
-    property === 'cold_start'
+    property === 'cold_start' ||
+    property === 'first_run'
   ) {
     return true;
   }
@@ -106,6 +109,34 @@ describe('the catalogue as a whole', () => {
     expect(carried.sort()).toEqual(
       [...TELEMETRY_EVENT_PROPERTIES[name], 'build', 'event.name'].sort()
     );
+  });
+
+  it.each(EVENT_NAMES)('sends %s well under the attribute count the relay drops at', (name) => {
+    // The relay drops any record with more than 128 attributes, and still
+    // answers 200. Held here, over every event, with room to spare.
+    const payload = buildOtlpPayload(name, sampleEvent(name) as never, CONTEXT);
+
+    expect(recordOf(payload).attributes.length).toBeLessThanOrEqual(100);
+  });
+
+  it.each(EVENT_NAMES)('sends %s well under the event size the relay drops at', (name) => {
+    // The relay drops any Amplitude event whose JSON is over 32 KiB, and still
+    // answers 200. Every string here is longer than any value the catalogue
+    // allows, and the OTLP attributes wrap each value in more JSON than the
+    // Amplitude event does, so this over-counts.
+    const largest = Object.fromEntries(
+      Object.entries(sampleEvent(name)).map(([key, value]) => [
+        key,
+        typeof value === 'string'
+          ? 'x'.repeat(256)
+          : typeof value === 'number'
+            ? -123456789012345.67
+            : false,
+      ])
+    );
+    const payload = buildOtlpPayload(name, largest as never, CONTEXT);
+
+    expect(JSON.stringify(recordOf(payload).attributes).length).toBeLessThanOrEqual(16384);
   });
 
   it.each(EVENT_NAMES)('refuses to send %s with a property missing', (name) => {

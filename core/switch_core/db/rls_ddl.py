@@ -127,6 +127,11 @@ POLICY_NAME = "tenant_isolation"
 # which reports counts and never an identifier — and scoping them would be
 # incoherent: a deployment running three tenants has one identity, not three,
 # and a milestone reported once per tenant would not be once-ever at all.
+#
+# `switch_core_processes` is each running switch-core process's lease: its id,
+# when it started, its last renewal and when it stopped. A process holds
+# controller sockets for every tenant at once, so its lease belongs to none of
+# them, and it holds no customer data, only that the process is alive.
 GLOBAL_TABLES = frozenset(
     {
         "users",
@@ -135,6 +140,7 @@ GLOBAL_TABLES = frozenset(
         "deployment_identity",
         "telemetry_milestones",
         "telemetry_snapshot_watermark",
+        "switch_core_processes",
     }
 )
 

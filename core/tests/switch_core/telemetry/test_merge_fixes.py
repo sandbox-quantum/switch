@@ -19,11 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.api import session_reporter
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_LAPSED,
+    AgentConnectionRegistry,
     ClientDeclaration,
     Closure,
-    ConnectionRegistry,
 )
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import TelemetryRecord
@@ -55,7 +55,7 @@ def _config(**overrides: object) -> object:
         "db_name": "d",
         "matrix_server_name": "test",
         "agent_registration_token": "t",
-        "jwt_secret_key": "k",
+        "secret_keys": "test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "gateway_admin_email": "a@b.test",
         "gateway_admin_password": "pw",
     }
@@ -132,7 +132,7 @@ class TestASessionIsTheAgentNotTheConnection:
     """
 
     def _reporter(
-        self, sink: _RecordingSink, registry: ConnectionRegistry
+        self, sink: _RecordingSink, registry: AgentConnectionRegistry
     ) -> SessionReporter:
         service = TelemetryService(
             sink=sink,  # type: ignore[arg-type]
@@ -141,12 +141,14 @@ class TestASessionIsTheAgentNotTheConnection:
             service_name="switch-core",
             version="1.0.0",
             environment=None,
+            telemetry_environment="prod",
+            telemetry_internal=False,
         )
         reporter = SessionReporter(service, registry)
         registry.set_close_listener(reporter.on_close)
         return reporter
 
-    def _open(self, registry: ConnectionRegistry, agent: str = "agent-1") -> str:
+    def _open(self, registry: AgentConnectionRegistry, agent: str = "agent-1") -> str:
         connection_id = uuid.uuid4().hex
         registry.open(
             agent_id=agent,
@@ -161,7 +163,7 @@ class TestASessionIsTheAgentNotTheConnection:
         return connection_id
 
     async def _stream(
-        self, reporter: SessionReporter, registry: ConnectionRegistry, cid: str
+        self, reporter: SessionReporter, registry: AgentConnectionRegistry, cid: str
     ) -> None:
         conn = registry.get(cid)
         assert conn is not None
@@ -175,7 +177,7 @@ class TestASessionIsTheAgentNotTheConnection:
 
     async def test_a_rejected_stream_reports_nothing(self) -> None:
         """No stream was handed back, so no session began."""
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         sink = _RecordingSink()
         self._reporter(sink, registry)
 
@@ -187,7 +189,7 @@ class TestASessionIsTheAgentNotTheConnection:
 
     async def test_twenty_rejected_attempts_report_nothing(self) -> None:
         """The retry loop, as the dashboard actually saw it."""
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         sink = _RecordingSink()
         self._reporter(sink, registry)
 
@@ -203,7 +205,7 @@ class TestASessionIsTheAgentNotTheConnection:
     ) -> None:
         """The heartbeat-lapse loop: one session, not one per six seconds."""
         monkeypatch.setattr(session_reporter, "_RECONNECT_GRACE_SECONDS", 0.05)
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         sink = _RecordingSink()
         reporter = self._reporter(sink, registry)
 
@@ -220,7 +222,7 @@ class TestASessionIsTheAgentNotTheConnection:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(session_reporter, "_RECONNECT_GRACE_SECONDS", 0.05)
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         sink = _RecordingSink()
         reporter = self._reporter(sink, registry)
 
@@ -239,7 +241,7 @@ class TestASessionIsTheAgentNotTheConnection:
         """Not the last connection's lifetime — the span the agent was present,
         across however many reconnects it took."""
         monkeypatch.setattr(session_reporter, "_RECONNECT_GRACE_SECONDS", 0.05)
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         sink = _RecordingSink()
         reporter = self._reporter(sink, registry)
 
@@ -256,7 +258,7 @@ class TestASessionIsTheAgentNotTheConnection:
     async def test_a_second_connection_does_not_start_a_second_session(
         self,
     ) -> None:
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         sink = _RecordingSink()
         reporter = self._reporter(sink, registry)
 
@@ -271,7 +273,7 @@ class TestASessionIsTheAgentNotTheConnection:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(session_reporter, "_RECONNECT_GRACE_SECONDS", 0.05)
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         sink = _RecordingSink()
         reporter = self._reporter(sink, registry)
 
@@ -286,7 +288,7 @@ class TestASessionIsTheAgentNotTheConnection:
         assert self._names(sink) == ["agent_session_started"]
 
     async def test_two_agents_are_two_sessions(self) -> None:
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         sink = _RecordingSink()
         reporter = self._reporter(sink, registry)
 
@@ -303,7 +305,7 @@ class TestASessionIsTheAgentNotTheConnection:
     async def test_shutdown_reports_no_ends(self) -> None:
         """Every agent disconnects at once when the process stops; a burst of
         ends saying "the server stopped" is noise, not signal."""
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         sink = _RecordingSink()
         reporter = self._reporter(sink, registry)
 
@@ -317,7 +319,7 @@ class TestASessionIsTheAgentNotTheConnection:
     def test_a_listener_that_raises_does_not_break_the_close(self) -> None:
         """The registry's contract — the connection is closed and handed back —
         must not depend on whoever is watching."""
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         registry.set_close_listener(lambda conn: (_ for _ in ()).throw(RuntimeError()))
         cid = self._open(registry)
 

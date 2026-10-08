@@ -37,6 +37,27 @@ spec:
           - path: /agents
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
+          - path: /hosted
+            pathType: Prefix
+            backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
+          # Session hosts report session starts, turn activity and approval
+          # requests here, and poll for approval answers. Without it a
+          # session fails on the HTML the gateway serves instead.
+          - path: /agent-sessions
+            pathType: Prefix
+            backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
+          - path: /version
+            pathType: Prefix
+            backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
+          # The "Open in Switch Console" redirect posted in messaging platforms.
+          - path: /deeplink
+            pathType: Prefix
+            backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
+          # Agents controllers: enrollment, tokens, assignment, status and
+          # their event stream (/v1/management/..., /v1/controllers/...).
+          - path: /v1
+            pathType: Prefix
+            backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
           - path: /mcp
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }

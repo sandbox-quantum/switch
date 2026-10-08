@@ -7,7 +7,7 @@ over the invite bus → the transport drops the subscription and tells its clien
 it.
 
 The unit tests cover each of those links. What only this can show is that they
-are joined: severing the one line in `ClientBase.setup` that wires the removal
+are joined: severing the one line in `Actor.setup` that wires the removal
 handler to the transport left the whole unit suite green while a kick reached
 nothing.
 
@@ -31,14 +31,14 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")
 
 
 async def _wait_joined(
-    client: object, matrix_room_id: str, timeout: float = 30
+    client: object, transport_room_id: str, timeout: float = 30
 ) -> None:
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
-        if matrix_room_id in client.room_join_times:  # type: ignore[attr-defined]
+        if transport_room_id in client.room_join_times:  # type: ignore[attr-defined]
             return
         await asyncio.sleep(0.25)
-    raise AssertionError(f"client never joined {matrix_room_id} within {timeout}s")
+    raise AssertionError(f"client never joined {transport_room_id} within {timeout}s")
 
 
 async def _wait_buffered(
@@ -87,13 +87,15 @@ async def test_removal_stops_every_reader_serving_the_room(harness: Harness) -> 
             )
         )
         rooms[label] = result.room
-        await _wait_joined(watcher_client, result.room.matrix_room_id)
+        await _wait_joined(watcher_client, result.room.transport_room_id)
 
     talker_client = harness.client_for(talker.agent_id)
     bodies = {}
     for label, room in rooms.items():
         bodies[label] = f"@e2e-removed-watcher please look at the {label} room"
-        await talker_client.send_message(room.matrix_room_id, bodies[label])
+        await talker_client.send_message(
+            room.transport_room_id, bodies[label], metered=True
+        )
         await _wait_buffered(harness, watcher.agent_id, room.id, bodies[label])
 
     # Both rooms are in the buffer and addressed, so every assertion after the
@@ -158,12 +160,14 @@ async def test_a_room_the_agent_is_still_in_is_untouched(harness: Harness) -> No
             agent_ids=[watcher.agent_id, talker.agent_id],
         )
     )
-    await _wait_joined(watcher_client, kept.room.matrix_room_id)
-    await _wait_joined(watcher_client, left.room.matrix_room_id)
+    await _wait_joined(watcher_client, kept.room.transport_room_id)
+    await _wait_joined(watcher_client, left.room.transport_room_id)
 
     body = "@e2e-still-in-watcher this one still applies"
     await harness.client_for(talker.agent_id).send_message(
-        kept.room.matrix_room_id, body
+        kept.room.transport_room_id,
+        body,
+        metered=True,
     )
     await _wait_buffered(harness, watcher.agent_id, kept.room.id, body)
 

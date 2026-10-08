@@ -1,5 +1,6 @@
 import {
   buildSshCommand,
+  exitDescription,
   SshExecutionContext,
 } from '@main/core/execution-context/ssh-execution-context';
 import type { IExecutionContext } from '@main/core/execution-context/types';
@@ -13,6 +14,7 @@ import type { DockerAvailability } from '@shared/core/managed-switch-server/mana
 import { REMOTE_SERVER_PROJECT_NAME } from '../constants';
 import type { LocalServerPorts } from '../free-port';
 import { remoteServerStateDir } from '../paths';
+import type { StackStateHost } from '../stack-state';
 import { PortForwarder } from './port-forward';
 import { pickRemoteFreePorts } from './remote-free-port';
 import { hostSlug, remoteSecretsKey } from './remote-identity';
@@ -48,6 +50,7 @@ export class RemoteServerHost implements ServerHost {
   readonly secretsKey: string;
   readonly label: string;
   readonly ctx: IExecutionContext;
+  readonly sharedState: StackStateHost = this;
 
   private readonly sshHost: string;
   private readonly proxy: SshClientProxy;
@@ -97,6 +100,33 @@ export class RemoteServerHost implements ServerHost {
     onLine: (line: string) => void,
     opts: { timeoutMs?: number } = {}
   ): Promise<void> {
+    return this.runOverSsh(command, args, { onLine, timeoutMs: opts.timeoutMs });
+  }
+
+  /**
+   * Run a command on the host with `input` as its stdin, for handing it a secret:
+   * stdin never shows in the host's process table, where arguments are readable
+   * by every account. Output is discarded. Rejects on non-zero exit or timeout.
+   */
+  writeCommandInput(
+    command: string,
+    args: string[],
+    input: string,
+    opts: { timeoutMs: number }
+  ): Promise<void> {
+    return this.runOverSsh(command, args, { input, timeoutMs: opts.timeoutMs });
+  }
+
+  /**
+   * Run `command` in the host's login shell under {@link workingDir}, rejecting
+   * with the stderr tail on a non-zero exit or on timeout. `onLine` gets each
+   * non-empty output line; `input`, if given, is written to stdin and closed.
+   */
+  private runOverSsh(
+    command: string,
+    args: string[],
+    opts: { onLine?: (line: string) => void; input?: string; timeoutMs?: number }
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
       this.proxy
         .getRemoteShellProfile()
@@ -110,9 +140,10 @@ export class RemoteServerHost implements ServerHost {
             let stderrTail = '';
             let settled = false;
             const emit = (buf: Buffer) => {
+              if (!opts.onLine) return;
               for (const raw of buf.toString('utf8').split('\n')) {
                 const line = raw.replace(/\r$/, '');
-                if (line.length > 0) onLine(line);
+                if (line.length > 0) opts.onLine(line);
               }
             };
             const settle = (fn: () => void) => {
@@ -135,13 +166,21 @@ export class RemoteServerHost implements ServerHost {
               stderrTail = (stderrTail + buf.toString('utf8')).slice(-4000);
               emit(buf);
             });
-            stream.on('close', (code: number | null) => {
+            // Only an exit status of 0 is a success: see SshExecutionContext.exec.
+            stream.on('close', (code: number | null | undefined, signal?: string) => {
               settle(() => {
-                if ((code ?? 0) === 0) resolve();
-                else reject(new Error(`${command} failed (exit ${code}): ${stderrTail.trim()}`));
+                const tail = stderrTail.trim();
+                if (code === 0) resolve();
+                else if (typeof code === 'number') {
+                  reject(new Error(`${command} failed (exit ${code}): ${tail}`));
+                } else {
+                  const why = exitDescription(code, signal);
+                  reject(new Error(`${command} failed: ${why}${tail ? ` (${tail})` : ''}`));
+                }
               });
             });
             stream.on('error', (err: Error) => settle(() => reject(err)));
+            if (opts.input !== undefined) stream.end(opts.input);
           });
         })
         .catch(reject);
@@ -190,6 +229,13 @@ export class RemoteServerHost implements ServerHost {
 
   pickFreePorts(): Promise<LocalServerPorts> {
     return pickRemoteFreePorts(this.ctx);
+  }
+
+  async checkNetworking(ports: LocalServerPorts): Promise<void> {
+    await PortForwarder.check(
+      FORWARDED_SERVICES.map((s) => ports[s]),
+      this.label
+    );
   }
 
   async establishNetworking(ports: LocalServerPorts): Promise<void> {

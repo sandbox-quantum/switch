@@ -157,6 +157,59 @@ class InvitationStore:
         )
         return list(result.scalars().all())
 
+    async def list_live_addressed_to(
+        self, session: AsyncSession, tenant_id: str, email: str
+    ) -> list[Invitation]:
+        """The live invitations of `tenant_id` addressed to `email`, compared
+        case-insensitively as acceptance compares it.
+
+        Called once per tenant from a fan-out over `tenants_inviting_email`,
+        which is why it names the tenant in its own `WHERE` rather than leaning
+        on the policy: on a connection the policy does not apply to, the same
+        read would return every tenant's rows on every pass
+        (`db/tenant_lookup.py`, on fan-outs).
+        """
+        result = await session.execute(
+            select(Invitation)
+            .where(
+                Invitation.tenant_id == tenant_id,
+                func.lower(Invitation.email) == email.lower(),
+                _usable(),
+            )
+            .order_by(Invitation.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def get_in_tenant(
+        self, session: AsyncSession, tenant_id: str, invitation_id: str
+    ) -> Invitation | None:
+        """The invitation `invitation_id`, if it belongs to `tenant_id`.
+
+        The tenant is checked here as well as by the policy, for the same
+        reason `list_live_addressed_to` names it: an id arriving from a
+        request must not reach another tenant's row on a connection the policy
+        does not bind.
+        """
+        result = await session.execute(
+            select(Invitation).where(
+                Invitation.id == invitation_id, Invitation.tenant_id == tenant_id
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def count_addressed_since(
+        self, session: AsyncSession, since: datetime
+    ) -> int:
+        """How many of the bound tenant's invitations named an e-mail and were
+        minted after `since` — the measure the daily e-mail cap is kept on.
+        Per tenant through the policy, like `list_for_tenant`."""
+        result = await session.execute(
+            select(func.count())
+            .select_from(Invitation)
+            .where(Invitation.email.is_not(None), Invitation.created_at > since)
+        )
+        return int(result.scalar_one())
+
     async def revoke(self, session: AsyncSession, invitation_id: str) -> Invitation:
         invitation = await session.get(Invitation, invitation_id)
         if invitation is None:

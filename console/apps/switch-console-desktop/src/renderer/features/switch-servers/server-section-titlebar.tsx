@@ -1,8 +1,10 @@
 import type { LucideIcon } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
+import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar';
+import { workspaceTitle } from '@renderer/features/workspaces/workspace-title';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { TitlebarBreadcrumb } from '@renderer/lib/components/titlebar/titlebar-breadcrumb';
-import { ServerAvatar, ServerStatusPill } from './server-presentation';
+import { ServerStatusPill } from './server-presentation';
 import { switchServersStore } from './switch-servers-store';
 
 /**
@@ -29,6 +31,7 @@ export const ServerSectionTitlebar = observer(function ServerSectionTitlebar({
   onSectionClick?: () => void;
 }) {
   const server = switchServersStore.servers.find((s) => s.id === serverId);
+  const title = server ? workspaceTitle(server) : null;
   return (
     <Titlebar
       leftSlot={
@@ -36,8 +39,8 @@ export const ServerSectionTitlebar = observer(function ServerSectionTitlebar({
           crumbs={[
             {
               key: 'server',
-              icon: server && <ServerAvatar server={server} size="sm" />,
-              label: server?.name ?? 'Server',
+              icon: title && <WorkspaceAvatar name={title} size="sm" active />,
+              label: title ?? 'Workspace',
               maxWidthClassName: 'max-w-40',
             },
             {

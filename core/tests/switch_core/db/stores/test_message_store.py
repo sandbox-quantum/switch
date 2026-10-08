@@ -22,7 +22,7 @@ from switch_core.db.stores.message_store import MessageStore
 
 async def _make_room(session: AsyncSession, name: str) -> Room:
     room = Room(
-        matrix_room_id=f"!{name}-{uuid.uuid4().hex[:8]}:test",
+        transport_room_id=f"!{name}-{uuid.uuid4().hex[:8]}:test",
         name=name,
         description=f"{name} desc",
     )
@@ -33,7 +33,7 @@ async def _make_room(session: AsyncSession, name: str) -> Room:
 
 async def _make_client(session: AsyncSession, name: str) -> Client:
     client = Client(
-        matrix_user_id=f"@{name}-{uuid.uuid4().hex[:8]}:test",
+        transport_user_id=f"@{name}-{uuid.uuid4().hex[:8]}:test",
         display_name=name,
         type="agent",
     )
@@ -369,8 +369,8 @@ class TestListForRoom:
     async def test_after_seq_from_another_room_does_not_skip_rows(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """`seq` is global, so a cursor is only meaningful within its own room;
-        rows interleaved from another room must not consume the page."""
+        """`seq` is per room, so a cursor is only meaningful within its own
+        room; rows interleaved from another room must not consume the page."""
         store = MessageStore()
         async with session_factory() as session:
             room_a = await _make_room(session, "alpha")

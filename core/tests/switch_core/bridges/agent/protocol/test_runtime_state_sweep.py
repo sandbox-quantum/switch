@@ -23,12 +23,12 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.models import TENANT_ZERO_ID
 
 AGENT = "agent-1"
@@ -57,13 +57,18 @@ class _SessionStore:
     ) -> set[str]:
         return set()
 
+    async def live_agent_ids_by_room(
+        self, _session: Any, _agent_ids: list[str], _room_ids: list[str]
+    ) -> dict[str, set[str]]:
+        return {}
+
 
 def _service(
     session_factory: async_sessionmaker[AsyncSession],
-    registry: ConnectionRegistry,
+    registry: AgentConnectionRegistry,
     store: _RuntimeStateStore,
-) -> ProtocolService:
-    svc = object.__new__(ProtocolService)
+) -> AgentCore:
+    svc = object.__new__(AgentCore)
     svc.connections = registry
     svc.agent_runtime_state_store = store  # type: ignore[assignment]
     svc.agent_session_store = _SessionStore()  # type: ignore[assignment]
@@ -86,15 +91,15 @@ async def _an_agent(*_a: Any, **_kw: Any) -> Any:
 
 
 async def _a_room(*_a: Any, **_kw: Any) -> Any:
-    return SimpleNamespace(id=ROOM, matrix_room_id="!m:server", bridge_id=None)
+    return SimpleNamespace(id=ROOM, transport_room_id="!m:server", bridge_id=None)
 
 
 async def _noop(*_a: Any, **_kw: Any) -> None:
     return None
 
 
-def _connected(room: str | None) -> ConnectionRegistry:
-    registry = ConnectionRegistry()
+def _connected(room: str | None) -> AgentConnectionRegistry:
+    registry = AgentConnectionRegistry()
     conn = registry.open(
         agent_id=AGENT,
         connection_id="c1",
@@ -149,6 +154,8 @@ async def test_with_nothing_live_the_sweep_still_clears(
     """The sweep's whole purpose: a crashed session must not stay 'working'."""
     store = _RuntimeStateStore([_row()])
 
-    await _service(session_factory, ConnectionRegistry(), store).sweep_runtime_states()
+    await _service(
+        session_factory, AgentConnectionRegistry(), store
+    ).sweep_runtime_states()
 
     assert store.cleared == [(AGENT, ROOM)]

@@ -73,7 +73,7 @@ async def _make_admin(session: AsyncSession) -> User:
 
 async def _make_bridge(session: AsyncSession) -> str:
     client = Client(
-        matrix_user_id=f"@bridge-{uuid.uuid4().hex[:12]}:test",
+        transport_user_id=f"@bridge-{uuid.uuid4().hex[:12]}:test",
         display_name="bridge client",
         type="bridge",
     )
@@ -92,7 +92,7 @@ async def _make_bridge(session: AsyncSession) -> str:
 
 async def _make_room(session: AsyncSession, *, bridge_id: str) -> str:
     room = Room(
-        matrix_room_id=f"!{uuid.uuid4().hex[:8]}:test",
+        transport_room_id=f"!{uuid.uuid4().hex[:8]}:test",
         name="bridged room",
         description="mirror of an external channel",
         bridge_id=bridge_id,

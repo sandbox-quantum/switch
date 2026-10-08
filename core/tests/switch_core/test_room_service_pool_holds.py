@@ -16,6 +16,7 @@ written until the transport side is in place.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -54,21 +55,23 @@ class _TrackedSession:
         return await self._inner.__aexit__(*exc)  # type: ignore[no-any-return]
 
 
-class _RecordingMatrix:
+class _RecordingProvisioning:
     """Records each Matrix call together with the sessions open at the time."""
 
     def __init__(self, tracker: _TrackingSessionFactory) -> None:
         self._tracker = tracker
         self.calls: list[tuple[str, str, int]] = []
 
-    async def invite_to_room(self, matrix_room_id: str, matrix_user_id: str) -> None:
-        self.calls.append(("invite", matrix_user_id, self._tracker.live))
+    async def invite_to_room(
+        self, transport_room_id: str, transport_user_id: str
+    ) -> None:
+        self.calls.append(("invite", transport_user_id, self._tracker.live))
 
-    async def kick_user(self, matrix_room_id: str, matrix_user_id: str) -> None:
-        self.calls.append(("kick", matrix_user_id, self._tracker.live))
+    async def kick_user(self, transport_room_id: str, transport_user_id: str) -> None:
+        self.calls.append(("kick", transport_user_id, self._tracker.live))
 
-    async def delete_room(self, matrix_room_id: str) -> None:
-        self.calls.append(("delete_room", matrix_room_id, self._tracker.live))
+    async def delete_room(self, transport_room_id: str) -> None:
+        self.calls.append(("delete_room", transport_room_id, self._tracker.live))
 
 
 class _RunningClients:
@@ -87,9 +90,9 @@ class _RunningClients:
 
 
 class _RunningClient:
-    def __init__(self, client_id: str, matrix_user_id: str) -> None:
+    def __init__(self, client_id: str, transport_user_id: str) -> None:
         self.client_id = client_id
-        self.matrix_user_id = matrix_user_id
+        self.transport_user_id = transport_user_id
 
 
 async def _seed(
@@ -111,7 +114,7 @@ async def _seed(
                 type="agent",
             )
             client = Client(
-                matrix_user_id=f"@a{i}:test",
+                transport_user_id=f"@a{i}:test",
                 display_name=f"a{i}",
                 type="agent",
             )
@@ -130,8 +133,8 @@ async def _seed(
             session.add(agent)
             await session.flush()
             agent_ids.append(agent.id)
-            running[agent.id] = _RunningClient(client.id, client.matrix_user_id)
-        room = Room(matrix_room_id="!r:test", name="room", description="d")
+            running[agent.id] = _RunningClient(client.id, client.transport_user_id)
+        room = Room(transport_room_id="!r:test", name="room", description="d")
         session.add(room)
         await session.flush()
         await session.commit()
@@ -140,16 +143,19 @@ async def _seed(
 
 def _service(
     tracker: _TrackingSessionFactory, running: dict[str, Any]
-) -> tuple[RoomService, _RecordingMatrix]:
-    matrix = _RecordingMatrix(tracker)
+) -> tuple[RoomService, _RecordingProvisioning]:
+    provisioning = _RecordingProvisioning(tracker)
     svc = object.__new__(RoomService)
     svc._session_factory = tracker  # type: ignore[assignment]
     svc._room_store = RoomStore()  # type: ignore[assignment]
     svc._agent_store = AgentStore()  # type: ignore[assignment]
-    svc._matrix_admin = matrix  # type: ignore[assignment]
+    svc._provisioning = provisioning  # type: ignore[assignment]
     svc._client_lifecycle = _RunningClients(running)  # type: ignore[assignment]
     svc._collab_lifecycle = _RunningClients({})  # type: ignore[assignment]
-    return svc, matrix
+    svc._room_cache = SimpleNamespace(  # type: ignore[assignment]
+        invalidate=lambda tenant_id, room_id: None
+    )
+    return svc, provisioning
 
 
 class TestAddAgentsToRoom:
@@ -158,12 +164,12 @@ class TestAddAgentsToRoom:
     ) -> None:
         room_id, agent_ids, running = await _seed(session_factory, agents=3)
         tracker = _TrackingSessionFactory(session_factory)
-        svc, matrix = _service(tracker, running)
+        svc, provisioning = _service(tracker, running)
 
         await svc.add_agents_to_room(room_id, agent_ids=agent_ids)
 
-        assert len(matrix.calls) == 3
-        assert [live for _kind, _who, live in matrix.calls] == [0, 0, 0]
+        assert len(provisioning.calls) == 3
+        assert [live for _kind, _who, live in provisioning.calls] == [0, 0, 0]
 
     async def test_membership_is_recorded_before_the_invite(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -173,14 +179,14 @@ class TestAddAgentsToRoom:
         # a room Switch has no record of it being in.
         room_id, agent_ids, running = await _seed(session_factory, agents=1)
         tracker = _TrackingSessionFactory(session_factory)
-        svc, matrix = _service(tracker, running)
+        svc, provisioning = _service(tracker, running)
         seen_at_invite: list[list[str]] = []
 
-        async def _invite(matrix_room_id: str, matrix_user_id: str) -> None:
+        async def _invite(transport_room_id: str, transport_user_id: str) -> None:
             async with session_factory() as session:
                 seen_at_invite.append(await RoomStore().get_agent_ids(session, room_id))
 
-        matrix.invite_to_room = _invite  # type: ignore[method-assign]
+        provisioning.invite_to_room = _invite  # type: ignore[method-assign]
 
         await svc.add_agents_to_room(room_id, agent_ids=agent_ids)
 
@@ -194,16 +200,16 @@ class TestAddAgentsToRoom:
         # the invite has actually gone out.
         room_id, agent_ids, running = await _seed(session_factory, agents=1)
         tracker = _TrackingSessionFactory(session_factory)
-        svc, matrix = _service(tracker, running)
+        svc, provisioning = _service(tracker, running)
         seen_at_invite: list[list[str]] = []
 
-        async def _invite(matrix_room_id: str, matrix_user_id: str) -> None:
+        async def _invite(transport_room_id: str, transport_user_id: str) -> None:
             async with session_factory() as session:
                 seen_at_invite.append(
                     await RoomStore().get_client_ids(session, room_id)
                 )
 
-        matrix.invite_to_room = _invite  # type: ignore[method-assign]
+        provisioning.invite_to_room = _invite  # type: ignore[method-assign]
 
         await svc.add_agents_to_room(room_id, agent_ids=agent_ids)
 
@@ -213,17 +219,17 @@ class TestAddAgentsToRoom:
                 running[agent_ids[0]].client_id
             ]
 
-    async def test_a_missing_room_still_raises_before_any_matrix_call(
+    async def test_a_missing_room_still_raises_before_any_provisioning_call(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         _, agent_ids, running = await _seed(session_factory, agents=1)
         tracker = _TrackingSessionFactory(session_factory)
-        svc, matrix = _service(tracker, running)
+        svc, provisioning = _service(tracker, running)
 
         with pytest.raises(ValueError, match="Room not found"):
             await svc.add_agents_to_room("no-such-room", agent_ids=agent_ids)
 
-        assert matrix.calls == []
+        assert provisioning.calls == []
 
 
 class TestRemoveAgentsFromRoom:
@@ -232,14 +238,14 @@ class TestRemoveAgentsFromRoom:
     ) -> None:
         room_id, agent_ids, running = await _seed(session_factory, agents=3)
         tracker = _TrackingSessionFactory(session_factory)
-        svc, matrix = _service(tracker, running)
+        svc, provisioning = _service(tracker, running)
         await svc.add_agents_to_room(room_id, agent_ids=agent_ids)
-        matrix.calls.clear()
+        provisioning.calls.clear()
 
         await svc.remove_agents_from_room(room_id, agent_ids)
 
-        assert [kind for kind, _who, _live in matrix.calls] == ["kick"] * 3
-        assert [live for _kind, _who, live in matrix.calls] == [0, 0, 0]
+        assert [kind for kind, _who, _live in provisioning.calls] == ["kick"] * 3
+        assert [live for _kind, _who, live in provisioning.calls] == [0, 0, 0]
 
     async def test_the_rows_are_gone_before_the_kick_lands(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -263,15 +269,15 @@ class TestRemoveAgentsFromRoom:
         """
         room_id, agent_ids, running = await _seed(session_factory, agents=1)
         tracker = _TrackingSessionFactory(session_factory)
-        svc, matrix = _service(tracker, running)
+        svc, provisioning = _service(tracker, running)
         await svc.add_agents_to_room(room_id, agent_ids=agent_ids)
         seen_at_kick: list[list[str]] = []
 
-        async def _kick(matrix_room_id: str, matrix_user_id: str) -> None:
+        async def _kick(transport_room_id: str, transport_user_id: str) -> None:
             async with session_factory() as session:
                 seen_at_kick.append(await RoomStore().get_agent_ids(session, room_id))
 
-        matrix.kick_user = _kick  # type: ignore[method-assign]
+        provisioning.kick_user = _kick  # type: ignore[method-assign]
 
         await svc.remove_agents_from_room(room_id, agent_ids)
 
@@ -303,7 +309,7 @@ class TestRemoveAgentsFromRoom:
         """
         room_id, agent_ids, running = await _seed(session_factory, agents=2)
         tracker = _TrackingSessionFactory(session_factory)
-        svc, matrix = _service(tracker, running)
+        svc, provisioning = _service(tracker, running)
         await svc.add_agents_to_room(room_id, agent_ids=agent_ids)
 
         # Every state the rows are seen in, sampled from a separate connection
@@ -316,10 +322,10 @@ class TestRemoveAgentsFromRoom:
                 clients = await RoomStore().get_client_ids(probe, room_id)
             seen.append((len(agents), len(clients)))
 
-        async def _kick(matrix_room_id: str, matrix_user_id: str) -> None:
+        async def _kick(transport_room_id: str, transport_user_id: str) -> None:
             await _sample()
 
-        matrix.kick_user = _kick  # type: ignore[method-assign]
+        provisioning.kick_user = _kick  # type: ignore[method-assign]
         await svc.remove_agents_from_room(room_id, agent_ids)
         await _sample()
 
@@ -336,18 +342,18 @@ class TestDeleteRoom:
     ) -> None:
         room_id, agent_ids, running = await _seed(session_factory, agents=2)
         tracker = _TrackingSessionFactory(session_factory)
-        svc, matrix = _service(tracker, running)
+        svc, provisioning = _service(tracker, running)
         await svc.add_agents_to_room(room_id, agent_ids=agent_ids)
-        matrix.calls.clear()
+        provisioning.calls.clear()
 
         await svc.delete_room(room_id)
 
-        assert [kind for kind, _who, _live in matrix.calls] == [
+        assert [kind for kind, _who, _live in provisioning.calls] == [
             "kick",
             "kick",
             "delete_room",
         ]
-        assert [live for _kind, _who, live in matrix.calls] == [0, 0, 0]
+        assert [live for _kind, _who, live in provisioning.calls] == [0, 0, 0]
 
         async with session_factory() as session:
             assert await RoomStore().get(session, room_id) is None

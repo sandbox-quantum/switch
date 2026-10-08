@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from switch_core.db.models import SessionActivityItem
+from switch_core.db.models import AgentSessionActivityItem
 from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
 from switch_core.sessions.contract import TURN_ENDED, Item, TurnUpsert
 
@@ -30,7 +30,7 @@ class TurnView:
     turn: TurnUpsert
     items: list[Item]
     # The turn's own row: where it was asked, and when it started and ended.
-    row: SessionActivityItem
+    row: AgentSessionActivityItem
     started_at: datetime
 
     @property
@@ -54,7 +54,7 @@ class TurnView:
         return max(0.0, elapsed)
 
 
-def turn_view(rows: list[SessionActivityItem]) -> TurnView | None:
+def turn_view(rows: list[AgentSessionActivityItem]) -> TurnView | None:
     """The turn its rows describe, or None until its own row has been reported."""
     row = next((r for r in rows if r.item_id == TURN_ITEM_ID), None)
     if row is None:

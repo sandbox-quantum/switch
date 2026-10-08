@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import update
 
-from switch_core.db.models import ApprovalRequest, SessionActivityItem
+from switch_core.db.models import AgentSessionActivityItem, ApprovalRequest
 from switch_core.session_activity.maintenance import maintain_once
 from switch_core.session_activity.service import ApprovalOption
 
@@ -50,10 +50,11 @@ async def test_a_pass_expires_overdue_requests_and_prunes_only_when_asked(
         thread_id=None,
         message_id=None,
         occurred_at=datetime.now(UTC),
+        usage=[],
     )
     past = datetime.now(UTC) - timedelta(days=30)
     await _backdate(session_factory, ApprovalRequest, expires_at=past)
-    await _backdate(session_factory, SessionActivityItem, updated_at=past)
+    await _backdate(session_factory, AgentSessionActivityItem, updated_at=past)
 
     await maintain_once(session_factory, prune=False)
     [owed] = await service.undelivered_outcomes(AGENT)

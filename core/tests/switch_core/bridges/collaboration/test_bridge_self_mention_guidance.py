@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundMessage
 
 # When a user tags the bridge bot itself ("Agent Switch") but the bot is not set
@@ -88,7 +88,7 @@ async def test_unaliased_self_mention_posts_guidance() -> None:
         agents={"a1": _agent("agent-a"), "a2": _agent("agent-b")},
     )
 
-    await BridgeCore._maybe_guide_self_mention(
+    await CollaborationCore._maybe_guide_self_mention(
         bridge, _msg(self_mention_token="UBOT"), "room-uuid"
     )
 
@@ -111,7 +111,7 @@ async def test_aliased_self_mention_posts_nothing() -> None:
         agents={"a1": _agent("agent-a")},
     )
 
-    await BridgeCore._maybe_guide_self_mention(
+    await CollaborationCore._maybe_guide_self_mention(
         bridge, _msg(self_mention_token="UBOT"), "room-uuid"
     )
 
@@ -121,7 +121,7 @@ async def test_aliased_self_mention_posts_nothing() -> None:
 async def test_no_self_mention_posts_nothing() -> None:
     bridge = _fake_bridge(alias_agent=None, agents={"a1": _agent("agent-a")})
 
-    await BridgeCore._maybe_guide_self_mention(
+    await CollaborationCore._maybe_guide_self_mention(
         bridge, _msg(self_mention_token=None), "room-uuid"
     )
 
@@ -131,7 +131,7 @@ async def test_no_self_mention_posts_nothing() -> None:
 async def test_self_mention_threads_under_existing_thread_root() -> None:
     bridge = _fake_bridge(alias_agent=None, agents={"a1": _agent("agent-a")})
 
-    await BridgeCore._maybe_guide_self_mention(
+    await CollaborationCore._maybe_guide_self_mention(
         bridge, _msg(self_mention_token="UBOT", root_id="C123:100.1"), "room-uuid"
     )
 
@@ -146,7 +146,7 @@ async def test_guidance_omits_set_alias_for_non_alias_safe_token() -> None:
         agents={"a1": _agent("agent-a"), "a2": _agent("agent-b")},
     )
 
-    await BridgeCore._maybe_guide_self_mention(
+    await CollaborationCore._maybe_guide_self_mention(
         bridge, _msg(self_mention_token="28:app-123"), "room-uuid"
     )
 
@@ -159,7 +159,7 @@ async def test_guidance_omits_set_alias_for_non_alias_safe_token() -> None:
 async def test_resolve_target_single_agent_unaliased() -> None:
     bridge = _fake_bridge(alias_agent=None, agents={"a1": _agent("agent-a")})
 
-    target = await BridgeCore._resolve_self_mention_target(
+    target = await CollaborationCore._resolve_self_mention_target(
         bridge, _msg(self_mention_token="28:app-123"), "room-uuid"
     )
 
@@ -172,7 +172,7 @@ async def test_resolve_target_uses_alias_even_with_many_agents() -> None:
         agents={"a1": _agent("agent-a"), "a2": _agent("agent-b")},
     )
 
-    target = await BridgeCore._resolve_self_mention_target(
+    target = await CollaborationCore._resolve_self_mention_target(
         bridge, _msg(self_mention_token="UBOT"), "room-uuid"
     )
 
@@ -185,7 +185,7 @@ async def test_resolve_target_ambiguous_returns_none() -> None:
         agents={"a1": _agent("agent-a"), "a2": _agent("agent-b")},
     )
 
-    target = await BridgeCore._resolve_self_mention_target(
+    target = await CollaborationCore._resolve_self_mention_target(
         bridge, _msg(self_mention_token="28:app-123"), "room-uuid"
     )
 
@@ -195,7 +195,7 @@ async def test_resolve_target_ambiguous_returns_none() -> None:
 async def test_resolve_target_no_token_returns_none() -> None:
     bridge = _fake_bridge(alias_agent=None, agents={"a1": _agent("agent-a")})
 
-    target = await BridgeCore._resolve_self_mention_target(
+    target = await CollaborationCore._resolve_self_mention_target(
         bridge, _msg(self_mention_token=None), "room-uuid"
     )
 

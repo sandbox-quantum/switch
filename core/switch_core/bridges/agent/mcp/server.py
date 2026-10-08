@@ -17,17 +17,23 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_request
 from fastmcp.server.middleware import Middleware, MiddlewareContext, PingMiddleware
 from starlette.types import ASGIApp
 
 from switch_core.bridges.agent.auth import BearerAuthMiddleware, OIDCTokenValidator
-from switch_core.bridges.agent.operations import all_operations
+from switch_core.bridges.agent.operations import (
+    all_operations,
+    declared_operations,
+    get_operation,
+)
 from switch_core.bridges.agent.operations.callctx import CallContext, call_context
 from switch_core.bridges.agent.operations.context import init_operations_protocol
+from switch_core.bridges.agent.protocol.hosted_workers import CodedPermissionError
 
 if TYPE_CHECKING:
-    from switch_core.bridges.agent.protocol.service import ProtocolService
+    from switch_core.bridges.agent.protocol.agent_core import AgentCore
     from switch_core.config import SwitchConfig
     from switch_core.db.stores.agent_store import AgentStore
     from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -35,7 +41,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def init_mcp_protocol(protocol: ProtocolService) -> None:
+def init_mcp_protocol(protocol: AgentCore) -> None:
     """Give the operations layer its protocol service.
 
     Kept under the old name because callers wire it at startup; the state it
@@ -72,25 +78,56 @@ class CallContextMiddleware(Middleware):
                 session=None,
             )
         ):
-            return await call_next(context)
+            try:
+                return await call_next(context)
+            except ToolError as exc:
+                # The server prefixes a tool's error with its name; a coded
+                # refusal is sent as its bare `{code, message}` object instead.
+                if isinstance(exc.__cause__, CodedPermissionError):
+                    raise ToolError(str(exc.__cause__)) from exc.__cause__
+                raise
+
+
+class ExistingOperationsOnly(Middleware):
+    """Serve only the operations that exist now.
+
+    Every declared operation is registered as a tool, including those of a
+    group that is off (an optional module's, enabled when the module runs).
+    Which of them exist is the registry's answer at the time of the request,
+    so a tool is listed and callable exactly when `/ops` offers it, however
+    late in startup its group was enabled.
+    """
+
+    async def on_list_tools(self, context: MiddlewareContext, call_next):  # type: ignore[no-untyped-def]
+        tools = await call_next(context)
+        existing = all_operations()
+        return [tool for tool in tools if tool.name in existing]
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next):  # type: ignore[no-untyped-def]
+        name = context.message.name
+        if get_operation(name) is None:
+            raise ToolError(f"Unknown tool: {name}")
+        return await call_next(context)
 
 
 mcp = FastMCP("Switch")
+mcp.add_middleware(ExistingOperationsOnly())
 mcp.add_middleware(CallContextMiddleware())
 
-# Every operation, registered as a tool. This loop is the only thing that makes
-# an operation an MCP tool, so the two surfaces cannot diverge.
-for _op in all_operations().values():
+# Every declared operation, registered as a tool. This loop is the only thing
+# that makes an operation an MCP tool, and `ExistingOperationsOnly` hides the
+# ones whose group is off, so the two surfaces cannot diverge.
+for _op in declared_operations().values():
     mcp.tool(_op.fn, description=_op.description)
 
-logger.debug("Registered %d operations as MCP tools", len(all_operations()))
+logger.debug("Registered %d operations as MCP tools", len(declared_operations()))
 
 
 def create_mcp_app(
     *,
     agent_store: AgentStore,
     api_key_store: ApiKeyStore,
-    protocol: ProtocolService,
+    protocol: AgentCore,
     config: SwitchConfig,
 ) -> tuple[ASGIApp, Any]:
     """Returns (asgi_app, lifespan). The lifespan must be wired into the parent app."""
@@ -100,6 +137,7 @@ def create_mcp_app(
 
     oidc_validator = None
     if config.oauth_issuer_url:
+        assert config.oauth_audience is not None  # enforced by SwitchConfig
         oidc_validator = OIDCTokenValidator(
             issuer_url=config.oauth_issuer_url,
             audience=config.oauth_audience,

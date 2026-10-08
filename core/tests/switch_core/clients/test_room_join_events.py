@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from switch_core.bridges.agent.protocol.types import AgentEvent, RoomJoinPayload
-from switch_core.clients.agent_client import AgentClient, RoomMeta
+from switch_core.clients.agent_consumer import AgentConsumer, RoomMeta
 from switch_core.transport import InboundMembership, RoomRef
 
 
@@ -22,10 +22,10 @@ class _FakeClientStore:
     def __init__(self, names: dict[str, str]) -> None:
         self._names = names
 
-    async def get_by_matrix_user_id(
-        self, _session: object, matrix_user_id: str
+    async def get_by_transport_user_id(
+        self, _session: object, transport_user_id: str
     ) -> object | None:
-        name = self._names.get(matrix_user_id)
+        name = self._names.get(transport_user_id)
         return SimpleNamespace(display_name=name) if name else None
 
 
@@ -45,7 +45,7 @@ def _client(
     receives: bool = True,
     known: dict[str, str] | None = None,
 ) -> SimpleNamespace:
-    """A minimal fake `self` for the unbound AgentClient.on_member_event.
+    """A minimal fake `self` for the unbound AgentConsumer.on_member_event.
 
     Stubs the event queue, agent identity, room-meta resolution, and the room
     store / session factory so the handler can run without a DB or live Matrix
@@ -59,7 +59,7 @@ def _client(
         channel_type="channel_public",
     )
 
-    async def _resolve_room_meta(_matrix_room_id: str) -> RoomMeta | None:
+    async def _resolve_room_meta(_transport_room_id: str) -> RoomMeta | None:
         return resolved
 
     @asynccontextmanager
@@ -77,7 +77,7 @@ def _client(
         session_factory=_session_factory,
     )
     # Bound, so the handler resolves the name through the real implementation.
-    stub._member_name = lambda session, event: AgentClient._member_name(
+    stub._member_name = lambda session, event: AgentConsumer._member_name(
         stub, session, event
     )
     return stub
@@ -108,7 +108,7 @@ def _member_event(
 
 
 async def _run(client: SimpleNamespace, event: InboundMembership) -> None:
-    await AgentClient.on_member_event(client, RoomRef("!matrix:switch.local"), event)
+    await AgentConsumer.on_member_event(client, RoomRef("!matrix:switch.local"), event)
 
 
 class TestRoomJoinEnqueue:
@@ -174,7 +174,7 @@ class TestRoomJoinEnqueue:
         assert client._event_buffer.enqueued == []
 
     async def test_no_room_meta_does_not_enqueue(self) -> None:
-        async def _none(_matrix_room_id: str) -> RoomMeta | None:
+        async def _none(_transport_room_id: str) -> RoomMeta | None:
             return None
 
         client = _client()

@@ -107,7 +107,7 @@ class _Subscriber:
 _RESYNC = object()
 
 
-class SessionActivityListener:
+class AgentSessionActivityListener:
     def __init__(self, engine_factory: EngineFactory) -> None:
         self._engine_factory = engine_factory
         self._subscribers: dict[str, set[_Subscriber]] = {}
@@ -140,7 +140,7 @@ class SessionActivityListener:
 
     async def start(self) -> None:
         if self._running:
-            raise RuntimeError("SessionActivityListener is already started")
+            raise RuntimeError("AgentSessionActivityListener is already started")
         self._running = True
         self._tasks = [
             asyncio.create_task(

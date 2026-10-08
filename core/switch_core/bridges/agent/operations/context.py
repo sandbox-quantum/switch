@@ -18,19 +18,19 @@ from switch_core.bridges.agent.operations.callctx import (
 from switch_core.bridges.agent.protocol.event_buffer import Reader
 
 if TYPE_CHECKING:
-    from switch_core.bridges.agent.protocol.service import ProtocolService
+    from switch_core.bridges.agent.protocol.agent_core import AgentCore
 
 logger = logging.getLogger(__name__)
 
-_protocol: ProtocolService | None = None
+_protocol: AgentCore | None = None
 
 
-def init_operations_protocol(protocol: ProtocolService) -> None:
+def init_operations_protocol(protocol: AgentCore) -> None:
     global _protocol
     _protocol = protocol
 
 
-def get_protocol() -> ProtocolService:
+def get_protocol() -> AgentCore:
     assert _protocol is not None, "operations protocol not initialized"
     return _protocol
 

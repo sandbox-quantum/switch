@@ -143,6 +143,42 @@ function resultText(result: ToolResult): string {
  * The call is made as the session, so Switch must already know the room is
  * placed with it.
  */
+/** The notice a room gets while a session starts to answer it. */
+export const SESSION_STARTING_MESSAGE = 'Starting a session to handle this — one moment.';
+
+/**
+ * Tells the room a session is starting for its message, as the session that
+ * will answer: in the thread the message was in, so the answer follows it.
+ */
+export async function announceSessionStart(input: {
+  identity: SwitchIdentity;
+  connectionId: string;
+  session: { sessionId: string; hostId: string; epoch: string };
+  root: string;
+  cwd: string;
+  threadId: string | null;
+}): Promise<void> {
+  const ctx: CallerContext = {
+    identity: input.identity,
+    connectionId: input.connectionId,
+    selector: {
+      [SESSION_SELECTOR_HEADERS.sessionId]: input.session.sessionId,
+      [SESSION_SELECTOR_HEADERS.hostId]: input.session.hostId,
+      [SESSION_SELECTOR_HEADERS.epoch]: input.session.epoch,
+    },
+    room: null,
+    mediaDir: join(input.root, 'media'),
+    cwd: input.cwd,
+    deadConnection: (operation) =>
+      `Switch refused ${operation}: this agent's connection (${input.connectionId}) had lapsed.`,
+  };
+  const posted = await callOperation(ctx, 'post_message', {
+    body: SESSION_STARTING_MESSAGE,
+    ...(input.threadId ? { thread_id: input.threadId } : {}),
+  });
+  if (posted.isError) throw new Error(resultText(posted));
+}
+
 export async function announceStartFailure(input: {
   identity: SwitchIdentity;
   connectionId: string;

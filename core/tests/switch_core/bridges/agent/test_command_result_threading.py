@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from switch_core.bridges.agent.commands import _cmd_help, _reply
-from switch_core.clients.client_base import ClientBase
+from switch_core.clients.consumer import Consumer
 from switch_core.events import CommandEvent
 from switch_core.transport import InboundCustomEvent, RoomRef
 
@@ -83,7 +83,7 @@ class TestDispatchPopulatesThreadId:
 
         fake_self = SimpleNamespace(
             _should_ignore=lambda _room, _event: False,
-            _EVENT_DISPATCH=ClientBase._EVENT_DISPATCH,
+            _EVENT_DISPATCH=Consumer._EVENT_DISPATCH,
             on_command=_on_command,
         )
         custom = InboundCustomEvent(
@@ -95,7 +95,7 @@ class TestDispatchPopulatesThreadId:
             event_type="com.switch.command",
             thread_root_id=thread_root_id,
         )
-        await ClientBase._handle_custom_event(fake_self, RoomRef("!m"), custom)
+        await Consumer._handle_custom_event(fake_self, RoomRef("!m"), custom)
         assert len(captured) == 1
         return captured[0]
 

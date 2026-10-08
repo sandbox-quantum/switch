@@ -41,7 +41,7 @@ from switch_core.tenant_context import tenant_scope
 pytestmark = pytest.mark.no_ambient_tenant
 
 
-class _FakeMatrix:
+class _FakeProvisioning:
     """Provisioning, which room_service calls with no session open."""
 
     def __init__(self) -> None:
@@ -73,12 +73,12 @@ class _FakeAdapter:
         return None
 
 
-class _FakeBridgeCore:
+class _FakeCollaborationCore:
     """The running half of a bridge — `create_room` never opens a session on
-    this, so it does not need to be the real `BridgeCore`."""
+    this, so it does not need to be the real `CollaborationCore`."""
 
-    def __init__(self, matrix_user_id: str) -> None:
-        self._bridge_client_matrix_user_id = matrix_user_id
+    def __init__(self, transport_user_id: str) -> None:
+        self._workspace_consumer_transport_user_id = transport_user_id
         self.adapter = _FakeAdapter()
         self.mappings: list[tuple[str, str, str, str]] = []
 
@@ -91,15 +91,17 @@ class _FakeBridgeCore:
     def add_room_mapping(
         self,
         room_id: str,
-        matrix_room_id: str,
+        transport_room_id: str,
         external_channel_id: str,
         tenant_id: str,
     ) -> None:
-        self.mappings.append((room_id, matrix_room_id, external_channel_id, tenant_id))
+        self.mappings.append(
+            (room_id, transport_room_id, external_channel_id, tenant_id)
+        )
 
 
 class _FakeLifecycle:
-    def __init__(self, bridges: dict[str, _FakeBridgeCore]) -> None:
+    def __init__(self, bridges: dict[str, _FakeCollaborationCore]) -> None:
         self._bridges = bridges
 
     def get(self, bridge_id: str) -> Any:
@@ -134,7 +136,7 @@ async def _make_default_bridge(
     """
     async with tenant_session(session_factory, tenant_id) as session:
         client = Client(
-            matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:switch.local",
+            transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:switch.local",
             display_name="bridge client",
             type="bridge",
         )
@@ -156,8 +158,8 @@ async def _make_default_bridge(
 def _service(
     session_factory: async_sessionmaker[AsyncSession],
     *,
-    bridges: dict[str, _FakeBridgeCore],
-    matrix: _FakeMatrix,
+    bridges: dict[str, _FakeCollaborationCore],
+    provisioning: _FakeProvisioning,
 ) -> RoomService:
     svc = object.__new__(RoomService)
     svc._session_factory = session_factory  # type: ignore[assignment]
@@ -166,7 +168,7 @@ def _service(
     svc._client_lifecycle = _NoRunningClients()  # type: ignore[assignment]
     svc._collab_lifecycle = _FakeLifecycle(bridges)  # type: ignore[assignment]
     svc._collab_bridge_store = CollaborationBridgeStore()  # type: ignore[assignment]
-    svc._matrix_admin = matrix  # type: ignore[assignment]
+    svc._provisioning = provisioning  # type: ignore[assignment]
     return svc
 
 
@@ -188,14 +190,14 @@ async def test_create_room_succeeds_for_each_tenants_own_default_bridge(
     bridge_a = await _make_default_bridge(session_factory, tenant_id=tenant_a)
     bridge_b = await _make_default_bridge(session_factory, tenant_id=tenant_b)
 
-    matrix = _FakeMatrix()
+    provisioning = _FakeProvisioning()
     svc = _service(
         session_factory,
         bridges={
-            bridge_a: _FakeBridgeCore("@bot-a:switch.local"),
-            bridge_b: _FakeBridgeCore("@bot-b:switch.local"),
+            bridge_a: _FakeCollaborationCore("@bot-a:switch.local"),
+            bridge_b: _FakeCollaborationCore("@bot-b:switch.local"),
         },
-        matrix=matrix,
+        provisioning=provisioning,
     )
 
     # Before the fix this raised MultipleResultsFound out of

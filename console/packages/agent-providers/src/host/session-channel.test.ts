@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   connectParent,
+  HOST_HUNG_UP_MS,
   SessionHostFailedError,
   SessionLinks,
   SessionUnavailableError,
@@ -19,6 +20,7 @@ function fakeChild() {
   };
   child.sent = [];
   (child as unknown as { connected: boolean }).connected = true;
+  Object.assign(child, { pid: 4242, exitCode: null, signalCode: null });
   child.send = (message, callback) => {
     child.sent.push(message);
     callback(null);
@@ -246,4 +248,121 @@ it('refuses a question from a host that has not said who it is, and tells who ex
   child.emit('exit', 0, null);
   expect(exits).toEqual([['root', IDENTITY]]);
   expect(links.identity('root')).toBeNull();
+});
+
+it('keeps what a host last said about being busy, and answers a barrier once it has settled', async () => {
+  const links = new SessionLinks();
+  const child = fakeChild();
+  const heard: string[] = [];
+  links.onBusy((root) => heard.push(root));
+  links.attach('root', child as unknown as ChildProcess);
+  await expect(links.barrier('root', 100)).rejects.toThrow(SessionUnavailableError);
+  child.emit('message', { kind: 'ready' });
+  const running = { busy: true, reasons: [{ kind: 'turn_running', count: 1 }] };
+  child.emit('message', { kind: 'busy', ...running });
+  expect(links.busy('root')).toEqual(running);
+
+  const answer = links.barrier('root', 1000);
+  const [barrier] = child.sent as { kind: string; id: number }[];
+  expect(barrier).toMatchObject({ kind: 'busyBarrier' });
+  child.emit('message', { kind: 'busy', busy: false, reasons: [], barrier: barrier!.id });
+  expect(await answer).toEqual({ busy: false, reasons: [] });
+
+  const lost = links.barrier('root', 1000);
+  child.emit('exit', 0, null);
+  await expect(lost).rejects.toThrow(SessionUnavailableError);
+  expect(links.busy('root')).toBeNull();
+  expect(heard).toEqual(['root', 'root', 'root']);
+});
+
+it('answers a busy barrier on the host side with the settled state', async () => {
+  const { sent, port } = fakePort();
+  const served = connectParent(port);
+  served.onBarrier(async () => ({ busy: true, reasons: [{ kind: 'approval_open', count: 2 }] }));
+  served.busy({ busy: false, reasons: [] }, null);
+  port.emit('message', { kind: 'busyBarrier', id: 4 });
+  await vi.waitFor(() =>
+    expect(sent).toEqual([
+      { kind: 'busy', busy: false, reasons: [] },
+      { kind: 'busy', busy: true, reasons: [{ kind: 'approval_open', count: 2 }], barrier: 4 },
+    ])
+  );
+});
+
+it('stops sending to a host that hung up, and waits for the next one', async () => {
+  // A host that closed its pipe and did not exit — something it started still
+  // running — used to read as ready for good, so every message went down a
+  // closed pipe and failed, forever.
+  const links = new SessionLinks();
+  const hung = fakeChild();
+  links.attach('root', hung as unknown as ChildProcess);
+  hung.emit('message', { kind: 'ready' });
+  const unanswered = links.request('root', { type: 'snapshot' }, 1000);
+  await vi.waitFor(() => expect(hung.sent).toHaveLength(1));
+
+  (hung as unknown as { connected: boolean }).connected = false;
+  hung.emit('disconnect');
+
+  await expect(unanswered).rejects.toThrow('hung up before it answered');
+  expect(links.ready('root')).toBe(false);
+  const next = links.request('root', { type: 'snapshot' }, 1000);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(hung.sent).toHaveLength(1);
+
+  const replacement = fakeChild();
+  links.attach('root', replacement as unknown as ChildProcess);
+  replacement.emit('message', { kind: 'ready' });
+  await vi.waitFor(() => expect(replacement.sent).toHaveLength(1));
+  const [request] = replacement.sent as { id: number }[];
+  replacement.emit('message', { kind: 'reply', id: request!.id, ok: true, value: 'fresh' });
+  expect(await next).toBe('fresh');
+});
+
+it('kills a host that hung up and stays alive, with what it started', async () => {
+  vi.useFakeTimers();
+  try {
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    const links = new SessionLinks();
+    const hung = fakeChild();
+    links.attach('root', hung as unknown as ChildProcess);
+    hung.emit('disconnect');
+
+    await vi.advanceTimersByTimeAsync(HOST_HUNG_UP_MS - 1);
+    expect(kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    // Its group: the provider it started is in it.
+    expect(kill).toHaveBeenCalledWith(-4242, 'SIGKILL');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('leaves a host that hung up and then exited on its own', async () => {
+  vi.useFakeTimers();
+  try {
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    const links = new SessionLinks();
+    const leaving = fakeChild();
+    links.attach('root', leaving as unknown as ChildProcess);
+    leaving.emit('disconnect');
+    leaving.emit('exit', 0, null);
+
+    await vi.advanceTimersByTimeAsync(HOST_HUNG_UP_MS * 2);
+    expect(kill).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('tells a request waiting on a host that the host stopped, rather than at its deadline', async () => {
+  const links = new SessionLinks();
+  const child = fakeChild();
+  links.attach('root', child as unknown as ChildProcess);
+  const started = Date.now();
+  const waiting = links.request('root', { type: 'snapshot' }, 60000);
+
+  child.emit('exit', 0, null);
+
+  await expect(waiting).rejects.toThrow('stopped before it was ready');
+  expect(Date.now() - started).toBeLessThan(5000);
 });

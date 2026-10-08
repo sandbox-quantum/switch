@@ -11,20 +11,23 @@ from __future__ import annotations
 
 import pytest
 
-from switch_core.clients.client_base import ClientBase
+from switch_core.clients.actor import Actor
+from switch_core.clients.consumer import Consumer
 from switch_core.transport import InboundMembership, RoomRef
 
-MATRIX_ROOM_ID = "!matrix:switch.local"
+TRANSPORT_ROOM_ID = "!matrix:switch.local"
 SELF = "@switch-agent-1:switch.local"
 
 
-class _Client(ClientBase):
+class _Client(Consumer):
     def __init__(self) -> None:
-        self.matrix_user_id = SELF
-        self.client_id = "client-1"
-        self.display_name = "client one"
-        self.room_join_times = {}
-        self._room_joined_events = {}
+        actor = Actor.__new__(Actor)
+        actor.transport_user_id = SELF
+        actor.client_id = "client-1"
+        actor.display_name = "client one"
+        actor.room_join_times = {}
+        actor._room_joined_events = {}
+        self.actor = actor
         self._self_join_dispatched = set()
         self._startup_ts = 1000
         self.self_joins: list[str] = []
@@ -38,7 +41,7 @@ class _Client(ClientBase):
 
 
 def _room() -> RoomRef:
-    return RoomRef(room_id=MATRIX_ROOM_ID)
+    return RoomRef(room_id=TRANSPORT_ROOM_ID)
 
 
 def _member_event(
@@ -49,7 +52,7 @@ def _member_event(
     timestamp: int = 2000,
 ) -> InboundMembership:
     return InboundMembership(
-        room_id=MATRIX_ROOM_ID,
+        room_id=TRANSPORT_ROOM_ID,
         event_id="$member",
         sender=state_key,
         timestamp=timestamp,
@@ -63,11 +66,11 @@ def _member_event(
 async def test_self_join_fires_after_the_client_joined_itself() -> None:
     client = _Client()
     # Auto-accepting the invite records membership before sync reports the join.
-    client._mark_joined(MATRIX_ROOM_ID, 1500)
+    client.actor.mark_joined(TRANSPORT_ROOM_ID, 1500)
 
     await client._handle_member_event(_room(), _member_event())
 
-    assert client.self_joins == [MATRIX_ROOM_ID]
+    assert client.self_joins == [TRANSPORT_ROOM_ID]
 
 
 @pytest.mark.asyncio
@@ -78,7 +81,7 @@ async def test_self_join_fires_only_once_for_the_same_join() -> None:
     await client._handle_member_event(_room(), event)
     await client._handle_member_event(_room(), event)
 
-    assert client.self_joins == [MATRIX_ROOM_ID]
+    assert client.self_joins == [TRANSPORT_ROOM_ID]
 
 
 @pytest.mark.asyncio
@@ -115,7 +118,7 @@ async def test_rejoining_after_leaving_is_a_fresh_arrival() -> None:
         _room(), _member_event(prev_membership="leave", timestamp=4000)
     )
 
-    assert client.self_joins == [MATRIX_ROOM_ID, MATRIX_ROOM_ID]
+    assert client.self_joins == [TRANSPORT_ROOM_ID, TRANSPORT_ROOM_ID]
 
 
 @pytest.mark.asyncio

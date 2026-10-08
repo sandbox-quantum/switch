@@ -16,9 +16,9 @@ _BASE_KWARGS = dict(
     db_user="postgres",
     db_password="pw",
     db_name="switch",
-    matrix_server_name="switch.local",
+    id_server_name="switch.local",
     agent_registration_token="token",
-    jwt_secret_key="jwt",
+    secret_keys="test:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
     gateway_admin_email="admin@example.com",
     gateway_admin_password="pw",
 )

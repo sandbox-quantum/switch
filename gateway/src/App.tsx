@@ -1,12 +1,14 @@
-import { Box, CircularProgress } from "@mui/material";
+import { Alert, Box, Button, CircularProgress } from "@mui/material";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { AuthProvider, useAuth } from "./data/AuthContext";
+import { appView, readPendingInvite } from "./data/sessionState";
 import PageShell from "./layout/PageShell";
 import AgentDetailPage from "./pages/agents/AgentDetailPage";
 import AgentsPage from "./pages/agents/AgentsPage";
 import LoginPage from "./pages/auth/LoginPage";
 import CollaborationsPage from "./pages/collaborations/CollaborationsPage";
 import EcosystemGraphPage from "./pages/ecosystem/EcosystemGraphPage";
+import MachinesPage from "./pages/machines/MachinesPage";
 import RegistrationKeysPage from "./pages/registration-keys/RegistrationKeysPage";
 import DocumentDetailPage from "./pages/resources/DocumentDetailPage";
 import PackageDetailPage from "./pages/resources/PackageDetailPage";
@@ -19,31 +21,84 @@ import RoomDetailPage from "./pages/rooms/RoomDetailPage";
 import RoomScopedDocumentView from "./pages/rooms/RoomScopedDocumentView";
 import RoomsGraphPage from "./pages/rooms/RoomsGraphPage";
 import RoomsPage from "./pages/rooms/RoomsPage";
+import AcceptInvitePage from "./pages/onboarding/AcceptInvitePage";
+import InviteCapture from "./pages/onboarding/InviteCapture";
+import OnboardingPage from "./pages/onboarding/OnboardingPage";
+import WorkspacePickerPage from "./pages/onboarding/WorkspacePickerPage";
+import UsagePage from "./pages/usage/UsagePage";
 import UsersPage from "./pages/users/UsersPage";
+import WorkspacePage from "./pages/workspace/WorkspacePage";
 
-function AppRoutes() {
-  const { user, loading } = useAuth();
+function FullScreen({ children }: { children: React.ReactNode }) {
+  return (
+    <Box
+      sx={{
+        display: "flex",
+        height: "100vh",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      {children}
+    </Box>
+  );
+}
+
+export function AppRoutes() {
+  const { session, loading, loadError } = useAuth();
 
   if (loading) {
     return (
-      <Box
-        sx={{
-          display: "flex",
-          height: "100vh",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
+      <FullScreen>
         <CircularProgress />
-      </Box>
+      </FullScreen>
     );
   }
 
-  if (!user) {
+  if (loadError !== null) {
+    return (
+      <FullScreen>
+        <Alert
+          severity="error"
+          action={
+            <Button color="inherit" size="small" onClick={() => window.location.reload()}>
+              Retry
+            </Button>
+          }
+        >
+          Could not load your session: {loadError}
+        </Alert>
+      </FullScreen>
+    );
+  }
+
+  const pendingInvite = readPendingInvite();
+  const view = appView(session, pendingInvite);
+
+  if (view === "signed_out") {
     return (
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/invite" element={<InviteCapture />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    );
+  }
+
+  if (view !== "ready") {
+    const screen =
+      view === "accept_invite" && pendingInvite !== null ? (
+        <AcceptInvitePage token={pendingInvite} />
+      ) : view === "needs_selection" ? (
+        <WorkspacePickerPage />
+      ) : (
+        <OnboardingPage />
+      );
+    return (
+      <Routes>
+        <Route path="/invite" element={<InviteCapture />} />
+        <Route path="/" element={screen} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     );
   }
@@ -81,10 +136,14 @@ function AppRoutes() {
         />
         <Route path="agents" element={<AgentsPage />} />
         <Route path="agents/:agentId" element={<AgentDetailPage />} />
+        <Route path="machines" element={<MachinesPage />} />
         <Route path="collaborations" element={<CollaborationsPage />} />
         <Route path="registration-keys" element={<RegistrationKeysPage />} />
+        <Route path="usage" element={<UsagePage />} />
         <Route path="users" element={<UsersPage />} />
+        <Route path="workspace" element={<WorkspacePage />} />
       </Route>
+      <Route path="/invite" element={<InviteCapture />} />
       <Route path="/login" element={<Navigate to="/" replace />} />
     </Routes>
   );

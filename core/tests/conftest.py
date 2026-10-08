@@ -22,11 +22,22 @@ from testcontainers.postgres import PostgresContainer
 # Importing the models module registers every table on Base.metadata so
 # create_all provisions the full schema (rooms, room_groups, FKs, …).
 import switch_core.db.models  # noqa: F401
+from switch_core.db import encrypted_json
 from switch_core.db.base import Base
 from switch_core.db.engine import create_session_factory
 from switch_core.db.models import TENANT_ZERO_ID, Tenant
 from switch_core.db.runtime_role import grant_runtime_role
+from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
+from tests.switch_core.pool_checkouts import PoolCheckouts
+from tests.switch_core.statement_counts import StatementCounts
+
+# Production configures this in `main.run()`; every test that touches a
+# connection config needs the same, and none needs a particular key.
+TEST_KEYRING = Keyring.parse(
+    "test:" + "column-encryption-secret" * 2, legacy_secret=None
+)
+encrypted_json.configure(TEST_KEYRING)
 
 
 async def _seed_tenant_zero(conn: AsyncConnection) -> None:
@@ -163,6 +174,37 @@ async def session_factory(
             yield create_session_factory(engine)
     finally:
         await engine.dispose()
+
+
+@pytest.fixture
+def pool_checkouts(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> Iterator[PoolCheckouts]:
+    """Connections borrowed from `session_factory`'s pool, counted per request.
+
+    Wrap an app under test with `pool_checkouts.wrap(app)`, or a block with
+    `pool_checkouts.scope(label)`, and assert `pool_checkouts.over() == []`:
+    no request held two connections at once. See `pool_checkouts.py`.
+    """
+    tracker = PoolCheckouts(session_factory.kw["bind"])
+    try:
+        yield tracker
+    finally:
+        tracker.close()
+
+
+@pytest.fixture
+def statement_counts(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> Iterator[StatementCounts]:
+    """SQL statements run against `session_factory`'s engine, counted per
+    request. Wrap an app under test with `statement_counts.wrap(app)`; see
+    `statement_counts.py`."""
+    counts = StatementCounts(session_factory.kw["bind"])
+    try:
+        yield counts
+    finally:
+        counts.close()
 
 
 @dataclass(frozen=True)

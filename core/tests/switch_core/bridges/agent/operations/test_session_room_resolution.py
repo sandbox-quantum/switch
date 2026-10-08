@@ -31,10 +31,10 @@ from switch_core.bridges.agent.operations.context import (
     init_operations_protocol,
     require_connected_room,
 )
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer, Reader
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
@@ -75,7 +75,7 @@ def registry():
     async def session_factory():
         yield SimpleNamespace()
 
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     init_operations_protocol(
         SimpleNamespace(
             connections=registry,
@@ -87,7 +87,7 @@ def registry():
     init_operations_protocol(None)  # type: ignore[arg-type]
 
 
-def _open(registry: ConnectionRegistry) -> Any:
+def _open(registry: AgentConnectionRegistry) -> Any:
     return registry.open(
         agent_id=AGENT,
         connection_id=CONNECTION,
@@ -376,7 +376,7 @@ async def test_evicting_another_connection_still_names_the_connection(
     assert "connection connection-old" in result["warning"]
 
 
-def _protocol_for(registry: ConnectionRegistry, room_id: str) -> Any:
+def _protocol_for(registry: AgentConnectionRegistry, room_id: str) -> Any:
     room = SimpleNamespace(id=room_id, name="Room C", description="A room")
     profile = {
         "connection_model": "session_addressable",
@@ -402,12 +402,17 @@ def _protocol_for(registry: ConnectionRegistry, room_id: str) -> Any:
 
     return SimpleNamespace(
         connections=registry,
-        event_buffer=EventBuffer(),
+        event_buffer=EventBuffer(sequence_base=0),
         agent_session_store=_AbsentSessionStore(),
         session_factory=session_factory,
         agent_store=SimpleNamespace(
             get=_returning(
-                SimpleNamespace(id=AGENT, name="agent-1", integration_profile=profile)
+                SimpleNamespace(
+                    id=AGENT,
+                    name="agent-1",
+                    integration_profile=profile,
+                    metadata_=None,
+                )
             )
         ),
         room_store=SimpleNamespace(

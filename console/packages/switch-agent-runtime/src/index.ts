@@ -26,13 +26,18 @@ export {
   type ContractRange,
 } from './artifacts';
 export {
-  BEAT_INTERVAL_MS,
+  OpenRefused,
   EVICTION_CLOSED,
   EVICTION_CREDENTIALS_REJECTED,
   EVICTION_HEARTBEAT_LAPSED,
+  EVICTION_LAUNCH_SUPERSEDED,
   EVICTION_TAKEN_OVER,
   PlacementsRefusedError,
   SwitchEventStream,
+  WORKER_CAPABILITY_OBSOLETE,
+  WorkerCallError,
+  type WorkerFrameName,
+  type WorkerIdentity,
   type ApprovalOutcome,
   type SessionCommand,
   type DeliveryFilter,
@@ -50,7 +55,7 @@ export {
   type RoomDelivery,
   type RoomReservation,
 } from './room-admission';
-export { readSse, type SseFrame } from './sse';
+export type { SocketFrame } from './event-stream';
 export type {
   AgentBridgeEvent,
   AttachmentRef,

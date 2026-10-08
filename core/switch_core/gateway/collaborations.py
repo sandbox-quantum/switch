@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Iterable
 from typing import Annotated, Literal
 
@@ -8,15 +9,24 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.bridges.collaboration.adapter import DirectorySearchBusy
 from switch_core.bridges.collaboration.lifecycle_service import (
+    BridgeClaimConflict,
     CollaborationBridgeLifecycleService,
 )
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeInstallLink,
+    BridgeStartRefused,
     DirectoryUser,
 )
-from switch_core.db.models import CollaborationBridge, ExternalUser, User
+from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.models import (
+    CollaborationBridge,
+    ExternalUser,
+    User,
+    require_tenant_id,
+)
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
@@ -171,8 +181,20 @@ async def create_bridge(
     # Admin-only: a bridge is an unowned, workspace-wide integration holding
     # platform secrets, so there is no owner to scope to (unlike connectors,
     # whose authz is owner-or-admin) — registering one is an admin action.
-    _user: Annotated[User, Depends(require_tenant_admin)],
+    user: Annotated[User, Depends(require_tenant_admin)],
 ) -> BridgeDetail:
+    # A shared bridge runs on this deployment's own app, which is in every
+    # tenant's workspaces, so it is made only by installing the app — the one
+    # path that proves the workspace is the caller's. Registered here, it
+    # would reach whichever workspace its config named.
+    if req.connection_config.get("event_delivery") == "shared":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "A shared connection is created by installing the app, not "
+                "registered here."
+            ),
+        )
     try:
         bridge = await collab_lifecycle.register(
             bridge_type=req.bridge_type,
@@ -193,8 +215,21 @@ async def create_bridge(
     is_default = bridge.is_default
     if req.set_as_default:
         await bridge_store.set_default(session, bridge.id)
-        await session.commit()
         is_default = True
+    await record_audit_event(
+        session,
+        tenant_id=bridge.tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.BRIDGE_CREATED,
+        target_type="collaboration_bridge",
+        target_id=bridge.id,
+        details={
+            "type": bridge.type,
+            "display_name": bridge.display_name,
+            "set_as_default": req.set_as_default,
+        },
+    )
+    await session.commit()
 
     return await _detail(
         bridge, room_count=0, collab_lifecycle=collab_lifecycle, is_default=is_default
@@ -210,13 +245,22 @@ async def set_default_bridge(
     collab_lifecycle: Annotated[
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
-    _user: Annotated[User, Depends(require_tenant_admin)],
+    user: Annotated[User, Depends(require_tenant_admin)],
 ) -> BridgeDetail:
     """Nominate a bridge as the instance default, demoting the previous one."""
     try:
         bridge = await bridge_store.set_default(session, bridge_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await record_audit_event(
+        session,
+        tenant_id=bridge.tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.BRIDGE_DEFAULT_SET,
+        target_type="collaboration_bridge",
+        target_id=bridge.id,
+        details=None,
+    )
     await session.commit()
 
     rooms = await room_store.get_by_bridge(session, bridge_id)
@@ -261,7 +305,7 @@ async def update_bridge(
     ],
     # Admin-only for the same reason as registering one: a bridge is an unowned,
     # workspace-wide integration, so there is no owner to scope mutation to.
-    _user: Annotated[User, Depends(require_tenant_admin)],
+    user: Annotated[User, Depends(require_tenant_admin)],
 ) -> BridgeDetail:
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
@@ -280,6 +324,40 @@ async def update_bridge(
             ),
         )
 
+    if payload.connection_config is not None:
+        current = bridge.connection_config or {}
+        merged = {**current, **payload.connection_config}
+        # How a bridge receives its events is decided by where it came from —
+        # an install, or someone's own bot — and changing it on the edit form
+        # would turn one into the other with none of what that takes.
+        if merged.get("event_delivery") != current.get("event_delivery"):
+            raise HTTPException(
+                status_code=422,
+                detail="event_delivery cannot be changed on an existing connection.",
+            )
+        # Not held across the platform's credential check; nothing is written
+        # until it passes, so a refused edit still changes nothing.
+        await session.commit()
+        try:
+            await collab_lifecycle.check_edited_connection_config(
+                bridge_id=bridge_id, bridge_type=bridge.type, connection_config=merged
+            )
+            # Asked now rather than at the restart below, so an edit that would
+            # point a shared bridge at a workspace this tenant never installed
+            # into is refused instead of stored and then failing to start.
+            await collab_lifecycle.check_start_guards(
+                bridge_id=bridge_id,
+                tenant_id=bridge.tenant_id,
+                bridge_type=bridge.type,
+                connection_config=merged,
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except BridgeStartRefused as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (BridgeClaimConflict, BridgeCredentialError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     if payload.agent_greetings_enabled is not None:
         bridge = await bridge_store.set_agent_greetings_enabled(
             session, bridge_id, payload.agent_greetings_enabled
@@ -293,14 +371,24 @@ async def update_bridge(
             session, bridge_id, payload.preconfigured
         )
     if payload.connection_config is not None:
-        merged = {**(bridge.connection_config or {}), **payload.connection_config}
-        try:
-            collab_lifecycle.validate_connection_config(bridge.type, merged)
-        except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
         bridge = await bridge_store.merge_connection_config(
             session, bridge_id, dict(payload.connection_config)
         )
+    await record_audit_event(
+        session,
+        tenant_id=bridge.tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.BRIDGE_UPDATED,
+        target_type="collaboration_bridge",
+        target_id=bridge_id,
+        details={
+            "agent_greetings_enabled": payload.agent_greetings_enabled,
+            "channel_creation_enabled": payload.channel_creation_enabled,
+            "connection_config_keys": sorted(payload.connection_config)
+            if payload.connection_config is not None
+            else None,
+        },
+    )
     await session.commit()
 
     # A running adapter holds the config it was built with, so a change only
@@ -414,6 +502,8 @@ async def search_bridge_directory(
         u.external_user_id: u
         for u in await external_user_store.get_by_bridge(session, bridge_id)
     }
+    # Not held across the platform search below.
+    await session.commit()
 
     source: Literal["directory", "known"] = "directory"
     note: str | None = None
@@ -423,6 +513,8 @@ async def search_bridge_directory(
         source = "known"
         note = str(e)
         found = _known_as_directory_users(known.values(), query)
+    except DirectorySearchBusy as e:
+        raise _search_busy(e) from e
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
@@ -483,6 +575,15 @@ def _known_as_directory_users(
     )
 
 
+def _search_busy(e: DirectorySearchBusy) -> HTTPException:
+    """A directory refusing more searches for now, as a 429 saying when to retry."""
+    return HTTPException(
+        status_code=429,
+        detail=str(e),
+        headers={"Retry-After": str(math.ceil(e.retry_after))},
+    )
+
+
 async def _require_directory_account(
     collab_lifecycle: CollaborationBridgeLifecycleService,
     *,
@@ -493,8 +594,8 @@ async def _require_directory_account(
     """Raise unless the platform's directory really lists this account.
 
     This is an existence check, not an ownership one — anyone may claim any
-    real account, deliberately. What it prevents is provisioning a Matrix
-    puppet for an id that came from nowhere: the claim body is user-supplied,
+    real account, deliberately. What it prevents is provisioning a
+    human actor for an id that came from nowhere: the claim body is user-supplied,
     and the row it creates is permanent.
 
     Only reached for an account Switch has never seen. One it has recorded is
@@ -518,6 +619,8 @@ async def _require_directory_account(
                 "seen. Send one message in the workspace, then link it."
             ),
         ) from e
+    except DirectorySearchBusy as e:
+        raise _search_busy(e) from e
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
@@ -568,7 +671,12 @@ async def claim_bridge_identity(
             status_code=403,
             detail="Only an admin may claim a messaging identity for another user",
         )
-    if await user_store.get(session, target_user_id) is None:
+    # Membership, not existence: `users` is deployment-wide, and a claim
+    # names who the account is recognised as inside this tenant.
+    if (
+        await user_store.tenant_role(session, require_tenant_id(), target_user_id)
+        is None
+    ):
         raise HTTPException(status_code=404, detail="Switch user not found")
 
     external_user = await external_user_store.get_by_external_id(
@@ -578,17 +686,19 @@ async def claim_bridge_identity(
         # Nobody has seen this person speak yet, which is the normal case right
         # after connecting a workspace. Provision the identity now rather than
         # making them post something first — but only once the platform agrees
-        # the account exists. Provisioning mints a Matrix puppet, so taking the
+        # the account exists. Provisioning mints a human actor, so taking the
         # request's word for it would let any signed-in user conjure accounts
         # for people who do not exist.
+        # Not held across the directory search or provisioning's own session.
+        await session.commit()
         await _require_directory_account(
             collab_lifecycle,
             bridge_id=bridge_id,
             external_user_id=payload.external_user_id,
             username=payload.username,
         )
-        bridge_core = collab_lifecycle.get(bridge_id)
-        if bridge_core is None:
+        collaboration_core = collab_lifecycle.get(bridge_id)
+        if collaboration_core is None:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -597,7 +707,7 @@ async def claim_bridge_identity(
                 ),
             )
         try:
-            external_user = await bridge_core.ensure_external_user(
+            external_user = await collaboration_core.ensure_external_user(
                 external_user_id=payload.external_user_id,
                 external_username=payload.username,
             )
@@ -614,6 +724,15 @@ async def claim_bridge_identity(
             )
 
     await external_user_store.claim(session, external_user, target_user_id)
+    await record_audit_event(
+        session,
+        tenant_id=external_user.tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.BRIDGE_IDENTITY_CLAIMED,
+        target_type="external_user",
+        target_id=external_user.id,
+        details={"bridge_id": bridge_id, "user_id": target_user_id},
+    )
     await session.commit()
 
     return await _identity_summary(
@@ -674,6 +793,15 @@ async def release_bridge_identity(
             status_code=404,
             detail="That user has no claim on this messaging account",
         )
+    await record_audit_event(
+        session,
+        tenant_id=external_user.tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.BRIDGE_IDENTITY_RELEASED,
+        target_type="external_user",
+        target_id=external_user.id,
+        details={"bridge_id": bridge_id, "user_id": target_user_id},
+    )
     await session.commit()
     return await _identity_summary(
         session, external_user_store, user_store, external_user
@@ -693,7 +821,7 @@ async def delete_bridge(
     ],
     # Admin-only: deleting a bridge cascades into deleting every room on it, so
     # this is the most destructive operation on the router.
-    _user: Annotated[User, Depends(require_tenant_admin)],
+    user: Annotated[User, Depends(require_tenant_admin)],
 ) -> dict[str, bool]:
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
@@ -719,8 +847,26 @@ async def delete_bridge(
         )
 
     rooms = await room_store.get_by_bridge(session, bridge_id)
+    tenant_id = bridge.tenant_id
+    details = {
+        "type": bridge.type,
+        "display_name": bridge.display_name,
+        "rooms_deleted": len(rooms),
+    }
+    # Not held across the deletes, which open their own sessions and call Matrix.
+    await session.commit()
     for room in rooms:
         await room_service.delete_room(room.id)
 
     await collab_lifecycle.remove(bridge_id)
+    await record_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.BRIDGE_DELETED,
+        target_type="collaboration_bridge",
+        target_id=bridge_id,
+        details=details,
+    )
+    await session.commit()
     return {"ok": True}

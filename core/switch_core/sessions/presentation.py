@@ -82,7 +82,7 @@ async def notification_recipient(
             return None
         actor = await db.scalar(
             members.join(Client, Client.id == ExternalUser.client_id)
-            .where(Client.matrix_user_id == actor_id)
+            .where(Client.transport_user_id == actor_id)
             .order_by(ExternalUser.id)
             .limit(1)
         )

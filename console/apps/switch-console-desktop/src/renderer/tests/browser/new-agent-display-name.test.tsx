@@ -136,14 +136,21 @@ afterEach(async () => {
 
 function Fields() {
   domForm = useConfigureAgentForm();
-  return <AgentIdentityFields form={domForm} />;
+  return <AgentIdentityFields form={domForm} serverId={null} />;
 }
 
 async function renderFields(): Promise<HTMLDivElement> {
   domContainer = document.createElement('div');
   document.body.appendChild(domContainer);
   domRoot = createRoot(domContainer);
-  await act(async () => domRoot!.render(<Fields />));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  await act(async () =>
+    domRoot!.render(
+      <QueryClientProvider client={client}>
+        <Fields />
+      </QueryClientProvider>
+    )
+  );
   return domContainer;
 }
 
@@ -157,55 +164,23 @@ async function typeName(el: HTMLElement, value: string) {
   });
 }
 
-async function typeDisplayName(el: HTMLElement, value: string) {
-  const label = [...el.querySelectorAll('label')].find((l) =>
-    /^Display name/.test(l.textContent ?? '')
-  );
-  expect(label, 'no Display name label').not.toBeUndefined();
-  const field = el.querySelector<HTMLInputElement>(`#${label!.htmlFor}`);
-  expect(field, 'no Display name input').not.toBeNull();
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-  await act(async () => {
-    setter.call(field!, value);
-    field!.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-}
-
 function suggestionButton(el: HTMLElement): HTMLButtonElement | undefined {
   return [...el.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
     /^Use\b/.test(b.textContent?.trim() ?? '')
   );
 }
 
-describe('the display name field in the DOM', () => {
-  it('renders an input labelled Display name', async () => {
+describe('the identity fields in the DOM', () => {
+  it('ask for no display name: what was typed before the slug becomes it', async () => {
     const el = await renderFields();
+    expect(
+      [...el.querySelectorAll('label')].some((l) => /^Display name/.test(l.textContent ?? ''))
+    ).toBe(false);
 
-    const label = [...el.querySelectorAll('label')].find((l) =>
-      /^Display name/.test(l.textContent ?? '')
-    );
-    expect(label, 'no Display name label').not.toBeUndefined();
-    const field = el.querySelector<HTMLInputElement>(`#${label!.htmlFor}`);
-    expect(field, 'no Display name input').not.toBeNull();
-  });
-
-  it('updates form.displayName when typed into', async () => {
-    const el = await renderFields();
-
-    await typeDisplayName(el, 'The Dev');
-
-    expect(domForm?.displayName).toBe('The Dev');
-  });
-
-  it('shows the name in the Display name input after accepting the slug', async () => {
-    const el = await renderFields();
     await typeName(el, 'Switch Dev');
     await act(async () => suggestionButton(el)!.click());
 
-    const label = [...el.querySelectorAll('label')].find((l) =>
-      /^Display name/.test(l.textContent ?? '')
-    );
-    const field = el.querySelector<HTMLInputElement>(`#${label!.htmlFor}`);
-    expect(field?.value).toBe('Switch Dev');
+    expect(domForm?.agentName).toBe('switch-dev');
+    expect(domForm?.displayName).toBe('Switch Dev');
   });
 });

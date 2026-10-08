@@ -20,7 +20,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.clients.admin_client import AdminClient
+from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.db.models import (
     Agent,
@@ -110,7 +110,7 @@ class FakeRoomService:
                 agent_ids = [name_to_id[n] for n in config.agent_names]
 
             room = Room(
-                matrix_room_id=f"!{uuid.uuid4().hex}:test.local",
+                transport_room_id=f"!{uuid.uuid4().hex}:test.local",
                 name=config.name,
                 description=config.description,
                 channel_type=config.channel_type or "channel_public",
@@ -154,7 +154,7 @@ async def _make_agent(session: AsyncSession, name: str, user_id: str) -> Agent:
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{name}:test.local",
+        transport_user_id=f"@{name}:test.local",
         display_name=name,
         type="agent",
     )
@@ -685,22 +685,22 @@ async def test_export_includes_users_from_bridge(env):
     """A bridged room with an external user in it exports that user by name."""
     sf = env["session_factory"]
     async with sf() as session:
-        bridge_client = Client(
-            matrix_user_id="@bridge:test.local",
+        workspace_consumer = Client(
+            transport_user_id="@bridge:test.local",
             display_name="bridge",
             type="collaboration_bridge",
         )
         user_client = Client(
-            matrix_user_id="@bob:test.local",
+            transport_user_id="@bob:test.local",
             display_name="bob",
             type="external_user",
         )
-        session.add_all([bridge_client, user_client])
+        session.add_all([workspace_consumer, user_client])
         await session.flush()
         bridge = CollaborationBridge(
             type="mattermost",
             display_name="Mattermost",
-            client_id=bridge_client.id,
+            client_id=workspace_consumer.id,
             status="active",
         )
         session.add(bridge)
@@ -714,7 +714,7 @@ async def test_export_includes_users_from_bridge(env):
             )
         )
         room = Room(
-            matrix_room_id="!bridged:test.local",
+            transport_room_id="!bridged:test.local",
             name="Mattermost: Bridged",
             description="d",
             channel_type="channel_public",
@@ -1170,7 +1170,7 @@ async def test_endpoint_json_body(env):
 # ── kickoff ─────────────────────────────────────────────────────────────────
 
 
-class FakeAdminClient(AdminClient):
+class FakeSystemActor(SystemActor):
     """Records platform sends; never touches a transport."""
 
     def __init__(self) -> None:  # noqa: D107 - test double, no super().__init__
@@ -1214,7 +1214,7 @@ class FakeAgentClient:
 
 
 class FakeLifecycle:
-    def __init__(self, admin: AdminClient | None) -> None:
+    def __init__(self, admin: SystemActor | None) -> None:
         self.admin = admin
         self.agent_clients: dict[str, FakeAgentClient] = {}
 
@@ -1228,7 +1228,7 @@ class FakeLifecycle:
 
 
 def _with_kickoff(
-    env, admin: AdminClient | None
+    env, admin: SystemActor | None
 ) -> tuple[RoomYamlService, FakeLifecycle]:
     lifecycle = FakeLifecycle(admin)
     svc = _svc(env)
@@ -1253,7 +1253,7 @@ kickoff: |
 async def test_provision_kickoff_posts_as_platform_on_behalf_of_creator(env):
     """The kickoff goes out through the admin client with the creator named
     in the marker, after interpolation, and the room reports no failure."""
-    admin = FakeAdminClient()
+    admin = FakeSystemActor()
     svc, _ = _with_kickoff(env, admin)
     spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
     result = await svc.provision(
@@ -1285,7 +1285,7 @@ async def test_provision_kickoff_posts_as_platform_on_behalf_of_creator(env):
 
 @pytest.mark.asyncio
 async def test_provision_kickoff_send_failure_is_reported_not_fatal(env):
-    admin = FakeAdminClient()
+    admin = FakeSystemActor()
     admin.send_error = RuntimeError("transport down")
     svc, _ = _with_kickoff(env, admin)
     spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
@@ -1302,7 +1302,7 @@ async def test_provision_kickoff_send_failure_is_reported_not_fatal(env):
 async def test_provision_kickoff_none_event_id_is_a_failure(env):
     """The admin client answers None when the send did not happen; that is a
     failure, not a silent success."""
-    admin = FakeAdminClient()
+    admin = FakeSystemActor()
     admin.send_returns = None
     svc, _ = _with_kickoff(env, admin)
     spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
@@ -1318,7 +1318,7 @@ async def test_provision_kickoff_none_event_id_is_a_failure(env):
 async def test_provision_kickoff_waits_for_agents_and_reports_the_late(env):
     """An agent whose client has not joined by the timeout is named in the
     failure; the kickoff is still posted for the ones that did."""
-    admin = FakeAdminClient()
+    admin = FakeSystemActor()
     svc, lifecycle = _with_kickoff(env, admin)
     async with env["session_factory"]() as session:
         agent = await AgentStore().get_by_name(session, "claude-code.alice")
@@ -1335,7 +1335,7 @@ async def test_provision_kickoff_waits_for_agents_and_reports_the_late(env):
 
 @pytest.mark.asyncio
 async def test_provision_kickoff_not_posted_when_platform_never_joins(env):
-    admin = FakeAdminClient()
+    admin = FakeSystemActor()
     admin.joined = False
     svc, _ = _with_kickoff(env, admin)
     spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
@@ -1364,7 +1364,7 @@ async def test_provision_kickoff_without_admin_client_is_reported(env):
 
 @pytest.mark.asyncio
 async def test_provision_without_kickoff_posts_nothing(env):
-    admin = FakeAdminClient()
+    admin = FakeSystemActor()
     svc, _ = _with_kickoff(env, admin)
     spec, kickoff = svc.parse("room:\n  name: quiet\n  description: d\n")
     assert kickoff is None
@@ -1386,22 +1386,22 @@ async def _seed_bridge_with_claim(
     """A bridge, an external user on it, and optionally a claim. Returns the
     bridge id."""
     async with session_factory() as session:
-        bridge_client = Client(
-            matrix_user_id=f"@bridge-{display_name.lower()}:test.local",
+        workspace_consumer = Client(
+            transport_user_id=f"@bridge-{display_name.lower()}:test.local",
             display_name=display_name,
             type="collaboration_bridge",
         )
         user_client = Client(
-            matrix_user_id=f"@{external_username}-{display_name.lower()}:test.local",
+            transport_user_id=f"@{external_username}-{display_name.lower()}:test.local",
             display_name=external_username,
             type="external_user",
         )
-        session.add_all([bridge_client, user_client])
+        session.add_all([workspace_consumer, user_client])
         await session.flush()
         bridge = CollaborationBridge(
             type="slack",
             display_name=display_name,
-            client_id=bridge_client.id,
+            client_id=workspace_consumer.id,
             status="active",
             is_default=is_default,
         )

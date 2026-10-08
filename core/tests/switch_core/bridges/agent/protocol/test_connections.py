@@ -1,4 +1,4 @@
-"""Connection lifecycle, room slots and liveness (CHOO-1857)."""
+"""AgentConnection lifecycle, room slots and liveness (CHOO-1857)."""
 
 from __future__ import annotations
 
@@ -6,16 +6,16 @@ import time
 
 import pytest
 
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     FENCED_PROTOCOL_REVISION,
     HEARTBEAT_LAPSED,
     HEARTBEAT_TTL_SECONDS,
     MAX_CONNECTIONS_PER_AGENT,
     PROTOCOL_ACCEPTS,
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
     Closure,
-    ConnectionRegistry,
     NoStreamAttachedError,
     ProtocolVersionError,
     RoomOccupiedError,
@@ -33,7 +33,7 @@ ROOM_B = "room-b"
 
 
 def _open(
-    registry: ConnectionRegistry,
+    registry: AgentConnectionRegistry,
     connection_id: str,
     *,
     agent_id: str = AGENT,
@@ -57,7 +57,7 @@ def _open(
 
 
 def test_open_is_idempotent_for_the_same_id() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     first = _open(registry, "c1")
     second = _open(registry, "c1")
 
@@ -66,7 +66,7 @@ def test_open_is_idempotent_for_the_same_id() -> None:
 
 
 def test_reopening_bumps_the_generation_so_the_old_stream_can_stand_down() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
     generation = conn.stream_generation
 
@@ -75,7 +75,7 @@ def test_reopening_bumps_the_generation_so_the_old_stream_can_stand_down() -> No
 
 
 def test_another_agent_cannot_attach_to_a_connection_id() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     _open(registry, "c1")
 
     with pytest.raises(UnknownConnectionError):
@@ -83,7 +83,7 @@ def test_another_agent_cannot_attach_to_a_connection_id() -> None:
 
 
 def test_incompatible_protocol_is_refused() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     with pytest.raises(ProtocolVersionError):
         registry.open(
             agent_id=AGENT,
@@ -98,7 +98,10 @@ def test_incompatible_protocol_is_refused() -> None:
 
 
 def _open_declaring(
-    registry: ConnectionRegistry, declaration: ClientDeclaration, *, cid: str = "c1"
+    registry: AgentConnectionRegistry,
+    declaration: ClientDeclaration,
+    *,
+    cid: str = "c1",
 ):
     return registry.open(
         agent_id=AGENT,
@@ -118,7 +121,7 @@ def test_a_client_that_declares_nothing_is_admitted_as_unknown() -> None:
     Refusing on silence would lock out every client built before there was
     anything to say, and Part 1 of CHOO-1865 refuses nobody.
     """
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open_declaring(registry, ClientDeclaration())
 
     assert conn.declaration.declares_protocol is False
@@ -133,7 +136,7 @@ def test_a_client_declaring_only_speaks_is_read_as_a_single_revision() -> None:
 
 
 def test_overlapping_ranges_are_admitted() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open_declaring(
         registry,
         ClientDeclaration(speaks=PROTOCOL_VERSION + 3, accepts=PROTOCOL_ACCEPTS),
@@ -143,7 +146,7 @@ def test_overlapping_ranges_are_admitted() -> None:
 
 
 def test_a_client_whose_ceiling_is_below_the_server_floor_is_refused() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     with pytest.raises(ProtocolVersionError) as excinfo:
         _open_declaring(
             registry,
@@ -157,7 +160,7 @@ def test_a_client_whose_ceiling_is_below_the_server_floor_is_refused() -> None:
 
 
 def test_a_client_whose_floor_is_above_the_server_ceiling_is_refused() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     with pytest.raises(ProtocolVersionError) as excinfo:
         _open_declaring(
             registry,
@@ -176,7 +179,7 @@ def test_a_reattach_replaces_the_declaration() -> None:
 
     A client can be upgraded and reattach to the same connection id.
     """
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     _open_declaring(
         registry, ClientDeclaration(speaks=PROTOCOL_VERSION, version="1.0.0")
     )
@@ -188,7 +191,7 @@ def test_a_reattach_replaces_the_declaration() -> None:
 
 
 def test_connection_cap_is_enforced_loudly() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     for i in range(MAX_CONNECTIONS_PER_AGENT):
         _open(registry, f"c{i}")
 
@@ -200,7 +203,7 @@ def test_connection_cap_is_enforced_loudly() -> None:
 
 
 def test_losing_the_stream_does_not_kill_the_connection() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
     registry.claim_room(conn, ROOM_A)
 
@@ -212,7 +215,7 @@ def test_losing_the_stream_does_not_kill_the_connection() -> None:
 
 
 def test_a_beat_without_a_stream_is_rejected() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
     registry.detach_stream(conn, conn.stream_generation)
 
@@ -223,7 +226,7 @@ def test_a_beat_without_a_stream_is_rejected() -> None:
 
 
 def test_a_stale_heartbeat_kills_the_connection_even_with_a_stream() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
     assert conn.stream_attached
 
@@ -235,7 +238,7 @@ def test_a_stale_heartbeat_kills_the_connection_even_with_a_stream() -> None:
 
 
 def test_a_superseded_stream_cannot_clear_the_flag_of_its_replacement() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
     stale_generation = conn.stream_generation
 
@@ -246,7 +249,7 @@ def test_a_superseded_stream_cannot_clear_the_flag_of_its_replacement() -> None:
 
 
 def test_beat_advances_the_cursor_but_never_rewinds_it() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
     current = conn.stream_generation
 
@@ -255,7 +258,7 @@ def test_beat_advances_the_cursor_but_never_rewinds_it() -> None:
 
 
 def test_a_beat_for_a_superseded_incarnation_is_refused() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
     displaced = conn.stream_generation
 
@@ -269,7 +272,7 @@ def test_a_beat_for_a_superseded_incarnation_is_refused() -> None:
 
 
 def test_a_refused_beat_leaves_the_winners_cursor_where_it_was() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
     displaced = conn.stream_generation
     winner = _open(registry, "c1")
@@ -288,7 +291,7 @@ def test_a_refused_beat_leaves_the_winners_cursor_where_it_was() -> None:
 
 
 def test_a_refused_beat_does_not_keep_the_connection_alive() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
     displaced = conn.stream_generation
     winner = _open(registry, "c1")
@@ -304,7 +307,7 @@ def test_a_refused_beat_does_not_keep_the_connection_alive() -> None:
 
 
 def test_a_beat_from_a_client_that_cannot_be_fenced_is_accepted() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     _open(registry, "c1", speaks=None)
     _open(registry, "c1", speaks=None)
 
@@ -314,7 +317,7 @@ def test_a_beat_from_a_client_that_cannot_be_fenced_is_accepted() -> None:
 
 
 def test_a_client_declaring_the_revision_before_the_fence_ticks_unfenced() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     _open(registry, "c1", speaks=FENCED_PROTOCOL_REVISION - 1)
 
     # The server still accepts revision 1, and that revision has no incarnation
@@ -324,7 +327,7 @@ def test_a_client_declaring_the_revision_before_the_fence_ticks_unfenced() -> No
 
 
 def test_a_holder_that_carries_an_incarnation_may_not_tick_without_one() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
     conn.cursor = 4
 
@@ -340,7 +343,7 @@ def test_a_holder_that_carries_an_incarnation_may_not_tick_without_one() -> None
 
 
 def test_what_a_connection_cannot_be_fenced_by_follows_its_current_holder() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     _open(registry, "c1", speaks=None)
 
     # A reattach replaces the declaration, so an id first opened by a client
@@ -364,7 +367,7 @@ def test_a_connection_accumulates_the_rooms_claimed_on_it() -> None:
     it: clearing here would mean a second session connecting silently
     unsubscribed the first.
     """
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(registry, "c1", scope="single")
 
     registry.claim_room(conn, ROOM_A)
@@ -376,7 +379,7 @@ def test_a_connection_accumulates_the_rooms_claimed_on_it() -> None:
 
 
 def test_a_second_connection_cannot_take_a_claimed_room() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     first = _open(registry, "c1")
     registry.claim_room(first, ROOM_A)
 
@@ -386,7 +389,7 @@ def test_a_second_connection_cannot_take_a_claimed_room() -> None:
 
 
 def test_takeover_evicts_the_incumbent() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     first = _open(registry, "c1")
     registry.claim_room(first, ROOM_A)
     second = _open(registry, "c2")
@@ -399,7 +402,7 @@ def test_takeover_evicts_the_incumbent() -> None:
 
 
 def test_all_scope_covers_rooms_no_session_has_claimed() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     daemon = _open(registry, "daemon", scope="all", delivery_filter="addressed")
 
     assert registry.covers(daemon, ROOM_A)
@@ -407,7 +410,7 @@ def test_all_scope_covers_rooms_no_session_has_claimed() -> None:
 
 
 def test_all_scope_goes_fully_dark_on_a_claimed_room() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     daemon = _open(registry, "daemon", scope="all", delivery_filter="addressed")
     session = _open(registry, "session", scope="single")
     registry.claim_room(session, ROOM_A)
@@ -419,7 +422,7 @@ def test_all_scope_goes_fully_dark_on_a_claimed_room() -> None:
 
 
 def test_coverage_returns_to_the_daemon_when_the_session_goes() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     daemon = _open(registry, "daemon", scope="all")
     session = _open(registry, "session", scope="single")
     registry.claim_room(session, ROOM_A)
@@ -440,7 +443,7 @@ def test_a_removal_takes_the_room_off_every_connection_of_that_agent() -> None:
     session that claimed a room the agent has since been removed from keeps
     covering it for the life of its stream.
     """
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     session = _open(registry, "session", scope="single")
     other = _open(registry, "other", scope="single")
     registry.claim_room(session, ROOM_A)
@@ -454,7 +457,7 @@ def test_a_removal_takes_the_room_off_every_connection_of_that_agent() -> None:
 
 
 def test_a_removal_does_not_touch_another_agents_claim() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     mine = _open(registry, "c1")
     theirs = _open(registry, "c2", agent_id=OTHER_AGENT)
     registry.claim_room(mine, ROOM_A)
@@ -468,7 +471,7 @@ def test_a_removal_does_not_touch_another_agents_claim() -> None:
 
 def test_a_removal_reaches_a_connection_whose_heartbeat_has_lapsed() -> None:
     """A lapsed connection still holds its claim, and can be reconnected to."""
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(registry, "c1")
     registry.claim_room(conn, ROOM_A)
     conn.last_beat = time.monotonic() - HEARTBEAT_TTL_SECONDS - 1
@@ -480,7 +483,7 @@ def test_a_removal_reaches_a_connection_whose_heartbeat_has_lapsed() -> None:
 
 
 def test_rooms_of_one_agent_do_not_block_another() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     mine = _open(registry, "c1")
     registry.claim_room(mine, ROOM_A)
 
@@ -503,7 +506,7 @@ class TestAReattachCanBeFenced:
     """
 
     def test_the_holder_reattaches_and_the_incarnation_moves_on(self) -> None:
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         conn = _open(registry, "c1")
 
         before = conn.stream_generation
@@ -512,7 +515,7 @@ class TestAReattachCanBeFenced:
         assert conn.stream_generation != before
 
     def test_a_claim_on_a_superseded_incarnation_is_refused(self) -> None:
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         conn = _open(registry, "c1")
         displaced = conn.stream_generation
         _open(registry, "c1")
@@ -530,7 +533,7 @@ class TestAReattachCanBeFenced:
         the declaration would hand the loser a way to disrupt the winner
         without ever taking the connection from it.
         """
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         conn = _open(registry, "c1")
         displaced = conn.stream_generation
         _open(registry, "c1", speaks=PROTOCOL_VERSION)
@@ -552,7 +555,7 @@ class TestAReattachCanBeFenced:
         It is how a supervisor adopts a session's connection, and how every
         client built before the check attaches. Both are unconditional.
         """
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         conn = _open(registry, "c1")
         _open(registry, "c1")
 
@@ -567,7 +570,7 @@ class TestAReattachCanBeFenced:
         Refusing here would strand every client that outlived the process:
         there is no holder to protect, so there is nothing to take away.
         """
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
 
         conn = _open(registry, "c1", expected_generation=4)
 
@@ -585,7 +588,7 @@ class TestAReattachCanBeFenced:
         evict the client that legitimately opened it — the takeover the fence
         exists to refuse, let through by arithmetic.
         """
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         stale = _open(registry, "c1").stream_generation
         registry.close("c1", HEARTBEAT_LAPSED)
 
@@ -609,14 +612,14 @@ class TestLiveConnectionIds:
     """
 
     def test_reports_connection_ids_not_agent_ids(self) -> None:
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         _open(registry, "c1")
         _open(registry, "c2")
 
         assert registry.live_connection_ids() == {"c1", "c2"}
 
     def test_a_dead_connection_is_not_reported(self) -> None:
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         conn = _open(registry, "c1")
         _open(registry, "c2")
 

@@ -20,8 +20,8 @@ import tempfile
 from pathlib import Path
 
 DOCS_REPO_URL = "https://github.com/sandbox-quantum/docs"
-PRODUCT = "Switch"
-SOURCE_PREFIX = "flintai/switch/"
+PRODUCT = "Switch Rooms"
+SOURCE_PREFIX = "switch-rooms/"
 SITE_BASE = "https://docs.flintai.dev"
 
 # Components whose body is kept and whose wrapper is dropped.

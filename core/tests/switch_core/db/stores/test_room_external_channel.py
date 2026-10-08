@@ -23,7 +23,7 @@ NEW_ID = "-1009876543210"
 
 async def _make_bridge(session: AsyncSession, name: str) -> CollaborationBridge:
     client = Client(
-        matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+        transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
         display_name=f"{name} client",
         type="bridge",
     )
@@ -52,7 +52,7 @@ async def _make_room(
     return await store.create(
         session,
         Room(
-            matrix_room_id=f"!{name}:test",
+            transport_room_id=f"!{name}:test",
             name=name,
             description=f"{name} desc",
             bridge_id=bridge_id,

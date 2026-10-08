@@ -1,9 +1,10 @@
 """Validation for an agent's icon URL (CHOO-2171).
 
 Switch stores a link to an agent's icon, never the image bytes. The picture may
-come from a generated-avatar service, an operator's own host, or anywhere else
-the client chooses — core does not care, and deliberately knows nothing about
-any provider.
+come from an operator's own host or anywhere else the client chooses; an agent
+created without one gets a generated robot (`generated_icon_url`), the same set
+every client offers, so it looks alike in the gateway, Console and every
+platform.
 
 That makes the URL attacker-controlled input with two distinct consumers, and
 the rules below exist for the second one:
@@ -129,6 +130,32 @@ def default_icon_url(agent_name: str, *, image_format: str | None = None) -> str
     name = quote(agent_name).replace("_", "+")
     url = f"https://ui-avatars.com/api/?name={name}&background=random&size=128"
     return f"{url}&format={image_format}" if image_format else url
+
+
+# Generated icons. The URL is all Switch stores; the picture is DiceBear's
+# "bottts" robot, raster because Slack, Discord and Mattermost render no SVG,
+# and pinned to a major version because the drawing changes between majors.
+_GENERATED_ICON_BASE = "https://api.dicebear.com/9.x/bottts/png"
+_GENERATED_ICON_PIXELS = 256
+GENERATED_ICON_CHOICES = 10
+
+
+def generated_icon_url(seed: str) -> str:
+    """The generated robot icon for `seed`: the same seed always draws the same robot."""
+    return f"{_GENERATED_ICON_BASE}?seed={quote(seed, safe='')}&size={_GENERATED_ICON_PIXELS}"
+
+
+def generated_icon_choices(agent_name: str, page: int) -> list[str]:
+    """One page of icons to choose from for an agent called `agent_name`.
+
+    Page 0 leads with the icon its name generates, which is what a new agent
+    gets when nobody picks one; every page is the same each time it is asked
+    for, so a picker does not reshuffle under the person choosing.
+    """
+    seeds = [f"{agent_name}-{page}-{index}" for index in range(GENERATED_ICON_CHOICES)]
+    if page == 0:
+        seeds = [agent_name, *seeds[: GENERATED_ICON_CHOICES - 1]]
+    return [generated_icon_url(seed) for seed in seeds]
 
 
 def normalise_icon_url(url: str | None) -> str | None:

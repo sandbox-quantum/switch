@@ -52,6 +52,13 @@ CONTEXT_FIELDS: tuple[str, ...] = (
     "agent_id",
     "room_id",
     "user_id",
+    "console_id",
+    "console_name",
+    # Which bridge a line belongs to ("collaboration" or "agent"), and for a
+    # collaboration bridge its platform. Log prefixes like [BRIDGE-IN] stay;
+    # these say which side, as fields a search can filter on.
+    "bridge",
+    "platform",
 )
 
 
@@ -62,6 +69,12 @@ class LogContext:
     agent_id: str | None = None
     room_id: str | None = None
     user_id: str | None = None
+    # The Switch Console that sent the request (see `request_context.py`):
+    # people can share one sign-in, so `user_id` alone cannot tell them apart.
+    console_id: str | None = None
+    console_name: str | None = None
+    bridge: str | None = None
+    platform: str | None = None
 
 
 _EMPTY = LogContext()
@@ -161,8 +174,9 @@ class LogContextFilter(logging.Filter):
         record.tenant_id = (
             context.tenant_id or current_tenant_id() or self._default_tenant_id
         )
-        record.request_id = context.request_id
-        record.agent_id = context.agent_id
-        record.room_id = context.room_id
-        record.user_id = context.user_id
+        # Every other field by name, so a field added to CONTEXT_FIELDS
+        # reaches the formatters without a second edit here.
+        for name in CONTEXT_FIELDS:
+            if name != "tenant_id":
+                setattr(record, name, getattr(context, name))
         return True

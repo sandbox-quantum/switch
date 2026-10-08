@@ -23,7 +23,8 @@ The schema is defined in `apps/switch-console-desktop/src/main/db/schema.ts`.
 | **session** | `conversation` | One instantiation/run of an agent. The unit shown under an agent in the sidebar. |
 | **message** | `message` | A message in a session (was keyed by `conversationId`, now `sessionId`). |
 | *(removed)* | `session` (worktree-era) | The upstream parallel-run grouping. Removed — Switch Console runs every session in the location's directory, so the grouping layer is gone. |
-| *(removed)* | `workspace` | The upstream execution-location abstraction (worktree / SSH / BYOI remote). Removed — see below. |
+| *(removed)* | `workspace` | The upstream execution-location abstraction (worktree / SSH / BYOI remote). Removed — see below. Switch Console has a `workspaces` table again, but it names something unrelated: a tenant on a Switch server. |
+| **workspace** | *(none)* — new | A tenant on a Switch server, and what the window is scoped to. An agent belongs to one; every gateway call is made in its name. The table is `workspaces`. |
 
 ### Tables with no upstream equivalent
 
@@ -32,6 +33,7 @@ These carry the Switch- and remote-specific state that upstream had no concept o
 | Table | What it is |
 |---|---|
 | `switch_servers` | A Switch server Switch Console talks to, managed or external. |
+| `workspaces` | A tenant on one of those servers. Registering a server creates its first, tenant-less and named after the server. Agents reference it, and the active selection (`kv`, `activeWorkspaceId`) names one. |
 | `remote_hosts` | An SSH host (keyed by its `~/.ssh/config` alias) that can run agents. |
 | `remote_host_reachability` | The last observed reachability of a host. Separate from the host record so a probe result never masquerades as configuration — see the reachability note below. |
 | `remote_host_setup_plans` | A host's onboarding plan (CHOO-1809). See "Remote host setup". |
@@ -52,6 +54,11 @@ location  (a working directory, local or on an SSH host)
 A location that lives on an SSH host references a `remote_hosts` row; that host carries
 its own reachability and setup-plan rows alongside, not inside, the location hierarchy.
 
+An agent also references the workspace it belongs to, which is not part of this
+hierarchy: a location is where an agent runs, a workspace is who it runs as. One
+directory can hold agents belonging to different workspaces, and a workspace's
+agents can be spread across directories and hosts.
+
 A session's room connection is a row keyed by `session_id` with
 `ON DELETE CASCADE`, so it cannot outlive the session (or the agent above it).
 It was previously a JSON blob in `app_settings`, which referenced nothing and so
@@ -60,12 +67,14 @@ agents whose Switch server had been destroyed.
 
 ## What we deliberately dropped from upstream, and why
 
-- **The `workspaces` table and the workspace abstraction.** Upstream modelled
+- **The upstream workspace abstraction.** (Not to be confused with Switch
+  Console's own `workspaces` table above, which reuses the name for a tenant on
+  a Switch server and has nothing to do with this.) Upstream modelled
   *where* a session runs (git worktree, project-SSH, BYOI remote). Switch Console had
   already gutted this before the rework — `workspace-config` reached v3 with the
   note *"Switch Console has no git worktrees, branches, PRs, or BYOI: every session
   runs in the project root directory."* A workspace was therefore just "the
-  project directory" plus lifecycle scripts. We dropped the table (and
+  project directory" plus lifecycle scripts. We dropped it (and
   `project.repositoryWorkspaceId` / `session.workspaceId`) and keep lifecycle
   scripts / fs access as a service hung off the location's directory.
 

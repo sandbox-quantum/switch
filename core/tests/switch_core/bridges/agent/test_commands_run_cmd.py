@@ -192,7 +192,7 @@ def _event(args: str) -> CommandEvent:
 def _fake_client(*, role_exists: bool) -> SimpleNamespace:
     sent: list[str] = []
 
-    async def _resolve_room_meta(_matrix_room_id: str):  # type: ignore[no-untyped-def]
+    async def _resolve_room_meta(_transport_room_id: str):  # type: ignore[no-untyped-def]
         return SimpleNamespace(room_id="room-1", name="Feature Room", bridge_id=None)
 
     async def _agent_get(_session, _agent_id):  # type: ignore[no-untyped-def]

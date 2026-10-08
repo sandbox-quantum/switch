@@ -8,16 +8,17 @@ import { PRODUCT_NAME } from '@shared/app-identity';
 import { registerRPCRouter } from '@shared/lib/ipc/rpc';
 import { flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
 import { setupApplicationMenu } from './app/menu';
-import { registerAppScheme, setupAppProtocol } from './app/protocol';
+import { APP_ORIGIN, registerAppScheme, setupAppProtocol } from './app/protocol';
 import { createMainWindow, getMainWindow } from './app/window';
+import { startAutoMigration, stopAutoMigration } from './core/agent-migration/agent-migration';
 import { bridgeAgentEventsToRenderer } from './core/agents/agent-events-renderer-bridge';
 import { setAgentStorageMigrationReady } from './core/agents/agent-storage-migration-ready';
 import { migrateAgentStorage } from './core/agents/migrate-agent-storage';
 import { initializeRemoteDiscovery, initializeRemoteWatchers } from './core/agents/remote-watcher';
-import { resolveAgentServers } from './core/agents/resolve-servers';
 import { appService } from './core/app/service';
 import { controlService } from './core/control-api/control-service';
 import { localDependencyManager } from './core/dependencies/dependency-managers';
+import { embeddedControllerService } from './core/embedded-controller/embedded-controllers';
 import { locationManager } from './core/locations/location-manager';
 import { locationSettingsService } from './core/locations/settings/location-settings-service';
 import { localServerService } from './core/managed-switch-server/local-server-service';
@@ -33,10 +34,13 @@ import { searchService } from './core/search/search-service';
 import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
+import { currentInternalFlag } from './core/telemetry/internal-account';
+import { readThisLaunch, reportLaunch } from './core/telemetry/launch-history';
 import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
-import { trackEvent } from './core/telemetry/telemetry-service';
+import { telemetryService } from './core/telemetry/telemetry-service';
 import { updateService } from './core/updates/update-service';
 import { viewStateService } from './core/view-state/view-state-service';
+import { reconcileAllWorkspaces } from './core/workspaces/reconcile-workspaces';
 import { initializeDatabase } from './db/initialize';
 import { logAppExit, logAppStart, registerAppDiagnostics } from './lib/app-diagnostics';
 import {
@@ -143,13 +147,8 @@ void app.whenReady().then(async () => {
   // After the settings store, which owns the consent gate every event asks
   // before it is sent, and never before the database it is read from.
   registerTelemetryListeners();
-  trackEvent('app_launched', {});
-
-  try {
-    await resolveAgentServers();
-  } catch (e) {
-    log.warn('switch-agents: failed to reconcile agent → server links at boot', { error: e });
-  }
+  telemetryService.setInternalSource(currentInternalFlag);
+  void reportLaunch(readThisLaunch);
 
   // Kept off the boot path: this can open an SSH/SFTP connection per remote
   // agent, so awaiting it here delayed the window opening. Session relaunch below
@@ -163,16 +162,43 @@ void app.whenReady().then(async () => {
     log.error('Failed to start control API service:', e);
   });
 
-  registerRPCRouter(rpcRouter, ipcMain, withRPCLogContext);
+  const rendererURL = new URL(
+    import.meta.env.DEV ? process.env.ELECTRON_RENDERER_URL! : APP_ORIGIN
+  );
+  registerRPCRouter(
+    rpcRouter,
+    ipcMain,
+    (event) => {
+      const contents = getMainWindow()?.webContents;
+      if (!contents || event.sender !== contents || event.senderFrame !== contents.mainFrame)
+        return false;
+      const senderURL = new URL(event.senderFrame.url);
+      return senderURL.protocol === rendererURL.protocol && senderURL.host === rendererURL.host;
+    },
+    withRPCLogContext
+  );
 
   void reconcileResourceSampler();
 
   // Reflect a managed local Switch stack that survived the last quit, so the UI
   // shows it running without the user restarting it.
-  void localServerService.initialize();
+  const localServerReady = localServerService.initialize();
   // Re-establish desktop-side forwards for remote-managed stacks that survived
   // the last quit, restoring their reachability from this machine.
-  void remoteServerService.initialize();
+  const remoteServerReady = remoteServerService.initialize();
+
+  // A server registered before its account's memberships were known carries one
+  // tenant-less workspace; this is what gives it its tenant, and what notices a
+  // membership added or withdrawn since the last launch. It runs after the two
+  // services above because they are what make a stack that survived the last
+  // quit report itself as running — before them every managed server still
+  // looks stopped and would be passed over. Unawaited: it talks to every
+  // signed-in server, and the window must not wait on any of them.
+  void Promise.allSettled([localServerReady, remoteServerReady])
+    .then(reconcileAllWorkspaces)
+    .catch((error: unknown) => {
+      log.error('Workspace reconcile could not run; every server was left as it was:', error);
+    });
 
   const dependenciesReady = localDependencyManager.probeAll().catch((e: unknown) => {
     log.error('Failed to probe dependencies:', e);
@@ -218,6 +244,16 @@ void app.whenReady().then(async () => {
     } catch (e) {
       log.error('Failed to initialise remote watchers at startup:', e);
     }
+    // The managed agents this computer runs for a server, through the embedded
+    // agents controller. After the dependency probe, like the watchers above:
+    // the controller resolves provider CLIs from the same environment.
+    try {
+      await embeddedControllerService.initialize();
+    } catch (e) {
+      log.error('Failed to start the embedded agents controllers at startup:', e);
+    }
+    // After the controllers: moving an agent onto this computer's controller needs it running.
+    startAutoMigration();
   });
 
   // A laptop waking from sleep usually has stale (frozen) SSH sockets to remote
@@ -252,6 +288,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   logAppExit('before-quit');
   controlService.dispose();
+  stopAutoMigration();
   stopResourceSampler();
   localServerService.dispose();
   remoteServerService.dispose();
@@ -259,14 +296,20 @@ app.on('before-quit', (event) => {
   void (async () => {
     // Locally hosted watchers and sessions are Console's own children. Stop them
     // before exiting, bounded so a stuck host cannot keep Console from quitting.
-    await Promise.race([
-      autoSessionWatcher.dispose(),
-      delay(LOCAL_HOST_SHUTDOWN_MS).then(() =>
-        log.warn('Local SDK hosts did not stop in time; they may outlive Console.')
-      ),
-    ]).catch((e) => {
-      log.error('Failed to stop local SDK hosts:', e);
-    });
+    await Promise.all([
+      Promise.race([
+        autoSessionWatcher.dispose(),
+        delay(LOCAL_HOST_SHUTDOWN_MS).then(() =>
+          log.warn('Local SDK hosts did not stop in time; they may outlive Console.')
+        ),
+      ]).catch((e) => {
+        log.error('Failed to stop local SDK hosts:', e);
+      }),
+      // The embedded agents controllers stop, and their agents and sessions with them.
+      embeddedControllerService.dispose().catch((e) => {
+        log.error('Failed to stop the embedded agents controllers:', e);
+      }),
+    ]);
     await locationManager.dispose().catch((e) => {
       log.error('Failed to shutdown location manager:', e);
     });

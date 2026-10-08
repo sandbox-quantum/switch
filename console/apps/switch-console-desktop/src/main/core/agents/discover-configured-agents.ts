@@ -1,13 +1,14 @@
 import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { getLocationByHostDir } from '@main/core/locations/store';
 import { listPlugins } from '@main/core/providers/plugin-registry';
+import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import {
   isValidProviderId,
   type AgentProviderId,
 } from '@shared/core/providers/agent-provider-registry';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
-import { getLocationAgentsOnServer } from './getAgents';
+import { resolveWorkdirFsFor } from './agent-workdir-fs';
+import { getLocationAgentsInWorkspace } from './getAgents';
 import { SWITCH_AGENTS_DIR_RELATIVE } from './switch-settings-paths';
 
 /** How an agent's provider was inferred, so the UI can say whether to trust it. */
@@ -73,13 +74,13 @@ function parseCredentialIdentity(raw: string | null, name: string): CredentialId
  * concept at all. Built once per scan: each provider answers with its own
  * discovery rather than this module hardcoding any provider's on-disk layout.
  */
-async function definitionOwners(workspaceFs: PluginFs): Promise<Map<string, AgentProviderId>> {
+async function definitionOwners(workdirFs: PluginFs): Promise<Map<string, AgentProviderId>> {
   const owners = new Map<string, AgentProviderId>();
   for (const plugin of listPlugins()) {
     const behavior = plugin.behavior.repoAgents;
     if (!behavior) continue;
     try {
-      for (const def of await behavior.discoverDefinitions(workspaceFs)) {
+      for (const def of await behavior.discoverDefinitions(workdirFs)) {
         if (!owners.has(def.name) && isValidProviderId(plugin.metadata.id)) {
           owners.set(def.name, plugin.metadata.id);
         }
@@ -118,26 +119,29 @@ export async function discoverConfiguredAgents(params: {
    * attached here already and still be attachable to another (CHOO-2044). */
   serverId: string;
 }): Promise<DiscoveredConfiguredAgent[]> {
+  const targetWorkspace = await requireWorkspaceForServer(params.serverId);
   const location = await getLocationByHostDir(params.sshHost, params.dir);
   const existing = location
-    ? new Set((await getLocationAgentsOnServer(location.id, params.serverId)).map((a) => a.name))
+    ? new Set(
+        (await getLocationAgentsInWorkspace(location.id, targetWorkspace.id)).map((a) => a.name)
+      )
     : new Set<string>();
 
-  const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
+  const workdir = await resolveWorkdirFsFor(params.sshHost, params.dir);
   try {
-    const names = (await workspace.fs.list(SWITCH_AGENTS_DIR_RELATIVE))
+    const names = (await workdir.fs.list(SWITCH_AGENTS_DIR_RELATIVE))
       .filter((entry) => entry.endsWith('.json'))
       .map((entry) => entry.slice(0, -'.json'.length))
       .filter((name) => name.length > 0)
       .sort((a, b) => a.localeCompare(b));
     if (names.length === 0) return [];
 
-    const owners = await definitionOwners(workspace.fs);
+    const owners = await definitionOwners(workdir.fs);
 
     const discovered: DiscoveredConfiguredAgent[] = [];
     for (const name of names) {
       const identity = parseCredentialIdentity(
-        await workspace.fs.read(`${SWITCH_AGENTS_DIR_RELATIVE}/${name}.json`),
+        await workdir.fs.read(`${SWITCH_AGENTS_DIR_RELATIVE}/${name}.json`),
         name
       );
       if (!identity) continue;
@@ -156,6 +160,6 @@ export async function discoverConfiguredAgents(params: {
     }
     return discovered;
   } finally {
-    workspace.close();
+    workdir.close();
   }
 }

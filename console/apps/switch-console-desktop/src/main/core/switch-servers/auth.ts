@@ -1,11 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { err, ok, type Result } from '@switch-console/shared';
 import { BrowserWindow, session as electronSession } from 'electron';
+import { z } from 'zod';
 import { LOCAL_SERVER_ADMIN_EMAIL } from '@main/core/managed-switch-server/constants';
 import { managedServerSecretsKey } from '@main/core/managed-switch-server/host/host-for-server';
-import { loadOrCreateSecrets } from '@main/core/managed-switch-server/secrets';
+import { readSecrets } from '@main/core/managed-switch-server/secrets';
 import { log } from '@main/lib/logger';
-import type { SwitchServer, SwitchUser } from '@shared/core/switch-servers/switch-servers';
+import type {
+  SignupResult,
+  SwitchServer,
+  SwitchUser,
+} from '@shared/core/switch-servers/switch-servers';
+import { consoleIdentityHeaders } from './console-identity';
 import { getSessionCookie, setSessionCookie } from './servers-store';
 
 const SWITCH_AUTH_COOKIE = 'switch_auth';
@@ -21,7 +27,7 @@ function gatewayUrl(server: SwitchServer, path: string): string {
 }
 
 /** Pull the `switch_auth` value out of the response's Set-Cookie headers. */
-function extractAuthCookie(setCookies: string[]): string | null {
+export function extractAuthCookie(setCookies: string[]): string | null {
   for (const raw of setCookies) {
     const [pair] = raw.split(';');
     const eq = pair.indexOf('=');
@@ -31,6 +37,62 @@ function extractAuthCookie(setCookies: string[]): string | null {
     }
   }
   return null;
+}
+
+export type SignupError =
+  | { kind: 'disabled'; message: string }
+  | { kind: 'email_taken'; message: string }
+  | { kind: 'invalid'; message: string }
+  | { kind: 'rate_limited'; message: string }
+  | { kind: 'failed'; message: string };
+
+type TransportError = { kind: 'failed'; message: string };
+
+async function postCredentials(
+  server: SwitchServer,
+  path: string,
+  body: Record<string, string>
+): Promise<Result<Response, TransportError>> {
+  const identity = await consoleIdentityHeaders(server);
+  try {
+    return ok(
+      await fetch(gatewayUrl(server, path), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...identity },
+        body: JSON.stringify(body),
+        redirect: 'manual',
+        signal: AbortSignal.timeout(30_000),
+      })
+    );
+  } catch (cause) {
+    return err({
+      kind: 'failed',
+      message: `Could not reach ${server.gatewayUrl}. Check that the address is right and that the server is running. (${cause instanceof Error ? cause.message : String(cause)})`,
+    });
+  }
+}
+
+/** A failing gateway may answer with an HTML error page rather than a
+ * sentence; unbounded, that lands in the form as a wall of markup. */
+function boundedBody(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+
+/** Read the `switch_auth` cookie off a successful auth response and persist it. */
+async function persistSessionCookie(
+  server: SwitchServer,
+  response: Response,
+  action: string
+): Promise<Result<true, TransportError>> {
+  const jwt = extractAuthCookie(response.headers.getSetCookie());
+  if (!jwt) {
+    return err({
+      kind: 'failed',
+      message: `${action} succeeded but the gateway did not return a session cookie.`,
+    });
+  }
+  await setSessionCookie(server.id, jwt);
+  return ok(true);
 }
 
 /**
@@ -44,48 +106,121 @@ export async function passwordLogin(
   email: string,
   password: string
 ): Promise<Result<SwitchUser, LoginError>> {
-  let response: Response;
-  try {
-    response = await fetch(gatewayUrl(server, '/auth/login'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ email, password }),
-      redirect: 'manual',
-      signal: AbortSignal.timeout(30_000),
-    });
-  } catch (cause) {
-    return err({
-      kind: 'failed',
-      message: `Could not reach ${server.gatewayUrl}. Check that the address is right and that the server is running. (${cause instanceof Error ? cause.message : String(cause)})`,
-    });
-  }
+  const posted = await postCredentials(server, '/auth/login', { email, password });
+  if (!posted.success) return posted;
+  const response = posted.data;
 
   if (response.status === 401) {
     return err({ kind: 'invalid_credentials', message: 'Invalid email or password.' });
   }
   if (!response.ok) {
-    // A failing gateway may answer with an HTML error page rather than a
-    // sentence; unbounded, that lands in the form as a wall of markup.
     const detail = await response.text().catch(() => '');
     return err({
       kind: 'failed',
       message: `${server.gatewayUrl} rejected the sign-in with HTTP ${response.status}. That is a problem on the server, not with your credentials.${
-        detail ? ` (${detail.replace(/\s+/g, ' ').trim().slice(0, 200)})` : ''
+        detail ? ` (${boundedBody(detail)})` : ''
       }`,
     });
   }
 
-  const jwt = extractAuthCookie(response.headers.getSetCookie());
-  if (!jwt) {
+  const stored = await persistSessionCookie(server, response, 'Login');
+  if (!stored.success) return stored;
+  const user = (await response.json()) as SwitchUser;
+  return ok(user);
+}
+
+const validationIssueSchema = z.object({
+  loc: z.array(z.union([z.string(), z.number()])),
+  msg: z.string(),
+});
+
+/**
+ * The gateway's refusal as a sentence: its string `detail` as written, or a
+ * FastAPI 422 validation array rendered one issue per field. Null when the
+ * body carries neither.
+ */
+function signupRefusal(body: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  const detail = (parsed as { detail?: unknown } | null)?.detail;
+  if (typeof detail === 'string') return detail;
+  const issues = z.array(validationIssueSchema).safeParse(detail);
+  if (!issues.success || issues.data.length === 0) return null;
+  return issues.data
+    .map(({ loc, msg }) => {
+      const field = String(loc[loc.length - 1] ?? '').replace(/_/g, ' ');
+      const stripped = msg.replace(/^Value error, /, '');
+      const text = /[.!?]$/.test(stripped) ? stripped : `${stripped}.`;
+      return field ? `${field[0].toUpperCase()}${field.slice(1)}: ${text}` : text;
+    })
+    .join(' ');
+}
+
+const SIGNUP_REFUSAL_KIND: Partial<Record<number, SignupError['kind']>> = {
+  400: 'invalid',
+  403: 'disabled',
+  409: 'email_taken',
+  422: 'invalid',
+  429: 'rate_limited',
+};
+
+const signupMachineSchema = z.object({
+  status: z.enum(['starting', 'unavailable']),
+  reason: z.string().nullable(),
+});
+
+/**
+ * Self sign-up: create an account and come away signed in, its cookie stored
+ * exactly as a password login stores one. The response also says whether the
+ * server began warming the new account's cloud machine.
+ */
+export async function signup(
+  server: SwitchServer,
+  params: { email: string; password: string; displayName?: string }
+): Promise<Result<SignupResult, SignupError>> {
+  const posted = await postCredentials(server, '/auth/signup', {
+    email: params.email,
+    password: params.password,
+    ...(params.displayName ? { display_name: params.displayName } : {}),
+  });
+  if (!posted.success) return posted;
+  const response = posted.data;
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    const refusal = signupRefusal(body);
+    const kind = SIGNUP_REFUSAL_KIND[response.status];
+    if (kind && refusal) return err({ kind, message: refusal });
     return err({
       kind: 'failed',
-      message: 'Login succeeded but the gateway did not return a session cookie.',
+      message: `${server.gatewayUrl} rejected the sign-up with HTTP ${response.status}.${
+        body ? ` (${refusal ?? boundedBody(body)})` : ''
+      }`,
     });
   }
 
-  await setSessionCookie(server.id, jwt);
-  const user = (await response.json()) as SwitchUser;
-  return ok(user);
+  const stored = await persistSessionCookie(server, response, 'Sign-up');
+  if (!stored.success) return stored;
+  const { machine, ...user } = (await response.json()) as SwitchUser & { machine: unknown };
+  const parsedMachine = signupMachineSchema.safeParse(machine);
+  if (!parsedMachine.success) {
+    log.warn('Switch sign-up response carried no readable machine status', {
+      server: server.id,
+      error: parsedMachine.error.message,
+    });
+    return ok({
+      user,
+      machine: {
+        status: 'unavailable',
+        reason: 'The server did not say whether your cloud machine is starting.',
+      },
+    });
+  }
+  return ok({ user, machine: parsedMachine.data });
 }
 
 /**
@@ -109,7 +244,11 @@ export async function refreshSession(
   try {
     response = await fetch(gatewayUrl(server, '/auth/refresh'), {
       method: 'POST',
-      headers: { Accept: 'application/json', Cookie: `${SWITCH_AUTH_COOKIE}=${currentJwt}` },
+      headers: {
+        Accept: 'application/json',
+        Cookie: `${SWITCH_AUTH_COOKIE}=${currentJwt}`,
+        ...(await consoleIdentityHeaders(server)),
+      },
       redirect: 'manual',
       signal: AbortSignal.timeout(30_000),
     });
@@ -140,17 +279,26 @@ export async function refreshSession(
 }
 
 /**
- * Silent re-login for the managed local server. Switch Console generated that
- * server's admin password, so when its session is missing or expired we can
- * sign in again with no user interaction — the local server is meant to be
- * always signed in. Persists the fresh cookie (via `passwordLogin`) and returns
- * it for immediate reuse, or `null` when re-login failed (the caller then falls
- * back to the normal sign-in path). No-op for non-managed servers, whose
+ * Silent re-login for a managed server. Switch Console holds that server's
+ * admin password, so when its session is missing or expired we can sign in
+ * again with no user interaction — a managed server is meant to be always
+ * signed in. Persists the fresh cookie (via `passwordLogin`) and returns it for
+ * immediate reuse, or `null` when re-login failed (the caller then falls back
+ * to the normal sign-in path). No-op for non-managed servers, whose
  * credentials Switch Console does not hold.
+ *
+ * Reads the stored credentials and never makes them: minted ones would match no
+ * running stack, and would then be kept as though they were the stack's.
  */
 export async function reauthenticateManagedServer(server: SwitchServer): Promise<string | null> {
   if (!server.managed) return null;
-  const secrets = await loadOrCreateSecrets({ secretsKey: managedServerSecretsKey(server) });
+  const secrets = await readSecrets({ secretsKey: managedServerSecretsKey(server) });
+  if (secrets === null) {
+    log.warn('Managed Switch server has no stored credentials to sign in with', {
+      server: server.id,
+    });
+    return null;
+  }
   const result = await passwordLogin(
     server,
     LOCAL_SERVER_ADMIN_EMAIL,

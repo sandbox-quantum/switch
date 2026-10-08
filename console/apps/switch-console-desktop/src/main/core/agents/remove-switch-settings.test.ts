@@ -33,7 +33,7 @@ describe('removeSwitchCredentials', () => {
       }),
     });
 
-    await removeSwitchCredentials(fs);
+    await removeSwitchCredentials(fs, 'agent-123');
 
     expect(fs.files.has(SETTINGS_PATH)).toBe(false);
   });
@@ -51,7 +51,7 @@ describe('removeSwitchCredentials', () => {
       }),
     });
 
-    await removeSwitchCredentials(fs);
+    await removeSwitchCredentials(fs, 'a');
 
     const parsed = JSON.parse(fs.files.get(SETTINGS_PATH)!) as Record<string, unknown>;
     expect(parsed.env).toEqual({ EDITOR: 'vim' });
@@ -62,14 +62,25 @@ describe('removeSwitchCredentials', () => {
     const original = JSON.stringify({ env: { EDITOR: 'vim' } });
     const fs = fakeFs({ [SETTINGS_PATH]: original });
 
-    await removeSwitchCredentials(fs);
+    await removeSwitchCredentials(fs, 'a');
+
+    expect(fs.files.get(SETTINGS_PATH)).toBe(original);
+  });
+
+  it('leaves the credentials of the agent the shared file belongs to', async () => {
+    const original = JSON.stringify({
+      env: { SWITCH_API_ENDPOINT: 'e', SWITCH_API_TOKEN: 't', SWITCH_AGENT_ID: 'agent-main' },
+    });
+    const fs = fakeFs({ [SETTINGS_PATH]: original });
+
+    await removeSwitchCredentials(fs, 'agent-sibling');
 
     expect(fs.files.get(SETTINGS_PATH)).toBe(original);
   });
 
   it('is a no-op when there is no settings file', async () => {
     const fs = fakeFs({});
-    await expect(removeSwitchCredentials(fs)).resolves.toBeUndefined();
+    await expect(removeSwitchCredentials(fs, 'a')).resolves.toBeUndefined();
     expect(fs.files.size).toBe(0);
   });
 });

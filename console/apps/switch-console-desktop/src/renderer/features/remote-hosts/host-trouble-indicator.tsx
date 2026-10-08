@@ -15,7 +15,7 @@
  * as broken because Codex is absent.
  */
 
-import { PlugZap, Wrench } from 'lucide-react';
+import { ServerOff, Wrench } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
@@ -55,7 +55,7 @@ export const HostTroubleIndicator = observer(function HostTroubleIndicator({
     return (
       <Tooltip>
         <TooltipTrigger>
-          <PlugZap className={ICON} aria-label="Host unavailable" />
+          <ServerOff className={ICON} aria-label="Host unavailable" />
         </TooltipTrigger>
         <TooltipContent>
           {status.kind === 'auth-failed'

@@ -2,13 +2,13 @@
 
 There was an eighth exempt lookup, `tenant_of_client`, and it was the most
 called of them: every `PostgresTransport` asked it once, and so did every
-`AgentClient.start`. Both were built from a `clients` row that names the
+`AgentConsumer.start`. Both were built from a `clients` row that names the
 tenant in a column, so the question went to the database with the answer
 already in hand — and a `SECURITY DEFINER` function nobody needs is still a
 function to audit and still one more thing the runtime role's credentials
 reach.
 
-So `ClientBase` and `PostgresTransport` take a `tenant_id` the way they take a
+So `Actor` and `PostgresTransport` take a `tenant_id` the way they take a
 `client_id`. That moves the risk rather than removing it: a lookup that
 resolves the tenant from a primary key cannot be given the wrong one, and a
 parameter can. These tests are what stands in for it.
@@ -17,7 +17,7 @@ Three things are pinned:
 
 - **the factory**, which is the one place the value is read off a row, for
   both the client and the transport it is handed;
-- **the write path**, because the freshest caller — a puppet minted
+- **the write path**, because the freshest caller — a human actor minted
   mid-conversation — passes a record that was flushed a moment ago rather than
   read back, and `record.tenant_id` has to be populated by then;
 - **every call site**, by scanning for one that names a `client_id` and not a
@@ -38,7 +38,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import switch_core
-from switch_core.clients.client_base import ClientBase, ClientConfig
+from switch_core.clients.actor import Actor, ClientConfig
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import TENANT_ZERO_ID, Client, Tenant
@@ -47,6 +47,7 @@ from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.tenant_store import TenantStore
+from switch_core.db.stores.usage_store import UsageStore
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
@@ -56,15 +57,17 @@ def _factory(session_factory: async_sessionmaker[AsyncSession]) -> ClientFactory
     factory = ClientFactory(
         client_store=ClientStore(),
         session_factory=session_factory,
-        config=SimpleNamespace(matrix_server_name="test"),  # type: ignore[arg-type]
+        config=SimpleNamespace(id_server_name="test"),  # type: ignore[arg-type]
         room_store=RoomStore(),
         message_store=MessageStore(),
+        usage_store=UsageStore(),
         media_store=MediaStore(),
         listener=MagicMock(),
         invites=InviteBus(),
         ephemeral=EphemeralBus(),
+        room_cache=MagicMock(),
     )
-    factory.register("user", ClientBase)
+    factory.register("user", Actor)
     return factory
 
 
@@ -73,8 +76,8 @@ def _record(tenant_id: str) -> Client:
     return Client(
         id=f"client-{suffix}",
         tenant_id=tenant_id,
-        matrix_user_id=f"@puppet-{suffix}:test",
-        display_name="a puppet",
+        transport_user_id=f"@human-actor-{suffix}:test",
+        display_name="a human actor",
         type="user",
     )
 
@@ -85,7 +88,7 @@ class TestTheFactoryReadsItOffTheRow:
     ) -> None:
         tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
 
-        client = _factory(session_factory).create(_record(tenant_id))
+        client, _ = _factory(session_factory).create(_record(tenant_id))
 
         assert client.tenant_id == tenant_id
 
@@ -99,7 +102,7 @@ class TestTheFactoryReadsItOffTheRow:
         tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
         factory = _factory(session_factory)
 
-        client = factory.create(_record(tenant_id))
+        client, _ = factory.create(_record(tenant_id))
         transport = factory.transport_for(client)
 
         assert transport.tenant_id == tenant_id  # type: ignore[attr-defined]
@@ -109,12 +112,12 @@ class TestTheFactoryReadsItOffTheRow:
     ) -> None:
         """Required rather than defaulted. A client that fell back to whatever
         was ambient would be silently correct in the common case — boot, one
-        tenant — and silently wrong for the puppet a bridge mints while
+        tenant — and silently wrong for the human actor a bridge mints while
         handling another tenant's message."""
         with pytest.raises(TypeError):
-            ClientBase(  # type: ignore[call-arg]
+            Actor(  # type: ignore[call-arg]
                 client_id="c",
-                matrix_user_id="@a:test",
+                transport_user_id="@a:test",
                 display_name="a client",
                 session_factory=session_factory,
                 client_store=ClientStore(),
@@ -126,7 +129,7 @@ class TestTheFactoryReadsItOffTheRow:
 class TestAFreshlyWrittenRowAlreadyCarriesIt:
     """`create_client` writes the row and hands it straight to the factory.
 
-    A puppet is created and started inside one inbound message, so the record
+    A human actor is created and started inside one inbound message, so the record
     the factory sees has been flushed rather than read back. `tenant_id` is a
     Python-side default (`db/models.py`'s `TenantScoped`) applied at flush, and
     the session factory does not expire on commit, so the value is there — but
@@ -143,17 +146,18 @@ class TestAFreshlyWrittenRowAlreadyCarriesIt:
             await session.commit()
 
         service = ClientLifecycleService(
-            matrix_admin=MagicMock(),
+            provisioning=MagicMock(),
             client_store=ClientStore(),
             tenant_store=TenantStore(),
             client_factory=MagicMock(),
             session_factory=session_factory,
-            config=SimpleNamespace(matrix_server_name="test"),  # type: ignore[arg-type]
+            config=SimpleNamespace(id_server_name="test"),  # type: ignore[arg-type]
+            tenants_isolated=True,
         )
 
         with tenant_scope(tenant_id):
             record = await service.create_client(
-                client_type="user", display_name="a puppet"
+                client_type="user", display_name="a human actor"
             )
 
         assert record.tenant_id == tenant_id
@@ -164,16 +168,17 @@ class TestAFreshlyWrittenRowAlreadyCarriesIt:
         """The other direction, so the test above is not satisfied by a
         constant: with tenant zero bound, that is what the row gets."""
         service = ClientLifecycleService(
-            matrix_admin=MagicMock(),
+            provisioning=MagicMock(),
             client_store=ClientStore(),
             tenant_store=TenantStore(),
             client_factory=MagicMock(),
             session_factory=session_factory,
-            config=SimpleNamespace(matrix_server_name="test"),  # type: ignore[arg-type]
+            config=SimpleNamespace(id_server_name="test"),  # type: ignore[arg-type]
+            tenants_isolated=True,
         )
 
         record = await service.create_client(
-            client_type="user", display_name="another puppet"
+            client_type="user", display_name="another human actor"
         )
 
         assert record.tenant_id == TENANT_ZERO_ID
@@ -211,5 +216,5 @@ def test_no_call_site_names_a_client_without_naming_its_tenant() -> None:
         f"name a client_id and no tenant_id: {offenders}. Take it off the "
         "`clients` row the client_id came from — every caller is holding one "
         "— rather than from whatever tenant happens to be bound, which for a "
-        "puppet minted mid-conversation is the wrong one."
+        "human actor minted mid-conversation is the wrong one."
     )

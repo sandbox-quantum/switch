@@ -128,6 +128,16 @@ pnpm run dev
 pnpm run d
 ```
 
+Switch Cloud, the hosted deployment the first-run page and the Add server dialog
+offer, has no URL in source. Point a run at one with `SWITCH_CLOUD_URL`, or bake
+one into a build with `MAIN_VITE_SWITCH_CLOUD_URL` (inlined into the main
+process by electron-vite). Either must be a bare https origin; with neither set
+the Cloud choice reads "Coming soon".
+
+```bash
+SWITCH_CLOUD_URL=https://cloud.example.com pnpm run dev
+```
+
 Run main-process or renderer-only dev watches:
 
 ```bash
@@ -300,7 +310,7 @@ Shared IPC primitives, provider metadata, events, MCP types, skills types, and
 domain types live under `src/shared/`.
 
 Main-process work is split into domain modules under `src/main/core/`: agent hooks,
-agent runtime, agents (Switch agents), app, dependencies, execution context, fs,
+agent runtime, agents (Switch agents), app, dependencies, embedded controller, execution context, fs,
 locations (an agent's working dir on a host — formerly the project/workspace split),
 managed Switch server, prompt library, providers (the CLI-provider registry), SDK host,
 remote hosts, resource monitor, search, secrets, sessions, settings, SDK host, SSH,
@@ -429,8 +439,10 @@ pnpm run lint
   enough — excess-property checking does not apply through a spread — so the runtime
   filter is what makes "nothing free-text can reach a payload" true rather than intended.
   Permitted: which of the catalogued things happened, agent type, local-vs-remote,
-  success-vs-failure, how long an operation took, app version, operating system, and the
-  random install id. A duration is a number rather than a value from a fixed set,
+  success-vs-failure, how long an operation took, app version, operating system, the
+  random install id, which kind of launch it was (first, after an update, or neither),
+  and whether a signed-in account is on a company email domain — the yes/no only, read
+  from the domain, never the address. A duration is a number rather than a value from a fixed set,
   so it is held to `TelemetryDurationMs`: measured on a monotonic clock, whole
   milliseconds, and never a span that could encode something else. That is a branded
   type, not an alias for `number`, and `startTimer()` is the only thing that mints one —
@@ -519,7 +531,11 @@ pnpm run lint
     `.gitignore` stops `git add` and not an archive, a sync or `git add -f`.
     Moving it out is tracked separately; it is deliberately not solved by
     writing it to a second location as well.
-- SDK host environment passthrough must use the allowlist in `src/main/core/sdk-host/agent-env.ts`.
+- **The embedded agents controller's credential** (`embedded-controller/`) lives only in
+  the encrypted app secrets store. It reaches the controller child on stdin
+  (`--credential-stdin`), never on argv, in the environment or in a file, so the
+  watchers and sessions the controller starts cannot inherit it. Keep it that way.
+- SDK host environment passthrough must use the allowlist in `packages/agent-providers/src/host/agent-env.ts`.
 - Treat shell escaping and provider process spawning as security-sensitive.
 - Do not bypass path-safety, shell escaping, or validation helpers.
 - Use `pnpm-lock.yaml` for dependency integrity and review dependency changes.

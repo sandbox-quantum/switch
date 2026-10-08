@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
 from slack_sdk.errors import SlackApiError
 
 from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
@@ -14,13 +15,15 @@ from switch_core.bridges.collaboration.slack.adapter import (
 
 
 def _adapter() -> SlackAdapter:
-    return SlackAdapter(
+    adapter = SlackAdapter(
         config=SlackConnectionConfig(
             bot_token="xoxb-test",
             app_token="xapp-test",
             workspace_id="T123",
         )
     )
+    adapter.set_tenant_id("tenant-1")
+    return adapter
 
 
 def _run(coro: Any) -> Any:
@@ -539,6 +542,24 @@ def test_send_message_top_level_has_no_thread_ts() -> None:
     assert fake.calls[0]["thread_ts"] is None
 
 
+def test_a_room_wide_mention_in_a_group_dm_is_not_auto_threaded() -> None:
+    # A group DM threads an agent's reply under the last person's message,
+    # and Slack sends no channel-wide alert from a thread.
+    adapter = _adapter()
+    fake = _FakeWebClient()
+    adapter._web_client = fake  # type: ignore[assignment]
+    adapter._channel_type_cache["G1"] = "mpim"
+    adapter._last_user_message_ts["G1"] = "100.1"
+
+    _run(
+        adapter.send_message("G1", "agent-bot", "<!channel> hi", room_wide_mention=True)
+    )
+    _run(adapter.send_message("G1", "agent-bot", "hi"))
+
+    assert fake.calls[0]["thread_ts"] is None
+    assert fake.calls[1]["thread_ts"] == "100.1"
+
+
 # ── Thinking indicator threading ─────────────────────────────────────────────
 
 
@@ -931,6 +952,29 @@ def test_translate_inbound_unknown_piped_mention_falls_back_to_id() -> None:
     # raw id (its room-alias key) rather than being dropped, so alias routing
     # still resolves for an aliased app mention.
     assert adapter.translate_inbound("<@U0B1BF0JP6H|agent switch>") == "@U0B1BF0JP6H"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("<!channel> deploy at five", "@channel deploy at five"),
+        ("<!here> anyone?", "@here anyone?"),
+        ("<!everyone> heads up", "@everyone heads up"),
+        ("<!channel|@channel> labelled", "@channel labelled"),
+        ("<!here|here> labelled", "@here labelled"),
+        ("<!group> legacy private channel", "@channel legacy private channel"),
+        ("<!CHANNEL> any case", "@channel any case"),
+    ],
+)
+def test_translate_inbound_shows_a_channel_wide_mention_as_the_word(
+    raw: str, expected: str
+) -> None:
+    assert _adapter().translate_inbound(raw) == expected
+
+
+def test_translate_inbound_leaves_a_user_group_to_its_own_rule() -> None:
+    # `<!subteam^…>` shares the `<!` prefix and must not be read as a page.
+    assert _adapter().translate_inbound("<!subteam^S123|@ops> hi") == "@ops hi"
 
 
 def test_slash_command_without_channel_is_ignored() -> None:

@@ -14,9 +14,9 @@ from typing import Any
 from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
-    CollaborationAdapter,
+    PlatformAdapter,
 )
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 
 _CUSTOM = "https://cdn.example.com/9.x/bottts/png?seed=chosen"
 
@@ -37,8 +37,8 @@ class _AgentStore:
         return self._agents.get(name)
 
 
-def _bridge(agents: dict[str, SimpleNamespace]) -> BridgeCore:
-    bridge = BridgeCore.__new__(BridgeCore)
+def _bridge(agents: dict[str, SimpleNamespace]) -> CollaborationCore:
+    bridge = CollaborationCore.__new__(CollaborationCore)
     bridge._bridge_tenant_id = "tenant-1"
     bridge._agent_store = _AgentStore(agents)  # type: ignore[assignment]
     bridge._session_factory = _Session  # type: ignore[assignment]
@@ -49,7 +49,7 @@ def _agent(icon_url: str | None) -> SimpleNamespace:
     return SimpleNamespace(name="worker", display_name=None, icon_url=icon_url)
 
 
-class _Adapter(CollaborationAdapter):
+class _Adapter(PlatformAdapter):
     """Concrete only so it can be instantiated — the icon plumbing under test
     lives entirely on the base class, and none of the platform methods are
     called here."""
@@ -68,10 +68,10 @@ class _Adapter(CollaborationAdapter):
     async def create_agent_identity(self, *a: Any, **k: Any) -> Any: ...
     async def remove_agent_identity(self, *a: Any, **k: Any) -> Any: ...
     def translate_inbound(self, *a: Any, **k: Any) -> Any: ...
-    def translate_outbound(self, *a: Any, **k: Any) -> Any: ...
+    def _render_outbound(self, *a: Any, **k: Any) -> Any: ...
 
 
-class TestBridgeCoreResolver:
+class TestCollaborationCoreResolver:
     async def test_returns_the_agents_own_icon(self) -> None:
         bridge = _bridge({"worker": _agent(_CUSTOM)})
         found = await bridge._agent_presentation("worker")

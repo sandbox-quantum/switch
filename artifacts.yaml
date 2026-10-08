@@ -66,7 +66,7 @@ artifacts:
 
   switch-console:
     description: The desktop app.
-    version: 0.37.3
+    version: 0.38.1
     declared_in: console/apps/switch-console-desktop/package.json
     # Which switch-core release this app build bundles and pulls for
     # local-server mode. DELIBERATELY NOT switch-core's version above.
@@ -84,7 +84,7 @@ artifacts:
     description: >-
       The Switch protocol client and the MCP tool surface each session host
       serves. Bundled into Switch Console and its sidecar, not published.
-    version: 0.7.0
+    version: 0.8.0
     declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:
@@ -92,7 +92,7 @@ artifacts:
       The remote runtime Switch Console deploys to an agent host. Deployed rather
       than published, so nothing else declares its version — this file is its
       only source and the constant is generated from it.
-    version: 1.9.10
+    version: 1.9.12
 
   # ── Published under the switch-core release ────────────────────────────────
   # No version of their own: `helm package` and the image build stamp them with
@@ -173,9 +173,33 @@ contracts:
     # `room_released` (`room_id`, and the session placed there or null). The
     # frame is sent only to a client that declares this revision, for the same
     # reason as revision 4.
+    #
+    # Revision 7 adds the hosted worker. A hosted agent's stream opens only
+    # with the worker capability of its launch's current revision
+    # (`X-Switch-Worker-Capability`, plus the host identity headers), and from
+    # a client that declares this revision (`upgrade_required` otherwise). The
+    # attached worker alone is sent `worker_attached`, `relay`, `relay_cancel`,
+    # `wake`, `mailbox_cancel`, `operation` and `credential`. Nothing changes
+    # for a local agent, so `accepts` stays at 1.
+    #
+    # Revision 8 moves the connection onto one WebSocket,
+    # `/agents/{id}/connection/ws`, which carries the frames as JSON
+    # (`event`, `data`, `id`) and the heartbeat: the server sends `ping` every
+    # heartbeat interval and the client answers `pong` with its cursor. The
+    # token is checked once, when the socket opens. A hosted worker opens it
+    # with the headers and under the rules revision 7 set for the stream. It
+    # is meant to replace the Server-Sent Events stream and
+    # `POST /connection/beat`, which would make it
+    # the first revision that is not additive, but that removal is deferred:
+    # the stream and the beat are kept beside the socket for a compatibility
+    # window, so `accepts` stays at 1 on both sides. switch-core serves either
+    # transport, and agent-runtime prefers the socket and falls back to the
+    # stream and its beat against a server with no socket. Both go, and
+    # `accepts` rises to 8, once `switch.agents.connected{transport:sse}` stays
+    # at zero.
     artifacts:
-      switch-core: { speaks: 6, accepts: 1 }
-      agent-runtime: { speaks: 6, accepts: 1 }
+      switch-core: { speaks: 8, accepts: 1 }
+      agent-runtime: { speaks: 8, accepts: 1 }
 
   gateway-api:
     description: >-

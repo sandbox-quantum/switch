@@ -8,8 +8,11 @@ Switch will make on behalf of whoever typed it.
 import pytest
 
 from switch_core.agent_icon import (
+    GENERATED_ICON_CHOICES,
     MAX_ICON_URL_LENGTH,
     InvalidIconUrl,
+    generated_icon_choices,
+    generated_icon_url,
     normalise_icon_url,
     validate_icon_url,
 )
@@ -142,3 +145,20 @@ def test_normalise_validates_a_present_url() -> None:
     )
     with pytest.raises(InvalidIconUrl):
         normalise_icon_url("http://10.0.0.1/i.png")
+
+
+def test_generated_icon_is_a_stable_raster_robot_per_seed() -> None:
+    url = generated_icon_url("pm-agent")
+    assert url == "https://api.dicebear.com/9.x/bottts/png?seed=pm-agent&size=256"
+    assert generated_icon_url("pm-agent") == url
+    assert validate_icon_url(url) == url
+
+
+def test_generated_choices_lead_with_the_name_and_stay_put() -> None:
+    first = generated_icon_choices("pm-agent", 0)
+    assert len(first) == GENERATED_ICON_CHOICES
+    assert first[0] == generated_icon_url("pm-agent")
+    assert generated_icon_choices("pm-agent", 0) == first
+    second = generated_icon_choices("pm-agent", 1)
+    assert len(second) == GENERATED_ICON_CHOICES
+    assert not set(first) & set(second)

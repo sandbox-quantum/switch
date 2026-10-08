@@ -1,11 +1,11 @@
 """The classification has to keep up with the dispatch table.
 
-A custom event type added to `ClientBase._EVENT_DISPATCH` without a decision
+A custom event type added to `Consumer._EVENT_DISPATCH` without a decision
 here is recorded by default, which is the safe direction but not a decision.
 These tests make the omission visible instead of letting it ride.
 """
 
-from switch_core.clients.client_base import ClientBase
+from switch_core.clients.consumer import Consumer
 from switch_core.messages.recorded_types import (
     EPHEMERAL,
     NOT_RECORDED,
@@ -21,7 +21,7 @@ RECORDED_CUSTOM_TYPES = frozenset({"com.switch.command"})
 
 
 def test_every_dispatched_type_is_classified():
-    dispatched = set(ClientBase._EVENT_DISPATCH)
+    dispatched = set(Consumer._EVENT_DISPATCH)
     unclassified = dispatched - NOT_RECORDED - RECORDED_CUSTOM_TYPES
     assert not unclassified, (
         "These custom event types are neither recorded nor denied. Decide "
@@ -31,7 +31,7 @@ def test_every_dispatched_type_is_classified():
 
 
 def test_classification_names_no_type_that_is_never_dispatched():
-    dispatched = set(ClientBase._EVENT_DISPATCH)
+    dispatched = set(Consumer._EVENT_DISPATCH)
     stale = (NOT_RECORDED | RECORDED_CUSTOM_TYPES) - dispatched - RETIRED
     assert not stale, f"Classified but no longer dispatched: {sorted(stale)}"
 
@@ -39,7 +39,7 @@ def test_classification_names_no_type_that_is_never_dispatched():
 def test_retired_types_are_the_ones_nothing_dispatches():
     """The set exists for types the code no longer has. A name that is back in
     the dispatch table is a live type and belongs in a live bucket."""
-    revived = RETIRED & set(ClientBase._EVENT_DISPATCH)
+    revived = RETIRED & set(Consumer._EVENT_DISPATCH)
     assert not revived, f"Retired but dispatched again: {sorted(revived)}"
 
 

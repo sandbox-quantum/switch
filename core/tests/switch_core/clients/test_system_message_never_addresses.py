@@ -21,7 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 from switch_core.clients.admin_messages import ADMIN_MARKER, admin_extra_content
-from switch_core.clients.agent_client import AgentClient
+from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.transport import InboundMessage
@@ -53,7 +53,7 @@ def _client(name: str = "flintai-sdk.ts") -> SimpleNamespace:
     """
     resolver = SimpleNamespace(
         agent=SimpleNamespace(name=name),
-        matrix_user_id=f"@switch-agent-{name}:switch.local",
+        transport_user_id=f"@switch-agent-{name}:switch.local",
     )
 
     async def _no(*_a: object, **_k: object) -> bool:
@@ -79,10 +79,10 @@ async def _addressed(
         resolver,
         object(),
         agent=resolver.agent,
-        agent_matrix_id=resolver.matrix_user_id,
+        agent_user_id=resolver.transport_user_id,
         room_id=meta.room_id,
         channel_type=meta.channel_type,
-        message=AgentClient._as_incoming(event),
+        message=AgentConsumer._as_incoming(event),
     )
 
 

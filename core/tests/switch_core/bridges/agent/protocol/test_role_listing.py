@@ -3,8 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 
 
 class _FakeSession:
@@ -106,11 +106,11 @@ def _build_service(
     sdk_rooms: dict[str, str],
     rooms: dict[str, Any],
     my_lease: Any | None = None,
-) -> ProtocolService:
-    svc = object.__new__(ProtocolService)
+) -> AgentCore:
+    svc = object.__new__(AgentCore)
     # Presence unions the heartbeat rows with the live connections
     # (CHOO-1857); an empty registry means "rows only".
-    svc.connections = ConnectionRegistry()
+    svc.connections = AgentConnectionRegistry()
     # Where each holding session connected, as `connect_to_room` placed it.
     for session_id, room_id in sdk_rooms.items():
         holder = next(

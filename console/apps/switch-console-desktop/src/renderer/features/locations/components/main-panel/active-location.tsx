@@ -31,7 +31,7 @@ export const ActiveLocation = observer(function ActiveLocation() {
     <AgentEditsProvider>
       <div className="flex min-h-0 w-full flex-1 flex-col">
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-          <div className="mx-auto flex w-full max-w-[820px] flex-col gap-10 px-8 pb-20">
+          <div className="mx-auto flex w-full max-w-[900px] flex-col gap-10 px-8 pb-20">
             <AgentPageHeader />
             <SettingsPanel />
             <SidecarPanel />

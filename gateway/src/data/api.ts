@@ -75,9 +75,13 @@ export interface AgentRoomMembership {
 export interface AgentSessionDetail {
   room_id: string | null;
   room_name: string | null;
+  // `heartbeat` / `explicit` (a session row), `connection` (the agent's own
+  // connection) or `controller` (run by the agents controller it is placed on).
   lifecycle: string;
   state: string;
   last_seen_at: string;
+  // The agents controller running it, for a `controller` session; else null.
+  controller_id: string | null;
 }
 
 export interface AgentDetail extends AgentSummary {
@@ -89,6 +93,12 @@ export interface AgentDetail extends AgentSummary {
   sessions: AgentSessionDetail[];
   children: AgentSummary[];
   addressing_policy: AddressingPolicy | null;
+  /**
+   * Whether the agent may act on its owner's agent management: list the
+   * owner's machines and managed agents, and create managed agents on them.
+   * Only the owner changes it.
+   */
+  can_manage_agents: boolean;
 }
 
 // Scoped agent-addressing permissions (CHOO-1585). Each dimension is "*" (any)
@@ -210,16 +220,37 @@ export interface UpdateRoomInput {
   write_visibility?: "public" | "private";
 }
 
-/** FastAPI's `detail` is a string for HTTPException but an array of
- * validation objects for a 422; render both as text so no error surfaces
- * as "[object Object]". */
-function errorText(detail: unknown, fallback: string): string {
+/** A failed gateway call that keeps what the server said: the status, for
+ * callers that branch on it, and `detail` as sent. `message` is `detail`
+ * rendered as text. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail: unknown;
+
+  constructor(status: number, detail: unknown, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+/** FastAPI's `detail` is a string for HTTPException, an array of validation
+ * objects for a 422, and an object for the structured errors (tenant
+ * resolution's `{error, message, ...}`). Render all three as text so no error
+ * surfaces as "[object Object]". */
+export function errorText(detail: unknown, fallback: string): string {
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) {
     const msgs = detail
       .map((d) => (d && typeof d === "object" && "msg" in d ? String(d.msg) : null))
       .filter((m): m is string => m !== null);
     if (msgs.length > 0) return msgs.join("; ");
+  }
+  if (detail && typeof detail === "object") {
+    const record = detail as Record<string, unknown>;
+    if (typeof record.message === "string") return record.message;
+    if (typeof record.error === "string") return record.error;
   }
   return fallback;
 }
@@ -236,8 +267,13 @@ async function jsonRequest<T>(
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    const detail = await res.json().catch(() => null);
-    throw new Error(errorText(detail?.detail, `${res.status} ${res.statusText}`));
+    const payload = await res.json().catch(() => null);
+    const detail = payload?.detail ?? null;
+    throw new ApiError(
+      res.status,
+      detail,
+      errorText(detail, `${res.status} ${res.statusText}`),
+    );
   }
   return (await res.json()) as T;
 }
@@ -575,6 +611,17 @@ export async function updateAgentAddressingPolicy(
   );
 }
 
+export async function updateAgentCanManageAgents(
+  agentId: string,
+  enabled: boolean,
+): Promise<AgentDetail> {
+  return jsonRequest<AgentDetail>(
+    `/agents/${agentId}/can-manage-agents`,
+    "PUT",
+    { enabled },
+  );
+}
+
 export async function fetchKnownAgentTypes(): Promise<KnownAgentType[] | null> {
   return fetchJson<KnownAgentType[]>("/agents/known-types");
 }
@@ -907,17 +954,7 @@ export interface UserInfo {
 }
 
 export async function login(email: string, password: string): Promise<UserInfo> {
-  const res = await fetch(`${BASE}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ email, password }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
-  }
-  return (await res.json()) as UserInfo;
+  return jsonRequest<UserInfo>("/auth/login", "POST", { email, password });
 }
 
 export async function logout(): Promise<void> {
@@ -931,10 +968,151 @@ export async function fetchMe(): Promise<UserInfo | null> {
   return fetchJson<UserInfo>("/auth/me");
 }
 
+export type SignupMode = "default_tenant" | "invite_only" | "open";
+
 export interface AuthConfig {
   password_login_enabled: boolean;
   oidc_enabled: boolean;
   oidc_provider_label: string | null;
+  signup_mode: SignupMode;
+}
+
+// ── Session and workspaces ──────────────────────────────────────────────────
+
+export type TenantRole = "owner" | "admin" | "member";
+
+export interface TenantMembership {
+  id: string;
+  slug: string;
+  name: string;
+  role: TenantRole;
+}
+
+export interface SessionUser {
+  id: string;
+  name: string;
+  email: string;
+  is_operator: boolean;
+}
+
+export type SessionStateName = "ready" | "needs_selection" | "needs_workspace";
+
+export interface Session {
+  user: SessionUser;
+  tenant: TenantMembership | null;
+  tenants: TenantMembership[];
+  state: SessionStateName;
+  can_create_workspace: boolean;
+  // Whether an invitation naming an e-mail is sent there by this server.
+  invite_email_enabled: boolean;
+}
+
+/** The signed-in session, or null when nobody is signed in. Any other
+ * failure throws: a server error is not the same answer as "signed out". */
+export async function fetchSession(): Promise<Session | null> {
+  try {
+    return await jsonRequest<Session>("/auth/session", "GET");
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) return null;
+    throw err;
+  }
+}
+
+export async function createTenant(name: string): Promise<TenantMembership> {
+  return jsonRequest<TenantMembership>("/tenants", "POST", { name });
+}
+
+export async function switchTenant(tenantId: string): Promise<void> {
+  await jsonRequest(`/tenants/${encodeURIComponent(tenantId)}/switch`, "POST");
+}
+
+export interface Member {
+  user_id: string;
+  name: string;
+  email: string;
+  role: TenantRole;
+  created_at: string;
+}
+
+export async function fetchMembers(tenantId: string): Promise<Member[]> {
+  return jsonRequest<Member[]>(`/tenants/${encodeURIComponent(tenantId)}/members`, "GET");
+}
+
+export async function updateMemberRole(
+  tenantId: string,
+  userId: string,
+  role: TenantRole,
+): Promise<Member> {
+  return jsonRequest<Member>(
+    `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
+    "PATCH",
+    { role },
+  );
+}
+
+export async function removeMember(tenantId: string, userId: string): Promise<void> {
+  await jsonRequest(
+    `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
+    "DELETE",
+  );
+}
+
+export interface Invitation {
+  id: string;
+  role: TenantRole;
+  email: string | null;
+  expires_at: string;
+  uses_remaining: number;
+  revoked_at: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export type EmailDelivery = "sent" | "not_configured" | "failed" | "not_requested";
+
+export interface CreatedInvitation extends Invitation {
+  // The plaintext token, returned once, at creation, and never again.
+  token: string;
+  email_delivery: EmailDelivery;
+}
+
+export interface CreateInvitationInput {
+  role: TenantRole;
+  email: string | null;
+  expires_in_hours: number;
+  uses_remaining: number;
+}
+
+export async function fetchInvitations(tenantId: string): Promise<Invitation[]> {
+  return jsonRequest<Invitation[]>(
+    `/tenants/${encodeURIComponent(tenantId)}/invitations`,
+    "GET",
+  );
+}
+
+export async function createInvitation(
+  tenantId: string,
+  input: CreateInvitationInput,
+): Promise<CreatedInvitation> {
+  return jsonRequest<CreatedInvitation>(
+    `/tenants/${encodeURIComponent(tenantId)}/invitations`,
+    "POST",
+    input,
+  );
+}
+
+export async function revokeInvitation(
+  tenantId: string,
+  invitationId: string,
+): Promise<void> {
+  await jsonRequest(
+    `/tenants/${encodeURIComponent(tenantId)}/invitations/${encodeURIComponent(invitationId)}`,
+    "DELETE",
+  );
+}
+
+export async function acceptInvitation(token: string): Promise<TenantMembership> {
+  return jsonRequest<TenantMembership>("/invitations/accept", "POST", { token });
 }
 
 // Unauthenticated: tells the login page which methods to offer.
@@ -1694,4 +1872,128 @@ export async function validateTemplate(
   return jsonRequest<TemplateValidation>("/templates/validate", "POST", {
     content,
   });
+}
+
+// ── Workspace usage and budgets ─────────────────────────────────────────────
+
+export interface CurrentTenant {
+  id: string;
+  slug: string;
+  name: string;
+  role: string;
+  // Whether the caller may manage the workspace: an owner or admin
+  // membership, or the operator bit.
+  administers: boolean;
+}
+
+export type UsageMetric =
+  | "messages"
+  | "turns"
+  | "input_tokens"
+  | "output_tokens"
+  | "cache_read_tokens"
+  | "cache_write_tokens";
+
+export const USAGE_METRICS: UsageMetric[] = [
+  "messages",
+  "turns",
+  "input_tokens",
+  "output_tokens",
+  "cache_read_tokens",
+  "cache_write_tokens",
+];
+
+// Messages and turns are not counted per model, so a budget on them covers
+// every model and the server refuses one that names a model.
+export const PER_MODEL_METRICS: UsageMetric[] = [
+  "input_tokens",
+  "output_tokens",
+  "cache_read_tokens",
+  "cache_write_tokens",
+];
+
+export interface UsageTotal {
+  metric: UsageMetric;
+  client_id: string;
+  // Null when the client has since been deleted; its spend still counts.
+  client_name: string | null;
+  client_type: string | null;
+  model: string;
+  amount: number;
+}
+
+// The server's bounds on a budget: at most a leap year, and at most the largest
+// integer a JavaScript number holds exactly.
+export const MAX_BUDGET_PERIOD_HOURS = 8784;
+export const MAX_BUDGET_AMOUNT = Number.MAX_SAFE_INTEGER;
+
+export interface Budget {
+  id: string;
+  // Null covers every agent in the workspace.
+  agent_id: string | null;
+  agent_name: string | null;
+  metric: UsageMetric;
+  // Empty covers every model.
+  model: string;
+  amount_limit: number;
+  period_hours: number;
+  spent: number;
+  resets_at: string;
+  exhausted: boolean;
+}
+
+export interface BudgetCreate {
+  agent_id: string | null;
+  metric: UsageMetric;
+  model: string;
+  amount_limit: number;
+  period_hours: number;
+}
+
+export interface BudgetUpdate {
+  amount_limit: number;
+  period_hours: number;
+}
+
+export async function fetchCurrentTenant(): Promise<CurrentTenant | null> {
+  return fetchJson<CurrentTenant>("/tenants/current");
+}
+
+export async function fetchUsage(
+  tenantId: string,
+  since: Date,
+  until: Date,
+): Promise<UsageTotal[] | null> {
+  const params = new URLSearchParams({
+    since: since.toISOString(),
+    until: until.toISOString(),
+  });
+  return fetchJson<UsageTotal[]>(`/tenants/${tenantId}/usage?${params}`);
+}
+
+export async function fetchBudgets(tenantId: string): Promise<Budget[] | null> {
+  return fetchJson<Budget[]>(`/tenants/${tenantId}/budgets`);
+}
+
+export async function createBudget(tenantId: string, body: BudgetCreate): Promise<Budget> {
+  return jsonRequest<Budget>(`/tenants/${tenantId}/budgets`, "POST", body);
+}
+
+export async function updateBudget(
+  tenantId: string,
+  budgetId: string,
+  body: BudgetUpdate,
+): Promise<Budget> {
+  return jsonRequest<Budget>(`/tenants/${tenantId}/budgets/${budgetId}`, "PUT", body);
+}
+
+export async function deleteBudget(tenantId: string, budgetId: string): Promise<void> {
+  const res = await fetch(`${BASE}/tenants/${tenantId}/budgets/${budgetId}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(errorText(detail?.detail, `${res.status} ${res.statusText}`));
+  }
 }

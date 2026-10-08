@@ -12,15 +12,16 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
-from switch_core.clients.agent_client import AgentClient, RoomMeta
-from switch_core.clients.client_base import ClientBase
+from switch_core.clients.actor import Actor
+from switch_core.clients.agent_consumer import AgentConsumer, RoomMeta
+from switch_core.clients.consumer import Consumer
 from switch_core.transport import InboundMembership, RoomRef
 
 AGENT = "agent-1"
@@ -55,8 +56,10 @@ def _leave(transport_room_id: str) -> InboundMembership:
     )
 
 
-def _client(buffer: EventBuffer, connections: ConnectionRegistry) -> SimpleNamespace:
-    """A minimal fake `self` for the unbound `AgentClient.on_removed`."""
+def _client(
+    buffer: EventBuffer, connections: AgentConnectionRegistry
+) -> SimpleNamespace:
+    """A minimal fake `self` for the unbound `AgentConsumer.on_removed`."""
     meta = {
         "!left:test": RoomMeta(
             room_id=LEFT,
@@ -66,8 +69,8 @@ def _client(buffer: EventBuffer, connections: ConnectionRegistry) -> SimpleNames
         ),
     }
 
-    async def _resolve_room_meta(matrix_room_id: str) -> RoomMeta | None:
-        return meta.get(matrix_room_id)
+    async def _resolve_room_meta(transport_room_id: str) -> RoomMeta | None:
+        return meta.get(transport_room_id)
 
     return SimpleNamespace(
         _event_buffer=buffer,
@@ -78,7 +81,7 @@ def _client(buffer: EventBuffer, connections: ConnectionRegistry) -> SimpleNames
 
 
 async def _removed(stub: SimpleNamespace, transport_room_id: str) -> None:
-    await AgentClient.on_removed(
+    await AgentConsumer.on_removed(
         stub,  # type: ignore[arg-type]
         RoomRef(room_id=transport_room_id),
         _leave(transport_room_id),
@@ -86,11 +89,11 @@ async def _removed(stub: SimpleNamespace, transport_room_id: str) -> None:
 
 
 async def test_the_rooms_retained_events_are_forgotten() -> None:
-    buffer = EventBuffer()
+    buffer = EventBuffer(sequence_base=0)
     buffer.enqueue(AGENT, LEFT, _message(LEFT, "said in the old room"))
     buffer.enqueue(AGENT, KEPT, _message(KEPT, "said in this one"))
 
-    await _removed(_client(buffer, ConnectionRegistry()), "!left:test")
+    await _removed(_client(buffer, AgentConnectionRegistry()), "!left:test")
 
     # Read at the level every reader is built on, filter or no filter: this is
     # what closes it for the stream, which has no membership of its own to
@@ -99,7 +102,7 @@ async def test_the_rooms_retained_events_are_forgotten() -> None:
 
 
 async def test_the_rooms_claim_is_released() -> None:
-    connections = ConnectionRegistry()
+    connections = AgentConnectionRegistry()
     conn = connections.open(
         agent_id=AGENT,
         connection_id="c1",
@@ -112,17 +115,17 @@ async def test_the_rooms_claim_is_released() -> None:
     )
     connections.claim_room(conn, LEFT)
 
-    await _removed(_client(EventBuffer(), connections), "!left:test")
+    await _removed(_client(EventBuffer(sequence_base=0), connections), "!left:test")
 
     assert conn.rooms == set()
 
 
 async def test_a_room_that_cannot_be_resolved_drops_nothing() -> None:
     """Rather than guessing which room was meant and emptying the wrong one."""
-    buffer = EventBuffer()
+    buffer = EventBuffer(sequence_base=0)
     buffer.enqueue(AGENT, LEFT, _message(LEFT, "still here"))
 
-    await _removed(_client(buffer, ConnectionRegistry()), "!unknown:test")
+    await _removed(_client(buffer, AgentConnectionRegistry()), "!unknown:test")
 
     assert [item.room_id for item in buffer.read_from(AGENT, 0)] == [LEFT]
 
@@ -135,13 +138,15 @@ class _CapturingTransport:
         self.handlers = handlers
 
 
-class _BareClient(ClientBase):
-    """Enough of a client for `setup` to run and a hook to be observed."""
+class _BareClient(Consumer):
+    """Enough of a consumer for `setup` to run and a hook to be observed."""
 
     def __init__(self, transport: _CapturingTransport) -> None:
-        self.matrix_user_id = "@agent:test"
+        actor = Actor.__new__(Actor)
+        actor.transport_user_id = "@agent:test"
         # `_transport` is a property over this, and raises until it is set.
-        self.transport = transport
+        actor.transport = transport
+        self.actor = actor
         self._self_join_dispatched: set[str] = set()
         self.removed: list[str] = []
 

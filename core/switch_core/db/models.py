@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import (
     DDL,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     Integer,
     LargeBinary,
     PrimaryKeyConstraint,
+    Sequence,
     Table,
     Text,
     UniqueConstraint,
@@ -25,6 +27,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 from switch_core.db.base import Base
+from switch_core.db.encrypted_json import EncryptedJSONB
 from switch_core.db.notify_ddl import (
     CREATE_NOTIFY_FUNCTION,
     CREATE_NOTIFY_TRIGGER,
@@ -39,6 +42,10 @@ from switch_core.db.session_activity_notify_ddl import (
 )
 from switch_core.db.tenant_lookup import attach_tenant_lookups
 from switch_core.tenant_context import current_tenant_id
+
+agent_event_boot_sequence = Sequence(
+    "agent_event_boot", metadata=Base.metadata, maxvalue=2097150, cycle=False
+)
 
 
 def _uuid() -> str:
@@ -258,6 +265,7 @@ class OidcIdentity(Base):
 class ApiKey(TenantScoped, Base):
     __tablename__ = "api_keys"
     __table_args__ = (
+        Index("ix_api_keys_tenant_id", "tenant_id"),
         UniqueConstraint("id", "tenant_id", name="uq_api_keys_id_tenant"),
     )
 
@@ -270,6 +278,424 @@ class ApiKey(TenantScoped, Base):
     label: Mapped[str] = mapped_column(Text, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ProviderConnection(TenantScoped, Base):
+    __tablename__ = "provider_connections"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "user_id", "provider"),
+        CheckConstraint(
+            "provider IN ('claude', 'github', 'codex', 'opencode', 'cursor', 'antigravity')",
+            name="ck_provider_connections_provider",
+        ),
+        CheckConstraint(
+            "(provider = 'claude' AND kind IN ('api-key', 'setup-token')) OR (provider = 'github' AND kind = 'oauth') OR (provider = 'codex' AND kind IN ('api-key', 'auth-json')) OR (provider = 'cursor' AND kind = 'api-key') OR (provider IN ('opencode', 'antigravity') AND kind = 'auth-json')",
+            name="ck_provider_connections_kind",
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_credential: Mapped[str] = mapped_column(Text, nullable=False)
+    verification_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="verified"
+    )
+    verified_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class ProviderVerification(TenantScoped, Base):
+    __tablename__ = "provider_verifications"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        Index(
+            "ix_provider_verification_owner",
+            "tenant_id",
+            "user_id",
+            "provider",
+            "created_at",
+        ),
+        Index("ix_provider_verification_state", "tenant_id", "state"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_credential: Mapped[str | None] = mapped_column(Text)
+    encrypted_token: Mapped[str | None] = mapped_column(Text)
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    result: Mapped[bool | None] = mapped_column(Boolean)
+    instance_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class HostedMachine(TenantScoped, Base):
+    """One user's hosted VM, which runs every one of that user's cloud agents."""
+
+    __tablename__ = "hosted_machines"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        CheckConstraint(
+            "state IN ('queued', 'provisioning', 'ready', 'stopping', 'stopped', 'error', 'retained', 'deleting', 'deleted')",
+            name="ck_hosted_machine_state",
+        ),
+        CheckConstraint(
+            "desired_state IN ('running', 'stopped', 'retained', 'deleted')",
+            name="ck_hosted_machine_desired_state",
+        ),
+        CheckConstraint(
+            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner')",
+            name="ck_hosted_machine_stop_reason",
+        ),
+        CheckConstraint("generation >= 1", name="ck_hosted_machine_generation"),
+        Index(
+            "uq_hosted_machine_owner",
+            "tenant_id",
+            "owner_id",
+            unique=True,
+            postgresql_where=text("state <> 'deleted'"),
+        ),
+        Index(
+            "uq_hosted_machine_slot",
+            "tenant_id",
+            "slot_id",
+            unique=True,
+            postgresql_where=text("state <> 'deleted'"),
+        ),
+        Index(
+            "uq_hosted_machine_generation",
+            "tenant_id",
+            "slot_id",
+            "generation",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    slot_id: Mapped[str] = mapped_column(Text, nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    desired_state: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="running"
+    )
+    stop_reason: Mapped[str | None] = mapped_column(Text)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    instance_type: Mapped[str | None] = mapped_column(Text)
+    data_volume_id: Mapped[str | None] = mapped_column(Text)
+    instance_id: Mapped[str | None] = mapped_column(Text)
+    retain_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    machine_capability_hash: Mapped[str | None] = mapped_column(Text)
+    machine_capability_encrypted: Mapped[str | None] = mapped_column(Text)
+    machine_capability_revision: Mapped[int | None] = mapped_column(Integer)
+    agents_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="1"
+    )
+    active_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    heartbeat: Mapped[dict | None] = mapped_column(JSONB)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When Core first saw the controller report `running` for this revision.
+    running_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class HostedLaunch(TenantScoped, Base):
+    __tablename__ = "hosted_launches"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        UniqueConstraint("tenant_id", "name", name="uq_hosted_launch_name"),
+        CheckConstraint(
+            "state IN ('queued', 'provisioning', 'ready', 'error', 'stopping', 'stopped', 'deleting', 'deleted')",
+            name="ck_hosted_launch_state",
+        ),
+        CheckConstraint(
+            "process_state IS NULL OR process_state IN ('pending', 'starting', 'running', 'stopping', 'stopped', 'restarting', 'crashed', 'failed')",
+            name="ck_hosted_launch_process_state",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "machine_id"],
+            ["hosted_machines.tenant_id", "hosted_machines.id"],
+            name="fk_hosted_launches_machine",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    spec: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
+    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    desired_state: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="running"
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deletion_cleanup: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    active_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    worker_capability_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    worker_capability_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    worker_capability_revision: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    relay_seq: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    machine_id: Mapped[str | None] = mapped_column(Text)
+    repository: Mapped[str | None] = mapped_column(Text)
+    process_state: Mapped[str | None] = mapped_column(Text)
+    process_restarts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    process_oom_kills: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    process_exit: Mapped[dict | None] = mapped_column(JSONB)
+    process_reported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+
+class GitHubIssuedToken(TenantScoped, Base):
+    __tablename__ = "github_issued_tokens"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "launch_id"],
+            ["hosted_launches.tenant_id", "hosted_launches.id"],
+        ),
+        Index("ix_github_issued_tokens_owner", "tenant_id", "owner_id"),
+    )
+    id: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    launch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    launch_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    encrypted_token: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    revoke_requested: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    claim_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class HostedOperation(TenantScoped, Base):
+    __tablename__ = "hosted_operations"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "launch_id"],
+            ["hosted_launches.tenant_id", "hosted_launches.id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "state IN ('queued', 'claimed', 'applied', 'failed', 'unknown')",
+            name="ck_hosted_operation_state",
+        ),
+    )
+    id: Mapped[str] = mapped_column(Text, nullable=False)
+    launch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    launch_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
+    error: Mapped[str | None] = mapped_column(Text)
+    claimed_by: Mapped[str | None] = mapped_column(Text)
+    claimed_boot_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class HostedWakeMailbox(TenantScoped, Base):
+    """An addressed event for a hosted agent, kept until its worker has admitted it."""
+
+    __tablename__ = "hosted_wake_mailbox"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "agent_id", "room_id", "message_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "launch_id"],
+            ["hosted_launches.tenant_id", "hosted_launches.id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "state IN ('pending', 'offered', 'accepted', 'admitted', 'held', 'cancelled', 'cancel_requested', 'refused', 'duplicate', 'expired', 'expired_uncertain')",
+            name="ck_hosted_wake_mailbox_state",
+        ),
+        CheckConstraint(
+            "cancel_reason IS NULL OR cancel_reason IN ('stopped', 'expired')",
+            name="ck_hosted_wake_mailbox_cancel_reason",
+        ),
+        CheckConstraint(
+            "origin IN ('live', 'cutover')", name="ck_hosted_wake_mailbox_origin"
+        ),
+        CheckConstraint(
+            "notice_owed IS NULL OR notice_owed IN ('stopped', 'expired', 'expired_uncertain', 'started_before_stop', 'started_before_expiry')",
+            name="ck_hosted_wake_mailbox_notice_owed",
+        ),
+        CheckConstraint(
+            "notice_dropped IS NULL OR notice_dropped IN ('agent_deleted')",
+            name="ck_hosted_wake_mailbox_notice_dropped",
+        ),
+        Index(
+            "ix_hosted_wake_mailbox_agent_state",
+            "tenant_id",
+            "agent_id",
+            "state",
+            "addressed_at",
+        ),
+        Index(
+            "ix_hosted_wake_mailbox_notice_owed",
+            "tenant_id",
+            "addressed_at",
+            postgresql_where=text("notice_owed IS NOT NULL"),
+        ),
+    )
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[str] = mapped_column(Text, nullable=False)
+    launch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    thread_id: Mapped[str | None] = mapped_column(Text)
+    event: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
+    cancel_reason: Mapped[str | None] = mapped_column(Text)
+    #: The room notice this row's terminal move owes, until one is posted.
+    notice_owed: Mapped[str | None] = mapped_column(Text)
+    #: Why `notice_owed` will never be posted; the upkeep no longer retries it.
+    notice_dropped: Mapped[str | None] = mapped_column(Text)
+    ever_offered: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    offered_to: Mapped[str | None] = mapped_column(Text)
+    offered_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    origin: Mapped[str] = mapped_column(Text, nullable=False, server_default="live")
+    addressed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class HostedCutoverVolume(TenantScoped, Base):
+    """A launch's retained worker volume, complete once its preflight manifest is recorded."""
+
+    __tablename__ = "hosted_cutover_volumes"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "launch_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "launch_id"],
+            ["hosted_launches.tenant_id", "hosted_launches.id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "preflight_state IN ('pending', 'blocked', 'complete')",
+            name="ck_hosted_cutover_volumes_state",
+        ),
+    )
+    launch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    preflight_state: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="pending"
+    )
+    manifest_sha256: Mapped[str | None] = mapped_column(Text)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    blocked_reason: Mapped[str | None] = mapped_column(Text)
+    imports_queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class HostedCutoverItem(TenantScoped, Base):
+    """Pre-cutover work for a hosted agent: its evidence, and what was done with it."""
+
+    __tablename__ = "hosted_cutover_items"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "launch_id"],
+            ["hosted_launches.tenant_id", "hosted_launches.id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "kind IN ('room_message', 'console_command', 'session', 'request_open', 'reset_pending', 'operation')",
+            name="ck_hosted_cutover_items_kind",
+        ),
+        CheckConstraint(
+            "disposition IS NULL OR disposition IN ('ran', 'uncertain', 'unrecoverable', 'import', 'settled_by_host', 'owner_notice', 'interrupted', 'preserved')",
+            name="ck_hosted_cutover_items_disposition",
+        ),
+        CheckConstraint(
+            "kind <> 'room_message' OR (room_id IS NOT NULL AND message_id IS NOT NULL)",
+            name="ck_hosted_cutover_items_room_message",
+        ),
+        CheckConstraint(
+            "notice_dropped IS NULL OR notice_dropped IN ('agent_deleted')",
+            name="ck_hosted_cutover_items_notice_dropped",
+        ),
+        Index(
+            "uq_hosted_cutover_items_room_message",
+            "tenant_id",
+            "agent_id",
+            "room_id",
+            "message_id",
+            unique=True,
+            postgresql_where=text("kind = 'room_message'"),
+        ),
+        Index("ix_hosted_cutover_items_launch", "tenant_id", "launch_id"),
+    )
+    id: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("gen_random_uuid()::text")
+    )
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    launch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str | None] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str | None] = mapped_column(Text)
+    message_id: Mapped[str | None] = mapped_column(Text)
+    thread_id: Mapped[str | None] = mapped_column(Text)
+    evidence: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    disposition: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict | None] = mapped_column(JSONB)
+    notice_posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Why the notice will never be posted; nothing retries it. Deferred because
+    #: `hosted-cutover-upgrade record` loads items at `a3c9e5f71d28`, before the
+    #: column exists.
+    notice_dropped: Mapped[str | None] = mapped_column(Text, deferred=True)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
@@ -314,6 +740,7 @@ class Invitation(TenantScoped, Base):
 
     __tablename__ = "invitations"
     __table_args__ = (
+        Index("ix_invitations_tenant_id", "tenant_id"),
         CheckConstraint(
             "role IN ('owner', 'admin', 'member')", name="ck_invitations_role"
         ),
@@ -344,6 +771,86 @@ class Invitation(TenantScoped, Base):
     )
 
 
+class TenantJoinDomain(TenantScoped, Base):
+    """An e-mail domain whose people may join a tenant without an invitation.
+
+    Anyone signed in with an address at `domain` is offered the tenant and
+    joins it as a member. The natural key is `(tenant_id, domain)`, so
+    `tenant_id` joins the primary key directly, as on `reference_types`, and
+    two tenants may each open themselves to the same domain.
+
+    `domain` is stored lower-case, and the constraint is what makes that true
+    rather than a convention: the lookup that finds these rows
+    (`tenants_open_to_domain`, `db/tenant_lookup.py`) compares by equality,
+    and a mixed-case row would be one nobody could ever match.
+
+    Who may add a domain, and which, is the gateway's decision rather than this
+    row's — today an admin may open a tenant only to the domain of their own
+    address, and never to a public e-mail provider's.
+    """
+
+    __tablename__ = "tenant_join_domains"
+    __table_args__ = (
+        CheckConstraint(
+            "domain = lower(domain)", name="ck_tenant_join_domains_lower_case"
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("tenants.id", name="fk_tenant_join_domains_tenant"),
+        primary_key=True,
+        default=require_tenant_id,
+    )
+    domain: Mapped[str] = mapped_column(Text, primary_key=True)
+    created_by: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AuditEvent(TenantScoped, Base):
+    """One security-relevant change in a tenant: who did what, to what, when.
+
+    Written in the same transaction as the change it records wherever that
+    change is made on the caller's session, so a change that rolls back
+    leaves no event. Where a service commits the change on sessions of its
+    own (registering or removing a bridge, disconnecting an install), the
+    event is written after it succeeds, so it never describes a change that
+    did not happen.
+
+    Append-only for the runtime role: `grant_runtime_role` takes `UPDATE` and
+    `DELETE` on this table back off it, so the process serving requests can
+    add to the history but not rewrite it.
+
+    `actor_user_id` carries no foreign key, so the history outlives the
+    account; it is null when no signed-in person acted. `details` holds
+    identifiers and field names, never secrets or the values of connection
+    settings.
+
+    `occurred_at` defaults to `clock_timestamp()`, not `now()`: two events in
+    one transaction would otherwise share a timestamp, and the read pages back
+    by it.
+    """
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_events_tenant_occurred_at", "tenant_id", "occurred_at"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False
+    )
+    actor_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    target_type: Mapped[str] = mapped_column(Text, nullable=False)
+    target_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
 # ── Clients ────────────────────────────────────────────────────────────────────
 
 
@@ -357,7 +864,10 @@ class Client(TenantScoped, Base):
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    matrix_user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # The column keeps its Matrix-era name; the attribute says what it is.
+    transport_user_id: Mapped[str] = mapped_column(
+        "matrix_user_id", Text, nullable=False
+    )
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -369,6 +879,7 @@ class Client(TenantScoped, Base):
 class ClientRoom(TenantScoped, Base):
     __tablename__ = "client_rooms"
     __table_args__ = (
+        Index("ix_client_rooms_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "client_id"],
             ["clients.tenant_id", "clients.id"],
@@ -395,6 +906,14 @@ class Agent(TenantScoped, Base):
     __tablename__ = "agents"
     __table_args__ = (
         Index("ix_agents_parent_agent_id", "parent_agent_id"),
+        # Deployment-wide, not per tenant: an OIDC sign-in resolves the agent
+        # from its client id before any tenant is known.
+        Index(
+            "uq_agents_oauth_client_id",
+            "oauth_client_id",
+            unique=True,
+            postgresql_where=text("oauth_client_id IS NOT NULL"),
+        ),
         UniqueConstraint("tenant_id", "name", name="uq_agents_tenant_name"),
         UniqueConstraint("id", "tenant_id", name="uq_agents_id_tenant"),
         ForeignKeyConstraint(
@@ -426,7 +945,7 @@ class Agent(TenantScoped, Base):
     icon_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Human-readable name shown to people ("Switch Dev") next to the machine
     # identifier `name` carries ("switchdev"). NULL means none was chosen and
-    # the display layer falls back to `name`. Never the Matrix client display
+    # the display layer falls back to `name`. Never the client display
     # name: that stays the identifier, because it is what bridges match on to
     # recognise an agent's own echo.
     display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -453,6 +972,13 @@ class Agent(TenantScoped, Base):
     # `switch_core.addressing.AddressingPolicy` blob (an allow-list of rules
     # over room / room-group / user / agent). See that module for the model.
     addressing_policy: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Whether the agent may act on its owner's agent management through the
+    # agent operations: list the owner's machines and managed agents, and
+    # create managed agents on those machines. Off unless the owner turns it
+    # on, and never inherited by an agent it creates.
+    can_manage_agents: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -465,6 +991,7 @@ class Agent(TenantScoped, Base):
 class Tool(TenantScoped, Base):
     __tablename__ = "tools"
     __table_args__ = (
+        Index("ix_tools_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
@@ -489,6 +1016,7 @@ class Tool(TenantScoped, Base):
 class Model(TenantScoped, Base):
     __tablename__ = "models"
     __table_args__ = (
+        Index("ix_models_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
             ["agents.tenant_id", "agents.id"],
@@ -531,12 +1059,14 @@ agent_skills = Table(
         ["skills.tenant_id", "skills.id"],
         name="fk_agent_skills_skill",
     ),
+    Index("ix_agent_skills_tenant_id", "tenant_id"),
 )
 
 
 class Skill(TenantScoped, Base):
     __tablename__ = "skills"
     __table_args__ = (
+        Index("ix_skills_tenant_id", "tenant_id"),
         UniqueConstraint("id", "tenant_id", name="uq_skills_id_tenant"),
         ForeignKeyConstraint(
             ["tenant_id", "owner_agent_id"],
@@ -596,6 +1126,7 @@ room_agents = Table(
         ["agents.tenant_id", "agents.id"],
         name="fk_room_agents_agent",
     ),
+    Index("ix_room_agents_tenant_id", "tenant_id"),
 )
 
 room_skills = Table(
@@ -620,6 +1151,7 @@ room_skills = Table(
         ["skills.tenant_id", "skills.id"],
         name="fk_room_skills_skill",
     ),
+    Index("ix_room_skills_tenant_id", "tenant_id"),
 )
 
 
@@ -672,7 +1204,10 @@ class Room(TenantScoped, Base):
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    matrix_room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # The column keeps its Matrix-era name; the attribute says what it is.
+    transport_room_id: Mapped[str] = mapped_column(
+        "matrix_room_id", Text, nullable=False
+    )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     bridge_id: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -720,7 +1255,7 @@ class Room(TenantScoped, Base):
     )
     # When set, the room is archived: hidden from the default active room lists
     # (gateway + agent MCP tools) but otherwise fully intact and retrievable —
-    # members, Matrix room, and bridge channel are untouched. NULL = active.
+    # members, room, and bridge channel are untouched. NULL = active.
     # Archiving is metadata-only and reversible (unarchive clears this).
     archived_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -746,6 +1281,7 @@ class RoomGroup(TenantScoped, Base):
 
     __tablename__ = "room_groups"
     __table_args__ = (
+        Index("ix_room_groups_tenant_id", "tenant_id"),
         CheckConstraint("parent_group_id <> id", name="room_groups_no_self_parent"),
         UniqueConstraint("id", "tenant_id", name="uq_room_groups_id_tenant"),
         ForeignKeyConstraint(
@@ -779,6 +1315,7 @@ class RoomLink(TenantScoped, Base):
 
     __tablename__ = "room_links"
     __table_args__ = (
+        Index("ix_room_links_tenant_id", "tenant_id"),
         CheckConstraint("source_room_id <> target_room_id", name="room_links_no_self"),
         ForeignKeyConstraint(
             ["tenant_id", "source_room_id"],
@@ -808,6 +1345,7 @@ class RoomLink(TenantScoped, Base):
 class Task(TenantScoped, Base):
     __tablename__ = "tasks"
     __table_args__ = (
+        Index("ix_tasks_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "room_id"],
             ["rooms.tenant_id", "rooms.id"],
@@ -872,6 +1410,7 @@ room_references = Table(
         ["references.tenant_id", "references.id"],
         name="fk_room_references_reference",
     ),
+    Index("ix_room_references_tenant_id", "tenant_id"),
 )
 
 room_documents = Table(
@@ -896,12 +1435,14 @@ room_documents = Table(
         ["documents.tenant_id", "documents.id"],
         name="fk_room_documents_document",
     ),
+    Index("ix_room_documents_tenant_id", "tenant_id"),
 )
 
 
 class Reference(TenantScoped, Base):
     __tablename__ = "references"
     __table_args__ = (
+        Index("ix_references_tenant_id", "tenant_id"),
         UniqueConstraint("id", "tenant_id", name="uq_references_id_tenant"),
     )
 
@@ -952,6 +1493,7 @@ class ReferenceType(TenantScoped, Base):
 class Document(TenantScoped, Base):
     __tablename__ = "documents"
     __table_args__ = (
+        Index("ix_documents_tenant_id", "tenant_id"),
         Index(
             "uq_documents_room_name",
             "room_id",
@@ -1009,6 +1551,7 @@ class Template(TenantScoped, Base):
 
     __tablename__ = "templates"
     __table_args__ = (
+        Index("ix_templates_tenant_id", "tenant_id"),
         # Not widened to include the tenant: an owner belongs to one, so
         # scoping the name to the owner already scopes it to the tenant.
         UniqueConstraint("owner_id", "name", name="uq_templates_owner_name"),
@@ -1077,6 +1620,7 @@ room_packages = Table(
         ["packages.tenant_id", "packages.id"],
         name="fk_room_packages_package",
     ),
+    Index("ix_room_packages_tenant_id", "tenant_id"),
 )
 
 package_references = Table(
@@ -1101,6 +1645,7 @@ package_references = Table(
         ["references.tenant_id", "references.id"],
         name="fk_package_references_reference",
     ),
+    Index("ix_package_references_tenant_id", "tenant_id"),
 )
 
 package_documents = Table(
@@ -1125,12 +1670,14 @@ package_documents = Table(
         ["documents.tenant_id", "documents.id"],
         name="fk_package_documents_document",
     ),
+    Index("ix_package_documents_tenant_id", "tenant_id"),
 )
 
 
 class Package(TenantScoped, Base):
     __tablename__ = "packages"
     __table_args__ = (
+        Index("ix_packages_tenant_id", "tenant_id"),
         UniqueConstraint("id", "tenant_id", name="uq_packages_id_tenant"),
     )
 
@@ -1152,6 +1699,7 @@ class Package(TenantScoped, Base):
 class CollaborationBridge(TenantScoped, Base):
     __tablename__ = "collaboration_bridges"
     __table_args__ = (
+        Index("ix_collaboration_bridges_tenant_id", "tenant_id"),
         # The bridge new rooms land on when no bridge is named. At most one row
         # per tenant may be true; this partial unique index is what actually
         # enforces that, so concurrent writers cannot produce two defaults.
@@ -1172,7 +1720,9 @@ class CollaborationBridge(TenantScoped, Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
-    connection_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    connection_config: Mapped[dict | None] = mapped_column(
+        EncryptedJSONB, nullable=True
+    )
     client_id: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     agent_greetings_enabled: Mapped[bool] = mapped_column(
@@ -1251,7 +1801,7 @@ class MessagingInstall(TenantScoped, Base):
     install is recorded and not yet serving.
 
     `encrypted_bot_token` uses the same key as every other credential this
-    schema stores (`crypto.encrypt_token` over the configured secret), so it
+    schema stores (`Keyring.encrypt`, the at-rest key), so it
     is protected against a stolen dump and not against a compromised process.
     A per-tenant key is a stronger boundary and a later decision. It is
     nullable so that an install which has ended can keep its record without
@@ -1266,6 +1816,7 @@ class MessagingInstall(TenantScoped, Base):
 
     __tablename__ = "messaging_installs"
     __table_args__ = (
+        Index("ix_messaging_installs_tenant_id", "tenant_id"),
         Index(
             "uq_messaging_installs_workspace",
             "platform",
@@ -1334,9 +1885,14 @@ class MessagingInstallState(TenantScoped, Base):
     is a bound on how long the platform's round trip may take; `consumed_at`
     is the fact of redemption, kept rather than deleted so an operator asking
     why a link stopped working can see it was used rather than lost.
+
+    `decided_at` is the second single use. Redeeming the state does not claim
+    the workspace: the callback asks whoever approved it to confirm which
+    organisation it joins, and their Connect or Cancel is recorded here, once.
     """
 
     __tablename__ = "messaging_install_states"
+    __table_args__ = (Index("ix_messaging_install_states_tenant_id", "tenant_id"),)
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     platform: Mapped[str] = mapped_column(Text, nullable=False)
@@ -1348,6 +1904,9 @@ class MessagingInstallState(TenantScoped, Base):
     )
     expires_at: Mapped[str] = mapped_column(DateTime(timezone=True), nullable=False)
     consumed_at: Mapped[str | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decided_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
@@ -1424,6 +1983,7 @@ class MessagingEventReceipt(TenantScoped, Base):
 class ServerConnector(TenantScoped, Base):
     __tablename__ = "server_connectors"
     __table_args__ = (
+        Index("ix_server_connectors_tenant_id", "tenant_id"),
         ForeignKeyConstraint(
             ["tenant_id", "api_key_id"],
             ["api_keys.tenant_id", "api_keys.id"],
@@ -1434,7 +1994,9 @@ class ServerConnector(TenantScoped, Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
-    connection_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    connection_config: Mapped[dict | None] = mapped_column(
+        EncryptedJSONB, nullable=True
+    )
     api_key_id: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
@@ -1448,6 +2010,7 @@ class ServerConnector(TenantScoped, Base):
 class ExternalUser(TenantScoped, Base):
     __tablename__ = "external_users"
     __table_args__ = (
+        Index("ix_external_users_tenant_id", "tenant_id"),
         UniqueConstraint("bridge_id", "external_user_id"),
         UniqueConstraint("id", "tenant_id", name="uq_external_users_id_tenant"),
         ForeignKeyConstraint(
@@ -1487,6 +2050,7 @@ class ExternalUserClaim(TenantScoped, Base):
 
     __tablename__ = "external_user_claims"
     __table_args__ = (
+        Index("ix_external_user_claims_tenant_id", "tenant_id"),
         Index("ix_external_user_claims_user_id", "user_id"),
         ForeignKeyConstraint(
             ["tenant_id", "external_user_id"],
@@ -1530,6 +2094,7 @@ class AgentSession(TenantScoped, Base):
 
     __tablename__ = "agent_sessions"
     __table_args__ = (
+        Index("ix_agent_sessions_tenant_id", "tenant_id"),
         Index(
             "uq_agent_sessions_agent_room",
             text("agent_id"),
@@ -1579,6 +2144,7 @@ class AgentRuntimeState(TenantScoped, Base):
 
     __tablename__ = "agent_runtime_states"
     __table_args__ = (
+        Index("ix_agent_runtime_states_tenant_id", "tenant_id"),
         UniqueConstraint(
             "agent_id", "room_id", name="uq_agent_runtime_states_agent_room"
         ),
@@ -1640,6 +2206,7 @@ class RoomRole(TenantScoped, Base):
 
     __tablename__ = "room_roles"
     __table_args__ = (
+        Index("ix_room_roles_tenant_id", "tenant_id"),
         UniqueConstraint("room_id", "name", name="uq_room_roles_room_name"),
         UniqueConstraint("id", "tenant_id", name="uq_room_roles_id_tenant"),
         ForeignKeyConstraint(
@@ -1687,6 +2254,7 @@ class RoleLease(TenantScoped, Base):
 
     __tablename__ = "role_leases"
     __table_args__ = (
+        Index("ix_role_leases_tenant_id", "tenant_id"),
         UniqueConstraint("agent_id", name="uq_role_leases_agent"),
         Index("ix_role_leases_role_id", "role_id"),
         ForeignKeyConstraint(
@@ -1738,6 +2306,7 @@ class BridgeMessageMap(TenantScoped, Base):
 
     __tablename__ = "bridge_message_map"
     __table_args__ = (
+        Index("ix_bridge_message_map_tenant_id", "tenant_id"),
         UniqueConstraint("bridge_id", "transport_event_id"),
         UniqueConstraint("bridge_id", "external_post_id"),
         ForeignKeyConstraint(
@@ -1823,6 +2392,37 @@ class TelemetrySnapshotWatermark(Base):
     )
 
 
+# ── Switch-core processes ────────────────────────────────────────────────────
+
+
+class SwitchCoreProcess(Base):
+    """A running switch-core process's lease (`management/process_lease.py`).
+
+    Each process holding controller sockets claims a row at startup, renews
+    `beat_at` every few seconds, and sets `stopped_at` as it shuts down. A
+    controller connection whose holding process's lease is stale, stopped or
+    gone reads as offline, which is how a process that died without writing
+    its connections' closings is noticed. One write per process per renewal,
+    however many machines it holds.
+
+    Not tenant-scoped: a process serves every tenant. Rows long stale are
+    pruned by the live processes.
+    """
+
+    __tablename__ = "switch_core_processes"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    beat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    stopped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 # ── Feature flags ────────────────────────────────────────────────────────────
 
 
@@ -1860,7 +2460,7 @@ class Message(TenantScoped, Base):
 
     Every participant in a room is a Switch-owned client, so recording each
     send captures the whole room exactly once — including messages a human
-    originates on a bridged platform, which enter through that user's puppet.
+    originates on a bridged platform, which enter through that user's human actor.
 
     `content` is the full event body as sent. The columns beside it are
     denormalised out of it for querying; for a custom `com.switch.*` event
@@ -1900,12 +2500,25 @@ class Message(TenantScoped, Base):
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    # Position within the room, from 1, and the cursor the read path pages on.
-    # Assigned by MessageStore.create under a per-room lock rather than by a
-    # sequence: a sequence hands out numbers when a statement runs, not when it
-    # commits, so a row can commit after one with a higher number and a reader
-    # paging on `seq > n` would step straight over it. See the store for the
-    # argument in full.
+    # The message's position in its room's log: the room's offset, in Kafka
+    # terms (room = partition, seq = offset, a reader's cursor = its consumer
+    # offset). It means something only within its room: unique per room, and
+    # two rooms can each have a message 5.
+    #
+    # Live messages (MessageStore.create) count up from 1 with no gaps, in
+    # commit order, and a number is never renumbered or reused. Reconstructed
+    # history (MessageStore.create_historical) counts down from -1, below the
+    # room's oldest, so seq can be negative and ordering by it still walks the
+    # room in the order things happened.
+    #
+    # A reader's cursor is the last seq it has, and it reads `seq > cursor`.
+    # Commit order is what makes that safe: nothing can later commit behind a
+    # cursor. A Postgres sequence would not give it, because it hands out
+    # numbers when a statement runs rather than when it commits. See
+    # MessageStore._next_seq for the argument in full.
+    #
+    # Not the `sequence` an agent sees on its event stream: that one is the
+    # event buffer's, numbered per agent across all its rooms.
     seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
     room_id: Mapped[str] = mapped_column(Text, nullable=False)
     # Global on purpose: a random, globally-unique identifier — scoping it
@@ -1934,6 +2547,7 @@ class MessageAttachment(TenantScoped, Base):
 
     __tablename__ = "message_attachments"
     __table_args__ = (
+        Index("ix_message_attachments_tenant_id", "tenant_id"),
         Index("ix_message_attachments_message", "message_id"),
         ForeignKeyConstraint(
             ["tenant_id", "message_id"],
@@ -1973,6 +2587,7 @@ class DeliveryCursor(TenantScoped, Base):
 
     __tablename__ = "delivery_cursors"
     __table_args__ = (
+        Index("ix_delivery_cursors_tenant_id", "tenant_id"),
         UniqueConstraint("agent_id", "room_id", name="uq_delivery_cursors_agent_room"),
         ForeignKeyConstraint(
             ["tenant_id", "agent_id"],
@@ -2171,7 +2786,7 @@ class ApprovalRequest(TenantScoped, Base):
     )
 
 
-class SessionActivityItem(TenantScoped, Base):
+class AgentSessionActivityItem(TenantScoped, Base):
     """One step of a turn as a platform draws it: the turn itself, a message,
     a tool call, or a notice.
 
@@ -2348,10 +2963,378 @@ for _table, _triggers in (
         ApprovalRequest.__table__,
         (CREATE_APPROVAL_INSERT_TRIGGER, CREATE_APPROVAL_STATE_TRIGGER),
     ),
-    (SessionActivityItem.__table__, (CREATE_ACTIVITY_TRIGGER,)),
+    (AgentSessionActivityItem.__table__, (CREATE_ACTIVITY_TRIGGER,)),
 ):
     for _ddl in (CREATE_SESSION_ACTIVITY_NOTIFY_FUNCTION, *_triggers):
         event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))
+
+
+# ── Usage metering ───────────────────────────────────────────────────────────
+
+
+class UsageMetric(StrEnum):
+    """What is counted. Cache reads and writes are kept apart from input
+    tokens because providers price them apart."""
+
+    MESSAGES = "messages"
+    TURNS = "turns"
+    INPUT_TOKENS = "input_tokens"
+    OUTPUT_TOKENS = "output_tokens"
+    CACHE_READ_TOKENS = "cache_read_tokens"
+    CACHE_WRITE_TOKENS = "cache_write_tokens"
+
+
+class TenantUsage(TenantScoped, Base):
+    """What a tenant has consumed, counted as it happens, one row per hour.
+
+    The record that quotas are enforced against and that billing will read,
+    so it is kept apart from the rows it counts: deleting a room cascades to
+    its messages, and a count derived from `messages` would forget usage the
+    tenant has already spent. Written in the same transaction as the thing it
+    counts, so the two cannot disagree.
+
+    Hourly buckets because a budget period is configurable: any period of a
+    whole number of hours is a sum over these rows, while a coarser bucket
+    would fix the shortest period a budget can have.
+
+    `client_id` is who consumed it: the sender of a message, or the client of
+    the agent a turn ran for. No foreign key, so a count outlives the client it
+    names. `model` is empty where a metric has none.
+    """
+
+    __tablename__ = "tenant_usage"
+    __table_args__ = (
+        # Leads on the metric so "this tenant's turns since a moment" — the
+        # shape every budget check asks — is a range scan on the key itself.
+        PrimaryKeyConstraint(
+            "tenant_id", "metric", "bucket_start", "client_id", "model"
+        ),
+        CheckConstraint(
+            "metric IN ({})".format(", ".join(f"'{m}'" for m in UsageMetric)),
+            name="ck_tenant_usage_metric",
+        ),
+        CheckConstraint("amount > 0", name="ck_tenant_usage_amount"),
+    )
+
+    metric: Mapped[str] = mapped_column(Text, nullable=False)
+    bucket_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    client_id: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+# A budget's period is at most a leap year, and its limit at most the largest
+# integer a JavaScript client reads exactly. Both keep the period arithmetic
+# and the gateway's numbers from overflowing.
+MAX_BUDGET_PERIOD_HOURS = 8784
+MAX_BUDGET_AMOUNT = 2**53 - 1
+
+
+class UsageBudget(TenantScoped, Base):
+    """A ceiling on one metric over a repeating period.
+
+    `agent_id` null covers every agent in the tenant; otherwise the one agent.
+    `model` empty covers every model. An agent that has reached any budget
+    covering it is stopped until the period turns over; people are never
+    stopped. A tenant with no budgets is unlimited.
+
+    Periods are whole hours counted from the Unix epoch in UTC, so a daily
+    budget turns over at midnight UTC and every writer agrees when.
+    """
+
+    __tablename__ = "usage_budgets"
+    __table_args__ = (
+        Index("ix_usage_budgets_tenant_id", "tenant_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_usage_budgets_agent",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "metric IN ({})".format(", ".join(f"'{m}'" for m in UsageMetric)),
+            name="ck_usage_budgets_metric",
+        ),
+        CheckConstraint(
+            f"amount_limit > 0 AND amount_limit <= {MAX_BUDGET_AMOUNT}",
+            name="ck_usage_budgets_amount_limit",
+        ),
+        CheckConstraint(
+            f"period_hours > 0 AND period_hours <= {MAX_BUDGET_PERIOD_HOURS}",
+            name="ck_usage_budgets_period_hours",
+        ),
+        Index(
+            "uq_usage_budgets_tenant_wide",
+            "tenant_id",
+            "metric",
+            "model",
+            unique=True,
+            postgresql_where=text("agent_id IS NULL"),
+        ),
+        Index(
+            "uq_usage_budgets_agent",
+            "tenant_id",
+            "agent_id",
+            "metric",
+            "model",
+            unique=True,
+            postgresql_where=text("agent_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metric: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    amount_limit: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    period_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# ── Agent management ──────────────────────────────────────────────────────────
+
+# `api_keys.type` values that hold a hash and nothing else. Nothing may decrypt
+# them, so their `encrypted_key` is the empty string, and they are neither
+# listed nor revealable through the user's API-key routes.
+CONTROLLER_KEY_TYPE = "controller"
+CONTROLLER_ENROLLMENT_KEY_TYPE = "controller_enrollment"
+HASH_ONLY_KEY_TYPES = frozenset({CONTROLLER_KEY_TYPE, CONTROLLER_ENROLLMENT_KEY_TYPE})
+
+
+class AgentController(TenantScoped, Base):
+    """A machine that runs managed agents on behalf of its owner.
+
+    `api_key_id` is the controller's long-lived credential, an `api_keys` row of
+    type `controller` holding the hash only. It is null once the controller is
+    revoked, and also if the key is deleted from under it (removing a member
+    deletes every key they hold), which is treated the same as revocation. `status` is the last accepted status report verbatim and
+    `status_seq` its sequence number: a report with a sequence at or below it is
+    ignored. `assignment_revision` bumps on every change to the set of agents
+    the controller should run, and is what its ETag carries.
+
+    The `connection_*`, `connected_at` and `disconnect*` columns are the
+    controller's socket as the switch-core process holding it last recorded it
+    (`management/connection_ledger.py`): which connection, which process holds
+    it (`connection_process_id`, a `switch_core_processes` row), when its
+    socket attached, and when and why it went. Only transitions are written,
+    never heartbeats; a process that dies without writing the closing is
+    caught by its lease in `switch_core_processes` going stale. They describe
+    the current connection, or the last one once it has closed; a new one
+    replaces them. Every replica reads them, so whether the machine is
+    connected does not depend on which process holds its socket.
+    """
+
+    __tablename__ = "agent_controllers"
+    __table_args__ = (
+        UniqueConstraint("id", "tenant_id", name="uq_agent_controllers_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "api_key_id"],
+            ["api_keys.tenant_id", "api_keys.id"],
+            name="fk_agent_controllers_api_key",
+            ondelete="SET NULL (api_key_id)",
+        ),
+        CheckConstraint(
+            "kind IN ('console', 'daemon', 'ec2')", name="ck_agent_controllers_kind"
+        ),
+        Index("ix_agent_controllers_owner_id", "owner_id"),
+        Index("ix_agent_controllers_tenant_id", "tenant_id"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    # What the owner says the machine is for; free text, optional.
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    platform: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    public_key: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    api_key_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    assignment_revision: Mapped[int] = mapped_column(
+        Integer, server_default=text("0"), nullable=False
+    )
+    status_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    status: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    connection_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Not a foreign key: a lease row is pruned once long stale, and a
+    # connection naming a process with no lease reads as lost.
+    connection_process_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    connected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    disconnected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # `socket_closed`, `heartbeat_lapsed`, `taken_over`, `revoked` or
+    # `server_shutdown`.
+    disconnect_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class AgentControllerEnrollmentCode(TenantScoped, Base):
+    """A one-time code a headless controller enrolls with.
+
+    The code itself is an `api_keys` row of type `controller_enrollment`, so the
+    global hash-to-tenant lookup resolves it before any tenant is bound, exactly
+    as it does a bearer credential. That row is deleted when the code is used,
+    leaving `api_key_id` null and `controller_id` naming what it enrolled.
+    """
+
+    __tablename__ = "agent_controller_enrollment_codes"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "api_key_id"],
+            ["api_keys.tenant_id", "api_keys.id"],
+            name="fk_agent_controller_enrollment_codes_api_key",
+            ondelete="SET NULL (api_key_id)",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "controller_id"],
+            ["agent_controllers.tenant_id", "agent_controllers.id"],
+            name="fk_agent_controller_enrollment_codes_controller",
+        ),
+        Index("ix_agent_controller_enrollment_codes_tenant_id", "tenant_id"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    api_key_id: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    controller_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AgentDefinition(TenantScoped, Base):
+    """What a managed agent is, and which controller runs it.
+
+    One per agent. `controller_id` null means the agent is managed but placed
+    nowhere. `revision` bumps on every change to the definition, its desired
+    state or its placement; controllers use it to fence out stale revisions.
+    `definition` is the v1 definition document (provider, model, instructions,
+    auto_approve, directory).
+    """
+
+    __tablename__ = "agent_definitions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "agent_id", name="uq_agent_definitions_agent"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_definitions_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "controller_id"],
+            ["agent_controllers.tenant_id", "agent_controllers.id"],
+            name="fk_agent_definitions_controller",
+        ),
+        CheckConstraint(
+            "desired_state IN ('running', 'stopped')",
+            name="ck_agent_definitions_desired_state",
+        ),
+        Index("ix_agent_definitions_controller_id", "controller_id"),
+        Index("ix_agent_definitions_owner_id", "owner_id"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    controller_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    desired_state: Mapped[str] = mapped_column(Text, nullable=False)
+    definition: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class AgentControllerOperation(TenantScoped, Base):
+    """An explicit action for a controller to carry out, outside desired state.
+
+    A controller claims a pending operation and holds it under a lease
+    (`lease_expires_at`); an operation still `claimed` after its lease has
+    lapsed is offered again. `kind` is not checked here, because the set grows
+    with the protocol; Management refuses the kinds it does not support.
+    """
+
+    __tablename__ = "agent_controller_operations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "controller_id"],
+            ["agent_controllers.tenant_id", "agent_controllers.id"],
+            name="fk_agent_controller_operations_controller",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_controller_operations_agent",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "state IN ('pending', 'claimed', 'succeeded', 'failed', 'cancelled', 'expired')",
+            name="ck_agent_controller_operations_state",
+        ),
+        Index(
+            "ix_agent_controller_operations_controller_state",
+            "controller_id",
+            "state",
+        ),
+        Index("ix_agent_controller_operations_tenant_id", "tenant_id"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    controller_id: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    params: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_by: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
 
 
 # Same reasoning as the notify trigger above: `create_all` has to build the

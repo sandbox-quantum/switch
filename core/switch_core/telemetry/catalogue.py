@@ -150,8 +150,13 @@ _SNAPSHOT_COUNTS = (
     "tenant_count",
     "tenant_failed_count",
     "user_count",
+    "user_internal_count",
+    # Switch accounts, not chat identities — see `chat_identity_*` for those.
     "user_active_1d",
     "user_active_7d",
+    "chat_identity_count",
+    "chat_identity_active_1d",
+    "chat_identity_active_7d",
     # `room_count` is the headline: rooms a *person* made. The other two keep
     # agent scratch rooms and adopted channels out of it.
     "room_count",
@@ -336,6 +341,9 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "failed_attempts_before_success": NUMBER,
     },
     "bridge_connected": {
+        # Which side of the bridge: always "collaboration" today; "agent" is
+        # declared so the agent bridge can report the same events.
+        "bridge": one_of("collaboration", "agent"),
         "bridge_platform": BRIDGE_PLATFORM,
         "outcome": OUTCOME,
         # `none` on success, so the property set stays exact either way.
@@ -428,9 +436,14 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "bridge_platform": BRIDGE_PLATFORM,
         "is_preconfigured": BOOLEAN,
     },
-    "invitation_sent": {},
+    "invitation_sent": {
+        "delivery": one_of("sent", "not_configured", "failed", "not_requested")
+    },
     "invitation_accepted": {"age_hours": NUMBER},
     "bridge_disconnected": {
+        # Which side of the bridge: always "collaboration" today; "agent" is
+        # declared so the agent bridge can report the same events.
+        "bridge": one_of("collaboration", "agent"),
         "bridge_platform": BRIDGE_PLATFORM,
         # Shutdown reasons plus every failure `bridge_connected` can carry.
         "reason": one_of(

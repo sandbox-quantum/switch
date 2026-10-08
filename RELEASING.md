@@ -83,6 +83,26 @@ peer still on it, and it can never be raised past what is running in the field.
 You can also trigger `workflow_dispatch` manually from the Actions tab to test a
 build without creating a release.
 
+### Release candidates
+
+To publish a pre-release of the stack for staging, pilot or a canary Console,
+tag a release candidate. Don't bump `core/pyproject.toml` first:
+
+```bash
+git tag switch-v0.30.0-rc.1 <commit on main>   # or on release/0.30
+git push origin switch-v0.30.0-rc.1
+```
+
+- **Only from `main` or `release/*`.** The workflow refuses a tag whose commit is on
+  neither.
+- **The version previews the next release.** The base (`0.30.0`) must be at or above
+  `core/pyproject.toml` and not already released as `switch-v0.30.0`.
+- **Never `latest`.** Images, chart and compose are pushed under `0.30.0-rc.1` only.
+  `helm install` skips the chart unless given `--devel` or that exact `--version`.
+- **The server reports the RC.** The workflow stamps `0.30.0rc1` (the PEP 440 form)
+  into `core/pyproject.toml` on the runner, so the running server's version says
+  which candidate it is. Nothing is committed.
+
 ## Switch Console desktop app release (separate)
 
 The desktop app (`console/`) releases on its own tag, `switch-console-v<version>`, via
@@ -115,6 +135,68 @@ his approval in the `release` environment, and asking him to approve. Do not
 wait silently — the macOS build cannot proceed until he approves. Only after
 the run goes green are the notes finalised and the 🚀 banner posted.
 switch-core releases are **not** gated and need no such ping.
+
+### Canary builds
+
+Canary is a separate install (`Switch Console Canary`) that updates itself to newer
+canaries and is never offered to stable installs. The same workflow builds it,
+triggered by a bare-semver tag:
+
+```bash
+git tag v0.38.0-canary.1 <commit on main>      # or v0.38.0-canary.rc.1 from release/0.38
+git push origin v0.38.0-canary.1
+```
+
+- **No `switch-console-` prefix.** electron-updater's canary lookup skips any tag
+  that is not a valid semver, so a prefixed canary tag would be invisible to it.
+- **The version previews the next release.** The base (`0.38.0`) must be at or above
+  `package.json`'s version and not already released as `switch-console-v0.38.0`,
+  so every canary ranks above the current stable. `package.json` is not bumped:
+  the workflow stamps the tag's version into it on the runner.
+- **Only from `main` or `release/*`.** The workflow refuses a tag whose commit is on
+  neither.
+- **Published as a prerelease, never Latest.** Stable installs read only the Latest
+  release. The workflow checks that against GitHub after publishing, and reverts a
+  canary that fails it to a draft.
+- **Only the newest 5 canaries are kept.** Older canary prereleases and their tags
+  are deleted; nothing else is ever selected.
+- **Same approval gate as stable.** The macOS jobs wait for approval in the
+  `release` environment, whose deployment rules must allow `v*-canary.*` tags.
+- **A failed run leaves a draft**, which no updater can see. Re-run the failed
+  job; the tag stays.
+
+The canary app only reads GitHub's 10 most recent releases, and core and stable
+releases count toward them. If 10 of those are published after the newest canary,
+canary installs find no update until the next canary is tagged.
+
+## switch-agent-controller release (separate)
+
+The headless agents controller (`console/packages/agent-controller`), which runs
+managed agents on a customer's own Linux or macOS machine, releases on its own tag,
+`switch-agent-controller-v<version>`, via
+`.github/workflows/agent-controller-release.yml`:
+
+```bash
+git tag switch-agent-controller-v0.2.0 <commit on main>
+git push origin switch-agent-controller-v0.2.0
+```
+
+- **The tag sets the version.** It must be `x.y.z`; the workflow stamps it into the
+  package on the runner, so `package.json` is not bumped. The controller reports it
+  to Switch and compares it with newer releases.
+- **What it publishes:** a GitHub Release holding
+  `switch-agent-controller-<version>.tgz` (one npm package with the CLI and the
+  shared-host bundle, no dependencies) and `install.sh`. It is never marked Latest,
+  so Switch Console's stable updater never sees it.
+- **How installs find it:** `install.sh` and `switch-agent-controller update` list the
+  repository's releases and take the highest non-draft, non-prerelease controller tag
+  that carries its package. No npm registry or token is involved.
+- **Canary visibility:** each controller release counts toward the 10 most recent
+  releases the Console canary updater reads (see Canary builds above).
+- **Not gated:** the workflow needs no approval. It tests the controller, packs it,
+  installs the package and runs it once before releasing.
+
+`workflow_dispatch` runs everything except the release, for verification.
 
 ## Where artifacts are published
 

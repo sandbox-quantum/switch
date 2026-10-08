@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { describe, expect, it, vi } from 'vitest';
 import type { ProviderSessionStartInput, RuntimeMode } from '../adapter';
 import { ProviderConversationUnavailableError } from '../adapter';
 import { EventRecorder } from '../testing/event-recorder';
@@ -135,6 +136,7 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(options.systemPrompt).toEqual({
       type: 'preset',
       preset: 'claude_code',
+      snapshot: false,
       append: 'Switch context',
     });
     expect(options.mcpServers).toEqual({
@@ -175,12 +177,18 @@ describe('ClaudeAdapter session lifecycle', () => {
     const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
     await adapter.startSession(
       startInput({
+        env: {
+          PATH: '/usr/bin',
+          HOME: '/home/agent',
+          SWITCH_API_TOKEN: 'synthetic-switch-token',
+        },
         mcpServers: {
           switch: {
             transport: 'stdio',
             command: 'npx',
             args: ['-y', 'runtime'],
-            envVars: ['HOME', 'SWITCH_ABSENT'],
+            env: { HOME: '/explicit/home' },
+            envVars: ['HOME', 'SWITCH_API_TOKEN', 'SWITCH_ABSENT'],
           },
         },
       })
@@ -190,7 +198,10 @@ describe('ClaudeAdapter session lifecycle', () => {
         type: 'stdio',
         command: 'npx',
         args: ['-y', 'runtime'],
-        env: { HOME: '/home/agent' },
+        env: {
+          HOME: '/explicit/home',
+          SWITCH_API_TOKEN: '${SWITCH_API_TOKEN}',
+        },
       },
     });
   });
@@ -328,6 +339,28 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(sdk.options().resume).toBe('earlier');
     expect(sdk.options().sessionId).toBeUndefined();
     expect(session.nativeSessionId).toBe('earlier');
+  });
+
+  it('resumes a conversation under the model and instructions it is started with now', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({
+      query: sdk.query,
+      claudeExecutablePath: '/bin/claude',
+      savedConversationExists: async (id) => id === 'earlier',
+    });
+    await adapter.startSession(
+      startInput({
+        resume: { nativeSessionId: 'earlier' },
+        model: { id: 'claude-sonnet-4-6' },
+        systemContext: 'Answer in one word.',
+      })
+    );
+    expect(sdk.options()).toMatchObject({
+      resume: 'earlier',
+      model: 'claude-sonnet-4-6',
+      // Not recorded, so a resumed conversation takes the instructions given now.
+      systemPrompt: { append: 'Answer in one word.', snapshot: false },
+    });
   });
 
   it('stops the session, closes the query and forgets it', async () => {
@@ -1091,5 +1124,95 @@ describe('ClaudeAdapter model switching', () => {
       startInput({ model: { id: 'claude-sonnet-5', options: { effort: 'ludicrous' } } })
     );
     expect(sdk.options().effort).toBeUndefined();
+  });
+});
+
+describe('ClaudeAdapter background subagents', () => {
+  function task(subtype: string, fields: Record<string, unknown>) {
+    return { type: 'system', subtype, uuid: randomUUID(), session_id: 'native-1', ...fields };
+  }
+
+  it('reports background work while a subagent outlives its turn, until it settles', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    query.emit(
+      task('task_started', {
+        task_id: 'agent-1',
+        task_type: 'local_agent',
+        subagent_type: 'Explore',
+        description: 'Search',
+        is_backgrounded: true,
+      })
+    );
+    query.emit(
+      task('task_started', {
+        task_id: 'shell-1',
+        task_type: 'local_bash',
+        description: 'dev server',
+        is_backgrounded: true,
+      })
+    );
+    query.emit(resultMessage([sent!.uuid!]));
+    await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(adapter.hasBackgroundWork(SESSION)).toBe(true);
+
+    query.emit(
+      task('task_notification', {
+        task_id: 'agent-1',
+        status: 'completed',
+        output_file: '',
+        summary: 'done',
+      })
+    );
+    await vi.waitFor(() => expect(adapter.hasBackgroundWork(SESSION)).toBe(false));
+    await adapter.stopAll();
+  });
+
+  it('counts a foreground subagent only once it is moved to the background', async () => {
+    const { sdk, adapter } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
+    const query = sdk.latest();
+    query.emit(
+      task('task_started', {
+        task_id: 'agent-1',
+        task_type: 'local_agent',
+        description: 'Search',
+        is_backgrounded: false,
+      })
+    );
+    query.emit(task('task_updated', { task_id: 'agent-1', patch: { is_backgrounded: true } }));
+    await vi.waitFor(() => expect(adapter.hasBackgroundWork(SESSION)).toBe(true));
+    query.emit(task('task_updated', { task_id: 'agent-1', patch: { status: 'killed' } }));
+    await vi.waitFor(() => expect(adapter.hasBackgroundWork(SESSION)).toBe(false));
+    await adapter.stopAll();
+  });
+
+  it('takes the background task list as the truth, ignoring ambient tasks', async () => {
+    const { sdk, adapter } = await startSession();
+    const query = sdk.latest();
+    query.emit(
+      task('task_started', {
+        task_id: 'stale',
+        task_type: 'local_agent',
+        description: 'x',
+        is_backgrounded: true,
+      })
+    );
+    await vi.waitFor(() => expect(adapter.hasBackgroundWork(SESSION)).toBe(true));
+    query.emit(
+      task('background_tasks_changed', {
+        tasks: [{ task_id: 'watcher', task_type: 'local_agent', description: 'w', ambient: true }],
+      })
+    );
+    await vi.waitFor(() => expect(adapter.hasBackgroundWork(SESSION)).toBe(false));
+    query.emit(
+      task('background_tasks_changed', {
+        tasks: [{ task_id: 'agent-2', task_type: 'local_agent', description: 'y' }],
+      })
+    );
+    await vi.waitFor(() => expect(adapter.hasBackgroundWork(SESSION)).toBe(true));
+    await adapter.stopAll();
   });
 });

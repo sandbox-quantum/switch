@@ -1,0 +1,148 @@
+[
+  {
+    "event": "connection_state",
+    "data": {
+      "controller_id": "00000000-0000-4000-8000-0000000000c1",
+      "assignment_revision": 3,
+      "report_within_s": 60,
+      "connection_id": "00000000-0000-4000-8000-0000000000e1",
+      "generation": 3141592653,
+      "heartbeat_interval_s": 2.0
+    }
+  },
+  {
+    "event": "agent.attached",
+    "data": {
+      "agent_id": "00000000-0000-4000-8000-0000000000a1",
+      "from_seq": 0,
+      "rooms": [
+        "00000000-0000-4000-8000-0000000000b1"
+      ]
+    }
+  },
+  {
+    "event": "agent.gap",
+    "data": {
+      "agent_id": "00000000-0000-4000-8000-0000000000a1",
+      "from_sequence": 0,
+      "resumed_at": 0,
+      "rooms": [
+        "00000000-0000-4000-8000-0000000000b1"
+      ],
+      "all_rooms": true,
+      "reason": "the server restarted since your last connection; sequence numbers have been reset and events from before the restart are gone in every room — re-read room context"
+    }
+  },
+  {
+    "event": "agent.event",
+    "data": {
+      "agent_id": "00000000-0000-4000-8000-0000000000a1",
+      "seq": 1,
+      "event": {
+        "type": "message",
+        "room_id": "00000000-0000-4000-8000-0000000000b1",
+        "bridge_id": null,
+        "channel_type": null,
+        "payload": {
+          "addressed": true,
+          "sender": "@ada:switch.local",
+          "sender_name": "Ada",
+          "sender_kind": null,
+          "on_behalf_of": null,
+          "message_id": "$event-1",
+          "body": "@reviewer can you look at this?",
+          "timestamp": 1767225600000,
+          "thread_id": null,
+          "attachments": []
+        },
+        "sequence": 1,
+        "missed": {
+          "count": 0,
+          "reason": null
+        }
+      }
+    }
+  },
+  {
+    "event": "agent.session_command",
+    "data": {
+      "agent_id": "00000000-0000-4000-8000-0000000000a1",
+      "room_id": "00000000-0000-4000-8000-0000000000b1",
+      "command": {
+        "contractVersion": 1,
+        "commandId": "00000000-0000-5000-8000-0000000000f1",
+        "sessionId": null,
+        "epoch": "current",
+        "origin": {
+          "surface": "slack",
+          "actorId": "@ada:switch.local",
+          "roomId": "00000000-0000-4000-8000-0000000000b1",
+          "threadId": null,
+          "messageId": "$reset-command"
+        },
+        "body": {
+          "type": "session.reset"
+        },
+        "requesterName": "Ada"
+      }
+    }
+  },
+  {
+    "event": "agent.approval_outcome",
+    "data": {
+      "agent_id": "00000000-0000-4000-8000-0000000000a1",
+      "outcome": {
+        "session_id": "session-1",
+        "request_id": "request-1",
+        "kind": "approval.answered",
+        "state": "answered",
+        "answer": "allow",
+        "answers": null,
+        "answered_by": "00000000-0000-4000-8000-000000000011",
+        "answered_at": "2026-01-01T00:00:00+00:00"
+      }
+    }
+  },
+  {
+    "event": "agent.rooms",
+    "data": {
+      "agent_id": "00000000-0000-4000-8000-0000000000a1",
+      "rooms": [
+        "00000000-0000-4000-8000-0000000000b1",
+        "00000000-0000-4000-8000-0000000000b2"
+      ]
+    }
+  },
+  {
+    "event": "assignment.changed",
+    "data": {
+      "revision": 4
+    }
+  },
+  {
+    "event": "operation.pending",
+    "data": {
+      "operation_id": "00000000-0000-4000-8000-0000000000d2",
+      "kind": "provider.recheck",
+      "agent_id": null
+    }
+  },
+  {
+    "event": "agent.detached",
+    "data": {
+      "agent_id": "00000000-0000-4000-8000-0000000000a1",
+      "reason": "unassigned"
+    }
+  },
+  {
+    "event": "credential.revoked",
+    "data": {}
+  },
+  {
+    "event": "evicted",
+    "data": {
+      "code": "taken_over",
+      "reason": "another stream attached to this connection and took it over"
+    }
+  }
+]

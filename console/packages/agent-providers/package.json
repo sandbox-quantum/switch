@@ -6,6 +6,9 @@
   "author": {
     "name": "Switch Console Contributors"
   },
+  "bin": {
+    "switch-hosted-bootstrap": "./dist/hosted-bootstrap.mjs"
+  },
   "files": [
     "dist"
   ],
@@ -22,7 +25,8 @@
     },
     "./package.json": "./package.json",
     "./host-daemon": "./dist/host-daemon.mjs",
-    "./shared-host-daemon": "./dist/shared-host-daemon.mjs"
+    "./shared-host-daemon": "./dist/shared-host-daemon.mjs",
+    "./hosted-bootstrap": "./dist/hosted-bootstrap.mjs"
   },
   "scripts": {
     "dev": "tsdown --watch",

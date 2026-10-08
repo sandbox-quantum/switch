@@ -71,7 +71,7 @@
         "title": "Agents connected",
         "requests": [
           {
-            "q": "avg:switch.agents.connected{$env,$service}",
+            "q": "sum:switch.agents.connected{$env,$service}",
             "aggregator": "last"
           }
         ],
@@ -108,10 +108,10 @@
     {
       "definition": {
         "type": "query_value",
-        "title": "Room clients running",
+        "title": "Consumers running (read loops)",
         "requests": [
           {
-            "q": "avg:switch.clients.running{$env,$service}",
+            "q": "avg:switch.consumers.running{$env,$service}",
             "aggregator": "last"
           }
         ],
@@ -269,11 +269,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.messages.sent{$env,$service}.as_rate()",
+            "q": "sum:switch.messages.sent{$env,$service} by {actor}.as_rate()",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.messages.delivered{$env,$service}.as_rate()",
+            "q": "sum:switch.messages.delivered{$env,$service} by {actor}.as_rate()",
             "display_type": "line"
           }
         ]
@@ -333,7 +333,7 @@
     {
       "definition": {
         "type": "note",
-        "content": "**Bridges.** Inbound is counted where every platform event already funnels through; outbound at the relay, so a puppet's own echo and a room with no channel are not counted as traffic nobody sent.",
+        "content": "**Bridges.** Inbound is counted where every platform event already funnels through; outbound at the relay, so a human actor's own echo and a room with no channel are not counted as traffic nobody sent.",
         "background_color": "gray",
         "font_size": "14",
         "text_align": "left",
@@ -353,11 +353,11 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Inbound platform events per second, by platform",
+        "title": "Bridge events in per second, by bridge and platform",
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.bridge.events_in{$env,$service} by {platform}.as_rate()",
+            "q": "sum:switch.bridge.events_in{$env,$service} by {bridge,platform}.as_rate()",
             "display_type": "area"
           }
         ]
@@ -372,11 +372,11 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Outbound relays per second, by platform",
+        "title": "Bridge events out per second, by bridge and platform",
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.bridge.events_out{$env,$service} by {platform}.as_rate()",
+            "q": "sum:switch.bridge.events_out{$env,$service} by {bridge,platform}.as_rate()",
             "display_type": "area"
           }
         ]
@@ -391,11 +391,11 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Bridge errors per second, by platform and direction",
+        "title": "Bridge errors per second, by bridge, platform and direction",
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.bridge.errors{$env,$service} by {platform,direction}.as_rate()",
+            "q": "sum:switch.bridge.errors{$env,$service} by {bridge,platform,direction}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -491,7 +491,7 @@
       "layout": {
         "x": 0,
         "y": 38,
-        "width": 4,
+        "width": 3,
         "height": 3
       }
     },
@@ -508,9 +508,9 @@
         ]
       },
       "layout": {
-        "x": 4,
+        "x": 3,
         "y": 38,
-        "width": 4,
+        "width": 3,
         "height": 3
       }
     },
@@ -527,9 +527,32 @@
         ]
       },
       "layout": {
-        "x": 8,
+        "x": 6,
         "y": 38,
-        "width": 4,
+        "width": 3,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Garbage-collection pause p99 / max (ms) by generation. Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p99:switch.runtime.gc_pause{$env,$service} by {generation}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.runtime.gc_pause{$env,$service} by {generation}",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 9,
+        "y": 38,
+        "width": 3,
         "height": 3
       }
     },
@@ -661,11 +684,11 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Collaboration platform call duration p95 (ms) by platform \u2014 needs distribution mapping, see README",
+        "title": "Bridge call duration p95 (ms) by bridge and platform \u2014 needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.bridge.call.duration{$env,$service} by {platform}",
+            "q": "p95:switch.bridge.call.duration{$env,$service} by {bridge,platform}",
             "display_type": "line"
           }
         ]
@@ -712,6 +735,323 @@
         "x": 0,
         "y": 63,
         "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agents connected, by transport and client",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.agents.connected{$env,$service} by {transport,client}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 67,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent connections refused per second, by reason",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.agent.connections_refused{$env,$service} by {reason}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "warm"
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 67,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Database sessions for this server's role, by state (the database's view)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.db.server.connections{$env,$service} by {state}",
+            "display_type": "area"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 71,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Database transactions per second (the database's view)",
+        "show_legend": false,
+        "requests": [
+          {
+            "q": "avg:switch.db.server.transactions{$env,$service}.as_rate()",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 71,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent buffer events walked per scan, p50 / p95 by operation (cap 2000), needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p50:switch.agent.buffer.scanned{$env,$service} by {operation}",
+            "display_type": "line"
+          },
+          {
+            "q": "p95:switch.agent.buffer.scanned{$env,$service} by {operation}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 75,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent buffer scan duration p95 / p99 (ms) by operation, needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.agent.buffer.scan.duration{$env,$service} by {operation}",
+            "display_type": "line"
+          },
+          {
+            "q": "p99:switch.agent.buffer.scan.duration{$env,$service} by {operation}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 75,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Database pool: connection hold p95 / p99 (ms) by caller. Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.db.pool.hold.duration{$env,$service} by {caller}",
+            "display_type": "line"
+          },
+          {
+            "q": "p99:switch.db.pool.hold.duration{$env,$service} by {caller}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 79,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Database pool: wait for a connection p95 / p99 (ms). Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.db.pool.wait.duration{$env,$service}",
+            "display_type": "line"
+          },
+          {
+            "q": "p99:switch.db.pool.wait.duration{$env,$service}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 79,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent connections opened per second, by kind (after_lapse = returning from a lapse)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.agent.connections_opened{$env,$service} by {kind}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 83,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Process starts (deploys and restarts)",
+        "show_legend": false,
+        "requests": [
+          {
+            "q": "sum:switch.runtime.starts{$env,$service}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 83,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "**Shared room reads.** Each fill is one database read standing in for one per member of the room, so fills against deliveries is the saving. A fallback (behind, evicted, unwatched, gave_up) is a transport reading the database itself: it costs a read, never a message.",
+        "background_color": "gray",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 87,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Room cache reads per second, by outcome (hit and filled are served from memory)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.delivery_cache.reads{$env,$service} by {outcome}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 89,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Room cache fills and rows read per second, against messages delivered",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.delivery_cache.fills{$env,$service} by {outcome}.as_rate()",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:switch.delivery_cache.rows_read{$env,$service}.as_rate()",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:switch.messages.delivered{$env,$service}.as_rate()",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 89,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Room cache memory (bytes) and rooms held",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.delivery_cache.bytes{$env,$service}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.delivery_cache.rooms{$env,$service}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 93,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Room cache evictions per second, by reason",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.delivery_cache.evictions{$env,$service} by {reason}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 93,
+        "width": 6,
         "height": 4
       }
     }

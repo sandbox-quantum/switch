@@ -4,7 +4,7 @@ The inbound half of `bridge_publisher`. A press carries the card's token and
 the option; a typed answer names the card by its handle (`A3 yes`, `A3 q1=2
 q2=use staging`), or is a bare "yes" / "no" as the first reply to an approval
 card. Either resolves to one `approval_request_posts` row, and from there to
-the request itself, which `SessionActivityService.answer_approval` checks:
+the request itself, which `AgentSessionActivityService.answer_approval` checks:
 open, unexpired, fits what was asked, and from someone who may address the
 agent.
 
@@ -46,11 +46,11 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.session_activity_post_store import ApprovalRequestPostStore
 from switch_core.db.stores.session_activity_store import ApprovalRequestStore
-from switch_core.session_activity.bridge_publisher import HANDLE_PREFIX
 from switch_core.session_activity.cards import approval_request
+from switch_core.session_activity.publisher import HANDLE_PREFIX
 from switch_core.session_activity.service import (
+    AgentSessionActivityService,
     PlatformPerson,
-    SessionActivityService,
 )
 from switch_core.sessions.contract import RequestResult
 from switch_core.sessions.errors import SessionError
@@ -72,7 +72,7 @@ class ApprovalAnswers:
         self,
         *,
         bridge_id: str,
-        service: SessionActivityService,
+        service: AgentSessionActivityService,
         session_factory: async_sessionmaker[AsyncSession],
         identify: Callable[[InboundActor], Awaitable[str | None]],
         is_first_reply: Callable[[str, str, str], Awaitable[bool]],

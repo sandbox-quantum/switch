@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { CircleAlert, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useId, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
 import { AddressingPolicyControl } from '@renderer/features/switch-servers/addressing-policy-control';
 import type { OptionItem } from '@renderer/features/switch-servers/addressing-policy-editor';
@@ -9,6 +9,7 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { rpc } from '@renderer/lib/ipc';
+import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
@@ -29,14 +30,17 @@ import type { ConfigureAgentFormState } from './modes';
  */
 export const AgentSettingsSection = observer(function AgentSettingsSection({
   form,
-  serverId,
+  workspaceId,
   onAddServer,
   onOpenMessagingApps,
+  children,
 }: {
   form: ConfigureAgentFormState;
-  serverId: string | null;
+  workspaceId: string | null;
   onAddServer: () => void;
   onOpenMessagingApps: () => void;
+  /** Further settings for this kind of agent, after the common ones. */
+  children: ReactNode;
 }) {
   // Sessions, permissions and addressing are set once and rarely revisited, so
   // they start folded — the identity fields above are what the dialog is for.
@@ -48,27 +52,24 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
 
   const servers = switchServersStore.servers;
 
-  // Selector data for the addressing-policy editor, scoped to the chosen server.
+  // Selector data for the addressing-policy editor, scoped to the workspace the
+  // chosen server is in scope for.
   const roomsQuery = useQuery({
-    queryKey: ['remote-rooms', serverId],
-    queryFn: () => rpc.switchServers.listRemoteRooms(serverId as string),
-    enabled: serverId !== null,
+    queryKey: ['remote-rooms', workspaceId],
+    queryFn: () => rpc.workspaces.listRooms(workspaceId as string),
+    enabled: workspaceId !== null,
   });
   const groupsQuery = useQuery({
-    queryKey: ['remote-room-groups', serverId],
-    queryFn: () => rpc.switchServers.listRemoteRoomGroups(serverId as string),
-    enabled: serverId !== null,
+    queryKey: ['remote-room-groups', workspaceId],
+    queryFn: () => rpc.workspaces.listRoomGroups(workspaceId as string),
+    enabled: workspaceId !== null,
   });
   const usersQuery = useQuery({
-    queryKey: ['remote-external-users', serverId],
-    queryFn: () => rpc.switchServers.listRemoteExternalUsers(serverId as string),
-    enabled: serverId !== null,
+    queryKey: ['remote-external-users', workspaceId],
+    queryFn: () => rpc.workspaces.listExternalUsers(workspaceId as string),
+    enabled: workspaceId !== null,
   });
-  const agentsQuery = useQuery({
-    queryKey: ['remote-agents', serverId],
-    queryFn: () => rpc.switchServers.listRemoteAgents(serverId as string),
-    enabled: serverId !== null,
-  });
+  const agentsQuery = useWorkspaceAgents(workspaceId);
   const roomOptions: OptionItem[] = (roomsQuery.data ?? []).map((r) => ({
     id: r.id,
     label: r.name,
@@ -88,11 +89,11 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
 
   // Read here rather than inside the editor so the owner-only default can be
   // questioned before the agent exists, not after it has gone quiet.
-  const { identities } = useMyIdentities(serverId);
+  const { identities } = useMyIdentities(workspaceId);
   const bridgesQuery = useQuery({
-    queryKey: ['remote-bridges', serverId],
-    queryFn: () => rpc.switchServers.listRemoteBridges(serverId as string),
-    enabled: serverId !== null,
+    queryKey: ['remote-bridges', workspaceId],
+    queryFn: () => rpc.workspaces.listBridges(workspaceId as string),
+    enabled: workspaceId !== null,
   });
   const unlinkedApps =
     identities === null || bridgesQuery.data === undefined
@@ -152,28 +153,6 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
               <label className="-mx-2 flex cursor-pointer items-start justify-between gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-[var(--sel-soft)]">
                 <span className="flex flex-col gap-0.5">
                   <span className="flex items-center gap-1.5 text-sm">
-                    Auto-create a session on notify
-                    <InfoTooltip
-                      label="More info about auto-creating a session"
-                      content="Switch Console watches this agent's Switch rooms and starts a session — connected to the room and ready to reply — whenever it's addressed with no session running."
-                    />
-                  </span>
-                  <span className="text-xs text-foreground-muted">
-                    Start a session when this agent is addressed.
-                  </span>
-                </span>
-                <Switch
-                  className="mt-0.5"
-                  checked={form.autoSession}
-                  onCheckedChange={(checked) => form.setAutoSession(checked)}
-                />
-              </label>
-            </Field>
-
-            <Field>
-              <label className="-mx-2 flex cursor-pointer items-start justify-between gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-[var(--sel-soft)]">
-                <span className="flex flex-col gap-0.5">
-                  <span className="flex items-center gap-1.5 text-sm">
                     Bypass permissions
                     <InfoTooltip
                       label="More info about bypassing permissions"
@@ -217,6 +196,7 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
                 inlineLabel={null}
               />
             </Field>
+            {children}
           </FieldGroup>
         )}
       </div>
@@ -232,9 +212,15 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
  * agents — so the two halves can sit in different places in the dialog without
  * the identity fields waiting on four queries they do not use.
  */
-export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState }) {
+export function AgentIdentityFields({
+  form,
+  serverId,
+}: {
+  form: ConfigureAgentFormState;
+  /** The Switch server whose generated icons are offered. */
+  serverId: string | null;
+}) {
   const nameId = useId();
-  const displayNameId = useId();
   const descriptionId = useId();
   const instructionsId = useId();
   const nameRef = useRef<HTMLInputElement>(null);
@@ -245,6 +231,7 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
           recognised by. */}
       <div className="flex flex-col items-center gap-1.5 pb-1">
         <AgentIconPicker
+          serverId={serverId}
           name={form.agentName}
           iconUrl={form.iconUrl}
           onChange={form.setIconUrl}
@@ -311,22 +298,6 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
       </Field>
 
       <Field>
-        <FieldLabel htmlFor={displayNameId}>
-          Display name <span className="text-foreground-muted">(optional)</span>
-        </FieldLabel>
-        <Input
-          id={displayNameId}
-          placeholder={form.agentName.length > 0 ? form.agentName : 'How to show this agent'}
-          value={form.displayName}
-          onChange={(e) => form.setDisplayName(e.target.value)}
-        />
-        <span className="text-xs text-foreground-muted">
-          The name this agent is shown under on Slack, Discord and other chat platforms. Leave it
-          empty and it shows up under its identifier.
-        </span>
-      </Field>
-
-      <Field>
         <FieldLabel htmlFor={descriptionId}>Description</FieldLabel>
         <Input
           id={descriptionId}
@@ -334,9 +305,6 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
           value={form.description}
           onChange={(e) => form.setDescription(e.target.value)}
         />
-        <span className="text-xs text-foreground-muted">
-          Helps other people and agents understand what this agent is for.
-        </span>
       </Field>
 
       <Field>

@@ -54,16 +54,19 @@ export function PageContent({
 }
 
 export function PageLayout({
+  width,
   sidebar,
   children,
 }: {
+  /** The column's maximum width, in pixels. */
+  width: number;
   sidebar: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden">
       <div className="h-full scrollbar-gutter-stable overflow-x-hidden overflow-y-auto">
-        <div className="mx-auto w-full max-w-[1060px] px-8">
+        <div className="mx-auto w-full px-8" style={{ maxWidth: width }}>
           <div className="grid w-full grid-cols-[13rem_minmax(0,1fr)] gap-8">
             {sidebar}
             {children}

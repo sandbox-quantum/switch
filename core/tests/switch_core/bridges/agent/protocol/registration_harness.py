@@ -1,4 +1,4 @@
-"""A ProtocolService wired up far enough to run `register_agent`.
+"""An AgentCore wired up far enough to run `register_agent`.
 
 Registration touches a Matrix client lifecycle and the collaboration bridges;
 tests about what registration *records* need neither, so the service is built
@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     TaskProtocolConfig,
@@ -21,6 +21,7 @@ from switch_core.db.models import Client, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.keys import Keyring
 
 PROFILE = IntegrationProfile(
     connection_model="session_passive",
@@ -46,7 +47,7 @@ class FakeClientLifecycle:
         self.requested_display_names.append(display_name)
         async with self._session_factory() as session:
             client = Client(
-                matrix_user_id=f"@{display_name}:test",
+                transport_user_id=f"@{display_name}:test",
                 display_name=display_name,
                 type=client_type,
             )
@@ -65,8 +66,8 @@ class NoBridges:
 
 def make_service(
     session_factory: async_sessionmaker[AsyncSession],
-) -> ProtocolService:
-    svc = object.__new__(ProtocolService)
+) -> AgentCore:
+    svc = object.__new__(AgentCore)
     svc.session_factory = session_factory  # type: ignore[attr-defined]
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.api_key_store = ApiKeyStore()  # type: ignore[attr-defined]
@@ -74,7 +75,9 @@ def make_service(
     svc.api_key_cache = ApiKeyCache(ttl_seconds=5.0, max_entries=8)  # type: ignore[attr-defined]
     svc.client_lifecycle = FakeClientLifecycle(session_factory)  # type: ignore[attr-defined]
     svc.collab_lifecycle = NoBridges()  # type: ignore[attr-defined]
-    svc.config = SimpleNamespace(jwt_secret_key="test-secret")  # type: ignore[attr-defined]
+    svc.config = SimpleNamespace(
+        keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None)
+    )  # type: ignore[attr-defined]
     return svc
 
 
@@ -86,9 +89,7 @@ async def make_owner(session_factory: async_sessionmaker[AsyncSession]) -> str:
         return user.id
 
 
-async def register(
-    svc: ProtocolService, name: str, owner_id: str, **kwargs: object
-) -> str:
+async def register(svc: AgentCore, name: str, owner_id: str, **kwargs: object) -> str:
     result = await svc.register_agent(
         name=name,
         description=f"{name} desc",

@@ -23,10 +23,9 @@ data:
   # itself at boot, from the owner connection, immediately after that
   # migration (core/switch_core/db/runtime_role.py::grant_runtime_role).
   #
-  # The role's password is deliberately the bootstrapped superuser's own
-  # ($POSTGRES_PASSWORD, already in this container's environment): see
-  # postgresql.managed.runtimeUsername in values.yaml for why that is not a
-  # second secret to manage.
+  # The role's password is $RUNTIME_ROLE_PASSWORD, which is the superuser's
+  # own unless a separate one is configured: see
+  # postgresql.managed.runtimeUsername in values.yaml.
   #
   # No `set` line, deliberately. A ConfigMap volume mounts its files without
   # the executable bit, so the Postgres entrypoint *sources* this rather than
@@ -42,7 +41,7 @@ data:
     #!/bin/bash
     psql -v ON_ERROR_STOP=1 -U {{ include "switch.postgresSuperUser" . }} -d postgres \
       -v role="{{ include "switch.postgresUser" . }}" \
-      -v pw="$POSTGRES_PASSWORD" <<'SQL'
+      -v pw="$RUNTIME_ROLE_PASSWORD" <<'SQL'
     SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS', :'role', :'pw')
     WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role')
     \gexec

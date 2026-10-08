@@ -30,7 +30,7 @@ from tests.conftest import RLSHarness
 
 async def _client(session: AsyncSession, name: str = "someone") -> Client:
     client = Client(
-        matrix_user_id=f"@{name}-{uuid.uuid4().hex[:8]}:test",
+        transport_user_id=f"@{name}-{uuid.uuid4().hex[:8]}:test",
         display_name=name,
         type="agent",
     )
@@ -40,7 +40,7 @@ async def _client(session: AsyncSession, name: str = "someone") -> Client:
 
 
 async def _room(session: AsyncSession) -> Room:
-    room = Room(matrix_room_id=new_room_id(), name="a room", description="")
+    room = Room(transport_room_id=new_room_id(), name="a room", description="")
     session.add(room)
     await session.flush()
     return room
@@ -81,7 +81,7 @@ class TestRooms:
 
         assert first != second
         async with session_factory() as session:
-            assert await RoomStore().get_by_matrix_room_id(session, first) is None
+            assert await RoomStore().get_by_transport_room_id(session, first) is None
 
 
 class TestMembership:
@@ -92,8 +92,8 @@ class TestMembership:
             room = await _room(session)
             client = await _client(session, "nova")
             await session.commit()
-            room_id, transport_room_id = room.id, room.matrix_room_id
-            client_id, user_id = client.id, client.matrix_user_id
+            room_id, transport_room_id = room.id, room.transport_room_id
+            client_id, user_id = client.id, client.transport_user_id
 
         await _provisioning(session_factory).invite_to_room(transport_room_id, user_id)
 
@@ -123,8 +123,8 @@ class TestMembership:
             room = await _room(session)
             client = await _client(session)
             await session.commit()
-            room_id, transport_room_id = room.id, room.matrix_room_id
-            client_id, user_id = client.id, client.matrix_user_id
+            room_id, transport_room_id = room.id, room.transport_room_id
+            client_id, user_id = client.id, client.transport_user_id
 
         woken: list[str] = []
 
@@ -132,7 +132,7 @@ class TestMembership:
             woken.append(invited_to)
 
         # By client id: the bus is keyed on `clients.id`, not on the handle,
-        # because `matrix_user_id` is unique per tenant and every tenant's
+        # because `transport_user_id` is unique per tenant and every tenant's
         # admin client carries the same one.
         invites = InviteBus()
         invites.register(client_id, _handler, _never)
@@ -155,7 +155,10 @@ class TestMembership:
             room = await _room(session)
             client = await _client(session)
             await session.commit()
-            transport_room_id, user_id = room.matrix_room_id, client.matrix_user_id
+            transport_room_id, user_id = (
+                room.transport_room_id,
+                client.transport_user_id,
+            )
             room_id, client_id = room.id, client.id
 
         provisioning = _provisioning(session_factory)
@@ -180,7 +183,10 @@ class TestMembership:
             room = await _room(session)
             client = await _client(session)
             await session.commit()
-            transport_room_id, user_id = room.matrix_room_id, client.matrix_user_id
+            transport_room_id, user_id = (
+                room.transport_room_id,
+                client.transport_user_id,
+            )
             room_id, client_id = room.id, client.id
 
         provisioning = _provisioning(session_factory)
@@ -212,7 +218,10 @@ class TestMembership:
             room = await _room(session)
             client = await _client(session)
             await session.commit()
-            transport_room_id, user_id = room.matrix_room_id, client.matrix_user_id
+            transport_room_id, user_id = (
+                room.transport_room_id,
+                client.transport_user_id,
+            )
             room_id, client_id = room.id, client.id
 
         told: list[str] = []
@@ -253,7 +262,10 @@ class TestMembership:
             room = await _room(session)
             client = await _client(session)
             await session.commit()
-            transport_room_id, user_id = room.matrix_room_id, client.matrix_user_id
+            transport_room_id, user_id = (
+                room.transport_room_id,
+                client.transport_user_id,
+            )
             client_id = client.id
 
         told: list[str] = []
@@ -280,7 +292,10 @@ class TestMembership:
             room = await _room(session)
             client = await _client(session)
             await session.commit()
-            transport_room_id, user_id = room.matrix_room_id, client.matrix_user_id
+            transport_room_id, user_id = (
+                room.transport_room_id,
+                client.transport_user_id,
+            )
 
         await _provisioning(session_factory).kick_user(transport_room_id, user_id)
 
@@ -290,7 +305,7 @@ class TestMembership:
         async with session_factory() as session:
             room = await _room(session)
             await session.commit()
-            transport_room_id = room.matrix_room_id
+            transport_room_id = room.transport_room_id
 
         provisioning = _provisioning(session_factory)
         with pytest.raises(ProvisioningError):
@@ -312,7 +327,10 @@ class TestMembership:
             room = await _room(session)
             client = await _client(session)
             await session.commit()
-            transport_room_id, user_id = room.matrix_room_id, client.matrix_user_id
+            transport_room_id, user_id = (
+                room.transport_room_id,
+                client.transport_user_id,
+            )
 
         woken: list[str] = []
 
@@ -374,20 +392,20 @@ class TestTwoTenantsSharingAHandle:
                 await session.flush()
                 client = Client(
                     tenant_id=tenant_id,
-                    matrix_user_id=handle,
+                    transport_user_id=handle,
                     display_name="admin",
                     type="admin",
                 )
                 room = Room(
                     tenant_id=tenant_id,
-                    matrix_room_id=new_room_id(),
+                    transport_room_id=new_room_id(),
                     name="a room",
                     description="",
                 )
                 session.add_all([client, room])
                 await session.commit()
                 clients[tenant_id] = client.id
-                rooms[tenant_id] = room.matrix_room_id
+                rooms[tenant_id] = room.transport_room_id
 
         woken: dict[str, list[str]] = {tenant_id: [] for tenant_id in tenants}
 

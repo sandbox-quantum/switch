@@ -1,0 +1,24 @@
+{
+  "machine_id": "3f1c2b4a-0000-4000-8000-000000000001",
+  "state": "stopped",
+  "desired_state": "stopped",
+  "stop_reason": "idle",
+  "sleeping": true,
+  "revision": 2,
+  "instance_type": "c7i.2xlarge",
+  "error": null,
+  "error_code": null,
+  "retain_until": null,
+  "heartbeat_at": "2026-01-01T00:00:00+00:00",
+  "disk": {
+    "total_bytes": 214748364800,
+    "available_bytes": 204010946560
+  },
+  "memory": {
+    "total_bytes": 17179869184,
+    "available_bytes": 12884901888
+  },
+  "agents": [
+    "3f1c2b4a-0000-4000-8000-0000000000c1"
+  ]
+}

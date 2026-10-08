@@ -18,7 +18,7 @@ vi.mock('@main/core/secrets/encrypted-app-secrets-store', () => ({
   UndecryptableSecretError: FakeUndecryptableSecretError,
 }));
 
-const { loadOrCreateSecrets, readSecrets } = await import('./secrets');
+const { loadOrCreateSecrets, readSecrets, storeSecrets } = await import('./secrets');
 
 describe('generateSecrets', () => {
   it('populates every field with a non-empty value', () => {
@@ -76,6 +76,28 @@ describe('loadOrCreateSecrets', () => {
     expect(setSecret).toHaveBeenCalledWith('host-a', JSON.stringify(secrets));
   });
 
+  it('backfills a missing key ring on an install predating SECRET_KEYS', async () => {
+    const legacy = generateSecrets() as Partial<ReturnType<typeof generateSecrets>>;
+    delete legacy.secretKeys;
+    getSecret.mockResolvedValue(JSON.stringify(legacy));
+
+    const secrets = await loadOrCreateSecrets({ secretsKey: 'host-a' });
+
+    expect(secrets).toMatchObject(legacy);
+    expect(secrets.secretKeys).toMatch(/^console:[0-9a-f]{64}$/);
+    expect(setSecret).toHaveBeenCalledWith('host-a', JSON.stringify(secrets));
+  });
+
+  it('never replaces a key ring the stored secrets were encrypted with', async () => {
+    const current = generateSecrets();
+    getSecret.mockResolvedValue(JSON.stringify(current));
+
+    const secrets = await loadOrCreateSecrets({ secretsKey: 'host-a' });
+
+    expect(secrets.secretKeys).toBe(current.secretKeys);
+    expect(setSecret).not.toHaveBeenCalled();
+  });
+
   it('fails loud on an unreadable bundle instead of regenerating over a live volume', async () => {
     getSecret.mockResolvedValue('not json');
 
@@ -127,5 +149,19 @@ describe('readSecrets', () => {
     expect(secrets).toMatchObject(legacy);
     expect(secrets?.dbRuntimePassword).toBeTruthy();
     expect(setSecret).not.toHaveBeenCalled();
+  });
+});
+
+describe('storeSecrets', () => {
+  it('keeps a bundle taken from a shared host as this desktop’s copy, under the host’s key', async () => {
+    setSecret.mockReset();
+    const secrets = generateSecrets();
+
+    await storeSecrets({ secretsKey: 'remote-switch-server:vm-1:secrets' } as never, secrets);
+
+    expect(setSecret).toHaveBeenCalledWith(
+      'remote-switch-server:vm-1:secrets',
+      JSON.stringify(secrets)
+    );
   });
 });

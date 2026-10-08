@@ -3,15 +3,6 @@ import { db } from '@main/db/client';
 import { appSettings } from '@main/db/schema';
 
 /**
- * Local mirror of which agents have `auto_session` enabled. The agent's gateway
- * profile (`connection_model === 'auto_session'`) is the source of truth; this
- * mirror lets the watcher start at boot using only the agent token (no gateway
- * JWT), and is reconciled from the gateway when the UI loads the agent. Stored
- * as a JSON array of local agent ids under a single appSettings key.
- */
-const KEY = 'auto_session_agents';
-
-/**
  * Agents whose controller someone stopped by hand. Every agent linked to Switch
  * is given a controller at boot, so this is the only record that one of them
  * was deliberately taken off the air — without it, quitting Console would put
@@ -48,8 +39,7 @@ const inFlight = new Map<string, Promise<void>>();
  * row, so changing one member is a read, an edit and a write with suspension
  * points between them: two that overlap both read before either writes, and the
  * later write drops the earlier's member. Overlapping is ordinary here —
- * removing an agent clears both agent keys, and tearing down a host removes its
- * agents together — and what is lost is durable, so an agent stopped by hand is
+ * tearing down a host removes its agents together — and what is lost is durable, so an agent stopped by hand is
  * back on the air at the next boot.
  */
 function serialize(key: string, mutate: () => Promise<void>): Promise<void> {
@@ -70,16 +60,6 @@ async function updateSet(key: string, agentId: string, member: boolean): Promise
     else ids.delete(agentId);
     await writeSet(key, ids);
   });
-}
-
-/** Local agent ids currently mirrored as auto_session-enabled. */
-export async function listAutoSessionAgentIds(): Promise<string[]> {
-  return [...(await readSet(KEY))];
-}
-
-/** Add or remove an agent from the local auto_session mirror. */
-export async function setAutoSessionAgent(agentId: string, enabled: boolean): Promise<void> {
-  await updateSet(KEY, agentId, enabled);
 }
 
 /** Local agent ids whose controller is stopped until someone starts it again. */

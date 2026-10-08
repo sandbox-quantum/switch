@@ -1,0 +1,7 @@
+slug: new-relic
+name: New Relic
+category: Observability
+description: Query New Relic telemetry and alerts.
+enabled: false
+auth:
+  type: api_key

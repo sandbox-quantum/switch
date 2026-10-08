@@ -43,7 +43,7 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 import switch_core
 from switch_core.db.models import (
@@ -56,6 +56,7 @@ from switch_core.db.models import (
     Room,
     ServerConnector,
     Tenant,
+    TenantJoinDomain,
     TenantMember,
     User,
 )
@@ -63,7 +64,6 @@ from switch_core.db.tenant_lookup import (
     SECURE_SEARCH_PATH,
     TENANT_LOOKUPS,
     TENANT_LOOKUPS_BY_NAME,
-    TenantLookupError,
     all_tenant_ids,
     create_lookup_ddl,
     tenant_of_agent_oauth_client,
@@ -73,7 +73,9 @@ from switch_core.db.tenant_lookup import (
     tenant_of_messaging_install,
     tenant_of_room,
     tenant_of_server_connector,
+    tenants_inviting_email,
     tenants_of_user,
+    tenants_open_to_domain,
 )
 from switch_core.tenant_context import tenant_scope
 from tests.conftest import RLSHarness
@@ -101,6 +103,8 @@ _DROPPED_SINCE = {"tenant_of_client": "b1d7c4f0a92e"}
 _ADDED_SINCE = {
     "tenant_of_invitation": "5daaea6b674d",
     "tenant_of_messaging_install": "c8a4e21f6d30",
+    "tenants_inviting_email": "4b8e2d61c9f7",
+    "tenants_open_to_domain": "7d3f5a19e2c8",
 }
 
 # A third kind of change, and the quietest: a lookup whose body a later
@@ -197,13 +201,13 @@ async def _two_populated_tenants(harness: RLSHarness) -> _Fixture:
         for tenant_id, tag in ((fixture.tenant_a, "a"), (fixture.tenant_b, "b")):
             client = Client(
                 tenant_id=tenant_id,
-                matrix_user_id=f"@client-{tag}-{suffix}:test",
+                transport_user_id=f"@client-{tag}-{suffix}:test",
                 display_name=f"client {tag}",
                 type="agent",
             )
             room = Room(
                 tenant_id=tenant_id,
-                matrix_room_id=f"!room-{tag}-{suffix}:test",
+                transport_room_id=f"!room-{tag}-{suffix}:test",
                 name=f"room {tag}",
                 description="",
             )
@@ -266,10 +270,9 @@ async def _two_populated_tenants(harness: RLSHarness) -> _Fixture:
                     agent_type="always_on",
                     integration_profile={"connection_model": "always_on"},
                     connector_type="test",
-                    # Both tenants carry the same value on a column with no
-                    # unique index: the one lookup that can legitimately
-                    # answer twice, and the case it has to refuse.
-                    oauth_client_id=fixture.oauth_client_a,
+                    oauth_client_id=(
+                        fixture.oauth_client_a if tag == "a" else f"oauth-b-{suffix}"
+                    ),
                 )
             )
             await session.flush()
@@ -482,6 +485,85 @@ class TestWhatTheyAnswer:
             await tenant_of_invitation(rls_harness.restricted, "no-such-hash") is None
         )
 
+    async def test_an_address_resolves_to_the_tenants_with_live_invitations_for_it(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Only live invitations count, the address matches in any case, and
+        a tenant with several answers once. Tenant B's invitations to the
+        address are all dead in a different way, so it must not appear."""
+        fixture = await _two_populated_tenants(rls_harness)
+        address = f"invitee-{uuid.uuid4().hex[:8]}@example.test"
+        now = datetime.now(UTC)
+        live: dict[str, object] = {
+            "expires_at": now + timedelta(days=1),
+            "uses_remaining": 1,
+        }
+        rows = [
+            (fixture.tenant_a, address.upper(), live),
+            (fixture.tenant_a, address, live),
+            (fixture.tenant_b, address, {**live, "revoked_at": now}),
+            (
+                fixture.tenant_b,
+                address,
+                {**live, "expires_at": now - timedelta(minutes=1)},
+            ),
+            (fixture.tenant_b, address, {**live, "uses_remaining": 0}),
+            (fixture.tenant_b, f"other-{address}", live),
+        ]
+        async with rls_harness.owner() as session:
+            for tenant_id, email, state in rows:
+                session.add(
+                    Invitation(
+                        tenant_id=tenant_id,
+                        role="member",
+                        email=email,
+                        token_hash=uuid.uuid4().hex,
+                        created_by=fixture.user_in_both,
+                        **state,
+                    )
+                )
+            await session.commit()
+
+        assert await tenants_inviting_email(rls_harness.restricted, address) == [
+            fixture.tenant_a
+        ]
+        assert (
+            await tenants_inviting_email(rls_harness.restricted, "nobody@example.test")
+            == []
+        )
+
+    async def test_a_domain_resolves_to_the_tenants_open_to_it(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The domain matches in any case, and only the tenants open to it
+        answer."""
+        fixture = await _two_populated_tenants(rls_harness)
+        domain = f"open-{uuid.uuid4().hex[:8]}.example.test"
+        async with rls_harness.owner() as session:
+            session.add(
+                TenantJoinDomain(
+                    tenant_id=fixture.tenant_a,
+                    domain=domain,
+                    created_by=fixture.user_in_both,
+                )
+            )
+            session.add(
+                TenantJoinDomain(
+                    tenant_id=fixture.tenant_b,
+                    domain=f"other-{domain}",
+                    created_by=fixture.user_in_both,
+                )
+            )
+            await session.commit()
+
+        assert await tenants_open_to_domain(rls_harness.restricted, domain.upper()) == [
+            fixture.tenant_a
+        ]
+        assert (
+            await tenants_open_to_domain(rls_harness.restricted, "nobody.example.test")
+            == []
+        )
+
     async def test_an_installed_workspace_resolves_to_the_tenant_that_installed_it(
         self, rls_harness: RLSHarness
     ) -> None:
@@ -533,20 +615,34 @@ class TestWhatTheyAnswer:
             is None
         )
 
-    async def test_an_ambiguous_answer_is_refused_rather_than_picked(
+    async def test_an_oauth_client_resolves_to_the_one_tenant_holding_it(
         self, rls_harness: RLSHarness
     ) -> None:
-        """`agents.oauth_client_id` carries no unique index, so two tenants
-        can register an agent under the same one. Resolving that to a tenant
-        by taking the first row would authenticate a caller into somebody
-        else's data on the strength of a duplicate — a provisioning fault
-        turned into an authorization one — so it raises."""
         fixture = await _two_populated_tenants(rls_harness)
-        with pytest.raises(TenantLookupError) as raised:
+        assert (
             await tenant_of_agent_oauth_client(
                 rls_harness.restricted, fixture.oauth_client_a
             )
-        assert "refusing to pick one" in str(raised.value)
+            == fixture.tenant_a
+        )
+
+    async def test_a_second_tenant_cannot_take_an_oauth_client_id(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The client id is how an OIDC sign-in finds its agent before any
+        tenant is known, so it must name one agent deployment-wide. Were a
+        second tenant able to register it, the lookup would have to refuse
+        both — the first tenant's agents locked out by someone else's row."""
+        fixture = await _two_populated_tenants(rls_harness)
+        async with rls_harness.owner() as session:
+            with pytest.raises(IntegrityError, match="uq_agents_oauth_client_id"):
+                await session.execute(
+                    text(
+                        "UPDATE agents SET oauth_client_id = :oauth "
+                        "WHERE tenant_id = :tenant"
+                    ),
+                    {"oauth": fixture.oauth_client_a, "tenant": fixture.tenant_b},
+                )
 
 
 class TestWhatTheExemptionDiscloses:

@@ -1,4 +1,4 @@
-import { applyControllerState, configureSharedWatcher } from '@main/core/sdk-host/shared-watcher';
+import { applyControllerState, configureAgentHost } from '@main/core/sdk-host/agent-host';
 import { agentEvents } from './agent-events';
 import { getAgentById } from './getAgentById';
 import { getAgents } from './getAgents';
@@ -34,9 +34,33 @@ export async function startRemoteDiscovery(agentId: string): Promise<void> {
  */
 export async function ensureRemoteWatcher(agentId: string): Promise<void> {
   if (!(await getAgentById(agentId))?.switchAgentId) return;
-  await applyControllerState(agentId, 'restore');
+  await applyControllerState(agentId, 'restore', 'host');
   remoteSessionReconciler.start(agentId);
 }
+/** {@link ensureRemoteWatcher}, but writing this Console's auto-approve to the
+ * host instead of adopting the host's. */
+export async function pushRemoteAutoApprove(agentId: string): Promise<void> {
+  await applyControllerState(agentId, 'restore', 'this-console');
+  remoteSessionReconciler.start(agentId);
+}
+/**
+ * Hands the running watcher of an agent on this computer the configuration its
+ * settings now describe; it brings its live sessions in step as each finishes
+ * its turn. A save that cannot reach it says so, with the setting kept.
+ */
+export async function refreshLocalWatcher(agentId: string): Promise<void> {
+  if (!(await getAgentById(agentId))?.switchAgentId) return;
+  try {
+    await applyControllerState(agentId, 'restore', 'host');
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `The setting is saved, but the agent's running watcher could not be updated yet (${reason}). ` +
+        'Its sessions take the new setting once it is.',
+      { cause: error }
+    );
+  }
+}
 export async function stopRemoteWatcher(agentId: string): Promise<void> {
-  await configureSharedWatcher(agentId, { connected: false, spawning: false }, 'restore');
+  await configureAgentHost(agentId, { connected: false, spawning: false }, 'restore');
 }

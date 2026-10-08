@@ -168,7 +168,7 @@ async def answerer_of(
             )
             .join(Client, Client.id == ExternalUser.client_id)
             .join(CollaborationBridge, CollaborationBridge.id == ExternalUser.bridge_id)
-            .where(Client.matrix_user_id == answered_by)
+            .where(Client.transport_user_id == answered_by)
             .limit(1)
         )
     ).first()

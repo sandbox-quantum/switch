@@ -39,6 +39,20 @@ async function save(path: string, value: unknown, replace: boolean): Promise<voi
   }
 }
 
+/** A live process held its ticket past the wait; `holders` are the processes still ahead. */
+export class OwnershipContendedError extends Error {
+  readonly holders: number[];
+
+  constructor(holders: number[]) {
+    const self = holders.includes(process.pid) ? ', this process among them' : '';
+    super(
+      `FENCING_REQUIRED: another live host is acquiring ownership (pid ${holders.join(', ')}${self}).`
+    );
+    this.name = 'OwnershipContendedError';
+    this.holders = holders;
+  }
+}
+
 /** Bakery election: each contender writes only its own ticket, so reclamation needs no lock. */
 export async function withOwnershipLock<T>(root: string, action: () => Promise<T>): Promise<T> {
   const directory = join(root, 'ownership');
@@ -69,22 +83,58 @@ export async function withOwnershipLock<T>(root: string, action: () => Promise<T
     if (!Number.isSafeInteger(ticket)) throw new Error('Ownership ticket space exhausted.');
     await save(path, { choosing: false, ticket }, true);
     const deadline = performance.now() + 15000;
-    while (
-      (await entries()).some(
+    for (;;) {
+      const ahead = (await entries()).filter(
         (entry) =>
           entry.id !== id &&
           (entry.value.choosing ||
             entry.value.ticket < ticket ||
             (entry.value.ticket === ticket && entry.id < id))
-      )
-    ) {
+      );
+      if (!ahead.length) break;
       if (performance.now() >= deadline)
-        throw new Error('FENCING_REQUIRED: another live host is acquiring ownership.');
+        throw new OwnershipContendedError([
+          ...new Set(ahead.map((entry) => Number(entry.id.split('-')[0]))),
+        ]);
       await delay(25);
     }
     return await action();
   } finally {
     await unlink(path);
+  }
+}
+
+/** How long {@link withOwnershipLockOutlasting} waits for the processes ahead of it to finish or exit. */
+export const OUTLAST_PATIENCE_MS = 120_000;
+
+/**
+ * {@link withOwnershipLock} for a start that may overlap the exit of the
+ * process it replaces, such as a Console restarting: the old process can
+ * hold its ticket for as long as it takes to shut down, longer than the lock
+ * waits. Contention is retried until the processes ahead finish or exit, up
+ * to {@link OUTLAST_PATIENCE_MS}. Null when `signal` aborts while waiting.
+ */
+export async function withOwnershipLockOutlasting<T>(
+  root: string,
+  action: () => Promise<T>,
+  signal: AbortSignal
+): Promise<{ value: T } | null> {
+  const deadline = performance.now() + OUTLAST_PATIENCE_MS;
+  let warned = false;
+  for (;;) {
+    try {
+      return { value: await withOwnershipLock(root, action) };
+    } catch (error) {
+      if (!(error instanceof OwnershipContendedError) || performance.now() >= deadline) throw error;
+      if (!warned) {
+        console.warn(
+          `${error.message} Waiting up to ${OUTLAST_PATIENCE_MS / 1000} s for it to finish or exit, as a process shutting down does.`
+        );
+        warned = true;
+      }
+    }
+    await delay(1000, undefined, { signal }).catch(() => {});
+    if (signal.aborted) return null;
   }
 }
 

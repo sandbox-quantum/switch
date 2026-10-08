@@ -17,14 +17,16 @@ from fastapi import Response
 from switch_core.db.models import User
 from switch_core.gateway.auth import decode_jwt
 from switch_core.gateway.auth_routes import refresh
+from switch_core.keys import Keyring
 
 # Dummy HS256 signing key for these unit tests only — not a real secret.
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
+_KEYRING = Keyring.parse("test:" + _SECRET, legacy_secret=None)
 
 
 def _config(*, cookie_secure: bool = False) -> SimpleNamespace:
     # refresh() only touches these two config attributes.
-    return SimpleNamespace(jwt_secret_key=_SECRET, gateway_cookie_secure=cookie_secure)
+    return SimpleNamespace(keyring=_KEYRING, gateway_cookie_secure=cookie_secure)
 
 
 def _request(*, tenant_id: str | None) -> SimpleNamespace:
@@ -50,7 +52,7 @@ async def test_refresh_remints_cookie_for_current_user() -> None:
     result = await refresh(_request(tenant_id="tenant-0"), response, user, _config())
 
     token = _extract_cookie(response)
-    payload = decode_jwt(token, _SECRET)
+    payload = decode_jwt(token, _KEYRING)
     assert payload["sub"] == "u-1"
     assert payload["email"] == "ada@example.com"
     assert payload["role"] == "user"
@@ -70,7 +72,7 @@ async def test_refresh_carries_the_selected_tenant_forward() -> None:
     await refresh(_request(tenant_id="tenant-b"), response, user, _config())
 
     token = _extract_cookie(response)
-    payload = decode_jwt(token, _SECRET)
+    payload = decode_jwt(token, _KEYRING)
     assert payload["tenant_id"] == "tenant-b"
 
 

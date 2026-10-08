@@ -1,0 +1,15 @@
+{
+  "machines": [
+    {
+      "machine_id": "3f1c2b4a-0000-4000-8000-000000000001",
+      "slot_id": "slot-a",
+      "generation": 1,
+      "state": "ready",
+      "desired_state": "running",
+      "revision": 1,
+      "data_volume_id": "vol-0123456789abcdef0",
+      "retain_until": null,
+      "bundle_revision": 1
+    }
+  ]
+}

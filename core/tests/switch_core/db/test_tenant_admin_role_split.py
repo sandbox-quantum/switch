@@ -200,7 +200,7 @@ class TestRoomAuthzThroughTenantRole:
             await _membership(session, TENANT_ZERO_ID, owner.id, "owner")
             room = Room(
                 tenant_id=TENANT_ZERO_ID,
-                matrix_room_id="!private-room:test",
+                transport_room_id="!private-room:test",
                 name="private room",
                 description="desc",
                 owner_id=someone_else.id,
@@ -225,7 +225,7 @@ class TestRoomAuthzThroughTenantRole:
             await _membership(session, tenant_b.id, owner.id, "member")
             room = Room(
                 tenant_id=TENANT_ZERO_ID,
-                matrix_room_id="!private-room-2:test",
+                transport_room_id="!private-room-2:test",
                 name="private room",
                 description="desc",
                 owner_id=someone_else.id,
@@ -252,7 +252,7 @@ class TestRoomAuthzThroughTenantRole:
             await _membership(session, TENANT_ZERO_ID, member.id, "member")
             room = Room(
                 tenant_id=TENANT_ZERO_ID,
-                matrix_room_id="!private-room-3:test",
+                transport_room_id="!private-room-3:test",
                 name="private room",
                 description="desc",
                 owner_id=someone_else.id,

@@ -52,9 +52,9 @@ def _config() -> SwitchConfig:
         db_user="u",
         db_password="p",
         db_name="d",
-        matrix_server_name="test",
+        id_server_name="test",
         agent_registration_token="t",
-        jwt_secret_key="s",
+        secret_keys="test:" + "x" * 40,
         gateway_admin_email="admin@test",
         gateway_admin_password="pw",
     )

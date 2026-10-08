@@ -1,0 +1,7 @@
+# Findings gitleaks reports in history that are not secrets, by fingerprint
+# (commit:file:rule:line). Prefer the allowlist in .gitleaks.toml for a pattern
+# that recurs; this file is for one commit's line that cannot be rewritten.
+
+# A placeholder JWT_SECRET_KEY in a migration test's environment, since replaced
+# by SECRET_KEYS; it signed nothing outside that test.
+f1eaba23f82611562b478aaed85687c1bd99e8e0:core/tests/switch_core/test_migration_hosted_merge.py:generic-api-key:947

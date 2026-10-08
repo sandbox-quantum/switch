@@ -218,6 +218,27 @@ interface SessionState {
    */
   usage: CumulativeUsage;
   unreportedUsage: TokenUsage[];
+  /**
+   * Subagent tasks the CLI is running, by task id, and whether each runs in
+   * the background. A background one outlives the turn that started it, so
+   * the session is still at work after the turn ends.
+   */
+  subagentTasks: Map<string, { backgrounded: boolean }>;
+}
+
+/** Task types that are agents doing work, rather than shells or tool calls. */
+const SUBAGENT_TASK_TYPES = new Set(['local_agent', 'remote_agent', 'local_workflow']);
+
+function isSubagentTask(task: {
+  task_type?: string;
+  subagent_type?: string;
+  ambient?: boolean;
+  skip_transcript?: boolean;
+}): boolean {
+  if (task.ambient || task.skip_transcript) return false;
+  return task.task_type !== undefined
+    ? SUBAGENT_TASK_TYPES.has(task.task_type)
+    : task.subagent_type !== undefined;
 }
 
 /** An async iterable the adapter pushes into for the life of the session. */
@@ -351,6 +372,14 @@ export class ClaudeAdapter implements ProviderAdapter {
     return this.sessions.has(sessionId);
   }
 
+  /** Whether subagents started in the background are still running. */
+  hasBackgroundWork(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    for (const task of session.subagentTasks.values()) if (task.backgrounded) return true;
+    return false;
+  }
+
   /**
    * Start a Claude Code session.
    *
@@ -403,9 +432,14 @@ export class ClaudeAdapter implements ProviderAdapter {
       ...(effort ? { effort } : {}),
       ...(input.resume ? { resume: nativeSessionId } : { sessionId: nativeSessionId }),
       ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+      // Never recorded: the agent's instructions can change between launches
+      // of the same conversation, and a recorded prompt is replayed as-is on
+      // every resume (recent Claude Code CLIs record one even with an append),
+      // so an edited agent would go on answering under its old instructions.
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
+        snapshot: false,
         ...(input.systemContext ? { append: input.systemContext } : {}),
       },
       includePartialMessages: true,
@@ -438,6 +472,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       exited: false,
       usage: new CumulativeUsage(),
       unreportedUsage: [],
+      subagentTasks: new Map(),
     };
     this.sessions.set(input.sessionId, session);
     this.emit(session, { type: 'session.state.changed', status: 'starting' });
@@ -684,6 +719,7 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   private handleMessage(session: SessionState, message: SDKMessage): void {
     if (message.type === 'result') this.recordUsage(session, message);
+    this.trackSubagentTasks(session, message);
     if (session.compaction) {
       if (message.type === 'system' && message.subtype === 'compact_boundary')
         session.compaction.boundary = true;
@@ -727,6 +763,50 @@ export class ClaudeAdapter implements ProviderAdapter {
       case 'result':
         this.handleResult(session, message);
         return;
+      default:
+        return;
+    }
+  }
+
+  /**
+   * Follows the CLI's subagent tasks, which compaction does not pause. The
+   * `background_tasks_changed` level replaces what the edges built up, so a
+   * missed notification cannot leave a task counted forever.
+   */
+  private trackSubagentTasks(session: SessionState, message: SDKMessage): void {
+    const tasks = session.subagentTasks;
+    if (message.type === 'result') {
+      // A foreground task blocks the turn it runs in, so none outlives it.
+      for (const [taskId, task] of tasks) if (!task.backgrounded) tasks.delete(taskId);
+      return;
+    }
+    if (message.type !== 'system') return;
+    switch (message.subtype) {
+      case 'task_started':
+        if (isSubagentTask(message))
+          tasks.set(message.task_id, { backgrounded: message.is_backgrounded !== false });
+        return;
+      case 'task_updated': {
+        const task = tasks.get(message.task_id);
+        if (!task) return;
+        const status = message.patch.status;
+        if (status === 'completed' || status === 'failed' || status === 'killed')
+          tasks.delete(message.task_id);
+        else if (message.patch.is_backgrounded !== undefined)
+          task.backgrounded = message.patch.is_backgrounded;
+        return;
+      }
+      case 'task_notification':
+        tasks.delete(message.task_id);
+        return;
+      case 'background_tasks_changed': {
+        const foreground = [...tasks].filter(([, task]) => !task.backgrounded);
+        tasks.clear();
+        for (const [taskId, task] of foreground) tasks.set(taskId, task);
+        for (const task of message.tasks)
+          if (isSubagentTask(task)) tasks.set(task.task_id, { backgrounded: true });
+        return;
+      }
       default:
         return;
     }

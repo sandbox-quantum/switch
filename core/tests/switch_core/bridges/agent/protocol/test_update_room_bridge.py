@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 
 
 class _FakeSession:
@@ -55,14 +55,12 @@ class _FakeRoomService:
         )
 
 
-def _build_service(
-    *, bridge_found: bool = True
-) -> tuple[ProtocolService, _FakeRoomService]:
+def _build_service(*, bridge_found: bool = True) -> tuple[AgentCore, _FakeRoomService]:
     room_service = _FakeRoomService()
-    svc = object.__new__(ProtocolService)
+    svc = object.__new__(AgentCore)
     # Presence unions the heartbeat rows with the live connections
     # (CHOO-1857); an empty registry means "rows only".
-    svc.connections = ConnectionRegistry()
+    svc.connections = AgentConnectionRegistry()
     svc.session_factory = lambda: _FakeSession()  # type: ignore[assignment]
     svc.room_store = _FakeRoomStore()  # type: ignore[assignment]
     svc.bridge_store = _FakeBridgeStore(bridge_found)  # type: ignore[assignment]

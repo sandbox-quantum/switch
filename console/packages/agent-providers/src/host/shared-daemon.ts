@@ -2,17 +2,22 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { ensureSessions, serveControl } from './control';
+import { openSwitchStream, runAgentHost } from './agent-host';
+import { AttachmentTransfers } from './attachment-transfers';
+import { type ControlContext, ensureSessions, serveControl } from './control';
+import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
+import { hostedWorker } from './hosted-watcher';
+import { openHubStream } from './hub-stream';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
-import { SessionLinks } from './session-channel';
-import { sharedConfigSchema } from './shared-config';
+import { HOST_EXIT_GRACE_MS, SessionLinks } from './session-channel';
+import { readSharedCredentials, sharedConfigSchema } from './shared-config';
 import { hostSessionProcess } from './shared-host';
-import { runSharedWatcher } from './shared-watcher';
 import { superviseSharedHost } from './supervisor';
+import { recordWatcherHealth } from './watcher-health-file';
 import { WatcherControl } from './watcher-tools';
 
 const [root, configPath, mode] = process.argv.slice(2);
@@ -108,6 +113,7 @@ async function main(): Promise<void> {
       signal: stop.signal,
       build: process.argv[1]!,
       links: null,
+      logRedactions: [],
     });
   } else if (mode === '--watch-worker') {
     const stop = new AbortController();
@@ -120,18 +126,43 @@ async function main(): Promise<void> {
     const ensure = ensureSessions(supervision);
     // Console's "Reconnect to room" reaches the watcher through the control port.
     const control = new WatcherControl();
+    const transfers = new AttachmentTransfers(resolve(root));
+    await transfers.clear();
+    const context: ControlContext = {
+      agentId: config.session.agentId,
+      links,
+      ensure,
+      watcher: control,
+      transfers,
+    };
+    const hosted = await hostedWorker(config, resolve(root), context);
+    // An agents controller running this agent host in a process of its own
+    // names its hub: the agent's events come from there, not from Switch.
+    const hub = config.execution
+      ? (await readSharedCredentials(config)).SWITCH_AGENT_HUB
+      : undefined;
+    // Console reads the watcher's connection state from this file, with the
+    // rest of the host's watcher state, rather than from the control port.
+    const stopRecording = recordWatcherHealth(resolve(root), control);
     // A watcher that stops (disabled, stood down after a takeover, or
     // signalled) takes the process with it: the control port and every
     // session host go too, so the supervisor sees a clean exit and does not
     // start it again.
     try {
       await Promise.all([
-        runSharedWatcher(root, config, stop.signal, supervision, control).finally(() =>
-          stop.abort()
-        ),
-        serveControl(resolve(root), links, ensure, control, stop.signal),
+        runAgentHost(
+          root,
+          config,
+          stop.signal,
+          supervision,
+          control,
+          hosted,
+          hub ? openHubStream(hub) : openSwitchStream
+        ).finally(() => stop.abort()),
+        serveControl(resolve(root), context, stop.signal),
       ]);
     } finally {
+      stopRecording();
       await supervision.close();
     }
   } else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
@@ -188,23 +219,38 @@ async function main(): Promise<void> {
     } finally {
       // The channel would otherwise keep this process alive after the host is done.
       process.disconnect();
+      // Something the host started can outlive it too, and keep this process
+      // alive holding the session's lock with no pipe to its parent. Exit
+      // regardless: the supervisor then clears what is left of the group.
+      setTimeout(() => {
+        console.warn(
+          `The session host finished but was still running ${HOST_EXIT_GRACE_MS / 1000} s later; exiting so its supervisor can stop what it left behind.`
+        );
+        process.exit();
+      }, HOST_EXIT_GRACE_MS).unref();
     }
   }
 }
 try {
   await main();
 } catch (error) {
-  if (
-    root !== '--probe' &&
-    root !== '--models' &&
-    mode !== '--supervise' &&
-    mode !== '--watch-supervise'
-  ) {
-    await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
-    await replaceOwner(join(root, 'supervisor', 'failure.json'), {
-      message: error instanceof Error ? error.message : String(error),
-    });
+  if (error instanceof WorkerObsoleteError) {
+    // Not a failure of this bundle's to record: the worker service waits for a current one.
+    console.error(error.message);
+    process.exitCode = OBSOLETE_BUNDLE_EXIT_CODE;
+  } else {
+    if (
+      root !== '--probe' &&
+      root !== '--models' &&
+      mode !== '--supervise' &&
+      mode !== '--watch-supervise'
+    ) {
+      await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
+      await replaceOwner(join(root, 'supervisor', 'failure.json'), {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    console.error(error);
+    process.exitCode = 1;
   }
-  console.error(error);
-  process.exitCode = 1;
 }

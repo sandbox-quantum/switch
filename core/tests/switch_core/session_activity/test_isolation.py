@@ -8,17 +8,17 @@ from sqlalchemy import select
 
 from switch_core.db.models import (
     Agent,
+    AgentSessionActivityItem,
     ApiKey,
     ApprovalRequest,
     Client,
-    SessionActivityItem,
     Tenant,
     User,
 )
 from switch_core.session_activity.service import (
+    AgentSessionActivityService,
     ApprovalOption,
     PlatformPerson,
-    SessionActivityService,
 )
 from switch_core.sessions.errors import SessionError
 from switch_core.tenant_context import tenant_scope
@@ -26,7 +26,7 @@ from switch_core.tenant_context import tenant_scope
 from .conftest import pick
 
 
-async def _seed(harness, tenant: str) -> SessionActivityService:
+async def _seed(harness, tenant: str) -> AgentSessionActivityService:
     async with harness.owner() as db, db.begin():
         db.add(Tenant(id=tenant, slug=tenant, name=tenant))
         db.add(
@@ -42,7 +42,7 @@ async def _seed(harness, tenant: str) -> SessionActivityService:
                 type="agent",
             )
             client = Client(
-                matrix_user_id=f"@agent-{tenant}:example.test",
+                transport_user_id=f"@agent-{tenant}:example.test",
                 display_name="Agent",
                 type="agent",
             )
@@ -61,7 +61,7 @@ async def _seed(harness, tenant: str) -> SessionActivityService:
                     owner_id=tenant,
                 )
             )
-    return SessionActivityService(harness.restricted)
+    return AgentSessionActivityService(harness.restricted)
 
 
 async def test_each_tenant_sees_only_its_own_activity_and_requests(rls_harness):
@@ -83,6 +83,7 @@ async def test_each_tenant_sees_only_its_own_activity_and_requests(rls_harness):
                 thread_id=None,
                 message_id=None,
                 occurred_at=datetime.now(UTC),
+                usage=[],
             )
             await service.open_approval(
                 tenant,
@@ -102,7 +103,7 @@ async def test_each_tenant_sees_only_its_own_activity_and_requests(rls_harness):
     for tenant in services:
         with tenant_scope(tenant):
             async with rls_harness.restricted() as db:
-                for model in (SessionActivityItem, ApprovalRequest):
+                for model in (AgentSessionActivityItem, ApprovalRequest):
                     rows = (await db.scalars(select(model))).all()
                     assert {row.tenant_id for row in rows} == {tenant}
 

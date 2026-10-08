@@ -17,12 +17,17 @@ The finishing order is load-bearing and not the obvious one:
    outage burns the link — the customer starts a ten-second flow again, and
    the property we keep in exchange is that a captured state is worth nothing.
 3. **Exchange the code**, which is the only network call.
-4. **Claim the workspace**, which is where a workspace already held by another
+4. **Ask the approver to confirm**, on a page naming the Switch organisation
+   and who started the install. Whoever approved on the platform need not be
+   whoever started the flow — the consent link can be sent to anyone — so
+   nothing is claimed until they choose Connect. The grant waits in the page,
+   sealed, and the choice is recorded once.
+5. **Claim the workspace**, which is where a workspace already held by another
    tenant fails, in the database rather than in a check above it.
-5. **Register the bridge** from the rendered connection config, exactly as if
+6. **Register the bridge** from the rendered connection config, exactly as if
    an operator had typed the token in, and point the install row at it.
 
-Step 5 last is deliberate too: a bridge that exists with no install row behind
+Step 6 last is deliberate too: a bridge that exists with no install row behind
 it is an orphan nothing can revoke, whereas an install row with no bridge is a
 recorded credential waiting to be used, which is a state the schema already
 allows for.
@@ -57,14 +62,22 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.install import (
     InboundWebhook,
+    InstallGrant,
     MessagingAppInstaller,
     MessagingInstallerRegistry,
+    MessagingInstallError,
     WebhookEndpoint,
     oauth_callback_path,
     public_url,
+)
+from switch_core.bridges.collaboration.install_confirmation import (
+    CONFIRM_TTL,
+    InstallTicket,
+    open_ticket,
+    seal,
 )
 from switch_core.bridges.collaboration.install_state import (
     InstallState,
@@ -72,19 +85,26 @@ from switch_core.bridges.collaboration.install_state import (
     verify,
 )
 from switch_core.bridges.collaboration.lifecycle_service import (
+    BridgeClaimConflict,
     CollaborationBridgeLifecycleService,
 )
-from switch_core.crypto import decrypt_token, encrypt_token
-from switch_core.db.models import MessagingInstall
+from switch_core.bridges.collaboration.models import (
+    BridgeCredentialError,
+    BridgeStartRefused,
+)
+from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.models import MessagingInstall, Tenant, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import (
     INSTALL_ACTIVE,
     INSTALL_DISCONNECTED,
     INSTALL_REVOKED,
+    MessagingInstallClaimedError,
     MessagingInstallStore,
 )
 from switch_core.db.tenant_lookup import tenant_of_messaging_install
+from switch_core.keys import Keyring
 from switch_core.tenant_context import no_tenant, tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -131,7 +151,23 @@ class WebhookTarget:
     tenant_id: str
     platform: str
     bridge_id: str
-    adapter: CollaborationAdapter
+    adapter: PlatformAdapter
+
+
+@dataclass(frozen=True)
+class PendingInstall:
+    """A redeemed grant waiting for the approver's Connect or Cancel.
+
+    Everything the confirmation page shows, and the sealed `ticket` its forms
+    send back. `requested_by` is the email of whoever started the install.
+    """
+
+    platform: str
+    workspace_name: str
+    external_workspace_id: str
+    organisation: str
+    requested_by: str
+    ticket: str
 
 
 class InstallPlatformMismatch(RuntimeError):
@@ -155,7 +191,7 @@ class MessagingInstallService:
         installers: MessagingInstallerRegistry,
         lifecycle: CollaborationBridgeLifecycleService,
         public_origin: str,
-        secret: str,
+        keyring: Keyring,
     ) -> None:
         self._session_factory = session_factory
         self._store = store
@@ -163,7 +199,7 @@ class MessagingInstallService:
         self._installers = installers
         self._lifecycle = lifecycle
         self._public_origin = public_origin
-        self._secret = secret
+        self._keyring = keyring
 
     def _redirect_uri(self, platform: str) -> str:
         """Where the platform sends the browser back to.
@@ -197,7 +233,7 @@ class MessagingInstallService:
             InstallState(
                 tenant_id=state.tenant_id, state_id=state.id, platform=platform
             ),
-            secret=self._secret,
+            keyring=self._keyring,
         )
         return installer.authorize_url(
             state=token, redirect_uri=self._redirect_uri(platform)
@@ -205,14 +241,15 @@ class MessagingInstallService:
 
     async def complete(
         self, *, platform: str, code: str, state_token: str
-    ) -> MessagingInstall:
-        """Finish an install begun elsewhere, on behalf of nobody in particular.
+    ) -> PendingInstall:
+        """Redeem the platform's code and return what the approver must confirm.
 
         The caller is unauthenticated: everything trusted here comes out of the
         signature on `state_token` or out of the platform's own response.
+        Nothing is claimed yet — see `confirm`.
         """
         installer = self._installers.get(platform)
-        state = verify(state_token, secret=self._secret)
+        state = verify(state_token, keyring=self._keyring)
         if state.platform != platform:
             raise InstallPlatformMismatch(
                 f"an install state for {state.platform} was presented to the "
@@ -232,39 +269,155 @@ class MessagingInstallService:
                 code=code, redirect_uri=self._redirect_uri(platform)
             )
 
+            # Refused here rather than after the approver has chosen Connect on
+            # a page offering a workspace that cannot be had. `confirm` checks
+            # again, since the workspace may be claimed in between.
+            try:
+                await self._lifecycle.reject_claim_conflict(
+                    platform, installer.connection_config(grant)
+                )
+            except BridgeClaimConflict as exc:
+                raise MessagingInstallClaimedError(str(exc)) from exc
+
             async with tenant_session(
                 self._session_factory, state.tenant_id
+            ) as session:
+                tenant = await session.get(Tenant, state.tenant_id)
+                requester = await session.get(User, burnt.created_by_user_id)
+                if tenant is None or requester is None:
+                    raise RuntimeError(
+                        f"install state {state.state_id} names a tenant or user "
+                        "that no longer exists"
+                    )
+                organisation = tenant.name
+                requested_by = requester.email
+
+        return PendingInstall(
+            platform=platform,
+            workspace_name=grant.workspace_name,
+            external_workspace_id=grant.external_workspace_id,
+            organisation=organisation,
+            requested_by=requested_by,
+            ticket=seal(
+                InstallTicket(
+                    tenant_id=state.tenant_id,
+                    state_id=state.state_id,
+                    platform=platform,
+                    grant=grant,
+                ),
+                keyring=self._keyring,
+            ),
+        )
+
+    async def confirm(self, *, platform: str, ticket: str) -> MessagingInstall:
+        """The approver chose Connect: claim the workspace and build its bridge."""
+        opened = self._open(platform, ticket)
+        installer = self._installers.get(platform)
+        grant = opened.grant
+
+        with tenant_scope(opened.tenant_id):
+            async with tenant_session(
+                self._session_factory, opened.tenant_id
+            ) as session:
+                decided = await self._store.decide_state(
+                    session,
+                    state_id=opened.state_id,
+                    platform=platform,
+                    window=CONFIRM_TTL,
+                )
+                await session.commit()
+
+            connection_config = installer.connection_config(grant)
+
+            # Before the install is recorded: registering the bridge re-checks
+            # this, but a refusal there would leave an active install with no
+            # bridge, holding the workspace for nothing.
+            try:
+                await self._lifecycle.reject_claim_conflict(platform, connection_config)
+            except BridgeClaimConflict as exc:
+                raise MessagingInstallClaimedError(str(exc)) from exc
+
+            async with tenant_session(
+                self._session_factory, opened.tenant_id
             ) as session:
                 install = await self._store.record_install(
                     session,
                     platform=platform,
                     external_workspace_id=grant.external_workspace_id,
-                    encrypted_bot_token=encrypt_token(grant.bot_token, self._secret),
+                    # A grant with no token is a platform whose credential is
+                    # deployment-level (Discord), not per-install; there is
+                    # nothing to encrypt and the column is nullable for it.
+                    encrypted_bot_token=(
+                        self._keyring.encrypt(grant.bot_token)
+                        if grant.bot_token is not None
+                        else None
+                    ),
                     scopes=grant.scopes,
-                    user_id=burnt.created_by_user_id,
+                    user_id=decided.created_by_user_id,
                 )
                 install_id = install.id
                 await session.commit()
 
-            bridge = await self._lifecycle.register(
-                bridge_type=platform,
-                display_name=grant.workspace_name,
-                connection_config=installer.connection_config(grant),
-                # Off, though the granted scopes would allow it. Nobody was
-                # asked: an install has no registration form, and letting an
-                # app create channels in a customer's workspace is a decision
-                # someone should make rather than inherit.
-                channel_creation_enabled=False,
-                # A person installed the app: this is them connecting their
-                # platform, which is exactly what onboarding measures.
-                preconfigured=False,
-            )
+            try:
+                bridge = await self._lifecycle.register(
+                    bridge_type=platform,
+                    display_name=grant.workspace_name,
+                    connection_config=connection_config,
+                    # Off, though the granted scopes would allow it. Nobody was
+                    # asked: an install has no registration form, and letting
+                    # an app create channels in a customer's workspace is a
+                    # decision someone should make rather than inherit.
+                    channel_creation_enabled=False,
+                    # A person installed the app: this is them connecting their
+                    # platform, which is exactly what onboarding measures.
+                    preconfigured=False,
+                )
+            except Exception as exc:
+                # An active install with no bridge would hold the workspace,
+                # refusing every reinstall until someone disconnected it by
+                # hand — a platform blip during the credential check would be
+                # enough. Ending it releases the workspace for the retry.
+                async with tenant_session(
+                    self._session_factory, opened.tenant_id
+                ) as session:
+                    await self._store.end(
+                        session, install_id=install_id, status=INSTALL_DISCONNECTED
+                    )
+                    await session.commit()
+                logger.warning(
+                    "Ended %s install %s for workspace %s: its bridge could not "
+                    "be registered (%s)",
+                    platform,
+                    install_id,
+                    grant.external_workspace_id,
+                    exc,
+                )
+                if isinstance(exc, BridgeCredentialError):
+                    raise MessagingInstallError(
+                        f"{exc} Start the install again from Switch."
+                    ) from exc
+                raise
 
             async with tenant_session(
-                self._session_factory, state.tenant_id
+                self._session_factory, opened.tenant_id
             ) as session:
                 attached = await self._store.attach_bridge(
                     session, install_id=install_id, bridge_id=bridge.id
+                )
+                await record_audit_event(
+                    session,
+                    tenant_id=opened.tenant_id,
+                    actor_user_id=decided.created_by_user_id,
+                    action=AuditAction.MESSAGING_INSTALL_CONNECTED,
+                    target_type="messaging_install",
+                    target_id=install_id,
+                    details={
+                        "platform": platform,
+                        "external_workspace_id": grant.external_workspace_id,
+                        "workspace_name": grant.workspace_name,
+                        "bridge_id": bridge.id,
+                        "scopes": grant.scopes,
+                    },
                 )
                 await session.commit()
 
@@ -272,10 +425,105 @@ class MessagingInstallService:
                 "Installed %s workspace %s for tenant %s as bridge %s",
                 platform,
                 grant.external_workspace_id,
-                state.tenant_id,
+                opened.tenant_id,
                 bridge.id,
             )
             return attached
+
+    async def cancel(self, *, platform: str, ticket: str) -> InstallGrant:
+        """The approver chose Cancel: give the credential back, then record it.
+
+        The token is revoked only when no active install holds the workspace.
+        A platform hands the same bot token to every install of one app into
+        one workspace, so revoking it while another install holds that
+        workspace would cut that install off.
+
+        The decision commits only once the revocation has succeeded. The token
+        is stored nowhere else, so a cancel recorded ahead of a failed
+        revocation would leave a live credential nothing could reach again.
+        Until the commit the state row stays locked, so a Connect submitted
+        meanwhile waits for this outcome rather than racing it.
+        """
+        opened = self._open(platform, ticket)
+        grant = opened.grant
+
+        with tenant_scope(opened.tenant_id):
+            async with tenant_session(
+                self._session_factory, opened.tenant_id
+            ) as session:
+                await self._store.decide_state(
+                    session,
+                    state_id=opened.state_id,
+                    platform=platform,
+                    window=CONFIRM_TTL,
+                )
+                if grant.bot_token is not None:
+                    with no_tenant():
+                        holder = await tenant_of_messaging_install(
+                            self._session_factory,
+                            platform,
+                            grant.external_workspace_id,
+                        )
+                    if holder is None:
+                        await self._installers.get(platform).revoke(
+                            bot_token=grant.bot_token
+                        )
+                await session.commit()
+
+        logger.info(
+            "Install of %s workspace %s for tenant %s was cancelled by its approver",
+            platform,
+            grant.external_workspace_id,
+            opened.tenant_id,
+        )
+        return grant
+
+    def _open(self, platform: str, ticket: str) -> InstallTicket:
+        opened = open_ticket(ticket, keyring=self._keyring)
+        if opened.platform != platform:
+            raise InstallPlatformMismatch(
+                f"an install confirmation for {opened.platform} was presented to "
+                f"the {platform} callback"
+            )
+        return opened
+
+    async def refuse_uninstalled_bridge(
+        self,
+        *,
+        bridge_id: str,
+        tenant_id: str,
+        bridge_type: str,
+        connection_config: Mapping[str, object],
+    ) -> None:
+        """Refuse a bridge on the deployment's credential that no install of its
+        tenant built. A start guard, so a refused bridge never runs.
+
+        Such a bridge reaches whatever workspace its config names through the
+        one credential every tenant shares, so naming a workspace is not
+        evidence of owning it. The tenant's live install of that workspace is:
+        it came from the platform's own consent screen, and the unique index
+        lets only one tenant hold a workspace. The install's bridge pointer is
+        still empty while the install flow registers the bridge, which is what
+        the empty case admits.
+        """
+        if bridge_type not in self._installers.platforms():
+            return
+        workspace_id = self._installers.get(bridge_type).workspace_of_bridge(
+            connection_config
+        )
+        if workspace_id is None:
+            return
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            install = await self._store.get_for_workspace(
+                session, platform=bridge_type, external_workspace_id=workspace_id
+            )
+        if install is None or install.bridge_id not in (None, bridge_id):
+            raise BridgeStartRefused(
+                f"Bridge {bridge_id} names {bridge_type} workspace {workspace_id}, "
+                "which its tenant has not installed this deployment's app into. "
+                "A bridge on that app is created by installing it, and serves "
+                "only what it was installed into."
+            )
 
     async def list_installs(self, session: AsyncSession) -> list[MessagingInstall]:
         """The bound tenant's installs, for the operator's own list.
@@ -322,7 +570,7 @@ class MessagingInstallService:
         with tenant_scope(tenant_id):
             if token is not None:
                 await self._installers.get(platform).revoke(
-                    bot_token=decrypt_token(token, self._secret)
+                    bot_token=self._keyring.decrypt(token)
                 )
 
             async with tenant_session(self._session_factory, tenant_id) as session:
@@ -418,7 +666,7 @@ class MessagingInstallService:
     #
     # The split is what lets the route acknowledge in time. Slack gives three
     # seconds and retries what it does not get an answer to, so a handler that
-    # posts to Matrix before replying turns one slow room into duplicate
+    # posts to the room before replying turns one slow room into duplicate
     # messages. Everything up to and including `resolve` is fast enough to
     # answer inside, and `deliver` runs after the response has gone.
 
@@ -461,7 +709,17 @@ class MessagingInstallService:
         )
 
     async def resolve(self, *, platform: str, event: InboundWebhook) -> WebhookTarget:
-        """Turn a workspace id into the one bridge entitled to the event.
+        """Turn a webhook event's workspace into the bridge entitled to it."""
+        installer = self._installers.get(platform)
+        workspace_id = installer.workspace_of_event(event.payload)
+        return await self.resolve_by_workspace(
+            platform=platform, workspace_id=workspace_id
+        )
+
+    async def resolve_by_workspace(
+        self, *, platform: str, workspace_id: str
+    ) -> WebhookTarget:
+        """Turn a workspace id into the one bridge entitled to its events.
 
         The tenant comes from the exempt lookup (`db/tenant_lookup.py`), which
         is the only way to answer it: the caller authenticated to nothing, and
@@ -469,10 +727,13 @@ class MessagingInstallService:
         *again* under that tenant rather than returned by the lookup — a
         deliberate second check, so a wrong answer above is a miss here instead
         of a cross-tenant read.
-        """
-        installer = self._installers.get(platform)
-        workspace_id = installer.workspace_of_event(event.payload)
 
+        Split from `resolve` so a caller that already holds the workspace id
+        reaches it without a webhook: the Discord shared connection reads the
+        guild id straight off the Gateway event, and calling this keeps the
+        exempt-lookup caller inside this already-allowlisted module and inherits
+        the scoped re-read for free.
+        """
         tenant_id = await tenant_of_messaging_install(
             self._session_factory, platform, workspace_id
         )

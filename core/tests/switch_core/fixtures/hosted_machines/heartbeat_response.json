@@ -1,0 +1,5 @@
+{
+  "agents_version": 3,
+  "machine_desired_state": "running",
+  "heartbeat_every_s": 15
+}

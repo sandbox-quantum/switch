@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { buildEnvFile } from './env-file';
+import { buildEnvFile, keysDisagreeing, readStackEnv, telemetryRequested } from './env-file';
 import type { LocalServerSecrets } from './secret-values';
 
 const secrets: LocalServerSecrets = {
@@ -10,6 +10,7 @@ const secrets: LocalServerSecrets = {
   dbRuntimePassword: 'db-runtime-pw',
   agentRegistrationToken: 'agent-token',
   jwtSecretKey: 'jwt-key',
+  secretKeys: 'console:secret-keys-value',
   gatewayAdminPassword: 'gw-admin',
   mattermostAdminPassword: 'mm-admin',
   mattermostUserPassword: 'mm-user',
@@ -30,6 +31,8 @@ describe('buildEnvFile', () => {
     ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
     secrets,
     telemetryEnabled: false,
+    telemetryEnvironment: 'prod',
+    telemetryInternal: false,
   });
   const vars = Object.fromEntries(
     env
@@ -55,6 +58,7 @@ describe('buildEnvFile', () => {
 
   it('binds the managed stack to loopback and seeds the admin account', () => {
     expect(vars.SWITCH_BIND_ADDR).toBe('127.0.0.1');
+    expect(vars.GATEWAY_COOKIE_SECURE).toBe('false');
     expect(vars.GATEWAY_ADMIN_EMAIL).toBe('admin@switch.local');
   });
 
@@ -63,6 +67,7 @@ describe('buildEnvFile', () => {
     expect(vars.DB_OWNER_PASSWORD).toBe('db-pw');
     expect(vars.AGENT_REGISTRATION_TOKEN).toBe('agent-token');
     expect(vars.JWT_SECRET_KEY).toBe('jwt-key');
+    expect(vars.SECRET_KEYS).toBe('console:secret-keys-value');
     expect(vars.GATEWAY_ADMIN_PASSWORD).toBe('gw-admin');
     expect(vars.MATTERMOST_ADMIN_PASSWORD).toBe('mm-admin');
     expect(vars.MATTERMOST_USER_PASSWORD).toBe('mm-user');
@@ -94,20 +99,39 @@ describe('buildEnvFile', () => {
     // An entry here must say why the stack is correct without it — leaving a
     // var unset is a decision, not a default.
     const intentionallyUnset = new Set<string>([
-      // The four below configure switch-core as a distributed messaging app —
-      // one app we own, installed by a customer into their own workspace, with
-      // the platform posting events to URLs declared once in the app manifest.
-      // A managed stack cannot be one of those and is not meant to be: it binds
-      // to loopback, so no platform can reach its callback or event URLs, and
-      // the credentials are the app owner's rather than anything this machine
-      // could hold. switch-core registers no installer without them and the
-      // operator UI says so rather than offering a button that would fail at
-      // Slack. Connecting a workspace from here is the other path — an operator
-      // registering a bridge with their own app's token.
+      // The vars below configure switch-core as a distributed messaging app —
+      // one app we own, installed by a customer into their own workspace. A
+      // managed stack cannot be one of those and is not meant to be: it binds
+      // to loopback, so no platform can reach the OAuth redirect the install
+      // needs (and switch-core makes MESSAGING_PUBLIC_URL a startup requirement
+      // the moment a distributed app is configured, so setting the credentials
+      // without it would fail boot), and the credentials are the app owner's
+      // rather than anything this machine could hold. switch-core registers no
+      // installer without them and the operator UI says so rather than offering
+      // a button that would fail at the platform. Connecting a workspace from
+      // here is the other path — an operator registering a bridge with their
+      // own app's token.
       'MESSAGING_PUBLIC_URL',
       'SLACK_APP_CLIENT_ID',
       'SLACK_APP_CLIENT_SECRET',
       'SLACK_APP_SIGNING_SECRET',
+      // Discord grants no per-install token, so its four are deployment config
+      // rather than per-workspace secrets. None can be held by a loopback stack
+      // (see above), so all are unset here.
+      'DISCORD_APP_CLIENT_ID',
+      'DISCORD_APP_CLIENT_SECRET',
+      'DISCORD_APP_BOT_TOKEN',
+      'DISCORD_APP_APPLICATION_ID',
+      // Agent management is off unless a server opts in, and the compose file
+      // defaults it off. A managed stack does not opt in yet: the pinned
+      // switch-core release predates it, and turning it on also needs a
+      // controller token secret generated for the stack.
+      'AGENT_MANAGEMENT_ENABLED',
+      'CONTROLLER_TOKEN_SECRET',
+      // Private hosts Switch may reach at a tenant- or agent-supplied URL. The
+      // compose file always allows the bundled Mattermost; a managed stack
+      // allows nothing more until its operator says so.
+      'OUTBOUND_ALLOWED_PRIVATE_HOSTS',
     ]);
 
     const missing = [...interpolated]
@@ -135,8 +159,47 @@ describe('buildEnvFile', () => {
       ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
       secrets,
       telemetryEnabled: true,
+      telemetryEnvironment: 'prod',
+      telemetryInternal: false,
     });
     expect(sharing).toContain('TELEMETRY_ENABLED=true');
+  });
+
+  it('tells the server which Amplitude project its usage belongs in', () => {
+    // The relay files each event under the project its environment names, so a
+    // server a development build runs must say so as plainly as the app does.
+    const fromDevBuild = buildEnvFile({
+      version: '1.2.3',
+      registry: 'ghcr.io',
+      namespace: 'sandbox-quantum',
+      ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
+      secrets,
+      telemetryEnabled: true,
+      telemetryEnvironment: 'local',
+      telemetryInternal: false,
+    });
+
+    expect(fromDevBuild).toContain('TELEMETRY_ENVIRONMENT=local');
+    expect(vars.TELEMETRY_ENVIRONMENT).toBe('prod');
+    // Written but never forwarded would reach no container.
+    expect(composeYaml).toMatch(/^\s+TELEMETRY_ENVIRONMENT:\s*$/m);
+  });
+
+  it('tells the server whether the person it runs for is staff', () => {
+    const forStaff = buildEnvFile({
+      version: '1.2.3',
+      registry: 'ghcr.io',
+      namespace: 'sandbox-quantum',
+      ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
+      secrets,
+      telemetryEnabled: true,
+      telemetryEnvironment: 'prod',
+      telemetryInternal: true,
+    });
+
+    expect(forStaff).toContain('TELEMETRY_INTERNAL=true');
+    expect(vars.TELEMETRY_INTERNAL).toBe('false');
+    expect(composeYaml).toMatch(/^\s+TELEMETRY_INTERNAL:\s*$/m);
   });
 
   it('is the only thing the compose file needs to forward the gate', () => {
@@ -152,5 +215,188 @@ describe('buildEnvFile', () => {
     // the gateway's own URL here would produce links that 404.
     expect(vars.GATEWAY_PUBLIC_URL).toBe('http://localhost:51001');
     expect(vars.FRONTEND_BASE_URL).toBe('http://localhost:51000');
+  });
+});
+
+describe('readStackEnv', () => {
+  const ports = { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 };
+  const written = buildEnvFile({
+    version: '1.2.3',
+    registry: 'ghcr.io',
+    namespace: 'sandbox-quantum',
+    ports,
+    secrets,
+    telemetryEnabled: true,
+    telemetryEnvironment: 'prod',
+    telemetryInternal: false,
+  });
+
+  it('reads back exactly what buildEnvFile wrote', () => {
+    expect(readStackEnv(written)).toEqual({
+      kind: 'complete',
+      env: { ports, secrets, version: '1.2.3' },
+    });
+  });
+
+  it('reads a file written before the database role split', () => {
+    const legacy = written
+      .replace('DB_USER=switch_app', 'DB_USER=postgres')
+      .replace(`DB_PASSWORD=${secrets.dbRuntimePassword}`, `DB_PASSWORD=${secrets.dbPassword}`)
+      .replace(/^DB_OWNER_USER=.*$/m, '')
+      .replace(/^DB_OWNER_PASSWORD=.*$/m, '');
+
+    expect(readStackEnv(legacy)).toEqual({
+      kind: 'complete',
+      env: {
+        ports,
+        secrets: { ...secrets, dbRuntimePassword: null },
+        version: '1.2.3',
+      },
+    });
+  });
+
+  it('reads a file written before SECRET_KEYS, leaving the key ring to be filled in', () => {
+    const legacy = written.replace(/^SECRET_KEYS=.*$/m, '');
+
+    expect(readStackEnv(legacy)).toEqual({
+      kind: 'complete',
+      env: { ports, secrets: { ...secrets, secretKeys: null }, version: '1.2.3' },
+    });
+  });
+
+  it('names the owner password a file from before the role split is missing', () => {
+    const legacy = written
+      .replace('DB_USER=switch_app', 'DB_USER=postgres')
+      .replace(/^DB_PASSWORD=.*$/m, '')
+      .replace(/^DB_OWNER_USER=.*$/m, '')
+      .replace(/^DB_OWNER_PASSWORD=.*$/m, '');
+
+    expect(readStackEnv(legacy)).toMatchObject({
+      kind: 'incomplete',
+      missing: expect.arrayContaining(['DB_PASSWORD']),
+    });
+  });
+
+  it('reads whether a stack asks to share usage data', () => {
+    expect(telemetryRequested('TELEMETRY_ENABLED=true\n')).toBe(true);
+    expect(telemetryRequested('TELEMETRY_ENABLED=false\n')).toBe(false);
+    // Absent is off: switch-core's own default for the gate.
+    expect(telemetryRequested('GATEWAY_HOST_PORT=3300\n')).toBe(false);
+  });
+
+  it('names every key it could not find instead of inventing a value', () => {
+    const partial = written
+      .replace(/^JWT_SECRET_KEY=.*$/m, '')
+      .replace(/^API_HOST_PORT=.*$/m, 'API_HOST_PORT=')
+      .replace(/^MATTERMOST_USER_PASSWORD=.*$/m, '');
+
+    expect(readStackEnv(partial)).toEqual({
+      kind: 'incomplete',
+      missing: ['API_HOST_PORT', 'JWT_SECRET_KEY', 'MATTERMOST_USER_PASSWORD'],
+    });
+  });
+
+  it('does not read a port that is not one', () => {
+    const garbled = written
+      .replace('GATEWAY_HOST_PORT=51000', 'GATEWAY_HOST_PORT=http://localhost:51000')
+      .replace('POSTGRES_HOST_PORT=51003', 'POSTGRES_HOST_PORT=70000');
+
+    expect(readStackEnv(garbled)).toEqual({
+      kind: 'incomplete',
+      missing: ['GATEWAY_HOST_PORT', 'POSTGRES_HOST_PORT'],
+    });
+  });
+
+  it('refuses a current-layout file whose runtime password is gone', () => {
+    const noRuntime = written.replace(/^DB_PASSWORD=.*$/m, '');
+
+    expect(readStackEnv(noRuntime)).toEqual({ kind: 'incomplete', missing: ['DB_PASSWORD'] });
+  });
+
+  it('refuses a file that names no schema owner at all', () => {
+    const noOwner = written
+      .replace(/^DB_OWNER_PASSWORD=.*$/m, '')
+      .replace(/^DB_OWNER_USER=.*$/m, '');
+
+    expect(readStackEnv(noOwner)).toEqual({
+      kind: 'incomplete',
+      missing: ['DB_OWNER_PASSWORD'],
+    });
+  });
+
+  it('treats an empty file as missing everything', () => {
+    const reading = readStackEnv('');
+
+    expect(reading.kind).toBe('incomplete');
+    expect(reading.kind === 'incomplete' && reading.missing).toHaveLength(10);
+  });
+});
+
+describe('keysDisagreeing', () => {
+  const ports = { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 };
+  const written = buildEnvFile({
+    version: '1.2.3',
+    registry: 'ghcr.io',
+    namespace: 'sandbox-quantum',
+    ports,
+    secrets,
+    telemetryEnabled: true,
+    telemetryEnvironment: 'prod',
+    telemetryInternal: false,
+  });
+
+  it('finds nothing wrong with a copy of the same settings', () => {
+    expect(keysDisagreeing(written, { ports, secrets })).toEqual([]);
+  });
+
+  it('names the ports and credentials a copy of another generation gets wrong', () => {
+    const copy = {
+      ports: { ...ports, gateway: 3300 },
+      secrets: { ...secrets, dbPassword: 'old-owner-pw', gatewayAdminPassword: 'old-admin' },
+    };
+
+    expect(keysDisagreeing(written, copy).sort()).toEqual([
+      'DB_OWNER_PASSWORD',
+      'GATEWAY_ADMIN_PASSWORD',
+      'GATEWAY_HOST_PORT',
+    ]);
+  });
+
+  it('judges only what the file carries, and not what a start rewrites', () => {
+    const partial = written
+      .replace(/^JWT_SECRET_KEY=.*$/m, '')
+      .replace('SWITCH_VERSION=1.2.3', 'SWITCH_VERSION=0.0.1');
+
+    expect(keysDisagreeing(partial, { ports, secrets: { ...secrets, jwtSecretKey: 'x' } })).toEqual(
+      []
+    );
+  });
+
+  it('names a key ring the copy disagrees with', () => {
+    expect(
+      keysDisagreeing(written, { ports, secrets: { ...secrets, secretKeys: 'console:other' } })
+    ).toEqual(['SECRET_KEYS']);
+  });
+
+  it('reads DB_PASSWORD as the owner’s in a file written before the role split', () => {
+    const legacy = written
+      .replace('DB_USER=switch_app', 'DB_USER=postgres')
+      .replace(`DB_PASSWORD=${secrets.dbRuntimePassword}`, `DB_PASSWORD=${secrets.dbPassword}`)
+      .replace(/^DB_OWNER_USER=.*$/m, '')
+      .replace(/^DB_OWNER_PASSWORD=.*$/m, '');
+
+    expect(keysDisagreeing(legacy, { ports, secrets })).toEqual([]);
+    expect(
+      keysDisagreeing(legacy, { ports, secrets: { ...secrets, dbPassword: 'other' } })
+    ).toEqual(['DB_PASSWORD']);
+  });
+
+  it('reads DB_PASSWORD as the runtime role’s when the owner’s line is what is missing', () => {
+    const partial = written.replace(/^DB_OWNER_PASSWORD=.*$/m, '');
+
+    expect(keysDisagreeing(partial, { ports, secrets })).toEqual([]);
+    expect(
+      keysDisagreeing(partial, { ports, secrets: { ...secrets, dbRuntimePassword: 'other' } })
+    ).toEqual(['DB_PASSWORD']);
   });
 });

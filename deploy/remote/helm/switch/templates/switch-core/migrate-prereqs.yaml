@@ -1,4 +1,6 @@
-{{- if .Values.switchCore.migrations.preUpgradeJob }}
+{{- $migrateJob := .Values.switchCore.migrations.preUpgradeJob }}
+{{- $runtimeRoleJob := eq .Values.postgresql.mode "managed" }}
+{{- if or $migrateJob $runtimeRoleJob }}
 # The migration Job runs as a pre-upgrade hook, so it starts before helm applies
 # the release's ordinary resources. Reading the release's own Secret and CA
 # ConfigMap therefore gets the *previous* release's values — which makes an
@@ -12,6 +14,10 @@
 # hooks instead does not work: a resource that moves out of the manifest is
 # deleted during the apply that follows, taking the running release's
 # credentials with it.
+#
+# The create-runtime-role Job (mode: managed) is a pre-upgrade hook too and
+# reads the same Secret copy, so the copy is rendered for it even when the
+# migration Job is off.
 #
 # Not needed when the values come from outside the chart — an existing Secret or
 # ConfigMap is already there before the hook runs.
@@ -30,7 +36,7 @@ type: Opaque
 data:
   {{- include "switch.secretData" . | nindent 2 }}
 {{- end }}
-{{- if and .Values.postgresql.caBundle.contents (not .Values.postgresql.caBundle.existingConfigMap) }}
+{{- if and $migrateJob .Values.postgresql.caBundle.contents (not .Values.postgresql.caBundle.existingConfigMap) }}
 ---
 apiVersion: v1
 kind: ConfigMap

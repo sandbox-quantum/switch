@@ -34,20 +34,28 @@ from switch_core.gateway.auth import (
     get_authenticated_caller,
     get_authenticated_user_id,
     get_current_user,
+    get_current_user_in_transaction,
     require_admin,
 )
 from switch_core.gateway.dependencies import get_session, get_system_session
+from switch_core.gateway.hosted_controller import controller_session
+from switch_core.gateway.provider_verifications import worker_session
 
 # The only routes that may open a session with no tenant bound. `get_session`
 # is unavailable to them because there is no `get_current_user` to bind one:
-# for login and the OIDC callback there is no caller yet at all; for switching
-# tenants the caller is authenticated (`get_authenticated_user_id`) but has,
-# by construction, not yet selected the tenant this session opens for — see
-# `get_system_session`'s docstring. All three take `get_system_session`
-# instead, which says so in the signature.
+# for login and the OIDC callback there is no caller yet at all; for the rest
+# the caller is authenticated but has, by construction, no selected tenant to
+# bind — switching is choosing one, creating a workspace makes one, and the
+# session state is how a caller without one learns so. See
+# `get_system_session`'s docstring. They take `get_system_session` instead,
+# which says so in the signature.
 _ROUTES_WITH_NO_TENANT_BOUND = {
     ("POST", "/auth/login"),
+    # Self sign-up has no caller either; it writes into tenant zero by name.
+    ("POST", "/auth/signup"),
     ("GET", "/auth/oidc/callback"),
+    ("GET", "/auth/session"),
+    ("POST", "/tenants"),
     ("POST", "/tenants/{tenant_id}/switch"),
     # Locks the caller's `users` row, which has no tenant, while it creates a
     # workspace that has none yet either.
@@ -68,12 +76,21 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
 # `get_authenticated_caller`. This way the next door is a failing test rather
 # than a route nobody counted. `_ROUTES_WITH_NO_TENANT_BOUND` is a strict subset.
 _ROUTES_THAT_NEVER_BIND_A_TENANT = {
+    # Browser handoff uses a short-lived flow, browser cookie and PKCE; saving
+    # credentials requires the initiating user to confirm via the authenticated API.
+    ("GET", "/provider-connections/github/authorize"),
+    ("GET", "/provider-connections/github/callback"),
+    ("POST", "/provider-connections/github/callback"),
     # No caller yet: the sign-in surface and what it hands back.
     ("GET", "/auth/config"),
     ("GET", "/auth/oidc/login"),
     ("GET", "/auth/oidc/callback"),
     ("POST", "/auth/login"),
+    ("POST", "/auth/signup"),
     ("POST", "/auth/logout"),
+    # What a signed-in caller's session resolves to — including that it
+    # resolves to no workspace, which is the answer a caller with none needs.
+    ("GET", "/auth/session"),
     # A deployment-wide constant — the agent types this build knows about.
     # Nothing tenant-specific to scope it to.
     ("GET", "/known-types"),
@@ -87,6 +104,21 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # neither the one on the caller's session nor one they belong to yet. It
     # opens its own `tenant_session` around that id — see `accept_invitation`.
     ("POST", "/invitations/accept"),
+    # Invitations addressed to the caller are in workspaces they are not in, so
+    # no session of theirs is bound to one. Listing opens a `tenant_session`
+    # per tenant `tenants_with_invitations_for` names; accepting opens one
+    # around the tenant the request names, and finds nothing if the
+    # invitation is not there — see `list_my_invitations` and
+    # `accept_my_invitation`.
+    ("GET", "/invitations/mine"),
+    ("POST", "/invitations/mine/accept"),
+    # Workspaces open to the caller's e-mail domain are ones they are not in
+    # yet, for the same reason. Listing opens a `tenant_session` per tenant
+    # `tenants_open_to` names; joining opens one around the tenant in the path
+    # and finds nothing unless it is open to the caller's domain — see
+    # `list_joinable_tenants` and `join_tenant_by_domain`.
+    ("GET", "/joinable-tenants"),
+    ("POST", "/joinable-tenants/{tenant_id}/join"),
 }
 
 
@@ -99,6 +131,13 @@ class _Route:
 
     def __str__(self) -> str:
         return f"{self.module}: {self.method} {self.path}"
+
+    @property
+    def binds_a_tenant(self) -> bool:
+        return (
+            get_current_user in self.calls
+            or get_current_user_in_transaction in self.calls
+        )
 
     @property
     def key(self) -> tuple[str, str]:
@@ -149,7 +188,7 @@ def test_every_route_taking_the_session_also_authenticates() -> None:
         for route in ROUTES
         if get_session in route.calls
         and route.key not in _ROUTES_WITH_NO_TENANT_BOUND
-        and get_current_user not in route.calls
+        and not route.binds_a_tenant
         and require_admin not in route.calls
     )
     assert not unauthenticated, (
@@ -174,8 +213,30 @@ def test_the_routes_that_never_bind_a_tenant_are_exactly_these() -> None:
     A route that lands here has no workspace to authorize against and has to
     say, in its own docstring, what it does instead."""
     assert {
-        route.key for route in ROUTES if get_current_user not in route.calls
+        route.key
+        for route in ROUTES
+        if not route.binds_a_tenant
+        and controller_session not in route.calls
+        and worker_session not in route.calls
     } == _ROUTES_THAT_NEVER_BIND_A_TENANT
+
+
+def test_controller_credential_is_confined_to_the_controller_routes() -> None:
+    assert {route.key for route in ROUTES if controller_session in route.calls} == {
+        ("GET", "/provider-verifications"),
+        ("POST", "/provider-verifications/{job_id}/prepare"),
+        ("POST", "/provider-verifications/{job_id}/observe"),
+        ("GET", "/hosted-controller/machines"),
+        ("POST", "/hosted-controller/machines/{machine_id}/prepare"),
+        ("POST", "/hosted-controller/machines/{machine_id}/observation"),
+    }
+
+
+def test_verification_job_token_is_confined_to_its_worker_routes() -> None:
+    assert {route.key for route in ROUTES if worker_session in route.calls} == {
+        ("GET", "/provider-verifications/{job_id}/credential"),
+        ("POST", "/provider-verifications/{job_id}/result"),
+    }
 
 
 def test_the_routes_with_no_tenant_bound_do_not_bind_a_tenant() -> None:
@@ -208,7 +269,7 @@ def test_no_route_both_resolves_a_tenant_and_skips_resolving_one() -> None:
     assert not [
         str(route)
         for route in ROUTES
-        if get_authenticated_user_id in route.calls and get_current_user in route.calls
+        if get_authenticated_user_id in route.calls and route.binds_a_tenant
     ]
 
 

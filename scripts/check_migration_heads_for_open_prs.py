@@ -70,6 +70,9 @@ VERSIONS_DIR = REPO_ROOT / "core" / "switch_core" / "migrations" / "versions"
 VERSIONS_PATH = "core/switch_core/migrations/versions"
 STATUS_CONTEXT = "migration-heads-on-merge"
 PR_LIST_LIMIT = 1000
+# GitHub's pull request files endpoint lists at most this many files, however
+# many pages are asked for.
+MAX_LISTED_FILES = 3000
 
 # The repository is never named in an argument list: `gh` takes it from the
 # checkout, and its `{owner}/{repo}` placeholder fills it in for an API path.
@@ -205,7 +208,10 @@ def run(
 
 
 def open_prs_touching_migrations() -> list[dict[str, Any]]:
-    """Open pull requests that add or change a migration.
+    """Open pull requests that add or change a migration, or might.
+
+    A PR whose files cannot be listed is included rather than skipped; see
+    `pr_touches_migrations`.
 
     No `--repo`: `gh` resolves it from the checkout this runs in, which keeps
     the repository out of the argument list entirely.
@@ -232,12 +238,53 @@ def open_prs_touching_migrations() -> list[dict[str, Any]]:
             f"{len(open_prs)} open PRs reached the --limit of {PR_LIST_LIMIT}; "
             "some were not listed and would be skipped without a word"
         )
-    candidates = []
-    for pr in open_prs:
-        diff = run("gh", "pr", "diff", str(pr["number"]), "--name-only")
-        if any(line.startswith(VERSIONS_PATH) for line in diff.stdout.splitlines()):
-            candidates.append(pr)
-    return candidates
+    return [
+        pr for pr in open_prs if pr_touches_migrations(int(pr["number"])) is not False
+    ]
+
+
+def pr_touches_migrations(number: int) -> bool | None:
+    """Whether the PR changes a file under `versions/`, from its file list.
+
+    The files endpoint rather than `gh pr diff`: GitHub refuses a diff of more
+    than 20,000 lines (HTTP 406), and one such PR used to abort this whole
+    sweep before the PRs after it were looked at, which let a second head
+    reach main unflagged (#593, merged while #672 was open).
+
+    None when the answer is unknown: the list could not be read, or it may
+    have been cut off at `MAX_LISTED_FILES`. The caller then checks the PR
+    anyway. Checking a PR that turns out not to touch migrations costs one
+    fetch; skipping one that does is how a second head lands.
+    """
+    try:
+        listing = run(
+            "gh",
+            "api",
+            "--paginate",
+            # 100 is the largest page GitHub serves; the default is 30.
+            f"repos/{{owner}}/{{repo}}/pulls/{number}/files?per_page=100",
+            "--jq",
+            ".[].filename",
+        )
+    except (subprocess.CalledProcessError, OSError) as exc:
+        detail = (
+            exc.stderr.strip()
+            if isinstance(exc, subprocess.CalledProcessError) and exc.stderr
+            else str(exc)
+        )
+        print(
+            f"::warning::PR #{number}: could not list its files, so it is checked anyway: {detail}"
+        )
+        return None
+    files = listing.stdout.splitlines()
+    if any(path.startswith(f"{VERSIONS_PATH}/") for path in files):
+        return True
+    if len(files) >= MAX_LISTED_FILES:
+        print(
+            f"::warning::PR #{number}: its file list may be cut off at {MAX_LISTED_FILES}, so it is checked anyway"
+        )
+        return None
+    return False
 
 
 def fetch_pr_revisions(pr_number: int) -> list[RevisionFile]:

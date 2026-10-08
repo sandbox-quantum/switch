@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "switch-hosted-controller"
+version = "0.2.0"
+description = "Bounded EC2 lifecycle controller for hosted Switch agents"
+requires-python = ">=3.11"
+dependencies = ["boto3>=1.35,<2"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9"]
+
+[project.scripts]
+switch-hosted-controller = "switch_hosted_controller.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/switch_hosted_controller"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]

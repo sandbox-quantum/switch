@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from switch_core.clients.agent_client import AgentClient
+from switch_core.clients.agent_consumer import AgentConsumer
 
 
 def _claimed(bridge_id: str, username: str) -> SimpleNamespace:
@@ -39,7 +39,7 @@ class TestResolvingTheOwnersHandle:
     async def test_the_owners_account_on_this_bridge(self) -> None:
         client = _client([_claimed("slack-1", "louis.amaudruz")])
 
-        handle = await AgentClient.owner_handle_in(
+        handle = await AgentConsumer.owner_handle_in(
             client, None, _agent("u1"), "slack-1"
         )
 
@@ -53,7 +53,9 @@ class TestResolvingTheOwnersHandle:
         )
 
         assert (
-            await AgentClient.owner_handle_in(client, None, _agent("u1"), "telegram-1")
+            await AgentConsumer.owner_handle_in(
+                client, None, _agent("u1"), "telegram-1"
+            )
             == "louisa"
         )
 
@@ -63,7 +65,9 @@ class TestResolvingTheOwnersHandle:
         client = _client([_claimed("slack-1", "louis.amaudruz")])
 
         assert (
-            await AgentClient.owner_handle_in(client, None, _agent("u1"), "telegram-1")
+            await AgentConsumer.owner_handle_in(
+                client, None, _agent("u1"), "telegram-1"
+            )
             is None
         )
 
@@ -71,7 +75,7 @@ class TestResolvingTheOwnersHandle:
         client = _client([_claimed("slack-1", "louis.amaudruz")])
 
         assert (
-            await AgentClient.owner_handle_in(client, None, _agent(None), "slack-1")
+            await AgentConsumer.owner_handle_in(client, None, _agent(None), "slack-1")
             is None
         )
 
@@ -80,7 +84,8 @@ class TestResolvingTheOwnersHandle:
         client = _client([_claimed("slack-1", "louis.amaudruz")])
 
         assert (
-            await AgentClient.owner_handle_in(client, None, _agent("u1"), None) is None
+            await AgentConsumer.owner_handle_in(client, None, _agent("u1"), None)
+            is None
         )
 
     async def test_the_same_account_every_time_when_they_hold_several(self) -> None:
@@ -88,8 +93,10 @@ class TestResolvingTheOwnersHandle:
         # between one message and the next.
         client = _client([_claimed("slack-1", "zoe"), _claimed("slack-1", "adam")])
 
-        first = await AgentClient.owner_handle_in(client, None, _agent("u1"), "slack-1")
-        second = await AgentClient.owner_handle_in(
+        first = await AgentConsumer.owner_handle_in(
+            client, None, _agent("u1"), "slack-1"
+        )
+        second = await AgentConsumer.owner_handle_in(
             client, None, _agent("u1"), "slack-1"
         )
 

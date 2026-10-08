@@ -20,24 +20,25 @@ const LIVE_RUN_POLL_MS = 15_000;
  * Quiet on failure: an older server without runs answers 404 and the list
  * stays empty, and a failed refresh keeps what was already shown.
  */
-export function useTemplateRuns(serverId: string): {
+export function useTemplateRuns(workspaceId: string | null): {
   runs: TemplateRun[];
   replace: (run: TemplateRun) => void;
 } {
   const [runs, setRuns] = useState<TemplateRun[]>([]);
-  // An answer that lands after the listing moved to another server belongs
-  // to the old one and is dropped.
-  const shownServer = useRef(serverId);
-  shownServer.current = serverId;
+  // An answer that lands after the listing moved to another workspace
+  // belongs to the old one and is dropped.
+  const shownWorkspace = useRef(workspaceId);
+  shownWorkspace.current = workspaceId;
 
   const load = useCallback(async () => {
+    if (workspaceId === null) return;
     try {
-      const list = await rpc.switchServers.listTemplateRuns({ serverId });
-      if (shownServer.current === serverId) setRuns(list ?? []);
+      const list = await rpc.workspaces.listTemplateRuns({ workspaceId });
+      if (shownWorkspace.current === workspaceId) setRuns(list ?? []);
     } catch {
       // The runs are an addition to the recents; the section renders without them.
     }
-  }, [serverId]);
+  }, [workspaceId]);
 
   useEffect(() => {
     setRuns([]);
@@ -98,11 +99,11 @@ function RunState({ run }: { run: TemplateRun }) {
  * room the run started from.
  */
 export function TemplateRunRow({
-  serverId,
+  workspaceId,
   run,
   onChanged,
 }: {
-  serverId: string;
+  workspaceId: string;
   run: TemplateRun;
   onChanged: (run: TemplateRun) => void;
 }) {
@@ -116,11 +117,11 @@ export function TemplateRunRow({
   const change = async (action: 'stop' | 'continue') => {
     setBusy(action);
     try {
-      const params = { serverId, rootRoomId: run.rootRoomId };
+      const params = { workspaceId, rootRoomId: run.rootRoomId };
       onChanged(
         action === 'stop'
-          ? await rpc.switchServers.stopTemplateRun(params)
-          : await rpc.switchServers.continueTemplateRun(params)
+          ? await rpc.workspaces.stopTemplateRun(params)
+          : await rpc.workspaces.continueTemplateRun(params)
       );
     } catch (error) {
       toast({

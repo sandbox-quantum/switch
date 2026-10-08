@@ -7,6 +7,10 @@
  */
 export const ADD_SERVER_STEPS = [
   'choose',
+  'managedReady',
+  'managedClaude',
+  'managedGitHub',
+  'managedAgent',
   'local',
   'remoteHost',
   'external',
@@ -20,8 +24,9 @@ export type AddServerStepName = (typeof ADD_SERVER_STEPS)[number];
  * Which kind of server the wizard is setting up.
  *
  * `none` is the first screen, where nothing has been chosen yet — so a drop-off
- * before choosing is distinguishable from one after.
+ * before choosing is distinguishable from one after. `cloud` is connecting to
+ * Switch Cloud: an external server too, but one nobody typed the address of.
  */
-export const ADD_SERVER_CHOICES = ['none', 'local', 'remoteHost', 'external'] as const;
+export const ADD_SERVER_CHOICES = ['none', 'local', 'remoteHost', 'external', 'cloud'] as const;
 
 export type AddServerChoiceName = (typeof ADD_SERVER_CHOICES)[number];

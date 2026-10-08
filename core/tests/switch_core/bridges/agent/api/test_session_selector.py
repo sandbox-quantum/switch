@@ -7,14 +7,16 @@ memory, which room each session last connected to.
 
 from __future__ import annotations
 
+import typing
+
 import pytest
 from fastapi import HTTPException
 
-from switch_core.bridges.agent.api.operations import resolve_caller
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.api.operations import post_operation, resolve_caller
+from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_LAPSED,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 
 AGENT = "agent-demo"
@@ -22,12 +24,12 @@ CONNECTION = "connection-demo"
 
 
 class _Protocol:
-    def __init__(self, connections: ConnectionRegistry) -> None:
+    def __init__(self, connections: AgentConnectionRegistry) -> None:
         self.connections = connections
 
 
 def _protocol() -> _Protocol:
-    connections = ConnectionRegistry()
+    connections = AgentConnectionRegistry()
     connections.open(
         agent_id=AGENT,
         connection_id=CONNECTION,
@@ -89,6 +91,12 @@ async def test_a_session_selector_needs_its_connection() -> None:
     with pytest.raises(HTTPException) as refused:
         await _resolve(_protocol(), session_id="first")
     assert refused.value.status_code == 400
+    # The refusal tells the caller what to send, so it has to name the header
+    # the endpoint actually reads.
+    read = typing.get_type_hints(post_operation, include_extras=True)
+    alias = typing.get_args(read["connection_id"])[1].alias
+    assert alias.lower() == "x-switch-connection-id"
+    assert alias.lower() in refused.value.detail.lower()
 
 
 @pytest.mark.asyncio
@@ -105,7 +113,7 @@ async def test_a_dead_or_foreign_connection_is_refused() -> None:
 
 
 def test_one_session_per_room_and_one_room_per_session() -> None:
-    connections = ConnectionRegistry()
+    connections = AgentConnectionRegistry()
     assert connections.place_session(AGENT, "first", "room-a", CONNECTION) == (
         set(),
         None,

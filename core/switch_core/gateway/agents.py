@@ -3,13 +3,18 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_display_name import InvalidDisplayName, normalise_display_name
-from switch_core.agent_icon import InvalidIconUrl, normalise_icon_url
+from switch_core.agent_icon import (
+    InvalidIconUrl,
+    generated_icon_choices,
+    normalise_icon_url,
+)
 from switch_core.authz import Principal, require_manage
+from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.bridges.agent.protocol.agent_detail import (
     AgentOptionsNotEditable,
     apply_agent_options,
@@ -17,13 +22,14 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     build_agent_summary,
     list_agent_summaries,
 )
-from switch_core.bridges.agent.protocol.service import AgentExistsError, ProtocolService
+from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     TaskProtocolConfig,
 )
-from switch_core.db.models import User
+from switch_core.db.models import Agent, User
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
@@ -46,6 +52,8 @@ from switch_core.gateway.schemas import (
     RegisterKnownSubagentsResponse,
     RegisterOtherAgentRequest,
     UpdateAddressingPolicyRequest,
+    UpdateAgentCanManageAgentsRequest,
+    UpdateAgentDescriptionRequest,
     UpdateAgentDisplayNameRequest,
     UpdateAgentIconRequest,
     UpdateAgentOptionsRequest,
@@ -55,6 +63,17 @@ from switch_core.gateway.subagent_registration import derive_subagent_registrati
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+CLOUD_AGENT_DELETE_REFUSED = (
+    "This is a cloud agent. Remove it from Switch Console's cloud agents instead."
+)
+
+
+async def _sync_hosted_spec(session: AsyncSession, agent: Agent, changes: dict) -> None:
+    """Keep a cloud agent's launch spec, which registers it again, on the agent's values."""
+    launch_id = hosted_launch_of(agent.metadata_)
+    if launch_id is not None:
+        await HostedLaunchStore().merge_spec(session, launch_id, changes)
 
 
 @router.get("")
@@ -72,7 +91,7 @@ async def delete_agent_by_name(
     agent_name: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> dict[str, bool]:
@@ -89,6 +108,10 @@ async def delete_agent_by_name(
             status_code=403,
             detail="Only the agent's owner or an admin can delete it.",
         )
+    if hosted_launch_of(agent.metadata_) is not None:
+        raise HTTPException(status_code=409, detail=CLOUD_AGENT_DELETE_REFUSED)
+    # Not held across the delete, which opens its own sessions and calls every bridge.
+    await session.commit()
     try:
         await protocol.delete_agent(agent_name=agent_name)
     except ValueError as exc:
@@ -103,7 +126,7 @@ async def delete_agent(
     agent_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> dict[str, bool]:
@@ -120,6 +143,10 @@ async def delete_agent(
             status_code=403,
             detail="Only the agent's owner or an admin can delete it.",
         )
+    if hosted_launch_of(agent.metadata_) is not None:
+        raise HTTPException(status_code=409, detail=CLOUD_AGENT_DELETE_REFUSED)
+    # Not held across the delete, which opens its own sessions and calls every bridge.
+    await session.commit()
     try:
         await protocol.delete_agent(agent_id=agent_id)
     except ValueError as exc:
@@ -142,11 +169,22 @@ async def list_known_agent_types() -> list[KnownAgentType]:
     ]
 
 
+@router.get("/icon-choices")
+async def list_icon_choices(
+    _user: Annotated[User, Depends(get_current_user)],
+    name: Annotated[str, Query(min_length=1, max_length=128)],
+    page: Annotated[int, Query(ge=0, le=1000)] = 0,
+) -> dict[str, list[str]]:
+    """One page of generated icons for an agent called `name`: page 0 leads
+    with the one an agent of that name gets when nobody picks an icon."""
+    return {"choices": generated_icon_choices(name, page)}
+
+
 @router.post("/register")
 async def register_known_agent(
     req: RegisterKnownAgentRequest,
     user: Annotated[User, Depends(get_current_user)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> RegisterAgentResponse:
     spec = KNOWN_AGENTS.get(req.agent_type)
     if spec is None:
@@ -198,7 +236,7 @@ async def register_known_agent(
 async def register_known_subagents(
     req: RegisterKnownSubagentsRequest,
     user: Annotated[User, Depends(get_current_user)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
@@ -265,6 +303,8 @@ async def register_known_subagents(
                 ),
             )
 
+    # Not held across registration, which opens its own session and calls every bridge.
+    await session.commit()
     results: list[BulkRegisterResult] = []
     for d in derived:
         try:
@@ -342,7 +382,7 @@ async def update_agent_options(
         )
 
     try:
-        await apply_agent_options(session, agent_store, agent, req.options, merge=False)
+        await apply_agent_options(session, agent_store, agent, req.options)
     except AgentOptionsNotEditable as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValidationError as exc:
@@ -404,6 +444,7 @@ async def update_agent_icon(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     await agent_store.update(session, agent_id, icon_url=icon_url)
+    await _sync_hosted_spec(session, agent, {"icon_url": icon_url})
     await session.commit()
     await session.refresh(agent)
 
@@ -458,6 +499,7 @@ async def update_agent_display_name(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     await agent_store.update(session, agent_id, display_name=display_name)
+    await _sync_hosted_spec(session, agent, {"display_name": display_name})
     await session.commit()
     await session.refresh(agent)
 
@@ -472,11 +514,49 @@ async def update_agent_display_name(
     return await build_agent_summary(session, agent_store, agent, owner_name)
 
 
+@router.put("/{agent_id}/description")
+async def update_agent_description(
+    agent_id: str,
+    req: UpdateAgentDescriptionRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> AgentSummary:
+    """Change an agent's description. Only its owner (or an admin) may; a
+    blank description is refused with 400."""
+    agent = await agent_store.get(session, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+
+    try:
+        require_manage(Principal(user.id, is_admin), agent.owner_id)
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the agent's owner or an admin can change its description.",
+        )
+
+    description = req.description.strip()
+    if not description:
+        raise HTTPException(status_code=400, detail="description must not be blank")
+
+    await agent_store.update(session, agent_id, description=description)
+    await _sync_hosted_spec(session, agent, {"description": description})
+    await session.commit()
+    await session.refresh(agent)
+
+    logger.info("Set agent %s description by user %s", agent.name, user.name)
+
+    owner_name = user.name if agent.owner_id == user.id else None
+    return await build_agent_summary(session, agent_store, agent, owner_name)
+
+
 @router.post("/register-other")
 async def register_other_agent(
     req: RegisterOtherAgentRequest,
     user: Annotated[User, Depends(get_current_user)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> RegisterAgentResponse:
     # External agent registered without a known profile — give it a conservative
     # default profile (session_passive, no task capabilities).
@@ -522,7 +602,7 @@ async def update_addressing_policy(
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> AgentDetail:
@@ -548,12 +628,64 @@ async def update_addressing_policy(
 
     stored = req.policy.model_dump() if req.policy is not None else None
     await agent_store.update(session, agent_id, addressing_policy=stored)
+    await _sync_hosted_spec(session, agent, {"addressing_policy": stored})
     await session.commit()
 
     logger.info(
         "Updated addressing policy for agent %s (%d rules) by user %s",
         agent.name,
         len(req.policy.rules) if req.policy is not None else 0,
+        user.name,
+    )
+
+    return await assemble_agent_detail(
+        session,
+        agent=agent,
+        agent_store=agent_store,
+        room_store=room_store,
+        user_store=user_store,
+        agent_session_store=protocol.agent_session_store,
+        room_role_store=protocol.room_role_store,
+        connections=protocol.connections,
+    )
+
+
+@router.put("/{agent_id}/can-manage-agents")
+async def update_can_manage_agents(
+    agent_id: str,
+    req: UpdateAgentCanManageAgentsRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> AgentDetail:
+    """Turn the agent's "can manage agents" capability on or off.
+
+    With it on, the agent may list its owner's machines and managed agents
+    and create managed agents on those machines, acting for its owner. Only
+    the agent's owner may change it — not an admin, since the agent then acts
+    on the owner's own machines. It has an effect only on a server running
+    agent management, where those operations exist.
+    """
+    agent = await agent_store.get(session, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+    if agent.owner_id is None or agent.owner_id != user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the agent's owner can change whether it can manage agents.",
+        )
+
+    await agent_store.update(session, agent_id, can_manage_agents=req.enabled)
+    await session.commit()
+    await session.refresh(agent)
+
+    logger.info(
+        "%s 'can manage agents' for agent %s by its owner %s",
+        "Enabled" if req.enabled else "Disabled",
+        agent.name,
         user.name,
     )
 
@@ -578,7 +710,7 @@ async def get_agent_detail(
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     _user: Annotated[User, Depends(get_current_user)],
 ) -> AgentDetail:
     agent = await agent_store.get(session, agent_id)

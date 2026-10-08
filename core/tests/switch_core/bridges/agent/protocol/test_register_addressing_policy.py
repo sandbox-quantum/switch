@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import parse_policy
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.models import TENANT_ZERO_ID, ApiKey
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
     PROFILE,
@@ -44,7 +44,7 @@ async def _seed_registration_key(
 
 
 async def _policy_of(
-    svc: ProtocolService,
+    svc: AgentCore,
     session_factory: async_sessionmaker[AsyncSession],
     agent_id: str,
 ) -> dict | None:

@@ -10,7 +10,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, ClassVar, Literal, NoReturn
+from urllib.parse import urlsplit
 
+import aiohttp
 import httpx
 from pydantic import BaseModel, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
@@ -22,7 +24,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
-    CollaborationAdapter,
+    PlatformAdapter,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -36,6 +38,7 @@ from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
     BridgeConnectionConfig,
+    BridgeCredentialError,
     ChannelType,
     DirectoryUser,
     InboundAgentJoin,
@@ -62,9 +65,26 @@ from switch_core.bridges.collaboration.slack.agent_groups import (
 )
 from switch_core.bridges.collaboration.slack.avatar import on_slack_background
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
+from switch_core.room_wide_mention import (
+    CODE_AND_URLS,
+    defuse_mass_mention_words_in_prose,
+)
 from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
+
+# A channel-wide mention in Slack's own syntax, with or without the `|label`
+# a client may add. `group` is the legacy name for `channel` in a private one.
+_SLACK_MASS_MENTION = re.compile(
+    r"<(!(?:channel|here|everyone|group)(?:\|[^>]*)?)>", re.IGNORECASE
+)
+
+# The same mention as it arrives, read back to the word a person typed. A raw
+# `<!channel>` in delivered text is always a real mention: Slack escapes a `<`
+# a person types, so nobody can write one by hand.
+_SLACK_MASS_MENTION_WORD = re.compile(
+    r"<!(channel|here|everyone|group)(?:\|[^>]*)?>", re.IGNORECASE
+)
 
 # Stamped on the description of every user group we mint for an agent, so a
 # reload can tell ours apart from the workspace's own groups.
@@ -227,6 +247,9 @@ class SlackConnectionConfig(BridgeConnectionConfig):
 # A turn whose end never arrives — the agent died, the session was dropped —
 # leaves its stream open with nothing to close it. Far more than this many at
 # once is a bridge holding turns nobody is waiting on, so the oldest goes.
+# Where Slack serves private files from, commercial and GovSlack.
+_SLACK_FILE_DOMAINS = ("slack.com", "slack-gov.com")
+
 _MAX_OPEN_STREAMS = 100
 
 # Far above the open-stream bound on purpose. An entry here is what stops a
@@ -309,9 +332,10 @@ class _ActivityStream:
     blocks: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
-class SlackAdapter(CollaborationAdapter):
+class SlackAdapter(PlatformAdapter):
     draws_session_activity: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
+    channel_mention: ClassVar[str | None] = "<!channel>"
     #: Cheap on a stream in a way it never was on an edit. An append is rate
     #: limited at 100+/min and redraws nothing, so the clock ticks in the one
     #: message without disturbing what is open in front of a reader.
@@ -333,10 +357,46 @@ class SlackAdapter(CollaborationAdapter):
 
     # Every Slack bridge in this process shares one, because resolving a
     # mention that crossed a workspace boundary means reading a group another
-    # bridge minted. Rebind it to a fresh instance to isolate a test.
+    # bridge minted; the directory keeps each tenant's apart. Rebind it to a
+    # fresh instance to isolate a test.
     agent_group_directory: ClassVar[SlackAgentGroupDirectory] = (
         SlackAgentGroupDirectory()
     )
+
+    @classmethod
+    def claimed_workspace(cls, connection_config: dict[str, object]) -> str | None:
+        return f"Slack workspace {connection_config['workspace_id']}"
+
+    @classmethod
+    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+        """Check the bot token works and belongs to the configured workspace.
+
+        `workspace_id` is what a workspace is claimed by, so it has to be the
+        token's workspace and not merely a value someone typed. On an
+        Enterprise Grid org it may name the org rather than the workspace.
+        """
+        config = SlackConnectionConfig.model_validate(connection_config)
+        try:
+            auth = await AsyncWebClient(token=config.bot_token).auth_test()
+        except SlackApiError as exc:
+            raise BridgeCredentialError(
+                f"Slack refused the bot token: {exc.response.get('error', exc)}"
+            ) from exc
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise BridgeCredentialError(
+                f"Could not reach Slack to check the bot token: "
+                f"{exc or type(exc).__name__}. Try again."
+            ) from exc
+        authenticated = {
+            str(auth.get("team_id") or ""),
+            str(auth.get("enterprise_id") or ""),
+        } - {""}
+        if config.workspace_id not in authenticated:
+            raise BridgeCredentialError(
+                f"The bot token belongs to Slack workspace "
+                f"{auth.get('team_id')}, not {config.workspace_id}. Set "
+                "workspace_id to the workspace the app is installed in."
+            )
 
     def __init__(self, *, config: SlackConnectionConfig) -> None:
         super().__init__()
@@ -346,6 +406,7 @@ class SlackAdapter(CollaborationAdapter):
         self._bot_user_id: str = ""
         self._bot_id: str = ""
         self._team_id: str = ""
+        self._tenant_id: str | None = None
         self._user_cache: dict[str, SlackUser] = {}
         self._channel_name_cache: dict[str, str] = {}
         self._seen_ts: OrderedDict[str, None] = OrderedDict()
@@ -479,6 +540,17 @@ class SlackAdapter(CollaborationAdapter):
             await self._socket_client.connect()
             logger.info("Slack Socket Mode connected")
 
+    def set_tenant_id(self, tenant_id: str) -> None:
+        self._tenant_id = tenant_id
+
+    def _directory_tenant(self) -> str:
+        if self._tenant_id is None:
+            raise RuntimeError(
+                "Slack adapter used the shared agent group directory before "
+                "set_tenant_id() was called"
+            )
+        return self._tenant_id
+
     async def stop(self) -> None:
         if self._socket_client:
             try:
@@ -487,7 +559,8 @@ class SlackAdapter(CollaborationAdapter):
                 pass
             self._socket_client = None
         self._web_client = None
-        self.agent_group_directory.forget(self._team_id)
+        if self._tenant_id is not None:
+            self.agent_group_directory.forget(self._tenant_id, self._team_id)
         logger.info("Slack adapter stopped")
 
     # ── Messaging ────────────────────────────────────────────────────────────
@@ -498,6 +571,8 @@ class SlackAdapter(CollaborationAdapter):
         sender_name: str,
         content: str,
         thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
     ) -> str | None:
         if not self._web_client:
             logger.error("Cannot send message: Slack client not connected")
@@ -512,7 +587,12 @@ class SlackAdapter(CollaborationAdapter):
                 if ":" in thread_root_id
                 else thread_root_id
             )
-        elif self._channel_type_cache.get(channel_id) in ("im", "mpim"):
+        elif (
+            self._channel_type_cache.get(channel_id) in ("im", "mpim")
+            and not room_wide_mention
+        ):
+            # Not for a room-wide mention: Slack sends no channel-wide alert
+            # from a thread.
             thread_ts = self._last_user_message_ts.get(channel_id)
 
         agent = await self.agent_rendering(sender_name)
@@ -544,7 +624,7 @@ class SlackAdapter(CollaborationAdapter):
     ) -> str | None:
         """Post a Block Kit message, for what plain text cannot carry.
 
-        Slack-only and deliberately not on `CollaborationAdapter`: blocks are
+        Slack-only and deliberately not on `PlatformAdapter`: blocks are
         Slack's own shape, and the platforms that need something like them need
         something different. `text` is what a notification and a client that
         will not render the blocks are left with, so it has to stand alone.
@@ -1609,7 +1689,7 @@ class SlackAdapter(CollaborationAdapter):
         their name in the comment. The upload's shared-message ts is pulled
         from the response when Slack provides it (v2 completes the share
         asynchronously, so it may be absent — then no ref is returned and
-        replies to the file won't thread back to Matrix).
+        replies to the file won't thread back to the room).
         """
         if not self._web_client:
             logger.error("Cannot send attachment: Slack client not connected")
@@ -2243,7 +2323,9 @@ class SlackAdapter(CollaborationAdapter):
         await self._web_client.usergroups_disable(usergroup=group_id)
         self._agent_group_ids.pop(folded, None)
         self._agent_group_names.pop(group_id, None)
-        self.agent_group_directory.discard(self._team_id, group_id)
+        self.agent_group_directory.discard(
+            self._directory_tenant(), self._team_id, group_id
+        )
         self._agent_groups_disabled[folded] = group_id
         logger.info("Disabled Slack user group %s for agent %s", group_id, agent_name)
 
@@ -2388,7 +2470,9 @@ class SlackAdapter(CollaborationAdapter):
     def _remember_agent_group(self, group_id: str, agent_name: str) -> None:
         self._agent_group_ids[agent_name.casefold()] = group_id
         self._agent_group_names[group_id] = agent_name
-        self.agent_group_directory.add(self._team_id, group_id, agent_name)
+        self.agent_group_directory.add(
+            self._directory_tenant(), self._team_id, group_id, agent_name
+        )
 
     @staticmethod
     def _usergroup_handle(agent_name: str) -> str:
@@ -2466,7 +2550,9 @@ class SlackAdapter(CollaborationAdapter):
             else:
                 self._remember_agent_group(group_id, name)
 
-        self.agent_group_directory.replace(self._team_id, self._agent_group_names)
+        self.agent_group_directory.replace(
+            self._directory_tenant(), self._team_id, self._agent_group_names
+        )
         self._agent_groups_loaded = True
         logger.info(
             "Loaded %d Slack agent user groups (%d disabled, %d other groups seen)",
@@ -2480,8 +2566,22 @@ class SlackAdapter(CollaborationAdapter):
 
     # ── Translation ──────────────────────────────────────────────────────────
 
-    def translate_outbound(self, content: str) -> str:
+    def _render_outbound(self, content: str) -> str:
         return self._markdown_to_mrkdwn(self._translate_mentions_to_slack(content))
+
+    def defuse_mass_mentions(self, text: str) -> str:
+        """Escape Slack's own channel-wide syntax; defuse the words as prose.
+
+        `<!channel>`, `<!here>`, `<!everyone>` and the legacy `<!group>` page
+        a channel from any text Slack parses, and this runs on the finished
+        mrkdwn because the translation can write one: a Markdown link to
+        `!channel` comes out of it as `<!channel|…>`. Escaping shows the token
+        as written rather than hiding it. The words themselves page nobody on
+        Slack, so they are defused only where that leaves code and links
+        exact."""
+        return defuse_mass_mention_words_in_prose(
+            _SLACK_MASS_MENTION.sub(r"&lt;\1&gt;", text), keep=CODE_AND_URLS
+        )
 
     def escape_label_for_body(self, label: str) -> str:
         """Escape the three characters Slack reserves, over the base defusal.
@@ -2504,8 +2604,25 @@ class SlackAdapter(CollaborationAdapter):
 
     def translate_inbound(self, raw_message: str) -> str:
         return self._translate_links_to_markdown(
-            self._translate_mentions_to_markdown(raw_message)
+            self._translate_mass_mentions_to_markdown(
+                self._translate_mentions_to_markdown(raw_message)
+            )
         )
+
+    @staticmethod
+    def _translate_mass_mentions_to_markdown(message: str) -> str:
+        """Show a person's `<!channel>`, `<!here>` or `<!everyone>` as the word.
+
+        Agents read the room's history as text, and the raw code says nothing to
+        them. The word wakes no agent, because these names are reserved and
+        none can carry them. `group` is the legacy spelling of `channel`.
+        """
+
+        def _replace(match: re.Match[str]) -> str:
+            word = match.group(1).lower()
+            return "@channel" if word == "group" else f"@{word}"
+
+        return _SLACK_MASS_MENTION_WORD.sub(_replace, message)
 
     @staticmethod
     def _translate_links_to_markdown(message: str) -> str:
@@ -2767,7 +2884,7 @@ class SlackAdapter(CollaborationAdapter):
         self._last_user_message_ts[channel_id] = message_ts
 
         # App/bot posts (e.g. Datadog) carry no `user`; their identity lives in
-        # bot_id + bot_profile/username. Key the puppet on the stable bot_id and
+        # bot_id + bot_profile/username. Key the human actor on the stable bot_id and
         # name it from the app's profile.
         bot_id = str(event.get("bot_id", ""))
         if not user_id and bot_id:
@@ -2984,7 +3101,18 @@ class SlackAdapter(CollaborationAdapter):
         return attachments, failures
 
     async def _download_file(self, url: str) -> bytes:
-        """Fetch a Slack private file URL with the bot token, returning bytes."""
+        """Fetch a Slack private file URL with the bot token, returning bytes.
+
+        Refuses any host but Slack's own: the request carries the bot token,
+        and the URL is read out of an event rather than built here.
+        """
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        if parts.scheme != "https" or not any(
+            host == domain or host.endswith(f".{domain}")
+            for domain in _SLACK_FILE_DOMAINS
+        ):
+            raise ValueError(f"{url!r} is not a Slack file URL")
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 url,
@@ -3206,7 +3334,7 @@ class SlackAdapter(CollaborationAdapter):
             group_id = match.group(1)
             agent_name = self._agent_group_names.get(
                 group_id
-            ) or self.agent_group_directory.resolve(group_id)
+            ) or self.agent_group_directory.resolve(self._directory_tenant(), group_id)
             if agent_name:
                 return f"@{agent_name}"
             label = match.group(2)

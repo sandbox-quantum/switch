@@ -180,7 +180,7 @@ async def _card(**kwargs: Any) -> RequestCard:
 
 
 def test_the_publication_is_the_only_account_of_a_turn() -> None:
-    """There is no second renderer to fall back to, and `bridge_core` reads
+    """There is no second renderer to fall back to, and `collaboration_core` reads
     this flag to decide whether to route sessions here at all — so a platform
     that stopped declaring it would go quiet rather than draw the turn some
     other way."""

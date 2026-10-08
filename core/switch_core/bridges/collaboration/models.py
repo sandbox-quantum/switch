@@ -42,8 +42,8 @@ class WebhookDeliveryUnsupported(RuntimeError):
 class Attachment(BaseModel):
     """An inbound file attachment of any type, with its raw bytes.
 
-    `data` holds the downloaded file content; the bridge uploads it to the
-    Matrix media repository and discards the bytes afterwards.
+    `data` holds the downloaded file content; the bridge stores it in
+    Switch's media store and discards the bytes afterwards.
     """
 
     filename: str
@@ -124,7 +124,7 @@ class InboundCommand(BaseModel):
     command: str
     args: str
     # External platform's id for the command post (Mattermost post_id), so the
-    # command's bridged Matrix event can be mapped back to it and the result
+    # command's bridged room event can be mapped back to it and the result
     # can be threaded under the originating command message. None when the
     # platform gives us no post id.
     message_ref: str | None = None
@@ -212,6 +212,15 @@ class BridgeCredentialError(Exception):
     Carries a message intended for the operator who typed them, so it is
     surfaced verbatim rather than being reduced to "invalid configuration" —
     the platform's own explanation is almost always the actionable part.
+    """
+
+
+class BridgeStartRefused(RuntimeError):
+    """A start guard refused to let a bridge run, with the reason.
+
+    Raised before the bridge's adapter is built, so nothing of it ran. Also
+    answers an edit that would leave a bridge unable to start, before the edit
+    is stored.
     """
 
 

@@ -8,7 +8,10 @@ import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { remoteAgentsQueryKey, useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
+import {
+  workspaceAgentsQueryKey,
+  useWorkspaceAgents,
+} from '@renderer/lib/stores/use-workspace-agents';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
@@ -35,8 +38,8 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
   const agentMachineName = agent?.name ?? agentName ?? 'Agent';
   const provider = agent?.providerId ? providerDisplayName(agent.providerId) : null;
 
-  const serverId = agent?.serverId ?? null;
-  const { data: remoteAgents } = useRemoteAgents(serverId);
+  const workspaceId = agent?.workspaceId ?? null;
+  const { data: remoteAgents } = useWorkspaceAgents(workspaceId);
   const remote = (remoteAgents ?? []).find((a) => a.id === agent?.switchAgentId) ?? null;
   const description = remote?.description ?? null;
 
@@ -45,7 +48,7 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
   // Show machine name as subtitle only if displayName exists and differs from name
   const showMachineName = remote?.displayName != null && remote.displayName !== agentMachineName;
 
-  const roomable = serverId !== null && agent?.switchAgentId != null;
+  const roomable = workspaceId !== null && agent?.switchAgentId != null;
 
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -55,10 +58,10 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
    * request that can fail. It is reported rather than swallowed: a picture
    * that silently reverts on the next refresh is worse than an error. */
   const changeIcon = async (iconUrl: string | null) => {
-    if (serverId === null || switchAgentId === null) return;
+    if (workspaceId === null || switchAgentId === null) return;
     try {
-      await rpc.switchServers.updateAgentIcon({ serverId, agentId: switchAgentId, iconUrl });
-      await queryClient.invalidateQueries({ queryKey: remoteAgentsQueryKey(serverId) });
+      await rpc.workspaces.updateAgentIcon({ workspaceId, agentId: switchAgentId, iconUrl });
+      await queryClient.invalidateQueries({ queryKey: workspaceAgentsQueryKey(workspaceId) });
     } catch (cause) {
       const { headline, detail } = describeFailure(cause, "Could not change the agent's icon.");
       toast({
@@ -69,13 +72,14 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
     }
   };
 
-  const editableIcon = serverId !== null && switchAgentId !== null;
+  const editableIcon = workspaceId !== null && switchAgentId !== null;
 
   return (
-    <header className="flex shrink-0 items-start gap-5 pt-10">
-      <span className="flex size-[88px] shrink-0 items-center justify-center">
-        {editableIcon ? (
+    <AgentHeaderLayout
+      avatar={
+        editableIcon ? (
           <AgentIconPicker
+            serverId={agent?.serverId ?? null}
             name={title}
             iconUrl={remote?.iconUrl ?? null}
             onChange={changeIcon}
@@ -85,26 +89,20 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
           // Not registered on a server yet, so there is nothing to change the
           // icon on — shown, but not offered as editable.
           <AgentAvatar name={title} iconUrl={null} size={88} />
-        )}
-      </span>
-      <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <h1 className="truncate text-3xl font-semibold tracking-tight text-foreground">
-            {title}
-          </h1>
-          {provider && (
-            <Badge variant="secondary" className="h-5 shrink-0 px-2 text-[11px]">
-              {provider}
-            </Badge>
-          )}
-        </div>
-        {showMachineName && (
-          <p className="text-sm text-foreground-muted">
-            Machine name: <span className="font-mono">{agentMachineName}</span>
-          </p>
-        )}
-        {description && <p className="text-sm text-foreground-muted">{description}</p>}
-        <div className="mt-2 flex flex-wrap items-center gap-2">
+        )
+      }
+      title={title}
+      badges={
+        provider && (
+          <Badge variant="secondary" className="h-5 shrink-0 px-2 text-[11px]">
+            {provider}
+          </Badge>
+        )
+      }
+      machineName={showMachineName ? agentMachineName : null}
+      description={description}
+      actions={
+        <>
           <Button
             onClick={() =>
               showCreateSessionModal({ locationId, agentName, entryPoint: 'agent_page' })
@@ -117,7 +115,7 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
               variant="outline"
               onClick={() =>
                 showAddToRoom({
-                  serverId: serverId as string,
+                  workspaceId: workspaceId as string,
                   switchAgentId: agent.switchAgentId as string,
                   agentName: title,
                 })
@@ -126,8 +124,52 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
               Add to room
             </Button>
           )}
+        </>
+      }
+    />
+  );
+});
+
+/**
+ * The header's arrangement, whatever agent it is about: the mark on the left,
+ * then the title with its badges (which wrap under a title too long to share
+ * its line, rather than shortening it), the agent's own name when the title is a
+ * display name, its description, and the page's actions.
+ */
+export function AgentHeaderLayout({
+  avatar,
+  title,
+  badges,
+  machineName,
+  description,
+  actions,
+}: {
+  avatar: React.ReactNode;
+  title: React.ReactNode;
+  badges: React.ReactNode;
+  /** The agent's name, shown under a display name that differs from it; null to leave it out. */
+  machineName: string | null;
+  description: React.ReactNode;
+  actions: React.ReactNode;
+}) {
+  return (
+    <header className="flex shrink-0 items-start gap-5 pt-10">
+      <span className="flex size-[88px] shrink-0 items-center justify-center">{avatar}</span>
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1.5">
+          <h1 className="max-w-full shrink-0 text-3xl font-semibold tracking-tight [overflow-wrap:anywhere] text-foreground">
+            {title}
+          </h1>
+          {badges}
         </div>
+        {machineName !== null && (
+          <p className="text-sm text-foreground-muted">
+            Machine name: <span className="font-mono">{machineName}</span>
+          </p>
+        )}
+        {description && <p className="text-sm text-foreground-muted">{description}</p>}
+        <div className="mt-2 flex flex-wrap items-center gap-2">{actions}</div>
       </div>
     </header>
   );
-});
+}

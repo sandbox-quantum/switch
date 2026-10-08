@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
-from switch_core.db.models import Agent, ApprovalRequest, SessionActivityItem
+from switch_core.db.models import Agent, AgentSessionActivityItem, ApprovalRequest
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -100,8 +100,31 @@ class ApprovalRequestStore:
         return list(result.scalars())
 
 
-class SessionActivityStore:
-    async def upsert(self, session: AsyncSession, item: SessionActivityItem) -> bool:
+class AgentSessionActivityStore:
+    async def status_for_update(
+        self,
+        session: AsyncSession,
+        agent_id: str,
+        session_id: str,
+        turn_id: str,
+        item_id: str,
+    ) -> str | None:
+        """The row's stored status, locked until the transaction ends, or None."""
+        status: str | None = await session.scalar(
+            select(AgentSessionActivityItem.status)
+            .where(
+                AgentSessionActivityItem.agent_id == agent_id,
+                AgentSessionActivityItem.session_id == session_id,
+                AgentSessionActivityItem.turn_id == turn_id,
+                AgentSessionActivityItem.item_id == item_id,
+            )
+            .with_for_update()
+        )
+        return status
+
+    async def upsert(
+        self, session: AsyncSession, item: AgentSessionActivityItem
+    ) -> bool:
         """Record `item` unless a revision at least as new is stored.
 
         True when this call inserted the row or moved it forward. An equal or
@@ -109,11 +132,11 @@ class SessionActivityStore:
         """
         values = {
             column.key: getattr(item, column.key)
-            for column in SessionActivityItem.__table__.columns
+            for column in AgentSessionActivityItem.__table__.columns
             if column.key not in ("created_at", "updated_at")
             and not (column.key == "tenant_id" and item.tenant_id is None)
         }
-        statement = insert(SessionActivityItem).values(**values)
+        statement = insert(AgentSessionActivityItem).values(**values)
         moved = {
             key: statement.excluded[key]
             for key in (
@@ -132,50 +155,54 @@ class SessionActivityStore:
         result = await session.execute(
             statement.on_conflict_do_update(
                 index_elements=[
-                    SessionActivityItem.tenant_id,
-                    SessionActivityItem.agent_id,
-                    SessionActivityItem.session_id,
-                    SessionActivityItem.turn_id,
-                    SessionActivityItem.item_id,
+                    AgentSessionActivityItem.tenant_id,
+                    AgentSessionActivityItem.agent_id,
+                    AgentSessionActivityItem.session_id,
+                    AgentSessionActivityItem.turn_id,
+                    AgentSessionActivityItem.item_id,
                 ],
                 set_={**moved, "updated_at": func.now()},
-                where=SessionActivityItem.revision < statement.excluded.revision,
-            ).returning(SessionActivityItem.item_id)
+                where=AgentSessionActivityItem.revision < statement.excluded.revision,
+            ).returning(AgentSessionActivityItem.item_id)
         )
         return result.scalar_one_or_none() is not None
 
     async def turn(
         self, session: AsyncSession, agent_id: str, session_id: str, turn_id: str
-    ) -> list[SessionActivityItem]:
+    ) -> list[AgentSessionActivityItem]:
         """Every step of one turn, in the order each was first reported."""
         result = await session.execute(
-            select(SessionActivityItem)
+            select(AgentSessionActivityItem)
             .where(
-                SessionActivityItem.agent_id == agent_id,
-                SessionActivityItem.session_id == session_id,
-                SessionActivityItem.turn_id == turn_id,
+                AgentSessionActivityItem.agent_id == agent_id,
+                AgentSessionActivityItem.session_id == session_id,
+                AgentSessionActivityItem.turn_id == turn_id,
             )
-            .order_by(SessionActivityItem.created_at, SessionActivityItem.item_id)
+            .order_by(
+                AgentSessionActivityItem.created_at, AgentSessionActivityItem.item_id
+            )
         )
         return list(result.scalars())
 
     async def turns_of_session(
         self, session: AsyncSession, agent_id: str, session_id: str
-    ) -> list[SessionActivityItem]:
+    ) -> list[AgentSessionActivityItem]:
         """The turn rows of one session, oldest first."""
         result = await session.execute(
-            select(SessionActivityItem)
+            select(AgentSessionActivityItem)
             .where(
-                SessionActivityItem.agent_id == agent_id,
-                SessionActivityItem.session_id == session_id,
-                SessionActivityItem.item_id == TURN_ITEM_ID,
+                AgentSessionActivityItem.agent_id == agent_id,
+                AgentSessionActivityItem.session_id == session_id,
+                AgentSessionActivityItem.item_id == TURN_ITEM_ID,
             )
-            .order_by(SessionActivityItem.created_at)
+            .order_by(AgentSessionActivityItem.created_at)
         )
         return list(result.scalars())
 
     async def prune_before(self, session: AsyncSession, cutoff: datetime) -> int:
         result = await session.execute(
-            delete(SessionActivityItem).where(SessionActivityItem.updated_at < cutoff)
+            delete(AgentSessionActivityItem).where(
+                AgentSessionActivityItem.updated_at < cutoff
+            )
         )
         return int(result.rowcount or 0)  # type: ignore[attr-defined]

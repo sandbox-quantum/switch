@@ -12,11 +12,11 @@ from collections.abc import Iterator
 
 import pytest
 
-from switch_core.bridges.agent.protocol import connections as conn_module
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol import agent_connections as conn_module
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
@@ -57,7 +57,9 @@ def _event(index: int) -> AgentEvent:
 
 
 def test_events_dropped_for_overflow_are_counted(registry):
-    buffer = EventBuffer(max_events_per_agent=3, retention_seconds=3600)
+    buffer = EventBuffer(
+        max_events_per_agent=3, retention_seconds=3600, sequence_base=0
+    )
     for index in range(6):
         buffer.enqueue("agent-1", "room-1", _event(index))
 
@@ -70,7 +72,9 @@ def test_events_dropped_for_overflow_are_counted(registry):
 
 def test_events_dropped_for_retention_are_counted_separately(registry):
     """An agent that cannot keep up and one that was away are different faults."""
-    buffer = EventBuffer(max_events_per_agent=1000, retention_seconds=-1)
+    buffer = EventBuffer(
+        max_events_per_agent=1000, retention_seconds=-1, sequence_base=0
+    )
     buffer.enqueue("agent-1", "room-1", _event(0))
     buffer.enqueue("agent-1", "room-1", _event(1))
 
@@ -80,7 +84,9 @@ def test_events_dropped_for_retention_are_counted_separately(registry):
 
 
 def test_nothing_is_counted_when_nothing_is_dropped(registry):
-    buffer = EventBuffer(max_events_per_agent=100, retention_seconds=3600)
+    buffer = EventBuffer(
+        max_events_per_agent=100, retention_seconds=3600, sequence_base=0
+    )
     buffer.enqueue("agent-1", "room-1", _event(0))
 
     assert _counts(registry, "switch.agent.events_dropped") == {}
@@ -88,7 +94,7 @@ def test_nothing_is_counted_when_nothing_is_dropped(registry):
 
 def test_expired_connections_are_counted(registry, monkeypatch):
     """A flat connection count hides agents reconnecting as fast as they lapse."""
-    connections = ConnectionRegistry()
+    connections = AgentConnectionRegistry()
     connections.open(
         agent_id="agent-1",
         connection_id="c1",
@@ -113,7 +119,7 @@ def test_expired_connections_are_counted(registry, monkeypatch):
 
 
 def test_a_quiet_sweep_counts_nothing(registry):
-    connections = ConnectionRegistry()
+    connections = AgentConnectionRegistry()
     connections.open(
         agent_id="agent-1",
         connection_id="c1",
@@ -127,3 +133,98 @@ def test_a_quiet_sweep_counts_nothing(registry):
 
     assert connections.sweep() == []
     assert _counts(registry, "switch.agent.connections_expired") == {}
+
+
+def _open(connections: AgentConnectionRegistry, connection_id: str = "c1") -> None:
+    connections.open(
+        agent_id="agent-1",
+        connection_id=connection_id,
+        scope="single",  # type: ignore[arg-type]
+        delivery_filter="all",  # type: ignore[arg-type]
+        spawn_capable=False,
+        cursor=0,
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        expected_generation=None,
+    )
+
+
+def test_a_first_open_is_fresh(registry):
+    _open(AgentConnectionRegistry())
+
+    assert _counts(registry, "switch.agent.connections_opened") == {
+        (("kind", "fresh"),): 1.0
+    }
+
+
+def test_a_socket_coming_back_to_a_live_connection_is_a_reattach(registry):
+    connections = AgentConnectionRegistry()
+    _open(connections)
+    _open(connections)
+
+    assert _counts(registry, "switch.agent.connections_opened") == {
+        (("kind", "fresh"),): 1.0,
+        (("kind", "reattach"),): 1.0,
+    }
+
+
+def test_a_return_after_a_lapse_is_told_apart(registry, monkeypatch):
+    """The reconnect storm: agents lapse, then come straight back."""
+    connections = AgentConnectionRegistry()
+    _open(connections)
+    later = time_module.monotonic() + conn_module.HEARTBEAT_TTL_SECONDS + 1
+    monkeypatch.setattr(conn_module.time, "monotonic", lambda: later)
+    assert connections.sweep()
+
+    _open(connections)
+
+    assert _counts(registry, "switch.agent.connections_opened") == {
+        (("kind", "fresh"),): 1.0,
+        (("kind", "after_lapse"),): 1.0,
+    }
+
+
+def test_a_return_after_any_other_close_is_after_close(registry):
+    connections = AgentConnectionRegistry()
+    _open(connections)
+    connections.close("c1", conn_module.TAKEN_OVER)
+    _open(connections)
+
+    assert (
+        _counts(registry, "switch.agent.connections_opened")[(("kind", "after_close"),)]
+        == 1.0
+    )
+
+
+def test_the_memory_of_closed_connections_is_bounded(monkeypatch):
+    monkeypatch.setattr(conn_module, "_RECENTLY_CLOSED_LIMIT", 2)
+    connections = AgentConnectionRegistry()
+    for index in range(4):
+        _open(connections, f"c{index}")
+        connections.close(f"c{index}", conn_module.HEARTBEAT_LAPSED)
+
+    assert list(connections._recently_closed) == ["c2", "c3"]
+
+
+def test_a_lapse_noticed_on_next_use_is_counted_too(registry, monkeypatch):
+    """The sweep is one of three ways a lapse is noticed. Counting only it
+    under-reported lapses against the reconnects that follow them."""
+    connections = AgentConnectionRegistry()
+    _open(connections)
+    later = time_module.monotonic() + conn_module.HEARTBEAT_TTL_SECONDS + 1
+    monkeypatch.setattr(conn_module.time, "monotonic", lambda: later)
+
+    with pytest.raises(conn_module.UnknownConnectionError):
+        connections.require("agent-1", "c1")
+    _open(connections)
+
+    # One collection: reading the registry resets it.
+    payloads = {p.name: p for p in registry.collect()}
+    expired = sum(
+        point.value for point in payloads["switch.agent.connections_expired"].numbers
+    )
+    opened = {
+        point.attributes["kind"]: point.value
+        for point in payloads["switch.agent.connections_opened"].numbers
+    }
+    assert expired == 1.0
+    assert opened == {"fresh": 1.0, "after_lapse": 1.0}

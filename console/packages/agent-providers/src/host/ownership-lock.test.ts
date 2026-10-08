@@ -1,11 +1,16 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, expect, it } from 'vitest';
-import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
+import { afterEach, expect, it, vi } from 'vitest';
+import {
+  releaseOwner,
+  replaceOwner,
+  withOwnershipLock,
+  withOwnershipLockOutlasting,
+} from './ownership-lock';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -95,3 +100,33 @@ it('late cleanup cannot delete a replacement owner, even with the same PID', asy
   await releaseOwner(root, path, current);
   await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' });
 });
+
+it('outlasts a live process that left its ticket while shutting down, and names it', async () => {
+  const root = await rootDirectory();
+  // A Console that took the lock and is still exiting: alive, its ticket ahead.
+  const exiting = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], {
+    stdio: 'ignore',
+  });
+  await once(exiting, 'spawn');
+  await mkdir(join(root, 'ownership'));
+  await writeFile(
+    join(root, 'ownership', `${exiting.pid}-00000000-0000-0000-0000-000000000000.json`),
+    JSON.stringify({ choosing: false, ticket: 1 })
+  );
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    setTimeout(() => exiting.kill('SIGKILL'), 17_000);
+    const owned = await withOwnershipLockOutlasting(
+      root,
+      async () => 'owner',
+      new AbortController().signal
+    );
+    expect(owned).toEqual({ value: 'owner' });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(`another live host is acquiring ownership (pid ${exiting.pid})`)
+    );
+  } finally {
+    warn.mockRestore();
+    exiting.kill('SIGKILL');
+  }
+}, 40_000);

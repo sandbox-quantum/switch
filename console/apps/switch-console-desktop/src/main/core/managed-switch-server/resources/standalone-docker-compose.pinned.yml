@@ -213,9 +213,24 @@ services:
       DB_OWNER_USER: ${DB_OWNER_USER}
       DB_OWNER_PASSWORD: ${DB_OWNER_PASSWORD}
       DB_NAME: ${DB_NAME}
+      ID_SERVER_NAME: localhost
+      # The same setting under its old name, for a SWITCH_VERSION released
+      # before the rename, which reads only this one. Drop it once the oldest
+      # supported release reads ID_SERVER_NAME.
       MATRIX_SERVER_NAME: localhost
       AGENT_REGISTRATION_TOKEN: ${AGENT_REGISTRATION_TOKEN}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      SECRET_KEYS: ${SECRET_KEYS:?required, set it in .env (just init-env generates one)}
+      # Legacy, optional: keeps what it signed and encrypted working until the
+      # first boot has re-encrypted stored credentials under SECRET_KEYS.
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      # Served over plain http on this machine by default, where a Secure
+      # cookie would never be sent back. Set it to true behind https.
+      GATEWAY_COOKIE_SECURE: ${GATEWAY_COOKIE_SECURE:-false}
+      # The bundled Mattermost is on the compose network, a private address,
+      # so it is always allowed; .env adds to it rather than replacing it.
+      OUTBOUND_ALLOWED_PRIVATE_HOSTS: mattermost,${OUTBOUND_ALLOWED_PRIVATE_HOSTS:-}
+      AGENT_MANAGEMENT_ENABLED: ${AGENT_MANAGEMENT_ENABLED:-false}
+      CONTROLLER_TOKEN_SECRET: ${CONTROLLER_TOKEN_SECRET:-}
       GATEWAY_ADMIN_EMAIL: ${GATEWAY_ADMIN_EMAIL}
       GATEWAY_ADMIN_PASSWORD: ${GATEWAY_ADMIN_PASSWORD}
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL}
@@ -224,6 +239,14 @@ services:
       SLACK_APP_CLIENT_ID: ${SLACK_APP_CLIENT_ID:-}
       SLACK_APP_CLIENT_SECRET: ${SLACK_APP_CLIENT_SECRET:-}
       SLACK_APP_SIGNING_SECRET: ${SLACK_APP_SIGNING_SECRET:-}
+      DISCORD_APP_CLIENT_ID: ${DISCORD_APP_CLIENT_ID:-}
+      DISCORD_APP_CLIENT_SECRET: ${DISCORD_APP_CLIENT_SECRET:-}
+      DISCORD_APP_BOT_TOKEN: ${DISCORD_APP_BOT_TOKEN:-}
+      DISCORD_APP_APPLICATION_ID: ${DISCORD_APP_APPLICATION_ID:-}
+      # True/false flags, so bare keys for the reason given under LOG_FORMAT
+      # below: `${VAR:-}` would hand them an empty string, which fails boot.
+      DISCORD_APP_MESSAGE_CONTENT:
+      DISCORD_APP_MEMBERS:
       # Observability and log format. Forwarded because this service names
       # every variable it passes, so without them here, setting any of these
       # in `.env` does nothing and the Helm chart is the only way to turn
@@ -252,6 +275,12 @@ services:
       # brought up by hand, an operator sets it here the same way.
       TELEMETRY_ENABLED:
       TELEMETRY_ENDPOINT:
+      # Which Amplitude project the usage lands in. Unset is prod; Switch
+      # Console writes its own build's environment here for a server it runs.
+      TELEMETRY_ENVIRONMENT:
+      # Whether this is one of the company's own deployments. Switch Console
+      # writes its own answer here for a server it runs.
+      TELEMETRY_INTERNAL:
       TELEMETRY_SNAPSHOT_INTERVAL_HOURS:
     depends_on:
       postgres:

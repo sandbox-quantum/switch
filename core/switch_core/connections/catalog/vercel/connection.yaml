@@ -1,0 +1,7 @@
+slug: vercel
+name: Vercel
+category: Deployment
+description: Inspect Vercel projects and deployments.
+enabled: false
+auth:
+  type: api_key

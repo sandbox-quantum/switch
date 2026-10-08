@@ -99,6 +99,9 @@ const config: Configuration = {
   // The remote runtime sidecar (CHOO-1059) is a pure-Node bundle SFTP'd to the
   // agent's VM, not loaded into the Electron process — ship it as an unpacked
   // resource so resolveSidecarBundlePath() finds it under process.resourcesPath.
+  // The agents controller bundle (agent-controller.mjs) ships beside it the same
+  // way, so the child Console runs it in (its own binary with
+  // ELECTRON_RUN_AS_NODE) reads it from a plain path, as the shared host is.
   extraResources: [{ from: 'dist-sidecar', to: 'dist-sidecar' }],
   asarUnpack: ['node_modules/better-sqlite3/**', 'node_modules/@parcel/watcher/**', '**/*.node'],
   mac: {

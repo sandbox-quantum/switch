@@ -20,7 +20,7 @@ import pytest
 from slack_sdk.errors import SlackApiError
 
 from switch_core.bridges.collaboration.adapter import (
-    CollaborationAdapter,
+    PlatformAdapter,
     RemovalFailed,
     RichContentThrottled,
 )
@@ -144,7 +144,7 @@ def test_a_platform_with_no_implementation_refuses_rather_than_pretends() -> Non
     and then never redraw it, because the row says there is nothing there."""
 
     class Unimplemented:
-        remove_publication = CollaborationAdapter.remove_publication
+        remove_publication = PlatformAdapter.remove_publication
 
     assert getattr(Unimplemented(), "removes_answered_cards", False) is False
     with pytest.raises(RemovalFailed):

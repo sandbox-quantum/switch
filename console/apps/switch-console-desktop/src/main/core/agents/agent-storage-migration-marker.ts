@@ -6,7 +6,7 @@ import { kv } from '@main/db/schema';
  * Persisted marker recording which generation of the CHOO-1440 agent-storage
  * migration has completed a full, error-free pass. Once current,
  * {@link migrateAgentStorage} short-circuits at boot instead of re-opening every
- * agent's workspace filesystem (an SSH/SFTP round trip per remote agent, and a
+ * agent's workdir filesystem (an SSH/SFTP round trip per remote agent, and a
  * 20s connect timeout per unreachable host) on every launch.
  */
 const MARKER_KEY = 'agentStorageMigrationComplete';

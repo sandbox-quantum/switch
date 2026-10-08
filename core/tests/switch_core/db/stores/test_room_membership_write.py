@@ -21,12 +21,12 @@ from switch_core.db.stores.room_store import RoomStore
 
 async def _client_and_room(session: AsyncSession) -> tuple[str, str]:
     client = Client(
-        matrix_user_id=f"@someone-{uuid.uuid4().hex[:8]}:test",
+        transport_user_id=f"@someone-{uuid.uuid4().hex[:8]}:test",
         display_name="someone",
         type="agent",
     )
     room = Room(
-        matrix_room_id=f"!{uuid.uuid4().hex[:8]}:test",
+        transport_room_id=f"!{uuid.uuid4().hex[:8]}:test",
         name="a room",
         description="",
     )

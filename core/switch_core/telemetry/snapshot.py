@@ -44,6 +44,8 @@ from switch_core.db.models import (
     ClientRoom,
     CollaborationBridge,
     Document,
+    ExternalUser,
+    ExternalUserClaim,
     Message,
     MessageAttachment,
     Package,
@@ -56,10 +58,11 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.telemetry.internal import internal_email_condition
 
 logger = logging.getLogger(__name__)
 
-# `clients.type` for a human: one puppet per external user per bridge, and the
+# `clients.type` for a human: one human actor per external user per bridge, and the
 # only row in the schema that stands for "a person did something".
 HUMAN_CLIENT_TYPE = "user"
 AGENT_CLIENT_TYPE = "agent"
@@ -104,8 +107,26 @@ class UsageCounts:
     # HTTP request histogram that times everything else.
     duration_ms: int = 0
     user_count: int = 0
+    # Accounts on the company's own email domains, so staff can be told from
+    # customers inside one deployment. Counted once for the deployment, like
+    # `user_count`.
+    user_internal_count: int = 0
+    # Switch accounts that used a room with an agent: an account counts when a
+    # chat account it has claimed spoke. Counted from the ids below once every
+    # tenant is in, since one account can be active in several tenants and a
+    # per-tenant count would add it once for each.
     user_active_1d: int = 0
     user_active_7d: int = 0
+    active_user_ids_1d: set[str] = field(default_factory=set)
+    active_user_ids_7d: set[str] = field(default_factory=set)
+    # Chat identities — a Slack, Mattermost or other platform account — that
+    # used a room with an agent, whether or not anyone has claimed them. One
+    # person on two platforms is two identities, and most identities belong to
+    # no Switch account, which is why this runs above `user_active_*`.
+    # `chat_identity_count` is the whole population they are drawn from.
+    chat_identity_count: int = 0
+    chat_identity_active_1d: int = 0
+    chat_identity_active_7d: int = 0
     room_count: int = 0
     room_agent_created_count: int = 0
     room_system_created_count: int = 0
@@ -147,8 +168,12 @@ class UsageCounts:
             "tenant_failed_count": self.tenant_failed_count,
             "duration_ms": self.duration_ms,
             "user_count": self.user_count,
+            "user_internal_count": self.user_internal_count,
             "user_active_1d": self.user_active_1d,
             "user_active_7d": self.user_active_7d,
+            "chat_identity_count": self.chat_identity_count,
+            "chat_identity_active_1d": self.chat_identity_active_1d,
+            "chat_identity_active_7d": self.chat_identity_active_7d,
             "room_count": self.room_count,
             "room_agent_created_count": self.room_agent_created_count,
             "room_system_created_count": self.room_system_created_count,
@@ -313,6 +338,35 @@ def _human_interaction(tenant_id: str, since: datetime) -> Select[tuple[str]]:
     )
 
 
+def _active_accounts(tenant_id: str, since: datetime) -> Select[tuple[str]]:
+    """Distinct Switch accounts that used a room since `since`: an account
+    is active when a chat account it has claimed spoke. A chat account several
+    people claim makes each of them active. See `_human_activity_conditions`."""
+    return (
+        select(distinct(ExternalUserClaim.user_id))
+        .select_from(Message)
+        .join(Client, Client.id == Message.sender_client_id)
+        .join(
+            ExternalUser,
+            and_(
+                ExternalUser.client_id == Client.id, ExternalUser.tenant_id == tenant_id
+            ),
+        )
+        .join(
+            ExternalUserClaim,
+            and_(
+                ExternalUserClaim.external_user_id == ExternalUser.id,
+                ExternalUserClaim.tenant_id == tenant_id,
+            ),
+        )
+        .where(
+            Message.tenant_id == tenant_id,
+            Message.sent_at >= since,
+            *_human_activity_conditions(tenant_id),
+        )
+    )
+
+
 def _active_humans(tenant_id: str, since: datetime) -> Select[tuple[str | None]]:
     """Distinct human clients who used a room since `since`. See
     `_human_activity_conditions`."""
@@ -353,8 +407,24 @@ async def collect_tenant_counts(
     day_ago = now - _DAY
     week_ago = now - _WEEK
 
-    counts.user_active_1d += await _count(session, _active_humans(tenant_id, day_ago))
-    counts.user_active_7d += await _count(session, _active_humans(tenant_id, week_ago))
+    counts.active_user_ids_1d |= set(
+        (await session.execute(_active_accounts(tenant_id, day_ago))).scalars()
+    )
+    counts.active_user_ids_7d |= set(
+        (await session.execute(_active_accounts(tenant_id, week_ago))).scalars()
+    )
+    counts.chat_identity_count += await _scalar(
+        session,
+        select(func.count())
+        .select_from(Client)
+        .where(Client.tenant_id == tenant_id, Client.type == HUMAN_CLIENT_TYPE),
+    )
+    counts.chat_identity_active_1d += await _count(
+        session, _active_humans(tenant_id, day_ago)
+    )
+    counts.chat_identity_active_7d += await _count(
+        session, _active_humans(tenant_id, week_ago)
+    )
     counts.room_active_1d += await _count(
         session, _human_interaction(tenant_id, day_ago)
     )
@@ -683,6 +753,11 @@ def _merge_tenant_counts(total: UsageCounts, tenant: UsageCounts) -> None:
         "tenant_failed_count",
         "duration_ms",
         "user_count",
+        "user_internal_count",
+        "user_active_1d",
+        "user_active_7d",
+        "active_user_ids_1d",
+        "active_user_ids_7d",
         "room_users_max",
         "connector_counts",
     }
@@ -691,6 +766,8 @@ def _merge_tenant_counts(total: UsageCounts, tenant: UsageCounts) -> None:
             continue
         setattr(total, f.name, getattr(total, f.name) + getattr(tenant, f.name))
     total.room_users_max = max(total.room_users_max, tenant.room_users_max)
+    total.active_user_ids_1d |= tenant.active_user_ids_1d
+    total.active_user_ids_7d |= tenant.active_user_ids_7d
     for platform, count in tenant.connector_counts.items():
         total.connector_counts[platform] += count
 
@@ -747,6 +824,14 @@ async def collect_usage(
         counts.user_count = await _scalar(
             session, select(func.count()).select_from(User)
         )
+        counts.user_internal_count = await _scalar(
+            session,
+            select(func.count())
+            .select_from(User)
+            .where(internal_email_condition(User.email)),
+        )
+    counts.user_active_1d = len(counts.active_user_ids_1d)
+    counts.user_active_7d = len(counts.active_user_ids_7d)
     counts.duration_ms = round((time.monotonic() - started) * 1000)
     return counts
 

@@ -3,17 +3,17 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.models import Room
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 
 
-def _bare_service() -> ProtocolService:
+def _bare_service() -> AgentCore:
     # These methods only touch the passed-in session / session_factory, so we
     # can exercise them on an un-__init__'d instance (matching the fake-based
     # protocol tests).
-    return object.__new__(ProtocolService)
+    return object.__new__(AgentCore)
 
 
 class TestResolveGroupName:
@@ -86,7 +86,7 @@ class TestListRoomGroups:
             )
             room = await rooms.create(
                 session,
-                Room(matrix_room_id="!r:test", name="r", description="d"),
+                Room(transport_room_id="!r:test", name="r", description="d"),
             )
             await rooms.set_group(session, room.id, child.id)
             await session.commit()

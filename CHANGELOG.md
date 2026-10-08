@@ -44,6 +44,30 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **The Helm chart turns agent management on from its values.**
+  `switchCore.agentManagement.enabled` and `secrets.controllerTokenSecret` (or
+  `CONTROLLER_TOKEN_SECRET` in `secrets.existingSecret`) set
+  `AGENT_MANAGEMENT_ENABLED`, `CONTROLLER_TOKEN_SECRET` and
+  `CONTROLLER_STATUS_INTERVAL_SECONDS` on switch-core and its migration Job. Until
+  now they had to be added with `kubectl set env` after each upgrade, rolling the
+  pods twice. Rendering fails when the secret is missing or shorter than 32
+  characters. Remove variables set by hand before the first upgrade that renders
+  them (see the chart README).
+
+#### Fixed
+- **The Helm chart's Ingress now routes every agent API path to switch-core.**
+  `/agent-sessions` (session starts, turn activity, approval requests and their
+  answers), `/version` and `/deeplink` were missing from
+  `ingress.agentApiPaths` and from the sample Ingress, and so is `/v1`, where
+  agents controllers enroll and connect. Behind a path-routed
+  ingress they reached the gateway, which answered with its web page. Agent
+  sessions then failed mid-turn with `Unexpected token '<'`, and activity and
+  approval cards never reached messaging platforms. An install that overrides
+  `ingress.agentApiPaths`, or routes with its own Ingress, must add these paths
+  itself. A test now fails when the agent bridge serves a path the chart does
+  not route.
+
 ### [0.29.0] - 2026-09-29
 
 #### Added
@@ -1356,6 +1380,72 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+#### Fixed
+- **A machine whose controller Switch refuses for good says so instead of
+  restarting it forever.** When the server needs a newer agents controller than
+  Console carries, "This computer as a machine" shows that Console needs an
+  update and stops restarting the controller. When the server no longer knows
+  its credential, Console forgets it as it does for a removed machine, and
+  enrolls the machine again on the next check. SSH hosts set up by Console
+  stop restarting on either and enroll again on the second.
+- **A Claude Code session is no longer parked while its background subagents
+  are still working.** The idle timer only looked at turns, so a session whose
+  turn had ended with subagents still running in the background was stopped
+  after the idle timeout, taking the subagents with it. Those subagents now
+  count as activity, and the idle wait starts again when the last one stops.
+
+#### Changed
+- **An idle session now parks after a day rather than 30 minutes.** Set
+  `SWITCH_SESSION_PARK_AFTER_MS` on the session host to choose another
+  timeout, or `off` to never park.
+
+### [0.38.1] - 2026-10-01
+
+#### Fixed
+- **Clean recovery after the machine sleeps.** On wake, a watcher no longer
+  takes itself over, a silently-dropped SSH connection is detected rather than
+  trusted until it says it closed, and an agent shows a single status row
+  instead of duplicates (#621).
+
+### [0.38.0] - 2026-09-30
+
+#### Changed
+- **Updating the sidecars on a host with many agents takes a fraction of the
+  SSH round trips.** Each agent's bring-up used to check the host's shared
+  bundle for itself — half a dozen commands asking the same question — and
+  then stop an old sidecar, write its flags, stage its configuration and
+  launch it in as many more. The bundle is now checked, and uploaded if
+  needed, once per host, and each agent is brought up in one command after
+  its configuration is staged: about two round trips instead of thirteen.
+  Agents are still brought up one after another, so their reconnects to
+  Switch stay spread out.
+- **Every agent starts a session when it is addressed; the "Auto-create a
+  session on notify" setting is gone.** Its switch is removed from the agent
+  page and the create form, and new agents register as `auto_session`.
+- **Opening an agent's page only reads.** Reading the auto-session setting used
+  to re-launch the agent's controller as a side effect, which on a remote host
+  uploaded the sidecar bundle and replaced an outdated sidecar, and checking a
+  provider's sign-in or models uploaded the bundle too. The provider check now
+  uses the bundle already on the host, and says so when there is none. The
+  bundle is uploaded only when an agent is started, restarted or updated.
+
+#### Fixed
+- **A remote agent's status can no longer go stale.** Console used to learn
+  whether a remote agent was connected only from what its sidecar pushed down a
+  long-lived connection, and trusted that connection until it said it had
+  closed. One that died without saying so, as when every sidecar is replaced
+  while its host's SSH connection is rebuilt, left the last thing it carried
+  on screen for good: agents that were answering in Slack showed "Connection
+  failed" and "The agent's room watcher is not running". Console now reads each
+  host every five seconds, in one command for every agent on it, and the
+  sidebar and the agent's page are both built from that one read.
+- **Agents come up after Console starts without their page being opened.**
+  Console now brings each host's agents up side by side, so a slow or wedged
+  SSH connection holds back only that host, never local agents or other hosts,
+  and it keeps retrying an agent whose controller could not start, backing off
+  from 30 seconds to 5 minutes. Before, an agent that failed once stayed off
+  until its host reconnected or its page was opened.
 
 ### [0.37.3] - 2026-09-29
 
@@ -2955,12 +3045,87 @@ per-release notes on their GitHub Releases (`switch-console-v*` tags).
 
 ---
 
+## agent-controller
+
+The headless agents controller, `switch-agent-controller`
+(`console/packages/agent-controller/`), released on `switch-agent-controller-v*`
+tags; see RELEASING.md.
+
+### [Unreleased]
+
+#### Fixed
+- **A refusal that cannot pass stops the controller instead of retrying it
+  forever.** The server answers `protocol_unsupported` when it no longer speaks
+  the controller's protocol and `invalid_credential` when it knows no controller
+  by its credential, and marks both not retryable. The controller retried them
+  every few seconds for as long as it ran. It now stops its agents and exits
+  with a new code, `5` (update the controller) or `6` (enroll the machine
+  again), and the systemd unit and launchd job it installs do not restart it on
+  either.
+
+### [0.1.1] - 2026-10-07
+
+#### Fixed
+- **Installer falls back to `~/.local`** when it can't write to a system prefix, and
+  takes a `--data-dir` to place the controller's data directory explicitly.
+
+### [0.1.0] - 2026-10-07
+
+#### Added
+- **Installable on its own.** Each release publishes one npm package (the CLI and
+  the shared-host bundle, no dependencies) and an `install.sh`, which checks Node,
+  installs the newest release, and can enroll the machine and install the service
+  in one go.
+- **`install-service` / `uninstall-service`:** runs the controller as a systemd user
+  unit on Linux or a launchd agent on macOS, restarted only after an error that may
+  pass.
+- **`doctor`:** checks Node, enrollment, the credential, the server (including a
+  proxy that does not route `/v1` to switch-core), each provider CLI and its
+  sign-in, the service, and updates.
+- **`update`:** installs the newest release and restarts the service. `run` logs
+  when a newer one exists.
+- **`run --env-file` and `install-service --env-file`:** environment for the agents,
+  such as provider API keys or Vertex AI and Bedrock settings. Sessions now inherit
+  the Vertex and Bedrock variables Claude Code reads (`ANTHROPIC_VERTEX_PROJECT_ID`,
+  `CLOUD_ML_REGION`, `ANTHROPIC_BEDROCK_BASE_URL`, …).
+- **`enroll --secret-store`:** keeps the controller credential in the macOS keychain
+  (the default on a Mac) or the desktop keyring, as well as in owner-only files (the
+  default elsewhere).
+
+---
+
 ## agent-runtime
 
 The Switch protocol client and MCP runtime
 (`console/packages/switch-agent-runtime/`). Version lives in its `package.json`.
 
 ### [Unreleased]
+
+### [0.8.0] - 2026-09-25
+
+#### Added
+- Attaches as a hosted worker on agent-protocol 7: the event stream opens with
+  the worker capability and host identity, hands the protocol-7 frames to the
+  worker, stops for good on a terminal worker refusal or a superseded launch,
+  and fences hosted up-calls by the connection and incarnation it holds.
+- States a retained volume's layout version on open and uploads its cutover
+  manifest until Switch confirms it.
+### [0.7.2] - 2026-10-01
+
+#### Fixed
+- Event-stream handling hardened against a self-takeover and a silently
+  dropped stream when a connection resumes after the machine sleeps (#621).
+
+### [0.7.1] - 2026-09-30
+
+#### Fixed
+- **A connection no longer gives itself up to itself.** A placements or room
+  subscribe request sent under one incarnation and answered after this client
+  had reopened its own stream was refused as "taken over", naming this client
+  as the new holder, and the client stood down for good with nobody else
+  anywhere near the connection. Such a refusal now only fails the request,
+  which is stated again on the next change or reconnect; a real takeover is
+  still caught by the next heartbeat.
 
 ### [0.7.0] - 2026-09-25
 
@@ -3129,6 +3294,37 @@ The remote runtime Switch Console deploys to an agent host. Versioned in
 published on its own.
 
 ### [Unreleased]
+
+### [1.9.12] - 2026-10-01
+
+#### Changed
+- Picks up the agent-runtime 0.7.2 event-stream fix it bundles (#621).
+
+### [1.9.11] - 2026-09-30
+
+#### Added
+- **The room watcher records its connection to Switch in `health.json`** beside
+  its other state, each time it changes, so Console can read it from the host
+  instead of relying on a live connection to the sidecar.
+
+#### Fixed
+- **A stuck process can no longer block replacing a watcher.** Stopping a
+  watcher or session host sent SIGTERM and waited; one waiting on a child that
+  would never finish — a session host that hung up and stayed alive — never
+  exited, so every update to that agent failed with "The SDK host has not
+  stopped". A host asked to stop is now killed, with every process it started,
+  if it has not gone after 10 s (a supervised host) or 20 s (one being
+  replaced).
+- **A session whose host hung up no longer blocks its room for good.** After a
+  reset, a session host could finish and close its link to the watcher while a
+  provider process it had started kept it alive. The watcher still saw it as
+  running, so every room message failed and it was "started again" every five
+  seconds, forever, without anyone being told. Now the host exits within five
+  seconds of finishing whatever it left running; the watcher treats a host that
+  hung up as gone, and stops it and what it started if it has not exited
+  fifteen seconds later; and a session that still will not take a message after
+  five starts in a row is left alone with its messages queued, and the room is
+  told.
 
 #### Changed
 - Claude Code sessions accept their agent definition in the launch spec and pass

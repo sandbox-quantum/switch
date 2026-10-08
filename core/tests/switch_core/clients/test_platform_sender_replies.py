@@ -7,7 +7,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from switch_core.clients.admin_messages import PLATFORM_MARKER
-from switch_core.clients.agent_client import AgentClient
+from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.transport import InboundMessage
 
 
@@ -25,7 +25,7 @@ def _event(content: dict) -> InboundMessage:
 
 def _handle(event: InboundMessage) -> str:
     ns = SimpleNamespace()
-    return AgentClient._sender_handle(ns, event)  # type: ignore[arg-type]
+    return AgentConsumer._sender_handle(ns, event)  # type: ignore[arg-type]
 
 
 def test_reply_handle_is_the_person_behind_a_platform_message() -> None:

@@ -47,12 +47,13 @@ def _service(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> ClientLifecycleService:
     return ClientLifecycleService(
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         client_store=ClientStore(),
         tenant_store=TenantStore(),
         client_factory=MagicMock(),
         session_factory=session_factory,
-        config=SimpleNamespace(matrix_server_name="test"),  # type: ignore[arg-type]
+        config=SimpleNamespace(id_server_name="test"),  # type: ignore[arg-type]
+        tenants_isolated=True,
     )
 
 
@@ -83,7 +84,7 @@ async def test_a_fresh_database_gets_an_admin_client_rather_than_an_exception(
 
     clients = await _admin_clients(rls_harness.owner)
     assert [c.tenant_id for c in clients] == [TENANT_ZERO_ID]
-    assert clients[0].matrix_user_id == "@switch-admin:test"
+    assert clients[0].transport_user_id == "@switch-admin:test"
 
 
 async def test_each_tenant_gets_its_own_row(rls_harness: RLSHarness) -> None:
@@ -150,4 +151,4 @@ async def test_a_tenant_created_after_startup_gets_a_working_admin_client(
     clients = await _admin_clients(rls_harness.owner)
     assert sorted(c.tenant_id for c in clients) == sorted([TENANT_ZERO_ID, tenant.id])
     acme_client = next(c for c in clients if c.tenant_id == tenant.id)
-    assert acme_client.matrix_user_id == "@switch-admin:test"
+    assert acme_client.transport_user_id == "@switch-admin:test"

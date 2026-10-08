@@ -1,6 +1,8 @@
-import { listAutoSessionAgentIds } from '@main/core/switch-rooms/auto-session-store';
+import { keepAutoApproveChoice, recordAutoApproveOnHost } from '@main/core/sdk-host/agent-host';
+import { listStoppedControllerAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import { getRemoteAgentLocation } from './agent-location';
-import { ensureRemoteWatcher } from './remote-watcher';
+import { getAgentById } from './getAgentById';
+import { pushRemoteAutoApprove, refreshLocalWatcher } from './remote-watcher';
 import { updateAgent } from './updateAgent';
 
 export type AgentAutoApproveParams = { agentId: string; enabled: boolean };
@@ -8,24 +10,39 @@ export type AgentAutoApproveParams = { agentId: string; enabled: boolean };
 /**
  * Toggle an agent's per-agent bypass-permissions setting (CHOO-1664).
  *
- * Writes the agent row, then makes the change reach auto-started sessions:
- * - Local agents need nothing extra — the in-process auto-session watcher reads
- *   `agent.autoApprove` fresh each time it spawns a session.
- * - Remote agents bake the setting into the VM watcher's launch spec. When the
- *   agent's on-VM watcher is running (auto_session enabled), re-ensure the
- *   sidecar so the spec file is rewritten with the new value; the running sidecar
- *   re-reads it live and applies it to the next auto-started session without a
- *   restart. When auto_session is off there is no watcher to refresh — the next
- *   `ensureRemoteWatcher` (toggle-on / boot) picks up the current value.
- *
- * The re-ensure is allowed to throw: if the VM is unreachable the setting cannot
- * take effect live, and the caller should surface that rather than pretend it did.
+ * A remote agent's watchers are shared by every Console on the account and read
+ * the choice kept on the host, so the choice goes on the host before the row
+ * and the row never claims a value the host did not take. A failure after that
+ * throws, saying only the running watcher lags.
  */
 export async function setAgentAutoApprove(params: AgentAutoApproveParams): Promise<void> {
-  const agent = await updateAgent({ agentId: params.agentId, autoApprove: params.enabled });
+  const agent = await getAgentById(params.agentId);
   if (!agent) throw new Error(`No agent with id ${params.agentId}`);
-
-  if ((await getRemoteAgentLocation(agent)) === null) return;
-  if (!(await listAutoSessionAgentIds()).includes(agent.id)) return;
-  await ensureRemoteWatcher(agent.id);
+  const setRow = async (autoApprove: boolean) => {
+    if (!(await updateAgent({ agentId: agent.id, autoApprove }))) {
+      throw new Error(`No agent with id ${params.agentId}`);
+    }
+  };
+  if (!agent.switchAgentId || (await getRemoteAgentLocation(agent)) === null) {
+    await setRow(params.enabled);
+    if (agent.switchAgentId) await refreshLocalWatcher(agent.id);
+    return;
+  }
+  if ((await listStoppedControllerAgentIds()).includes(agent.id)) {
+    await recordAutoApproveOnHost(agent.id, params.enabled);
+    await setRow(params.enabled);
+    return;
+  }
+  await keepAutoApproveChoice(agent.id, params.enabled);
+  await setRow(params.enabled);
+  try {
+    await pushRemoteAutoApprove(agent.id);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Auto-approve is saved, but the agent's watcher on its host could not be updated yet ` +
+        `(${reason}). It runs its next sessions with the new setting once it is.`,
+      { cause: error }
+    );
+  }
 }

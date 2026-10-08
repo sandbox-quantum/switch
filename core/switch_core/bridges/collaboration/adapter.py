@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+import math
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, Protocol, final, runtime_checkable
 
 from switch_core.agent_display_name import defuse_label_markup
 from switch_core.agent_icon import default_icon_url
@@ -32,6 +33,12 @@ from switch_core.bridges.collaboration.session.renderers import (
 from switch_core.bridges.collaboration.session.renderers.neutral import (
     request_summary,
     turn_summary,
+)
+from switch_core.outbound import OutboundPolicy
+from switch_core.room_wide_mention import (
+    ROOM_WIDE_TARGET,
+    defuse_mass_mention_words,
+    strip_room_wide_target,
 )
 from switch_core.sessions.contract import (
     Item,
@@ -192,6 +199,31 @@ class RichContentFailed(Exception):
         self.text = text
 
 
+class ChannelNotBindable(ValueError):
+    """A room was asked to bind to a channel that is not this bridge's to bind.
+
+    A `ValueError` because it is the caller's input that is wrong, and every
+    path that binds a channel already answers those as a bad request.
+    """
+
+
+class DirectorySearchBusy(RuntimeError):
+    """The platform's directory is being searched too often to take one more.
+
+    Refused at once rather than queued: a search is someone waiting on a
+    dialog, and one that sat behind a spent budget would only time out later.
+    A `RuntimeError`, so anything that reads directory failures as the
+    platform's still does.
+    """
+
+    def __init__(self, retry_after: float) -> None:
+        super().__init__(
+            "Too many directory searches right now — try again in "
+            f"{math.ceil(retry_after)} seconds"
+        )
+        self.retry_after = retry_after
+
+
 class RemovalFailed(Exception):
     """A published message could not be taken back, or not provably.
 
@@ -279,7 +311,28 @@ class ActivityMarkRefused(RuntimeError):
 ActivityMark = Literal["working", "queued"]
 
 
-class CollaborationAdapter(ABC):
+@runtime_checkable
+class SupportsSharedConnection(Protocol):
+    """An adapter that runs on a shared, deployment-level connection it does not
+    own, attached after it starts rather than dialled at start.
+
+    A distributed bridge (currently only Discord) starts inert and is handed the
+    one shared connection once it is up — at boot for installs that already
+    exist, and lazily on first event for one added at runtime. Attaching also
+    re-runs whatever start-time work needed the connection (agent identities).
+
+    Structural on purpose: the lifecycle, the gateway and boot narrow to this
+    with `isinstance` and stay ignorant of the concrete adapter, and an adapter
+    with no shared connection (Slack, Mattermost, Teams, Telegram) never matches
+    and is left alone.
+    """
+
+    def attach_shared_connection(self, connection: Any) -> None: ...
+
+    def set_on_attached(self, callback: Callable[[], None]) -> None: ...
+
+
+class PlatformAdapter(ABC):
     #: Whether this platform draws agents' session activity: each turn step by
     #: step, and the approval and question cards a session waits on.
     draws_session_activity: ClassVar[bool] = False
@@ -306,6 +359,18 @@ class CollaborationAdapter(ABC):
     #: participant gets the threaded reply without being named, and naming
     #: them is a notification they already had.
     notifies_only_by_mention: ClassVar[bool] = False
+
+    #: The token that pages every member of a channel, for a room-wide mention.
+    #:
+    #: None where the platform has none a bot can send. A room-wide mention
+    #: there still posts, opening with an inert `@everyone`, and the agent is
+    #: told it paged nobody — unless `every_message_notifies_members` says the
+    #: platform does that work itself.
+    channel_mention: ClassVar[str | None] = None
+
+    #: Whether every message already notifies every member of the chat, so a
+    #: room-wide mention needs no token of its own to reach them all.
+    every_message_notifies_members: ClassVar[bool] = False
 
     #: Whether a ticking clock is reason enough to redraw a running turn.
     #:
@@ -447,6 +512,11 @@ class CollaborationAdapter(ABC):
         # Set by set_channel_migration_handler. Called with (old_id, new_id)
         # when the platform reissues a channel's id.
         self._on_channel_migrated: Callable[[str, str], Awaitable[None]] | None = None
+        # Set by set_channel_type_handler. Called with (channel_id, type) when
+        # the adapter learns a channel's type from the platform.
+        self._on_channel_type_learned: (
+            Callable[[str, ChannelType], Awaitable[None]] | None
+        ) = None
         # Set by set_agent_presentation_resolver. Returns the agent's stored
         # presentation, or None for a name that is not an agent. Left unset an
         # adapter still works — every agent renders under its identifier with
@@ -477,9 +547,34 @@ class CollaborationAdapter(ABC):
         invalidate whatever the last one signed or encrypted.
 
         Async because generating key material is CPU-bound and this runs on
-        the event loop that carries every live Matrix session.
+        the event loop that carries every live client in switch-core.
         """
         return connection_config
+
+    @classmethod
+    def claimed_workspace(cls, connection_config: dict[str, object]) -> str | None:
+        """Name the platform workspace this bridge connects, if it has one.
+
+        One workspace is connected at most once on an instance, across every
+        tenant: two bridges into it would each deliver its events to a
+        different tenant, and the hosted install path already holds a
+        workspace to one tenant. Registration refuses a second claim.
+
+        Quoted verbatim in that refusal, so it must not embed credential
+        material. Return None for a platform with no such notion.
+        """
+        return None
+
+    @classmethod
+    def outbound_urls(cls, connection_config: dict[str, object]) -> list[str]:
+        """The URLs in this config that Switch itself connects to.
+
+        Checked against the deployment's `OutboundPolicy` before the bridge is
+        stored, when its config is edited and each time it starts, so a config
+        cannot point Switch at an internal address. Not the platform's own API
+        hosts, and not URLs only handed to the platform or put in links.
+        """
+        return []
 
     @classmethod
     def exclusive_resource(cls, connection_config: dict[str, object]) -> str | None:
@@ -558,6 +653,8 @@ class CollaborationAdapter(ABC):
         sender_name: str,
         content: str,
         thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
     ) -> str | None:
         """Post a message to the external channel.
 
@@ -565,6 +662,11 @@ class CollaborationAdapter(ABC):
         thread root (e.g. Mattermost root_id) — the message should be posted as
         a reply within that thread. Adapters whose platform does not support
         threads ignore it.
+
+        room_wide_mention is set when `content` came from
+        `render_room_wide_mention`, for a platform that has to permit a
+        channel-wide mention on the request as well as write it in the text
+        (Discord's `allowed_mentions`). Everywhere else the text alone does it.
         """
         ...
 
@@ -590,7 +692,7 @@ class CollaborationAdapter(ABC):
 
         **`content` is Switch Markdown, and this method renders it.** Unlike
         `send_message`, whose caller translates, every caller here passes an
-        unrendered body — the notices in `bridge_core`, the adapters' own
+        unrendered body — the notices in `collaboration_core`, the adapters' own
         notices, and the relayed admin events alike. An override must therefore
         run `translate_outbound` itself. Splitting that responsibility between
         callers is what once sent a body through the conversion twice, and the
@@ -623,7 +725,7 @@ class CollaborationAdapter(ABC):
 
         Switch files a person under the name it first sees, and some platforms
         do not always supply one — Teams omits it from a 1:1 chat activity. The
-        id then becomes that person's name everywhere: their Matrix account,
+        id then becomes that person's name everywhere: their client,
         the title of any room auto-created for them, and every agent reply that
         addresses them. Fixing the resolution stops it happening to the next
         person and does nothing for the ones already recorded, so an adapter
@@ -1119,6 +1221,23 @@ class CollaborationAdapter(ABC):
         missing. Markdown-free plain text; None when there is nothing to add."""
         return None
 
+    async def require_bindable_channel(self, channel_id: str) -> None:
+        """Refuse a channel id someone asked to bind a room to, unless it is
+        this bridge's own.
+
+        Asked before a room is bound to an existing channel by id, when a room
+        is created or moved, and never for a channel the platform delivered to
+        this bridge. The id is the caller's, and binding decides where the
+        room's messages are posted.
+
+        Nothing to refuse by default: a bridge whose credential is its own can
+        reach only what that credential reaches. A bridge on a connection
+        shared between organisations can reach every organisation's channels,
+        so being able to see one says nothing about whose it is, and it has to
+        say here which are its own. Raises `ChannelNotBindable`.
+        """
+        return None
+
     @abstractmethod
     async def get_channel_type(self, channel_id: str) -> ChannelType: ...
 
@@ -1159,8 +1278,52 @@ class CollaborationAdapter(ABC):
     @abstractmethod
     async def get_channel_agent_names(self, channel_id: str) -> list[str]: ...
 
+    @final
+    def translate_outbound(self, content: str) -> str:
+        """Render a Switch body in this platform's markup, unable to page.
+
+        Final so that no adapter can forget the defusal: a platform renders in
+        `_render_outbound`, and nothing a body says can then page a channel.
+        Only `render_room_wide_mention` does that, for a message the server
+        marked.
+        """
+        return self.defuse_mass_mentions(self._render_outbound(content))
+
     @abstractmethod
-    def translate_outbound(self, content: str) -> str: ...
+    def _render_outbound(self, content: str) -> str:
+        """Render a Switch body in this platform's markup."""
+
+    def defuse_mass_mentions(self, text: str) -> str:
+        """Break every channel-wide mention in text on its way to the platform.
+
+        Safe by default: the words — `@everyone`, `@channel`, `@here`, `@all`
+        — are defused everywhere, code and URLs included, which is what a
+        platform that pages from plain text (Mattermost) needs. A platform
+        whose text cannot page on its own overrides this to leave code, URLs
+        and addresses exact, and one with a syntax of its own for the same
+        thing (Slack's `<!channel>`) escapes that too.
+        """
+        return defuse_mass_mention_words(text)
+
+    def render_room_wide_mention(self, body: str) -> str:
+        """The platform text of a message the server marked as room-wide.
+
+        The body opens with the `@everyone` the server wrote. That token is
+        taken off before translation, so a person on the platform who happens
+        to be called `everyone` is not the one it resolves to, and the
+        platform's own channel-wide mention goes in its place after
+        translation, so the defusal the rest of the body gets cannot break it.
+        """
+        rest = self.translate_outbound(strip_room_wide_target(body))
+        opening = self.channel_mention or defuse_mass_mention_words(
+            f"@{ROOM_WIDE_TARGET}"
+        )
+        return f"{opening} {rest}" if rest else opening
+
+    @property
+    def room_wide_mention_notifies(self) -> bool:
+        """Whether a room-wide mention reaches every member here."""
+        return self.channel_mention is not None or self.every_message_notifies_members
 
     @abstractmethod
     def translate_inbound(self, raw_message: str) -> str: ...
@@ -1189,6 +1352,27 @@ class CollaborationAdapter(ABC):
         bot having to be re-added to each channel."""
         return None
 
+    async def refresh_channel_types(self, channel_ids: list[str]) -> None:
+        """Re-read each channel's type from the platform and report it through
+        the channel-type handler. Called at bridge startup. Default is a no-op;
+        only Teams saves types it could not verify."""
+        return None
+
+    def set_outbound_policy(self, policy: OutboundPolicy) -> None:
+        """Install the policy for anything this adapter fetches from a URL a
+        tenant or agent chose. Set by the lifecycle before the adapter starts."""
+        self._outbound_policy = policy
+
+    @property
+    def outbound_policy(self) -> OutboundPolicy:
+        policy: OutboundPolicy | None = getattr(self, "_outbound_policy", None)
+        if policy is None:
+            raise RuntimeError(
+                f"{type(self).__name__} fetched a URL before its outbound policy "
+                "was set"
+            )
+        return policy
+
     def set_service_url_persister(
         self, persist: Callable[[str], Awaitable[None]]
     ) -> None:
@@ -1198,6 +1382,15 @@ class CollaborationAdapter(ABC):
         Default is a no-op; adapters whose outbound endpoint is only discovered
         from inbound activities (Teams, whose Bot Connector ``serviceUrl`` is
         carried on inbound activities) override this to persist it."""
+        return None
+
+    def set_tenant_id(self, tenant_id: str) -> None:
+        """Tell the adapter which tenant its bridge belongs to.
+
+        Default is a no-op: an adapter's state is its own bridge's and needs
+        no tenant. Slack overrides it, because it shares one structure across
+        every Slack bridge in the process and has to keep tenants apart in it.
+        """
         return None
 
     def set_channel_team_persister(
@@ -1238,6 +1431,13 @@ class CollaborationAdapter(ABC):
         The symptom without it is one-way traffic — sends still arrive, because
         the platform forwards them, while nothing inbound matches a room again."""
         self._on_channel_migrated = handler
+
+    def set_channel_type_handler(
+        self, handler: Callable[[str, ChannelType], Awaitable[None]]
+    ) -> None:
+        """Install the callback an adapter calls when it learns a channel's
+        type from the platform, so rooms saved with a different one follow."""
+        self._on_channel_type_learned = handler
 
     def set_interaction_handler(
         self, handler: Callable[[InboundInteraction], Awaitable[None]]

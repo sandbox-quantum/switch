@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from collections import OrderedDict
 
-from switch_core.bridges.agent.protocol.connections import HEARTBEAT_TTL_SECONDS
+from switch_core.bridges.agent.protocol.agent_connections import HEARTBEAT_TTL_SECONDS
 from switch_core.db.models import Agent, ApiKey
 
 

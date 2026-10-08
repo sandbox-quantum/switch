@@ -20,10 +20,12 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from switch_core.bridges.collaboration.adapter import DirectorySearchBusy
 from switch_core.bridges.collaboration.models import DirectoryUser
 from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
 from switch_core.gateway.collaborations import (
     _known_as_directory_users,
+    _require_directory_account,
     search_bridge_directory,
 )
 
@@ -82,6 +84,14 @@ class _StubUserStore:
         return []
 
 
+class _StubSession:
+    """The route commits before asking the platform, so it is not holding a
+    connection while the platform answers."""
+
+    async def commit(self) -> None:
+        return None
+
+
 async def _search(
     *,
     adapter_result: list[DirectoryUser] | Exception | None,
@@ -91,7 +101,7 @@ async def _search(
     return await search_bridge_directory(
         "b1",
         query,
-        None,  # type: ignore[arg-type]
+        _StubSession(),  # type: ignore[arg-type]
         _StubBridgeStore(),  # type: ignore[arg-type]
         _StubExternalUserStore(known),  # type: ignore[arg-type]
         _StubUserStore(),  # type: ignore[arg-type]
@@ -211,3 +221,27 @@ async def test_the_platform_names_itself_in_the_refusal() -> None:
 
     assert str(excinfo.value).startswith("Telegram has no searchable user directory")
     assert "Adapter" not in str(excinfo.value)
+
+
+class TestABusyDirectory:
+    """A directory refusing more searches is a 429 with when to retry, not the
+    502 every other platform failure is, so the dialog can say try again."""
+
+    async def test_a_search_is_told_when_to_retry(self) -> None:
+        with pytest.raises(HTTPException) as refused:
+            await _search(adapter_result=DirectorySearchBusy(12.2), known=[])
+
+        assert refused.value.status_code == 429
+        assert refused.value.headers == {"Retry-After": "13"}
+        assert "try again in 13 seconds" in refused.value.detail
+
+    async def test_so_is_the_check_behind_a_claim(self) -> None:
+        with pytest.raises(HTTPException) as refused:
+            await _require_directory_account(
+                _StubLifecycle(DirectorySearchBusy(5)),  # type: ignore[arg-type]
+                bridge_id="b1",
+                external_user_id="11",
+                username="louis",
+            )
+
+        assert refused.value.status_code == 429

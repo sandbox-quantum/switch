@@ -22,6 +22,7 @@ from switch_core.bridges.agent.server_connectors.base import (
     ServerSideConnectorConfig,
 )
 from switch_core.bridges.agent.server_connectors.opencode.client import OpenCodeClient
+from switch_core.outbound import OutboundPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +74,15 @@ class OpenCodeConnectionConfig(ServerSideConnectorConfig):
 
 
 class OpenCodeConnector(ServerSideConnector):
-    def __init__(self, config: OpenCodeConnectionConfig) -> None:
+    @classmethod
+    def outbound_urls(cls, connection_config: dict[str, object]) -> list[str]:
+        return [str(connection_config["server_url"])]
+
+    def __init__(
+        self, config: OpenCodeConnectionConfig, outbound_policy: OutboundPolicy
+    ) -> None:
         self._config = config
+        self._outbound_policy = outbound_policy
         self._client: OpenCodeClient | None = None
         self._sessions: dict[tuple[str, str], str] = {}
         self._agents_names_map: dict[str, str] = {}
@@ -84,6 +92,7 @@ class OpenCodeConnector(ServerSideConnector):
             server_url=self._config.server_url,
             username=self._config.username,
             password=self._config.password,
+            outbound_policy=self._outbound_policy,
         )
 
     async def stop(self) -> None:

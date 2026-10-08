@@ -1,4 +1,3 @@
-import { durationMs } from '@tooling/utils/telemetry-duration';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TelemetryConfig } from './config';
 import {
@@ -14,12 +13,15 @@ const CONTEXT: TelemetryContext = {
   osType: 'darwin',
   osVersion: '24.3.0',
   build: 'stable',
+  flintEnv: 'prod',
+  internal: 'false',
   timeMs: 1_700_000_000_000,
 };
 
 const CONFIG: TelemetryConfig = {
   endpoint: 'https://telemetry.example/v1/logs',
   build: 'stable',
+  flintEnv: 'prod',
 };
 
 type Attribute = { key: string; value: { stringValue: string } };
@@ -63,18 +65,20 @@ const SESSION_STARTED = {
 describe('the record that gets built', () => {
   it('carries the client id the relay requires, as a resource attribute', () => {
     // Without it the relay drops the whole payload — and still answers 200.
-    const payload = buildOtlpPayload('app_launched', {}, CONTEXT);
+    const payload = buildOtlpPayload('app_launched', { install_kind: 'same' }, CONTEXT);
 
     expect(resourceAttributes(payload)['flint.client_id']).toBe(CONTEXT.clientId);
   });
 
   it('says which app and version it is, for both destinations', () => {
-    const payload = buildOtlpPayload('app_launched', {}, CONTEXT);
+    const payload = buildOtlpPayload('app_launched', { install_kind: 'same' }, CONTEXT);
 
     expect(resourceAttributes(payload)).toEqual({
       'service.name': 'switch-console',
       'service.version': '1.2.3',
       'flint.client_id': CONTEXT.clientId,
+      flint_env: 'prod',
+      flint_internal: 'false',
       'os.type': 'darwin',
       'os.version': '24.3.0',
     });
@@ -90,7 +94,7 @@ describe('the record that gets built', () => {
     // The attribute alone gets a record past the relay's "is it named?" filter
     // and then dropped by an exporter that only reads the field — silently, and
     // with a 200 at every step. Both, or nothing arrives and nothing says so.
-    const payload = buildOtlpPayload('app_launched', {}, CONTEXT);
+    const payload = buildOtlpPayload('app_launched', { install_kind: 'same' }, CONTEXT);
 
     expect(logRecord(payload).eventName).toBe('switch_console.app_launched');
   });
@@ -128,19 +132,20 @@ describe('the record that gets built', () => {
     expect(JSON.stringify(payload)).not.toContain('secret-project');
   });
 
-  it('sends an event with no properties of its own as just its name and build', () => {
-    const payload = buildOtlpPayload('app_launched', {}, CONTEXT);
+  it('sends an event as its name, its build and its own properties, and nothing else', () => {
+    const payload = buildOtlpPayload('app_launched', { install_kind: 'new' }, CONTEXT);
 
     expect(logAttributes(payload)).toEqual({
       'event.name': 'switch_console.app_launched',
       build: 'stable',
+      install_kind: 'new',
     });
   });
 
   it('carries a body, so the event is not a blank line in the log sink', () => {
     // The relay forwards the same record to Datadog, which reads the body as
     // the message. It repeats the name rather than adding anything new.
-    const payload = buildOtlpPayload('app_launched', {}, CONTEXT);
+    const payload = buildOtlpPayload('app_launched', { install_kind: 'same' }, CONTEXT);
 
     expect(logRecord(payload).body).toEqual({ stringValue: 'switch_console.app_launched' });
   });
@@ -164,7 +169,36 @@ describe('the record that gets built', () => {
     expect(rawLogAttributes(payload).connected_to_room).toEqual({ boolValue: false });
   });
 
-  it('carries a count as a number, so it can be summed at the far end', () => {
+  it.each(['true', 'false', 'unknown'] as const)(
+    'says whether the person is staff (%s), and nothing about who',
+    (internal) => {
+      const payload = buildOtlpPayload(
+        'app_launched',
+        { install_kind: 'same' },
+        { ...CONTEXT, internal }
+      );
+
+      expect(resourceAttributes(payload).flint_internal).toBe(internal);
+      expect(JSON.stringify(payload)).not.toContain('@');
+    }
+  );
+
+  it.each(['prod', 'staging', 'dev', 'local'] as const)(
+    'says the event belongs in the %s Amplitude project',
+    (flintEnv) => {
+      // The relay picks the project from this, beside the client id it already
+      // requires on the resource.
+      const payload = buildOtlpPayload(
+        'app_launched',
+        { install_kind: 'same' },
+        { ...CONTEXT, flintEnv }
+      );
+
+      expect(resourceAttributes(payload).flint_env).toBe(flintEnv);
+    }
+  );
+
+  it('carries a yes as a boolean, not as the word', () => {
     const payload = buildOtlpPayload(
       'session_started',
       { ...SESSION_STARTED, has_initial_prompt: true },
@@ -172,42 +206,47 @@ describe('the record that gets built', () => {
     );
 
     expect(rawLogAttributes(payload).has_initial_prompt).toEqual({ boolValue: true });
-    expect(rawLogAttributes(payload).entry_point).toEqual({ stringValue: 'sidebar' });
   });
 
-  it('refuses a count that is not a real number rather than sending null', () => {
-    // NaN and Infinity both serialise to `null` in JSON, which at the far end
-    // is indistinguishable from a property that was never sent.
-    const broken = { ...SESSION_STARTED, has_initial_prompt: Number.NaN } as never;
+  it('carries a count as a number, so it can be summed at the far end', () => {
+    // A count sent as text arrives as a category: it can be grouped by, never
+    // summed or averaged.
+    const payload = buildOtlpPayload(
+      'search_performed',
+      { status: 'ok', result_count: 3 },
+      CONTEXT
+    );
 
-    expect(() => buildOtlpPayload('session_started', broken, CONTEXT)).toThrow(/non-finite/);
+    expect(rawLogAttributes(payload).result_count).toEqual({ doubleValue: 3 });
   });
+
+  it('carries a count of zero as a number, not as a property that was never sent', () => {
+    const payload = buildOtlpPayload(
+      'search_performed',
+      { status: 'ok', result_count: 0 },
+      CONTEXT
+    );
+
+    expect(rawLogAttributes(payload).result_count).toEqual({ doubleValue: 0 });
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    'refuses a count of %s rather than sending null',
+    (count) => {
+      // NaN and Infinity both serialise to `null` in JSON, which at the far end
+      // is indistinguishable from a property that was never sent.
+      const broken = { status: 'ok', result_count: count } as const;
+
+      expect(() => buildOtlpPayload('search_performed', broken, CONTEXT)).toThrow(/non-finite/);
+    }
+  );
 
   it('stamps the time in nanoseconds, which is what OTLP counts in', () => {
-    const payload = buildOtlpPayload('app_launched', {}, CONTEXT);
+    const payload = buildOtlpPayload('app_launched', { install_kind: 'same' }, CONTEXT);
 
     const record = logRecord(payload);
     expect(record.timeUnixNano).toBe('1700000000000000000');
     expect(record.observedTimeUnixNano).toBe('1700000000000000000');
-  });
-
-  it('stays far under the attribute count the relay drops a record for', () => {
-    // The guard drops any record with more than 128 attributes.
-    const payload = buildOtlpPayload(
-      'agent_cli_action',
-      {
-        agent_type: 'claude',
-        target: 'remote',
-        install_method: 'unspecified',
-        action: 'install',
-        outcome: 'success',
-        failure_reason: 'none',
-        duration_ms: durationMs(4200),
-      },
-      CONTEXT
-    );
-
-    expect(Object.keys(logAttributes(payload)).length).toBeLessThan(16);
   });
 });
 

@@ -120,9 +120,29 @@ class AgentStatus(StrEnum):
     NOT_PERMITTED = "not_permitted"
 
 
+class RoomWideMentionStatus(StrEnum):
+    """What a room-wide mention did, reported under `everyone`.
+
+    What Switch sent, not what the platform confirmed: the bridge posts after
+    `send_targeted_message` has returned.
+    """
+
+    # The bridge posts it as the platform's channel-wide mention, or the
+    # platform already notifies every member of every message (Telegram).
+    SENT = "sent"
+    # The platform has no channel-wide mention a bot can send (Teams). The
+    # message still posts; nobody is paged by it.
+    UNSUPPORTED = "unsupported"
+    # The room has no chat platform, so there is nobody to page.
+    NO_BRIDGE = "no_bridge"
+    # The room's bridge is not running, or has no channel for the room, so the
+    # message reaches the room but not its chat platform.
+    BRIDGE_UNAVAILABLE = "bridge_unavailable"
+
+
 class SendTargetedResult(BaseModel):
     event_id: str
-    target_statuses: dict[str, AgentStatus]
+    target_statuses: dict[str, AgentStatus | RoomWideMentionStatus]
 
 
 class DelegateTaskResult(BaseModel):
@@ -198,7 +218,8 @@ EventType = Literal[
 class AttachmentRef(BaseModel):
     """A pointer to a media attachment on a message event.
 
-    Carries metadata plus the Matrix `mxc://` URI only — never the bytes. The
+    Carries metadata plus the media URI (the `mxc` field, an opaque key) only,
+    never the bytes. The
     actual file is fetched on demand via the media-download endpoint.
     """
 
@@ -239,7 +260,7 @@ class CommandPayload(BaseModel):
 
 
 class RoomJoinPayload(BaseModel):
-    # The joiner's matrix user id (the member event's state_key) and display
+    # The joiner's participant id (the member event's state_key) and display
     # name. room_id / bridge_id / channel_type live on the enclosing AgentEvent.
     member: str
     member_name: str

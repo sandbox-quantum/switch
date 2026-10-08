@@ -3,8 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 
 
 class _FakeSession:
@@ -106,7 +106,7 @@ _ROOM = SimpleNamespace(
     id="room-1",
     name="This Room",
     description="desc",
-    matrix_room_id="!mx:switch.local",
+    transport_room_id="!mx:switch.local",
     archived_at=None,
     bridge_id=None,
 )
@@ -115,11 +115,11 @@ _ROLE = SimpleNamespace(id="role-m", name="manager", instructions="coordinate")
 
 def _build_service(
     *, role_store: _FakeRoomRoleStore, client: Any, members: list[str]
-) -> ProtocolService:
-    svc = object.__new__(ProtocolService)
+) -> AgentCore:
+    svc = object.__new__(AgentCore)
     # Presence unions the heartbeat rows with the live connections
     # (CHOO-1857); an empty registry means "rows only".
-    svc.connections = ConnectionRegistry()
+    svc.connections = AgentConnectionRegistry()
     svc.session_factory = _session_factory  # type: ignore[assignment]
     svc.room_role_store = role_store  # type: ignore[assignment]
     svc.room_store = _FakeRoomStore(_ROOM, members)  # type: ignore[assignment]

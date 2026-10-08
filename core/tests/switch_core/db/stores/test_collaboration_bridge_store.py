@@ -14,7 +14,7 @@ from switch_core.tenant_context import tenant_scope
 
 async def _make_bridge(session: AsyncSession) -> str:
     client = Client(
-        matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+        transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
         display_name="bridge client",
         type="bridge",
     )

@@ -2,26 +2,38 @@ import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { commandSchema } from '@switch-console/shared/session-v1';
-import type { Command, CommandStatus, Session } from '@switch-console/shared/session-v1';
+import type { Command, CommandStatus, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { ActivityReporter, type Report } from './activity-reporter';
-import { stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
+import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { HostWaker } from './handoff';
 import { followupCommandId, roomControlFollowup } from './room-control-followup';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
   planAttachments,
   roomCommand,
+  roomFreshStartCommandId,
   roomMessageSchema,
   type RoomAttachmentSource,
 } from './room-prompt';
-import { connectParent, type ParentChannel, type ParentPort } from './session-channel';
+import {
+  connectParent,
+  type BusyReason,
+  type BusyState,
+  type ParentChannel,
+  type ParentPort,
+} from './session-channel';
 import { HostedSession } from './session-host';
 import { startSessionMcp } from './session-mcp';
 import { owedSessionStart, settleSessionStart, type OwedSessionStart } from './session-start';
 import { prepareSharedConfig, type SharedHostConfig } from './shared-config';
 import { SharedState } from './shared-state';
+import {
+  instructionsChangedNote,
+  readToldInstructions,
+  recordToldInstructions,
+} from './told-instructions';
 
 /**
  * A session run on behalf of its agent.
@@ -54,14 +66,19 @@ export type SharedHostOptions = {
   parent: ParentChannel | null;
   /** How long the host waits with nothing to do before parking; null never parks. */
   parkAfterMs: number | null;
+  /**
+   * The agent's own instructions as its definition stands now; null for a
+   * configuration written before they were recorded apart.
+   */
+  instructions: string | null;
 };
 
 /** How long a session sits idle before its host parks, unless the environment says otherwise. */
-const PARK_AFTER_MS = 30 * 60 * 1000;
+const PARK_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /**
  * The park timeout for this process: `SWITCH_SESSION_PARK_AFTER_MS` in
- * milliseconds, `off` to never park, or 30 minutes when unset.
+ * milliseconds, `off` to never park, or one day when unset.
  */
 export function parkAfterMs(): number | null {
   const value = process.env.SWITCH_SESSION_PARK_AFTER_MS;
@@ -73,6 +90,41 @@ export function parkAfterMs(): number | null {
       `SWITCH_SESSION_PARK_AFTER_MS must be a positive number of milliseconds or "off", not "${value}".`
     );
   return parsed;
+}
+
+/**
+ * How long a session waiting on a fresh-conversation decision keeps its worker
+ * awake. Past it the decision and the room messages it holds stay recorded,
+ * but no longer count as busy, so the worker may sleep.
+ */
+export const RESET_HOLD_MS = 15 * 60_000;
+
+/** Whether a session waits on a reset decision, and if so whether its hold has ended. */
+export type ResetHold = 'none' | 'holding' | 'ended';
+
+/**
+ * Why a session is busy, if it is: what keeps a hosted worker awake and what
+ * keeps a host from parking. A session that is stopped or failed with nothing
+ * left to decide is not busy. Work the provider is still doing after its turn
+ * ended, such as background subagents, counts as a running turn.
+ */
+export function sessionBusy(
+  snapshot: Snapshot,
+  reset: ResetHold,
+  roomsPending: number,
+  backgroundWork: boolean
+): BusyState {
+  const reasons: BusyReason[] = [];
+  const add = (kind: BusyReason['kind'], count: number) => {
+    if (count > 0) reasons.push({ kind, count });
+  };
+  const running = snapshot.turns.filter((turn) => turn.status === 'running').length;
+  add('turn_starting', snapshot.session.status === 'starting' ? 1 : 0);
+  add('turn_running', running || (snapshot.session.status === 'running' || backgroundWork ? 1 : 0));
+  add('approval_open', snapshot.requests.filter((request) => request.state === 'open').length);
+  add('reset_waiting', reset === 'holding' ? 1 : 0);
+  add('room_pending', reset === 'ended' ? 0 : roomsPending);
+  return { busy: reasons.length > 0, reasons };
 }
 
 class TransportError extends Error {}
@@ -275,7 +327,9 @@ export async function runSharedHost(
           Promise.all(
             attachments.map((attachment) =>
               stageAttachment(options.root, attachment, async () => {
-                const fetched = roomAttachments.get(attachment.attachmentId);
+                const fetched =
+                  roomAttachments.get(attachment.attachmentId) ??
+                  (await readStagedAttachment(options.root, attachment));
                 if (!fetched)
                   throw new Error(
                     `Attachment ${attachment.name} is not one this session was given in a room, so there is nowhere to fetch it from.`
@@ -468,6 +522,64 @@ export async function runSharedHost(
         null
       );
     };
+    /** Tells the parent whenever the session's busy state changes. */
+    let announcedBusy = '';
+    let resetHeldSince: number | null = null;
+    const resetHold = (): ResetHold => {
+      if (!host!.resetDecisionPending) {
+        resetHeldSince = null;
+        return 'none';
+      }
+      resetHeldSince ??= Date.now();
+      return Date.now() - resetHeldSince < RESET_HOLD_MS ? 'holding' : 'ended';
+    };
+    const busyNow = (): BusyState =>
+      sessionBusy(
+        host!.snapshot(),
+        resetHold(),
+        rooms?.pending().length ?? 0,
+        host!.backgroundWorkRunning
+      );
+    const announceBusy = () => {
+      const state = busyNow();
+      const key = JSON.stringify(state);
+      if (key === announcedBusy) return;
+      if (resetHold() === 'ended')
+        console.warn(
+          `Session ${options.session.sessionId} has waited ${RESET_HOLD_MS / 60_000} min for a fresh-conversation decision; it no longer keeps its worker awake. The decision and its ${rooms?.pending().length ?? 0} held room message(s) are kept for when it next runs.`
+        );
+      announcedBusy = key;
+      options.parent?.busy(state, null);
+    };
+    // ── Telling a running conversation its instructions changed ───────────
+    // A conversation that has not started yet is given the current ones as it
+    // starts. One that has, and was told others, gets a note with the next
+    // room message: its provider would otherwise keep the old ones.
+    const instructions = options.instructions;
+    let instructionsNote: string | null = null;
+    if (instructions !== null) {
+      const told = await readToldInstructions(options.root);
+      if (host.snapshot().turns.length === 0)
+        await recordToldInstructions(options.root, instructions);
+      else if (told !== instructions) instructionsNote = instructionsChangedNote(instructions);
+    }
+    const instructionsTold = async (): Promise<void> => {
+      if (instructions === null) return;
+      await recordToldInstructions(options.root, instructions);
+      instructionsNote = null;
+    };
+    // Where the provider takes a developer message mid-conversation, that is
+    // how it hears: it outranks anything said in a user message. Otherwise
+    // the note rides on the next room message.
+    if (instructionsNote !== null && adapter.addDeveloperMessage)
+      try {
+        await adapter.addDeveloperMessage(options.session.sessionId, instructionsNote);
+        await instructionsTold();
+      } catch (error) {
+        console.warn(
+          `Could not give session ${options.session.sessionId} its changed instructions as a developer message (${error instanceof Error ? error.message : String(error)}); it is told with its next room message instead.`
+        );
+      }
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
     const run = async (
       value: unknown,
@@ -502,6 +614,9 @@ export async function runSharedHost(
         .snapshot()
         .commandStatuses.find((entry) => entry.commandId === command.commandId);
       if (owed && status?.status === 'applied') await sendFollowup(owed);
+      // A fresh conversation starts with the instructions this host was given.
+      if (command.body.type === 'session.reset' && status?.status === 'applied')
+        await instructionsTold();
       return status ?? 'The host did not record the command.';
     };
     /** Turn each room message handed over into the command it amounts to, in order. */
@@ -540,13 +655,54 @@ export async function runSharedHost(
           message: message.data,
           surface: 'switch-web',
           attachments,
+          preface: instructionsNote,
         });
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
-        await run(command, null);
+        const outcome = await run(command, null);
+        if (
+          instructionsNote !== null &&
+          typeof outcome !== 'string' &&
+          outcome.status !== 'rejected'
+        )
+          await instructionsTold();
         await inbox.acknowledge(event);
       }
+    };
+
+    /**
+     * A room message reached a conversation that cannot continue as it was —
+     * its provider lost it, or a reset was cut off. Nobody in the room can
+     * press "Start a fresh conversation" for it, so the session does: the
+     * message would otherwise wait unseen for someone at the Console. The
+     * transcript keeps everything said before.
+     */
+    const startFreshFor = async (event: { roomId: string; messageId: string }): Promise<void> => {
+      await host!.startingFreshForRoom();
+      const outcome = await run(
+        {
+          contractVersion: 1,
+          commandId: roomFreshStartCommandId(agentId, event.roomId, event.messageId),
+          sessionId: options.session.sessionId,
+          epoch: host!.snapshot().session.epoch,
+          origin: {
+            surface: 'switch-web',
+            actorId: agentId,
+            roomId: null,
+            threadId: null,
+            messageId: null,
+          },
+          body: { type: 'session.reset' },
+        },
+        null
+      );
+      if (typeof outcome === 'string')
+        throw new Error(`Could not start a fresh conversation for a room message: ${outcome}`);
+      if (outcome.status === 'rejected' || outcome.status === 'unknown')
+        throw new Error(
+          `Could not start a fresh conversation for a room message: ${outcome.message ?? outcome.code ?? outcome.status}`
+        );
     };
 
     identify(host.snapshot().session);
@@ -554,8 +710,11 @@ export async function runSharedHost(
     // messages come down the pipe, and every recorded event goes up it.
     const parent = options.parent;
     parent?.serve({
+      // Busy is announced before the reply, so a parent that has the reply has
+      // already heard any change the command made.
       command: async ({ command, requesterName }) => {
         const outcome = await run(command, requesterName);
+        announceBusy();
         if (typeof outcome === 'string') throw new Error(outcome);
         return outcome;
       },
@@ -563,6 +722,7 @@ export async function runSharedHost(
         if (!rooms) throw new Error('This session serves no rooms.');
         await rooms.accept(handoff);
         active();
+        announceBusy();
         waker.nudge();
         return { accepted: true };
       },
@@ -576,21 +736,28 @@ export async function runSharedHost(
     host.onPublished(active);
     host.onPublished(() => identify(host!.snapshot().session));
     if (parent) {
+      host.onPublished(announceBusy);
+      parent.onBarrier(async () => {
+        await host!.barrier();
+        return busyNow();
+      });
       host.onPublished((event) => parent.push(event));
+      announceBusy();
       parent.ready();
     }
-    /** Nothing running, nothing waiting on a person, nothing handed over, for long enough. */
+    /**
+     * Nothing running, nothing waiting on a person, nothing handed over, for
+     * long enough. Subagents still at work after their turn ended count as
+     * running, and the wait starts again from when the last of them stops.
+     */
     const idleEnough = (): boolean => {
       if (!parent || options.parkAfterMs === null) return false;
+      if (host!.backgroundWorkRunning) {
+        active();
+        return false;
+      }
       if (performance.now() - lastActive < options.parkAfterMs) return false;
-      const snapshot = host!.snapshot();
-      return (
-        snapshot.session.status === 'ready' &&
-        !host!.resetDecisionPending &&
-        !snapshot.turns.some((turn) => turn.status === 'running') &&
-        !snapshot.requests.some((request) => request.state === 'open') &&
-        !(rooms?.pending().length ?? 0)
-      );
+      return host!.snapshot().session.status === 'ready' && !busyNow().busy;
     };
     for (const owed of followups()) {
       const applied = host
@@ -666,13 +833,17 @@ export async function runSharedHost(
         throw new Error(
           'HOST_FAULTED: Provider execution failed. Inspect the transcript before recovery.'
         );
-      if (host.resetDecisionPending) heldForDecision = true;
-      else if (heldForDecision) {
+      if (host.resetDecisionPending) {
+        heldForDecision = true;
+        const first = rooms?.pending()[0];
+        if (first) await startFreshFor(first);
+      } else if (heldForDecision) {
         heldForDecision = false;
         const held = rooms?.pending().length ?? 0;
         if (held) await host.roomBacklogDelivered(held);
       }
       if (rooms && ['ready', 'running'].includes(status)) await admitRoomMessages(rooms);
+      announceBusy();
       if (idleEnough()) {
         console.info(
           `Parking session ${options.session.sessionId} after ${Math.round(options.parkAfterMs! / 1000)} s idle.`
@@ -739,6 +910,7 @@ export async function hostSessionProcess(input: {
         grant: config.grant,
         parent,
         parkAfterMs: parkAfterMs(),
+        instructions: config.execution?.instructions ?? null,
       },
       input.adapter,
       input.signal

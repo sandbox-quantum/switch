@@ -135,23 +135,25 @@ class _TenantRecordingRoomStore(RoomStore):
         await super().set_archived(session, room_id, archived)
 
 
-class _FakeMatrix:
+class _FakeProvisioning:
     """Provisioning, which room_service calls with no session open."""
 
     def __init__(self, *, fail_for: set[str] | None = None) -> None:
         self.invited: list[tuple[str, str]] = []
         self._fail_for = fail_for or set()
 
-    async def invite_to_room(self, matrix_room_id: str, matrix_user_id: str) -> None:
-        if matrix_room_id in self._fail_for:
-            raise RuntimeError(f"platform refused the invite to {matrix_room_id}")
-        self.invited.append((matrix_room_id, matrix_user_id))
+    async def invite_to_room(
+        self, transport_room_id: str, transport_user_id: str
+    ) -> None:
+        if transport_room_id in self._fail_for:
+            raise RuntimeError(f"platform refused the invite to {transport_room_id}")
+        self.invited.append((transport_room_id, transport_user_id))
 
 
 class _RunningClient:
-    def __init__(self, client_id: str, matrix_user_id: str) -> None:
+    def __init__(self, client_id: str, transport_user_id: str) -> None:
         self.client_id = client_id
-        self.matrix_user_id = matrix_user_id
+        self.transport_user_id = transport_user_id
 
 
 class _AgentRegistry:
@@ -161,7 +163,7 @@ class _AgentRegistry:
     that lookup is where the cross-tenant bug lived and a stand-in would have
     reimplemented the fix rather than exercised it. Resolving an agent to its
     running client is not tenant-sensitive — an agent id is unique across the
-    deployment — and building real `AgentClient`s to say so would add a
+    deployment — and building real `AgentConsumer`s to say so would add a
     transport and a sync loop to a test about bindings.
     """
 
@@ -188,7 +190,7 @@ class _StubClient:
 
     def __init__(self, record: Client) -> None:
         self.client_id = record.id
-        self.matrix_user_id = record.matrix_user_id
+        self.transport_user_id = record.transport_user_id
         self.display_name = record.display_name
         self._stopped = asyncio.Event()
 
@@ -201,33 +203,36 @@ class _StubClient:
 
 class _StubFactory:
     def create(self, record: Client) -> Any:
-        return _StubClient(record)
+        # The stub reads for itself: it is the actor and its own consumer.
+        client = _StubClient(record)
+        return client, client
 
 
 def _registry(
     session_factory: async_sessionmaker[AsyncSession],
     running: list[tuple[str, str, str]],
 ) -> ClientLifecycleService:
-    """The real registry, holding `(tenant_id, client_id, matrix_user_id)`.
+    """The real registry, holding `(tenant_id, client_id, transport_user_id)`.
 
     The real one on purpose: `reconcile_room_clients` asks it which system
     clients belong to a room's tenant, and getting that answer from the whole
     deployment instead of from one tenant is the defect these tests exist for.
     """
     service = ClientLifecycleService(
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         client_store=ClientStore(),
         tenant_store=TenantStore(),
         client_factory=_StubFactory(),  # type: ignore[arg-type]
         session_factory=session_factory,
-        config=SimpleNamespace(matrix_server_name="switch.local"),  # type: ignore[arg-type]
+        config=SimpleNamespace(id_server_name="switch.local"),  # type: ignore[arg-type]
+        tenants_isolated=True,
     )
-    for tenant_id, client_id, matrix_user_id in running:
+    for tenant_id, client_id, transport_user_id in running:
         service.start_client(
             Client(
                 id=client_id,
                 tenant_id=tenant_id,
-                matrix_user_id=matrix_user_id,
+                transport_user_id=transport_user_id,
                 display_name="admin",
                 type="admin",
             )
@@ -240,13 +245,13 @@ def _service(
     *,
     store: _TenantRecordingRoomStore,
     clients: Any,
-    matrix: _FakeMatrix,
+    matrix: _FakeProvisioning,
 ) -> RoomService:
     svc = object.__new__(RoomService)
     svc._session_factory = session_factory  # type: ignore[assignment]
     svc._room_store = store  # type: ignore[assignment]
     svc._client_lifecycle = clients  # type: ignore[assignment]
-    svc._matrix_admin = matrix  # type: ignore[assignment]
+    svc._provisioning = matrix  # type: ignore[assignment]
     svc._collab_lifecycle = None  # type: ignore[assignment]
     return svc
 
@@ -257,7 +262,7 @@ async def _seed_tenant_b(session: AsyncSession) -> None:
 
 
 async def _seed_room(
-    session: AsyncSession, *, tenant_id: str, room_id: str, matrix_room_id: str
+    session: AsyncSession, *, tenant_id: str, room_id: str, transport_room_id: str
 ) -> None:
     """Insert a room directly, naming its tenant.
 
@@ -271,7 +276,7 @@ async def _seed_room(
             tenant_id=tenant_id,
             name=room_id,
             description="d",
-            matrix_room_id=matrix_room_id,
+            matrix_room_id=transport_room_id,
         )
     )
 
@@ -281,14 +286,14 @@ async def _seed_client(
     *,
     tenant_id: str,
     client_id: str,
-    matrix_user_id: str,
+    transport_user_id: str,
     client_type: str = "admin",
 ) -> None:
     await session.execute(
         insert(Client.__table__).values(
             id=client_id,
             tenant_id=tenant_id,
-            matrix_user_id=matrix_user_id,
+            matrix_user_id=transport_user_id,
             display_name=client_type,
             type=client_type,
         )
@@ -320,7 +325,7 @@ async def _seed_agent(
         session,
         tenant_id=tenant_id,
         client_id=client_id,
-        matrix_user_id=f"@{agent_id}:switch.local",
+        transport_user_id=f"@{agent_id}:switch.local",
         client_type="agent",
     )
     await session.execute(
@@ -376,25 +381,25 @@ class TestReconcileRoomClients:
                 session,
                 tenant_id=TENANT_ZERO_ID,
                 room_id="room-zero",
-                matrix_room_id="!zero:switch.local",
+                transport_room_id="!zero:switch.local",
             )
             await _seed_room(
                 session,
                 tenant_id=TENANT_B,
                 room_id="room-b",
-                matrix_room_id="!b:switch.local",
+                transport_room_id="!b:switch.local",
             )
             await _seed_client(
                 session,
                 tenant_id=TENANT_ZERO_ID,
                 client_id="admin-zero",
-                matrix_user_id="@switch-admin:switch.local",
+                transport_user_id="@switch-admin:switch.local",
             )
             await _seed_client(
                 session,
                 tenant_id=TENANT_B,
                 client_id="admin-b",
-                matrix_user_id="@switch-admin:switch.local",
+                transport_user_id="@switch-admin:switch.local",
             )
             await session.commit()
 
@@ -410,7 +415,7 @@ class TestReconcileRoomClients:
             session_factory,
             store=store,
             clients=registry,
-            matrix=_FakeMatrix(),
+            matrix=_FakeProvisioning(),
         )
 
         try:
@@ -461,13 +466,13 @@ class TestReconcileRoomClients:
                 session,
                 tenant_id=TENANT_B,
                 room_id="room-b",
-                matrix_room_id="!b:switch.local",
+                transport_room_id="!b:switch.local",
             )
             await _seed_client(
                 session,
                 tenant_id=TENANT_B,
                 client_id="admin-b",
-                matrix_user_id="@switch-admin:switch.local",
+                transport_user_id="@switch-admin:switch.local",
             )
             await session.commit()
 
@@ -479,7 +484,7 @@ class TestReconcileRoomClients:
             session_factory,
             store=store,
             clients=registry,
-            matrix=_FakeMatrix(),
+            matrix=_FakeProvisioning(),
         )
 
         try:
@@ -515,25 +520,25 @@ class TestReconcileRoomClients:
                 session,
                 tenant_id=TENANT_ZERO_ID,
                 room_id="room-broken",
-                matrix_room_id="!broken:switch.local",
+                transport_room_id="!broken:switch.local",
             )
             await _seed_room(
                 session,
                 tenant_id=TENANT_B,
                 room_id="room-b",
-                matrix_room_id="!b:switch.local",
+                transport_room_id="!b:switch.local",
             )
             await _seed_client(
                 session,
                 tenant_id=TENANT_ZERO_ID,
                 client_id="admin-zero",
-                matrix_user_id="@switch-admin:switch.local",
+                transport_user_id="@switch-admin:switch.local",
             )
             await _seed_client(
                 session,
                 tenant_id=TENANT_B,
                 client_id="admin-b",
-                matrix_user_id="@switch-admin:switch.local",
+                transport_user_id="@switch-admin:switch.local",
             )
             await session.commit()
 
@@ -548,7 +553,7 @@ class TestReconcileRoomClients:
             session_factory,
             store=_TenantRecordingRoomStore(),
             clients=registry,
-            matrix=_FakeMatrix(fail_for={"!broken:switch.local"}),
+            matrix=_FakeProvisioning(fail_for={"!broken:switch.local"}),
         )
 
         try:
@@ -572,13 +577,13 @@ class TestReconcileRoomClients:
                 session,
                 tenant_id=TENANT_ZERO_ID,
                 room_id="room-broken",
-                matrix_room_id="!broken:switch.local",
+                transport_room_id="!broken:switch.local",
             )
             await _seed_client(
                 session,
                 tenant_id=TENANT_ZERO_ID,
                 client_id="admin-zero",
-                matrix_user_id="@switch-admin:switch.local",
+                transport_user_id="@switch-admin:switch.local",
             )
             await session.commit()
 
@@ -590,7 +595,7 @@ class TestReconcileRoomClients:
             session_factory,
             store=_TenantRecordingRoomStore(),
             clients=registry,
-            matrix=_FakeMatrix(fail_for={"!broken:switch.local"}),
+            matrix=_FakeProvisioning(fail_for={"!broken:switch.local"}),
         )
 
         try:
@@ -631,7 +636,7 @@ class TestBindingsOnTheRoomsOwnTenant:
                 session,
                 tenant_id=TENANT_B,
                 room_id="room-b",
-                matrix_room_id="!b:switch.local",
+                transport_room_id="!b:switch.local",
             )
             await _seed_agent(
                 session,
@@ -648,7 +653,7 @@ class TestBindingsOnTheRoomsOwnTenant:
             clients=_AgentRegistry(
                 {"agent-b": _RunningClient("client-b", "@agent-b:switch.local")}
             ),
-            matrix=_FakeMatrix(),
+            matrix=_FakeProvisioning(),
         )
 
         assert current_tenant_id() is None
@@ -682,7 +687,7 @@ class TestBindingsOnTheRoomsOwnTenant:
                 session,
                 tenant_id=TENANT_B,
                 room_id="room-b",
-                matrix_room_id="!b:switch.local",
+                transport_room_id="!b:switch.local",
             )
             await session.commit()
 
@@ -691,7 +696,7 @@ class TestBindingsOnTheRoomsOwnTenant:
             session_factory,
             store=store,
             clients=_AgentRegistry({}),
-            matrix=_FakeMatrix(),
+            matrix=_FakeProvisioning(),
         )
 
         await svc.set_room_archived("room-b", True)
@@ -723,7 +728,7 @@ class TestBindingsOnTheRoomsOwnTenant:
                 session,
                 tenant_id=TENANT_ZERO_ID,
                 room_id="room-zero",
-                matrix_room_id="!zero:switch.local",
+                transport_room_id="!zero:switch.local",
             )
             await session.commit()
 

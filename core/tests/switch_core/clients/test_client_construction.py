@@ -1,7 +1,7 @@
 """Every client subclass must be constructible through the real signature.
 
-Three subclasses take `**kwargs: Any` and forward to `ClientBase`, which
-hides the constructor from the type checker: a keyword `ClientBase` no
+Three subclasses take `**kwargs: Any` and forward to `Actor`, which
+hides the constructor from the type checker: a keyword `Actor` no
 longer accepts type-checks clean and fails at runtime, when the client
 starts. That is how a `device_id` left behind by the transport port took
 down all four collaboration bridges while mypy stayed green.
@@ -18,16 +18,19 @@ from typing import Any
 
 import pytest
 
-from switch_core.clients.admin_client import AdminClient
-from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
-from switch_core.clients.client_base import ClientBase, ClientConfig
+from switch_core.clients.actor import Actor, ClientConfig, HumanActor, SystemActor
+from switch_core.clients.command_consumer import CommandConsumer
+from switch_core.clients.workspace_consumer import (
+    WorkspaceConsumer,
+    WorkspaceConsumerConfig,
+)
 
 
 def _base_kwargs() -> dict[str, Any]:
     return {
         "client_id": "client-1",
         "tenant_id": "tenant-1",
-        "matrix_user_id": "@switch-agent-1:switch.local",
+        "transport_user_id": "@switch-agent-1:switch.local",
         "display_name": "agent-one",
         "session_factory": object(),
         "client_store": object(),
@@ -35,25 +38,35 @@ def _base_kwargs() -> dict[str, Any]:
     }
 
 
-def test_client_base_takes_what_the_factory_passes() -> None:
-    client = ClientBase(config=ClientConfig(), **_base_kwargs())
+def test_an_actor_takes_what_the_factory_passes() -> None:
+    client = Actor(config=ClientConfig(), **_base_kwargs())
 
     assert client.client_id == "client-1"
 
 
-def test_bridge_client_construction_matches_its_lifecycle_call_site() -> None:
-    client = BridgeClient(
-        bridge_core=object(),  # type: ignore[arg-type]
-        config=BridgeClientConfig(bridge_id="bridge-1"),
-        **_base_kwargs(),
+def test_workspace_consumer_construction_matches_its_lifecycle_call_site() -> None:
+    client = WorkspaceConsumer(
+        collaboration_core=object(),  # type: ignore[arg-type]
+        actor=Actor(
+            config=WorkspaceConsumerConfig(bridge_id="bridge-1"), **_base_kwargs()
+        ),
     )
 
-    assert client.config.bridge_id == "bridge-1"
+    assert client.actor.config.bridge_id == "bridge-1"
 
 
-@pytest.mark.parametrize("cls", [AdminClient])
-def test_every_registered_client_type_constructs(cls: type) -> None:
+@pytest.mark.parametrize(
+    ("actor_cls", "cls"),
+    [(SystemActor, CommandConsumer), (HumanActor, None)],
+)
+def test_every_registered_client_type_constructs(
+    actor_cls: type, cls: type | None
+) -> None:
     base = _base_kwargs()
+    actor = actor_cls(config=actor_cls.config_class(), **base)
+    assert isinstance(actor, Actor)
+    if cls is None:
+        return
     # Collaborators the factory injects as extra kwargs differ per class, so
     # stub whatever each one declares rather than naming them here.
     collaborators: dict[str, Any] = {}
@@ -61,22 +74,21 @@ def test_every_registered_client_type_constructs(cls: type) -> None:
         if (
             param.kind is not inspect.Parameter.KEYWORD_ONLY
             or param.default is not inspect.Parameter.empty
-            or name in base
-            or name == "config"
+            or name == "actor"
         ):
             continue
         # A plain object() stands in for a collaborator, but a few are strings
         # the constructor manipulates on the way in.
         collaborators[name] = "" if "str" in str(param.annotation) else object()
 
-    client = cls(config=cls.config_class(), **base, **collaborators)
+    consumer = cls(actor=actor, **collaborators)
 
-    assert isinstance(client, ClientBase)
+    assert consumer.actor is actor
 
 
 def test_no_client_holds_transport_credentials() -> None:
     """A client is a row, not a session: there is nothing to authenticate."""
-    client = ClientBase(config=ClientConfig(), **_base_kwargs())
+    client = Actor(config=ClientConfig(), **_base_kwargs())
 
     for attribute in ("access_token", "device_id", "password", "session_state"):
         assert not hasattr(client, attribute)

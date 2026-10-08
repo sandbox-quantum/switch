@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
 from switch_core.room_service import RoomCreateConfig, RoomService
 
@@ -170,7 +170,7 @@ async def test_base_adapter_rejects_dm_channel_creation() -> None:
     with pytest.raises(
         ChannelCreationUnsupported, match="Mattermost cannot create DM channels"
     ):
-        await CollaborationAdapter.create_dm_channel(
+        await PlatformAdapter.create_dm_channel(
             SimpleNamespace(platform_name="Mattermost"),
             agent_name="a",
             user_name="u",

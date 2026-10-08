@@ -1,0 +1,38 @@
+[Unit]
+Description=Switch agent %i
+StartLimitIntervalSec=600
+StartLimitBurst=5
+AssertPathIsMountPoint=/data
+
+[Service]
+Type=simple
+User=switch-agent
+Group=switch-agent
+Slice=switch-agents.slice
+EnvironmentFile=/run/switch-hosted/agents/%i/env
+ExecStart=/opt/switch/node/bin/node /opt/switch/agent-providers/hosted-bootstrap.mjs /data/agents/%i /run/switch-hosted/agents/%i/deployment.json
+WorkingDirectory=/data/agents/%i
+Restart=on-failure
+RestartSec=10s
+RestartPreventExitStatus=75
+MemoryMax=75%
+OOMPolicy=stop
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+StandardOutput=journal
+StandardError=journal

@@ -4,7 +4,7 @@ user). They are separate implementations over the same service, so this file
 pins them to the same answer for the same principal: a filter added to one and
 not the other is a drift bug that no other test would catch.
 
-`ProtocolService.__init__` takes 17 required collaborators, so the service is
+`AgentCore.__init__` takes 17 required collaborators, so the service is
 built with `object.__new__` and the four attributes this method touches, per
 `test_agent_detail_mcp_tools.py`. `_resolve_acting_identity` loads the owner
 with `session.get(User, ...)` on the live session, then reads
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.resource.registry import BUILTIN_REFERENCE_TYPES
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Agent, ApiKey, Client, User
@@ -44,11 +44,11 @@ def _resource_service(
     )
 
 
-def _protocol_service(
+def _agent_core(
     session_factory: async_sessionmaker[AsyncSession],
     resource_service: ResourceService,
-) -> ProtocolService:
-    svc = object.__new__(ProtocolService)
+) -> AgentCore:
+    svc = object.__new__(AgentCore)
     svc.session_factory = session_factory  # type: ignore[attr-defined]
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.resource_service = resource_service  # type: ignore[attr-defined]
@@ -76,7 +76,7 @@ async def _make_agent(
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{name}:example.invalid",
+        transport_user_id=f"@{name}:example.invalid",
         display_name=name,
         type="agent",
     )
@@ -151,7 +151,7 @@ class TestAgentAndGatewayAgree:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         service = _resource_service(session_factory)
-        svc = _protocol_service(session_factory, service)
+        svc = _agent_core(session_factory, service)
         async with session_factory() as session:
             alice, _bob, agent = await _seed(session, service)
             await session.commit()
@@ -172,7 +172,7 @@ class TestAgentAndGatewayAgree:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         service = _resource_service(session_factory)
-        svc = _protocol_service(session_factory, service)
+        svc = _agent_core(session_factory, service)
         async with session_factory() as session:
             _alice, _bob, _agent = await _seed(session, service)
             root = await _make_user(session, "root", role="admin")
@@ -201,7 +201,7 @@ class TestOwnerlessAgent:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         service = _resource_service(session_factory)
-        svc = _protocol_service(session_factory, service)
+        svc = _agent_core(session_factory, service)
         async with session_factory() as session:
             _alice, bob, _agent = await _seed(session, service)
             agent = await _make_agent(
@@ -219,7 +219,7 @@ class TestEntryShape:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         service = _resource_service(session_factory)
-        svc = _protocol_service(session_factory, service)
+        svc = _agent_core(session_factory, service)
         async with session_factory() as session:
             _alice, _bob, agent = await _seed(session, service)
             await session.commit()

@@ -16,9 +16,9 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.service import (
+from switch_core.bridges.agent.protocol.agent_core import (
+    AgentCore,
     AgentExistsError,
-    ProtocolService,
 )
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
@@ -27,6 +27,7 @@ from switch_core.bridges.agent.protocol.types import (
 from switch_core.db.models import Client, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.keys import Keyring
 
 _PROFILE = IntegrationProfile(
     connection_model="session_passive",
@@ -45,7 +46,7 @@ class _FakeClientLifecycle:
     async def create_client(self, *, client_type: str, display_name: str) -> Client:
         async with self._session_factory() as session:
             client = Client(
-                matrix_user_id=f"@{display_name}:test",
+                transport_user_id=f"@{display_name}:test",
                 display_name=display_name,
                 type=client_type,
             )
@@ -62,15 +63,17 @@ class _NoBridges:
         return []
 
 
-def _service(session_factory: async_sessionmaker[AsyncSession]) -> ProtocolService:
-    svc = object.__new__(ProtocolService)
+def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
+    svc = object.__new__(AgentCore)
     svc.session_factory = session_factory  # type: ignore[attr-defined]
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.api_key_store = ApiKeyStore()  # type: ignore[attr-defined]
     svc.client_lifecycle = _FakeClientLifecycle(session_factory)  # type: ignore[attr-defined]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[attr-defined]
-    svc.config = SimpleNamespace(jwt_secret_key="test-secret")  # type: ignore[attr-defined]
-    # Duck-typed: the attribute exists on ProtocolService after the api-key
+    svc.config = SimpleNamespace(
+        keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None)
+    )  # type: ignore[attr-defined]
+    # Duck-typed: the attribute exists on AgentCore after the api-key
     # cache landed on main; a no-op stand-in keeps this test valid on both
     # sides of that merge.
     svc.api_key_cache = SimpleNamespace(invalidate_agent=lambda *a, **k: None)  # type: ignore[attr-defined]
@@ -87,7 +90,7 @@ async def _make_user(
         return user.id
 
 
-async def _register(svc: ProtocolService, name: str, owner_id: str, **kw: object):
+async def _register(svc: AgentCore, name: str, owner_id: str, **kw: object):
     return await svc.register_agent(
         name=name,
         description=f"{name} desc",

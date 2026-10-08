@@ -6,6 +6,7 @@ out/
 
 # The connection-model benchmark's own bundle of its host entrypoint.
 packages/*/dist-bench/
+packages/*/dist-package/
 
 # App-specific outputs
 apps/*/out/
@@ -115,4 +116,5 @@ apps/*/tooling/node-deps/node_modules/
 
 # Vitest / Browser testing
 .vitest-attachments/
+.vitest/
 **/__screenshots__/

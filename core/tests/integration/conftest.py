@@ -4,7 +4,7 @@ Unlike the unit suite (which fakes the transport), these fixtures boot a real
 database and wire up the subset of `switch_core.main:run()` the feature under
 test needs, in-process. Messaging, membership and provisioning all run against
 that database, so a test drives the genuine path RoomService → provisioning →
-AgentClient receive loop → EventBuffer.
+AgentConsumer receive loop → EventBuffer.
 
 The container mirrors the `postgres` service in
 `deploy/local/docker-compose.yml` (see constants below — keep in sync). It gets
@@ -26,6 +26,7 @@ import subprocess
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
+from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
@@ -37,17 +38,17 @@ from testcontainers.postgres import PostgresContainer
 # Importing models registers every table on Base.metadata for create_all.
 import switch_core.db.models  # noqa: F401
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     RegistrationResult,
     TaskProtocolConfig,
 )
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.clients.agent_client import AgentClient
-from switch_core.clients.client_base import ClientBase
+from switch_core.clients.actor import Actor, AgentActor, HumanActor
+from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
@@ -66,6 +67,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.package_store import PackageStore
@@ -76,6 +78,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.tenant_store import TenantStore
+from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.main import _seed_agent_registration_bootstrap_key
 from switch_core.messages.notify import MessageListener
@@ -85,6 +88,8 @@ from switch_core.room_service import RoomService
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
+from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
+from switch_core.trust.client import NullTrustClient
 
 # ── Mirrors deploy/local/docker-compose.yml — keep in sync ──────────────────────
 POSTGRES_IMAGE = "postgres:16-alpine"
@@ -101,7 +106,7 @@ RUNTIME_ROLE_PREFIX = "switch_app"
 
 # ── Throwaway test constants (not secrets — local ephemeral infra) ──────────────
 SERVER_NAME = "localhost"
-JWT_SECRET = "dev-jwt-secret-test"
+SECRET_KEYS = "test:dev-secret-key-for-integration-tests-0000"
 REGISTRATION_TOKEN = "dev-test-token"
 GATEWAY_ADMIN_EMAIL = "admin@switch.local"
 GATEWAY_ADMIN_PASSWORD = "admin"
@@ -217,9 +222,9 @@ def _build_config(
         db_user=user or pg.username,
         db_password=password or pg.password,
         db_name=db_name,
-        matrix_server_name=SERVER_NAME,
+        id_server_name=SERVER_NAME,
         agent_registration_token=REGISTRATION_TOKEN,
-        jwt_secret_key=JWT_SECRET,
+        secret_keys=SECRET_KEYS,
         gateway_admin_email=GATEWAY_ADMIN_EMAIL,
         gateway_admin_password=GATEWAY_ADMIN_PASSWORD,
         frontend_base_url=None,
@@ -247,7 +252,7 @@ class Harness:
     def __init__(
         self,
         *,
-        protocol: ProtocolService,
+        protocol: AgentCore,
         room_service: RoomService,
         client_lifecycle: ClientLifecycleService,
         room_store: RoomStore,
@@ -310,7 +315,7 @@ class Harness:
             client = await self._await_client(agent_id, timeout)
             await client.wait_ready()
 
-    async def _await_client(self, agent_id: str, timeout: float) -> AgentClient:
+    async def _await_client(self, agent_id: str, timeout: float) -> AgentConsumer:
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
             client = self.client_lifecycle.get_by_agent_id(agent_id)
@@ -319,17 +324,17 @@ class Harness:
             await asyncio.sleep(0.1)
         raise AssertionError(f"No running client for agent {agent_id} after {timeout}s")
 
-    def client_for(self, agent_id: str) -> AgentClient:
+    def client_for(self, agent_id: str) -> AgentConsumer:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise AssertionError(f"No running client for agent {agent_id}")
         return client  # type: ignore[return-value]
 
-    async def matrix_room_id(self, room_id: str) -> str:
+    async def transport_room_id(self, room_id: str) -> str:
         async with self.session_factory() as session:  # type: ignore[operator]
             room = await self.room_store.get(session, room_id)
         assert room is not None
-        return room.matrix_room_id
+        return room.transport_room_id
 
 
 async def _admin_dsn(stack: StackInfo) -> str:
@@ -523,8 +528,8 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
 
         # Per-test in-memory wiring: a fresh EventBuffer / client registry so queued
         # events and client registrations never leak across tests.
-        event_buffer = EventBuffer()
-        connections = ConnectionRegistry()
+        event_buffer = EventBuffer(sequence_base=0)
+        connections = AgentConnectionRegistry()
         collab_lifecycle = _NoBridges()
 
         # The transport's wake-up path: rows are announced over LISTEN/NOTIFY, so
@@ -551,20 +556,34 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             invites=invites,
         )
 
+        room_cache = RoomDeliveryCache(
+            session_factory=session_factory,
+            message_store=session_env.message_store,
+            limits=RoomCacheLimits(
+                max_bytes=config.room_delivery_cache_max_bytes,
+                max_rooms=config.room_delivery_cache_max_rooms,
+                max_rows_per_room=config.room_delivery_cache_max_rows_per_room,
+                max_age_seconds=config.room_delivery_cache_max_age_seconds,
+            ),
+        )
+
         client_factory = ClientFactory(
             client_store=session_env.client_store,
             session_factory=session_factory,
             config=config,
             room_store=session_env.room_store,
             message_store=session_env.message_store,
+            usage_store=UsageStore(),
             media_store=session_env.media_store,
             listener=message_listener,
             invites=invites,
             ephemeral=ephemeral,
+            room_cache=room_cache,
         )
         client_factory.register(
             "agent",
-            AgentClient,
+            AgentActor,
+            AgentConsumer,
             event_buffer=event_buffer,
             agent_store=session_env.agent_store,
             room_store=session_env.room_store,
@@ -574,23 +593,25 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             agent_session_store=session_env.agent_session_store,
             room_role_store=session_env.room_role_store,
             external_user_store=session_env.external_user_store,
+            hosted_launch_store=HostedLaunchStore(),
             connections=connections,
             frontend_base_url=config.frontend_base_url,
         )
-        client_factory.register("user", ClientBase)
-        client_factory.register("bridge", ClientBase)
+        client_factory.register("user", HumanActor)
+        client_factory.register("bridge", Actor)
 
         client_lifecycle = ClientLifecycleService(
-            matrix_admin=provisioning,
+            provisioning=provisioning,
             client_store=session_env.client_store,
             tenant_store=TenantStore(),
             client_factory=client_factory,
             session_factory=session_factory,
             config=config,
+            tenants_isolated=True,
         )
 
         room_service = RoomService(
-            matrix_admin=provisioning,
+            provisioning=provisioning,
             room_store=session_env.room_store,
             agent_store=session_env.agent_store,
             client_lifecycle=client_lifecycle,
@@ -598,9 +619,10 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             collab_bridge_store=session_env.bridge_store,
             resource_service=resource_service,
             session_factory=session_factory,
+            room_cache=room_cache,
         )
 
-        protocol = ProtocolService(
+        protocol = AgentCore(
             agent_store=session_env.agent_store,
             agent_session_store=session_env.agent_session_store,
             room_store=session_env.room_store,
@@ -619,6 +641,9 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             bridge_store=session_env.bridge_store,
             session_factory=session_factory,
             config=config,
+            # Required since #543; no integration test answers an approval.
+            approval_outcomes=MagicMock(),
+            trust_client=NullTrustClient(),
             connections=connections,
         )
 

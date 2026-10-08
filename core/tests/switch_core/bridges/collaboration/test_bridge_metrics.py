@@ -2,7 +2,7 @@
 
 Inbound at `_traced`, the choke point every platform event goes through;
 outbound at the relay rather than the top of the handler, which returns early
-for a puppet's own echo and for a room with no channel mapping.
+for a human actor's own echo and for a room with no channel mapping.
 
 The failure counters matter more than the volume ones: an inbound failure is a
 message a person sent that nobody received.
@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 
 BRIDGE_TENANT = "tenant-bridge"
@@ -30,8 +30,8 @@ def registry() -> Iterator[MetricsRegistry]:
     uninstall()
 
 
-def _bridge() -> BridgeCore:
-    bridge = BridgeCore.__new__(BridgeCore)
+def _bridge() -> CollaborationCore:
+    bridge = CollaborationCore.__new__(CollaborationCore)
     bridge._bridge_id = "bridge-1"
     bridge._bridge_tenant_id = BRIDGE_TENANT
     bridge._bridge_type = "slack"
@@ -71,8 +71,8 @@ async def test_each_inbound_event_kind_is_counted_separately(registry) -> None:
     await bridge._traced("command", _handler)(_event())
 
     assert _points(registry, "switch.bridge.events_in") == {
-        (("event", "message"), ("platform", "slack")): 2.0,
-        (("event", "command"), ("platform", "slack")): 1.0,
+        (("bridge", "collaboration"), ("event", "message"), ("platform", "slack")): 2.0,
+        (("bridge", "collaboration"), ("event", "command"), ("platform", "slack")): 1.0,
     }
 
 
@@ -89,7 +89,11 @@ async def test_a_failing_inbound_handler_is_counted_and_still_raises(
 
     # Counted and re-raised unchanged: whoever handled it before still does.
     assert _points(registry, "switch.bridge.errors") == {
-        (("direction", "inbound"), ("platform", "slack")): 1.0
+        (
+            ("bridge", "collaboration"),
+            ("direction", "inbound"),
+            ("platform", "slack"),
+        ): 1.0
     }
 
 
@@ -100,7 +104,7 @@ def test_an_outbound_relay_is_counted(registry) -> None:
         pass
 
     assert _points(registry, "switch.bridge.events_out") == {
-        (("kind", "message"), ("platform", "slack")): 1.0
+        (("bridge", "collaboration"), ("kind", "message"), ("platform", "slack")): 1.0
     }
 
 
@@ -113,12 +117,16 @@ def test_a_failing_outbound_relay_is_counted_and_still_raises(registry) -> None:
 
     collected = _collect(registry)
     assert collected["switch.bridge.errors"] == {
-        (("direction", "outbound"), ("platform", "slack")): 1.0
+        (
+            ("bridge", "collaboration"),
+            ("direction", "outbound"),
+            ("platform", "slack"),
+        ): 1.0
     }
     # Still counted as attempted: the rate of attempts is what the failure
     # rate is a fraction of.
     assert collected["switch.bridge.events_out"] == {
-        (("kind", "media"), ("platform", "slack")): 1.0
+        (("bridge", "collaboration"), ("kind", "media"), ("platform", "slack")): 1.0
     }
 
 

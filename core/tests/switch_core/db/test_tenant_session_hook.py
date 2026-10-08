@@ -337,7 +337,7 @@ class TestARowFromAnotherTenantIsRefusedFromTheIdentityMap:
                 Client(
                     id=client_id,
                     tenant_id=TENANT_A,
-                    matrix_user_id=f"@{client_id}:localhost",
+                    transport_user_id=f"@{client_id}:localhost",
                     display_name="a client",
                     type="agent",
                 )

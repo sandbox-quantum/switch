@@ -54,6 +54,15 @@ ingress:
   # gateway: the Bearer-auth agent bridge + MCP, and public OAuth/MCP discovery.
   agentApiPaths:
     - /agents
+    - /hosted
+    # Session hosts report session starts, turn activity and approval requests
+    # here, and poll for approval answers.
+    - /agent-sessions
+    - /version
+    - /deeplink
+    # Agents controllers: enrollment, tokens, assignment, status and their
+    # event stream (/v1/management/..., /v1/controllers/...).
+    - /v1
     - /mcp
     - /oauth
     - /.well-known
@@ -82,8 +91,10 @@ ingress:
 #      POSTGRES_PASSWORD (unless postgresql.existingSecret is set),
 #      DB_OWNER_PASSWORD (only if postgresql.owner.username is set, and unless
 #        postgresql.owner.existingSecret is set),
-#      AGENT_REGISTRATION_TOKEN, JWT_SECRET_KEY, GATEWAY_ADMIN_EMAIL,
+#      AGENT_REGISTRATION_TOKEN, SECRET_KEYS, GATEWAY_ADMIN_EMAIL,
 #      GATEWAY_ADMIN_PASSWORD,
+#      JWT_SECRET_KEY (optional, legacy — see secrets.jwtSecretKey),
+#      CONTROLLER_TOKEN_SECRET (if switchCore.agentManagement.enabled),
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
 #      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled).
 secrets:
@@ -94,14 +105,36 @@ secrets:
   # Password for postgresql.owner.username. Required when that is set, unless
   # postgresql.owner.existingSecret names a Secret that already carries it.
   dbOwnerPassword: ""
+  # Password for the managed-mode runtime role (postgresql.managed
+  # .runtimeUsername). Optional; see that setting for why to set it. Not
+  # usable with existingSecret: use postgresql.managed.runtimeExistingSecret.
+  dbRuntimePassword: ""
   agentRegistrationToken: ""
+  # The server's master keys, "<id>:<secret>" comma-separated, current first;
+  # each secret at least 32 characters. Every signing and encryption key is
+  # derived from these. To rotate, put a new entry first and keep the old one
+  # until a boot has re-encrypted stored values (docs/old/key-rotation.md).
+  # Generate one with: echo "$(date +%Y%m):$(openssl rand -hex 32)"
+  secretKeys: ""
+  # Legacy: the single secret used before secretKeys. Keep it set through the
+  # first upgrade so existing sessions, Mattermost buttons and stored
+  # credentials keep working; the first boot re-encrypts stored credentials
+  # under secretKeys. Remove it afterwards.
   jwtSecretKey: ""
   gatewayAdminEmail: ""
   gatewayAdminPassword: ""
   mattermostAdminPassword: ""
   mattermostUserPassword: ""
+  # Signs agent controllers' access tokens (required when
+  # switchCore.agentManagement.enabled), at least 32 characters. Kept apart from
+  # secretKeys so rotating either never invalidates the other. Generate one
+  # with: openssl rand -hex 32
+  controllerTokenSecret: ""
   # Gateway OIDC client secret (required when switchCore.oidc.enabled).
   gatewayOidcClientSecret: ""
+  # SMTP relay password for invitation e-mails (required when
+  # switchCore.smtp.enabled and switchCore.smtp.username is set).
+  gatewaySmtpPassword: ""
   # `key=value` pairs, comma-separated, sent on every OTLP request. Here rather
   # than beside the other observability settings because the documented use for
   # it is a collector's API key, and every other credential in this chart comes
@@ -112,9 +145,22 @@ secrets:
   # a post by anyone who learned the URL.
   slackAppClientSecret: ""
   slackAppSigningSecret: ""
+  # Distributed Discord app (required when switchCore.discordApp.enabled). The
+  # bot token is the application-wide credential the single shared Gateway
+  # connection authenticates with — it is deployment config, not per install, so
+  # it lives here and is never stored against an install or revoked on disconnect.
+  discordAppClientSecret: ""
+  discordAppBotToken: ""
 
 # ── Switch Core (FastAPI) ─────────────────────────────────────────────────────
 switchCore:
+  # Existing Secret with github.json (client_id, client_secret, slug, origin).
+  githubConnectionsSecret: ""
+  hostedControllerSecret: ""
+  hostedLaunchCapacity: 0
+  hostedDiskRetentionDays: 7
+  hostedIdleStopMinutes: 30
+  hostedProviderVerificationEnabled: false
   image: switch-core:latest
   imagePullPolicy: Always
   logLevel: INFO
@@ -187,6 +233,13 @@ switchCore:
     endpoint: https://telemetry.flintai.dev
     # How often the usage snapshot is collected and sent.
     snapshotIntervalHours: 24
+    # Which Amplitude project the usage lands in: prod, staging, dev or local.
+    # Leave it at prod unless this is one of Flint's own non-production
+    # deployments; anything else is refused at startup.
+    environment: prod
+    # Whether this is one of Flint's own deployments, so staff usage can be
+    # told from adoption. Leave it false on any other deployment.
+    internal: false
 
   # Public base URL the gateway is served on (used for links / OIDC redirects).
   frontendBaseUrl: ""
@@ -200,6 +253,12 @@ switchCore:
   # gateway is served over HTTPS (ALB / Tailscale); keep false only for plain-HTTP
   # local dev.
   cookieSecure: true
+  # Allow email+password self sign-up on the gateway login page. Takes effect
+  # only while signup.mode is default_tenant, where a new account joins the
+  # deployment's one pre-existing workspace.
+  signupEnabled: false
+  # Most users created per rolling hour, counting every way a user is created.
+  signupMaxPerHour: 20
   # Gateway OIDC login (bring-your-own IdP, e.g. Okta). Disabled by default;
   # set enabled=true and supply issuerUrl/clientId (plus
   # secrets.gatewayOidcClientSecret) to gate the gateway behind OIDC. Provider
@@ -220,6 +279,59 @@ switchCore:
     requireEmailVerified: true
     # Set false to disable password login entirely (OIDC-only).
     passwordLoginEnabled: true
+  # Where someone signing in through the IdP for the first time lands. Who may
+  # sign in at all is the IdP's decision; this decides what they get.
+  #   default_tenant — joined to the deployment's one pre-existing workspace
+  #   invite_only    — no workspace until they accept an invitation; only an
+  #                    operator may create one
+  #   open           — no workspace, and they may create their own, up to
+  #                    maxWorkspacesPerUser
+  signup:
+    mode: default_tenant
+    # Most workspaces one person may ever create (operators are exempt); 0
+    # turns self-service creation off. Applies in every mode but invite_only,
+    # which allows none.
+    maxWorkspacesPerUser: 3
+  # Answer a person with several workspaces and none selected with a 409 that
+  # lists them, rather than a 403. The gateway UI does not need it; turn it on
+  # once every API client authenticating against this deployment handles it.
+  tenantChoiceEnabled: false
+  # Agent management: managed agents, and the agent controllers (Switch Console,
+  # or switch-agent-controller on a user's own machine) that run them. Needs
+  # secrets.controllerTokenSecret, and `/v1` routed to switch-core
+  # (ingress.agentApiPaths does by default).
+  agentManagement:
+    enabled: false
+    # How often a controller must report; one silent for three of these is
+    # shown as unknown and gets no new placements.
+    statusIntervalSeconds: 60
+  # Private hosts switch-core may reach at a URL a tenant or agent supplied —
+  # a Mattermost server, an OpenCode server, an agent icon. Hostnames or CIDRs.
+  # Anything else that is not a public address is refused, and link-local and
+  # cloud metadata addresses are refused even when listed. The bundled
+  # Mattermost (mattermost.enabled) is added automatically.
+  outbound:
+    allowedPrivateHosts: []
+  # Invitation e-mails. When enabled, an invitation addressed to an e-mail is
+  # sent there through this SMTP relay (SES SMTP, Postmark, a company relay —
+  # anything that speaks SMTP). Off, the invitation is still created and the
+  # admin is told to share the link themselves. Requires frontendBaseUrl, which
+  # the link in the e-mail points at.
+  smtp:
+    enabled: false
+    host: ""
+    # 587 with starttls, 465 with tls; none is for a relay on a trusted network.
+    port: 587
+    tls: starttls
+    # Leave empty for a relay that needs no login; set it and
+    # secrets.gatewaySmtpPassword otherwise.
+    username: ""
+    # The From address, e.g. "Switch <invites@your-domain>".
+    from: ""
+    # Addressed invitations one workspace may send per 24 hours. With sign-up
+    # open anyone can own a workspace, so this keeps the relay from being used
+    # to mail arbitrary addresses. Operators are exempt.
+    emailsPerDayPerWorkspace: 50
   # The distributed Slack app: the one a customer installs into their workspace
   # by clicking a button, as opposed to an app an operator registers themselves
   # and pastes a bot token for. Off unless you have registered such an app and
@@ -238,6 +350,30 @@ switchCore:
     # move every deeplink along with it.
     messagingPublicUrl: ""
     clientId: ""
+  # The distributed Discord app: one application we register that a customer adds
+  # to their server by clicking "Add to Server", never seeing a token — as
+  # opposed to a self-registered app an operator pastes a bot token for. Off
+  # unless you have registered and are distributing such an app.
+  #
+  # Unlike Slack there is no inbound webhook: messages and interactions arrive
+  # over the Gateway, so the only public route is the OAuth callback under
+  # /messaging. Enabling it still commits the deployment to being reachable at
+  # messagingPublicUrl (the callback origin) — add /messaging to
+  # ingress.agentApiPaths as well. The client secret and bot token are supplied
+  # through secrets.discordAppClientSecret / secrets.discordAppBotToken.
+  discordApp:
+    enabled: false
+    # Public origin Discord sends the OAuth callback to — scheme + host, https,
+    # no path. The same deployment-wide origin as slackApp.messagingPublicUrl; if
+    # both apps are enabled the Slack value is used and this one is ignored.
+    messagingPublicUrl: ""
+    clientId: ""
+    applicationId: ""
+    # Privileged Gateway intents, each off by default and requiring Discord
+    # verification past ~100 guilds (counted across every tenant). Off is
+    # mention-only operation; leave both false unless the app is verified.
+    messageContent: false
+    members: false
   # Bearer-token resolution runs before every authenticated request and agents
   # beat continuously, so a successful resolution is memoised in process for
   # this many seconds. Only successes are cached — an unknown or revoked token
@@ -345,18 +481,19 @@ switchCore:
     # for it, so this must match switch-core's own COLLABORATION_CALLBACK_PORT
     # default.
     port: 8081
-  # switch-core MUST run as a single replica. Four things live in the process
-  # rather than the database: the per-agent event buffer, the invite bus, the
-  # ephemeral (presence) bus, and the message listener's subscriber registry. A
+  # switch-core MUST run as a single replica. Live state stays in the process
+  # rather than the database: GitHub sign-in flows, the per-agent event buffer,
+  # the invite and presence buses, and the message listener's subscriber registry. A
   # second replica would hold its own copy of each, so a signal raised in one
   # would never reach a client attached to the other. This is enforced at
   # render time; do not raise it.
   replicaCount: 1
   # Run DB migrations (alembic upgrade head) as a pre-upgrade hook Job, before
   # the new pods roll, so a failed migration blocks the upgrade instead of
-  # crash-looping the new pods. switch-core also migrates on startup (which
-  # covers fresh installs, where pre-upgrade hooks don't run), so the Job is
-  # idempotent. Disable only if you run migrations out-of-band.
+  # crash-looping the new pods. The switch-core pod also migrates in an init
+  # container before the server starts (which covers fresh installs, where
+  # pre-upgrade hooks don't run), so the Job is idempotent. Disable only if you
+  # run migrations out-of-band.
   migrations:
     preUpgradeJob: true
   resources:
@@ -513,9 +650,9 @@ postgresql:
   # transaction without executing anything for longer than this (e.g. "15s"),
   # so a leaked checkout becomes a loud, attributable error instead of a slot
   # that never comes back. Empty (the default) leaves it off, and it must stay
-  # off until switch-core stops holding transactions across Matrix round trips
-  # on the room-membership paths — until then this trades request latency for
-  # membership drift: agents invited on Matrix with no row recording it. Set it
+  # off until switch-core stops holding transactions open across the invite and
+  # kick calls on the room-membership paths. Until then this trades request
+  # latency for membership drift: agents invited with no row recording it. Set it
   # in staging first. Migrations are unaffected; Alembic does not read it.
   idleInTransactionSessionTimeout: ""
 
@@ -541,10 +678,12 @@ postgresql:
   # distinct from DB_USER above (or postgresql.external.username for
   # mode: existing), which name the RUNTIME role every request actually
   # authenticates as and which the row-level-security policies apply to.
-  # switch-core uses the owner connection for exactly two things at boot, and
-  # never to serve a request: applying Alembic migrations, and re-issuing the
-  # runtime role's grants immediately afterwards, so a table a migration just
-  # added is usable by the role that is about to need it.
+  # switch-core uses the owner connection for exactly two things, and never to
+  # serve a request: applying Alembic migrations, and re-issuing the runtime
+  # role's grants immediately afterwards, so a table a migration just added is
+  # usable by the role that is about to need it. Both run in the migration Job
+  # and the pod's init container; the serving container is not given the
+  # owner's password at all.
   #
   # mode: managed defaults this to the bootstrapped "postgres" superuser (the
   # same account POSTGRES_USER creates on the StatefulSet below) whenever
@@ -650,17 +789,23 @@ postgresql:
     # templates/postgresql/configmap-init.yaml and, for an upgrade of a
     # deployment that predates it, by the create-runtime-role pre-upgrade hook.
     #
-    # Its password is deliberately the bootstrapped superuser's own —
-    # secrets.postgresPassword, or whatever postgresql.existingSecret resolves
-    # to — rather than a password of its own. That adds no new required value,
-    # keeps working unmodified with postgresql.existingSecret, and exposes
-    # nothing new: this pod already holds that password as DB_OWNER_PASSWORD.
-    # The point of splitting DB_USER from the superuser is that the
-    # row-level-security policies apply to the connection serving requests,
-    # not to compartmentalise passwords between two accounts that already
-    # trust each other — so change the username here if you want, but there is
-    # no separate password field to set alongside it.
+    # Its password is secrets.dbRuntimePassword, or the key named by
+    # runtimeExistingSecret below. Set one of them: the serving container is
+    # not given the superuser's password, and a runtime role sharing it hands
+    # that password back. Left unset, the role falls back to the superuser's
+    # own password (secrets.postgresPassword / postgresql.existingSecret), as
+    # releases before this setting did, and the install notes warn about it.
+    #
+    # With secrets.existingSecret, secrets.dbRuntimePassword is refused (the
+    # chart renders no Secret to hold it): set runtimeExistingSecret instead,
+    # which may name that same Secret.
+    #
+    # The create-runtime-role pre-upgrade hook re-applies the password on
+    # every upgrade, so setting it on an existing deployment takes effect in
+    # that same upgrade.
     runtimeUsername: switch_app
+    runtimeExistingSecret: ""
+    runtimeExistingSecretKey: DB_RUNTIME_PASSWORD
 
   # Postgres server parameters, passed as `-c name=value`. Each client
   # connection is a backend process costing several MB of non-reclaimable

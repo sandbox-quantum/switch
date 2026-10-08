@@ -21,7 +21,7 @@ async def _make_agent(session: AsyncSession, name: str) -> Agent:
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{name}:test",
+        transport_user_id=f"@{name}:test",
         display_name=name,
         type="agent",
     )
@@ -48,7 +48,8 @@ class TestGetWithMembership:
         store = RoomStore()
         async with session_factory() as session:
             room = await store.create(
-                session, Room(matrix_room_id="!a:test", name="alpha", description="d")
+                session,
+                Room(transport_room_id="!a:test", name="alpha", description="d"),
             )
             agent = await _make_agent(session, "member")
             await store.add_agents(session, room.id, [agent.id])
@@ -70,7 +71,7 @@ class TestGetWithMembership:
         store = RoomStore()
         async with session_factory() as session:
             room = await store.create(
-                session, Room(matrix_room_id="!b:test", name="beta", description="d")
+                session, Room(transport_room_id="!b:test", name="beta", description="d")
             )
             outsider = await _make_agent(session, "outsider")
             await session.commit()
@@ -103,7 +104,8 @@ class TestGetWithMembership:
         store = RoomStore()
         async with session_factory() as session:
             room = await store.create(
-                session, Room(matrix_room_id="!c:test", name="gamma", description="d")
+                session,
+                Room(transport_room_id="!c:test", name="gamma", description="d"),
             )
             insider = await _make_agent(session, "insider")
             outsider = await _make_agent(session, "stranger")

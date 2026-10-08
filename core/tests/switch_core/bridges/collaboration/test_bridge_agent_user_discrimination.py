@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundMessage,
@@ -54,9 +54,9 @@ def _fake_bridge(*, agents: set[str]) -> SimpleNamespace:
     async def _is_registered_agent(name: str) -> bool:
         return name in agents
 
-    async def _ensure_user_in_matrix_room(**kwargs: str):  # noqa: ANN202
+    async def _ensure_human_in_room(**kwargs: str):  # noqa: ANN202
         ensure_calls.append(kwargs)
-        return None  # short-circuits the message path after the puppet step
+        return None  # short-circuits the message path after the human actor step
 
     async def _handle_agent_joined_channel(join: InboundAgentJoin) -> None:
         agent_joins.append(join)
@@ -68,7 +68,7 @@ def _fake_bridge(*, agents: set[str]) -> SimpleNamespace:
         _handle_text_answer=_no_text_answer,
         _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
-        _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
+        _ensure_human_in_room=_ensure_human_in_room,
         _handle_agent_joined_channel=_handle_agent_joined_channel,
         _maybe_guide_self_mention=_maybe_guide_self_mention,
         _channel_to_room={"chan-1": ("room-uuid", "!matrix:switch.local")},
@@ -84,9 +84,9 @@ def _fake_bridge(*, agents: set[str]) -> SimpleNamespace:
 async def test_inbound_message_from_agent_is_dropped() -> None:
     bridge = _fake_bridge(agents={"cc-marketing.chad"})
 
-    await BridgeCore._handle_inbound_message(bridge, _msg("cc-marketing.chad"))
+    await CollaborationCore._handle_inbound_message(bridge, _msg("cc-marketing.chad"))
 
-    # Agent's own echo: never re-imported, never puppeted as a user.
+    # Agent's own echo: never re-imported, never given a human actor as a user.
     assert bridge.ensure_calls == []
 
 
@@ -94,7 +94,7 @@ async def test_inbound_message_from_third_party_bot_is_bridged() -> None:
     # Not a registered agent (e.g. a GitHub/CI bot or a human) — must flow in.
     bridge = _fake_bridge(agents={"cc-marketing.chad"})
 
-    await BridgeCore._handle_inbound_message(bridge, _msg("github-ci-bot"))
+    await CollaborationCore._handle_inbound_message(bridge, _msg("github-ci-bot"))
 
     assert len(bridge.ensure_calls) == 1
     assert bridge.ensure_calls[0]["external_username"] == "github-ci-bot"
@@ -106,17 +106,19 @@ async def test_inbound_message_from_third_party_bot_is_bridged() -> None:
 async def test_user_join_from_agent_routes_to_agent_join() -> None:
     bridge = _fake_bridge(agents={"github.phil.conway"})
 
-    await BridgeCore._handle_user_joined_channel(bridge, _join("github.phil.conway"))
+    await CollaborationCore._handle_user_joined_channel(
+        bridge, _join("github.phil.conway")
+    )
 
-    # Routed to the agent-join path; no external-user puppet created.
+    # Routed to the agent-join path; no external-user human actor created.
     assert [j.agent_name for j in bridge.agent_joins] == ["github.phil.conway"]
     assert bridge.ensure_calls == []
 
 
-async def test_user_join_from_human_creates_puppet() -> None:
+async def test_user_join_from_human_creates_human_actor() -> None:
     bridge = _fake_bridge(agents={"github.phil.conway"})
 
-    await BridgeCore._handle_user_joined_channel(bridge, _join("alice"))
+    await CollaborationCore._handle_user_joined_channel(bridge, _join("alice"))
 
     assert bridge.agent_joins == []
     assert len(bridge.ensure_calls) == 1

@@ -65,7 +65,12 @@ export function ModelCombobox({
       // in the box is what gets saved, listed or not.
       inputValue={value}
       onInputValueChange={(next: string, details) => {
-        if (details.reason === 'escape-key') return;
+        // Pressing Enter on text that matches no item makes the combobox clear
+        // the box ('input-clear'), which would throw away a model id the user
+        // typed on purpose — routine here, since the catalogue is a snapshot and
+        // a valid model may not be in it. This field offers no clear control, so
+        // the only clears are these spurious ones; ignore them, as with escape.
+        if (details.reason === 'escape-key' || details.reason === 'input-clear') return;
         onChange(next);
         // Typing has to open the list, and does not on its own here: the input
         // value is controlled, so the combobox treats the change as programmatic

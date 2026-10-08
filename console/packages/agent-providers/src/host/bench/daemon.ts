@@ -23,14 +23,17 @@
 import { spawn } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { ensureSessions, serveControl } from '../control';
+import { openSwitchStream, runAgentHost } from '../agent-host';
+import { AttachmentTransfers } from '../attachment-transfers';
+import { type ControlContext, ensureSessions, serveControl } from '../control';
+import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from '../exit-codes';
+import { hostedWorker } from '../hosted-watcher';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from '../launch';
 import { replaceOwner } from '../ownership-lock';
 import { ownProcessGroup } from '../process-fence';
 import { SessionLinks } from '../session-channel';
 import { sharedConfigSchema } from '../shared-config';
 import { hostSessionProcess } from '../shared-host';
-import { runSharedWatcher } from '../shared-watcher';
 import { superviseSharedHost } from '../supervisor';
 import { WatcherControl } from '../watcher-tools';
 import { createBenchAdapter } from './adapter';
@@ -72,6 +75,7 @@ async function main(): Promise<void> {
       signal: stop.signal,
       build: process.argv[1]!,
       links: null,
+      logRedactions: [],
     });
   } else if (mode === '--watch-worker') {
     const stop = new AbortController();
@@ -83,16 +87,33 @@ async function main(): Promise<void> {
     const ensure = ensureSessions(supervision);
     // Console's "Reconnect to room" reaches the watcher through the control port.
     const control = new WatcherControl();
+    const transfers = new AttachmentTransfers(resolve(root));
+    await transfers.clear();
     // A watcher that stops (disabled, stood down after a takeover, or
     // signalled) takes the process with it: the control port and every
     // session host go too, so the supervisor sees a clean exit and does not
     // start it again.
+    const context: ControlContext = {
+      agentId: config.session.agentId,
+      links,
+      ensure,
+      watcher: control,
+      transfers,
+    };
+    // A bootstrapped watcher attaches as the hosted worker, as the shipped one does.
+    const hosted = await hostedWorker(config, resolve(root), context);
     try {
       await Promise.all([
-        runSharedWatcher(root, config, stop.signal, supervision, control).finally(() =>
-          stop.abort()
-        ),
-        serveControl(resolve(root), links, ensure, control, stop.signal),
+        runAgentHost(
+          root,
+          config,
+          stop.signal,
+          supervision,
+          control,
+          hosted,
+          openSwitchStream
+        ).finally(() => stop.abort()),
+        serveControl(resolve(root), context, stop.signal),
       ]);
     } finally {
       await supervision.close();
@@ -139,12 +160,17 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (error) {
-  if (mode !== '--supervise' && mode !== '--watch-supervise') {
-    await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
-    await replaceOwner(join(root, 'supervisor', 'failure.json'), {
-      message: error instanceof Error ? error.message : String(error),
-    });
+  if (error instanceof WorkerObsoleteError) {
+    console.error(error.message);
+    process.exitCode = OBSOLETE_BUNDLE_EXIT_CODE;
+  } else {
+    if (mode !== '--supervise' && mode !== '--watch-supervise') {
+      await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
+      await replaceOwner(join(root, 'supervisor', 'failure.json'), {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    console.error(error);
+    process.exitCode = 1;
   }
-  console.error(error);
-  process.exitCode = 1;
 }

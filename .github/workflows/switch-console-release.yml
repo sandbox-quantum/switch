@@ -21,6 +21,15 @@ name: Switch Console release
 # `switch-console-v` MUST match apps/switch-console-desktop/package.json `version`).
 # `workflow_dispatch` builds the artifacts for testing without creating a Release.
 #
+# Canary: push a tag like `v0.38.0-canary.3` (or `v0.38.0-canary.rc.1` for a release
+# candidate) on a commit that is on `main` or a `release/*` branch. The same jobs
+# build with the canary identity and config, stamp the tag's version into
+# package.json on the runner (nothing is committed), upload `canary*.yml` channel
+# files instead of `latest*.yml`, and publish a **prerelease** that is never marked
+# Latest — stable installs read only the Latest release, so they never see it. The
+# tag has no `switch-console-` prefix because electron-updater's canary lookup
+# skips any tag that is not a bare semver. Only the newest canaries are kept.
+#
 # The Release stays a **draft** until every platform job has uploaded, and is
 # published by the final `publish-release` job. A draft is invisible to
 # electron-updater (`/releases/latest` skips drafts, and the prerelease listing
@@ -35,6 +44,7 @@ on:
   push:
     tags:
       - 'switch-console-v*'
+      - 'v*-canary.*'
   workflow_dispatch:
 
 permissions:
@@ -45,6 +55,104 @@ defaults:
     working-directory: console
 
 jobs:
+  # Decides, once, what this run builds: the channel, the version, and the names
+  # that differ between channels. Every other job reads these outputs rather than
+  # re-deriving them from the ref, and every tag rule is enforced here.
+  resolve:
+    name: Resolve channel and version
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.resolve.outputs.channel }}
+      version: ${{ steps.resolve.outputs.version }}
+      builder_config: ${{ steps.resolve.outputs.builder_config }}
+      manifest: ${{ steps.resolve.outputs.manifest }}
+      artifact_prefix: ${{ steps.resolve.outputs.artifact_prefix }}
+      vite_build: ${{ steps.resolve.outputs.vite_build }}
+      vite_release: ${{ steps.resolve.outputs.vite_release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Branch and tag history, to check which branches contain a canary tag.
+          fetch-depth: 0
+
+      - name: Resolve
+        id: resolve
+        run: |
+          pkg_version="$(node -p "require('./apps/switch-console-desktop/package.json').version")"
+          case "$GITHUB_REF" in
+            refs/tags/switch-console-v*)
+              channel=stable
+              version="${GITHUB_REF_NAME#switch-console-v}"
+              echo "tag=$version package.json=$pkg_version"
+              if [ "$version" != "$pkg_version" ]; then
+                echo "::error::Tag version ($version) does not match apps/switch-console-desktop/package.json version ($pkg_version). Bump package.json and re-tag."
+                exit 1
+              fi
+              ;;
+            refs/tags/v*)
+              channel=canary
+              version="${GITHUB_REF_NAME#v}"
+              if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-canary\.([0-9]+|rc\.[0-9]+)$'; then
+                echo "::error::Canary tag $GITHUB_REF_NAME must look like v1.2.0-canary.<n> or v1.2.0-canary.rc.<n>."
+                exit 1
+              fi
+              # A canary previews an unreleased version. One at or below the
+              # current stable would rank below what stable users already run,
+              # and canary installs would never move to it.
+              base="${version%%-*}"
+              echo "canary base=$base package.json=$pkg_version"
+              if [ "$(printf '%s\n%s\n' "$pkg_version" "$base" | sort -V | head -n1)" != "$pkg_version" ]; then
+                echo "::error::Canary base version $base is below package.json $pkg_version."
+                exit 1
+              fi
+              if git rev-parse -q --verify "refs/tags/switch-console-v$base" >/dev/null; then
+                echo "::error::switch-console-v$base is already released; a canary must preview a later version."
+                exit 1
+              fi
+              commit="$(git rev-parse "$GITHUB_REF^{commit}")"
+              branches="$(git branch -r --contains "$commit" --format='%(refname:short)')"
+              echo "branches containing $commit:"
+              echo "$branches"
+              if ! printf '%s\n' "$branches" | grep -Eq '^origin/(main|release/.+)$'; then
+                echo "::error::Canary tag $GITHUB_REF_NAME points at $commit, which is not on main or a release/* branch."
+                exit 1
+              fi
+              ;;
+            *)
+              # workflow_dispatch: a stable test build of the current package.json.
+              channel=stable
+              version="$pkg_version"
+              ;;
+          esac
+          # A tagged build is a published release; a workflow_dispatch test build
+          # is not. The app reports its usage to production's Amplitude project
+          # (or staging's, for a canary) only when this says it is a release.
+          case "$GITHUB_REF" in
+            refs/tags/*) vite_release=1 ;;
+            *) vite_release= ;;
+          esac
+          if [ "$channel" = canary ]; then
+            builder_config=electron-builder.canary.config.ts
+            manifest=canary
+            artifact_prefix=switch-console-canary
+            vite_build=canary
+          else
+            builder_config=electron-builder.config.ts
+            manifest=latest
+            artifact_prefix=switch-console
+            vite_build=
+          fi
+          {
+            echo "channel=$channel"
+            echo "version=$version"
+            echo "builder_config=$builder_config"
+            echo "manifest=$manifest"
+            echo "artifact_prefix=$artifact_prefix"
+            echo "vite_build=$vite_build"
+            echo "vite_release=$vite_release"
+          } | tee -a "$GITHUB_OUTPUT"
+
   # Creates the (assetless) Release up front so the platform jobs can run
   # concurrently and each upload into it, rather than chaining Linux behind macOS
   # purely to wait for the Release to exist. It is created as a draft: an
@@ -54,26 +162,34 @@ jobs:
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
+    needs: resolve
     if: startsWith(github.ref, 'refs/tags/')
+    defaults:
+      run:
+        working-directory: .
     steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Verify tag matches package.json version
-        run: |
-          tag_version="${GITHUB_REF_NAME#switch-console-v}"
-          pkg_version="$(node -p "require('./apps/switch-console-desktop/package.json').version")"
-          echo "tag=$tag_version package.json=$pkg_version"
-          if [ "$tag_version" != "$pkg_version" ]; then
-            echo "::error::Tag version ($tag_version) does not match apps/switch-console-desktop/package.json version ($pkg_version). Bump package.json and re-tag."
-            exit 1
-          fi
-
-      - name: Create the Release
+      - name: Create the Release (canary prerelease)
+        if: needs.resolve.outputs.channel == 'canary'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
-          version="${GITHUB_REF_NAME#switch-console-v}"
+          notes="Switch Console Canary $VERSION — a preview build for internal testing. Canary installs update themselves to newer canaries; stable installs never see this release.
+
+          Download the \`switch-console-canary-*\` installer for your platform."
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Switch Console Canary $VERSION" \
+            --draft \
+            --prerelease \
+            --notes "$notes"
+
+      - name: Create the Release
+        if: needs.resolve.outputs.channel == 'stable'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ needs.resolve.outputs.version }}
+        run: |
           notes="Switch Console desktop app $version — macOS Apple silicon + Intel, Linux x64 + arm64, and Windows x64.
 
           **macOS:** download the .dmg for your Mac — \`switch-console-arm64.dmg\` for Apple silicon (M1 and later), \`switch-console-x64.dmg\` for Intel. Not sure which you have? Apple menu → About This Mac. Open it and drag Switch Console to Applications. Both are signed and notarized with SandboxAQ's Developer ID — they open without a Gatekeeper bypass, and both receive in-app updates.
@@ -97,8 +213,8 @@ jobs:
     environment: release
     # Runs on dispatch too (from main), where create-release is skipped rather
     # than run. Restricted to main / tags so a feature-branch dispatch is skipped.
-    needs: create-release
-    if: ${{ !cancelled() && needs.create-release.result != 'failure' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main') }}
+    needs: [resolve, create-release]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.create-release.result != 'failure' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main') }}
     strategy:
       # One arch must not take the other down with it. A half-built pair still
       # cannot ship: merge-mac-manifest needs both manifests, and publish-release
@@ -138,16 +254,21 @@ jobs:
           cache: pnpm
           cache-dependency-path: console/pnpm-lock.yaml
 
-      - name: Verify tag matches package.json version
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Stamp the canary version
+        # The app reports, and electron-updater compares, package.json's version.
+        # A canary's comes from its tag and is written here, never committed.
+        if: needs.resolve.outputs.channel == 'canary'
+        working-directory: console/apps/switch-console-desktop
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
-          tag_version="${GITHUB_REF_NAME#switch-console-v}"
-          pkg_version="$(node -p "require('./apps/switch-console-desktop/package.json').version")"
-          echo "tag=$tag_version package.json=$pkg_version"
-          if [ "$tag_version" != "$pkg_version" ]; then
-            echo "::error::Tag version ($tag_version) does not match apps/switch-console-desktop/package.json version ($pkg_version). Bump package.json and re-tag."
-            exit 1
-          fi
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.version = process.env.VERSION;
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '
+          node -p "require('./package.json').version"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -159,6 +280,11 @@ jobs:
 
       - name: Build workspace packages + app
         # Root recursive build (topological): packages/** then the desktop app.
+        env:
+          VITE_BUILD: ${{ needs.resolve.outputs.vite_build }}
+          VITE_RELEASE: ${{ needs.resolve.outputs.vite_release }}
+          # Only canary knows where Switch Cloud is; a build without it offers no Cloud.
+          MAIN_VITE_SWITCH_CLOUD_URL: ${{ needs.resolve.outputs.channel == 'canary' && vars.SWITCH_CLOUD_URL || '' }}
         run: pnpm run build
 
       - name: Write App Store Connect API key
@@ -183,7 +309,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.APPLE_CSC_LINK != '' && 'true' || 'false' }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: pnpm exec electron-builder --mac --${{ matrix.arch }} --publish never --config electron-builder.config.ts
+        run: pnpm exec electron-builder --mac --${{ matrix.arch }} --publish never --config ${{ needs.resolve.outputs.builder_config }}
 
       - name: Verify the package is really ${{ matrix.arch }}
         # The flag says which arch was asked for; these binaries say which was
@@ -301,7 +427,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: mac-update-manifest-${{ matrix.arch }}
-          path: console/apps/switch-console-desktop/release/latest-mac.yml
+          path: console/apps/switch-console-desktop/release/${{ needs.resolve.outputs.manifest }}-mac.yml
           if-no-files-found: error
 
       - name: Upload build artifacts (dispatch runs, no Release)
@@ -323,10 +449,13 @@ jobs:
   merge-mac-manifest:
     name: Merge the macOS channel manifest
     runs-on: ubuntu-latest
-    needs: build-macos
+    needs: [resolve, build-macos]
     # Skipped when either mac job failed or was skipped, which leaves no
-    # latest-mac.yml on the Release and stops publish-release.
+    # macOS channel file on the Release and stops publish-release.
     if: ${{ !cancelled() && needs.build-macos.result == 'success' }}
+    env:
+      # `latest` or `canary`: electron-updater's channel file name for this build.
+      MANIFEST: ${{ needs.resolve.outputs.manifest }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -352,21 +481,21 @@ jobs:
           pattern: mac-update-manifest-*
           path: mac-manifests
 
-      - name: Merge into one latest-mac.yml
+      - name: Merge into one ${{ needs.resolve.outputs.manifest }}-mac.yml
         working-directory: console/apps/switch-console-desktop
         run: |
           node --experimental-strip-types scripts/merge-mac-update-manifest.ts \
-            --out "$RUNNER_TEMP/latest-mac.yml" \
-            arm64="$GITHUB_WORKSPACE/mac-manifests/mac-update-manifest-arm64/latest-mac.yml" \
-            x64="$GITHUB_WORKSPACE/mac-manifests/mac-update-manifest-x64/latest-mac.yml"
-          cat "$RUNNER_TEMP/latest-mac.yml"
+            --out "$RUNNER_TEMP/$MANIFEST-mac.yml" \
+            arm64="$GITHUB_WORKSPACE/mac-manifests/mac-update-manifest-arm64/$MANIFEST-mac.yml" \
+            x64="$GITHUB_WORKSPACE/mac-manifests/mac-update-manifest-x64/$MANIFEST-mac.yml"
+          cat "$RUNNER_TEMP/$MANIFEST-mac.yml"
 
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/latest-mac.yml" \
+          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/$MANIFEST-mac.yml" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
@@ -375,7 +504,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: switch-console-macos-manifest
-          path: ${{ runner.temp }}/latest-mac.yml
+          path: ${{ runner.temp }}/${{ needs.resolve.outputs.manifest }}-mac.yml
           if-no-files-found: error
 
   build-linux:
@@ -383,8 +512,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     # Waits only for the Release to exist, not for the macOS build — the two
     # platform jobs are independent. Linux is unsigned, so no cert secrets.
-    needs: create-release
-    if: ${{ !cancelled() && needs.create-release.result != 'failure' }}
+    needs: [resolve, create-release]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.create-release.result != 'failure' }}
+    env:
+      MANIFEST: ${{ needs.resolve.outputs.manifest }}
     strategy:
       # One arch must not take the other down with it: an arm64 runner outage
       # should still ship x64.
@@ -420,16 +551,21 @@ jobs:
         # tooling is already present on ubuntu-latest.
         run: sudo apt-get update && sudo apt-get install -y rpm
 
-      - name: Verify tag matches package.json version
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Stamp the canary version
+        # The app reports, and electron-updater compares, package.json's version.
+        # A canary's comes from its tag and is written here, never committed.
+        if: needs.resolve.outputs.channel == 'canary'
+        working-directory: console/apps/switch-console-desktop
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
-          tag_version="${GITHUB_REF_NAME#switch-console-v}"
-          pkg_version="$(node -p "require('./apps/switch-console-desktop/package.json').version")"
-          echo "tag=$tag_version package.json=$pkg_version"
-          if [ "$tag_version" != "$pkg_version" ]; then
-            echo "::error::Tag version ($tag_version) does not match apps/switch-console-desktop/package.json version ($pkg_version). Bump package.json and re-tag."
-            exit 1
-          fi
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.version = process.env.VERSION;
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '
+          node -p "require('./package.json').version"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -438,11 +574,16 @@ jobs:
         run: pnpm --filter @switch-console/desktop run rebuild
 
       - name: Build workspace packages + app
+        env:
+          VITE_BUILD: ${{ needs.resolve.outputs.vite_build }}
+          VITE_RELEASE: ${{ needs.resolve.outputs.vite_release }}
+          # Only canary knows where Switch Cloud is; a build without it offers no Cloud.
+          MAIN_VITE_SWITCH_CLOUD_URL: ${{ needs.resolve.outputs.channel == 'canary' && vars.SWITCH_CLOUD_URL || '' }}
         run: pnpm run build
 
       - name: Package (linux ${{ matrix.arch }}, no publish)
         working-directory: console/apps/switch-console-desktop
-        run: pnpm exec electron-builder --linux --${{ matrix.arch }} --publish never --config electron-builder.config.ts
+        run: pnpm exec electron-builder --linux --${{ matrix.arch }} --publish never --config ${{ needs.resolve.outputs.builder_config }}
 
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -455,7 +596,7 @@ jobs:
           # electron-builder names the arm64 one `latest-linux-arm64.yml`, and
           # each arch's job uploads only its own.
           shopt -s nullglob
-          assets=(release/*.AppImage release/*.deb release/*.rpm release/*.blockmap release/latest-linux*.yml)
+          assets=(release/*.AppImage release/*.deb release/*.rpm release/*.blockmap "release/$MANIFEST"-linux*.yml)
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
@@ -475,8 +616,8 @@ jobs:
     name: Build & release (Windows x64)
     runs-on: windows-latest
     # Waits only for the Release to exist, not for the other platform builds.
-    needs: create-release
-    if: ${{ !cancelled() && needs.create-release.result != 'failure' }}
+    needs: [resolve, create-release]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.create-release.result != 'failure' }}
     # The Azure signing credentials live in the `release` environment, whose
     # federated credential is scoped to `environment:release` — so entering it is
     # what makes the OIDC token acceptable to Azure at all. Only main and tags may
@@ -497,6 +638,8 @@ jobs:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      MANIFEST: ${{ needs.resolve.outputs.manifest }}
+      INSTALLER: release/${{ needs.resolve.outputs.artifact_prefix }}-x64.exe
     # windows-latest defaults to pwsh; the scripted steps below are bash.
     defaults:
       run:
@@ -518,16 +661,21 @@ jobs:
           cache: pnpm
           cache-dependency-path: console/pnpm-lock.yaml
 
-      - name: Verify tag matches package.json version
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Stamp the canary version
+        # The app reports, and electron-updater compares, package.json's version.
+        # A canary's comes from its tag and is written here, never committed.
+        if: needs.resolve.outputs.channel == 'canary'
+        working-directory: console/apps/switch-console-desktop
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
-          tag_version="${GITHUB_REF_NAME#switch-console-v}"
-          pkg_version="$(node -p "require('./apps/switch-console-desktop/package.json').version")"
-          echo "tag=$tag_version package.json=$pkg_version"
-          if [ "$tag_version" != "$pkg_version" ]; then
-            echo "::error::Tag version ($tag_version) does not match apps/switch-console-desktop/package.json version ($pkg_version). Bump package.json and re-tag."
-            exit 1
-          fi
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.version = process.env.VERSION;
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '
+          node -p "require('./package.json').version"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -538,6 +686,11 @@ jobs:
         run: pnpm --filter @switch-console/desktop run rebuild
 
       - name: Build workspace packages + app
+        env:
+          VITE_BUILD: ${{ needs.resolve.outputs.vite_build }}
+          VITE_RELEASE: ${{ needs.resolve.outputs.vite_release }}
+          # Only canary knows where Switch Cloud is; a build without it offers no Cloud.
+          MAIN_VITE_SWITCH_CLOUD_URL: ${{ needs.resolve.outputs.channel == 'canary' && vars.SWITCH_CLOUD_URL || '' }}
         run: pnpm run build
 
       - name: Azure login for Artifact Signing
@@ -553,7 +706,7 @@ jobs:
 
       - name: Package (windows x64, no publish)
         working-directory: console/apps/switch-console-desktop
-        run: pnpm exec electron-builder --win --publish never --config electron-builder.config.ts
+        run: pnpm exec electron-builder --win --publish never --config ${{ needs.resolve.outputs.builder_config }}
 
       - name: Verify the installer's signature and update manifest
         # The build logs "signing with signtool.exe" whether or not a certificate
@@ -563,7 +716,7 @@ jobs:
         run: |
           signed="$(node -e '
             const fs = require("fs");
-            const d = fs.readFileSync("release/switch-console-x64.exe");
+            const d = fs.readFileSync(process.env.INSTALLER);
             const pe = d.readUInt32LE(0x3c);
             const magic = d.readUInt16LE(pe + 24);
             const dirs = pe + 24 + (magic === 0x20b ? 112 : 96);
@@ -579,9 +732,9 @@ jobs:
           if [ "$signed" != "0" ]; then
             echo "Authenticode signature present ($signed bytes)."
             status="$(powershell -NoProfile -Command \
-              '(Get-AuthenticodeSignature "release\switch-console-x64.exe").Status' | tr -d '\r')"
+              "(Get-AuthenticodeSignature '$INSTALLER').Status" | tr -d '\r')"
             subject="$(powershell -NoProfile -Command \
-              '(Get-AuthenticodeSignature "release\switch-console-x64.exe").SignerCertificate.Subject' | tr -d '\r')"
+              "(Get-AuthenticodeSignature '$INSTALLER').SignerCertificate.Subject" | tr -d '\r')"
             echo "status: $status"
             echo "subject: $subject"
             if [ "$status" != "Valid" ]; then
@@ -623,7 +776,7 @@ jobs:
           # Attach the Windows installers + the electron-updater channel manifest
           # (latest.yml) and the blockmaps that differentialPackage emits.
           shopt -s nullglob
-          assets=(release/*.exe release/*.msi release/*.blockmap release/latest.yml)
+          assets=(release/*.exe release/*.msi release/*.blockmap "release/$MANIFEST.yml")
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
@@ -649,13 +802,15 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: [create-release, build-macos, merge-mac-manifest, build-linux, build-windows]
+    needs: [resolve, create-release, build-macos, merge-mac-manifest, build-linux, build-windows]
     if: startsWith(github.ref, 'refs/tags/')
     # This job never checks out, so the workflow-level `console` working directory
     # does not exist for it.
     defaults:
       run:
         working-directory: .
+    env:
+      MANIFEST: ${{ needs.resolve.outputs.manifest }}
     steps:
       - name: Verify every channel manifest is present
         # The manifests are what auto-update reads. Publishing without one is the
@@ -667,7 +822,7 @@ jobs:
           assets="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
           echo "$assets"
           missing=""
-          for required in latest-mac.yml latest-linux.yml latest-linux-arm64.yml latest.yml; do
+          for required in "$MANIFEST-mac.yml" "$MANIFEST-linux.yml" "$MANIFEST-linux-arm64.yml" "$MANIFEST.yml"; do
             printf '%s\n' "$assets" | grep -qx "$required" || missing="$missing $required"
           done
           if [ -n "$missing" ]; then
@@ -676,7 +831,7 @@ jobs:
           fi
 
       - name: Verify the macOS manifest covers both architectures
-        # Presence is not enough for macOS: both mac builds write `latest-mac.yml`,
+        # Presence is not enough for macOS: both mac builds write the same channel file,
         # so a single-arch manifest is what a regression here looks like — and it
         # is silent, because the architecture that is missing keeps checking for
         # updates and simply never finds one it can install.
@@ -685,19 +840,20 @@ jobs:
         run: |
           gh release download "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
-            --pattern latest-mac.yml \
+            --pattern "$MANIFEST-mac.yml" \
             --dir "$RUNNER_TEMP"
-          cat "$RUNNER_TEMP/latest-mac.yml"
+          cat "$RUNNER_TEMP/$MANIFEST-mac.yml"
           missing=""
           for required in -arm64.zip -x64.zip; do
-            grep -q "url: .*$required$" "$RUNNER_TEMP/latest-mac.yml" || missing="$missing $required"
+            grep -q "url: .*$required$" "$RUNNER_TEMP/$MANIFEST-mac.yml" || missing="$missing $required"
           done
           if [ -n "$missing" ]; then
-            echo "::error::Refusing to publish $GITHUB_REF_NAME — latest-mac.yml lists no:$missing. That architecture would receive no further updates, without an error anywhere. The Release stays a draft."
+            echo "::error::Refusing to publish $GITHUB_REF_NAME — $MANIFEST-mac.yml lists no:$missing. That architecture would receive no further updates, without an error anywhere. The Release stays a draft."
             exit 1
           fi
 
       - name: Publish
+        if: needs.resolve.outputs.channel == 'stable'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -705,3 +861,62 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --draft=false \
             --latest
+
+      - name: Publish (canary prerelease)
+        if: needs.resolve.outputs.channel == 'canary'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --prerelease \
+            --latest=false
+
+      - name: Verify the canary is a prerelease and not Latest
+        # Stable installs update from whichever Release GitHub calls Latest. A
+        # canary that became Latest would be the stable feed, so this is checked
+        # against GitHub itself, and a canary that fails it goes back to draft.
+        if: needs.resolve.outputs.channel == 'canary'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          prerelease="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)"
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          echo "isPrerelease=$prerelease latest=$latest"
+          if [ "$prerelease" != "true" ] || [ "$latest" = "$GITHUB_REF_NAME" ]; then
+            echo "::error::$GITHUB_REF_NAME was published as a stable-visible release (isPrerelease=$prerelease, Latest=$latest). Reverting it to a draft."
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=true
+            exit 1
+          fi
+
+  # Keeps the Releases page and the canary feed short: only the newest canaries
+  # stay. Matches bare `v<semver>-canary.` tags only, so a stable
+  # `switch-console-v*` or core `switch-v*` release can never be selected.
+  prune-canaries:
+    name: Prune old canary releases
+    runs-on: ubuntu-latest
+    needs: [resolve, publish-release]
+    if: needs.resolve.outputs.channel == 'canary'
+    defaults:
+      run:
+        working-directory: .
+    env:
+      KEEP: 5
+    steps:
+      - name: Delete all but the newest canaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          stale="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 \
+            --json tagName,isPrerelease,isDraft,createdAt \
+            --jq '[.[] | select(.isPrerelease and (.isDraft | not) and (.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-canary\\.")))]
+                  | sort_by(.createdAt) | reverse | .['"$KEEP"':] | .[].tagName')"
+          if [ -z "$stale" ]; then
+            echo "Nothing to prune."
+            exit 0
+          fi
+          printf '%s\n' "$stale" | while IFS= read -r tag; do
+            echo "Deleting $tag"
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          done

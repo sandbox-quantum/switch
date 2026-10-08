@@ -6,16 +6,18 @@ import pytest
 from sqlalchemy import update
 
 from switch_core.addressing import owner_only_policy
-from switch_core.bridges.agent.protocol.connections import (
-    SESSION_COMMAND_PROTOCOL_REVISION,
+from switch_core.bridges.agent.protocol.agent_connections import (
+    PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundInteraction
 from switch_core.bridges.collaboration.session.renderers import INTERRUPT_ACTION
 from switch_core.db.models import Agent
-from switch_core.session_activity.bridge_publisher import StopTarget
+from switch_core.db.stores.agent_store import AgentStore
+from switch_core.session_activity.publisher import StopTarget
+from switch_core.tenant_context import current_tenant_id
 
 from .conftest import AGENT, make_room
 
@@ -39,7 +41,7 @@ class Platform:
         self.told.append(text)
 
 
-def _watching(registry: ConnectionRegistry):
+def _watching(registry: AgentConnectionRegistry):
     conn = registry.open(
         agent_id=AGENT,
         connection_id="watcher",
@@ -47,7 +49,7 @@ def _watching(registry: ConnectionRegistry):
         delivery_filter="addressed",
         spawn_capable=False,
         cursor=0,
-        declaration=ClientDeclaration(speaks=SESSION_COMMAND_PROTOCOL_REVISION),
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
     conn.stream_attached = True
@@ -60,8 +62,8 @@ async def room(session_factory, people) -> str:
         return await make_room(db, member=AGENT)
 
 
-def _bridge(service, registry, target, mxid) -> tuple[BridgeCore, Platform]:
-    bridge = BridgeCore.__new__(BridgeCore)
+def _bridge(service, registry, target, mxid) -> tuple[CollaborationCore, Platform]:
+    bridge = CollaborationCore.__new__(CollaborationCore)
     platform = Platform()
     bridge._bridge_id = "bridge-1"
     bridge._bridge_type = "slack"
@@ -69,6 +71,9 @@ def _bridge(service, registry, target, mxid) -> tuple[BridgeCore, Platform]:
     bridge._activity_publisher = Publisher(target)  # type: ignore[assignment]
     bridge._session_activity_service = service
     bridge._connections = registry
+    bridge._session_factory = service._sessions
+    bridge._bridge_tenant_id = current_tenant_id()
+    bridge._agent_store = AgentStore()
 
     async def identify(_actor) -> str | None:
         return mxid
@@ -99,7 +104,7 @@ def _target(room: str, running: str | None = "turn-1") -> StopTarget:
 
 
 async def test_a_press_is_relayed_to_the_session_as_an_interrupt(service, people, room):
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _watching(registry)
     bridge, platform = _bridge(service, registry, _target(room), people.owner)
 
@@ -124,7 +129,7 @@ async def test_a_press_is_relayed_to_the_session_as_an_interrupt(service, people
 async def test_a_press_naming_a_turn_that_is_no_longer_running_is_refused(
     service, people, room
 ):
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _watching(registry)
     bridge, platform = _bridge(service, registry, _target(room, "turn-2"), people.owner)
     await bridge._handle_inbound_interaction(_press("turn-1"))
@@ -141,7 +146,7 @@ async def test_someone_who_may_not_address_the_agent_cannot_stop_it(
             .where(Agent.id == AGENT)
             .values(addressing_policy=owner_only_policy([]).model_dump())
         )
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _watching(registry)
     bridge, platform = _bridge(service, registry, _target(room), people.stranger)
     await bridge._handle_inbound_interaction(_press())
@@ -157,7 +162,7 @@ async def test_someone_who_may_not_address_the_agent_cannot_stop_it(
     ],
 )
 async def test_a_press_nothing_resolves_says_why(service, room, target, mxid, said):
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _watching(registry)
     resolved = _target(room) if target == "room" else None
     bridge, platform = _bridge(service, registry, resolved, mxid)
@@ -168,7 +173,7 @@ async def test_a_press_nothing_resolves_says_why(service, room, target, mxid, sa
 
 async def test_a_press_with_no_controller_attached_says_so(service, people, room):
     bridge, platform = _bridge(
-        service, ConnectionRegistry(), _target(room), people.owner
+        service, AgentConnectionRegistry(), _target(room), people.owner
     )
     await bridge._handle_inbound_interaction(_press())
     assert "controller is not connected" in platform.told[0]

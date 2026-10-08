@@ -15,7 +15,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.agent_display_name import InvalidDisplayName
-from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.models import Agent, Client
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
     FakeClientLifecycle,
@@ -28,7 +28,7 @@ _ICON = "https://cdn.example.com/9.x/bottts/png?seed=switchdev"
 
 
 async def _agent(
-    svc: ProtocolService,
+    svc: AgentCore,
     session_factory: async_sessionmaker[AsyncSession],
     agent_id: str,
 ) -> Agent:
@@ -38,8 +38,8 @@ async def _agent(
     return agent
 
 
-class TestMatrixIdentityStaysTheIdentifier:
-    async def test_a_display_name_does_not_reach_the_matrix_client(
+class TestTransportIdentityStaysTheIdentifier:
+    async def test_a_display_name_does_not_reach_the_transport(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         svc = make_service(session_factory)

@@ -26,10 +26,10 @@ from typing import Any
 from switch_core.bridges.agent.operations.definitions import (
     claim_room_on_caller_connection,
 )
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
     NoStreamAttachedError,
 )
 
@@ -38,11 +38,11 @@ ROOM = "room-1"
 CONN = "conn-1"
 
 
-def _protocol(registry: ConnectionRegistry) -> Any:
+def _protocol(registry: AgentConnectionRegistry) -> Any:
     return SimpleNamespace(connections=registry)
 
 
-def _open(registry: ConnectionRegistry, connection_id: str, agent_id: str = AGENT):
+def _open(registry: AgentConnectionRegistry, connection_id: str, agent_id: str = AGENT):
     return registry.open(
         agent_id=agent_id,
         connection_id=connection_id,
@@ -56,7 +56,7 @@ def _open(registry: ConnectionRegistry, connection_id: str, agent_id: str = AGEN
 
 
 def test_the_calling_connection_ends_up_holding_the_room() -> None:
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     _open(registry, CONN)
 
     claim_room_on_caller_connection(_protocol(registry), AGENT, CONN, ROOM)
@@ -72,7 +72,7 @@ def test_the_claim_wakes_the_stream_so_its_holder_is_told() -> None:
     Without it the supervisor stays blocked on its read and learns nothing
     until the next event happens along.
     """
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(registry, CONN)
     conn.wake.clear()
 
@@ -90,7 +90,7 @@ def test_a_dead_sibling_does_not_lock_the_agent_out() -> None:
     """
     import time as _time
 
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     dead = _open(registry, "previous-life")
     registry.claim_room(dead, ROOM)
     dead.last_beat = _time.monotonic() - 3600
@@ -115,7 +115,7 @@ def test_a_live_sibling_is_evicted_and_the_eviction_is_reported() -> None:
     indistinguishable from the duplicate-session bug it resolves: a session
     stops receiving a room and nothing says why.
     """
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     incumbent = _open(registry, "first-session")
     registry.claim_room(incumbent, ROOM)
     _open(registry, CONN)
@@ -135,7 +135,7 @@ def test_the_evicted_session_is_woken_so_it_learns_it_lost_the_room() -> None:
     Without the wake it stays blocked on its read, still believing it holds the
     room, and Switch Console keeps showing it under that room.
     """
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     incumbent = _open(registry, "first-session")
     registry.claim_room(incumbent, ROOM)
     incumbent.wake.clear()
@@ -148,7 +148,7 @@ def test_the_evicted_session_is_woken_so_it_learns_it_lost_the_room() -> None:
 
 def test_taking_an_unheld_room_reports_no_eviction() -> None:
     """The warning must not fire on the ordinary case of an empty room."""
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     _open(registry, CONN)
 
     evicted = claim_room_on_caller_connection(_protocol(registry), AGENT, CONN, ROOM)
@@ -164,7 +164,7 @@ def test_a_dead_predecessor_is_not_reported_as_an_eviction() -> None:
     """
     import time as _time
 
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     dead = _open(registry, "previous-life")
     registry.claim_room(dead, ROOM)
     dead.last_beat = _time.monotonic() - 3600
@@ -181,7 +181,7 @@ def test_the_same_connection_reconnecting_is_not_a_duplicate() -> None:
     A session keeps its connection id across reconnects, so it meets its own
     claim. That must stay idempotent or every restart would lock itself out.
     """
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(registry, CONN)
     registry.claim_room(conn, ROOM)
 
@@ -195,7 +195,7 @@ def test_the_same_connection_reconnecting_is_not_a_duplicate() -> None:
 
 def test_another_agent_holding_the_room_is_not_a_conflict() -> None:
     """The rule is one session per agent per room, not one agent per room."""
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     theirs = _open(registry, "their-session", agent_id="agent-2")
     registry.claim_room(theirs, ROOM)
     _open(registry, CONN)
@@ -210,7 +210,7 @@ def test_another_agent_holding_the_room_is_not_a_conflict() -> None:
 
 def test_an_unknown_connection_is_not_an_error() -> None:
     """An MCP transport session has no connection; the binding row covers it."""
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
 
     claim_room_on_caller_connection(_protocol(registry), AGENT, "no-such", ROOM)
 
@@ -219,7 +219,7 @@ def test_an_unknown_connection_is_not_an_error() -> None:
 
 def test_another_agents_connection_is_never_claimed_on() -> None:
     """The key comes off the caller's own header, but never trust it blindly."""
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     _open(registry, CONN, agent_id="someone-else")
 
     claim_room_on_caller_connection(_protocol(registry), AGENT, CONN, ROOM)
@@ -237,7 +237,7 @@ def test_a_fault_that_is_not_occupancy_is_logged_and_not_raised(
     caller may do. Any other connection fault leaves the room the caller's to
     have, so failing the whole connect over it would be the harsher answer.
     """
-    registry = ConnectionRegistry()
+    registry = AgentConnectionRegistry()
     conn = _open(registry, CONN)
 
     def _explode(*_a: Any, **_kw: Any) -> None:

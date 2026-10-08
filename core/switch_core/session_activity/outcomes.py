@@ -1,7 +1,7 @@
 """The outcomes an agent is owed on its stream: answers and expiries.
 
 Joins the two halves an agent stream needs. Live outcomes come pushed from
-`SessionActivityListener`, with the row attached. Undelivered ones come from
+`AgentSessionActivityListener`, with the row attached. Undelivered ones come from
 the table: everything answered or expired that the agent has not acknowledged,
 read when a stream opens and whenever the listener says announcements may have
 been missed.
@@ -19,8 +19,8 @@ from datetime import datetime
 from typing import Any
 
 from switch_core.db.models import ApprovalRequest
-from switch_core.session_activity.listener import Change, SessionActivityListener
-from switch_core.session_activity.service import SessionActivityService
+from switch_core.session_activity.listener import AgentSessionActivityListener, Change
+from switch_core.session_activity.service import AgentSessionActivityService
 
 OUTCOME_KINDS = frozenset({"approval.answered", "approval.expired"})
 
@@ -53,7 +53,9 @@ def outcome_of(row: ApprovalRequest | dict[str, Any]) -> Outcome:
 
 class ApprovalOutcomes:
     def __init__(
-        self, listener: SessionActivityListener, service: SessionActivityService
+        self,
+        listener: AgentSessionActivityListener,
+        service: AgentSessionActivityService,
     ) -> None:
         self._listener = listener
         self._service = service

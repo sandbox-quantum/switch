@@ -1,4 +1,12 @@
-import { Bot, ChevronRight, Plus, RotateCcw, Server, Trash2, TriangleAlert } from 'lucide-react';
+import {
+  ChevronRight,
+  Plus,
+  RotateCcw,
+  Server,
+  ServerOff,
+  Trash2,
+  TriangleAlert,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
 import {
@@ -12,9 +20,7 @@ import {
   hasDiscardableSessionError,
   hasSessionError,
 } from '@renderer/features/sessions/stores/session-selectors';
-import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
-import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
-import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { useAgentConnection } from '@renderer/features/switch-rooms/connection-health';
 import { ProviderIssueIndicator } from '@renderer/lib/components/provider-issue-indicator';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
@@ -23,7 +29,7 @@ import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
-import { useAgentIconUrl } from '@renderer/lib/stores/use-remote-agents';
+import { useAgentIconUrl } from '@renderer/lib/stores/use-workspace-agents';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -33,9 +39,15 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { Agent } from '@shared/core/agents/agents';
+import {
+  type AgentConnectionState,
+  connectionLabels,
+} from '@shared/core/switch-rooms/connection-health';
+import { type AgentPresence, SidebarAgentRow } from './agent-row';
 import { DiscoveryFailureIndicator } from './discovery-failure-indicator';
-import { SidebarItemMiniButton, SidebarMenuAction, SidebarMenuRow } from './sidebar-primitives';
-import { agentExpandKey, depthIndent } from './sidebar-store';
+import { MigrationProblemIndicator } from './migration-problem-indicator';
+import { SidebarItemMiniButton } from './sidebar-primitives';
+import { agentExpandKey } from './sidebar-store';
 
 /**
  * A single agent in the flat sidebar list. Switch Console has no main/subagent
@@ -65,7 +77,8 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
 
   const agentName = agent.name;
   const location = getLocationStore(agent.locationId);
-  const iconUrl = useAgentIconUrl(agent.serverId, agent.switchAgentId);
+  const iconUrl = useAgentIconUrl(agent.workspaceId, agent.switchAgentId);
+  const connection = useAgentConnection(agent);
 
   // The agent's name IS its Switch identity: Switch Console chose it, registered it
   // under that name, and keys its credentials and definition by it. Reading the
@@ -92,6 +105,12 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
   const sshHost = location.data?.sshHost ?? null;
   const hostUnreachable = hostReachabilityStore.isBlocked(sshHost);
 
+  const presence = agentPresence(
+    connection.state,
+    hostUnreachable,
+    connection.health?.detail ?? null
+  );
+
   // Opening the agent does not expand it. Expanding is the chevron's job alone,
   // so what is unfolded in the tree stays as the reader left it.
   const open = () => navigate('location', { locationId: agent.locationId, agentName });
@@ -99,146 +118,129 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
   return (
     <ContextMenu>
       <ContextMenuTrigger>
-        <SidebarMenuRow
-          className="group/row flex justify-between"
-          data-active={isActive || undefined}
+        <SidebarAgentRow
+          label={label}
+          iconUrl={iconUrl}
+          providerId={agent.providerId ?? null}
           isActive={isActive}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={open}
-        >
-          {/* The indent lives on the content, not the row, so the hover and
-              selection highlight still spans the sidebar's full width at every
-              depth. */}
-          <div className="flex min-w-0 flex-1 items-center gap-[9px]" style={depthIndent(depth)}>
-            {/* 21px inside an 18px slot, so the larger circle reads at the same
-                weight as the provider glyphs it replaced without growing the
-                row or shifting the label. */}
-            <span className="flex size-[18px] shrink-0 items-center justify-center">
-              <AgentAvatar
-                name={label}
-                iconUrl={iconUrl}
-                size={21}
-                className="-mx-[1.5px] bg-transparent"
-              />
-            </span>
-            <SidebarMenuAction
-              aria-label={`Open agent ${label}`}
-              className="flex-initial truncate select-none"
-            >
-              <span className="flex min-w-0 items-center gap-1.5">
-                <span className="truncate">{label}</span>
-                {/* What the agent runs on. The avatar took the leading slot, so
-                    without this the row no longer says. Hideable from the
-                    Sessions menu for a reader who only cares about identity. */}
-                {!sidebarStore.hideProviderMark &&
-                  (agent.providerId ? (
-                    <AgentIcon id={agent.providerId} size={12} className="h-3 w-3 shrink-0" />
+          depth={depth}
+          onOpen={open}
+          presence={presence}
+          dimmed={hostUnreachable}
+          marks={
+            location.data?.sshHost != null && (
+              <Tooltip>
+                <TooltipTrigger>
+                  {hostUnreachable ? (
+                    <ServerOff className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
                   ) : (
-                    <Bot className="h-3 w-3 shrink-0 text-foreground-muted" />
-                  ))}
-                {location.data?.sshHost != null && (
+                    <Server className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />
+                  )}
+                </TooltipTrigger>
+                <TooltipContent>
+                  {hostUnreachable
+                    ? `${location.data.sshHost} cannot be reached. The agent resumes when it reconnects.`
+                    : `Runs remotely on ${location.data.sshHost}${location.data.dir ? ` · ${location.data.dir}` : ''}`}
+                </TooltipContent>
+              </Tooltip>
+            )
+          }
+          status={
+            <>
+              {/* A host missing something this agent needs. An unreachable one
+                    is the red server mark, and the connection is the avatar's
+                    dot, so neither repeats here. */}
+              <HostTroubleIndicator
+                sshHost={hostUnreachable ? null : sshHost}
+                agentId={agent.providerId ?? null}
+              />
+              <DiscoveryFailureIndicator agentId={agent.id} label={label} />
+              <MigrationProblemIndicator agentId={agent.id} label={label} />
+              {agent.providerId && (
+                <ProviderIssueIndicator
+                  providerId={agent.providerId}
+                  sshHost={sshHost}
+                  hostReachable={!hostUnreachable}
+                  onOpen={open}
+                />
+              )}
+              {locationViewKind(location) === 'ready' &&
+                hasSessionError(agent.locationId) &&
+                (hasDiscardableSessionError(agent.locationId) ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <SidebarItemMiniButton
+                          type="button"
+                          aria-label={`Dismiss failed session for ${label}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            getSessionManagerStore(agent.locationId)?.discardFailedCreations();
+                          }}
+                        >
+                          <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
+                        </SidebarItemMiniButton>
+                      }
+                    />
+                    <TooltipContent>A session failed to connect — click to dismiss</TooltipContent>
+                  </Tooltip>
+                ) : (
                   <Tooltip>
                     <TooltipTrigger>
-                      <Server
-                        className={cn(
-                          'h-3.5 w-3.5 shrink-0',
-                          hostUnreachable ? 'text-foreground-warning' : 'text-foreground-muted'
-                        )}
-                      />
+                      <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
                     </TooltipTrigger>
-                    <TooltipContent>
-                      Runs remotely on {location.data.sshHost}
-                      {location.data.dir ? ` · ${location.data.dir}` : ''}
-                    </TooltipContent>
+                    <TooltipContent>A session failed to connect</TooltipContent>
                   </Tooltip>
-                )}
-                {/* Unreachable host, or one missing something this agent needs.
-                    Shared with the room-grouped rows so the two trees cannot
-                    disagree about the same agent (CHOO-1682/1809). */}
-                <HostTroubleIndicator sshHost={sshHost} agentId={agent.providerId ?? null} />
-                <DiscoveryFailureIndicator agentId={agent.id} label={label} />
-                {agent.providerId && (
-                  <ProviderIssueIndicator
-                    providerId={agent.providerId}
-                    sshHost={sshHost}
-                    hostReachable={!hostUnreachable}
-                    onOpen={open}
-                  />
-                )}
-                {locationViewKind(location) === 'ready' &&
-                  hasSessionError(agent.locationId) &&
-                  (hasDiscardableSessionError(agent.locationId) ? (
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <SidebarItemMiniButton
-                            type="button"
-                            aria-label={`Dismiss failed session for ${label}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              getSessionManagerStore(agent.locationId)?.discardFailedCreations();
-                            }}
-                          >
-                            <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
-                          </SidebarItemMiniButton>
-                        }
-                      />
-                      <TooltipContent>
-                        A session failed to connect — click to dismiss
-                      </TooltipContent>
-                    </Tooltip>
-                  ) : (
-                    <Tooltip>
-                      <TooltipTrigger>
-                        <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
-                      </TooltipTrigger>
-                      <TooltipContent>A session failed to connect</TooltipContent>
-                    </Tooltip>
-                  ))}
-              </span>
-            </SidebarMenuAction>
-            <AgentConnectionIndicator agent={agent} />
-          </div>
-          <Tooltip>
-            <TooltipTrigger
-              className="h-6"
-              render={
+                ))}
+            </>
+          }
+          actions={
+            <>
+              <Tooltip>
+                <TooltipTrigger
+                  className="h-6"
+                  render={
+                    <SidebarItemMiniButton
+                      type="button"
+                      aria-label={`New session for ${label}`}
+                      className="opacity-0 transition-opacity duration-150 group-hover/row:opacity-100"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        showCreateSessionModal({
+                          locationId: agent.locationId,
+                          agentName,
+                          entryPoint: 'sidebar',
+                        });
+                      }}
+                    >
+                      <Plus className="h-4 w-4" />
+                    </SidebarItemMiniButton>
+                  }
+                />
+                <TooltipContent>New Session</TooltipContent>
+              </Tooltip>
+              {hasSessions && (
                 <SidebarItemMiniButton
                   type="button"
-                  aria-label={`New session for ${label}`}
-                  className="opacity-0 transition-opacity duration-150 group-hover/row:opacity-100"
+                  aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
+                  aria-expanded={expanded}
+                  className="opacity-0 transition-opacity duration-150 group-hover/row:opacity-100 focus-visible:opacity-100"
                   onClick={(e) => {
                     e.stopPropagation();
-                    showCreateSessionModal({
-                      locationId: agent.locationId,
-                      agentName,
-                      entryPoint: 'sidebar',
-                    });
+                    toggle();
                   }}
                 >
-                  <Plus className="h-4 w-4" />
+                  <ChevronRight
+                    className={cn(
+                      'h-4 w-4 transition-transform duration-150',
+                      expanded && 'rotate-90'
+                    )}
+                  />
                 </SidebarItemMiniButton>
-              }
-            />
-            <TooltipContent>New Session</TooltipContent>
-          </Tooltip>
-          {hasSessions && (
-            <SidebarItemMiniButton
-              type="button"
-              aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
-              aria-expanded={expanded}
-              className="opacity-0 transition-opacity duration-150 group-hover/row:opacity-100 focus-visible:opacity-100"
-              onClick={(e) => {
-                e.stopPropagation();
-                toggle();
-              }}
-            >
-              <ChevronRight
-                className={cn('h-4 w-4 transition-transform duration-150', expanded && 'rotate-90')}
-              />
-            </SidebarItemMiniButton>
-          )}
-        </SidebarMenuRow>
+              )}
+            </>
+          }
+        />
       </ContextMenuTrigger>
       <ContextMenuContent>
         {location.data?.sshHost != null && (
@@ -282,3 +284,18 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
     </ContextMenu>
   );
 });
+
+/** The dot on a Console agent's avatar: its room connection, or its host when that is down. */
+function agentPresence(
+  state: AgentConnectionState | undefined,
+  hostUnreachable: boolean,
+  detail: string | null
+): AgentPresence | null {
+  if (hostUnreachable) return { tone: 'problem', label: 'Its host cannot be reached' };
+  if (!state) return null;
+  const label = detail ? `${connectionLabels[state]}: ${detail}` : connectionLabels[state];
+  if (state === 'connected') return { tone: 'running', label: 'Running' };
+  if (state === 'stopped') return { tone: 'stopped', label };
+  if (state === 'connecting') return { tone: 'pending', label };
+  return { tone: 'problem', label };
+}

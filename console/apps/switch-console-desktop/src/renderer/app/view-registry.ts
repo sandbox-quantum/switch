@@ -1,6 +1,8 @@
 import type { ComponentType, ReactNode } from 'react';
 import { homeView } from '@renderer/app/home-view';
+import { cloudSessionView } from '@renderer/features/cloud-agents/cloud-session-view';
 import { locationView } from '@renderer/features/locations/view';
+import { managedAgentView } from '@renderer/features/managed-agents/managed-agent-view';
 import { remoteHostView } from '@renderer/features/remote-hosts/views/remote-host-view';
 import { remoteHostsView } from '@renderer/features/remote-hosts/views/remote-hosts-view';
 import { templateCaptureView } from '@renderer/features/room-templates/room-template-capture-view';
@@ -25,6 +27,8 @@ export const views = {
   home: homeView,
   location: locationView,
   session: sessionView,
+  cloudSession: cloudSessionView,
+  managedAgent: managedAgentView,
   room: roomView,
   settings: settingsView,
   server: serverView,
@@ -58,11 +62,27 @@ export type ViewDefinition<TParams extends object = Record<never, never>> = {
    * by older builds, so each guard must validate the shape before using it.
    */
   canActivate?: (params: unknown) => GuardResult;
+  /**
+   * Set on a view that has something to show with no Switch server registered
+   * at all — Settings, the remote hosts. Everything else describes a server,
+   * or a workspace on one, and has nothing to draw without one.
+   *
+   * The shell reads it to decide whether the first-run page may be stepped out
+   * of. It lives on the view because only the view knows: a list of ids in the
+   * shell is a list someone has to remember to add to.
+   */
+  worksWithoutServer?: boolean;
 };
 
 type Views = typeof views;
 
 export type ViewId = keyof Views;
+
+/** Whether the view on screen can be drawn before any server is registered. */
+export function viewWorksWithoutServer(viewId: ViewId): boolean {
+  const view: Pick<ViewDefinition, 'MainPanel' | 'worksWithoutServer'> = views[viewId];
+  return view.worksWithoutServer === true;
+}
 
 /**
  * The registry and the shared list of view ids say the same thing.

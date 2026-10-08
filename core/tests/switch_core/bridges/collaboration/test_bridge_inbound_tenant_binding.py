@@ -31,7 +31,7 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 
 BRIDGE_TENANT = "tenant-bridge"
@@ -53,8 +53,8 @@ class _ExplodingSessionFactory:
         )
 
 
-def _bridge() -> BridgeCore:
-    bridge = BridgeCore.__new__(BridgeCore)
+def _bridge() -> CollaborationCore:
+    bridge = CollaborationCore.__new__(CollaborationCore)
     bridge._bridge_id = "bridge-1"
     bridge._bridge_tenant_id = BRIDGE_TENANT
     bridge._bridge_type = "mattermost"
@@ -176,8 +176,8 @@ async def test_the_dispatch_style_cannot_change_the_tenant() -> None:
     assert seen == [ROOM_TENANT, ROOM_TENANT]
 
 
-class TestAPuppetIsMintedInTheBridgesTenant:
-    """A puppet is per-bridge and reused for every room the person it stands
+class TestAHumanActorIsMintedInTheBridgesTenant:
+    """A human actor is per-bridge and reused for every room the person it stands
     for ever speaks in, so it cannot be stamped with the tenant of whichever
     room happened to trigger it first. The rooms a bridge carries are all in
     its tenant (`rooms` keys to `collaboration_bridges` on `tenant_id`), so
@@ -185,39 +185,41 @@ class TestAPuppetIsMintedInTheBridgesTenant:
     """
 
     async def test_the_identity_is_created_under_the_bridges_tenant(self) -> None:
-        bridge = BridgeCore.__new__(BridgeCore)
+        bridge = CollaborationCore.__new__(CollaborationCore)
         bridge._bridge_id = "bridge-1"
         bridge._bridge_tenant_id = BRIDGE_TENANT
         bridge._bridge_type = "mattermost"
-        bridge._puppet_locks = {}
-        bridge._user_puppets = {}
-        bridge._puppet_matrix_ids = set()
+        bridge._human_actor_locks = {}
+        bridge._human_actors = {}
+        bridge._human_user_ids = set()
         seen: list[str | None] = []
 
         async def _locked(external_user_id: str, external_username: str) -> str:
             seen.append(current_tenant_id())
             return "client-1"
 
-        bridge._create_puppet_locked = _locked  # type: ignore[assignment]
+        bridge._create_human_actor_locked = _locked  # type: ignore[assignment]
 
         # Reached from inside an inbound event for a room — the binding the
-        # puppet must *not* adopt, were the two ever to differ.
+        # human actor must *not* adopt, were the two ever to differ.
         with tenant_scope(ROOM_TENANT):
-            assert await bridge._create_puppet("U1", "alice") == "client-1"
+            assert await bridge._create_human_actor("U1", "alice") == "client-1"
 
         assert seen == [BRIDGE_TENANT]
 
-    async def test_a_cached_puppet_is_returned_without_reminting(self) -> None:
-        bridge = BridgeCore.__new__(BridgeCore)
+    async def test_a_cached_human_actor_is_returned_without_reminting(self) -> None:
+        bridge = CollaborationCore.__new__(CollaborationCore)
         bridge._bridge_tenant_id = BRIDGE_TENANT
-        bridge._puppet_locks = {}
-        bridge._user_puppets = {"U1": "client-1"}
+        bridge._human_actor_locks = {}
+        bridge._human_actors = {"U1": "client-1"}
 
         # The cache check lives inside the locked half, so this proves the
         # split did not move it out from under the lock.
-        bridge._create_puppet_locked = BridgeCore._create_puppet_locked.__get__(bridge)  # type: ignore[assignment]
+        bridge._create_human_actor_locked = (
+            CollaborationCore._create_human_actor_locked.__get__(bridge)
+        )  # type: ignore[assignment]
 
-        assert await bridge._create_puppet("U1", "alice") == "client-1"
+        assert await bridge._create_human_actor("U1", "alice") == "client-1"
 
 
 @pytest.mark.parametrize("tenant", [BRIDGE_TENANT, ROOM_TENANT])
@@ -234,11 +236,11 @@ async def test_the_mapping_records_whatever_tenant_it_is_given(tenant: str) -> N
 
 class TestBridgeLevelWorkBindsTheBridgesTenant:
     """Everything a bridge does that is not for one room in particular. All of
-    it is reached with nothing bound — from `BridgeCore.start`, which the
+    it is reached with nothing bound — from `CollaborationCore.start`, which the
     bridge's task calls after unbinding, or from a callback the adapter holds
     and invokes on its own task."""
 
-    def _bridge_with_store(self, seen: list[str | None]) -> BridgeCore:
+    def _bridge_with_store(self, seen: list[str | None]) -> CollaborationCore:
         class _Session:
             async def __aenter__(self) -> Any:
                 seen.append(current_tenant_id())
@@ -254,7 +256,7 @@ class TestBridgeLevelWorkBindsTheBridgesTenant:
             async def get_all(self, session: Any) -> list[Any]:
                 return []
 
-        bridge = BridgeCore.__new__(BridgeCore)
+        bridge = CollaborationCore.__new__(CollaborationCore)
         bridge._bridge_id = "bridge-1"
         bridge._bridge_tenant_id = BRIDGE_TENANT
         bridge._bridge_type = "mattermost"
@@ -275,7 +277,7 @@ class TestBridgeLevelWorkBindsTheBridgesTenant:
         assert seen == [BRIDGE_TENANT]
 
     async def test_the_identity_task_unbinds_and_then_binds_it(self) -> None:
-        """The provisioning task is spawned from `BridgeCore.start`; it must
+        """The provisioning task is spawned from `CollaborationCore.start`; it must
         not keep whatever created it, and the read it does must still be the
         bridge's."""
         seen: list[str | None] = []

@@ -17,7 +17,7 @@ function harness(router: Record<string, Record<string, unknown>>) {
     },
   } as unknown as IpcMain;
 
-  registerRPCRouter(router, ipcMain);
+  registerRPCRouter(router, ipcMain, () => true);
 
   return {
     handlers,

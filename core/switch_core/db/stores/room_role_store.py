@@ -20,6 +20,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from switch_core.db.models import RoleLease, RoomRole
+from switch_core.room_wide_mention import reject_reserved_mention_name
+
+
+def validate_role_name(name: str) -> None:
+    """Raise ValueError unless `name` can be addressed as a role.
+
+    Roles are addressed with `@<name>` tokens (in messages and
+    `send_targeted_message`), so a name with a space could never be matched as
+    a single mention token, and a room-wide mention word would page the room's
+    people and its role holder with the same tag.
+    """
+    if not name or any(ch.isspace() for ch in name):
+        raise ValueError("Role name must be non-empty and contain no whitespace")
+    reject_reserved_mention_name(name, kind="Role name")
 
 
 class RoomRoleStore:
@@ -60,13 +74,10 @@ class RoomRoleStore:
     ) -> RoomRole:
         """Create a role.
 
-        Raises ValueError if the name is empty, contains whitespace, or already
-        exists in the room. Whitespace is rejected because roles are addressed
-        with `@<name>` tokens (in messages and `send_targeted_message`); a name
-        with a space could never be matched as a single mention token.
+        Raises ValueError if `validate_role_name` rejects the name or it
+        already exists in the room.
         """
-        if not name or any(ch.isspace() for ch in name):
-            raise ValueError("Role name must be non-empty and contain no whitespace")
+        validate_role_name(name)
         existing = await self.get_role(session, room_id, name)
         if existing is not None:
             raise ValueError(f"Role '{name}' already exists in this room")
@@ -266,6 +277,27 @@ class RoomRoleStore:
             .where(self._live(live_connection_ids))
         )
         return result.scalar_one_or_none()
+
+    async def agent_room_roles(
+        self,
+        session: AsyncSession,
+        agent_id: str,
+        room_ids: Collection[str],
+        live_connection_ids: Collection[str],
+    ) -> dict[str, str]:
+        """`agent_room_role` for many rooms in one query: the role name the
+        agent live-holds in each, keyed by room id. A room where it holds
+        none has no key."""
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(RoleLease.room_id, RoomRole.name)
+            .join(RoleLease, RoleLease.role_id == RoomRole.id)
+            .where(RoleLease.room_id.in_(room_ids))
+            .where(RoleLease.agent_id == agent_id)
+            .where(self._live(live_connection_ids))
+        )
+        return {room_id: name for room_id, name in result.all()}
 
     async def acquire_lease(
         self,

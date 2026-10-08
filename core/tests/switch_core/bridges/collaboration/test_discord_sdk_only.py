@@ -309,8 +309,8 @@ def _adapter(channels: dict[int, Any]) -> DiscordAdapter:
     adapter = DiscordAdapter(
         config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
     )
-    adapter._bot_user_id = BOT_USER_ID
-    adapter._client = _Client(channels)  # type: ignore[assignment]
+    adapter._connection._bot_user_id = BOT_USER_ID
+    adapter._connection._client = _Client(channels)  # type: ignore[assignment]
     return adapter
 
 
@@ -351,7 +351,7 @@ async def _card(**kwargs: Any) -> RequestCard:
 
 
 async def test_the_publication_is_the_only_account_of_a_turn() -> None:
-    """There is no second renderer to fall back to, and `bridge_core` reads
+    """There is no second renderer to fall back to, and `collaboration_core` reads
     this flag to decide whether to route sessions here at all — so a platform
     that stopped declaring it would go quiet rather than draw the turn some
     other way."""
@@ -508,7 +508,7 @@ async def test_a_thread_the_bot_cannot_open_never_becomes_the_whole_channel() ->
     a private conversation an audience, and nothing takes it back.
     """
     adapter, channel, webhook = _no_thread_yet()
-    client: Any = adapter._client
+    client: Any = adapter._connection._client
     client.fetch_errors[ROOT_MESSAGE_ID] = discord.Forbidden(  # type: ignore[arg-type]
         _Response(), "not a member of this thread"
     )

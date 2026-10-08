@@ -3,6 +3,14 @@ import { z } from 'zod';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { remoteSessionReconciler } from '@main/core/agents/remote-session-reconciler';
 import { createRPCController } from '@shared/lib/ipc/rpc';
+import {
+  listCloudAgents,
+  listCloudSessions,
+  listServerCloudMachines,
+  runCloudSessionOperation,
+  uploadCloudAttachment,
+  wakeCloudAgent,
+} from './cloud-control';
 import { connectionHealth } from './connection-health';
 import { sharedAgentDiagnostics, sharedAgentLogs } from './diagnostics';
 import { sessionIssue, sessionStartupStatus } from './host-failures';
@@ -29,10 +37,10 @@ export const sdkHostController = createRPCController({
   agentLogs: sharedAgentLogs,
   manageSidecar: async (agentId: string, action: 'update' | 'restart' | 'stop' | 'start') =>
     manageAgentSidecar(agentId, z.enum(['update', 'restart', 'stop', 'start']).parse(action)),
-  serverForAgent: async (agentId: string) => {
+  workspaceForAgent: async (agentId: string) => {
     const agent = await getAgentById(agentId);
-    if (!agent?.serverId) throw new Error('This agent has no Switch server.');
-    return agent.serverId;
+    if (!agent?.workspaceId) throw new Error('This agent has no Switch workspace.');
+    return agent.workspaceId;
   },
   transcriptSource,
   transcriptOpen: (agentId: string, sessionId: string) => openTranscript(agentId, sessionId),
@@ -43,4 +51,25 @@ export const sdkHostController = createRPCController({
     reconcileSessionCommand(agentId, command),
   sessionCommandStatus: (agentId: string, sessionId: string, commandId: string) =>
     sessionCommandStatus(agentId, sessionId, commandId),
+  cloudAgents: (serverId: string) => listCloudAgents(serverId),
+  cloudMachines: (serverId: string) => listServerCloudMachines(serverId),
+  cloudSessions: (agentId: string) => listCloudSessions(agentId),
+  cloudWake: (agentId: string) => wakeCloudAgent(agentId),
+  cloudSessionOperation: async (
+    agentId: string,
+    sessionId: string,
+    operationId: string,
+    action: 'start' | 'restart'
+  ) =>
+    runCloudSessionOperation(
+      agentId,
+      sessionId,
+      z.string().uuid().parse(operationId),
+      z.enum(['start', 'restart']).parse(action)
+    ),
+  cloudUploadAttachment: (
+    agentId: string,
+    sessionId: string,
+    file: { name: string; mimeType: string; data: string }
+  ) => uploadCloudAttachment(agentId, sessionId, file),
 });

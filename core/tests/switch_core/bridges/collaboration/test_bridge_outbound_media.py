@@ -4,7 +4,7 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.transport import (
     DownloadResult,
     InboundMedia,
@@ -118,14 +118,14 @@ class _FakeAdapter:
 def _fake_bridge(
     *,
     download: DownloadResult | TransportError = DownloadResult(body=b"bytes"),
-    matrix_to_external: dict[str, str] | None = None,
+    room_to_external: dict[str, str] | None = None,
     max_bytes: int = 1024,
 ) -> SimpleNamespace:
     adapter = _FakeAdapter()
     recorded: list[dict[str, str]] = []
-    lookup = matrix_to_external or {}
+    lookup = room_to_external or {}
 
-    async def _external_post_for_matrix_event(transport_event_id: str) -> str | None:
+    async def _external_post_for_event(transport_event_id: str) -> str | None:
         return lookup.get(transport_event_id)
 
     async def _record_message_map(**kwargs: str) -> None:
@@ -137,10 +137,10 @@ def _fake_bridge(
     ns = SimpleNamespace(
         _bridge_type="slack",
         _adapter=adapter,
-        _puppet_matrix_ids={"@puppet:s"},
-        _bridge_client_matrix_user_id="@bridge:s",
+        _human_user_ids={"@human actor:s"},
+        _workspace_consumer_transport_user_id="@bridge:s",
         _max_attachment_bytes=max_bytes,
-        _external_post_for_matrix_event=_external_post_for_matrix_event,
+        _external_post_for_event=_external_post_for_event,
         _record_message_map=_record_message_map,
         recorded=recorded,
         _outbound_groups={},
@@ -148,22 +148,24 @@ def _fake_bridge(
         _channel_to_room={"chan-1": ("room-uuid", "!room:s")},
         _room_tenant=_room_tenant,
     )
-    ns._find_channel = lambda room_id=None, matrix_room_id=None: (
-        "chan-1" if matrix_room_id == "!room:s" else None
+    ns._find_channel = lambda room_id=None, transport_room_id=None: (
+        "chan-1" if transport_room_id == "!room:s" else None
     )
-    ns._outbound_thread_root_ref = BridgeCore._outbound_thread_root_ref.__get__(ns)
-    ns._download_matrix_media = BridgeCore._download_matrix_media.__get__(ns)
-    ns._schedule_outbound_group_flush = (
-        BridgeCore._schedule_outbound_group_flush.__get__(ns)
-    )
-    ns._cancel_outbound_group_flush = BridgeCore._cancel_outbound_group_flush.__get__(
+    ns._outbound_thread_root_ref = CollaborationCore._outbound_thread_root_ref.__get__(
         ns
     )
-    ns._relay_outbound_group = BridgeCore._relay_outbound_group.__get__(ns)
-    ns._relay_outbound_media = BridgeCore._relay_outbound_media.__get__(ns)
-    ns._counted_outbound = BridgeCore._counted_outbound.__get__(ns)
+    ns._download_media = CollaborationCore._download_media.__get__(ns)
+    ns._schedule_outbound_group_flush = (
+        CollaborationCore._schedule_outbound_group_flush.__get__(ns)
+    )
+    ns._cancel_outbound_group_flush = (
+        CollaborationCore._cancel_outbound_group_flush.__get__(ns)
+    )
+    ns._relay_outbound_group = CollaborationCore._relay_outbound_group.__get__(ns)
+    ns._relay_outbound_media = CollaborationCore._relay_outbound_media.__get__(ns)
+    ns._counted_outbound = CollaborationCore._counted_outbound.__get__(ns)
     ns._flush_incomplete_outbound_group = (
-        BridgeCore._flush_incomplete_outbound_group.__get__(ns)
+        CollaborationCore._flush_incomplete_outbound_group.__get__(ns)
     )
 
     async def _download_media(uri: str) -> DownloadResult:
@@ -184,7 +186,7 @@ def _room() -> RoomRef:
 async def test_image_relays_via_send_attachment_and_records_map() -> None:
     bridge = _fake_bridge()
 
-    await BridgeCore.handle_outbound_media(
+    await CollaborationCore.handle_outbound_media(
         bridge, _room(), _media_event(), bridge.client
     )
 
@@ -211,7 +213,7 @@ async def test_image_relays_via_send_attachment_and_records_map() -> None:
 async def test_caption_convention_unpacks_body_and_filename() -> None:
     bridge = _fake_bridge()
 
-    await BridgeCore.handle_outbound_media(
+    await CollaborationCore.handle_outbound_media(
         bridge,
         _room(),
         _media_event(body="look at this", filename="plot.png"),
@@ -224,22 +226,22 @@ async def test_caption_convention_unpacks_body_and_filename() -> None:
 
 
 async def test_threaded_media_resolves_external_root() -> None:
-    bridge = _fake_bridge(matrix_to_external={"$root": "ext-root"})
+    bridge = _fake_bridge(room_to_external={"$root": "ext-root"})
 
-    await BridgeCore.handle_outbound_media(
+    await CollaborationCore.handle_outbound_media(
         bridge, _room(), _media_event(thread_root="$root"), bridge.client
     )
 
     assert bridge._adapter.attachments[0]["thread_root_id"] == "ext-root"
 
 
-async def test_puppet_media_is_skipped() -> None:
-    # Media a puppet posted originated on the platform — relaying it back
+async def test_human_actor_media_is_skipped() -> None:
+    # Media a human actor posted originated on the platform — relaying it back
     # would echo it.
     bridge = _fake_bridge()
 
-    await BridgeCore.handle_outbound_media(
-        bridge, _room(), _media_event(sender="@puppet:s"), bridge.client
+    await CollaborationCore.handle_outbound_media(
+        bridge, _room(), _media_event(sender="@human actor:s"), bridge.client
     )
 
     assert bridge._adapter.attachments == []
@@ -249,7 +251,7 @@ async def test_puppet_media_is_skipped() -> None:
 async def test_media_without_sender_name_is_skipped() -> None:
     bridge = _fake_bridge()
 
-    await BridgeCore.handle_outbound_media(
+    await CollaborationCore.handle_outbound_media(
         bridge, _room(), _media_event(sender_name=None), bridge.client
     )
 
@@ -262,7 +264,7 @@ async def test_non_image_file_relays_natively() -> None:
     notice — that was the reported bug."""
     bridge = _fake_bridge()
 
-    await BridgeCore.handle_outbound_media(
+    await CollaborationCore.handle_outbound_media(
         bridge,
         _room(),
         _media_event(msgtype="m.file", body="report.pdf", mimetype="application/pdf"),
@@ -281,7 +283,7 @@ async def test_non_image_file_relays_natively() -> None:
 async def test_download_failure_posts_disclosed_fallback() -> None:
     bridge = _fake_bridge(download=TransportError("boom"))
 
-    await BridgeCore.handle_outbound_media(
+    await CollaborationCore.handle_outbound_media(
         bridge, _room(), _media_event(), bridge.client
     )
 
@@ -293,7 +295,7 @@ async def test_download_failure_posts_disclosed_fallback() -> None:
 async def test_oversize_media_posts_disclosed_fallback() -> None:
     bridge = _fake_bridge(download=DownloadResult(body=b"too big"), max_bytes=3)
 
-    await BridgeCore.handle_outbound_media(
+    await CollaborationCore.handle_outbound_media(
         bridge, _room(), _media_event(), bridge.client
     )
 
@@ -314,7 +316,7 @@ async def test_grouped_attachments_relay_as_one_platform_post() -> None:
             ("data.csv", "text/csv"),
         ]
     ):
-        await BridgeCore.handle_outbound_media(
+        await CollaborationCore.handle_outbound_media(
             bridge,
             _room(),
             _media_event(
@@ -345,13 +347,13 @@ async def test_grouped_attachments_relay_as_one_platform_post() -> None:
 async def test_incomplete_group_is_flushed_with_a_disclosed_notice() -> None:
     """A group that never completes must still reach the platform, flagged —
     never silently held forever."""
-    import switch_core.bridges.collaboration.bridge_core as bc
+    import switch_core.bridges.collaboration.collaboration_core as bc
 
     original = bc.OUTBOUND_GROUP_TIMEOUT_SECONDS
     bc.OUTBOUND_GROUP_TIMEOUT_SECONDS = 0.01
     try:
         bridge = _fake_bridge()
-        await BridgeCore.handle_outbound_media(
+        await CollaborationCore.handle_outbound_media(
             bridge,
             _room(),
             _media_event(

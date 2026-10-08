@@ -36,7 +36,7 @@ from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.install import (
     MessagingInstallerRegistry,
     commands_path,
@@ -62,13 +62,14 @@ from switch_core.db.stores.messaging_event_store import (
     MessagingEventReceiptStore,
 )
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.keys import Keyring
 from switch_core.tenant_context import current_tenant_id
 from tests.conftest import RLSHarness
 
 pytestmark = pytest.mark.no_ambient_tenant
 
 _SIGNING_SECRET = "test-signing-secret"
-_SECRET = "test-secret"
+_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 _ORIGIN = "https://switch.example"
 
 
@@ -86,7 +87,7 @@ def _signed(body: bytes) -> dict[str, str]:
     }
 
 
-class _SocketOnlyAdapter(CollaborationAdapter):
+class _SocketOnlyAdapter(PlatformAdapter):
     """A bridge that takes its events some other way.
 
     Concrete only so one can be built; every platform call is a stub, because
@@ -111,7 +112,7 @@ class _SocketOnlyAdapter(CollaborationAdapter):
     async def create_agent_identity(self, *a: Any, **k: Any) -> Any: ...
     async def remove_agent_identity(self, *a: Any, **k: Any) -> Any: ...
     def translate_inbound(self, *a: Any, **k: Any) -> Any: ...
-    def translate_outbound(self, *a: Any, **k: Any) -> Any: ...
+    def _render_outbound(self, *a: Any, **k: Any) -> Any: ...
 
 
 class _RecordingAdapter(_SocketOnlyAdapter):
@@ -159,10 +160,10 @@ class _GatedAdapter(_SocketOnlyAdapter):
 class _FakeLifecycle:
     def __init__(self, factory: async_sessionmaker) -> None:
         self._factory = factory
-        self.adapters: dict[str, CollaborationAdapter] = {}
+        self.adapters: dict[str, PlatformAdapter] = {}
         self.removed: list[str] = []
 
-    def get_adapter(self, bridge_id: str) -> CollaborationAdapter | None:
+    def get_adapter(self, bridge_id: str) -> PlatformAdapter | None:
         return self.adapters.get(bridge_id)
 
     async def remove(self, bridge_id: str) -> None:
@@ -202,7 +203,7 @@ class _Fixture:
 async def _make_bridge(factory: async_sessionmaker, tenant_id: str, suffix: str) -> str:
     async with tenant_session(factory, tenant_id) as session:
         client = Client(
-            matrix_user_id=f"@bridge-{tenant_id}:{suffix}",
+            transport_user_id=f"@bridge-{tenant_id}:{suffix}",
             display_name="bridge",
             type="collaboration_bridge",
         )
@@ -282,7 +283,7 @@ async def _fixture(harness: RLSHarness) -> _Fixture:
         installers=installers,
         lifecycle=fixture.lifecycle,  # type: ignore[arg-type]
         public_origin=_ORIGIN,
-        secret=_SECRET,
+        keyring=_KEYRING,
     )
 
     app = FastAPI()

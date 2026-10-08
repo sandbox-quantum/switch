@@ -207,7 +207,7 @@
   {
     "name": "[Switch] a bridge is failing to relay",
     "type": "metric alert",
-    "query": "sum(last_15m):sum:switch.bridge.errors{service:switch-core} by {platform,direction}.as_count() > 10",
+    "query": "sum(last_15m):sum:switch.bridge.errors{service:switch-core,bridge:collaboration} by {platform,direction}.as_count() > 10",
     "message": "{{platform.name}} has failed {{value}} time(s) {{direction.name}} in fifteen minutes.\n\nInbound failures are messages a person sent that nobody received; from the platform's side that is indistinguishable from being ignored. Outbound failures are Switch's replies not arriving.\n\nThe bridge is still running \u2014 a crashed one is a different alert. This is usually the platform rate-limiting, an expired token, or a channel the app was removed from.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",

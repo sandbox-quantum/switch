@@ -12,7 +12,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from pydantic import ValidationError
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -249,7 +249,7 @@ async def test_verify_credentials_reports_an_unreachable_microsoft(
 # ── register() wiring ────────────────────────────────────────────────────────
 
 
-class _RecordingAdapter(CollaborationAdapter):
+class _RecordingAdapter(PlatformAdapter):
     """Records the order register() drives the two hooks in."""
 
     events: list[str] = []
@@ -316,7 +316,7 @@ def _lifecycle() -> CollaborationBridgeLifecycleService:
         client_store=MagicMock(),
         client_lifecycle=MagicMock(),
         room_service=MagicMock(),
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         session_factory=MagicMock(),
         config=MagicMock(),
         client_factory=MagicMock(),
@@ -383,12 +383,12 @@ async def test_exclusive_resource_is_the_listener_port() -> None:
 
 def test_outbound_only_adapters_claim_nothing() -> None:
     """Slack, Discord and Mattermost dial out; any number can coexist."""
-    assert CollaborationAdapter.exclusive_resource({}) is None
+    assert PlatformAdapter.exclusive_resource({}) is None
 
 
 # The one tenant these tests pretend the deployment has. Named rather than
 # repeated: the stubbed lookup answers with it, and the fake rows have to
-# carry it, or the per-tenant filter in `_reject_resource_conflict` drops them.
+# carry it, or the per-tenant filter in `reject_claim_conflict` drops them.
 _STUB_TENANT = "tenant-a"
 
 
@@ -431,7 +431,7 @@ def _service_with_existing(
         client_store=MagicMock(),
         client_lifecycle=MagicMock(),
         room_service=MagicMock(),
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         session_factory=MagicMock(return_value=session),
         config=MagicMock(),
         client_factory=MagicMock(),
@@ -617,7 +617,7 @@ async def test_concurrent_registration_cannot_take_the_same_port_twice(
         client_store=MagicMock(),
         client_lifecycle=MagicMock(),
         room_service=MagicMock(),
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         session_factory=MagicMock(return_value=session),
         config=MagicMock(),
         client_factory=MagicMock(),
@@ -690,7 +690,7 @@ async def test_start_refuses_a_second_bridge_already_holding_the_port(
         client_store=MagicMock(),
         client_lifecycle=MagicMock(),
         room_service=MagicMock(),
-        matrix_admin=MagicMock(),
+        provisioning=MagicMock(),
         session_factory=MagicMock(return_value=session),
         config=MagicMock(),
         client_factory=MagicMock(),

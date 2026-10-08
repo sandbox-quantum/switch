@@ -16,15 +16,15 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.agent.protocol.connections import (
+from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_LAPSED,
     PROTOCOL_VERSION,
+    AgentConnectionRegistry,
     ClientDeclaration,
-    ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.logging_context import LogContextFilter, current_log_context
 from switch_core.transport.postgres import PostgresTransport
 
@@ -65,6 +65,7 @@ class TestTheDeliveryLoopBindsItsRoom:
     async def test_a_failing_drain_carries_the_room(self, captured: _Capture) -> None:
         transport = object.__new__(PostgresTransport)
         transport.user_id = "@someone:test"  # type: ignore[attr-defined]
+        transport._actor_role = "agent"  # type: ignore[attr-defined]
         transport._wake = asyncio.Event()  # type: ignore[attr-defined]
         transport._pending = {"room-7"}  # type: ignore[attr-defined]
         transport._delivering = False  # type: ignore[attr-defined]
@@ -93,6 +94,7 @@ class TestTheDeliveryLoopBindsItsRoom:
         every later line in the same task."""
         transport = object.__new__(PostgresTransport)
         transport.user_id = "@someone:test"  # type: ignore[attr-defined]
+        transport._actor_role = "agent"  # type: ignore[attr-defined]
         transport._wake = asyncio.Event()  # type: ignore[attr-defined]
         transport._pending = {"room-7"}  # type: ignore[attr-defined]
         transport._delivering = False  # type: ignore[attr-defined]
@@ -119,7 +121,7 @@ class TestTheProtocolBindsItsAgent:
     connected or keeps missing events."""
 
     def test_a_closing_connection_carries_the_agent(self, captured: _Capture) -> None:
-        registry = ConnectionRegistry()
+        registry = AgentConnectionRegistry()
         registry.open(
             agent_id="agent-42",
             connection_id="c1",
@@ -138,7 +140,9 @@ class TestTheProtocolBindsItsAgent:
         assert all(getattr(r, "agent_id", None) == "agent-42" for r in closed)
 
     def test_an_overflowing_buffer_carries_the_agent(self, captured: _Capture) -> None:
-        buffer = EventBuffer(max_events_per_agent=2, retention_seconds=3600)
+        buffer = EventBuffer(
+            max_events_per_agent=2, retention_seconds=3600, sequence_base=0
+        )
         for index in range(5):
             buffer.enqueue(
                 "agent-99",
@@ -171,7 +175,7 @@ class TestTheBridgeInboundPathBindsItsRoom:
     async def test_an_inbound_event_carries_the_room_it_is_for(
         self, captured: _Capture
     ) -> None:
-        bridge = _bridge_core("slack", channel_to_room={"C1": ["room-5"]})
+        bridge = _collaboration_core("slack", channel_to_room={"C1": ["room-5"]})
 
         async def handler(event) -> None:
             logging.getLogger("switch_core.test").info("handling the event")
@@ -190,7 +194,7 @@ class TestTheBridgeInboundPathBindsItsRoom:
         """Auto-room-creation, still ahead of the handler. There is no room to
         name, and inventing one would be worse than the absence — `None` is the
         honest reading."""
-        bridge = _bridge_core("slack", channel_to_room={})
+        bridge = _collaboration_core("slack", channel_to_room={})
 
         async def handler(event) -> None:
             logging.getLogger("switch_core.test").info("handling the event")
@@ -209,13 +213,13 @@ class _InboundEvent:
         self.channel_id = channel_id
 
 
-def _bridge_core(bridge_type: str, *, channel_to_room: dict[str, list[str]]):
-    """A `BridgeCore` with only what `_traced` reads.
+def _collaboration_core(bridge_type: str, *, channel_to_room: dict[str, list[str]]):
+    """A `CollaborationCore` with only what `_traced` reads.
 
     Through `__new__` for the reason the outbound one is: the real constructor
     wants an adapter and six stores, none of which this path touches.
     """
-    core = object.__new__(BridgeCore)
+    core = object.__new__(CollaborationCore)
     core._bridge_type = bridge_type  # type: ignore[attr-defined]
     core._bridge_tenant_id = "tenant-1"  # type: ignore[attr-defined]
     core._channel_to_room = channel_to_room  # type: ignore[attr-defined]

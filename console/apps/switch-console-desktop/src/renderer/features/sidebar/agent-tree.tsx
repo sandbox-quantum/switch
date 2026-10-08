@@ -1,6 +1,8 @@
 import { observer } from 'mobx-react-lite';
+import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
 import { SidebarAgentItem } from './agent-item';
 import { SidebarSessionItem } from './session-item';
@@ -95,7 +97,11 @@ const AgentSessions = observer(function AgentSessions({
 });
 
 export const AgentTree = observer(function AgentTree() {
-  const entries = scopedAgents();
+  const managed = useManagedAgents(switchServersStore.activeServerId);
+  const managedIds = new Set((managed.data ?? []).map((agent) => agent.agentId));
+  const entries = scopedAgents().filter(
+    (entry) => entry.agent.switchAgentId === null || !managedIds.has(entry.agent.switchAgentId)
+  );
   return (
     <SortableList
       containerId={AGENTS_CONTAINER}

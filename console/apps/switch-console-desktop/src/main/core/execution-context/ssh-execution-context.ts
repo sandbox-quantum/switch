@@ -7,6 +7,7 @@ import {
 import {
   isSshChannelOpenFailure,
   isSshChannelTimeout,
+  isSshTransportGone,
 } from '@main/core/ssh/lifecycle/ssh-channel-open-failure';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import { quoteShellArg } from '@main/utils/shellEscape';
@@ -26,6 +27,10 @@ function toTransportError(error: unknown): TransportError {
 
 function isTransportShaped(error: unknown): boolean {
   if (isSshChannelOpenFailure(error) || isSshChannelTimeout(error)) return true;
+  // ssh2's "Not connected": the transport is gone. Unrecognised, it fell
+  // through as an ordinary command failure, and a CLI lookup that failed this
+  // way reported the CLI as not installed.
+  if (isSshTransportGone(error)) return true;
   return error instanceof Error && error.message.includes('SSH connection is not available');
 }
 
@@ -77,6 +82,18 @@ export function buildSshCommand(
   const prefixed = marker ? `printf '%s\\n' ${quoteShellArg(marker)}; ${inner}` : inner;
   const body = root ? `cd ${quoteShellArg(root)} && ${prefixed}` : prefixed;
   return buildRemoteShellCommand(profile ?? FALLBACK_REMOTE_SHELL_PROFILE, body);
+}
+
+/** Why a remote command that did not exit 0 failed, from what ssh2 reported. */
+export function exitDescription(
+  code: number | null | undefined,
+  signal: string | undefined
+): string {
+  if (code === undefined) {
+    return 'The command ended without an exit status; the SSH connection may have dropped.';
+  }
+  if (code === null) return `The command was killed${signal ? ` by ${signal}` : ''}.`;
+  return `Process exited with code ${code}`;
 }
 
 export class SshExecutionContext implements IExecutionContext {
@@ -165,14 +182,17 @@ export class SshExecutionContext implements IExecutionContext {
           stderr += d.toString('utf-8');
         });
 
-        stream.on('close', (code: number | null) => {
+        // ssh2 passes the exit status, null plus a signal when the command was
+        // killed, or nothing when the channel closed without either (a dropped
+        // connection). Only 0 is success; partial output is not an answer.
+        stream.on('close', (code: number | null | undefined, signal?: string) => {
           settle(() => {
             const cleanStdout = stripExecBanner(stdout, EXEC_STDOUT_MARKER);
-            if ((code ?? 0) === 0) {
+            if (code === 0) {
               resolve({ stdout: cleanStdout, stderr });
             } else {
               reject(
-                Object.assign(new Error(stderr || `Process exited with code ${code}`), {
+                Object.assign(new Error(stderr || exitDescription(code, signal)), {
                   stdout: cleanStdout,
                   stderr,
                   code: code ?? undefined,

@@ -130,6 +130,9 @@ export type SwitchAuthConfig = {
   oidcEnabled: boolean;
   /** Button label for the OIDC provider (e.g. "Okta"), or null. */
   oidcProviderLabel: string | null;
+  /** Whether anyone may create an account with an email and password. False
+   * for a server predating the field. */
+  signupEnabled: boolean;
 };
 
 /** What a switch-core says about itself to an authenticated client (CHOO-1865).
@@ -170,6 +173,24 @@ export type PasswordLoginParams = {
   serverId: string;
   email: string;
   password: string;
+};
+
+export type SignupParams = PasswordLoginParams & {
+  /** Omitted to let the server name the account after its email. */
+  displayName?: string;
+};
+
+/** Whether the server began warming the new account's cloud machine, and why
+ * not when it did not. */
+export type SignupMachine = {
+  status: 'starting' | 'unavailable';
+  reason: string | null;
+};
+
+/** A created account: signed in, as after a password login. */
+export type SignupResult = {
+  user: SwitchUser;
+  machine: SignupMachine;
 };
 
 /** Read-only summary of a remote agent (mirrors the gateway `AgentSummary`). */
@@ -265,7 +286,7 @@ export type RemoteRoomDetail = RemoteRoomSummary & {
 /** The room fields Switch Console can change. Anything omitted is left alone;
  * an empty string clears the field rather than leaving it. */
 export type UpdateRoomParams = {
-  serverId: string;
+  workspaceId: string;
   roomId: string;
   description?: string;
   instructions?: string;
@@ -414,7 +435,7 @@ export type RemoteBridgeType = {
  * never logged, and never sent back to the renderer.
  */
 export type CreateBridgeParams = {
-  serverId: string;
+  workspaceId: string;
   bridgeType: string;
   displayName: string;
   connectionConfig: Record<string, string | boolean>;
@@ -450,7 +471,7 @@ export type CreateBridgeResult =
  * own partial-update contract.
  */
 export type UpdateBridgeParams = {
-  serverId: string;
+  workspaceId: string;
   bridgeId: string;
   channelCreationEnabled?: boolean;
 };
@@ -468,7 +489,7 @@ export type UpdateBridgeResult =
 /** Parameters for disconnecting a bridge from a server
  * (`DELETE /collaborations/{id}`). */
 export type DeleteBridgeParams = {
-  serverId: string;
+  workspaceId: string;
   bridgeId: string;
 };
 
@@ -555,7 +576,7 @@ export type BridgeDirectorySearchResult =
 
 /** Claim a platform identity for the signed-in Switch user (CHOO-2137). */
 export type ClaimIdentityParams = {
-  serverId: string;
+  workspaceId: string;
   bridgeId: string;
   /** The platform's own id, not an `ExternalUser` row id — the row may not
    * exist yet, and the server creates it on demand. */
@@ -669,7 +690,7 @@ export type AgentProviderKind = 'anthropic' | 'third-party';
  * its credentials into the directory's `.claude/settings.local.json`.
  */
 export type ProvisionAgentParams = {
-  serverId: string;
+  workspaceId: string;
   /** The agent's working directory; the settings file is written here and used
    * as `repo_dir` so an offline-session command can `cd` into it. */
   dir: string;
@@ -688,7 +709,7 @@ export type ProvisionAgentParams = {
  * is no local directory: the agent's config lives entirely on the host.
  */
 export type ProvisionRemoteAgentParams = {
-  serverId: string;
+  workspaceId: string;
   /** SSH alias of the onboarded host the agent runs on. */
   sshHost: string;
   /** The agent's working directory on the host; the settings file is written
@@ -741,7 +762,7 @@ export type ProvisionAgentResult =
  * useful room, so there is no internal-only path here.
  */
 export type CreateRoomParams = {
-  serverId: string;
+  workspaceId: string;
   name: string;
   description: string;
   /** Room-specific system prompt shown to agents on connect. Optional. */

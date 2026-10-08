@@ -9,6 +9,8 @@ from typing import Any
 
 from aiohttp import web
 
+from switch_core.keys import Keyring, Purpose
+
 logger = logging.getLogger(__name__)
 
 # What a bridge's callbacks are addressed as. The type is in the path so a
@@ -16,9 +18,9 @@ logger = logging.getLogger(__name__)
 # bridge's id is in it so one listener serves every bridge and every tenant.
 _ROUTE = "/collaboration/{bridge_type}/{bridge_id}/callback"
 
-# What a callback key is derived from, so it is not the same value as anything
-# else the server secret is used for.
-_KEY_PURPOSE = "collaboration-callback"
+# How a bridge's callback key was derived from `JWT_SECRET_KEY` before
+# `SECRET_KEYS`; kept so buttons posted then still verify while it is set.
+_LEGACY_KEY_PURPOSE = "collaboration-callback"
 
 Handler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
@@ -64,10 +66,10 @@ class CallbackIngress:
     any other bridge sharing it.
     """
 
-    def __init__(self, *, host: str, port: int, secret: str) -> None:
+    def __init__(self, *, host: str, port: int, keyring: Keyring) -> None:
         self._host = host
         self._port = port
-        self._secret = secret
+        self._keyring = keyring
         self._handlers: dict[tuple[str, str], Handler] = {}
         self._runner: web.AppRunner | None = None
         # Each bridge runs in a task of its own, so two starting together reach
@@ -81,6 +83,7 @@ class CallbackIngress:
             bridge_type,
             bridge_id,
             key=self._key_for(bridge_type, bridge_id),
+            verification_keys=self._verification_keys_for(bridge_type, bridge_id),
         )
 
     def path_for(self, bridge_type: str, bridge_id: str) -> str:
@@ -95,18 +98,39 @@ class CallbackIngress:
         take one until somebody edits its configuration by hand — and adds a
         second secret to keep, back up and rotate. Deriving it costs none of
         that: the key exists the moment the bridge starts, and rotating the
-        server secret rotates it.
+        server keys rotates it.
 
         Separated by bridge, so what one bridge accepts another will not, and
-        by purpose, so it is not the same value as anything else derived from
-        the same secret. Rotating the server secret invalidates whatever the
-        old key signed; a platform that has already handed out signed material
-        is responsible for saying so rather than failing quietly.
+        by purpose (`keys.Purpose.BRIDGE_CALLBACK`), so it is not the same value
+        as anything else derived from the server's keys. Signing uses the
+        current key; `_verification_keys_for` also accepts older ones.
         """
+        return self._bridge_key(
+            self._keyring.derive(Purpose.BRIDGE_CALLBACK), bridge_type, bridge_id
+        )
+
+    def _verification_keys_for(self, bridge_type: str, bridge_id: str) -> list[str]:
+        """Every key a press for this bridge may carry a signature from: each
+        key in the keyring, and while `JWT_SECRET_KEY` is set, the key it
+        derived before `SECRET_KEYS`, so buttons already posted keep working."""
+        keys = [
+            self._bridge_key(derived, bridge_type, bridge_id)
+            for derived in self._keyring.verification_keys(Purpose.BRIDGE_CALLBACK)
+        ]
+        if self._keyring.legacy_secret is not None:
+            keys.append(
+                hmac.new(
+                    self._keyring.legacy_secret.encode(),
+                    f"{_LEGACY_KEY_PURPOSE}:{bridge_type}:{bridge_id}".encode(),
+                    hashlib.sha256,
+                ).hexdigest()
+            )
+        return keys
+
+    @staticmethod
+    def _bridge_key(derived: bytes, bridge_type: str, bridge_id: str) -> str:
         return hmac.new(
-            self._secret.encode(),
-            f"{_KEY_PURPOSE}:{bridge_type}:{bridge_id}".encode(),
-            hashlib.sha256,
+            derived, f"{bridge_type}:{bridge_id}".encode(), hashlib.sha256
         ).hexdigest()
 
     async def serve(self, bridge_type: str, bridge_id: str, handle: Handler) -> None:
@@ -206,7 +230,7 @@ class CallbackEndpoint:
 
     Handed to an adapter so it can serve its own callbacks without knowing
     which bridge it is or that it shares a port with anything — and without
-    ever holding the server secret the key came from.
+    ever holding the server keys its keys came from.
     """
 
     def __init__(
@@ -216,11 +240,15 @@ class CallbackEndpoint:
         bridge_id: str,
         *,
         key: str,
+        verification_keys: list[str],
     ) -> None:
         self._ingress = ingress
         self._bridge_type = bridge_type
         self._bridge_id = bridge_id
+        # Signs what the bridge posts now.
         self.key = key
+        # Verifies a press: `key`, plus older keys still in the keyring.
+        self.verification_keys = verification_keys
 
     @property
     def path(self) -> str:

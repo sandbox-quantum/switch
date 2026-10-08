@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -48,15 +48,15 @@ def _calls(registry: MetricsRegistry) -> dict[tuple[str, str], tuple[int, float]
 
 
 class _Bridge:
-    """The `_counted_outbound` contextmanager, off a real `BridgeCore`.
+    """The `_counted_outbound` contextmanager, off a real `CollaborationCore`.
 
     Built by `__new__` rather than through the constructor: the manager reads
-    one attribute, and standing up a whole `BridgeCore` would need a database,
+    one attribute, and standing up a whole `CollaborationCore` would need a database,
     an adapter and six stores to test a `time.perf_counter()` pair.
     """
 
     def __new__(cls, bridge_type: str):
-        core = object.__new__(BridgeCore)
+        core = object.__new__(CollaborationCore)
         core._bridge_type = bridge_type  # type: ignore[attr-defined]
         return core
 

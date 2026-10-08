@@ -9,6 +9,14 @@ name: switch release
 # MUST match pyproject.toml `[project].version`; the prep job verifies this).
 # `workflow_dispatch` builds everything WITHOUT pushing, for verification.
 #
+# Release candidates: push `switch-v0.30.0-rc.1` on a commit that is on `main` or
+# a `release/*` branch. The base version must be at or above pyproject's and not
+# already released. An RC publishes the images, chart and compose under its own
+# version only — never `latest` — so nothing that follows `latest` picks up an
+# untested build, and Helm skips it unless asked for with `--devel` or an exact
+# `--version`. pyproject's version is stamped on the runner (PEP 440 form,
+# `0.30.0rc1`) so the running server reports the RC it is; nothing is committed.
+#
 # Artifacts go to GHCR by default, and the packages are public alongside the
 # repo. REGISTRY / IMAGE_NAMESPACE are the only things to change to retarget
 # another registry (e.g. ECR) — a config flip, not a rewrite.
@@ -33,32 +41,68 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
+      python_version: ${{ steps.version.outputs.python_version }}
       push: ${{ steps.version.outputs.push }}
+      latest: ${{ steps.version.outputs.latest }}
       compose_speaks: ${{ steps.contract.outputs.speaks }}
       compose_accepts: ${{ steps.contract.outputs.accepts }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Branch and tag history, to check which branches contain an RC tag.
+          fetch-depth: 0
 
       - name: Resolve version
         id: version
-        # On a tag: version is the tag minus `switch-v`, and we push. On a
+        # On a release tag: version is the tag minus `switch-v`, and we push and
+        # move `latest`. On an RC tag: push under the RC version only. On a
         # dispatch run: use pyproject's version and DON'T push (build-only).
         run: |
           pkg_version="$(python3 -c "import tomllib; print(tomllib.load(open('core/pyproject.toml','rb'))['project']['version'])")"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             tag_version="${GITHUB_REF_NAME#switch-v}"
-            if [ "$tag_version" != "$pkg_version" ]; then
-              echo "::error::Tag version ($tag_version) does not match core/pyproject.toml version ($pkg_version). Bump pyproject and re-tag."
+            if [[ "$tag_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-rc\.([0-9]+)$ ]]; then
+              base="${BASH_REMATCH[1]}"
+              python_version="${base}rc${BASH_REMATCH[2]}"
+              echo "rc base=$base pyproject=$pkg_version"
+              if [ "$(printf '%s\n%s\n' "$pkg_version" "$base" | sort -V | head -n1)" != "$pkg_version" ]; then
+                echo "::error::RC base version $base is below core/pyproject.toml $pkg_version."
+                exit 1
+              fi
+              if git rev-parse -q --verify "refs/tags/switch-v$base" >/dev/null; then
+                echo "::error::switch-v$base is already released; an RC must precede a later version."
+                exit 1
+              fi
+              commit="$(git rev-parse "$GITHUB_REF^{commit}")"
+              branches="$(git branch -r --contains "$commit" --format='%(refname:short)')"
+              echo "branches containing $commit:"
+              echo "$branches"
+              if ! printf '%s\n' "$branches" | grep -Eq '^origin/(main|release/.+)$'; then
+                echo "::error::RC tag $GITHUB_REF_NAME points at $commit, which is not on main or a release/* branch."
+                exit 1
+              fi
+              latest=false
+            elif [ "$tag_version" = "$pkg_version" ]; then
+              python_version="$pkg_version"
+              latest=true
+            else
+              echo "::error::Tag version ($tag_version) does not match core/pyproject.toml version ($pkg_version). Bump pyproject and re-tag, or tag a release candidate as switch-v<version>-rc.<n>."
               exit 1
             fi
-            echo "version=$tag_version" >> "$GITHUB_OUTPUT"
-            echo "push=true" >> "$GITHUB_OUTPUT"
+            push=true
           else
-            echo "version=$pkg_version" >> "$GITHUB_OUTPUT"
-            echo "push=false" >> "$GITHUB_OUTPUT"
+            tag_version="$pkg_version"
+            python_version="$pkg_version"
+            push=false
+            latest=false
           fi
-          echo "Resolved version=$pkg_version (push on tag only)"
+          {
+            echo "version=$tag_version"
+            echo "python_version=$python_version"
+            echo "push=$push"
+            echo "latest=$latest"
+          } | tee -a "$GITHUB_OUTPUT"
 
       # The published compose artifact declares its stack-compose range twice:
       # in the file (for whoever has already downloaded it) and as an OCI
@@ -95,6 +139,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      - name: Stamp the release candidate version
+        # The server reports its version from the installed package metadata,
+        # which comes from pyproject. Written here for an RC, never committed.
+        if: ${{ needs.prep.outputs.python_version != needs.prep.outputs.version }}
+        env:
+          PYTHON_VERSION: ${{ needs.prep.outputs.python_version }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          path = "core/pyproject.toml"
+          text = open(path).read()
+          stamped, n = re.subn(r'(?m)^version = ".*"$', f'version = "{os.environ["PYTHON_VERSION"]}"', text, count=1)
+          if n != 1:
+              raise SystemExit(f"no [project] version line found in {path}")
+          open(path, "w").write(stamped)
+          PY
+          grep -m1 '^version = ' core/pyproject.toml
+
       - name: Set up QEMU
         # Enables arm64 emulation so buildx can produce a multi-arch manifest
         # from an amd64 runner.
@@ -118,9 +180,13 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: ${{ needs.prep.outputs.push == 'true' }}
+          # Read by Dockerfile.switch only; the other images ignore them.
+          build-args: |
+            SWITCH_GIT_COMMIT=${{ github.sha }}
+            SWITCH_GIT_REPOSITORY_URL=${{ github.server_url }}/${{ github.repository }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ needs.prep.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:latest
+            ${{ needs.prep.outputs.latest == 'true' && format('{0}/{1}/{2}:latest', env.REGISTRY, env.IMAGE_NAMESPACE, matrix.image) || '' }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
 
@@ -186,12 +252,12 @@ jobs:
         # Publishes deploy/local/standalone-docker-compose.yml to GHCR as an OCI
         # artifact, stamped with the same version as the images so a single tag
         # pins the whole standalone stack. Switch Console bundles this exact file at
-        # build time. `latest` moves with each release.
+        # build time. `latest` moves with each release, never with an RC.
         if: ${{ needs.prep.outputs.push == 'true' }}
         working-directory: deploy/local
         run: |
           oras push \
-            "$REGISTRY/$IMAGE_NAMESPACE/standalone-compose:${{ needs.prep.outputs.version }},latest" \
+            "$REGISTRY/$IMAGE_NAMESPACE/standalone-compose:${{ needs.prep.outputs.version }}${{ needs.prep.outputs.latest == 'true' && ',latest' || '' }}" \
             --artifact-type application/vnd.switch.compose.v1+yaml \
             --annotation "org.opencontainers.image.version=${{ needs.prep.outputs.version }}" \
             --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
