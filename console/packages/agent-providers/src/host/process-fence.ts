@@ -26,12 +26,15 @@ export async function fenceDeadOwner(pid: number, group: number | null): Promise
   if (exists(pid)) throw new Error('FENCING_REQUIRED: the shared host owner is still alive.');
   if (group !== pid || process.platform === 'win32')
     throw new Error('FENCING_REQUIRED: the previous host did not isolate its provider processes.');
-  if (!exists(-group)) return;
   try {
+    if (!exists(-group)) return;
     process.kill(-group, 'SIGKILL');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
-    throw error;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return;
+    // macOS answers EPERM for a group whose members have all exited but are
+    // not yet reaped. The wait below tells that apart from one that stays.
+    if (code !== 'EPERM') throw error;
   }
   for (let attempt = 0; attempt < 100; attempt++) {
     try {

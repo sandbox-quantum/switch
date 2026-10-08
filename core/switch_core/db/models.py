@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from sqlalchemy import (
     DDL,
@@ -1830,6 +1831,13 @@ class MessagingInstall(TenantScoped, Base):
     verbatim rather than parsed into a list — a scope string that means
     nothing to us is still the thing to show an operator asking why a call was
     refused.
+
+    `platform_data` is what one platform needs to remember about an install
+    and no other platform has: Teams' id for the app in the customer's own
+    catalogue, say, which differs per organisation and is needed to act on it
+    later. Never a secret — those have a column, and an encryption — and never
+    in the bridge's connection config, which a workspace admin can edit. Empty
+    for a platform that has nothing to keep.
     """
 
     __tablename__ = "messaging_installs"
@@ -1865,6 +1873,9 @@ class MessagingInstall(TenantScoped, Base):
     )
     ended_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    platform_data: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
 
 

@@ -948,7 +948,14 @@ export class HostedSession {
   }
 
   private async providerEvent(event: ProviderRuntimeEvent): Promise<void> {
-    if (this.resetting && event.type === 'session.exited') return;
+    // A reset stops the old conversation on the way to a fresh one. That stop
+    // is not the session's: shown, it reads as the session ending.
+    if (
+      this.resetting &&
+      (event.type === 'session.exited' ||
+        (event.type === 'session.state.changed' && event.status === 'stopped'))
+    )
+      return;
     if (event.type === 'session.exited') {
       for (const request of this.snapshot().requests)
         if (request.state === 'open' || request.state === 'submitting')

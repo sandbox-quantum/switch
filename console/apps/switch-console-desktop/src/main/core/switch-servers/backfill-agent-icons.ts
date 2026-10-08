@@ -5,14 +5,14 @@ import type { AgentIconBackfill, SwitchServer } from '@shared/core/switch-server
 import { fetchAgents, GatewayError, updateAgentIcon } from './gateway-client';
 
 /**
- * Give the signed-in user's existing agents the bot avatar their name generates
+ * Give the signed-in user's existing agents the avatar their name generates
  * (CHOO-2171).
  *
- * Agents registered before icons existed have none, and the Switch server's own
- * fallback for those is the lettered avatar the bridges have always drawn. This
- * writes the bot in, so an agent this app manages looks the same in the app as
- * it does in Slack — and an agent belonging to an install that has not updated
- * keeps the letters, which is the intended way to tell the two apart.
+ * Agents registered before icons existed have none. A current Switch server
+ * draws those with the same name-generated avatar this app does, but an older
+ * one draws a lettered badge on the chat platforms instead. This writes the
+ * avatar in, so an agent this app manages looks the same in the app as it does
+ * in Slack whichever server it is on.
  *
  * Only agents this install manages are touched, and only those with no icon at
  * all — a chosen icon is never overwritten.
@@ -24,10 +24,10 @@ import { fetchAgents, GatewayError, updateAgentIcon } from './gateway-client';
  * call, and a refusal is taken as "not yours" rather than argued with.
  *
  * **The outcome is reported rather than logged and forgotten.** The app draws a
- * name-derived bot for any agent the server has no icon for, so a failed write
- * leaves the app looking correct while the chat platforms — which ask the
- * server — still show the lettered avatar. Nothing on screen would say why, so
- * the caller is handed what happened and tells the user.
+ * name-derived avatar for any agent the server has no icon for, so on an older
+ * server a failed write leaves the app looking correct while the chat platforms
+ * — which ask the server — still show the lettered badge. Nothing on screen
+ * would say why, so the caller is handed what happened and tells the user.
  */
 export function backfillAgentIcons(
   workspaceId: string,
@@ -116,7 +116,7 @@ async function writeMissingIcons(
   }
 
   if (failures.length > 0) {
-    log.warn('agent icon backfill: some agents kept the lettered avatar', {
+    log.warn('agent icon backfill: some agents could not be given an icon', {
       event: 'agent_icon_backfill',
       workspaceId,
       serverId: server.id,

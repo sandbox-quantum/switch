@@ -31,7 +31,9 @@ def adapter():
         conversations_history=AsyncMock(),
     )
     adapter.agent_rendering = AsyncMock(
-        return_value=SimpleNamespace(field_label="worker", icon_url=None)
+        return_value=SimpleNamespace(
+            field_label="worker", icon_url="https://example.com/worker.png"
+        )
     )
     adapter._bot_user_id = "bot-demo"
     return adapter

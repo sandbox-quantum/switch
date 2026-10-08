@@ -288,14 +288,21 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Delivery failures per second",
-        "show_legend": false,
+        "title": "Delivery and message-observer failures per second",
+        "show_legend": true,
         "requests": [
           {
             "q": "sum:switch.messages.delivery_failures{$env,$service}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
+            }
+          },
+          {
+            "q": "sum:switch.messages.observer_failures{$env,$service} by {actor}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "orange"
             }
           }
         ]

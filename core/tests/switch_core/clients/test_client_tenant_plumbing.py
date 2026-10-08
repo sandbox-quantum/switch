@@ -51,6 +51,7 @@ from switch_core.db.stores.usage_store import UsageStore
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
+from switch_core.transport.observer import IgnoreParticipantMessages
 
 
 def _factory(session_factory: async_sessionmaker[AsyncSession]) -> ClientFactory:
@@ -66,6 +67,7 @@ def _factory(session_factory: async_sessionmaker[AsyncSession]) -> ClientFactory
         invites=InviteBus(),
         ephemeral=EphemeralBus(),
         room_cache=MagicMock(),
+        message_observer=IgnoreParticipantMessages(),
     )
     factory.register("user", Actor)
     return factory

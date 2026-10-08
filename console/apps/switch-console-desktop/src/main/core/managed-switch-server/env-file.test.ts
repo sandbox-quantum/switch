@@ -132,6 +132,21 @@ describe('buildEnvFile', () => {
       // compose file always allows the bundled Mattermost; a managed stack
       // allows nothing more until its operator says so.
       'OUTBOUND_ALLOWED_PRIVATE_HOSTS',
+      // The distributed Teams app's credential, notification keypair and
+      // package pages are deployment config too, and a loopback stack can
+      // hold none of them for the same reason.
+      'TEAMS_APP_CLIENT_ID',
+      'TEAMS_APP_TENANT_ID',
+      'TEAMS_APP_CLIENT_SECRET',
+      'TEAMS_APP_CERTIFICATE',
+      'TEAMS_APP_CERTIFICATE_PRIVATE_KEY',
+      'TEAMS_APP_FEDERATED_TOKEN_FILE',
+      'TEAMS_APP_NOTIFICATION_CERTIFICATE',
+      'TEAMS_APP_NOTIFICATION_PRIVATE_KEY',
+      'TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY',
+      'TEAMS_APP_PRIVACY_URL',
+      'TEAMS_APP_TERMS_URL',
+      'TEAMS_APP_NAME',
     ]);
 
     const missing = [...interpolated]

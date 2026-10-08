@@ -462,7 +462,7 @@ async def test_the_answer_to_a_press_reaches_teams_as_the_invoke_response() -> N
     """A bare 200 with no body is what every other activity gets, and it says
     nothing to the presser. The response is the only channel a refusal has."""
     adapter, _connector = _teams()
-    adapter._validator = None
+    adapter._authenticator = None
 
     async def refuse(interaction: InboundInteraction) -> None:
         await adapter.tell_actor(
@@ -483,7 +483,7 @@ async def test_an_ordinary_message_still_answers_with_a_bare_acknowledgement() -
     """Only an invoke has a body to return, and a message carrying one would be
     a change in what every Teams activity has always been answered with."""
     adapter, _connector = _teams()
-    adapter._validator = None
+    adapter._authenticator = None
 
     response = await adapter._handle_http_messages(
         _FakeHttpRequest(  # type: ignore[arg-type]

@@ -3,15 +3,18 @@
 The bridges are where an icon is actually seen by people, and the adapters hold
 no database, so the bridge core supplies the lookup. These pin the two halves:
 the core answering with the agent's icon (or nothing), and the adapter choosing
-between that answer and the default it has always generated.
+between that answer and the icon the agent's name generates.
 """
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
 
-from switch_core.agent_icon import default_icon_url
+import pytest
+
+from switch_core.agent_icon import generated_icon_url, initials_icon_url
 from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
     PlatformAdapter,
@@ -94,9 +97,24 @@ class TestCollaborationCoreResolver:
 
 
 class TestAdapterIconSelection:
-    async def test_uses_the_default_when_no_resolver_is_installed(self) -> None:
+    async def test_draws_an_agent_face_when_no_resolver_is_installed(self) -> None:
+        # Nothing can say who is who, and the senders an adapter draws are
+        # overwhelmingly agents: drawing them all as people would be the worse
+        # mistake.
         adapter = _Adapter()
-        assert await adapter.agent_icon_url("worker") == default_icon_url("worker")
+        assert await adapter.agent_icon_url("worker") == generated_icon_url("worker")
+
+    async def test_says_once_that_no_resolver_is_installed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        adapter = _Adapter()
+        with caplog.at_level(logging.WARNING):
+            await adapter.agent_icon_url("worker")
+            await adapter.agent_icon_url("manager")
+        reports = [
+            r for r in caplog.records if "no agent presentation resolver" in r.message
+        ]
+        assert len(reports) == 1
 
     async def test_prefers_the_agents_own_icon(self) -> None:
         adapter = _Adapter()
@@ -114,7 +132,7 @@ class TestAdapterIconSelection:
             return AgentPresentation(display_name=None, icon_url=None)
 
         adapter.set_agent_presentation_resolver(resolver)
-        assert await adapter.agent_icon_url("worker") == default_icon_url("worker")
+        assert await adapter.agent_icon_url("worker") == generated_icon_url("worker")
 
     async def test_an_end_to_end_override_through_the_bridge_resolver(self) -> None:
         """The two halves wired together, which is the thing that actually has
@@ -124,22 +142,5 @@ class TestAdapterIconSelection:
         adapter.set_agent_presentation_resolver(bridge._agent_presentation)
 
         assert await adapter.agent_icon_url("worker") == _CUSTOM
-        assert await adapter.agent_icon_url("plain") == default_icon_url("plain")
-
-
-class TestDefaultIcon:
-    async def test_is_stable_for_a_given_name(self) -> None:
-        assert default_icon_url("worker") == default_icon_url("worker")
-
-    async def test_differs_between_agents(self) -> None:
-        assert default_icon_url("worker") != default_icon_url("manager")
-
-    async def test_underscores_become_word_separators(self) -> None:
-        """The avatar draws initials, so `a_b` has to read as two words rather
-        than one — this is the behaviour the bridges already relied on."""
-        assert "a+b" in default_icon_url("a_b")
-
-    async def test_format_override_is_appended_for_callers_that_need_bytes(
-        self,
-    ) -> None:
-        assert default_icon_url("worker", image_format="png").endswith("&format=png")
+        assert await adapter.agent_icon_url("plain") == generated_icon_url("plain")
+        assert await adapter.agent_icon_url("alice") == initials_icon_url("alice")

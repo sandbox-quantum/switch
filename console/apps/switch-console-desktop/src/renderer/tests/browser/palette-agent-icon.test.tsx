@@ -140,9 +140,9 @@ describe('an agent in search', () => {
     expect(src).toBe('https://icons.example/reviewer.png');
   });
 
-  it('falls back to the bot drawn from its name, not its provider logo', async () => {
+  it('falls back to the face drawn from its name, not its provider logo', async () => {
     const src = await rowAvatarSrc({ known: true, iconUrl: null });
-    expect(src).toContain('/bottts/png?');
+    expect(src).toContain('/gaze/png?');
     expect(src).toContain(AGENT_NAME);
   });
 
@@ -150,6 +150,6 @@ describe('an agent in search', () => {
     // The lookup that used to supply the provider id can miss — a stale index
     // entry, an agent removed since. A miss must not leave the row blank.
     const src = await rowAvatarSrc({ known: false, iconUrl: null });
-    expect(src).toContain('/bottts/png?');
+    expect(src).toContain('/gaze/png?');
   });
 });

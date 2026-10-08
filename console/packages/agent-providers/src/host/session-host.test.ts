@@ -957,6 +957,24 @@ it.each(['session.exited', 'session.state.changed'] as const)(
   }
 );
 
+it('never reads stopped while a reset replaces the conversation', async () => {
+  const { host, adapter, emit } = await start('claude');
+  adapter.stopSession = vi.fn(async () => {
+    emit({ type: 'session.state.changed', status: 'stopped' });
+    emit({ type: 'session.exited', reason: 'Stopped' });
+  });
+  const reset = { ...message('reset'), body: { type: 'session.reset' as const } };
+  expect((await host.command(reset)).status).toBe('applied');
+  expect(adapter.stopSession).toHaveBeenCalled();
+  expect(
+    host
+      .replay(0)
+      .events.some(
+        (event) => event.body.type === 'session.upsert' && event.body.session.status === 'stopped'
+      )
+  ).toBe(false);
+});
+
 async function openApproval(
   emit: (event: Record<string, unknown>) => void,
   host: HostedSession

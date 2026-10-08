@@ -16,6 +16,8 @@ from typing import Any
 import httpx
 import pytest
 
+from switch_core.bridges.collaboration.models import BridgeOperationError
+from switch_core.bridges.collaboration.teams import graph as graph_module
 from switch_core.bridges.collaboration.teams.connector import (
     ACTIVITY_SIZE_LIMIT,
     BotConnectorClient,
@@ -99,8 +101,18 @@ def _graph(recorder: _Recorder, tokens: _FakeTokens | None = None) -> GraphClien
     return GraphClient(tokens=tokens or _FakeTokens(), http=_client(recorder))  # type: ignore[arg-type]
 
 
-def _connector(recorder: _Recorder) -> BotConnectorClient:
-    return BotConnectorClient(tokens=_FakeTokens(), http=_client(recorder))  # type: ignore[arg-type]
+def _connector(
+    recorder: _Recorder,
+    *,
+    allowed_hosts: frozenset[str] | None = None,
+    on_bot_disabled: Any = None,
+) -> BotConnectorClient:
+    return BotConnectorClient(
+        tokens=_FakeTokens(),  # type: ignore[arg-type]
+        http=_client(recorder),
+        allowed_hosts=allowed_hosts,
+        on_bot_disabled=on_bot_disabled or (lambda: None),
+    )
 
 
 # ── GraphClient ───────────────────────────────────────────────────────────────
@@ -237,6 +249,7 @@ def test_create_channel_thread_builds_body_and_parses_ids() -> None:
         connector.create_channel_thread(
             service_url="https://smba.example/amer/",
             channel_id="19:c@thread.tacv2",
+            tenant_id="tenant-1",
             activity={"type": "message", "text": "hi"},
         )
     )
@@ -248,6 +261,9 @@ def test_create_channel_thread_builds_body_and_parses_ids() -> None:
     body = rec.last_json()
     assert body["isGroup"] is True
     assert body["channelData"]["channel"]["id"] == "19:c@thread.tacv2"
+    # Microsoft asks a proactive message to name the organisation, and with one
+    # app serving many the channel id alone does not.
+    assert body["channelData"]["tenant"]["id"] == "tenant-1"
 
 
 def test_create_channel_thread_refuses_to_invent_an_activity_id() -> None:
@@ -263,6 +279,7 @@ def test_create_channel_thread_refuses_to_invent_an_activity_id() -> None:
             connector.create_channel_thread(
                 service_url="https://smba.example/amer/",
                 channel_id="19:c@thread.tacv2",
+                tenant_id="tenant-1",
                 activity={"type": "message"},
             )
         )
@@ -279,6 +296,7 @@ def test_create_channel_thread_error_raises() -> None:
             connector.create_channel_thread(
                 service_url="https://smba.example/amer/",
                 channel_id="19:c@thread.tacv2",
+                tenant_id="tenant-1",
                 activity={"type": "message"},
             )
         )
@@ -468,6 +486,8 @@ def test_a_429_is_throttling_and_carries_the_wait_teams_asked_for() -> None:
     connector = BotConnectorClient(
         tokens=_FakeTokens(),  # type: ignore[arg-type]
         http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        allowed_hosts=None,
+        on_bot_disabled=lambda: None,
     )
 
     with pytest.raises(BotConnectorThrottled) as raised:
@@ -489,6 +509,8 @@ def test_an_unreadable_retry_after_leaves_the_wait_unstated() -> None:
     connector = BotConnectorClient(
         tokens=_FakeTokens(),  # type: ignore[arg-type]
         http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        allowed_hosts=None,
+        on_bot_disabled=lambda: None,
     )
 
     with pytest.raises(BotConnectorThrottled) as raised:
@@ -543,6 +565,8 @@ def test_a_transport_failure_never_escapes_as_httpx() -> None:
     connector = BotConnectorClient(
         tokens=_FakeTokens(),  # type: ignore[arg-type]
         http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        allowed_hosts=None,
+        on_bot_disabled=lambda: None,
     )
 
     with pytest.raises(BotConnectorUnavailable) as raised:
@@ -625,3 +649,356 @@ def test_what_the_guard_measured_is_what_goes_on_the_wire() -> None:
 
     assert rec.last_json()["text"] == "héllo 😀"
     assert rec.last.headers["Content-Type"] == "application/json"
+
+
+def test_the_token_is_never_sent_to_a_host_outside_the_allowlist() -> None:
+    """Under the distributed app the token posts into every organisation's
+    Teams, so a learned or stored address that is not Microsoft's is refused
+    before the token is attached."""
+    rec = _Recorder(201, {"id": "msg-1"})
+    connector = _connector(rec, allowed_hosts=frozenset({"smba.trafficmanager.net"}))
+
+    with pytest.raises(BotConnectorRefused, match="not a Bot Connector host"):
+        _run(
+            connector.send_to_conversation(
+                service_url="https://attacker.example/amer/",
+                conversation_id="19:c@thread.tacv2",
+                activity={"type": "message"},
+            )
+        )
+
+    assert rec.requests == []
+
+
+def test_an_allowed_host_over_plain_http_is_still_refused() -> None:
+    rec = _Recorder(201, {"id": "msg-1"})
+    connector = _connector(rec, allowed_hosts=frozenset({"smba.trafficmanager.net"}))
+
+    with pytest.raises(BotConnectorRefused):
+        _run(
+            connector.send_to_conversation(
+                service_url="http://smba.trafficmanager.net/amer/",
+                conversation_id="19:c@thread.tacv2",
+                activity={"type": "message"},
+            )
+        )
+
+
+def test_an_allowed_host_is_called() -> None:
+    rec = _Recorder(201, {"id": "msg-1"})
+    connector = _connector(rec, allowed_hosts=frozenset({"smba.trafficmanager.net"}))
+
+    _run(
+        connector.send_to_conversation(
+            service_url="https://smba.trafficmanager.net/amer/",
+            conversation_id="19:c@thread.tacv2",
+            activity={"type": "message"},
+        )
+    )
+
+    assert len(rec.requests) == 1
+
+
+def test_a_blocked_app_is_reported() -> None:
+    told: list[bool] = []
+    rec = _Recorder(403, {"error": {"code": "BotDisabledByAdmin"}})
+    connector = _connector(rec, on_bot_disabled=lambda: told.append(True))
+
+    with pytest.raises(BotConnectorRefused):
+        _run(
+            connector.send_to_conversation(
+                service_url="https://smba.example/amer/",
+                conversation_id="19:c@thread.tacv2",
+                activity={"type": "message"},
+            )
+        )
+
+    assert told == [True]
+
+
+# ── Paging, and the app's own installation in a team ─────────────────────────
+
+
+class _PagedRecorder(_Recorder):
+    """Answers each request with the next of a list of pages."""
+
+    def __init__(self, pages: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self._pages = list(pages)
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return httpx.Response(200, json=self._pages.pop(0))
+
+
+def test_every_page_of_subscriptions_is_read() -> None:
+    """An organisation with many captured channels has more subscriptions than
+    one page holds; one left unread at start would be made a second time."""
+    recorder = _PagedRecorder(
+        [
+            {
+                "value": [{"id": "S1"}],
+                "@odata.nextLink": "https://graph.microsoft.com/v1.0/subscriptions?$skiptoken=2",
+            },
+            {"value": [{"id": "S2"}]},
+        ]
+    )
+
+    subs = _run(_graph(recorder).list_subscriptions())
+
+    assert [s["id"] for s in subs] == ["S1", "S2"]
+    assert str(recorder.requests[1].url).endswith("$skiptoken=2")
+
+
+def test_every_page_of_teams_is_read_and_the_query_is_sent_once() -> None:
+    recorder = _PagedRecorder(
+        [
+            {
+                "value": [{"id": "T1", "displayName": "One"}],
+                "@odata.nextLink": "https://graph.microsoft.com/v1.0/teams?$skiptoken=2",
+            },
+            {"value": [{"id": "T2", "displayName": "Two"}]},
+        ]
+    )
+
+    teams = _run(_graph(recorder).list_teams())
+
+    assert [t["id"] for t in teams] == ["T1", "T2"]
+    assert recorder.requests[0].url.params["$select"] == "id,displayName"
+    assert "$select" not in recorder.requests[1].url.params
+
+
+def test_a_next_page_off_graph_is_not_sent_the_token() -> None:
+    recorder = _PagedRecorder(
+        [
+            {
+                "value": [{"id": "S1"}],
+                "@odata.nextLink": "https://elsewhere.example/v1.0/subscriptions?$skiptoken=2",
+            },
+            {"value": [{"id": "S2"}]},
+        ]
+    )
+
+    with pytest.raises(BridgeOperationError, match="not on graph.microsoft.com"):
+        _run(_graph(recorder).list_subscriptions())
+
+    assert len(recorder.requests) == 1
+
+
+def test_channel_and_installation_ids_stay_one_path_segment() -> None:
+    recorder = _Recorder(200, {"id": "x"})
+    graph = _graph(recorder)
+
+    _run(graph.get_channel(team_id="t1", channel_id="19:a/b?c@thread.tacv2"))
+    assert recorder.last.url.raw_path.split(b"?")[0] == (
+        b"/v1.0/teams/t1/channels/19:a%2Fb%3Fc@thread.tacv2"
+    )
+
+    _run(graph.uninstall_app(team_id="t1", installation_id="NmRi/Mw=="))
+    assert recorder.last.url.raw_path == b"/v1.0/teams/t1/installedApps/NmRi%2FMw%3D%3D"
+
+
+def test_a_real_channel_id_is_sent_as_it_is() -> None:
+    recorder = _Recorder(200, {"id": "x"})
+
+    _run(
+        _graph(recorder).get_channel(team_id="t1", channel_id="19:abc_1-2@thread.tacv2")
+    )
+
+    assert (
+        recorder.last.url.raw_path.split(b"?")[0]
+        == b"/v1.0/teams/t1/channels/19:abc_1-2@thread.tacv2"
+    )
+
+
+def test_a_failed_page_raises() -> None:
+    with pytest.raises(GraphError) as failed:
+        _run(_graph(_Recorder(503, {"error": {"message": "busy"}})).list_teams())
+    assert failed.value.status == 503
+
+
+def test_the_app_is_added_to_a_team_by_its_catalogue_id() -> None:
+    recorder = _Recorder(201)
+
+    _run(_graph(recorder).install_app(team_id="team-1", catalog_app_id="cat-1"))
+
+    assert recorder.last.method == "POST"
+    assert recorder.last.url.path == "/v1.0/teams/team-1/installedApps"
+    assert recorder.last_json() == {
+        "teamsApp@odata.bind": "https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/cat-1"
+    }
+
+
+def test_adding_the_app_where_it_already_is_is_not_an_error() -> None:
+    _run(_graph(_Recorder(409)).install_app(team_id="team-1", catalog_app_id="cat-1"))
+
+
+def test_a_refused_addition_raises() -> None:
+    with pytest.raises(GraphError):
+        _run(_graph(_Recorder(403)).install_app(team_id="team-1", catalog_app_id="c"))
+
+
+def test_the_apps_installations_are_found_by_its_manifest_id() -> None:
+    recorder = _Recorder(
+        200,
+        {
+            "value": [
+                {"id": "INST-1", "teamsApp": {"id": "cat-1"}},
+                {"id": "INST-2", "teamsApp": None},
+                {"teamsApp": {"id": "no-installation-id"}},
+            ]
+        },
+    )
+
+    found = _run(
+        _graph(recorder).find_app_installations(team_id="team-1", external_id="app-1")
+    )
+
+    assert [(i.installation_id, i.catalog_app_id) for i in found] == [
+        ("INST-1", "cat-1"),
+        ("INST-2", None),
+    ]
+    assert recorder.last.url.params["$filter"] == "teamsApp/externalId eq 'app-1'"
+    assert recorder.last.url.params["$expand"] == "teamsApp"
+
+
+def test_a_team_whose_apps_cannot_be_read_raises() -> None:
+    with pytest.raises(GraphError) as failed:
+        _run(
+            _graph(_Recorder(404)).find_app_installations(
+                team_id="team-1", external_id="app-1"
+            )
+        )
+    assert failed.value.status == 404
+
+
+def test_removing_the_app_from_a_team_it_has_left_is_not_an_error() -> None:
+    recorder = _Recorder(404)
+
+    _run(_graph(recorder).uninstall_app(team_id="team-1", installation_id="INST-1"))
+
+    assert recorder.last.method == "DELETE"
+    assert recorder.last.url.path == "/v1.0/teams/team-1/installedApps/INST-1"
+
+
+def test_a_refused_removal_raises() -> None:
+    with pytest.raises(GraphError):
+        _run(
+            _graph(_Recorder(500)).uninstall_app(
+                team_id="team-1", installation_id="INST-1"
+            )
+        )
+
+
+def test_a_team_id_cannot_move_the_rest_of_the_url() -> None:
+    """A team id comes from a request; a `?` or `/` in it must not turn the
+    path after it into a query, or into somewhere else."""
+    recorder = _Recorder(201)
+
+    _run(_graph(recorder).install_app(team_id="x?y=1/../../users", catalog_app_id="c"))
+
+    assert recorder.last.url.raw_path.startswith(
+        b"/v1.0/teams/x%3Fy%3D1%2F..%2F..%2Fusers/installedApps"
+    )
+    assert recorder.last.url.query == b""
+
+
+# ── Throttling ───────────────────────────────────────────────────────────────
+
+
+class _ThrottlingRecorder(_Recorder):
+    """Throttles the first `times` requests, naming `retry_after` if given."""
+
+    def __init__(self, *, times: int, retry_after: str | None) -> None:
+        super().__init__(200, {"value": []})
+        self._times = times
+        self._retry_after = retry_after
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if self._times > 0:
+            self._times -= 1
+            headers = {"Retry-After": self._retry_after} if self._retry_after else {}
+            return httpx.Response(
+                429, json={"error": {"message": "slow down"}}, headers=headers
+            )
+        return httpx.Response(200, json=self.body)
+
+
+@pytest.fixture
+def waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(graph_module.asyncio, "sleep", fake_sleep)
+    return slept
+
+
+def test_a_throttled_call_waits_as_long_as_graph_asks_and_tries_again(
+    waits: list[float],
+) -> None:
+    recorder = _ThrottlingRecorder(times=2, retry_after="3")
+
+    teams = _run(_graph(recorder).list_teams())
+
+    assert teams == []
+    assert len(recorder.requests) == 3
+    assert waits == [3.0, 3.0]
+
+
+def test_without_a_named_wait_the_wait_grows(waits: list[float]) -> None:
+    recorder = _ThrottlingRecorder(times=2, retry_after=None)
+
+    _run(_graph(recorder).list_teams())
+
+    assert waits == [1.0, 2.0]
+
+
+def test_throttling_that_outlasts_the_retries_is_raised(waits: list[float]) -> None:
+    recorder = _ThrottlingRecorder(times=5, retry_after="1")
+
+    with pytest.raises(GraphError) as failed:
+        _run(_graph(recorder).list_teams())
+
+    assert failed.value.status == 429
+    assert len(recorder.requests) == 3
+
+
+def test_a_wait_longer_than_is_worth_sitting_through_is_raised_at_once(
+    waits: list[float],
+) -> None:
+    recorder = _ThrottlingRecorder(times=1, retry_after="120")
+
+    with pytest.raises(GraphError) as failed:
+        _run(_graph(recorder).list_teams())
+
+    assert failed.value.status == 429
+    assert waits == []
+    assert len(recorder.requests) == 1
+
+
+def test_a_user_is_read_by_their_escaped_id() -> None:
+    recorder = _Recorder(200, {"id": "u/1", "displayName": "Alice"})
+
+    user = _run(_graph(recorder).get_user(user_id="u/1"))
+
+    assert user["displayName"] == "Alice"
+    assert recorder.last.url.raw_path.startswith(b"/v1.0/users/u%2F1?")
+
+
+def test_a_user_graph_cannot_find_raises() -> None:
+    with pytest.raises(GraphError) as failed:
+        _run(_graph(_Recorder(404)).get_user(user_id="u-1"))
+    assert failed.value.status == 404
+
+
+def test_a_channel_graph_will_not_show_raises() -> None:
+    with pytest.raises(GraphError) as failed:
+        _run(
+            _graph(_Recorder(403)).get_channel(
+                team_id="team-1", channel_id="19:abc@thread.tacv2"
+            )
+        )
+    assert failed.value.status == 403

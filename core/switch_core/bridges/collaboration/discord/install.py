@@ -75,6 +75,9 @@ PERMISSIONS: int = sum(_PERMISSION_BITS.values())
 
 class DiscordAppInstaller(MessagingAppInstaller):
     platform: ClassVar[str] = "discord"
+    # Discord delivers over the Gateway, so the app posts to no webhook and
+    # every `/messaging/discord/*` request is answered as if nothing were here.
+    webhook_endpoints: ClassVar[frozenset[WebhookEndpoint]] = frozenset()
 
     def __init__(
         self,
@@ -155,6 +158,7 @@ class DiscordAppInstaller(MessagingAppInstaller):
             # The one that makes this a Discord grant: no per-install token.
             bot_token=None,
             scopes=payload.get("scope") or "",
+            platform_data={},
         )
 
     def workspace_of_bridge(
@@ -179,17 +183,12 @@ class DiscordAppInstaller(MessagingAppInstaller):
     # ── The webhook half the ABC declares and Discord does not have ───────────
     #
     # Discord delivers over the Gateway (DISCORD_DISTRIBUTED_APP.md, "the one
-    # public URL"), so none of these carries real traffic: no
-    # `/messaging/discord/events` event is ours to read, and `disconnect` skips
-    # `revoke` for a tokenless install.
-    #
-    # `verify_webhook` is the one an unauthenticated stranger can reach — it runs
-    # first for any POST to `/messaging/discord/{events,interactive,commands}`.
-    # It raises `MessagingInstallError`, which the route turns into a 404 (the
-    # same answer as an unregistered platform), rather than an unhandled error
-    # that would be a repeatable 500 plus a traceback for anyone who found the
-    # URL. The rest raise loudly: they are only reachable from code that would
-    # have had to wire a Discord webhook up by mistake.
+    # public URL"), so none of these carries real traffic. `webhook_endpoints`
+    # is empty, so no request to `/messaging/discord/*` reaches them — the
+    # route answers 404 before anything is read — and `disconnect` skips
+    # `revoke` for a tokenless install. They raise loudly: they are only
+    # reachable from code that would have had to wire a Discord webhook up by
+    # mistake.
 
     async def revoke(self, *, bot_token: str) -> None:
         raise NotImplementedError(
@@ -197,14 +196,26 @@ class DiscordAppInstaller(MessagingAppInstaller):
             "is deployment config shared by every install"
         )
 
-    def verify_webhook(self, *, headers: Mapping[str, str], body: bytes) -> None:
+    async def verify_webhook(
+        self,
+        *,
+        endpoint: WebhookEndpoint,
+        headers: Mapping[str, str],
+        query: Mapping[str, str],
+        body: bytes,
+    ) -> None:
         raise MessagingInstallError(
             "the distributed Discord app has no webhook; events arrive over the Gateway"
         )
 
     def parse_webhook(
-        self, *, endpoint: WebhookEndpoint, headers: Mapping[str, str], body: bytes
-    ) -> InboundWebhook:
+        self,
+        *,
+        endpoint: WebhookEndpoint,
+        headers: Mapping[str, str],
+        query: Mapping[str, str],
+        body: bytes,
+    ) -> list[InboundWebhook]:
         raise NotImplementedError(
             "the distributed Discord app has no webhook; events arrive over the Gateway"
         )

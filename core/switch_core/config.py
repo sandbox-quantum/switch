@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -21,6 +24,52 @@ _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
 # worth catching at startup rather than at the first `GRANT`. The 63-character
 # cap matches Postgres's own `NAMEDATALEN` limit.
 _DB_ROLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+# The longest short name a Teams app manifest takes.
+_TEAMS_APP_SHORT_NAME_LIMIT = 30
+
+
+def _require_rsa_private_key(name: str, pem: str) -> rsa.RSAPrivateKey:
+    """Parse an RSA private key from a setting, or say which setting is wrong.
+
+    RSA because both of the Teams app's keypairs are used where Microsoft only
+    takes RSA: Graph wraps a notification's key with RSA-OAEP, and the
+    certificate credential is checked against an RSA signature.
+    """
+    try:
+        key = serialization.load_pem_private_key(pem.encode(), password=None)
+    except (ValueError, TypeError) as error:
+        raise ValueError(
+            f"{name} is not an unencrypted PEM private key: {error}"
+        ) from error
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise ValueError(f"{name} must be an RSA key, got {type(key).__name__}.")
+    return key
+
+
+def _require_matching_keypair(
+    certificate_name: str, certificate_pem: str, key_name: str, key_pem: str
+) -> None:
+    """Refuse a certificate paired with a key that is not its own.
+
+    The mismatch is otherwise silent until it matters: Microsoft rejects every
+    token request signed with the wrong key, or Graph encrypts every captured
+    message to a key Switch does not hold.
+    """
+    try:
+        certificate = x509.load_pem_x509_certificate(certificate_pem.encode())
+    except ValueError as error:
+        raise ValueError(
+            f"{certificate_name} is not a PEM certificate: {error}"
+        ) from error
+    key = _require_rsa_private_key(key_name, key_pem)
+    public = serialization.PublicFormat.SubjectPublicKeyInfo
+    if certificate.public_key().public_bytes(
+        serialization.Encoding.DER, public
+    ) != key.public_key().public_bytes(serialization.Encoding.DER, public):
+        raise ValueError(
+            f"{certificate_name} and {key_name} are not a pair: the key does "
+            "not match the certificate's public key."
+        )
 
 
 class SwitchConfig(BaseSettings):
@@ -435,6 +484,49 @@ class SwitchConfig(BaseSettings):
     # (once verified), the bot fills its member cache. Its own flag rather than
     # riding message content's, because the two are approved independently.
     discord_app_members: bool = False
+
+    # The distributed Microsoft Teams app (`TEAMS_DISTRIBUTED_APP.md`): one
+    # multi-tenant Entra app registration, backing a SingleTenant Azure Bot in
+    # *our* directory, that a customer's Microsoft admin approves for their
+    # organisation. Distinct from the bring-your-own Teams app, whose
+    # credentials an operator pastes into a bridge.
+    #
+    # Like Discord, Microsoft grants no per-install credential: the app's one
+    # credential reaches every organisation that approved it, so it lives here
+    # and never in a bridge row. Setting the app id enables installs; setting
+    # some of what it needs and not the rest is a startup error.
+    teams_app_client_id: str | None = None
+    # Our own directory, where the bot is registered. Bot Connector tokens for
+    # a SingleTenant bot can only come from here, so it is a directory id —
+    # never `common` or `organizations`.
+    teams_app_tenant_id: str | None = None
+
+    # How the app proves who it is to Microsoft: exactly one of a client
+    # secret, a certificate with its private key, or a workload-identity token
+    # file (a federated credential, so no secret exists at all). A secret is
+    # the simplest and expires; the other two are what a deployment should run.
+    teams_app_client_secret: str | None = None
+    teams_app_certificate: str | None = None
+    teams_app_certificate_private_key: str | None = None
+    teams_app_federated_token_file: str | None = None
+
+    # The keypair Graph encrypts captured channel messages to. One per
+    # deployment rather than per bridge: a notification has to be decrypted
+    # before anything says which organisation it belongs to. The previous key
+    # is kept only while subscriptions made against it run out after a
+    # rotation, and is otherwise unset.
+    teams_app_notification_certificate: str | None = None
+    teams_app_notification_private_key: str | None = None
+    teams_app_notification_previous_private_key: str | None = None
+    # Where the app's privacy statement and terms of use live. Every Teams app
+    # package has to name both, and they are shown to the admin approving it,
+    # so they are the deployment's to state rather than a placeholder of ours.
+    teams_app_privacy_url: str | None = None
+    teams_app_terms_url: str | None = None
+    # The name the app goes by in Teams. Every environment registers an app of
+    # its own, and an organisation approving more than one — ours, testing
+    # them — would otherwise see several apps of the same name.
+    teams_app_name: str = "Agent Switch"
 
     # Public origin (scheme + host, no path) that a messaging platform reaches
     # Switch on: the base of the OAuth redirect and of the three event URLs
@@ -1142,6 +1234,149 @@ class SwitchConfig(BaseSettings):
     @property
     def trust_enabled(self) -> bool:
         return bool(self.switch_trust_api_key and self.switch_trust_policy_id)
+
+    @model_validator(mode="after")
+    def _validate_teams_app(self) -> "SwitchConfig":
+        settings = {
+            "TEAMS_APP_CLIENT_ID": self.teams_app_client_id,
+            "TEAMS_APP_TENANT_ID": self.teams_app_tenant_id,
+            "TEAMS_APP_CLIENT_SECRET": self.teams_app_client_secret,
+            "TEAMS_APP_CERTIFICATE": self.teams_app_certificate,
+            "TEAMS_APP_CERTIFICATE_PRIVATE_KEY": self.teams_app_certificate_private_key,
+            "TEAMS_APP_FEDERATED_TOKEN_FILE": self.teams_app_federated_token_file,
+            "TEAMS_APP_NOTIFICATION_CERTIFICATE": (
+                self.teams_app_notification_certificate
+            ),
+            "TEAMS_APP_NOTIFICATION_PRIVATE_KEY": (
+                self.teams_app_notification_private_key
+            ),
+            "TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY": (
+                self.teams_app_notification_previous_private_key
+            ),
+            "TEAMS_APP_PRIVACY_URL": self.teams_app_privacy_url,
+            "TEAMS_APP_TERMS_URL": self.teams_app_terms_url,
+        }
+        if not any(settings.values()):
+            return self
+
+        missing = [
+            name
+            for name in (
+                "TEAMS_APP_CLIENT_ID",
+                "TEAMS_APP_TENANT_ID",
+                "TEAMS_APP_NOTIFICATION_CERTIFICATE",
+                "TEAMS_APP_NOTIFICATION_PRIVATE_KEY",
+                "TEAMS_APP_PRIVACY_URL",
+                "TEAMS_APP_TERMS_URL",
+            )
+            if not settings[name]
+        ]
+        if missing:
+            raise ValueError(
+                "Partial distributed Teams app config: "
+                f"{' / '.join(missing)} must be set as well. The app needs its "
+                "id, the directory its bot is registered in, the keypair Graph "
+                "encrypts captured messages to, and the privacy and terms pages "
+                "its package names."
+            )
+        app_name = self.teams_app_name
+        if (
+            not app_name
+            or app_name != app_name.strip()
+            or len(app_name) > _TEAMS_APP_SHORT_NAME_LIMIT
+        ):
+            raise ValueError(
+                f"TEAMS_APP_NAME must be 1 to {_TEAMS_APP_SHORT_NAME_LIMIT} "
+                "characters with no spaces around it; Teams refuses an app "
+                f"package whose short name is longer, got {app_name!r}."
+            )
+        for name in ("TEAMS_APP_PRIVACY_URL", "TEAMS_APP_TERMS_URL"):
+            parts = urlsplit(str(settings[name]))
+            if parts.scheme != "https" or not parts.netloc:
+                raise ValueError(
+                    f"{name} must be an https URL; Teams refuses an app package "
+                    f"naming anything else, got {settings[name]!r}."
+                )
+
+        try:
+            uuid.UUID(str(self.teams_app_tenant_id))
+        except ValueError as error:
+            raise ValueError(
+                "TEAMS_APP_TENANT_ID must be the id of the directory the bot is "
+                "registered in (a GUID). A SingleTenant bot can only be issued "
+                "tokens there, so `common` or `organizations` cannot work, got "
+                f"{self.teams_app_tenant_id!r}."
+            ) from error
+
+        if bool(self.teams_app_certificate) != bool(
+            self.teams_app_certificate_private_key
+        ):
+            raise ValueError(
+                "TEAMS_APP_CERTIFICATE and TEAMS_APP_CERTIFICATE_PRIVATE_KEY must "
+                "be set together: the certificate names the credential to "
+                "Microsoft and the key signs with it."
+            )
+        kinds = [
+            name
+            for name, chosen in (
+                ("TEAMS_APP_CLIENT_SECRET", self.teams_app_client_secret),
+                ("TEAMS_APP_CERTIFICATE", self.teams_app_certificate),
+                ("TEAMS_APP_FEDERATED_TOKEN_FILE", self.teams_app_federated_token_file),
+            )
+            if chosen
+        ]
+        if len(kinds) != 1:
+            raise ValueError(
+                "The distributed Teams app needs exactly one credential: "
+                "TEAMS_APP_CLIENT_SECRET, TEAMS_APP_CERTIFICATE (with its private "
+                "key), or TEAMS_APP_FEDERATED_TOKEN_FILE. "
+                + (f"Got {', '.join(kinds)}." if kinds else "Got none.")
+            )
+
+        if self.teams_app_certificate:
+            assert self.teams_app_certificate_private_key is not None
+            _require_matching_keypair(
+                "TEAMS_APP_CERTIFICATE",
+                self.teams_app_certificate,
+                "TEAMS_APP_CERTIFICATE_PRIVATE_KEY",
+                self.teams_app_certificate_private_key,
+            )
+        assert self.teams_app_notification_certificate is not None
+        assert self.teams_app_notification_private_key is not None
+        _require_matching_keypair(
+            "TEAMS_APP_NOTIFICATION_CERTIFICATE",
+            self.teams_app_notification_certificate,
+            "TEAMS_APP_NOTIFICATION_PRIVATE_KEY",
+            self.teams_app_notification_private_key,
+        )
+        if self.teams_app_notification_previous_private_key:
+            _require_rsa_private_key(
+                "TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY",
+                self.teams_app_notification_previous_private_key,
+            )
+        if (
+            self.teams_app_federated_token_file
+            and not Path(self.teams_app_federated_token_file).is_file()
+        ):
+            raise ValueError(
+                "TEAMS_APP_FEDERATED_TOKEN_FILE names "
+                f"{self.teams_app_federated_token_file!r}, which is not a file. "
+                "It is the projected service-account token the app presents to "
+                "Microsoft in place of a secret, and is mounted before Switch "
+                "starts."
+            )
+
+        # The bot's messaging endpoint and Graph's notification URL are both
+        # built from the public origin, and Microsoft calls them from the
+        # internet. Without it there is nothing to register with the bot.
+        if not self.messaging_public_url:
+            raise ValueError(
+                "A distributed Teams app is configured but MESSAGING_PUBLIC_URL "
+                "is not. The bot's messaging endpoint, the notification URL Graph "
+                "delivers captured messages to, and the approval redirect are "
+                "all built from it."
+            )
+        return self
 
     @property
     def gateway_oidc_enabled(self) -> bool:
