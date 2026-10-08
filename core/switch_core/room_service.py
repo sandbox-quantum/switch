@@ -134,6 +134,9 @@ class RoomCreateConfig(BaseModel):
     created_by_kind: Literal["user", "agent", "system"] = "user"
     # Provisioned from a room template rather than created directly.
     from_template: bool = False
+    # The Switch Console chat creation this room is for, stamped into the
+    # room's metadata in the same insert so a retried creation finds it.
+    chat_operation_id: str | None = None
 
 
 class RoomCreateResult(BaseModel):
@@ -595,7 +598,14 @@ class RoomService:
                 read_visibility=config.read_visibility,
                 write_visibility=config.write_visibility,
                 # Nothing else on the row can answer this afterwards.
-                metadata_={"created_by_kind": config.created_by_kind},
+                metadata_={
+                    "created_by_kind": config.created_by_kind,
+                    **(
+                        {"chat_operation_id": config.chat_operation_id}
+                        if config.chat_operation_id is not None
+                        else {}
+                    ),
+                },
             )
 
             async with self._session_factory() as session:
@@ -1468,6 +1478,14 @@ class RoomService:
                 len(rooms),
                 ", ".join(failures),
             )
+
+    async def reconcile_room(self, room: Room) -> None:
+        """Put the room's agent and system clients in it where they are missing.
+
+        For a caller repairing one room whose creation may have stopped after
+        the room row committed and before its clients joined.
+        """
+        await self._reconcile_one_room(room)
 
     async def _reconcile_one_room(self, room: Room) -> None:
         with tenant_scope(room.tenant_id):

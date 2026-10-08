@@ -46,7 +46,7 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.logging_context import log_context
 from switch_core.messages.recorded_types import EPHEMERAL
-from switch_core.messages.row import attachments_in, text_field, thread_root_of
+from switch_core.messages.row import attachments_in, message_row, new_event_id
 from switch_core.observability.catalogue import (
     DELIVERY_FAILURES,
     DELIVERY_LAG,
@@ -140,16 +140,6 @@ def _age_ms(sent_at: object) -> float | None:
 
 
 MEMBERSHIP_EVENT_TYPE = "m.room.member"
-
-
-def new_event_id() -> str:
-    """A fresh event id.
-
-    Prefixed so that a row's origin is readable at a glance during the window
-    where a room holds both these and ids minted by the old bus. The prefix is
-    decoration for humans — no code may branch on it.
-    """
-    return f"sw_{uuid.uuid4().hex}"
 
 
 class PostgresTransport:
@@ -700,18 +690,15 @@ class PostgresTransport:
         try:
             room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)
             async with tenant_session(self._session_factory, tenant_id) as session:
-                message = Message(
+                message = message_row(
                     room_id=room_id,
-                    transport_event_id=result.event_id,
+                    event_id=result.event_id,
                     sender_id=self.user_id,
                     sender_client_id=self.client_id,
                     sender_name=sender_name,
                     event_type=event_type,
-                    msgtype=text_field(content.get("msgtype")),
-                    body=text_field(content.get("body")),
-                    formatted_body=text_field(content.get("formatted_body")),
-                    thread_root_event_id=thread_root_of(content),
                     content=content,
+                    client_txn_id=None,
                 )
                 await self._message_store.create(
                     session, message, attachments_in(content)

@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.clients.actor import Actor, AgentActor, ClientConfig
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.consumer import Consumer
@@ -193,7 +194,13 @@ class ClientLifecycleService:
                     if record.tenant_id == tenant_id
                 )
 
-        records = [r for r in records if r.type not in self.COLLAB_CLIENT_TYPES]
+        # A member client's messages are written by the chats routes in the
+        # request's own transaction, so it has nothing to run.
+        records = [
+            r
+            for r in records
+            if r.type not in self.COLLAB_CLIENT_TYPES and r.type != MEMBER_CLIENT_TYPE
+        ]
 
         logger.info("Starting %d clients", len(records))
         for record in records:
