@@ -6,7 +6,7 @@ import logging
 import os
 import signal
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
@@ -169,6 +169,7 @@ from switch_core.session_activity.maintenance import (
 )
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.session_activity.service import AgentSessionActivityService
+from switch_core.telemetry.messages import MessageTelemetry
 from switch_core.telemetry.reporter import SnapshotReporter
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.setup import build_telemetry
@@ -288,34 +289,55 @@ async def _stop_management(management: Management) -> None:
 
 # The innermost of three nested budgets: under
 # `observability.logs.SHUTDOWN_FLUSH_SECONDS`, itself under
-# `_FORCED_EXIT_GRACE_SECONDS`.
+# `_FORCED_EXIT_GRACE_SECONDS`. This and the log flush already fill that
+# window, so neither can grow. The per-message worker gets at most
+# `_MESSAGE_TELEMETRY_DRAIN_SECONDS` and the sink the rest, so a slow worker
+# can never cost the sink its final flush, which carries every kind of event,
+# and whatever the worker does not use is the sink's.
 _TELEMETRY_DRAIN_SECONDS = 1.0
+_MESSAGE_TELEMETRY_DRAIN_SECONDS = 0.4
 
 
 async def _drain_telemetry(
-    telemetry: TelemetryService, http_client: httpx.AsyncClient | None
+    telemetry: TelemetryService,
+    message_telemetry: MessageTelemetry,
+    http_client: httpx.AsyncClient | None,
 ) -> None:
     """Let in-flight product events finish, then close their client.
 
     Never raises and never overruns: a relay that stopped answering must not
     hold the process past the point where it is killed.
     """
-    try:
-        async with asyncio.timeout(_TELEMETRY_DRAIN_SECONDS):
-            await telemetry.aclose()
-    except TimeoutError:
-        logger.warning(
-            "Gave up waiting for in-flight telemetry after %.1fs; those events "
-            "are lost.",
-            _TELEMETRY_DRAIN_SECONDS,
-        )
-    except Exception:
-        logger.warning("Telemetry shutdown failed; continuing.", exc_info=True)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _TELEMETRY_DRAIN_SECONDS
+    # First, because what it still holds is emitted through the sink.
+    await _close_by(
+        message_telemetry.aclose(),
+        loop.time() + _MESSAGE_TELEMETRY_DRAIN_SECONDS,
+        "queued message events",
+    )
+    await _close_by(telemetry.aclose(), deadline, "buffered telemetry events")
     if http_client is not None:
         try:
             await http_client.aclose()
         except Exception:
             logger.warning("Telemetry HTTP client did not close.", exc_info=True)
+
+
+async def _close_by(
+    closing: Coroutine[object, object, None], deadline: float, what: str
+) -> None:
+    """Await one telemetry shutdown step until `deadline`, on the loop's clock.
+    Never raises. The step logs how much it lost itself."""
+    try:
+        async with asyncio.timeout_at(deadline):
+            await closing
+    except TimeoutError:
+        logger.warning("Gave up waiting for %s at shutdown.", what)
+    except Exception:
+        logger.warning(
+            "Reporting %s at shutdown failed; continuing.", what, exc_info=True
+        )
 
 
 async def _snapshot_loop(reporter: SnapshotReporter) -> None:
@@ -519,6 +541,9 @@ async def run(config: SwitchConfig) -> None:
     telemetry, installed_at, telemetry_http = await build_telemetry(
         config, session_factory, switch_core_version()
     )
+    message_telemetry = MessageTelemetry(
+        telemetry=telemetry, session_factory=session_factory
+    )
 
     # ── Switch Trust guardrails ──────────────────────────────────────────────
     trust_client, trust_http = build_trust_client(config)
@@ -594,6 +619,7 @@ async def run(config: SwitchConfig) -> None:
         invites=invites,
         ephemeral=ephemeral,
         room_cache=room_cache,
+        message_observer=message_telemetry,
     )
     client_factory.register(
         "agent",
@@ -611,6 +637,7 @@ async def run(config: SwitchConfig) -> None:
         hosted_launch_store=HostedLaunchStore(),
         connections=connections,
         frontend_base_url=config.frontend_base_url,
+        message_telemetry=message_telemetry,
     )
     # Members that only write: a person on another platform, and a bridge's own
     # identity (its reader, the WorkspaceConsumer, is built by the bridge).
@@ -941,7 +968,7 @@ async def run(config: SwitchConfig) -> None:
                 # teardown runs inside `_FORCED_EXIT_GRACE_SECONDS` and a
                 # product event is the least valuable thing in it.
                 await protocol.sessions.aclose()
-                await _drain_telemetry(telemetry, telemetry_http)
+                await _drain_telemetry(telemetry, message_telemetry, telemetry_http)
                 if trust_http is not None:
                     await trust_http.aclose()
                 await observability.aclose()

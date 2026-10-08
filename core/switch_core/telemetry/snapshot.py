@@ -31,6 +31,7 @@ from sqlalchemy import (
     exists,
     func,
     select,
+    union,
     union_all,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -131,6 +132,12 @@ class UsageCounts:
     chat_identity_count: int = 0
     chat_identity_active_1d: int = 0
     chat_identity_active_7d: int = 0
+    # The other tiers, as chat identities like `chat_identity_active_*`:
+    # anyone who said anything in any room, and anyone Switch has seen in a
+    # room — see `_activity_tiers` for what that can and cannot see.
+    chat_identity_posted_1d: int = 0
+    chat_identity_posted_7d: int = 0
+    chat_identity_in_room_count: int = 0
     room_count: int = 0
     room_agent_created_count: int = 0
     room_system_created_count: int = 0
@@ -180,6 +187,9 @@ class UsageCounts:
             "chat_identity_count": self.chat_identity_count,
             "chat_identity_active_1d": self.chat_identity_active_1d,
             "chat_identity_active_7d": self.chat_identity_active_7d,
+            "chat_identity_posted_1d": self.chat_identity_posted_1d,
+            "chat_identity_posted_7d": self.chat_identity_posted_7d,
+            "chat_identity_in_room_count": self.chat_identity_in_room_count,
             "room_count": self.room_count,
             "room_agent_created_count": self.room_agent_created_count,
             "room_system_created_count": self.room_system_created_count,
@@ -387,6 +397,66 @@ def _active_humans(tenant_id: str, since: datetime) -> Select[tuple[str | None]]
     )
 
 
+def _activity_tiers(
+    tenant_id: str, day_ago: datetime, week_ago: datetime
+) -> Select[tuple[int, int, int]]:
+    """Distinct human clients who said anything in any room in the last day
+    and week, and those Switch has seen in a room: a member of a live room
+    now, or anyone who posted in the last week.
+
+    The posters are `_active_humans` without the agent condition: someone
+    talking only to other people is not using an agent, but is not passive
+    either. They are folded into the room count so the tiers nest: someone who
+    posted this week and then left, or whose room was archived, is no longer a
+    member of a live room but has still been seen. Rooms of every origin, like
+    the activity counts: a person in an adopted channel is in Switch whether
+    or not anybody created that room here.
+
+    Not a channel's whole audience. A person gets a membership row only when
+    they post, are added by name, or join after the channel was adopted;
+    nothing records the members a channel already had, so someone who has
+    only ever read is not here.
+
+    One statement over one read of the week's messages, so the three come from
+    the same snapshot and nest exactly, and the scan is not repeated per tier.
+    """
+    posters = (
+        select(
+            Message.sender_client_id.label("client_id"),
+            func.max(Message.sent_at).label("last_posted_at"),
+        )
+        .join(Client, Client.id == Message.sender_client_id)
+        .where(
+            Message.tenant_id == tenant_id,
+            Message.sent_at >= week_ago,
+            *_human_message_conditions(tenant_id),
+        )
+        .group_by(Message.sender_client_id)
+        .cte("posters")
+    )
+    members = (
+        select(ClientRoom.client_id)
+        .join(Client, Client.id == ClientRoom.client_id)
+        .join(Room, Room.id == ClientRoom.room_id)
+        .where(
+            ClientRoom.tenant_id == tenant_id,
+            Client.tenant_id == tenant_id,
+            Client.type == HUMAN_CLIENT_TYPE,
+            Room.tenant_id == tenant_id,
+            Room.archived_at.is_(None),
+        )
+    )
+    seen = union(members, select(posters.c.client_id)).subquery("seen")
+    return select(
+        select(func.count())
+        .select_from(posters)
+        .where(posters.c.last_posted_at >= day_ago)
+        .scalar_subquery(),
+        select(func.count()).select_from(posters).scalar_subquery(),
+        select(func.count()).select_from(seen).scalar_subquery(),
+    )
+
+
 async def _count(session: AsyncSession, query: Select[Any]) -> int:
     result = await session.execute(select(func.count()).select_from(query.subquery()))
     return int(result.scalar_one())
@@ -431,6 +501,12 @@ async def collect_tenant_counts(
     counts.chat_identity_active_7d += await _count(
         session, _active_humans(tenant_id, week_ago)
     )
+    posted_1d, posted_7d, in_room = (
+        await session.execute(_activity_tiers(tenant_id, day_ago, week_ago))
+    ).one()
+    counts.chat_identity_posted_1d += posted_1d
+    counts.chat_identity_posted_7d += posted_7d
+    counts.chat_identity_in_room_count += in_room
     counts.room_active_1d += await _count(
         session, _human_interaction(tenant_id, day_ago)
     )

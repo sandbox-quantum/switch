@@ -9,9 +9,27 @@ import httpx
 import pytest
 
 from switch_core.observability.otlp import OtlpClient
+from switch_core.telemetry import sink as sink_module
 from switch_core.telemetry.catalogue import TelemetryCatalogueError
 from switch_core.telemetry.service import TelemetryService, emit_safely
 from switch_core.telemetry.sink import NullSink, OtlpRelaySink, TelemetryRecord
+
+
+def _relay_sink(
+    http: httpx.AsyncClient,
+    *,
+    flush_interval_seconds: float = 60.0,
+    max_batch: int = 200,
+    max_buffered: int = 10_000,
+) -> OtlpRelaySink:
+    """A relay sink whose timer will not fire inside a test unless asked to:
+    a test posts by closing it, or by filling a batch."""
+    return OtlpRelaySink(
+        client=OtlpClient("https://relay.example", 5, {}, http),
+        flush_interval_seconds=flush_interval_seconds,
+        max_batch=max_batch,
+        max_buffered=max_buffered,
+    )
 
 
 class _RecordingSink:
@@ -19,7 +37,7 @@ class _RecordingSink:
         self.sent: list[TelemetryRecord] = []
         self.closed = False
 
-    async def send(self, record: TelemetryRecord) -> None:
+    def send(self, record: TelemetryRecord) -> None:
         self.sent.append(record)
 
     async def aclose(self) -> None:
@@ -156,7 +174,7 @@ class TestTagging:
 class TestFailuresDoNotReachTheCaller:
     async def test_a_sink_that_raises_does_not_surface(self) -> None:
         class _Broken:
-            async def send(self, record: TelemetryRecord) -> None:
+            def send(self, record: TelemetryRecord) -> None:
                 raise RuntimeError("relay on fire")
 
             async def aclose(self) -> None:
@@ -197,8 +215,8 @@ class TestTheWireFormat:
             return handler(request)  # type: ignore[operator]
 
         http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
-        sink = OtlpRelaySink(client=OtlpClient("https://relay.example", 5, {}, http))
-        await sink.send(
+        sink = _relay_sink(http)
+        sink.send(
             TelemetryRecord(
                 name="switch_core.usage_snapshot",
                 properties={"room_count": 7, "from_template": True, "kind": "user"},
@@ -211,6 +229,7 @@ class TestTheWireFormat:
                 timestamp_ns=1_700_000_000_000_000_000,
             )
         )
+        await sink.aclose()
         await http.aclose()
         return captured
 
@@ -250,8 +269,8 @@ class TestTheWireFormat:
             return httpx.Response(200)
 
         http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
-        sink = OtlpRelaySink(client=OtlpClient("https://relay.example", 5, {}, http))
-        await sink.send(
+        sink = _relay_sink(http)
+        sink.send(
             TelemetryRecord(
                 name="switch_core.connector_added",
                 properties={
@@ -267,6 +286,7 @@ class TestTheWireFormat:
                 timestamp_ns=1_700_000_000_000_000_000,
             )
         )
+        await sink.aclose()
         await http.aclose()
         attributes = {a["key"]: a["value"] for a in self._record(body)["attributes"]}
 
@@ -303,8 +323,9 @@ class TestTheWireFormat:
             return httpx.Response(200)
 
         http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
-        sink = OtlpRelaySink(client=OtlpClient("https://relay.example", 5, {}, http))
-        await sink.send(_a_record())
+        sink = _relay_sink(http)
+        sink.send(_a_record())
+        await sink.aclose()
         await http.aclose()
 
         assert seen == ["https://relay.example/v1/logs"]
@@ -318,8 +339,9 @@ class TestTheWireFormat:
             return httpx.Response(200)
 
         http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
-        sink = OtlpRelaySink(client=OtlpClient("https://relay.example", 5, {}, http))
-        await sink.send(_a_record())
+        sink = _relay_sink(http)
+        sink.send(_a_record())
+        await sink.aclose()
         await http.aclose()
 
         assert "authorization" not in seen
@@ -333,8 +355,9 @@ class TestTheRelayMisbehaving:
         http = httpx.AsyncClient(
             transport=httpx.MockTransport(handler)  # type: ignore[arg-type]
         )
-        sink = OtlpRelaySink(client=OtlpClient("https://relay.example", 5, {}, http))
-        await sink.send(_a_record())
+        sink = _relay_sink(http)
+        sink.send(_a_record())
+        await sink.aclose()
         await http.aclose()
 
     async def test_a_refusal_is_swallowed(self) -> None:
@@ -360,11 +383,41 @@ class TestTheRelayMisbehaving:
         with caplog.at_level("WARNING"):
             await self._send_against(
                 lambda r: httpx.Response(
-                    200, json={"partialSuccess": {"rejectedLogRecords": "3"}}
+                    200, json={"partialSuccess": {"rejectedLogRecords": "1"}}
                 )
             )
 
-        assert "was not sent" in caplog.text
+        assert "rejected 1 of 1" in caplog.text
+
+    async def test_a_partial_success_reports_what_was_lost_not_the_batch(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """One rejected record out of a batch is one lost, not the batch:
+        reporting the whole batch as unsent misstates the loss and sends an
+        operator after the wrong problem."""
+        http = httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(
+                    200,
+                    json={
+                        "partialSuccess": {
+                            "rejectedLogRecords": "1",
+                            "errorMessage": "too many attributes",
+                        }
+                    },
+                )
+            )
+        )
+        sink = _relay_sink(http)
+        for _ in range(3):
+            sink.send(_a_record())
+        with caplog.at_level("WARNING"):
+            await sink.aclose()
+        await http.aclose()
+
+        assert "rejected 1 of 3" in caplog.text
+        assert "too many attributes" in caplog.text
+        assert "was not sent" not in caplog.text
 
     async def test_an_empty_200_is_not_treated_as_a_rejection(
         self, caplog: pytest.LogCaptureFixture
@@ -389,35 +442,404 @@ def _a_record() -> TelemetryRecord:
     )
 
 
-class TestNullSink:
-    async def test_it_discards_and_closes(self) -> None:
-        sink = NullSink()
-        await sink.send(TelemetryRecord("switch_core.x", {}, {}, 1))
+class TestBatching:
+    """The message events fire once per message, so the relay sink posts many
+    events per request rather than one request per event."""
+
+    async def test_events_wait_and_go_together(self) -> None:
+        bodies: list[dict] = []
+
+        def _handle(request: httpx.Request) -> httpx.Response:
+            bodies.append(json.loads(request.content))
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = _relay_sink(http)
+        for name in ("switch_core.room_message_sent", "switch_core.agent_message_sent"):
+            sink.send(TelemetryRecord(name, {}, _a_record().resource, 1))
+
+        assert bodies == []
         await sink.aclose()
+        await http.aclose()
+
+        assert len(bodies) == 1
+        records = bodies[0]["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+        # Each record keeps its own name, in both places the relay reads it.
+        assert [r["eventName"] for r in records] == [
+            "switch_core.room_message_sent",
+            "switch_core.agent_message_sent",
+        ]
+        assert [r["body"]["stringValue"] for r in records] == [
+            r["eventName"] for r in records
+        ]
+
+    async def test_a_full_batch_goes_without_waiting_for_the_timer(self) -> None:
+        posted = asyncio.Event()
+        sizes: list[int] = []
+
+        def _handle(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            sizes.append(len(body["resourceLogs"][0]["scopeLogs"][0]["logRecords"]))
+            posted.set()
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = _relay_sink(http, max_batch=3)
+        for _ in range(3):
+            sink.send(_a_record())
+
+        async with asyncio.timeout(2):
+            await posted.wait()
+        await sink.aclose()
+        await http.aclose()
+
+        assert sizes == [3]
+
+    async def test_events_arriving_mid_post_wait_for_the_next_flush(self) -> None:
+        """A flush posts what it found and no more. Draining until empty would,
+        under steady traffic, post back to back in batches of a few events and
+        never return to waiting — the per-event request load batching is for."""
+        sizes: list[int] = []
+        in_flight = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _handle(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            sizes.append(len(body["resourceLogs"][0]["scopeLogs"][0]["logRecords"]))
+            in_flight.set()
+            await release.wait()
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = _relay_sink(http, max_batch=2)
+        sink.send(_a_record())
+        sink.send(_a_record())
+        async with asyncio.timeout(2):
+            await in_flight.wait()
+        sink.send(_a_record())
+        release.set()
+        await asyncio.sleep(0.05)
+
+        assert sizes == [2]
+        await sink.aclose()
+        await http.aclose()
+        assert sizes == [2, 1]
+
+    async def test_the_timer_posts_a_partial_batch(self) -> None:
+        posted = asyncio.Event()
+
+        def _handle(request: httpx.Request) -> httpx.Response:
+            posted.set()
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = _relay_sink(http, flush_interval_seconds=0.01)
+        sink.send(_a_record())
+
+        async with asyncio.timeout(2):
+            await posted.wait()
+        await sink.aclose()
+        await http.aclose()
+
+    async def test_a_full_buffer_drops_rather_than_grows(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        bodies: list[dict] = []
+
+        def _handle(request: httpx.Request) -> httpx.Response:
+            bodies.append(json.loads(request.content))
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = _relay_sink(http, max_batch=100, max_buffered=2)
+        with caplog.at_level("WARNING"):
+            for _ in range(3):
+                sink.send(_a_record())
+        await sink.aclose()
+        await http.aclose()
+
+        assert "buffer is full" in caplog.text
+        sent = [
+            r
+            for body in bodies
+            for r in body["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+        ]
+        assert len(sent) == 2
+
+    async def test_drops_after_the_last_warning_are_reported_at_shutdown(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The warning is rate-limited, so drops after it would otherwise never
+        be logged if no later drop came along to carry them."""
+        http = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200))
+        )
+        sink = _relay_sink(http, max_batch=100, max_buffered=1)
+        sink.send(_a_record())
+        with caplog.at_level("WARNING"):
+            for _ in range(4):
+                sink.send(_a_record())
+            await sink.aclose()
+        await http.aclose()
+
+        warnings = [
+            r.getMessage() for r in caplog.records if "buffer is full" in r.getMessage()
+        ]
+        assert len(warnings) == 2
+        assert "1 event(s) dropped" in warnings[0]
+        assert "3 event(s) dropped" in warnings[1]
+
+    async def test_a_batch_that_cannot_be_built_costs_only_itself(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A flush takes the whole buffer at once, so one bad batch must not
+        take the batches after it down with it."""
+        posted: list[int] = []
+
+        def _handle(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            posted.append(len(body["resourceLogs"][0]["scopeLogs"][0]["logRecords"]))
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = _relay_sink(http, max_batch=1)
+        post = sink._post
+        calls = 0
+
+        async def _first_one_breaks(batch: object) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise ValueError("bug in building the batch")
+            await post(batch)  # type: ignore[arg-type]
+
+        sink._post = _first_one_breaks  # type: ignore[method-assign]
+        for _ in range(3):
+            sink.send(_a_record())
+        with caplog.at_level("WARNING"):
+            await sink.aclose()
+        await http.aclose()
+
+        assert posted == [1, 1]
+        assert "batch of 1 event(s) could not be built" in caplog.text
+
+    async def test_events_after_shutdown_are_warned_about_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        http = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200))
+        )
+        sink = _relay_sink(http)
+        await sink.aclose()
+        with caplog.at_level("WARNING"):
+            for _ in range(3):
+                sink.send(_a_record())
+        await http.aclose()
+
+        late = [
+            r
+            for r in caplog.records
+            if "arrived after shutdown began" in r.getMessage()
+        ]
+        assert len(late) == 1
+
+    async def test_events_dropped_during_the_final_flush_are_all_counted(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Senders keep running while shutdown waits on the last POST. The
+        warning is rate-limited, so the drops after its first line are tallied
+        when the flush ends rather than never."""
+        release = asyncio.Event()
+
+        async def _slow(request: httpx.Request) -> httpx.Response:
+            await release.wait()
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_slow))
+        sink = _relay_sink(http)
+        sink.send(_a_record())
+        with caplog.at_level("WARNING"):
+            closing = asyncio.create_task(sink.aclose())
+            await asyncio.sleep(0)
+            for _ in range(3):
+                sink.send(_a_record())
+            release.set()
+            await closing
+        await http.aclose()
+
+        late = [
+            r.getMessage()
+            for r in caplog.records
+            if "arrived after shutdown began" in r.getMessage()
+        ]
+        assert len(late) == 2
+        assert "2 more telemetry event(s)" in late[1]
+
+    async def test_a_failed_batch_names_what_it_lost(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        http = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(503))
+        )
+        sink = _relay_sink(http)
+        sink.send(_a_record())
+        with caplog.at_level("WARNING"):
+            await sink.aclose()
+        await http.aclose()
+
+        assert "switch_core.deployment_started" in caplog.text
 
 
 class TestShutdown:
-    async def test_in_flight_sends_are_awaited(self) -> None:
-        """The events worth losing least are the ones emitted just before the
-        process goes away."""
-        started = asyncio.Event()
+    """The last flush runs under a fraction of a second. What it cannot post is
+    counted, and a slow request already in flight does not hold the rest."""
 
-        class _Slow:
-            def __init__(self) -> None:
-                self.finished = False
+    async def test_a_slow_post_in_flight_does_not_hold_back_the_rest(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        in_flight = asyncio.Event()
+        posted: list[int] = []
 
-            async def send(self, record: TelemetryRecord) -> None:
-                started.set()
-                await asyncio.sleep(0.05)
-                self.finished = True
+        async def _handle(request: httpx.Request) -> httpx.Response:
+            if not in_flight.is_set():
+                in_flight.set()
+                await asyncio.sleep(10)
+            body = json.loads(request.content)
+            posted.append(len(body["resourceLogs"][0]["scopeLogs"][0]["logRecords"]))
+            return httpx.Response(200)
 
-            async def aclose(self) -> None:
-                return None
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = _relay_sink(http, max_batch=1)
+        sink.send(_a_record())
+        async with asyncio.timeout(2):
+            await in_flight.wait()
+        sink.send(_a_record())
+        sink.send(_a_record())
 
-        sink = _Slow()
+        with caplog.at_level("WARNING"), pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.3):
+                await sink.aclose()
+        await http.aclose()
+
+        assert posted == [1, 1]
+        assert (
+            "1 telemetry event(s) were never sent: shutdown ran out of time"
+            in caplog.text
+        )
+
+    async def test_what_the_timeout_cuts_off_is_counted(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Both the batches still waiting and the ones abandoned mid-request:
+        a batch leaves the buffer before it is posted, so counting only what
+        is left would report nothing lost for a request the timeout cut off."""
+        monkeypatch.setattr(sink_module, "_SHUTDOWN_CONCURRENCY", 2)
+
+        async def _hang(request: httpx.Request) -> httpx.Response:
+            await asyncio.sleep(10)
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_hang))
+        sink = _relay_sink(http, max_batch=2)
+        for _ in range(5):
+            sink.send(_a_record())
+
+        with caplog.at_level("WARNING"), pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.2):
+                await sink.aclose()
+        await http.aclose()
+
+        assert "5 telemetry event(s) were never sent" in caplog.text
+
+    async def test_the_drop_tallies_survive_the_timeout(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def _hang(request: httpx.Request) -> httpx.Response:
+            await asyncio.sleep(10)
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_hang))
+        sink = _relay_sink(http, max_batch=100, max_buffered=1)
+        sink.send(_a_record())
+        with caplog.at_level("WARNING"):
+            for _ in range(3):
+                sink.send(_a_record())
+            with pytest.raises(TimeoutError):
+                async with asyncio.timeout(0.2):
+                    await sink.aclose()
+        await http.aclose()
+
+        full = [
+            r.getMessage() for r in caplog.records if "buffer is full" in r.getMessage()
+        ]
+        assert "2 event(s) dropped" in full[-1]
+
+    async def test_a_relay_that_refuses_at_shutdown_is_not_fed_the_rest(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        requests = 0
+
+        def _refuse(request: httpx.Request) -> httpx.Response:
+            nonlocal requests
+            requests += 1
+            return httpx.Response(503)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_refuse))
+        sink = _relay_sink(http, max_batch=1)
+        for _ in range(10):
+            sink.send(_a_record())
+        with caplog.at_level("WARNING"):
+            await sink.aclose()
+        await http.aclose()
+
+        assert requests <= sink_module._SHUTDOWN_CONCURRENCY
+        assert (
+            f"{10 - requests} telemetry event(s) were never sent: the relay "
+            "refused a batch at shutdown"
+        ) in caplog.text
+
+    async def test_a_clean_shutdown_reports_nothing_lost(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        http = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200))
+        )
+        sink = _relay_sink(http, max_batch=1)
+        for _ in range(10):
+            sink.send(_a_record())
+        with caplog.at_level("WARNING"):
+            await sink.aclose()
+        await http.aclose()
+
+        assert "never sent" not in caplog.text
+
+
+class TestNullSink:
+    async def test_it_discards_and_closes(self) -> None:
+        sink = NullSink()
+        sink.send(TelemetryRecord("switch_core.x", {}, {}, 1))
+        await sink.aclose()
+
+
+class TestHandOff:
+    async def test_the_sink_has_the_event_as_soon_as_emit_returns(self) -> None:
+        """No task per event: the message events fire once per message, and the
+        sink only buffers, so a task would be pure overhead on the loop."""
+        sink = _RecordingSink()
         service = _service(sink)
+
         service.emit("deployment_started", tenant_count=1)
-        await started.wait()
+
+        assert [record.name for record in sink.sent] == [
+            "switch_core.deployment_started"
+        ]
+
+    async def test_closing_the_service_closes_the_sink(self) -> None:
+        """The sink posts what it still holds when closed: the events worth
+        losing least are the ones emitted just before the process goes away."""
+        sink = _RecordingSink()
+        service = _service(sink)
+
         await service.aclose()
 
-        assert sink.finished
+        assert sink.closed
