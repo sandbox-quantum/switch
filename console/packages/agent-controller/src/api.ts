@@ -92,6 +92,23 @@ export function isTakenOver(error: unknown): boolean {
 }
 
 /**
+ * The server does not speak this controller's protocol. Retrying cannot change
+ * that: only a newer controller can, so this one stops and says so.
+ */
+export function isUpgradeRequired(error: unknown): boolean {
+  return error instanceof ControllerApiError && error.code === 'protocol_unsupported';
+}
+
+/**
+ * The server knows no controller by this credential: it was replaced, or the
+ * key behind it was deleted. Retrying the same credential cannot pass, so this
+ * one stops; the machine has to be enrolled again.
+ */
+export function isCredentialRefused(error: unknown): boolean {
+  return error instanceof ControllerApiError && error.code === 'invalid_credential';
+}
+
+/**
  * The agent bridge URL as given to `enroll`, checked and without a trailing
  * slash. The controller's relay forwards every agent's calls to it with the
  * controller's own token, so it gets the rule the session host applies to

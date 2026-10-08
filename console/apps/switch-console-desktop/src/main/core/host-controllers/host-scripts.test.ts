@@ -286,6 +286,6 @@ describe('the systemd unit', () => {
     );
     expect(unit).toContain('Environment="PATH=/home/ada/.local/bin:/usr/bin"');
     expect(unit).toContain('Restart=on-failure');
-    expect(unit).toContain('RestartPreventExitStatus=2 3 4');
+    expect(unit).toContain('RestartPreventExitStatus=2 3 4 5 6');
   });
 });

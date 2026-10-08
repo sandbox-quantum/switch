@@ -111,6 +111,8 @@ switch-agent-controller update [--check]
   | `2` | A configuration error that starting again unchanged cannot fix. | No, not until the configuration changes |
   | `3` | The server revoked this controller. | No: it must be enrolled again |
   | `4` | Another instance of this controller, with the same identity, opened the controller stream after this one, which took it over. | No |
+  | `5` | The server does not speak this controller's protocol (`protocol_unsupported`). | No: update the controller |
+  | `6` | The server knows no controller by this credential (`invalid_credential`): it was replaced, or its key was deleted. | No: enroll again |
 
   Code `2` covers: an unknown command, option or missing argument; a server
   URL that is not one, or is plain `http` to a host that is not loopback; a
@@ -206,7 +208,9 @@ To run it under another supervisor, have it run `run` and restart it on exit cod
 `1` only. Do not restart it on `2`, because it would fail the same way until its
 configuration is fixed, nor on `3`, because a revoked controller must be enrolled
 again, nor on `4`, because two instances would take the stream from each other in
-turn. With systemd, `Restart=on-failure` and `RestartPreventExitStatus=2 3 4`.
+turn, nor on `5` or `6`, because the server has said it will refuse this controller
+the same way again. With systemd, `Restart=on-failure` and
+`RestartPreventExitStatus=2 3 4 5 6`.
 
 ## Run by a parent process
 

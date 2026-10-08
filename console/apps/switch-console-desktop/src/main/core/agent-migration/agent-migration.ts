@@ -218,7 +218,7 @@ async function resolveSshHost(
   const probed = overview.process;
   const revoked =
     (overview.remote?.kind === 'ok' && overview.remote.controller?.state === 'revoked') ||
-    (probed?.kind === 'stopped' && probed.code === 3);
+    (probed?.kind === 'stopped' && (probed.code === 3 || probed.code === 6));
   const controller: TargetLookup['controller'] = overview.enrollment
     ? {
         controllerId: overview.enrollment.controllerId,
@@ -653,7 +653,7 @@ async function healMachine(agent: MigrationAgent): Promise<MachineHealth> {
     const gone =
       (remote?.kind === 'ok' &&
         (remote.controller === null || remote.controller.state === 'revoked')) ||
-      (running?.kind === 'stopped' && running.code === 3);
+      (running?.kind === 'stopped' && (running.code === 3 || running.code === 6));
     if (gone) {
       log.warn('Switch revoked or forgot an SSH host’s controller; enrolling it again', {
         event: 'agent_migration',
@@ -701,6 +701,10 @@ async function healMachine(agent: MigrationAgent): Promise<MachineHealth> {
   if (overview.phase.kind === 'taken_over')
     throw new Error(
       'Another copy of this computer’s controller connected to Switch and took over, so this one is not started again.'
+    );
+  if (overview.phase.kind === 'update_required')
+    throw new Error(
+      'This Switch server needs a newer agents controller than this Console carries. Update Switch Console, then try again.'
     );
   if (overview.phase.kind !== 'running' && overview.phase.kind !== 'restarting') {
     await embeddedControllerService.restart(serverId);

@@ -315,6 +315,32 @@ describe('runControllerStream', () => {
     expect(refusedAttach.staleTokens).toBe(0);
   });
 
+  it('stops for good when the server refuses its protocol, on open and on attach', async () => {
+    const refusedOpen = new ScriptedClient();
+    let opens = 0;
+    refusedOpen.open = async () => {
+      opens++;
+      throw new ControllerApiError(426, 'protocol_unsupported', 'protocol 1', false, null);
+    };
+    expect(await run(refusedOpen, new AbortController().signal).ending).toBe('upgrade_required');
+    expect(opens).toBe(1);
+
+    const refusedAttach = new ScriptedClient();
+    refusedAttach.sockets = () => scriptedSocket([refused(426, 'protocol_unsupported')], 4426);
+    expect(await run(refusedAttach, new AbortController().signal).ending).toBe('upgrade_required');
+  });
+
+  it('stops for good when the server knows no controller by its credential', async () => {
+    const scripted = new ScriptedClient();
+    let opens = 0;
+    scripted.open = async () => {
+      opens++;
+      throw new ControllerApiError(401, 'invalid_credential', 'not valid', false, null);
+    };
+    expect(await run(scripted, new AbortController().signal).ending).toBe('credential_invalid');
+    expect(opens).toBe(1);
+  });
+
   it('drops a token the socket refused as stale, and attaches again', async () => {
     const scripted = new ScriptedClient();
     scripted.sockets = () =>

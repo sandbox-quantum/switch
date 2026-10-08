@@ -14,6 +14,7 @@ import {
 } from './controller-files';
 import {
   type ControllerBackoff,
+  type ControllerFinalExit,
   type ControllerLaunch,
   type ControllerLogLevel,
   ControllerSupervisor,
@@ -495,7 +496,18 @@ export class EmbeddedControllerService {
     return moved;
   }
 
-  private async onFinal(serverId: string, exit: 'revoked' | 'taken_over'): Promise<void> {
+  private async onFinal(serverId: string, exit: ControllerFinalExit): Promise<void> {
+    if (exit === 'upgrade_required') {
+      this.deps.log.error(
+        'Switch needs a newer agents controller than this Console carries; not restarting it until Console is updated',
+        { serverId }
+      );
+      this.setRunnerPhase(serverId, {
+        kind: 'update_required',
+        at: new Date(this.deps.now()).toISOString(),
+      });
+      return;
+    }
     if (exit === 'taken_over') {
       this.deps.log.error(
         'Another copy of this computer’s controller connected to Switch and took over; not restarting it',
@@ -510,9 +522,12 @@ export class EmbeddedControllerService {
     if (this.busy.has(serverId)) return;
     const record = await this.deps.records.get(serverId);
     const at = new Date(this.deps.now()).toISOString();
-    this.deps.log.warn('Switch removed this computer as a machine; forgetting its credential', {
-      serverId,
-    });
+    this.deps.log.warn(
+      exit === 'credential_invalid'
+        ? 'Switch no longer knows this computer’s controller credential; forgetting it'
+        : 'Switch removed this computer as a machine; forgetting its credential',
+      { serverId }
+    );
     this.runners.delete(serverId);
     try {
       await this.deps.secrets.deleteSecret(credentialSecretKey(serverId));

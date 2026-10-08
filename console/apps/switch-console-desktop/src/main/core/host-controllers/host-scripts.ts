@@ -111,7 +111,8 @@ export const enrollResultSchema = z.discriminatedUnion('ok', [
 /**
  * Keeps the controller running under the supervisor: started again on exit
  * code 1 with a backoff, and left stopped on 0 (stopped), 2 (configuration),
- * 3 (revoked) and 4 (taken over), as the controller's README asks of any
+ * 3 (revoked), 4 (taken over), 5 (needs a newer controller) and 6 (credential
+ * not known), as the controller's README asks of any
  * supervisor. Records itself in `console-supervisor.json` in the data
  * directory. A run that lasted ten minutes resets the backoff.
  *
@@ -134,7 +135,7 @@ const start = () => {
   child.on('exit', (code, signal) => {
     child = null;
     if (stopping) { record({ state: 'stopped' }); process.exit(0); }
-    if ([0, 2, 3, 4].includes(code)) { record({ state: 'exited', code: code }); process.exit(0); }
+    if ([0, 2, 3, 4, 5, 6].includes(code)) { record({ state: 'exited', code: code }); process.exit(0); }
     if (Date.now() - started > 600000) attempt = 0;
     attempt += 1;
     const wait = Math.min(5000 * Math.pow(2, Math.min(attempt - 1, 4)), 60000);
@@ -293,7 +294,7 @@ export function systemdUnit(input: {
     'Environment=SWITCH_CONTROLLER_LOG_LEVEL=info',
     'Restart=on-failure',
     'RestartSec=5',
-    'RestartPreventExitStatus=2 3 4',
+    'RestartPreventExitStatus=2 3 4 5 6',
     '',
     '[Install]',
     'WantedBy=default.target',

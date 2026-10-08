@@ -66,10 +66,12 @@ describe('ControllerSupervisor', () => {
     await supervisor.stop(1_000);
   });
 
-  it('hands revocation and takeover over without restarting', async () => {
+  it('hands revocation, takeover and refusals that cannot pass over without restarting', async () => {
     for (const [code, exit] of [
       [3, 'revoked'],
       [4, 'taken_over'],
+      [5, 'upgrade_required'],
+      [6, 'credential_invalid'],
     ] as const) {
       const { supervisor, calls, finals } = harness();
       supervisor.start();
