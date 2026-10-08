@@ -1629,17 +1629,27 @@ class PlatformAdapter(ABC):
         that need one of them alone — an unescaped label is not among them:
         :attr:`AgentRendering.field_label` is reachable only alongside the
         escaped one, so choosing it is a choice."""
-        found: AgentPresentation | None = None
-        if self._resolve_agent_presentation is not None:
-            found = await self._resolve_agent_presentation(agent_name)
-        label = (found.display_name if found else None) or agent_name
-        # An agent with no icon wears the face its name generates; a sender
-        # that is not an agent keeps a lettered badge, so a person relayed
-        # from elsewhere is never drawn as an agent.
-        if found is None:
-            icon_url = initials_icon_url(agent_name)
+        # An agent with no icon wears the face its name generates; a name the
+        # resolver says is no agent keeps a lettered badge, so a person relayed
+        # from elsewhere is never drawn as an agent. The name is the sending
+        # actor's own (an agent's is its identifier, never a room alias), so a
+        # miss is a sender that is not an agent rather than an agent the lookup
+        # failed to recognise.
+        #
+        # Without a resolver nothing can say who is who. Production installs
+        # one before the adapter starts, so this is a test double or a wiring
+        # fault; the senders an adapter draws are overwhelmingly agents, so it
+        # draws them as agents rather than turning every agent into a person.
+        if self._resolve_agent_presentation is None:
+            label = agent_name
+            icon_url = generated_icon_url(agent_name)
         else:
-            icon_url = found.icon_url or generated_icon_url(agent_name)
+            found = await self._resolve_agent_presentation(agent_name)
+            label = (found.display_name if found else None) or agent_name
+            if found is None:
+                icon_url = initials_icon_url(agent_name)
+            else:
+                icon_url = found.icon_url or generated_icon_url(agent_name)
         return AgentRendering(
             field_label=label,
             body_label=self.escape_label_for_body(label),

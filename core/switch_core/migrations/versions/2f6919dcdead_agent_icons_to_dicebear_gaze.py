@@ -13,7 +13,13 @@ Only the robot URL Switch and Switch Console generated is touched, matched in
 exactly the shape they built it: a seed and `size=256`, nothing more. An icon on
 any other host, any other DiceBear style, or a robot URL carrying options of its
 own was chosen by someone and is left as it is. Downgrade is held to the same
-line, turning back only the gaze URL in exactly the shape this writes.
+line, turning back only the gaze URL in exactly the shape this writes. Saving an
+icon applies the same pattern (`agent_icon.upgrade_legacy_icon_url`), so what
+this leaves as a robot stays one when saved.
+
+The gaze URL is longer than the robot it replaces. A robot whose gaze form would
+exceed the 2048 characters Switch accepts for an icon is left as it is rather
+than stored over the limit; saving one is refused for the same reason.
 
 The gaze URL is written out here rather than built by
 `switch_core.agent_icon.generated_icon_url`: a migration has to keep producing
@@ -47,15 +53,20 @@ _ROBOT_SEED = r"'^https://api\.dicebear\.com/9\.x/bottts/png\?seed=([^&#]+)&size
 _GAZE_SEED = r"'^https://api\.dicebear\.com/10\.x/gaze/png\?seed=([^&#]+)&'"
 
 
+# `agent_icon.MAX_ICON_URL_LENGTH` on the day this shipped.
+_MAX_ICON_URL_LENGTH = 2048
+
+
 def upgrade() -> None:
+    gaze = f"'{_GAZE}' || substring(icon_url from {_ROBOT_SEED}) || '{_GAZE_QUERY_AFTER_SEED}'"
     # Runs as the schema owner, which row-level security does not restrict, so
     # every tenant's agents are seen.
     op.execute(
         f"""
         UPDATE agents
-        SET icon_url = '{_GAZE}'
-            || substring(icon_url from {_ROBOT_SEED}) || '{_GAZE_QUERY_AFTER_SEED}'
+        SET icon_url = {gaze}
         WHERE icon_url ~ {_ROBOT_SEED}
+          AND length({gaze}) <= {_MAX_ICON_URL_LENGTH}
         """
     )
 

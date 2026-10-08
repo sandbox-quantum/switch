@@ -94,11 +94,12 @@ class TestCollaborationCoreResolver:
 
 
 class TestAdapterIconSelection:
-    async def test_draws_initials_when_no_resolver_is_installed(self) -> None:
-        # Without a resolver nothing says the name is an agent, and a person
-        # must not be drawn with an agent's face.
+    async def test_draws_an_agent_face_when_no_resolver_is_installed(self) -> None:
+        # Nothing can say who is who, and the senders an adapter draws are
+        # overwhelmingly agents: drawing them all as people would be the worse
+        # mistake.
         adapter = _Adapter()
-        assert await adapter.agent_icon_url("worker") == initials_icon_url("worker")
+        assert await adapter.agent_icon_url("worker") == generated_icon_url("worker")
 
     async def test_prefers_the_agents_own_icon(self) -> None:
         adapter = _Adapter()

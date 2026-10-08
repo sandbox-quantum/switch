@@ -197,6 +197,9 @@ def test_a_generated_robot_is_upgraded_to_gaze_for_its_seed(
         "https://api.dicebear.com/9.x/bottts/png?size=256",
         "https://api.dicebear.com/9.x/bottts/svg?seed=x&size=256",
         "https://api.dicebear.com/9.x/bottts/png?seed=x&size=256#frag",
+        # Same fields, another order: no client built it this way.
+        "https://api.dicebear.com/9.x/bottts/png?size=256&seed=x",
+        "https://API.dicebear.com/9.x/bottts/png?seed=x&size=256",
         # Another style, another host, or a lookalike host.
         "https://api.dicebear.com/9.x/identicon/png?seed=x&size=256",
         "https://cdn.example.com/9.x/bottts/png?seed=x&size=256",
@@ -205,6 +208,22 @@ def test_a_generated_robot_is_upgraded_to_gaze_for_its_seed(
 )
 def test_anything_but_the_generated_robot_is_left_alone(url: str) -> None:
     assert upgrade_legacy_icon_url(url) == url
+
+
+def test_a_robot_is_converted_before_it_is_validated() -> None:
+    # Surrounding whitespace is stripped first, so it does not hide a robot.
+    stored = " https://api.dicebear.com/9.x/bottts/png?seed=pm-agent&size=256 "
+    assert normalise_icon_url(stored) == generated_icon_url("pm-agent")
+
+
+def test_a_robot_whose_gaze_form_is_over_the_limit_is_refused() -> None:
+    # The robot fits, but the gaze URL it becomes is longer. Checking before
+    # converting would store it over the limit.
+    seed = "a" * 1900
+    robot = f"https://api.dicebear.com/9.x/bottts/png?seed={seed}&size=256"
+    assert len(robot) <= MAX_ICON_URL_LENGTH < len(generated_icon_url(seed))
+    with pytest.raises(InvalidIconUrl, match="at most"):
+        normalise_icon_url(robot)
 
 
 def test_the_gaze_icon_is_left_alone() -> None:

@@ -26,8 +26,9 @@ rather than treating storage validation as sufficient.
 """
 
 import ipaddress
+import re
 from typing import NoReturn
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit
+from urllib.parse import quote, unquote_plus, urlencode, urlsplit
 
 # Long enough for a generated-avatar link carrying a full set of style options,
 # short enough that the column cannot be used to smuggle a payload.
@@ -154,11 +155,13 @@ def generated_icon_url(seed: str) -> str:
 
 
 # The robot every client generated before gaze, in exactly the shape they built
-# it: a seed and this size, nothing else. A robot URL with anything more on it
-# was put together by hand and is someone's choice, so it is left alone.
-_LEGACY_ICON_HOST = "api.dicebear.com"
-_LEGACY_ICON_PATH = "/9.x/bottts/png"
-_LEGACY_ICON_PIXELS = "256"
+# it: a seed and this size, nothing else. A robot URL with anything more on it,
+# or in any other order, was put together by hand and is someone's choice, so it
+# is left alone. The migration that replaced stored robots (`2f6919dcdead`)
+# matches the same pattern, so a URL it left as a robot stays one when saved.
+_LEGACY_ICON = re.compile(
+    r"^https://api\.dicebear\.com/9\.x/bottts/png\?seed=([^&#]+)&size=256$"
+)
 
 
 def upgrade_legacy_icon_url(url: str) -> str:
@@ -169,23 +172,21 @@ def upgrade_legacy_icon_url(url: str) -> str:
     on the way in means those clients cannot reintroduce robots after the
     migration that replaced every stored one.
     """
-    parts = urlsplit(url)
-    if (
-        parts.scheme != "https"
-        or (parts.hostname or "").lower() != _LEGACY_ICON_HOST
-        or parts.path != _LEGACY_ICON_PATH
-        or parts.fragment
-    ):
+    match = _LEGACY_ICON.match(url)
+    if match is None:
         return url
+    return generated_icon_url(unquote_plus(match.group(1)))
 
-    query = parse_qsl(parts.query, keep_blank_values=True)
-    fields = dict(query)
-    if len(query) != 2 or set(fields) != {"seed", "size"}:
-        return url
-    if fields["size"] != _LEGACY_ICON_PIXELS or not fields["seed"]:
-        return url
 
-    return generated_icon_url(fields["seed"])
+def prepare_icon_url(url: str) -> str:
+    """The icon URL to store for `url`, or raise `InvalidIconUrl`.
+
+    An older client's generated robot is converted first and the result is
+    what gets validated: the gaze URL is longer than the robot it replaces, so
+    checking before converting would let a robot near the length limit be
+    stored over it.
+    """
+    return validate_icon_url(upgrade_legacy_icon_url(url.strip()))
 
 
 def initials_icon_url(name: str) -> str:
@@ -223,7 +224,7 @@ def normalise_icon_url(url: str | None) -> str | None:
     "clear it"; both collapse to `None` so a cleared icon is stored as NULL
     rather than as an empty string the display layer would have to special-case.
     A generated robot from an older client is stored as its gaze equivalent
-    (`upgrade_legacy_icon_url`).
+    (`prepare_icon_url`).
     """
     if url is None:
         return None
@@ -231,4 +232,4 @@ def normalise_icon_url(url: str | None) -> str | None:
     if not url.strip():
         return None
 
-    return upgrade_legacy_icon_url(validate_icon_url(url))
+    return prepare_icon_url(url)
