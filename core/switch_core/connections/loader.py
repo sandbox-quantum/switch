@@ -91,6 +91,12 @@ class OAuthClient(BaseModel):
             raise ValueError(
                 "authorization_url and token_url are given together, or discovered"
             )
+        # The registration endpoint is found where the other two are.
+        if self.registration == "dynamic" and self.authorization_url is not None:
+            raise ValueError(
+                "a dynamically registered client discovers its endpoints from the "
+                "MCP server"
+            )
         return self
 
 

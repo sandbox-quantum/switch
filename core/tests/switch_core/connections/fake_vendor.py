@@ -1,17 +1,28 @@
-"""A stand-in for a service's vendor, for broker and route tests.
+"""Stand-ins for a service's vendor, for adapter, broker and route tests.
 
-Plays GitHub, the one enabled catalog entry, as the broker sees it through
-`ServiceAdapter`: refresh, check a grant, issue, revoke, all counted.
+`FakeVendor` plays a vendor as the broker sees it through `ServiceAdapter`:
+refresh, check a grant, issue, revoke, all counted. `FakeOAuthServer` plays
+the HTTP side of an OAuth vendor with MCP servers, for the generic OAuth/MCP
+adapter to talk to: its metadata, authorization, token, registration,
+revocation and account endpoints, and an MCP server that takes its tokens.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import json
+import secrets
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
+
+import httpx
 
 from switch_core.connections.adapters import (
     AccessToken,
@@ -100,3 +111,232 @@ class FakeVendor:
         verb = "push to" if access == "write" else "read"
         count = len(resources.get("repository_ids", []))
         return f"{agent_name} can {verb} {count} repositories, as the GitHub App."
+
+
+MCP_URL = "https://mcp.example.test/v1/mcp"
+ISSUER = "https://auth.example.test"
+IDENTITY_URL = "https://api.example.test/me"
+STATIC_CLIENT_ID = "example-client"
+STATIC_CLIENT_SECRET = "SYNTHETIC-CLIENT-SECRET"
+MCP_TOOLS = [
+    {
+        "name": "search_items",
+        "description": "Search work items.",
+        "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}},
+    }
+]
+
+
+def s256(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode()).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+
+@dataclass
+class _Code:
+    client_id: str
+    redirect_uri: str
+    challenge: str
+    scopes: list[str]
+    resource: str | None
+
+
+def _json(
+    status: int, body: Any, headers: dict[str, str] | None = None
+) -> httpx.Response:
+    return httpx.Response(status, json=body, headers=headers)
+
+
+class FakeOAuthServer:
+    """An OAuth vendor with an MCP server, over `httpx.MockTransport`.
+
+    Codes are checked against their PKCE challenge, redirect URI and client;
+    rotating refresh tokens are spent on use, as the vendor's would be.
+    `fail` answers a path with a fixed status and body, before anything else.
+    """
+
+    def __init__(self, *, rotating: bool = True, lifetime: int = 3600) -> None:
+        self.rotating = rotating
+        self.lifetime = lifetime
+        # Clients by id, with their secret (None: a public client).
+        self.clients: dict[str, str | None] = {STATIC_CLIENT_ID: STATIC_CLIENT_SECRET}
+        self.registrations: list[dict[str, Any]] = []
+        self.codes: dict[str, _Code] = {}
+        self.live_access: dict[str, list[str]] = {}
+        self.live_refresh: dict[str, list[str]] = {}
+        self.spent_refresh: set[str] = set()
+        self.token_requests: list[dict[str, str]] = []
+        self.revoked: list[dict[str, str]] = []
+        self.mcp_calls: list[dict[str, Any]] = []
+        self.paths: list[str] = []
+        self.fail: dict[str, tuple[int, Any]] = {}
+        self.metadata: dict[str, Any] = {
+            "issuer": ISSUER,
+            "authorization_endpoint": f"{ISSUER}/authorize",
+            "token_endpoint": f"{ISSUER}/token",
+            "registration_endpoint": f"{ISSUER}/register",
+            "revocation_endpoint": f"{ISSUER}/revoke",
+            "response_types_supported": ["code"],
+            "code_challenge_methods_supported": ["S256"],
+        }
+        self.account: dict[str, Any] = {"id": "acct-1", "email": "ada@example.test"}
+
+    def client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
+
+    # ── The person, in their browser ─────────────────────────────────────────
+
+    def authorize(self, url: str) -> str:
+        """Consent at `url`; the redirect the browser is sent back to."""
+        parts = urlsplit(url)
+        assert f"{parts.scheme}://{parts.netloc}{parts.path}" == f"{ISSUER}/authorize"
+        query = {key: values[0] for key, values in parse_qs(parts.query).items()}
+        assert query["response_type"] == "code"
+        assert query["code_challenge_method"] == "S256"
+        assert query["client_id"] in self.clients
+        code = secrets.token_urlsafe(16)
+        self.codes[code] = _Code(
+            client_id=query["client_id"],
+            redirect_uri=query["redirect_uri"],
+            challenge=query["code_challenge"],
+            scopes=query["scope"].split(),
+            resource=query.get("resource"),
+        )
+        separator = "&" if "?" in query["redirect_uri"] else "?"
+        return f"{query['redirect_uri']}{separator}code={code}&state={query['state']}"
+
+    def mint(self, scopes: list[str]) -> dict[str, Any]:
+        access = f"vendor_access_{secrets.token_hex(8)}"
+        refresh = f"vendor_refresh_{secrets.token_hex(8)}"
+        self.live_access[access] = scopes
+        self.live_refresh[refresh] = scopes
+        return {
+            "access_token": access,
+            "token_type": "Bearer",
+            "expires_in": self.lifetime,
+            "refresh_token": refresh,
+            "scope": " ".join(scopes),
+        }
+
+    # ── HTTP ─────────────────────────────────────────────────────────────────
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        url = request.url
+        where = f"{url.scheme}://{url.host}{url.path}"
+        self.paths.append(where)
+        if where in self.fail:
+            status, body = self.fail[where]
+            return _json(status, body)
+        if (
+            where
+            == "https://mcp.example.test/.well-known/oauth-protected-resource/v1/mcp"
+        ):
+            return _json(200, {"resource": MCP_URL, "authorization_servers": [ISSUER]})
+        if where == f"{ISSUER}/.well-known/oauth-authorization-server":
+            return _json(200, self.metadata)
+        if where == f"{ISSUER}/token" and request.method == "POST":
+            return self._token(request)
+        if where == f"{ISSUER}/register" and request.method == "POST":
+            return self._register(request)
+        if where == f"{ISSUER}/revoke" and request.method == "POST":
+            form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+            self.revoked.append(form)
+            self.live_refresh.pop(form.get("token", ""), None)
+            return httpx.Response(200)
+        if where == IDENTITY_URL and request.method == "GET":
+            if self._bearer(request) is None:
+                return _json(401, {"error": "invalid_token"})
+            return _json(200, {"account": self.account})
+        if where == MCP_URL:
+            return self._mcp(request)
+        return _json(404, {"error": "not_found"})
+
+    def _bearer(self, request: httpx.Request) -> list[str] | None:
+        header = request.headers.get("authorization", "")
+        if not header.startswith("Bearer "):
+            return None
+        return self.live_access.get(header.removeprefix("Bearer "))
+
+    def _client_ok(self, form: dict[str, str]) -> bool:
+        client_id = form.get("client_id")
+        if client_id not in self.clients:
+            return False
+        secret = self.clients[client_id]
+        return secret is None or form.get("client_secret") == secret
+
+    def _token(self, request: httpx.Request) -> httpx.Response:
+        form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+        self.token_requests.append(form)
+        if not self._client_ok(form):
+            return _json(401, {"error": "invalid_client"})
+        if form.get("grant_type") == "authorization_code":
+            pending = self.codes.pop(form.get("code", ""), None)
+            if (
+                pending is None
+                or pending.client_id != form["client_id"]
+                or pending.redirect_uri != form.get("redirect_uri")
+                or pending.challenge != s256(form.get("code_verifier", ""))
+                or pending.resource != form.get("resource")
+            ):
+                return _json(400, {"error": "invalid_grant"})
+            return _json(200, self.mint(pending.scopes))
+        if form.get("grant_type") == "refresh_token":
+            refresh = form.get("refresh_token", "")
+            scopes = self.live_refresh.get(refresh)
+            if scopes is None or refresh in self.spent_refresh:
+                return _json(400, {"error": "invalid_grant"})
+            if self.rotating:
+                self.spent_refresh.add(refresh)
+                del self.live_refresh[refresh]
+                return _json(200, self.mint(scopes))
+            minted = self.mint(scopes)
+            del self.live_refresh[minted.pop("refresh_token")]
+            return _json(200, minted)
+        return _json(400, {"error": "unsupported_grant_type"})
+
+    def _register(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        self.registrations.append(body)
+        client_id = f"registered-{len(self.registrations)}"
+        public = body.get("token_endpoint_auth_method") == "none"
+        secret = None if public else f"SYNTHETIC-REGISTERED-{secrets.token_hex(4)}"
+        self.clients[client_id] = secret
+        answer = {**body, "client_id": client_id}
+        if secret is not None:
+            answer["client_secret"] = secret
+        return _json(201, answer)
+
+    def _mcp(self, request: httpx.Request) -> httpx.Response:
+        if self._bearer(request) is None:
+            return _json(
+                401,
+                {"error": "invalid_token"},
+                {
+                    "WWW-Authenticate": 'Bearer resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/v1/mcp"'
+                },
+            )
+        message = json.loads(request.content)
+        self.mcp_calls.append(message)
+        method = message.get("method")
+        if method == "initialize":
+            result: dict[str, Any] = {
+                "protocolVersion": message["params"]["protocolVersion"],
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "example", "version": "1.0.0"},
+            }
+        elif method == "tools/list":
+            result = {"tools": MCP_TOOLS}
+        elif method == "tools/call":
+            result = {"content": [{"type": "text", "text": "2 items found"}]}
+        elif "id" not in message:
+            return httpx.Response(202)
+        else:
+            return _json(
+                200,
+                {
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "error": {"code": -32601, "message": "Method not found"},
+                },
+            )
+        return _json(200, {"jsonrpc": "2.0", "id": message["id"], "result": result})

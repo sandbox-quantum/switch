@@ -164,6 +164,7 @@ from switch_core.observability.bootstrap import (
 from switch_core.observability.pool import install_pool_watermark, pool_stats
 from switch_core.observability.query import instrument_queries
 from switch_core.observability.runtime import EventLoopLag
+from switch_core.outbound import guarded_async_client
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
@@ -845,7 +846,12 @@ async def run(config: SwitchConfig) -> None:
         session_factory=session_factory,
         keyring=config.keyring,
         catalog=CATALOG,
-        adapters=build_adapters(CATALOG, github_app=github_app, environ=os.environ),
+        adapters=build_adapters(
+            CATALOG,
+            github_app=github_app,
+            environ=os.environ,
+            http=guarded_async_client(config.outbound_policy, timeout=20),
+        ),
         disabled=config.disabled_services,
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=config.service_token_retention_days),

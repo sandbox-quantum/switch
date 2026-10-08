@@ -364,6 +364,13 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    authorization_url: https://auth.example.test/authorize\n",
             "given together",
         ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n"
+            "    authorization_url: https://auth.example.test/authorize\n"
+            "    token_url: https://auth.example.test/token\n",
+            "discovers its endpoints",
+        ),
         ("https://mcp.example.test", "http://mcp.example.test", "url"),
         ("{ name: example,", "{ name: switch,", "named switch"),
         (

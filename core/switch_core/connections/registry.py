@@ -16,10 +16,16 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from switch_core.connections.adapters import ServiceAdapter
 from switch_core.connections.adapters.github import GitHubAdapter, GitHubApp
+from switch_core.connections.adapters.oauth_mcp import (
+    OAuthClientCredentials,
+    OAuthMcpAdapter,
+    StaticClient,
+)
 from switch_core.connections.loader import Connection
 
 
@@ -68,8 +74,13 @@ def build_adapters(
     *,
     github_app: GitHubApp | None,
     environ: Mapping[str, str],
+    http: httpx.AsyncClient,
 ) -> dict[str, ServiceAdapter]:
-    """An adapter for each enabled entry this server is set up for."""
+    """An adapter for each enabled entry this server is set up for.
+
+    `http` is how OAuth/MCP adapters reach their vendors: one client, held to
+    the server's outbound policy.
+    """
     adapters: dict[str, ServiceAdapter] = {}
     for slug, entry in catalog.items():
         definition = entry.definition
@@ -80,6 +91,26 @@ def build_adapters(
             if github_app is not None:
                 adapters[slug] = GitHubAdapter(
                     github_app.connections, github_app.signer
+                )
+        elif definition.adapter == "oauth-mcp":
+            oauth = definition.auth.oauth
+            assert oauth is not None
+            if oauth.registration != "static":
+                raise ServiceSetupError(
+                    f"Connection {slug} registers its OAuth client dynamically, "
+                    "which this server cannot do."
+                )
+            assert oauth.client_settings is not None
+            settings = load_client_settings(oauth.client_settings, environ)
+            if settings is not None:
+                adapters[slug] = OAuthMcpAdapter(
+                    definition,
+                    StaticClient(
+                        OAuthClientCredentials(
+                            settings.client_id, settings.client_secret
+                        )
+                    ),
+                    http,
                 )
         else:
             raise ServiceSetupError(

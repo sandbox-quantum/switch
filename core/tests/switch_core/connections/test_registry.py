@@ -7,9 +7,11 @@ import shutil
 from datetime import timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 
 from switch_core.connections.adapters.github import GitHubAdapter, load_github_app
+from switch_core.connections.adapters.oauth_mcp import OAuthMcpAdapter
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG, CATALOG_ROOT, load_catalog
 from switch_core.connections.registry import (
@@ -22,28 +24,59 @@ from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.adapters.test_github import _app_files, _config
 from tests.switch_core.connections.test_loader import OAUTH_MCP_ENTRY, _write_example
 
+HTTP = httpx.AsyncClient()
+STATIC = OAUTH_MCP_ENTRY.replace(
+    "    registration: dynamic\n",
+    "    registration: static\n    client_settings: EXAMPLE\n",
+)
+
+
+def _catalog(tmp_path: Path, text: str = OAUTH_MCP_ENTRY) -> dict:
+    root = tmp_path / "catalog"
+    shutil.copytree(CATALOG_ROOT, root)
+    _write_example(root, text)
+    return load_catalog(root)
+
 
 def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None:
     settings, key = _app_files(tmp_path)
     app = load_github_app(
         _config(github_app_config_path=settings, github_app_private_key_path=key)
     )
-    adapters = build_adapters(CATALOG, github_app=app, environ={})
+    adapters = build_adapters(CATALOG, github_app=app, environ={}, http=HTTP)
     assert set(adapters) == {"github"}
     assert isinstance(adapters["github"], GitHubAdapter)
     assert adapters["github"].can_issue is True
 
 
 def test_github_without_the_app_is_left_not_set_up() -> None:
-    assert build_adapters(CATALOG, github_app=None, environ={}) == {}
+    assert build_adapters(CATALOG, github_app=None, environ={}, http=HTTP) == {}
 
 
-def test_an_entry_naming_an_adapter_this_server_lacks_stops_it(tmp_path: Path) -> None:
-    root = tmp_path / "catalog"
-    shutil.copytree(CATALOG_ROOT, root)
-    _write_example(root)
-    with pytest.raises(ServiceSetupError, match="example names the oauth-mcp adapter"):
-        build_adapters(load_catalog(root), github_app=None, environ={})
+def test_a_static_oauth_mcp_client_gets_the_generic_adapter(tmp_path: Path) -> None:
+    path = tmp_path / "client.json"
+    path.write_text(json.dumps({"client_id": "c", "client_secret": "SYNTHETIC"}))
+    adapters = build_adapters(
+        _catalog(tmp_path, STATIC),
+        github_app=None,
+        environ={"EXAMPLE_CLIENT_CONFIG_PATH": str(path)},
+        http=HTTP,
+    )
+    assert isinstance(adapters["example"], OAuthMcpAdapter)
+
+
+def test_a_static_oauth_mcp_client_without_settings_is_not_set_up(
+    tmp_path: Path,
+) -> None:
+    adapters = build_adapters(
+        _catalog(tmp_path, STATIC), github_app=None, environ={}, http=HTTP
+    )
+    assert "example" not in adapters
+
+
+def test_a_dynamic_client_this_server_cannot_register_stops_it(tmp_path: Path) -> None:
+    with pytest.raises(ServiceSetupError, match="example registers its OAuth client"):
+        build_adapters(_catalog(tmp_path), github_app=None, environ={}, http=HTTP)
 
 
 def test_an_entry_not_set_up_here_shows_its_catalog_note(
