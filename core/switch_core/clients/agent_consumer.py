@@ -187,6 +187,11 @@ class HostedNote:
     refusal: str | None
     deliver: bool
 
+    @property
+    def redelivered(self) -> bool:
+        """The mailbox already held this event: it was seen here before."""
+        return self.refusal is None and not self.deliver
+
 
 _HOSTED_STOPPED_MESSAGE = (
     "My cloud worker is stopped, so I did not process this message. "
@@ -687,7 +692,7 @@ class AgentConsumer(Consumer[AgentActor]):
                     unavailable = NOTICE_MESSAGES["unreachable"]
         if is_addressed:
             self._report_addressed(
-                meta, event, agent_live=agent_live, has_attachment=False
+                meta, event, hosted, agent_live=agent_live, has_attachment=False
             )
 
         if refusal is not None:
@@ -897,7 +902,13 @@ class AgentConsumer(Consumer[AgentActor]):
             async with self.session_factory() as session:
                 agent = await self._fresh_agent(session)
                 gate = await self._gate_addressed(session, agent, event, meta)
-                if gate.addressed and not self._triggered_by_auto_reply(event):
+                # Only telemetry reads this here — the media path posts no
+                # unavailable notice — so it is not worth a query while off.
+                if (
+                    gate.addressed
+                    and self._message_telemetry.enabled
+                    and not self._triggered_by_auto_reply(event)
+                ):
                     agent_live = await self._is_available(session, agent, meta.room_id)
             if gate.addressed:
                 gated = agent
@@ -945,7 +956,7 @@ class AgentConsumer(Consumer[AgentActor]):
                 )
         if is_addressed:
             self._report_addressed(
-                meta, event, agent_live=agent_live, has_attachment=True
+                meta, event, hosted, agent_live=agent_live, has_attachment=True
             )
         if hosted is not None and not hosted.deliver:
             return
@@ -1725,6 +1736,7 @@ class AgentConsumer(Consumer[AgentActor]):
         self,
         meta: RoomMeta,
         event: InboundMessage,
+        hosted: HostedNote | None,
         *,
         agent_live: bool,
         has_attachment: bool,
@@ -1732,16 +1744,22 @@ class AgentConsumer(Consumer[AgentActor]):
         """Count a message this agent was asked to act on.
 
         Every message let through the addressing policy and budget, whether or
-        not the agent was there to take it: `agent_live` says which, so an
-        offline or stopped agent is still asked and the charts can tell the
-        two apart. Not an auto-reply: Switch's notice that another agent is
-        offline or refused is not someone asking this one for something.
+        not the agent could take it, so an offline or stopped agent is still
+        asked. `agent_live` is the agent having a live session for the room,
+        and false as well when a hosted agent's mailbox refused the message:
+        a full mailbox or a lost provider turns it away even with a worker
+        attached. Not an auto-reply: Switch's notice that another agent is
+        offline or refused is not someone asking this one for something. Not
+        a redelivery the mailbox already holds: that request was counted when
+        it first arrived.
 
         Guarded like the transport's observer call: this runs on the delivery
         path, ahead of the enqueue, and a telemetry bug must not cost the
         agent the message.
         """
         if self._triggered_by_auto_reply(event):
+            return
+        if hosted is not None and hosted.redelivered:
             return
         try:
             self._message_telemetry.agent_addressed(
@@ -1750,7 +1768,7 @@ class AgentConsumer(Consumer[AgentActor]):
                 sender_transport_user_id=event.sender,
                 from_platform=PLATFORM_MARKER in event.content,
                 agent_metadata=self.agent.metadata_,
-                agent_live=agent_live,
+                agent_live=agent_live and (hosted is None or hosted.refusal is None),
                 has_attachment=has_attachment,
             )
         except Exception:

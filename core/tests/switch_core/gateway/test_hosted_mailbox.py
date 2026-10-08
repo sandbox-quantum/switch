@@ -849,7 +849,8 @@ async def agent_client(app) -> SimpleNamespace:
         _unreachable_notice_revisions={},
         actor=SimpleNamespace(send_message=send_message),
         _message_telemetry=SimpleNamespace(
-            agent_addressed=lambda **kwargs: reported.append(kwargs)
+            enabled=True,
+            agent_addressed=lambda **kwargs: reported.append(kwargs),
         ),
         posted=posted,
         enqueued=enqueued,

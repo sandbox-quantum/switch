@@ -203,16 +203,45 @@ async def test_a_message_a_hosted_agents_mailbox_refused_is_reported_as_not_live
     assert report["agent_live"] is False
 
 
+async def test_a_message_a_live_hosted_worker_could_not_take_is_not_live() -> None:
+    """A full mailbox or a lost provider refuses the message even with a
+    worker attached, so the agent could not act on it."""
+    consumer = _consumer(
+        addressed=True,
+        live=True,
+        hosted=HostedNote(
+            launch=None, machine=None, refusal="mailbox full", deliver=False
+        ),
+    )
+
+    await _deliver(consumer, _message())
+
+    [report] = consumer._message_telemetry.addressed
+    assert report["agent_live"] is False
+
+
 async def test_a_message_held_for_a_waking_hosted_agent_is_reported() -> None:
     consumer = _consumer(
         addressed=True,
         live=False,
-        hosted=HostedNote(launch=None, machine=None, refusal=None, deliver=False),
+        hosted=HostedNote(launch=None, machine=None, refusal=None, deliver=True),
     )
 
     await _deliver(consumer, _message())
 
     assert len(consumer._message_telemetry.addressed) == 1
+
+
+async def test_a_redelivery_the_mailbox_already_holds_is_not_counted_again() -> None:
+    """The same message seen a second time is one request, not two."""
+    consumer = _consumer(
+        addressed=True,
+        hosted=HostedNote(launch=None, machine=None, refusal=None, deliver=False),
+    )
+
+    await _deliver(consumer, _message())
+
+    assert consumer._message_telemetry.addressed == []
 
 
 async def test_a_telemetry_failure_does_not_cost_the_agent_the_message() -> None:

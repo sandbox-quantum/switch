@@ -678,7 +678,7 @@ replies, offline and refusal notices, a template's kickoff — is not in it.
 
 | Property | Type |
 |---|---|
-| `sender_kind` | `user` \| `agent` \| `platform` \| `unknown` |
+| `sender_kind` | `user` \| `agent` — only people and agents are metered, so `platform` does not occur here |
 | `bridge_platform` | platform, `none` for an internal room, `unknown` if the room could not be read |
 | `channel_type` | channel type, or `unknown` if the room could not be read |
 | `room_user_count` | number — human members of the room, `-1` if it could not be read |
@@ -699,8 +699,10 @@ addressing policy and budget, whether or not the agent was there to take it.
 Reported by the agent's consumer, where that is decided, so a message naming
 two agents is two of these and one `room_message_sent`. Switch's own
 auto-replies are excluded; a request Switch carries on a person's behalf is
-included, as `platform`. `agent_live` splits being asked from being there:
-filter on it to count only the requests an agent could act on as they arrived.
+included, as `platform`. A message a hosted agent's mailbox already holds — the
+same message seen again — is not counted twice. `agent_live` splits being asked
+from being there: filter on it to count only the requests an agent could act on
+as they arrived.
 
 | Property | Type |
 |---|---|
@@ -709,7 +711,7 @@ filter on it to count only the requests an agent could act on as they arrived.
 | `bridge_platform` | platform |
 | `channel_type` | channel type |
 | `has_attachment` | boolean |
-| `agent_live` | boolean — the agent had a live session for the room when the message arrived. False when it was offline, still starting, or its cloud worker was stopped; always false for a `session_passive` agent, which reads its messages later rather than live |
+| `agent_live` | boolean — the agent had a live session for the room when the message arrived. False when it was offline, still starting, or its cloud worker refused the message (stopped, broken, or a full mailbox); always false for a `session_passive` agent, which reads its messages later rather than live |
 
 **`agent_message_sent`** — a message an agent posted: its replies, status
 updates, anything it chose to say. Every one is also a `room_message_sent` with

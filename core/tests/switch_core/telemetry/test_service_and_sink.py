@@ -588,6 +588,60 @@ class TestBatching:
         assert "1 event(s) dropped" in warnings[0]
         assert "3 event(s) dropped" in warnings[1]
 
+    async def test_a_batch_that_cannot_be_built_costs_only_itself(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A flush takes the whole buffer at once, so one bad batch must not
+        take the batches after it down with it."""
+        posted: list[int] = []
+
+        def _handle(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            posted.append(len(body["resourceLogs"][0]["scopeLogs"][0]["logRecords"]))
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = _relay_sink(http, max_batch=1)
+        post = sink._post
+        calls = 0
+
+        async def _first_one_breaks(batch: object) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise ValueError("bug in building the batch")
+            await post(batch)  # type: ignore[arg-type]
+
+        sink._post = _first_one_breaks  # type: ignore[method-assign]
+        for _ in range(3):
+            sink.send(_a_record())
+        with caplog.at_level("WARNING"):
+            await sink.aclose()
+        await http.aclose()
+
+        assert posted == [1, 1]
+        assert "batch of 1 event(s) could not be built" in caplog.text
+
+    async def test_events_after_shutdown_are_warned_about_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        http = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200))
+        )
+        sink = _relay_sink(http)
+        await sink.aclose()
+        with caplog.at_level("WARNING"):
+            for _ in range(3):
+                sink.send(_a_record())
+        await http.aclose()
+
+        late = [
+            r
+            for r in caplog.records
+            if "arrived after shutdown began" in r.getMessage()
+        ]
+        assert len(late) == 1
+
     async def test_a_failed_batch_names_what_it_lost(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

@@ -56,6 +56,7 @@ async def _session_factory():  # type: ignore[no-untyped-def]
 
 class _FakeMessageTelemetry:
     def __init__(self) -> None:
+        self.enabled = True
         self.addressed: list[dict[str, Any]] = []
 
     def agent_addressed(self, **kwargs: Any) -> None:
@@ -93,6 +94,7 @@ def _fake_client() -> SimpleNamespace:
         return _GateOutcome(addressed=True, refusal=None)
 
     async def _is_available(_session: Any, _agent: Any, _room_id: str) -> bool:
+        ns.availability_checks += 1
         return True
 
     ns = SimpleNamespace(
@@ -109,6 +111,7 @@ def _fake_client() -> SimpleNamespace:
         _fresh_agent=_fresh_agent,
         _gate_addressed=_gate_addressed,
         _is_available=_is_available,
+        availability_checks=0,
         queue=queue,
         _note_hosted_addressed=AsyncMock(return_value=None),
     )
@@ -484,6 +487,18 @@ async def test_a_grouped_post_addressed_to_the_agent_is_reported_once() -> None:
             "has_attachment": True,
         }
     ]
+
+
+async def test_media_skips_the_availability_check_while_telemetry_is_off() -> None:
+    """The media path reads it only to report it, so off means no query."""
+    client = _fake_client()
+    client._message_telemetry.enabled = False
+    await AgentConsumer.on_media(
+        client, _room(), _media_event(body="@agent-a look", event_id="$solo")
+    )
+
+    assert client.availability_checks == 0
+    assert len(client.queue.events) == 1
 
 
 async def test_media_that_does_not_address_the_agent_is_not_reported() -> None:

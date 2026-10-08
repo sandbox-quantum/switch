@@ -108,9 +108,7 @@ KNOWN_AGENT_TYPE = one_of("claude-code", "codex", "opencode", "other", "none")
 # The runtime as `agent_message_sent` reports it. That event looks the sending
 # agent up after the fact, so it has a third answer: `unknown`, for a lookup
 # that failed or found no agent.
-LOOKED_UP_AGENT_TYPE = one_of(
-    "claude-code", "codex", "opencode", "other", "none", "unknown"
-)
+LOOKED_UP_AGENT_TYPE = one_of(*KNOWN_AGENT_TYPE.values, "unknown")
 
 ACTOR_KIND = one_of("user", "agent", "system")
 
@@ -409,10 +407,12 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # A message an agent was asked to act on: addressed to it and let through
     # its addressing policy and budget, whether or not the agent was there to
     # take it. One per agent addressed, so a message naming two agents is two
-    # of these and one `room_message_sent`. `agent_live` is whether the agent
+    # of these and one `room_message_sent`; a message a hosted agent's mailbox
+    # already holds is not counted again. `agent_live` is whether the agent
     # had a live session for the room when it arrived: false for one that was
-    # offline, still starting, or stopped, and always for a session_passive
-    # agent, which reads its messages later rather than live.
+    # offline, still starting, or whose cloud worker refused the message, and
+    # always for a session_passive agent, which reads its messages later
+    # rather than live.
     "agent_message_received": {
         "sender_kind": SENDER_KIND,
         "known_agent_type": KNOWN_AGENT_TYPE,

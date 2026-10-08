@@ -6,7 +6,7 @@ import logging
 import os
 import signal
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
@@ -289,8 +289,11 @@ async def _stop_management(management: Management) -> None:
 
 # The innermost of three nested budgets: under
 # `observability.logs.SHUTDOWN_FLUSH_SECONDS`, itself under
-# `_FORCED_EXIT_GRACE_SECONDS`.
+# `_FORCED_EXIT_GRACE_SECONDS`. Split in two, so the per-message worker
+# running long can never cost the sink its final flush, which carries every
+# kind of event rather than only the per-message ones.
 _TELEMETRY_DRAIN_SECONDS = 1.0
+_MESSAGE_TELEMETRY_DRAIN_SECONDS = 0.4
 
 
 async def _drain_telemetry(
@@ -303,24 +306,41 @@ async def _drain_telemetry(
     Never raises and never overruns: a relay that stopped answering must not
     hold the process past the point where it is killed.
     """
-    try:
-        async with asyncio.timeout(_TELEMETRY_DRAIN_SECONDS):
-            # First, because what it still holds is emitted through the other.
-            await message_telemetry.aclose()
-            await telemetry.aclose()
-    except TimeoutError:
-        logger.warning(
-            "Gave up waiting for in-flight telemetry after %.1fs; those events "
-            "are lost.",
-            _TELEMETRY_DRAIN_SECONDS,
-        )
-    except Exception:
-        logger.warning("Telemetry shutdown failed; continuing.", exc_info=True)
+    # First, because what it still holds is emitted through the sink.
+    await _close_within(
+        message_telemetry.aclose(),
+        _MESSAGE_TELEMETRY_DRAIN_SECONDS,
+        "queued message events",
+    )
+    await _close_within(
+        telemetry.aclose(),
+        _TELEMETRY_DRAIN_SECONDS - _MESSAGE_TELEMETRY_DRAIN_SECONDS,
+        "buffered telemetry events",
+    )
     if http_client is not None:
         try:
             await http_client.aclose()
         except Exception:
             logger.warning("Telemetry HTTP client did not close.", exc_info=True)
+
+
+async def _close_within(
+    closing: Coroutine[object, object, None], seconds: float, what: str
+) -> None:
+    """Await one telemetry shutdown step under its own budget. Never raises."""
+    try:
+        async with asyncio.timeout(seconds):
+            await closing
+    except TimeoutError:
+        logger.warning(
+            "Gave up waiting for %s after %.1fs at shutdown; they are lost.",
+            what,
+            seconds,
+        )
+    except Exception:
+        logger.warning(
+            "Reporting %s at shutdown failed; continuing.", what, exc_info=True
+        )
 
 
 async def _snapshot_loop(reporter: SnapshotReporter) -> None:

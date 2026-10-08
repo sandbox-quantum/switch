@@ -403,7 +403,97 @@ class TestFailingLookups:
         )
 
 
+class TestFailingReports:
+    async def test_an_event_that_cannot_be_reported_logs_once_not_per_message(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A bug that breaks every event would otherwise write a traceback per
+        message."""
+        world = await _world(session_factory)
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+
+        async def _broken(item: object) -> None:
+            raise RuntimeError("bug in building the event")
+
+        messages._report = _broken  # type: ignore[method-assign]
+
+        with caplog.at_level("WARNING"):
+            for _ in range(3):
+                messages.observe(_said(world, world.humans[0].id, "human"))
+            await _reported(messages, service, sink)
+
+        errors = [
+            r
+            for r in caplog.records
+            if "Could not report a message event" in r.getMessage()
+        ]
+        assert len(errors) == 1
+        assert errors[0].exc_info is not None
+        # The two after it are counted at shutdown rather than lost.
+        assert "2 more message event(s) could not be reported" in caplog.text
+
+    async def test_a_sender_that_cannot_be_found_is_disclosed(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        world = await _world(session_factory)
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+
+        with caplog.at_level("WARNING"):
+            messages.agent_addressed(
+                tenant_id=TENANT_ZERO,
+                room_id=world.room.id,
+                sender_transport_user_id="@nobody-we-know:test",
+                from_platform=False,
+                agent_metadata=None,
+                agent_live=True,
+                has_attachment=False,
+            )
+            [(_, properties)] = await _reported(messages, service, sink)
+
+        assert properties["sender_kind"] == "unknown"
+        assert "found no client for a message sender" in caplog.text
+
+
 class TestShutdown:
+    async def test_events_after_shutdown_are_counted_not_silently_lost(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(
+            telemetry=service,
+            session_factory=None,  # type: ignore[arg-type]
+        )
+        await messages.aclose()
+
+        with caplog.at_level("WARNING"):
+            for _ in range(3):
+                messages.observe(
+                    ParticipantMessage(
+                        tenant_id=TENANT_ZERO,
+                        room_id="room",
+                        sender_client_id="someone",
+                        sender_role="human",
+                        has_attachment=False,
+                        in_thread=False,
+                    )
+                )
+
+        late = [
+            r
+            for r in caplog.records
+            if "after message telemetry shut down" in r.getMessage()
+        ]
+        assert len(late) == 1
+
     async def test_closing_stays_inside_the_callers_timeout(self) -> None:
         """The worker is cancelled mid-lookup and its cleanup outlasts the
         shutdown budget. The caller's timeout must still fire: swallowing its

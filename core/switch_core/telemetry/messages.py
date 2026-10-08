@@ -52,9 +52,9 @@ _CACHE_TTL_SECONDS = 300.0
 _CACHE_MAX_ENTRIES = 10_000
 _WARNING_INTERVAL_SECONDS = 60.0
 _LOOKUP_BACKOFF_SECONDS = 5.0
-# Inside `main._TELEMETRY_DRAIN_SECONDS`, which also has to cover the sink's
-# final flush.
-_DRAIN_SECONDS = 0.5
+# Inside `main._MESSAGE_TELEMETRY_DRAIN_SECONDS`, leaving the rest of it for
+# cancelling the worker.
+_DRAIN_SECONDS = 0.3
 
 # The transport's `ActorRole` as the catalogue's `sender_kind`. A system or
 # bridge writer is Switch itself.
@@ -165,9 +165,17 @@ class MessageTelemetry:
             _CACHE_TTL_SECONDS, _CACHE_MAX_ENTRIES
         )
         self._drops = WarningThrottle(_WARNING_INTERVAL_SECONDS)
+        self._late = WarningThrottle(_WARNING_INTERVAL_SECONDS)
+        self._report_failures = WarningThrottle(_WARNING_INTERVAL_SECONDS)
         self._lookup_failures = WarningThrottle(_WARNING_INTERVAL_SECONDS)
         self._lookup_misses = WarningThrottle(_WARNING_INTERVAL_SECONDS)
         self._lookups_resume_at: float | None = None
+
+    @property
+    def enabled(self) -> bool:
+        """Whether anything handed over is reported. A caller with work to do
+        only for telemetry can skip it while this is false."""
+        return self._telemetry.enabled
 
     # ── Called on the sender's path ──────────────────────────────────────────
 
@@ -202,21 +210,32 @@ class MessageTelemetry:
         )
 
     def _enqueue(self, item: ParticipantMessage | _AgentAddressed) -> None:
-        if not self._telemetry.enabled or self._closed:
+        if not self._telemetry.enabled:
             return
-        try:
-            self._queue.put_nowait(item)
-        except asyncio.QueueFull:
-            if (dropped := self._drops.note()) is not None:
-                self._warn_dropped(dropped)
+        if self._closed:
+            # Senders still run while shutdown drains, and what they say then
+            # is lost; counted, so a low figure for the last minute has a cause.
+            if (late := self._late.note()) is not None:
+                logger.warning(
+                    "%d message event(s) arrived after message telemetry shut "
+                    "down and were dropped.",
+                    late,
+                )
             return
         if self._worker is None or self._worker.done():
+            # Before the put, so a worker that ended with the queue full is
+            # replaced rather than leaving every later event to be dropped.
             # A fresh context: started from whichever sender enqueued first, it
             # would otherwise carry that sender's tenant and log fields for its
             # whole life.
             self._worker = asyncio.get_running_loop().create_task(
                 self._run(), context=contextvars.Context()
             )
+        try:
+            self._queue.put_nowait(item)
+        except asyncio.QueueFull:
+            if (dropped := self._drops.note()) is not None:
+                self._warn_dropped(dropped)
 
     @staticmethod
     def _warn_dropped(dropped: int) -> None:
@@ -235,8 +254,15 @@ class MessageTelemetry:
             try:
                 await self._report(item)
             except Exception:
-                # One bad event must not stop the rest being reported.
-                logger.exception("Could not report a message event; dropped.")
+                # One bad event must not stop the rest being reported, and a
+                # bug that breaks every event must not log once per message.
+                if (failures := self._report_failures.note()) is not None:
+                    logger.error(
+                        "Could not report a message event; %d event(s) dropped "
+                        "this way since the last error.",
+                        failures,
+                        exc_info=True,
+                    )
             finally:
                 self._queue.task_done()
 
@@ -311,6 +337,12 @@ class MessageTelemetry:
             await asyncio.wait({self._worker})
         if dropped := self._drops.take_pending():
             self._warn_dropped(dropped)
+        if failures := self._report_failures.take_pending():
+            logger.error(
+                "%d more message event(s) could not be reported since the last "
+                "error and were dropped.",
+                failures,
+            )
 
     # ── Lookups ──────────────────────────────────────────────────────────────
 
@@ -424,6 +456,7 @@ class MessageTelemetry:
             self._lookup_failed("a message sender")
             return "unknown"
         if client_type is None:
+            self._lookup_missed("client for a message sender")
             return "unknown"
         kind = _CLIENT_TYPE_KIND.get(client_type, "unknown")
         self._sender_kinds.put(key, kind)

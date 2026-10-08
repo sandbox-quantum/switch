@@ -116,27 +116,33 @@ class OtlpRelaySink:
         self._flusher: asyncio.Task[None] | None = None
         self._closing = False
         self._drops = WarningThrottle(_DROP_WARNING_INTERVAL_SECONDS)
+        self._late = WarningThrottle(_DROP_WARNING_INTERVAL_SECONDS)
 
     def send(self, record: TelemetryRecord) -> None:
         if self._closing:
             # Shutdown has already taken the final batch; posting this one
             # would race the client being closed.
-            logger.warning(
-                "Telemetry event %s arrived after shutdown began and was dropped.",
-                record.name,
-            )
+            if (late := self._late.note()) is not None:
+                logger.warning(
+                    "%d telemetry event(s), the latest %s, arrived after "
+                    "shutdown began and were dropped.",
+                    late,
+                    record.name,
+                )
             return
+        if self._flusher is None or self._flusher.done():
+            # Before the capacity check, so a flusher that ended with the
+            # buffer full is replaced rather than leaving every later event to
+            # be dropped. A fresh context, so its warnings do not carry the log
+            # fields of whichever request happened to emit first.
+            self._flusher = asyncio.get_running_loop().create_task(
+                self._run(), context=contextvars.Context()
+            )
         if len(self._buffer) >= self._max_buffered:
             if (dropped := self._drops.note()) is not None:
                 self._warn_dropped(dropped)
             return
         self._buffer.append(record)
-        if self._flusher is None or self._flusher.done():
-            # A fresh context, so its warnings do not carry the log fields of
-            # whichever request happened to emit first.
-            self._flusher = asyncio.get_running_loop().create_task(
-                self._run(), context=contextvars.Context()
-            )
         if len(self._buffer) >= self._max_batch:
             self._wake.set()
 
@@ -156,22 +162,24 @@ class OtlpRelaySink:
             except TimeoutError:
                 pass
             self._wake.clear()
-            await self._flush_logging_bugs()
-        await self._flush_logging_bugs()
-
-    async def _flush_logging_bugs(self) -> None:
-        # A relay failure is already handled in `_post`; anything reaching
-        # here is a bug in building the batch, and must not end the task that
-        # every later event depends on.
-        try:
             await self._flush()
-        except Exception:
-            logger.exception("Telemetry batch could not be built; it is dropped.")
+        await self._flush()
 
     async def _flush(self) -> None:
         pending, self._buffer = self._buffer, []
         for start in range(0, len(pending), self._max_batch):
-            await self._post(pending[start : start + self._max_batch])
+            batch = pending[start : start + self._max_batch]
+            try:
+                await self._post(batch)
+            except Exception:
+                # A relay failure is already handled in `_post`; anything
+                # reaching here is a bug in building the batch. Caught per
+                # batch, so it costs neither the batches after it nor the task
+                # every later event depends on.
+                logger.exception(
+                    "Telemetry batch of %d event(s) could not be built; it is dropped.",
+                    len(batch),
+                )
 
     async def _post(self, batch: Sequence[TelemetryRecord]) -> None:
         # Every record a service emits carries the same resource, so this is
@@ -231,10 +239,12 @@ class OtlpRelaySink:
         """
         self._closing = True
         self._wake.set()
-        if self._flusher is not None:
-            await self._flusher
-        else:
+        if self._flusher is None or self._flusher.done():
             await self._flush()
+        else:
+            # Awaited directly, so the caller's timeout cancels the flusher
+            # along with this call rather than leaving it posting.
+            await self._flusher
         if dropped := self._drops.take_pending():
             self._warn_dropped(dropped)
 
