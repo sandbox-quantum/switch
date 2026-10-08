@@ -620,6 +620,7 @@ def _addressing_client(
     ns._fresh_agent = _fresh_agent
     ns._gate_addressed = _gate_addressed
     ns._note_hosted_addressed = _not_hosted
+    ns._report_addressed = lambda *_a, **_k: None
     ns._triggered_by_auto_reply = AgentConsumer._triggered_by_auto_reply
     ns.actor = SimpleNamespace(send_message=sent)
     ns._event_buffer = SimpleNamespace(

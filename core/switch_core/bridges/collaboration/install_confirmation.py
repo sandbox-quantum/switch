@@ -61,6 +61,7 @@ def seal(ticket: InstallTicket, *, keyring: Keyring) -> str:
             "name": ticket.grant.workspace_name,
             "tok": ticket.grant.bot_token,
             "scopes": ticket.grant.scopes,
+            "pd": dict(ticket.grant.platform_data),
         },
         separators=(",", ":"),
     )
@@ -91,5 +92,8 @@ def open_ticket(token: str, *, keyring: Keyring) -> InstallTicket:
             workspace_name=decoded["name"],
             bot_token=decoded["tok"],
             scopes=decoded["scopes"],
+            # Absent from a ticket sealed before platform data existed, which
+            # a confirmation page left open across that deploy still carries.
+            platform_data=decoded.get("pd", {}),
         ),
     )

@@ -27,7 +27,7 @@ export function useWorkspaceAgents(workspaceId: string | null) {
  * or the list has not arrived yet.
  *
  * Null is not an error and callers must not treat it as one: `AgentAvatar`
- * draws a bot from the agent's name instead, so a row renders the right
+ * draws an avatar from the agent's name instead, so a row renders the right
  * picture on first paint and simply sharpens to a custom icon if there is one.
  */
 export function useAgentIconUrl(

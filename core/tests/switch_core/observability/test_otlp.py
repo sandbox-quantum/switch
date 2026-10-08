@@ -18,6 +18,7 @@ from switch_core.observability.otlp import (
     MetricPayload,
     NumberPoint,
     OtlpClient,
+    OtlpPartialRejection,
     OtlpResource,
     OtlpSendError,
     build_logs_payload,
@@ -290,6 +291,19 @@ async def test_partial_rejection_inside_a_200_is_raised():
 
     with pytest.raises(OtlpSendError, match="rejected 4"):
         await client.post("metrics", {})
+
+
+@pytest.mark.asyncio
+async def test_a_partial_rejection_says_how_many_records_and_why():
+    """A batching caller reports what it lost from this, not the whole batch."""
+    body = {"partialSuccess": {"rejectedLogRecords": "2", "errorMessage": "too big"}}
+    client = _client(lambda request: httpx.Response(200, json=body))
+
+    with pytest.raises(OtlpPartialRejection) as raised:
+        await client.post("logs", {})
+
+    assert raised.value.rejected == 2
+    assert raised.value.reason == "too big"
 
 
 @pytest.mark.asyncio

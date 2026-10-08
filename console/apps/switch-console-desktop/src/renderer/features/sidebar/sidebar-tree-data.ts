@@ -177,7 +177,7 @@ async function giveExistingAgentsAnIcon(): Promise<void> {
       reportOnce(workspaceId, 'failed', {
         title: 'Agent icons could not be saved',
         description:
-          'Your agents show a generated icon here, but the Switch server has not stored it — so they keep their old picture in Slack and the other chat apps.',
+          'Your agents show a generated icon here, but the Switch server has not stored it, so Slack and the other chat apps may still show their old picture.',
         variant: 'destructive',
       });
     }
@@ -221,7 +221,7 @@ function reportBackfill(workspaceId: string, outcome: AgentIconBackfill): void {
     reportOnce(workspaceId, `partial:${outcome.failed}`, {
       title: `${outcome.failed} agent${outcome.failed === 1 ? '' : 's'} kept the old icon`,
       description:
-        'Their icon could not be saved to the Switch server, so it will not show in Slack or the other chat apps.',
+        'Their icon could not be saved to the Switch server, so Slack and the other chat apps may still show their old picture.',
       variant: 'destructive',
     });
     return;

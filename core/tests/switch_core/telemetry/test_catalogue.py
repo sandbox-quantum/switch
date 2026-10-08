@@ -177,3 +177,23 @@ class TestNaming:
         keeps `room_created` here apart from the Console's."""
         assert wire_name("room_created") == f"{EVENT_NAME_PREFIX}.room_created"
         assert EVENT_NAME_PREFIX == "switch_core"
+
+
+class TestAgentRuntimes:
+    """`unknown` is a lookup that failed, so only the event that looks the
+    agent up may carry it. Everywhere else the runtime comes from an agent in
+    hand, and `unknown` there would be a bug hiding as a value."""
+
+    def test_the_sent_event_may_say_its_runtime_is_unknown(self) -> None:
+        payload = _valid_payload("agent_message_sent")
+        payload["known_agent_type"] = "unknown"
+        validate("agent_message_sent", payload)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "event", ["agent_message_received", "first_agent_registered"]
+    )
+    def test_events_with_the_agent_in_hand_may_not(self, event: str) -> None:
+        payload = _valid_payload(event)
+        payload["known_agent_type"] = "unknown"
+        with pytest.raises(TelemetryCatalogueError, match="expected one of"):
+            validate(event, payload)  # type: ignore[arg-type]

@@ -9,7 +9,7 @@ import {
 } from './agent-avatar';
 
 describe('randomAgentAvatarUrl', () => {
-  it('draws a different bot each time', () => {
+  it('draws a different face each time', () => {
     // A new agent opens on one of these, so two agents created in a row must
     // not look alike.
     const urls = new Set(Array.from({ length: 20 }, randomAgentAvatarUrl));
@@ -17,14 +17,14 @@ describe('randomAgentAvatarUrl', () => {
   });
 
   it('is an ordinary avatar URL once drawn', () => {
-    expect(randomAgentAvatarUrl()).toContain('/bottts/png?');
+    expect(randomAgentAvatarUrl()).toContain('/gaze/png?');
   });
 });
 
 describe('agentAvatarUrlForSeed', () => {
   it('is stable for a seed', () => {
     // The whole scheme rests on this: an agent's generated avatar is stored
-    // nowhere, so the same seed has to redraw the same bot forever.
+    // nowhere, so the same seed has to redraw the same face forever.
     expect(agentAvatarUrlForSeed('worker')).toBe(agentAvatarUrlForSeed('worker'));
   });
 
@@ -36,14 +36,29 @@ describe('agentAvatarUrlForSeed', () => {
     // Slack, Discord and Mattermost are handed this exact URL as the agent's
     // avatar and none of them render SVG. An `svg` here would look right in
     // the app and show nothing on any chat platform.
-    expect(agentAvatarUrlForSeed('worker')).toContain('/bottts/png?');
+    expect(agentAvatarUrlForSeed('worker')).toContain('/gaze/png?');
     expect(agentAvatarUrlForSeed('worker')).not.toContain('/svg');
   });
 
   it('pins the drawing version', () => {
-    // Unpinned, every stored icon silently becomes a different bot the day the
+    // Unpinned, every stored icon silently becomes a different face the day the
     // service ships a new major.
-    expect(agentAvatarUrlForSeed('worker')).toContain('/9.x/');
+    expect(agentAvatarUrlForSeed('worker')).toContain('/10.x/');
+  });
+
+  it('matches the URL the Switch server generates for the same seed', () => {
+    // The server's test (`core/tests/switch_core/test_agent_icon.py`) pins this
+    // same string. Drift between the two and an agent with no icon stored wears
+    // one face here and another on every chat platform.
+    expect(agentAvatarUrlForSeed('pm-agent')).toBe(
+      'https://api.dicebear.com/10.x/gaze/png?seed=pm-agent&size=256&scale=1.1'
+    );
+  });
+
+  it('stays short enough for Slack with a UUID seed', () => {
+    // Slack refuses a whole post whose icon URL is over 255 characters, and
+    // the server adds a background parameter of about 25 more on the way.
+    expect(agentAvatarUrlForSeed(crypto.randomUUID()).length).toBeLessThan(200);
   });
 
   it('escapes a seed that would otherwise break the query string', () => {
@@ -97,8 +112,6 @@ describe('agentInitials', () => {
   });
 
   it('treats underscores as word breaks', () => {
-    // Matches what the Switch bridges put on Slack for the same agent, so the
-    // offline fallback here and the platform fallback there agree.
     expect(agentInitials('switch_worker')).toBe('SW');
   });
 

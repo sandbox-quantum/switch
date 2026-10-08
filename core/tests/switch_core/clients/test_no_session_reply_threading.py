@@ -99,6 +99,7 @@ def _fake_self(
         _triggered_by_auto_reply=AgentConsumer._triggered_by_auto_reply,
         actor=SimpleNamespace(send_message=send_message),
         _event_buffer=SimpleNamespace(enqueue=lambda *a, **k: None),
+        _report_addressed=lambda *a, **k: None,
     )
     # Exercise the real sender-tagging and auto-reply helpers.
     ns._sender_handle = AgentConsumer._sender_handle.__get__(ns)

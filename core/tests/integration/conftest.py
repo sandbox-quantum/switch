@@ -85,6 +85,9 @@ from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
+from switch_core.telemetry.messages import MessageTelemetry
+from switch_core.telemetry.service import TelemetryService
+from switch_core.telemetry.sink import NullSink
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
@@ -567,6 +570,22 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             ),
         )
 
+        # Telemetry off: these flows are not about reporting, but the
+        # message hook must still be wired for the clients to build.
+        message_telemetry = MessageTelemetry(
+            telemetry=TelemetryService(
+                sink=NullSink(),
+                enabled=False,
+                client_id="",
+                service_name="switch-core",
+                version=None,
+                environment=None,
+                telemetry_environment="dev",
+                telemetry_internal=True,
+            ),
+            session_factory=session_factory,
+        )
+
         client_factory = ClientFactory(
             client_store=session_env.client_store,
             session_factory=session_factory,
@@ -579,6 +598,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             invites=invites,
             ephemeral=ephemeral,
             room_cache=room_cache,
+            message_observer=message_telemetry,
         )
         client_factory.register(
             "agent",
@@ -596,6 +616,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             hosted_launch_store=HostedLaunchStore(),
             connections=connections,
             frontend_base_url=config.frontend_base_url,
+            message_telemetry=message_telemetry,
         )
         client_factory.register("user", HumanActor)
         client_factory.register("bridge", Actor)
