@@ -26,6 +26,7 @@ import type { ProviderRuntimeEvent } from '../events';
 import { ChatProjector } from '../session-v1/chat-projector';
 import { ATTACHMENT_MIME_TYPES } from './attachments';
 import { Journal } from './journal';
+import { ReasoningBuffer, type HostReasoningList } from './reasoning-buffer';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
@@ -90,6 +91,8 @@ export class HostedSession {
   private readonly queue: Command[] = [];
   private readonly questions = new Map<string, PendingQuestion>();
   private readonly listeners = new Set<(event: ServerEvent) => void>();
+  /** Recent reasoning, in memory only: never published, journaled or replayed. */
+  private readonly reasoningBuffer = new ReasoningBuffer();
   private activeTurn: string | null = null;
   private serial: Promise<unknown> = Promise.resolve();
   private eventSerial: Promise<unknown> = Promise.resolve();
@@ -162,6 +165,7 @@ export class HostedSession {
     this.projector = new ChatProjector(config.session);
     this.unsubscribe = adapter.subscribe((event) => {
       if (event.sessionId !== config.session.sessionId) return;
+      this.reasoningBuffer.ingest(event, this.config.session.epoch, Date.now());
       // Process cleanup leaves this conversation available for recovery.
       // An explicit session.stop is handled before shutdown and remains terminal.
       if (
@@ -468,6 +472,10 @@ export class HostedSession {
 
   snapshot(): Snapshot {
     return this.replica.snapshot();
+  }
+  /** The reasoning still held for `turnIds` (all buffered turns when null), for this epoch. */
+  reasoning(turnIds: string[] | null): HostReasoningList {
+    return this.reasoningBuffer.list(this.config.session.epoch, turnIds);
   }
   replay(after: number): { events: ServerEvent[]; throughSequence: number } {
     return {

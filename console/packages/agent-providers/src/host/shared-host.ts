@@ -727,6 +727,7 @@ export async function runSharedHost(
         return { accepted: true };
       },
       snapshot: async () => host!.snapshot(),
+      reasoning: async ({ turnIds }) => host!.reasoning(turnIds),
       approvals: async () => {
         active();
         waker.approvalsWaiting();
