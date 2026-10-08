@@ -18,6 +18,8 @@ export type EmbeddedControllerPhase =
   | { kind: 'removed'; at: string }
   /** Another copy of this controller connected and took over; this one is not restarted. */
   | { kind: 'taken_over'; at: string }
+  /** The server needs a newer controller than this Console carries; not restarted until Console is updated. */
+  | { kind: 'update_required'; at: string }
   | { kind: 'error'; message: string };
 
 export type EmbeddedControllerEnrollment = {

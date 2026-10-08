@@ -6,6 +6,15 @@ import type { EmbeddedControllerPhase } from '@shared/core/embedded-controller/e
 export const EXIT_CONFIGURATION = 2;
 export const EXIT_REVOKED = 3;
 export const EXIT_TAKEN_OVER = 4;
+export const EXIT_UPGRADE_REQUIRED = 5;
+export const EXIT_CREDENTIAL_INVALID = 6;
+
+/** How the controller ended when it must not be started again as it is. */
+export type ControllerFinalExit =
+  | 'revoked'
+  | 'taken_over'
+  | 'upgrade_required'
+  | 'credential_invalid';
 
 /** The part of a spawned `ChildProcess` the supervisor uses. */
 export interface ControllerChild {
@@ -52,8 +61,12 @@ export type SupervisorDeps = {
   spawn: SpawnController;
   launch: () => Promise<ControllerLaunch>;
   onPhase: (phase: EmbeddedControllerPhase) => void;
-  /** It exited in a way that must not be retried: the server revoked it, or another copy took over. */
-  onFinal: (exit: 'revoked' | 'taken_over') => void;
+  /**
+   * It exited in a way that must not be retried: the server revoked it,
+   * another copy took over, the server needs a newer controller, or it knows
+   * no controller by this credential.
+   */
+  onFinal: (exit: ControllerFinalExit) => void;
   /** One line the controller wrote, at the level it wrote it at. */
   onLine: (level: ControllerLogLevel, line: string) => void;
   now: () => number;
@@ -198,6 +211,8 @@ export class ControllerSupervisor {
       return;
     }
     if (code === EXIT_REVOKED) return this.deps.onFinal('revoked');
+    if (code === EXIT_UPGRADE_REQUIRED) return this.deps.onFinal('upgrade_required');
+    if (code === EXIT_CREDENTIAL_INVALID) return this.deps.onFinal('credential_invalid');
     if (code === EXIT_TAKEN_OVER) return this.deps.onFinal('taken_over');
     if (code === EXIT_CONFIGURATION) {
       this.deps.onPhase({
