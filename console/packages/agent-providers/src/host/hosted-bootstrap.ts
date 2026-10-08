@@ -222,8 +222,8 @@ export async function hostedUnitGitHubEnvironment(
  * user (`shared-host-daemon --prepare <agentRoot>`): migrates a worker
  * volume's layout, writes the provider sign-in the controller handed over
  * into the provider's home, makes the (empty) workspace directory when it is
- * missing, writes the `gh` wrapper when GitHub is granted, and installs the
- * granted skills.
+ * missing, writes the `gh` wrapper when GitHub is granted, and makes the
+ * installed connection skills the granted ones.
  *
  * Reads `watcher/config.json` and `workspace.json` from the agent root, and
  * the credentials `agent` and `provider` from `credentialsDirectory`.
@@ -285,9 +285,8 @@ export async function prepareHostedAgent(input: {
   const workspace = parsedWorkspace.data;
   await mkdir(workspace.workspacePath, { recursive: true, mode: 0o700 });
   if (workspace.connections.includes('github')) await prepareGitHubCli(root);
-  if (workspace.skills.length > 0) {
-    if (!supportsHostedSkills(provider))
-      throw new Error('This provider has no skills directory to install connection skills into.');
+  if (supportsHostedSkills(provider))
     await installHostedSkills(hostedSkillsDirectory(provider, environment), workspace.skills);
-  }
+  else if (workspace.skills.length > 0)
+    throw new Error('This provider has no skills directory to install connection skills into.');
 }

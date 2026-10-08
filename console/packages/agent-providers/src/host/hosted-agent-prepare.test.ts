@@ -136,6 +136,43 @@ it('writes a codex sign-in, makes the empty workspace, sets up gh for GitHub and
   expect(wrapper).not.toContain('token');
 });
 
+it('removes a connection skill no longer granted and keeps skills it did not install', async () => {
+  const credential = connected('claude', 'setup-token', 'token-placeholder');
+  const skills = join(agentRoot, 'provider-home', 'claude', 'skills');
+  await arrange({
+    provider: 'claude',
+    credential,
+    workspace: {
+      connections: ['github'],
+      skills: [{ slug: 'github', files: { 'SKILL.md': '# GitHub\n' } }],
+    },
+  });
+  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials });
+  await mkdir(join(skills, 'own-notes'), { recursive: true });
+  await writeFile(join(skills, 'own-notes', 'SKILL.md'), '# Mine\n');
+  expect((await readdir(skills)).sort()).toEqual(['github', 'own-notes']);
+
+  await arrange({ provider: 'claude', credential, workspace: { connections: [], skills: [] } });
+  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials });
+
+  expect(await readdir(skills)).toEqual(['own-notes']);
+  expect(await readFile(join(skills, 'own-notes', 'SKILL.md'), 'utf8')).toBe('# Mine\n');
+});
+
+it('keeps a skill of a connection slug that it did not install', async () => {
+  const skills = join(agentRoot, 'provider-home', 'claude', 'skills');
+  await mkdir(join(skills, 'github'), { recursive: true });
+  await writeFile(join(skills, 'github', 'SKILL.md'), '# Mine\n');
+  await arrange({
+    provider: 'claude',
+    credential: connected('claude', 'setup-token', 'token-placeholder'),
+  });
+
+  await prepareHostedAgent({ agentRoot, credentialsDirectory: credentials });
+
+  expect(await readFile(join(skills, 'github', 'SKILL.md'), 'utf8')).toBe('# Mine\n');
+});
+
 it('keeps what an existing workspace holds', async () => {
   const workspace = await arrange({
     provider: 'claude',
