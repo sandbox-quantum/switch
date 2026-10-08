@@ -49,12 +49,13 @@ def cloud_launch_status(
         return "running"
     if machine_desired != "running" or machine_state in (
         "error",
-        "retained",
         "deleting",
         "deleted",
     ):
         return "down"
-    if machine_state in ("stopping", "stopped"):
+    # Meant to run but not back yet: waking, or re-claimed from retained,
+    # which stays retained until it reconnects.
+    if machine_state in ("stopping", "stopped", "retained"):
         return "starting"
     return "running"
 

@@ -629,8 +629,11 @@ class TestCloudLaunch:
         assert "launch or machine is not running" in refused.message
         assert vendor.issued == []
 
+    @pytest.mark.parametrize(
+        "machine_state", ["stopped", "retained"], ids=["waking", "reclaimed"]
+    )
     async def test_a_waking_machine_is_asked_to_retry_not_refused(
-        self, broker, session_factory, vendor
+        self, broker, session_factory, vendor, machine_state
     ) -> None:
         world = await _world(session_factory)
         await _launch(
@@ -638,7 +641,7 @@ class TestCloudLaunch:
             world,
             state="ready",
             desired_state="running",
-            machine_state="stopped",
+            machine_state=machine_state,
             machine_desired="running",
         )
         refused = await _refused(broker, session_factory, world.agent.id)
