@@ -13,6 +13,7 @@ from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
 )
+from switch_core.bridges.collaboration.teams.auth import SigningKeysUnavailable
 from switch_core.bridges.collaboration.teams.cards import (
     ADAPTIVE_CARD_CONTENT_TYPE,
     agent_message_card,
@@ -270,6 +271,13 @@ class _RaisingAuthenticator:
         raise PermissionError("forged")
 
 
+class _KeysOutOfReachAuthenticator:
+    async def verify(
+        self, authorization: str | None, *, service_url: str, channel_id: str
+    ) -> None:
+        raise SigningKeysUnavailable("could not fetch signing keys")
+
+
 class _PassAuthenticator:
     async def verify(
         self, authorization: str | None, *, service_url: str, channel_id: str
@@ -291,6 +299,25 @@ def test_http_messages_rejects_unauthenticated_activity() -> None:
     )
 
     assert resp.status == 401
+
+
+def test_http_messages_asks_again_when_microsofts_keys_are_out_of_reach() -> None:
+    """Not refused as forged: Teams resends what it is told to retry."""
+    adapter = _adapter()
+    adapter._authenticator = _KeysOutOfReachAuthenticator()  # type: ignore[assignment]
+    captured = _capture_messages(adapter)
+
+    resp = _run(
+        adapter._handle_http_messages(
+            _FakeHttpRequest(  # type: ignore[arg-type]
+                headers={"Authorization": "Bearer t"},
+                body={"type": "message"},
+            )
+        )
+    )
+
+    assert resp.status == 503
+    assert captured == []
 
 
 def test_http_messages_rejects_invalid_json() -> None:

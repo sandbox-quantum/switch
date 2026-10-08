@@ -63,6 +63,7 @@ from switch_core.bridges.collaboration.teams.auth import (
     BotFrameworkAuthenticator,
     ClientSecret,
     SigningKeys,
+    SigningKeysUnavailable,
     TeamsTokenProvider,
     TokenRequestRefused,
 )
@@ -512,6 +513,12 @@ _GLOBAL_SERVICE_URL = "https://smba.trafficmanager.net/teams/"
 # permanently broken channel from hammering Graph for the life of the process.
 _REPAIR_MIN_INTERVAL_SECONDS = 30
 _REPAIR_MAX_INTERVAL_SECONDS = 5 * 60
+# How long an answer to "is Switch in this team" stands before it is asked
+# again: Teams says when the app joins or leaves a team, but not reliably.
+_TEAM_RECHECK_SECONDS = 15 * 60
+# The least time between readings of Graph's subscriptions prompted by a
+# notification for one the bridge does not know.
+_ADOPT_ON_DEMAND_COOLDOWN_SECONDS = 10
 
 
 def activity_tenant(activity: dict[str, Any]) -> str | None:
@@ -988,8 +995,14 @@ class TeamsAdapter(PlatformAdapter):
         # On the distributed app, whether Switch is in each team (team id ->
         # answer), and the channels not captured because it is not: Graph
         # delivers a team's messages whether or not the app is in it.
-        self._team_has_switch: dict[str, bool] = {}
-        self._capture_parked: set[str] = set()
+        # (answer, when it was found, monotonic)
+        self._team_has_switch: dict[str, tuple[bool, float]] = {}
+        # channel id -> the team whose lack of Switch is keeping it uncaptured.
+        self._capture_parked: dict[str, str] = {}
+        # channel id -> the team Graph accepted its subscription through,
+        # which proves the channel is in that team.
+        self._subscription_team: dict[str, str] = {}
+        self._adopt_on_demand_at: float | None = None
         # channel id -> AAD team id, learned from inbound activities so a
         # channel-message subscription can be created for it. Seeded from the
         # persisted config, so a channel outside the configured team keeps its
@@ -1146,8 +1159,8 @@ class TeamsAdapter(PlatformAdapter):
             # Only once there is something to answer with: an activity taken
             # before then is acknowledged and lost, and Teams does not resend.
             await self._open_listener()
-        await self._check_approval()
-        await self._adopt_existing_subscriptions()
+        async with self._sub_lock:
+            await self._adopt_existing_subscriptions()
         self._renewal_task = asyncio.create_task(self._renewal_loop())
         self._repair_task = asyncio.create_task(self._repair_loop())
 
@@ -1207,6 +1220,9 @@ class TeamsAdapter(PlatformAdapter):
                 continue
             if sub.get("notificationUrl") == notification_url:
                 self._subscriptions[channel_id] = str(sub.get("id", ""))
+                team_id = self._team_from_resource(resource)
+                if team_id:
+                    self._subscription_team[channel_id] = team_id
                 self._capture_wanted.add(channel_id)
                 expiry = _parse_graph_time(sub.get("expirationDateTime"))
                 if expiry is not None:
@@ -1337,6 +1353,7 @@ class TeamsAdapter(PlatformAdapter):
     def _forget_subscription(self, channel_id: str) -> None:
         self._subscriptions.pop(channel_id, None)
         self._subscription_expiry.pop(channel_id, None)
+        self._subscription_team.pop(channel_id, None)
 
     async def _check_approval(self) -> None:
         """Find out whether the organisation's approval of the app still stands.
@@ -2987,6 +3004,11 @@ class TeamsAdapter(PlatformAdapter):
             except PermissionError as e:
                 logger.warning("Rejected inbound Teams activity: %s", e)
                 return web.Response(status=401, text="unauthorized")
+            except SigningKeysUnavailable as e:
+                # Not refused as forged: Teams resends what it was told to
+                # retry, and nothing about this one was found wrong.
+                logger.error("Could not check an inbound Teams activity: %s", e)
+                return web.Response(status=503, text="unavailable")
 
         try:
             answer = await self.receive_activity(activity)
@@ -3133,11 +3155,12 @@ class TeamsAdapter(PlatformAdapter):
         delivers them whether or not the app is in the team: a room in a team
         Switch was taken out of would otherwise go on receiving everything
         said there, across restarts, to a bot that cannot answer. Remembered
-        per team, and changed by Switch joining or leaving it.
+        per team, changed by Switch joining or leaving it, and asked again by
+        the repair loop once it is old (`_recheck_teams`).
         """
-        known = self._team_has_switch.get(team_id)
-        if known is not None:
-            return known
+        cached = self._team_has_switch.get(team_id)
+        if cached is not None:
+            return cached[0]
         assert self._graph is not None
         try:
             installations = await self._graph.find_app_installations(
@@ -3151,18 +3174,27 @@ class TeamsAdapter(PlatformAdapter):
             )
             return None
         known = bool(installations)
-        self._team_has_switch[team_id] = known
+        self._team_has_switch[team_id] = (known, time.monotonic())
         return known
 
     def _capture_team(self, channel_id: str) -> str | None:
-        """The team a channel's messages are captured through."""
-        return self._team_of_channel.get(channel_id) or self._config.team_id
+        """The team a channel's messages would be captured through: the one it
+        is known to be in, or failing that the default team."""
+        return self._known_team(channel_id) or self._config.team_id
+
+    def _known_team(self, channel_id: str) -> str | None:
+        """The team a channel is known to be in: as Teams said, or as proved
+        by Graph accepting a subscription through it. Not the default team
+        merely because nothing else is known."""
+        return self._team_of_channel.get(channel_id) or self._subscription_team.get(
+            channel_id
+        )
 
     async def _park_capture(self, channel_id: str, team_id: str) -> None:
         """Stop capturing a channel whose team Switch is not in, until it is."""
         await self._stop_capture(channel_id)
-        if channel_id not in self._capture_parked:
-            self._capture_parked.add(channel_id)
+        if self._capture_parked.get(channel_id) != team_id:
+            self._capture_parked[channel_id] = team_id
             logger.info(
                 "Not capturing Teams channel %s: Switch is not in its team %s",
                 channel_id,
@@ -3171,25 +3203,51 @@ class TeamsAdapter(PlatformAdapter):
 
     async def _switch_joined_team(self, team_id: str) -> None:
         """Switch is in a team now: capture the channels waiting on that."""
-        self._team_has_switch[team_id] = True
-        waiting = [c for c in self._capture_parked if self._capture_team(c) == team_id]
+        self._team_has_switch[team_id] = (True, time.monotonic())
+        waiting = [c for c, t in self._capture_parked.items() if t == team_id]
         for channel_id in waiting:
-            self._capture_parked.discard(channel_id)
+            del self._capture_parked[channel_id]
             await self._ensure_channel_subscription(channel_id)
 
     async def _switch_left_team(self, team_id: str) -> None:
         """Switch is out of a team: stop capturing it, ready to resume on return."""
-        self._team_has_switch[team_id] = False
+        self._team_has_switch[team_id] = (False, time.monotonic())
         known = (
             self._capture_wanted | set(self._subscriptions) | set(self._team_of_channel)
         )
-        for channel_id in [c for c in known if self._capture_team(c) == team_id]:
+        for channel_id in [c for c in known if self._known_team(c) == team_id]:
             captured = (
                 channel_id in self._capture_wanted or channel_id in self._subscriptions
             )
             await self._stop_capture(channel_id)
             if captured:
-                self._capture_parked.add(channel_id)
+                self._capture_parked[channel_id] = team_id
+
+    async def _recheck_teams(self) -> None:
+        """Ask again whether Switch is in each team whose answer is old.
+
+        Teams tells the bot when the app joins or leaves a team, but an admin
+        can do either where the bot hears nothing of it, and an answer kept
+        for ever would keep a team uncaptured, or captured, for ever.
+        """
+        if not self._me.shared or self._graph is None:
+            return
+        now = time.monotonic()
+        stale = [
+            (team_id, answer)
+            for team_id, (answer, found_at) in self._team_has_switch.items()
+            if now - found_at >= _TEAM_RECHECK_SECONDS
+        ]
+        for team_id, previous in stale:
+            del self._team_has_switch[team_id]
+            current = await self._switch_in_team(team_id)
+            if current is None:
+                # Asked again next round, rather than taken as changed.
+                self._team_has_switch[team_id] = (previous, 0.0)
+            elif current and not previous:
+                await self._switch_joined_team(team_id)
+            elif previous and not current:
+                await self._switch_left_team(team_id)
 
     async def _stop_capture(self, channel_id: str) -> None:
         self._capture_wanted.discard(channel_id)
@@ -3955,6 +4013,12 @@ class TeamsAdapter(PlatformAdapter):
         match = re.search(r"channels/([^/]+)/messages", resource)
         return match.group(1) if match else ""
 
+    @staticmethod
+    def _team_from_resource(resource: str) -> str:
+        """The team id in a subscription's ``resource`` string."""
+        match = re.match(r"teams/([^/]+)/channels/", resource)
+        return match.group(1) if match else ""
+
     async def _ensure_channel_subscription(self, channel_id: str) -> None:
         """Create a Graph change-notification subscription for a channel's
         messages, so the bridge captures every post — not just @mentions.
@@ -4019,6 +4083,7 @@ class TeamsAdapter(PlatformAdapter):
                 self._note_capture_failure(channel_id, f"{type(exc).__name__}: {exc}")
                 return
             self._subscriptions[channel_id] = str(sub.get("id", ""))
+            self._subscription_team[channel_id] = team_id
             expiry = _parse_graph_time(sub.get("expirationDateTime"))
             if expiry is not None:
                 self._subscription_expiry[channel_id] = expiry
@@ -4081,6 +4146,10 @@ class TeamsAdapter(PlatformAdapter):
         delay = _REPAIR_MIN_INTERVAL_SECONDS
         while True:
             await asyncio.sleep(delay)
+            try:
+                await self._recheck_teams()
+            except Exception:
+                logger.exception("Teams team membership recheck failed this round")
             missing = [c for c in self._capture_wanted if c not in self._subscriptions]
             if not missing:
                 delay = _REPAIR_MIN_INTERVAL_SECONDS
@@ -4182,10 +4251,20 @@ class TeamsAdapter(PlatformAdapter):
         answered, so they would be lost until the repair loop next reads them.
         An unknown one is a reason to read them now.
         """
-        if not self._owns_subscription(subscription_id) and not self._adopted:
-            async with self._sub_lock:
-                if not self._adopted:
-                    await self._adopt_existing_subscriptions()
+        if self._owns_subscription(subscription_id) or self._adopted:
+            return self._owns_subscription(subscription_id)
+        async with self._sub_lock:
+            now = time.monotonic()
+            due = (
+                self._adopt_on_demand_at is None
+                or now - self._adopt_on_demand_at >= _ADOPT_ON_DEMAND_COOLDOWN_SECONDS
+            )
+            if not self._adopted and due:
+                # Spaced out, so a run of unknown ones — Graph failing, or
+                # someone holding the organisation's clientState — is not one
+                # listing each.
+                self._adopt_on_demand_at = now
+                await self._adopt_existing_subscriptions()
         return self._owns_subscription(subscription_id)
 
     async def _handle_lifecycle_event(self, item: dict[str, Any]) -> None:

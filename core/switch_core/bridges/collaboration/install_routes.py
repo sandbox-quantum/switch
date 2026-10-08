@@ -41,6 +41,7 @@ from switch_core.bridges.collaboration.install import (
     WebhookAuthenticityError,
     WebhookEndpoint,
     WebhookPayloadError,
+    WebhookVerificationUnavailable,
     oauth_confirm_path,
 )
 from switch_core.bridges.collaboration.install_confirmation import (
@@ -449,6 +450,13 @@ def create_messaging_install_router(
         except WebhookAuthenticityError as failure:
             logger.warning("Refused an unverified %s webhook: %s", platform, failure)
             return Response(status_code=401)
+        except WebhookVerificationUnavailable as failure:
+            logger.error(
+                "Could not check a %s webhook, so asked for it again: %s",
+                platform,
+                failure,
+            )
+            return Response(status_code=503)
         except WebhookPayloadError as failure:
             # Verified, so this really is the platform sending something this
             # build cannot read. Worth an error rather than a shrug — it is how

@@ -30,6 +30,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     InboundMessage,
 )
+from switch_core.bridges.collaboration.teams import adapter as adapter_module
 from switch_core.bridges.collaboration.teams import shared_app as shared_app_module
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
@@ -1475,8 +1476,10 @@ class _SubscribingGraph:
         # The teams Switch is in, and a failure for asking about any of them.
         self.installed_in: set[str] = {"team-1"}
         self.check_failure: Exception | None = None
+        self.listings = 0
 
     async def list_subscriptions(self) -> list[dict[str, Any]]:
+        self.listings += 1
         if self.list_failures:
             self.list_failures -= 1
             raise GraphError("list subscriptions failed (503)", status=503)
@@ -1732,6 +1735,117 @@ async def test_teams_saying_switch_was_added_captures_its_waiting_channels() -> 
     )
 
     assert graph.created == ["NEW-1"]
+
+
+async def test_unknown_subscriptions_do_not_each_cost_a_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Graph failing, or someone holding the organisation's clientState,
+    must not turn every notification into a reading of Graph."""
+    adapter = _shared_adapter(team_id="team-1")
+    graph = _SubscribingGraph(list_failures=10, held=[])
+    adapter._graph = graph  # type: ignore[assignment]
+    await adapter._adopt_existing_subscriptions()
+    unknown = {
+        "lifecycleEvent": "reauthorizationRequired",
+        "subscriptionId": "NOT-MINE",
+        "clientState": adapter._me.client_state,
+    }
+
+    await adapter.receive_notification(unknown)
+    await adapter.receive_notification(unknown)
+    assert graph.listings == 2
+
+    monkeypatch.setattr(adapter_module, "_ADOPT_ON_DEMAND_COOLDOWN_SECONDS", 0)
+    await adapter.receive_notification(unknown)
+    assert graph.listings == 3
+
+
+async def test_leaving_the_default_team_leaves_channels_known_to_be_elsewhere() -> None:
+    """A channel whose team is known, from Teams or from the subscription
+    Graph accepted, is not taken to be in the default team."""
+    learned = "19:learned@thread.tacv2"
+    adopted = "19:adopted@thread.tacv2"
+    adapter = _shared_adapter(team_id="team-1", channel_teams={learned: "team-2"})
+    graph = _SubscribingGraph(
+        list_failures=0,
+        held=[
+            {
+                "id": "ADOPTED",
+                "resource": f"teams/team-2/channels/{adopted}/messages",
+                "notificationUrl": adapter._me.notification_url,
+            }
+        ],
+    )
+    graph.installed_in = {"team-1", "team-2"}
+    adapter._graph = graph  # type: ignore[assignment]
+    await adapter._adopt_existing_subscriptions()
+    await adapter.ensure_channel_subscriptions(
+        [
+            (CHANNEL, "channel_public"),
+            (learned, "channel_public"),
+            (adopted, "channel_public"),
+        ]
+    )
+    assert set(adapter._subscriptions) == {CHANNEL, learned, adopted}
+
+    await adapter.remove_from_team("team-1")
+
+    assert set(adapter._subscriptions) == {learned, adopted}
+    assert set(adapter._capture_parked) == {CHANNEL}
+
+
+async def test_switch_added_back_where_the_bot_heard_nothing_is_noticed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _shared_adapter(team_id="team-2")
+    graph = _SubscribingGraph(list_failures=0, held=[])
+    adapter._graph = graph  # type: ignore[assignment]
+    await adapter._adopt_existing_subscriptions()
+    await adapter._ensure_channel_subscription(CHANNEL)
+    graph.installed_in.add("team-2")
+
+    await adapter._recheck_teams()
+    assert graph.created == []
+
+    monkeypatch.setattr(adapter_module, "_TEAM_RECHECK_SECONDS", 0)
+    await adapter._recheck_teams()
+    assert graph.created == ["NEW-1"]
+
+
+async def test_switch_removed_where_the_bot_heard_nothing_is_noticed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _shared_adapter(team_id="team-1")
+    graph = _SubscribingGraph(list_failures=0, held=[])
+    adapter._graph = graph  # type: ignore[assignment]
+    await adapter._adopt_existing_subscriptions()
+    await adapter._ensure_channel_subscription(CHANNEL)
+    graph.installed_in.discard("team-1")
+    monkeypatch.setattr(adapter_module, "_TEAM_RECHECK_SECONDS", 0)
+
+    await adapter._recheck_teams()
+
+    assert graph.deleted == ["NEW-1"]
+    assert CHANNEL in adapter._capture_parked
+
+
+async def test_a_recheck_that_cannot_reach_graph_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _shared_adapter(team_id="team-1")
+    graph = _SubscribingGraph(list_failures=0, held=[])
+    adapter._graph = graph  # type: ignore[assignment]
+    await adapter._adopt_existing_subscriptions()
+    await adapter._ensure_channel_subscription(CHANNEL)
+    graph.check_failure = GraphError("busy", status=503)
+    monkeypatch.setattr(adapter_module, "_TEAM_RECHECK_SECONDS", 0)
+
+    await adapter._recheck_teams()
+
+    assert graph.deleted == []
+    assert adapter._subscriptions == {CHANNEL: "NEW-1"}
+    assert adapter._team_has_switch["team-1"][0] is True
 
 
 async def test_a_team_that_cannot_be_checked_is_left_to_the_repair_loop() -> None:

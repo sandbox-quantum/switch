@@ -244,7 +244,22 @@ async def remove_from_team(
         )
         await bridge_store.set_channel_creation_enabled(session, bridge_id, False)
         await session.commit()
-        await collab_lifecycle.restart(bridge_id)
+        try:
+            await collab_lifecycle.restart(bridge_id)
+        except Exception as error:
+            logger.exception(
+                "Teams connection %s did not restart after leaving its default team",
+                bridge_id,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Switch left the team, and channel creation is off until "
+                    "another default team is chosen, but the connection did "
+                    f"not restart ({error}). It is stopped until it is "
+                    "restarted."
+                ),
+            ) from error
     return Response(status_code=204)
 
 

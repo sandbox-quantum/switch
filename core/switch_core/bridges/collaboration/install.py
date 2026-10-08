@@ -109,6 +109,16 @@ class WebhookAuthenticityError(RuntimeError):
     """
 
 
+class WebhookVerificationUnavailable(RuntimeError):
+    """An inbound webhook could not be checked at all, so it is neither
+    accepted nor refused.
+
+    The platform's signing keys could not be fetched: that is the platform's
+    outage, or ours, and says nothing about the request. Answered 503, which
+    platforms retry, where a 401 would turn the outage into lost events.
+    """
+
+
 class WebhookPayloadError(RuntimeError):
     """A webhook proved genuine and then could not be read.
 

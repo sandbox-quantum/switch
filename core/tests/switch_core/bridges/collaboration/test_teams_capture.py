@@ -9,6 +9,7 @@ import json
 import os
 from typing import Any
 
+import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
@@ -384,6 +385,89 @@ def test_graph_capture_dedupes_with_bot_framework_path() -> None:
     _run(adapter.receive_notification(item))
 
     assert len(captured) == 1
+
+
+def _mention_activity(message_id: str) -> dict[str, Any]:
+    return {
+        "type": "message",
+        "id": message_id,
+        "serviceUrl": "https://smba.trafficmanager.net/amer/",
+        "text": "<at>Switch</at> hi",
+        "from": {"aadObjectId": "aad-u", "name": "Alice"},
+        "conversation": {
+            "id": f"19:c@thread.tacv2;messageid={message_id}",
+            "conversationType": "channel",
+        },
+        "channelData": {"channel": {"id": "19:c@thread.tacv2"}},
+    }
+
+
+def _graph_message(message_id: str) -> dict[str, Any]:
+    return {
+        "id": message_id,
+        "messageType": "message",
+        "from": {"user": {"id": "aad-u", "displayName": "Alice"}},
+        "channelIdentity": {"teamId": "t1", "channelId": "19:c@thread.tacv2"},
+        "body": {"contentType": "text", "content": "hi"},
+    }
+
+
+def test_a_mention_heard_both_ways_reaches_the_room_once() -> None:
+    """A message mentioning the bot arrives as a Bot Framework activity and
+    as a Graph notification, under the same id; the second is the same
+    message, whichever comes first."""
+    key_pem, cert_pem, cert = _make_key_and_cert()
+    for activity_first in (True, False):
+        adapter = _adapter(key_pem, cert_pem)
+        captured = _capture(adapter)
+        adapter._channel_type["19:c@thread.tacv2"] = "channel_public"
+        notification = {
+            "clientState": "s3cr3t",
+            "encryptedContent": _encrypt_like_graph(_graph_message("m-1"), cert),
+        }
+        steps = [
+            adapter._dispatch_activity(_mention_activity("m-1")),
+            adapter.receive_notification(notification),
+        ]
+        if not activity_first:
+            steps.reverse()
+        for step in steps:
+            _run(step)
+
+        assert len(captured) == 1
+
+
+def test_an_encrypted_notification_with_no_key_to_open_it_is_dropped_loudly(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A subscription can outlive the key it was made with; what it then
+    delivers cannot be read, and says so."""
+    _, _, cert = _make_key_and_cert()
+    adapter = TeamsAdapter(
+        config=TeamsConnectionConfig(
+            app_id="app-123",
+            app_password="secret",
+            tenant_id="tenant-1",
+            team_id="team-1",
+            public_base_url="https://switch.example",
+            client_state="s3cr3t",
+        )
+    )
+    assert adapter._me.keyring is None
+    captured = _capture(adapter)
+    caplog.set_level("ERROR")
+
+    _run(
+        adapter.receive_notification(
+            {
+                "clientState": "s3cr3t",
+                "encryptedContent": _encrypt_like_graph(_graph_message("m-2"), cert),
+            }
+        )
+    )
+
+    assert captured == []
+    assert any("no private key" in r.getMessage() for r in caplog.records)
 
 
 def test_reply_sets_root_id_from_reply_to_id() -> None:

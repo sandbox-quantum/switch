@@ -296,6 +296,14 @@ class SigningKey:
     endorsements: frozenset[str]
 
 
+class SigningKeysUnavailable(RuntimeError):
+    """No signing keys are held, and none could be fetched.
+
+    Not a `PermissionError`: nothing about the token was found wrong, and
+    refusing it as forged would turn an outage into lost traffic.
+    """
+
+
 class SigningKeys:
     """An OpenID provider's signing keys, fetched without blocking and cached.
 
@@ -343,6 +351,10 @@ class SigningKeys:
                 await self._fetch()
         found = self._keys.get(kid)
         if found is None:
+            if not self._keys:
+                raise SigningKeysUnavailable(
+                    f"no signing keys could be fetched from {self._metadata_url}"
+                )
             raise PermissionError(f"token is signed with an unknown key ({kid!r})")
         return found
 
@@ -365,7 +377,7 @@ class SigningKeys:
                     len(self._keys),
                 )
                 return
-            raise PermissionError(
+            raise SigningKeysUnavailable(
                 f"could not fetch signing keys from {self._metadata_url}: {error}"
             ) from error
         keys: dict[str, SigningKey] = {}
@@ -389,7 +401,7 @@ class SigningKeys:
                     len(self._keys),
                 )
                 return
-            raise PermissionError(
+            raise SigningKeysUnavailable(
                 f"{self._metadata_url} published no usable signing keys"
             )
         self._keys = keys

@@ -29,12 +29,16 @@ from switch_core.bridges.collaboration.install import (
     MessagingInstallError,
     WebhookAuthenticityError,
     WebhookPayloadError,
+    WebhookVerificationUnavailable,
 )
 from switch_core.bridges.collaboration.teams import install as teams_install
 from switch_core.bridges.collaboration.teams.app_package import (
     build_distributed_app_package,
 )
-from switch_core.bridges.collaboration.teams.auth import ClientSecret
+from switch_core.bridges.collaboration.teams.auth import (
+    ClientSecret,
+    SigningKeysUnavailable,
+)
 from switch_core.bridges.collaboration.teams.crypto import load_certificate_der_b64
 from switch_core.bridges.collaboration.teams.identity import (
     REQUIRED_GRAPH_ROLES,
@@ -483,6 +487,7 @@ def test_graphs_url_check_is_echoed() -> None:
 class _Authenticator:
     def __init__(self, *, refuse: bool = False, vouched: frozenset[str] = frozenset()):
         self.refuse = refuse
+        self.keys_unavailable = False
         self.vouched = vouched
         self.seen: list[dict[str, Any]] = []
 
@@ -496,10 +501,14 @@ class _Authenticator:
                 "channel": channel_id,
             }
         )
+        if self.keys_unavailable:
+            raise SigningKeysUnavailable("keys out of reach")
         if self.refuse:
             raise PermissionError("forged")
 
     async def vouched_tenants(self, tokens: list[object]) -> frozenset[str]:
+        if self.keys_unavailable:
+            raise SigningKeysUnavailable("keys out of reach")
         if self.refuse:
             raise PermissionError("forged")
         return self.vouched
@@ -630,6 +639,46 @@ async def test_a_resent_batch_checked_while_the_first_is_parsed_is_kept() -> Non
 
     assert [e.payload["tenantId"] for e in first] == [ORG]
     assert [e.payload["tenantId"] for e in second] == [ORG]
+
+
+@pytest.mark.parametrize("endpoint", ["events", "notifications"])
+async def test_microsofts_keys_out_of_reach_is_not_called_a_forgery(
+    endpoint: str,
+) -> None:
+    installer = _installer(_Microsoft())
+    authenticator = _Authenticator()
+    authenticator.keys_unavailable = True
+    installer._app.bot_authenticator = authenticator  # type: ignore[assignment]
+    installer._app.notification_authenticator = authenticator  # type: ignore[assignment]
+    body = (
+        json.dumps(_activity()).encode()
+        if endpoint == "events"
+        else _notifications(_DATA, tokens=["t"])
+    )
+
+    with pytest.raises(WebhookVerificationUnavailable):
+        await installer.verify_webhook(
+            endpoint=endpoint,  # type: ignore[arg-type]
+            headers={"authorization": "Bearer t"},
+            query={},
+            body=body,
+        )
+
+
+async def test_microsofts_keys_out_of_reach_at_approval_is_explained() -> None:
+    microsoft = _Microsoft()
+    installer = _installer(microsoft)
+
+    async def keys_out_of_reach(id_token: str) -> dict[str, Any]:
+        raise SigningKeysUnavailable("could not fetch signing keys")
+
+    installer._app.verify_id_token = keys_out_of_reach  # type: ignore[method-assign]
+
+    with pytest.raises(MessagingInstallError, match="signing keys"):
+        await installer.redeem(
+            code="the-code", redirect_uri="https://switch.example/messaging/teams/cb"
+        )
+    assert microsoft.posted("/appCatalogs") == []
 
 
 async def test_a_forged_token_refuses_the_whole_batch() -> None:

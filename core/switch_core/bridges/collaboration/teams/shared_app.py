@@ -33,7 +33,7 @@ import httpx
 from cryptography.hazmat.primitives import serialization
 
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
-from switch_core.bridges.collaboration.install import PUBLIC_PATH_PREFIX, public_url
+from switch_core.bridges.collaboration.install import notifications_path, public_url
 from switch_core.bridges.collaboration.teams.adapter import TeamsAdapter
 from switch_core.bridges.collaboration.teams.auth import (
     BOTFRAMEWORK_OPENID,
@@ -76,10 +76,6 @@ PLATFORM = "teams"
 #: Changing it changes every organisation's clientState, which fails every
 #: live subscription's origin check until it is recreated.
 _CLIENT_STATE_KEY_INFO = b"switch/teams-client-state/v1"
-
-
-def notifications_path() -> str:
-    return f"{PUBLIC_PATH_PREFIX}/{PLATFORM}/notifications"
 
 
 def _client_state_key(secret: str) -> bytes:
@@ -147,7 +143,7 @@ class TeamsSharedApp:
         # with nothing to point at why.
         fingerprint = hashlib.sha256(_client_state_key(client_state_secret)).hexdigest()
         self._notification_url = (
-            public_url(messaging_public_url, notifications_path())
+            public_url(messaging_public_url, notifications_path(PLATFORM))
             + f"?v={fingerprint[:12]}"
         )
         self._client_state_secret = client_state_secret

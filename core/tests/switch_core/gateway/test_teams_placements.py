@@ -76,6 +76,7 @@ class _Lifecycle:
         self._adapter = adapter
         self._connected = connected
         self.restarted: list[str] = []
+        self.restart_failure: Exception | None = None
 
     def get_adapter(self, bridge_id: str) -> TeamsAdapter | None:
         return self._adapter
@@ -85,6 +86,8 @@ class _Lifecycle:
 
     async def restart(self, bridge_id: str) -> None:
         self.restarted.append(bridge_id)
+        if self.restart_failure is not None:
+            raise self.restart_failure
 
 
 class _InstallService:
@@ -363,6 +366,34 @@ async def test_removing_switch_from_the_default_team_turns_channel_creation_off(
     assert bridge.connection_config["team_id"] is None
     assert bridge.channel_creation_enabled is False
     assert lifecycle.restarted == [bridge_id]
+
+
+async def test_a_connection_that_does_not_restart_after_leaving_says_what_happened(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    graph = _Graph(installed_in={"team-1": "c-1"})
+    async with session_factory() as session:
+        bridge_id = await _connection(session, platform_data={"catalog_app_id": "c-1"})
+        await CollaborationBridgeStore().merge_connection_config(
+            session, bridge_id, {"team_id": "team-1"}
+        )
+        await session.commit()
+        lifecycle = _Lifecycle(_shared_adapter(graph))
+        lifecycle.restart_failure = RuntimeError("start guard refused")
+
+        with pytest.raises(HTTPException) as refused:
+            await _call(
+                remove_from_team,
+                session,
+                lifecycle,
+                bridge_id=bridge_id,
+                team_id="team-1",
+            )
+
+    assert refused.value.status_code == 503
+    assert "Switch left the team" in str(refused.value.detail)
+    assert "start guard refused" in str(refused.value.detail)
+    assert graph.removed == [("team-1", "I-team-1")]
 
 
 async def test_removing_switch_from_another_team_leaves_the_default_alone(

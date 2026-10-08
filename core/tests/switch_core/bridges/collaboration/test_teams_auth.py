@@ -25,6 +25,7 @@ from switch_core.bridges.collaboration.teams.auth import (
     FederatedTokenFile,
     GraphNotificationAuthenticator,
     SigningKeys,
+    SigningKeysUnavailable,
     TeamsTokenProvider,
     TokenRequestRefused,
     token_endpoint,
@@ -501,9 +502,10 @@ def test_a_validation_token_whose_directory_its_issuer_does_not_name_is_refused(
 # ── Signing keys: what a key set can go wrong with ───────────────────────────
 
 
-def test_no_keys_to_verify_with_is_a_refusal_not_an_acceptance() -> None:
+def test_no_keys_to_verify_with_is_neither_accepted_nor_called_forged() -> None:
     """Microsoft's key endpoint down at the first request leaves nothing to
-    check a signature against; the activity is refused."""
+    check a signature against. The activity is not accepted, and not refused
+    as forged either: that would lose it, where an outage is retried."""
     key = _rsa_key()
     server = _KeyServer([_jwk(key, "k1", ["msteams"])])
     server.fail = True
@@ -511,7 +513,12 @@ def test_no_keys_to_verify_with_is_a_refusal_not_an_acceptance() -> None:
         app_id="app-1", keys=_signing_keys(server)
     )
 
-    with pytest.raises(PermissionError, match="could not fetch signing keys"):
+    with pytest.raises(SigningKeysUnavailable, match="could not fetch signing keys"):
+        _verify(authenticator, f"Bearer {_bot_token(key)}")
+    # Too soon to fetch again, and still nothing held to check with.
+    with pytest.raises(
+        SigningKeysUnavailable, match="no signing keys could be fetched"
+    ):
         _verify(authenticator, f"Bearer {_bot_token(key)}")
 
 
@@ -531,14 +538,14 @@ def test_entries_that_are_not_usable_keys_are_skipped() -> None:
     _verify(authenticator, f"Bearer {_bot_token(key)}")
 
 
-def test_a_key_set_with_nothing_usable_is_a_refusal() -> None:
+def test_a_key_set_with_nothing_usable_leaves_nothing_to_check_with() -> None:
     key = _rsa_key()
     server = _KeyServer([{"kid": "broken", "kty": "RSA", "n": "!", "e": "!"}])
     authenticator = BotFrameworkAuthenticator(
         app_id="app-1", keys=_signing_keys(server)
     )
 
-    with pytest.raises(PermissionError, match="no usable signing keys"):
+    with pytest.raises(SigningKeysUnavailable, match="no usable signing keys"):
         _verify(authenticator, f"Bearer {_bot_token(key)}")
 
 

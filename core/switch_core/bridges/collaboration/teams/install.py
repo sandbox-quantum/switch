@@ -48,11 +48,13 @@ from switch_core.bridges.collaboration.install import (
     WebhookAuthenticityError,
     WebhookEndpoint,
     WebhookPayloadError,
+    WebhookVerificationUnavailable,
 )
 from switch_core.bridges.collaboration.teams.adapter import activity_tenant
 from switch_core.bridges.collaboration.teams.app_package import DistributedAppPackage
 from switch_core.bridges.collaboration.teams.auth import (
     GRAPH_SCOPE,
+    SigningKeysUnavailable,
     TokenRequestRefused,
     token_endpoint,
 )
@@ -219,6 +221,11 @@ class TeamsAppInstaller(MessagingAppInstaller):
             raise MessagingInstallError(
                 f"Microsoft's id token could not be verified ({error}). Nothing "
                 "was saved."
+            ) from error
+        except SigningKeysUnavailable as error:
+            raise MessagingInstallError(
+                "Switch could not fetch Microsoft's signing keys to check the "
+                f"sign-in ({error}). Nothing was saved; start again from Switch."
             ) from error
 
     def _require_approving_admin(self, claims: Mapping[str, Any]) -> None:
@@ -445,6 +452,8 @@ class TeamsAppInstaller(MessagingAppInstaller):
                 )
             except PermissionError as error:
                 raise WebhookAuthenticityError(str(error)) from error
+            except SigningKeysUnavailable as error:
+                raise WebhookVerificationUnavailable(str(error)) from error
             return
         await self._verify_notifications(payload)
 
@@ -479,6 +488,8 @@ class TeamsAppInstaller(MessagingAppInstaller):
             )
         except PermissionError as error:
             raise WebhookAuthenticityError(str(error)) from error
+        except SigningKeysUnavailable as error:
+            raise WebhookVerificationUnavailable(str(error)) from error
         self._remember_vouched(_digest(payload), vouched)
 
     def parse_webhook(

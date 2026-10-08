@@ -33,6 +33,7 @@ from switch_core.bridges.collaboration.install import (
     WebhookAuthenticityError,
     WebhookEndpoint,
     WebhookPayloadError,
+    WebhookVerificationUnavailable,
 )
 from switch_core.bridges.collaboration.install_routes import (
     create_messaging_install_router,
@@ -100,6 +101,8 @@ class _RelayInstaller(MessagingAppInstaller):
         body: bytes,
     ) -> None:
         self.verified += 1
+        if headers.get("x-test-signature") == "keys-unavailable":
+            raise WebhookVerificationUnavailable("the platform's keys are out of reach")
         if headers.get("x-test-signature") != "ok":
             raise WebhookAuthenticityError("unsigned")
 
@@ -319,6 +322,23 @@ async def test_anything_else_unsigned_is_refused(rls_harness: RLSHarness) -> Non
     )
 
     assert response.status_code == 401
+    assert _adapter(fixture, "a").dispatched == []
+
+
+async def test_a_request_that_cannot_be_checked_is_asked_for_again(
+    rls_harness: RLSHarness,
+) -> None:
+    """The platform's keys out of reach says nothing about the request: a
+    401 would lose it, where a 503 is retried."""
+    fixture = await _fixture(rls_harness)
+
+    response = await fixture.client.post(
+        f"/messaging/{_PLATFORM}/notifications",
+        content=_batch({"workspace": "org-a", "id": "n1"}),
+        headers={"x-test-signature": "keys-unavailable"},
+    )
+
+    assert response.status_code == 503
     assert _adapter(fixture, "a").dispatched == []
 
 
