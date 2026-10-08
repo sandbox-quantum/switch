@@ -229,8 +229,10 @@ agent:
 - gets its relay credentials and the provider settings from the controller's
   environment (the `--env-file`) through systemd, never the controller user's own
   provider logins in its home. Give each provider an API key or a token, for
-  example `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`. `doctor` checks the
-  providers the way an agent would see them.
+  example `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, or give the
+  machine a login from Console (see
+  [Provider logins given to the machine](#provider-logins-given-to-the-machine)).
+  `doctor` checks the providers the way an agent would see them.
 
 Node, the controller and the provider CLIs must be installed outside the home
 directories (`/usr`, `/usr/local` or `/opt`), where the agents can reach them; the
@@ -246,6 +248,37 @@ When every user in the pool runs an agent, the next agent fails with
 Agents' units keep running when the controller stops, as isolated agents do.
 `status` run in a shell without the agents' group shows each agent's unit state
 only.
+
+### Provider logins given to the machine
+
+A machine with no login of its own for a provider (a cloud machine, a fresh SSH
+host) can be given one by its owner, on demand, at any time after it is up.
+`enroll` makes an X25519 keypair, keeps the private half in the secret store
+(`sealing-key`) and sends the public half to Switch. A controller enrolled
+before this registers its key once, when it next runs. Console seals the login
+to that key before sending it, so Switch stores and relays only ciphertext it
+cannot open.
+
+Switch then queues a `provider.login` operation. The controller fetches the
+login, opens it, checks the provider signs in with it, and reports the result.
+Console shows that result: the operation fails with `provider_login_expired`
+when the provider does not sign in with the login, and `provider_login_missing`
+when there is none. From then on the provider is reported ready with
+`auth_source: "sealed"`.
+
+- The machine's own login comes first. A given login is used only for a
+  provider the machine has none for, on `PATH` or in the `--env-file`.
+- An agent using a given login gets it with its relay credentials. Its token
+  (Claude, Cursor) goes in its environment, and its file (Codex, OpenCode,
+  Antigravity) is written by the agent host in its own state. The agent runs in
+  a process of its own, as a separate user under `--separate-users`, and is
+  restarted when the login changes or is withdrawn.
+- Logins are kept in memory only, and fetched again every ten minutes and on
+  each `provider.login` and `provider.recheck`. When Switch cannot be reached,
+  the login already held is kept.
+- A controller whose credential is handed over (`--credential-stdin`) keeps no
+  key across starts, so it registers none and uses only the machine's own
+  logins.
 
 ### The controller credential
 

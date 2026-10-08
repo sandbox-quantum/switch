@@ -18,6 +18,13 @@ export type OperationDeps = {
   restartAgent: (entry: AgentAssignment) => Promise<{ reason: string; detail: string } | null>;
   /** Checks the provider now and sends a status report carrying the result. */
   recheckProvider: (provider: Provider) => Promise<ProviderStatus>;
+  /**
+   * Takes up the login Switch gave the machine for the provider now, as a
+   * recheck does, and says why it is not used when it is not.
+   */
+  takeUpLogin: (
+    provider: Provider
+  ) => Promise<{ status: ProviderStatus; problem: { code: string; message: string } | null }>;
   log: Logger;
 };
 
@@ -25,7 +32,10 @@ function failed(code: string, message: string): OperationResult {
   return { outcome: 'failed', error: { code, message } };
 }
 
-/** Runs one claimed operation. v1 runs `agent.restart` and `provider.recheck`; anything else is refused. */
+/**
+ * Runs one claimed operation: `agent.restart`, `provider.recheck`, and
+ * `provider.login` with `method: "sealed"`; anything else is refused.
+ */
 export async function executeOperation(
   operation: Operation,
   deps: OperationDeps
@@ -59,6 +69,25 @@ export async function executeOperation(
         );
       const status = await deps.recheckProvider(provider);
       return { outcome: 'succeeded', output: { provider: status } };
+    }
+    case 'provider.login': {
+      const { provider, method } = operation.params;
+      if (typeof provider !== 'string' || !isProvider(provider))
+        return failed(
+          'validation_error',
+          `provider.login needs params.provider set to a provider this controller runs; got ${JSON.stringify(provider)}.`
+        );
+      if (method !== 'sealed')
+        return failed(
+          'operation_unsupported',
+          `This controller takes up only logins sealed to it (method "sealed"), not ${JSON.stringify(method)}.`
+        );
+      const { status, problem } = await deps.takeUpLogin(provider);
+      if (status.auth === 'ok') return { outcome: 'succeeded', output: { provider: status } };
+      return failed(
+        problem?.code ?? status.reason ?? 'provider_login_missing',
+        problem?.message ?? `The ${provider} login given to this machine is not used.`
+      );
     }
     default:
       return failed(

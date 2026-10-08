@@ -1,10 +1,12 @@
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { generateSealingKeyPair, sealProviderLogin } from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { type AgentObservation, emptyObservation } from './runtime';
-import { type AgentAssignment, statusReportSchema } from './schemas';
+import { type AgentAssignment, type SealedLoginResponse, statusReportSchema } from './schemas';
+import { SealedLogins } from './sealed-logins';
 import {
   mapAgentProcess,
   PathProviderLocator,
@@ -232,6 +234,7 @@ describe('ProviderStatuses', () => {
     const statuses = new ProviderStatuses({
       locator,
       runtime,
+      sealed: null,
       probeCwd: '/tmp',
       now: () => clock,
       log: silentLogger,
@@ -253,6 +256,117 @@ describe('ProviderStatuses', () => {
     await statuses.check('claude');
     expect(changes).toBe(6);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
+  });
+});
+
+describe('ProviderStatuses with logins given to the machine', () => {
+  const keys = generateSealingKeyPair();
+  let answer: SealedLoginResponse | null;
+  let reachable: boolean;
+
+  function sealedAnswer(credential: string, revision = 1): SealedLoginResponse {
+    return {
+      provider: 'claude',
+      revision,
+      sealed: sealProviderLogin({
+        publicKey: keys.publicKey,
+        controllerId: 'controller-1',
+        provider: 'claude',
+        login: { kind: 'setup-token', credential },
+      }),
+    };
+  }
+
+  function build(runtime: FakeRuntime) {
+    return new ProviderStatuses({
+      locator: new FakeLocator(),
+      runtime,
+      sealed: new SealedLogins({
+        client: {
+          sealedLogin: async () => {
+            if (!reachable) throw new Error('Switch is unreachable');
+            return answer;
+          },
+        },
+        keys,
+        controllerId: 'controller-1',
+      }),
+      probeCwd: '/tmp',
+      now: () => NOW,
+      log: silentLogger,
+      onChange: () => {},
+    });
+  }
+
+  beforeEach(() => {
+    answer = null;
+    reachable = true;
+  });
+
+  it('uses the machine’s own login first, and never asks Switch then', async () => {
+    const runtime = new FakeRuntime();
+    answer = sealedAnswer('sk-ant-oat-given');
+    const statuses = build(runtime);
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'local' });
+    expect(await statuses.givenLogin('claude')).toBeNull();
+    expect(runtime.loginProbes).toEqual([]);
+  });
+
+  it('uses a given login once the provider signs in with it', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+    answer = sealedAnswer('sk-ant-oat-given', 3);
+    const statuses = build(runtime);
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    expect(await statuses.givenLogin('claude')).toEqual({
+      status: 'connected',
+      provider: 'claude',
+      revision: '3',
+      kind: 'setup-token',
+      credential: 'sk-ant-oat-given',
+    });
+    expect(runtime.loginProbes.map((login) => login.credential)).toEqual(['sk-ant-oat-given']);
+  });
+
+  it('says why a given login is not used', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    const statuses = build(runtime);
+    expect(await statuses.check('claude')).toMatchObject({
+      auth: 'missing',
+      reason: 'provider_login_missing',
+    });
+    expect(statuses.loginProblem('claude')?.code).toBe('provider_login_missing');
+
+    answer = sealedAnswer('sk-ant-oat-expired');
+    runtime.loginReadiness = { status: 'unauthenticated', message: 'Token expired.', models: [] };
+    expect(await statuses.check('claude')).toMatchObject({
+      auth: 'expired',
+      auth_source: 'sealed',
+      reason: 'provider_login_expired',
+    });
+    expect(statuses.loginProblem('claude')?.message).toContain('Token expired.');
+    expect(await statuses.givenLogin('claude')).toBeNull();
+
+    answer = {
+      ...sealedAnswer('sk-ant-oat-x'),
+      sealed: { ...sealedAnswer('y').sealed, nonce: answer.sealed.nonce },
+    };
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'missing' });
+    expect(statuses.loginProblem('claude')?.code).toBe('internal');
+  });
+
+  it('keeps the login it holds while Switch cannot be asked', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    answer = sealedAnswer('sk-ant-oat-given');
+    const statuses = build(runtime);
+    await statuses.check('claude');
+    reachable = false;
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    expect((await statuses.givenLogin('claude'))?.credential).toBe('sk-ant-oat-given');
+    statuses.disableGiven();
+    expect(await statuses.givenLogin('claude')).toBeNull();
   });
 });
 
@@ -293,6 +407,7 @@ describe('StatusCollector', () => {
     const providers = new ProviderStatuses({
       locator: new FakeLocator(),
       runtime,
+      sealed: null,
       probeCwd: dir,
       now: () => clock,
       log: silentLogger,

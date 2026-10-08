@@ -340,6 +340,15 @@ exactly the answer a missing one does.
   - Providers: installed via a PATH lookup, auth via the bundle's `--probe`, cached for 10 min. `provider.recheck` forces a probe.
   - Agents: read from each running agent host's state and `supervisor/failure.json`, mapped to the contract's process states and reason codes, with `directory`, the working directory its agent host was configured with.
 - **Operations:** `agent.restart` restarts the agent host. `provider.recheck` forces a probe and reports.
+- **Provider logins given to the machine** (`sealed-logins.ts`, contract §5): `enroll` makes an
+  X25519 keypair and sends the public half; a controller enrolled before registers it once
+  (`PATCH .../controllers/{id} {public_key}`). The owner's Console seals a login to it; Core
+  stores the ciphertext (`sealed_provider_logins`) and queues `provider.login {provider, method:
+  "sealed"}`, which the controller answers after opening the login and probing the provider with
+  it. `ProviderStatuses` prefers the machine's own login and falls back to a given one
+  (`auth_source: "sealed"`); `ensureRelayCredentials` writes it into the agent's credentials
+  (`providerLogin`), `startAgent` puts its environment in the template and runs the agent isolated,
+  and the agent host writes its login file (`readProviderLogin`, `materializeHostedProvider`).
 - **Each agent as a Linux user of its own** (`--agent-runtime separate-user`, `separate-users.ts`,
   `systemd-runtime.ts`): root sets up once a pool of system users `sa<uid>-NN` in a group
   `switch-agents-<uid>` that only the controller also joins, a template unit

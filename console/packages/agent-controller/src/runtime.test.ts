@@ -32,6 +32,7 @@ const RELAY = {
   endpoint: 'http://127.0.0.1:43210',
   token: 'swlr_relay-token-placeholder',
   hub: 'ws://127.0.0.1:43210/hub',
+  providerLogin: null,
 };
 const LAUNCH = {
   isolation: 'shared' as const,
@@ -256,7 +257,7 @@ describe('InProcessRuntime', () => {
   });
 
   it('probes a provider through the bundle', async () => {
-    const readiness = await runtime.probe('claude', '/usr/bin/claude', '/tmp');
+    const readiness = await runtime.probe('claude', '/usr/bin/claude', '/tmp', null);
     expect(readiness).toEqual({
       status: 'authenticated',
       message: '--probe claude /tmp /usr/bin/claude',

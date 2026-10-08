@@ -8,6 +8,7 @@ import type {
   RelayCredentials,
 } from './runtime';
 import type { Provider } from './schemas';
+import type { GivenLogin } from './sealed-logins';
 
 /**
  * Runs each agent the way its definition asks: its host in this controller's
@@ -69,7 +70,17 @@ export class AgentRuntimes implements AgentRuntime {
     return this.shared.workingDirectory(agentId, name, directory);
   }
 
-  probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness> {
-    return this.shared.probe(provider, binaryPath, cwd);
+  probe(
+    provider: Provider,
+    binaryPath: string,
+    cwd: string,
+    login: GivenLogin | null
+  ): Promise<ProviderReadiness> {
+    return this.shared.probe(provider, binaryPath, cwd, login);
+  }
+
+  /** The same for both: moving an agent between them keeps its root. */
+  agentStateRoot(agentId: string): string {
+    return this.shared.agentStateRoot(agentId);
   }
 }

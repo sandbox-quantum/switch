@@ -23,6 +23,7 @@ import {
   emptyObservation,
   isInside,
   type LaunchOptions,
+  loginProbeEnvironment,
   parseRelayCredentials,
   probeProvider,
   readOptional,
@@ -33,6 +34,7 @@ import {
   writeAtomic,
 } from './runtime';
 import type { Provider } from './schemas';
+import type { GivenLogin } from './sealed-logins';
 import {
   agentRoot,
   homeRootOf,
@@ -194,8 +196,16 @@ export class SystemdRuntime implements AgentRuntime {
     return resolved;
   }
 
-  /** The provider's login as an agent would have it: only the provider settings it is given, and a home of its own. */
-  async probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness> {
+  /**
+   * The provider's login as an agent would have it: only the provider
+   * settings it is given, or `login`, and a home of its own.
+   */
+  async probe(
+    provider: Provider,
+    binaryPath: string,
+    cwd: string,
+    login: GivenLogin | null
+  ): Promise<ProviderReadiness> {
     const home = homeRootOf(binaryPath, []);
     if (home)
       return {
@@ -205,11 +215,23 @@ export class SystemdRuntime implements AgentRuntime {
       };
     const probeHome = join(this.deps.config.dataDir, 'probe-home');
     await mkdir(probeHome, { recursive: true, mode: 0o700 });
+    const given = login
+      ? await loginProbeEnvironment(
+          join(this.deps.config.dataDir, 'login-check', provider),
+          login,
+          binaryPath
+        )
+      : {};
     return probeProvider(this.deps.config.bundle, provider, binaryPath, cwd, {
       ...this.agentEnvironment(),
       PATH: this.deps.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
       HOME: probeHome,
+      ...given,
     });
+  }
+
+  agentStateRoot(_agentId: string): string {
+    return join(unitAgentRoot(this.deps.config), 'watcher');
   }
 
   async observe(agentId: string): Promise<AgentObservation> {

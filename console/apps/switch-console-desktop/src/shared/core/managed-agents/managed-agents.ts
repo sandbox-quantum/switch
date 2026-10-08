@@ -63,6 +63,20 @@ export type MachineProvider = {
   problem: string | null;
 };
 
+/**
+ * A provider login to give a machine: a key or token typed in, or this
+ * computer's own sign-in for the provider, read from its file.
+ */
+export type MachineLoginInput =
+  | { source: 'typed'; kind: 'api-key' | 'setup-token'; credential: string }
+  | { source: 'this-computer' };
+
+/** How giving a machine a login went: still being taken up, taken up, or why not. */
+export type MachineLoginOutcome =
+  | { state: 'pending' }
+  | { state: 'succeeded' }
+  | { state: 'failed'; code: string; message: string };
+
 /** What a machine is to this Console: this computer, one of its SSH hosts, or neither. */
 export type MachineLocal = { kind: 'this-computer' } | { kind: 'ssh-host'; sshHost: string } | null;
 
@@ -70,6 +84,8 @@ export type MachineLocal = { kind: 'this-computer' } | { kind: 'ssh-host'; sshHo
 export type OwnedMachine = ManagedMachine & {
   /** Empty before the machine has reported. */
   providers: MachineProvider[];
+  /** It can be given a provider login sealed to its key: its controller registered one. */
+  acceptsLogins: boolean;
   /**
    * Where the machine makes agents' workspaces (an agent's is `<workspacesDir>/<name>`);
    * null before it has said.

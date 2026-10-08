@@ -5,12 +5,18 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { AgentBridgeEvent } from '@sandboxaq/switch-agent-runtime';
 import { callOperation, SESSION_SELECTOR_HEADERS } from '@sandboxaq/switch-agent-runtime/hosted';
-import { openHubStream } from '@switch-console/agent-providers';
+import { openHubStream, sealProviderLogin } from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type ControllerDeps, type ControllerExit, runController } from './controller';
+import {
+  type ControllerDeps,
+  type ControllerExit,
+  ensureRelayCredentials,
+  runController,
+} from './controller';
 import { ConfigurationError } from './errors';
 import { adoptIdentity } from './handover';
 import { silentLogger } from './log';
+import type { LocalRelay } from './relay';
 import type { AgentAssignment, StatusReport } from './schemas';
 import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
 import { ControllerStore } from './store';
@@ -345,6 +351,7 @@ describe('runController', () => {
       endpoint: `http://127.0.0.1:${port}`,
       token: 'swlr_old',
       hub: '',
+      providerLogin: null,
     });
     runtime.calls.length = 0;
     running = runController(deps(), stop.signal);
@@ -377,6 +384,7 @@ describe('runController', () => {
       endpoint: `http://127.0.0.1:${port}`,
       token: 'swlr_old',
       hub: `ws://127.0.0.1:${port}/hub`,
+      providerLogin: null,
     });
     runtime.calls.length = 0;
     running = runController(deps(), stop.signal);
@@ -459,6 +467,63 @@ describe('runController', () => {
     expect(await running).toBe('stopped');
   });
 
+  it('takes up a login given to the machine on demand, and moves its agent onto it', async () => {
+    runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the first start');
+    await waitFor(() => core.publicKey !== null, 'the machine registering its key');
+    expect(runtime.launches('agent-1')[0]!.options.isolation).toBe('shared');
+    expect(runtime.credentials.get('agent-1')?.providerLogin).toBeNull();
+
+    core.sealedLogins.set('claude', {
+      revision: 1,
+      sealed: sealProviderLogin({
+        publicKey: core.publicKey!,
+        controllerId: core.controllerId,
+        provider: 'claude',
+        login: { kind: 'setup-token', credential: 'sk-ant-oat-given' },
+      }),
+    });
+    core.addOperation({
+      id: 'op-give',
+      kind: 'provider.login',
+      agent_id: null,
+      params: { provider: 'claude', method: 'sealed', revision: 1 },
+      created_at: '2026-01-01T00:00:00Z',
+    });
+    core.push('operation.pending', {
+      operation_id: 'op-give',
+      kind: 'provider.login',
+      agent_id: null,
+    });
+    await waitFor(() => core.results.has('op-give'), 'the login taken up');
+    expect(core.results.get('op-give')).toMatchObject({
+      outcome: 'succeeded',
+      output: { provider: { auth: 'ok', auth_source: 'sealed' } },
+    });
+    await waitFor(() => runtime.launches('agent-1').length === 2, 'the agent moved onto it');
+    const moved = runtime.launches('agent-1')[1]!;
+    expect(moved.options).toMatchObject({ isolation: 'isolated', restart: true });
+    expect(moved.template.start.input.env).toMatchObject({
+      CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-given',
+    });
+    expect(runtime.credentials.get('agent-1')?.providerLogin).toMatchObject({
+      provider: 'claude',
+      revision: '1',
+    });
+    await waitFor(
+      () =>
+        core.statusReports.some(
+          (report) =>
+            report.providers.find((entry) => entry.provider === 'claude')?.auth_source === 'sealed'
+        ),
+      'a status report saying Claude is ready through the given login'
+    );
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
   it('resyncs after the stream drops and reconnects', async () => {
     core.setAssignment({ revision: 1, agents: [agent(1)] });
     running = runController(deps(), stop.signal);
@@ -477,6 +542,7 @@ describe('runController', () => {
       endpoint: 'http://127.0.0.1:1',
       token: 'swlr_k',
       hub: 'ws://127.0.0.1:1/hub',
+      providerLogin: null,
     });
     runtime.calls.length = 0;
     await core.stop();
@@ -565,5 +631,63 @@ describe('runController', () => {
     const wiped = runController(enrolled, stop.signal);
     await expect(wiped).rejects.toThrow(/revoked at/);
     await expect(wiped).rejects.toBeInstanceOf(ConfigurationError);
+  });
+});
+
+describe('ensureRelayCredentials', () => {
+  const login = {
+    status: 'connected' as const,
+    provider: 'claude' as const,
+    revision: '1',
+    kind: 'setup-token' as const,
+    credential: 'sk-ant-oat-given',
+  };
+
+  function fakeRelay() {
+    const registered = new Map<string, string>();
+    let minted = 0;
+    return {
+      registered,
+      relay: {
+        endpoint: 'http://127.0.0.1:43210',
+        hubUrl: 'ws://127.0.0.1:43210/hub',
+        isRegistered: (agentId: string, token: string) => registered.get(agentId) === token,
+        register: (agentId: string, token: string) => void registered.set(agentId, token),
+        mint: (agentId: string) => {
+          const token = `swlr_${++minted}`;
+          registered.set(agentId, token);
+          return token;
+        },
+      } as unknown as LocalRelay,
+    };
+  }
+
+  it('rewrites the file, keeping its token, when the given login changes', async () => {
+    const runtime = new FakeRuntime();
+    const { relay } = fakeRelay();
+    const deps = { runtime, relay, log: silentLogger };
+    expect(await ensureRelayCredentials('agent-1', null, deps)).toBe(true);
+    expect(await ensureRelayCredentials('agent-1', null, deps)).toBe(false);
+    expect(await ensureRelayCredentials('agent-1', login, deps)).toBe(true);
+    expect(runtime.credentials.get('agent-1')).toMatchObject({
+      token: 'swlr_1',
+      providerLogin: login,
+    });
+    expect(await ensureRelayCredentials('agent-1', login, deps)).toBe(false);
+    // The same login with its fields in another order is the same login.
+    const reordered = {
+      credential: login.credential,
+      kind: login.kind,
+      revision: login.revision,
+      provider: login.provider,
+      status: login.status,
+    };
+    expect(await ensureRelayCredentials('agent-1', reordered, deps)).toBe(false);
+    expect(await ensureRelayCredentials('agent-1', { ...login, revision: '2' }, deps)).toBe(true);
+    expect(await ensureRelayCredentials('agent-1', null, deps)).toBe(true);
+    expect(runtime.credentials.get('agent-1')).toMatchObject({
+      token: 'swlr_1',
+      providerLogin: null,
+    });
   });
 });

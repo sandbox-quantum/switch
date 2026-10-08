@@ -92,6 +92,24 @@ export { controllerConnectionId } from './host/connection-id';
 export { AGENT_ENV_VARS, EXECUTION_INHERIT_ENV } from './host/agent-env';
 export { SHARED_GROUP_ENV } from './host/host-permissions';
 export {
+  type HostedCredential,
+  hostedCredentialSchema,
+  providerLoginEnvironment,
+} from './host/provider-login';
+export { materializeHostedProvider } from './host/hosted-provider';
+export {
+  generateSealingKeyPair,
+  openProviderLogin,
+  type ProviderLogin,
+  providerLoginSchema,
+  SEALED_LOGIN_ALG,
+  type SealedLogin,
+  sealedLoginSchema,
+  sealingKeyId,
+  sealProviderLogin,
+  type SealingKeyPair,
+} from './sealed-login';
+export {
   SessionHostFailedError,
   SessionLinks,
   SessionUnavailableError,

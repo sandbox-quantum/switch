@@ -1,3 +1,4 @@
+import { providerLoginEnvironment } from '@switch-console/agent-providers';
 import { ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { isSafeSegment } from './paths';
@@ -9,6 +10,7 @@ import {
   type Provider,
   type ReasonCode,
 } from './schemas';
+import type { GivenLogin } from './sealed-logins';
 import { isCredentialFailure, LAUNCH_GRACE_MS } from './status';
 import type { AgentRow, ControllerStore } from './store';
 import { advancedConfigDefinitionProblem, buildWatcherTemplate } from './template';
@@ -200,7 +202,9 @@ export type ReconcileDeps = {
    * Makes the agent's credentials file name the relay and a token it accepts.
    * Resolves true when the file had to be (re)written.
    */
-  ensureCredentials: (agentId: string) => Promise<boolean>;
+  ensureCredentials: (agentId: string, provider: string) => Promise<boolean>;
+  /** The login Switch gave the machine for `provider`, when its agents use it rather than the machine's own. */
+  givenLogin: (provider: Provider) => Promise<GivenLogin | null>;
   /** The agent is no longer assigned here: the relay stops accepting its token. */
   forgetAgent: (agentId: string) => void;
   binaryPath: (provider: Provider) => Promise<string | null>;
@@ -231,7 +235,8 @@ export async function startAgent(
     const provider = definition.provider;
     if (!isProvider(provider))
       throw new ReasonedError('definition_invalid', `Unknown provider '${provider}'.`);
-    await deps.ensureCredentials(agentId);
+    await deps.ensureCredentials(agentId, provider);
+    const login = await deps.givenLogin(provider);
     const cwd = await deps.runtime.workingDirectory(agentId, definition.name, definition.directory);
     const binaryPath = await deps.binaryPath(provider);
     if (!binaryPath)
@@ -247,6 +252,14 @@ export async function startAgent(
       credentialsPath: deps.runtime.credentialsPath(agentId),
       binaryPath,
     });
+    // A login Switch gave the machine: its environment goes in the agent's
+    // configuration, and its files are written by the agent host, which then
+    // runs in a process of its own.
+    if (login)
+      template.start.input.env = {
+        ...template.start.input.env,
+        ...providerLoginEnvironment(deps.runtime.agentStateRoot(agentId), login),
+      };
     const observation = await deps.runtime.observe(agentId);
     const replaceIdentity =
       action.replaceIdentity ||
@@ -254,7 +267,7 @@ export async function startAgent(
         (observation.configured.provider !== provider || observation.configured.cwd !== cwd));
     const restart = action.restart || replaceIdentity;
     await deps.runtime.launch(agentId, template, {
-      isolation: definition.isolation === 'isolated' ? 'isolated' : 'shared',
+      isolation: definition.isolation === 'isolated' || login ? 'isolated' : 'shared',
       restart,
       replaceIdentity,
       clearTakenOver: action.clearTakenOver,
@@ -332,7 +345,8 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
     observations.set(entry.agent_id, await deps.runtime.observe(entry.agent_id));
     if (entry.desired_state !== 'running') continue;
     try {
-      if (await deps.ensureCredentials(entry.agent_id)) credentialsChanged.add(entry.agent_id);
+      if (await deps.ensureCredentials(entry.agent_id, entry.definition.provider))
+        credentialsChanged.add(entry.agent_id);
     } catch (error) {
       // Starting it writes them again, and records the failure on the agent.
       deps.log.error('Could not write an agent’s relay credentials', {

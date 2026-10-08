@@ -12,6 +12,7 @@ function controller(patch: Partial<ManagementController> & { id: string }): Mana
     revokedAt: null,
     providers: [],
     workspacesDir: null,
+    sealingKey: null,
     ...patch,
   };
 }
@@ -54,7 +55,7 @@ describe('ownedMachines', () => {
           workspacesDir: '/data/workspaces',
         }),
         controller({ id: 'box', state: 'unknown' }),
-        controller({ id: 'cloud-vm' }),
+        controller({ id: 'cloud-vm', sealingKey: { key: 'a2V5', keyId: 'id' } }),
         controller({ id: 'gone', state: 'revoked' }),
       ],
       { thisComputer: 'laptop', sshHosts: [{ controllerId: 'box', sshHost: 'devbox' }] }
@@ -68,6 +69,7 @@ describe('ownedMachines', () => {
         providers: [{ provider: 'claude', ready: true, problem: null }],
         workspacesDir: '/data/workspaces',
         local: { kind: 'this-computer' },
+        acceptsLogins: false,
       },
       {
         id: 'box',
@@ -77,6 +79,7 @@ describe('ownedMachines', () => {
         providers: [],
         workspacesDir: null,
         local: { kind: 'ssh-host', sshHost: 'devbox' },
+        acceptsLogins: false,
       },
       {
         id: 'cloud-vm',
@@ -86,6 +89,7 @@ describe('ownedMachines', () => {
         providers: [],
         workspacesDir: null,
         local: null,
+        acceptsLogins: true,
       },
     ]);
   });

@@ -12,6 +12,7 @@ import {
   type RelayCredentials,
 } from '../runtime';
 import type { Provider } from '../schemas';
+import type { GivenLogin } from '../sealed-logins';
 import type { LocatedProvider, ProviderLocator } from '../status';
 
 export type RuntimeCall =
@@ -27,6 +28,13 @@ export class FakeRuntime implements AgentRuntime {
   readonly credentials = new Map<string, RelayCredentials>();
   readiness: ProviderReadiness = { status: 'authenticated', message: 'Signed in.', models: [] };
   probes = 0;
+  /** What a probe with a login Switch gave the machine answers. */
+  loginReadiness: ProviderReadiness = {
+    status: 'authenticated',
+    message: 'Signed in.',
+    models: [],
+  };
+  readonly loginProbes: GivenLogin[] = [];
   /** Thrown from the next launch, once. */
   failNextLaunch: Error | null = null;
   /** What the controller gave it to open each agent's event stream. */
@@ -120,7 +128,20 @@ export class FakeRuntime implements AgentRuntime {
       observation.health = { ...observation.health, state: 'disabled', current: false };
   }
 
-  async probe(_provider: Provider, _binaryPath: string, _cwd: string): Promise<ProviderReadiness> {
+  agentStateRoot(agentId: string): string {
+    return `/data/watchers/${agentId}`;
+  }
+
+  async probe(
+    _provider: Provider,
+    _binaryPath: string,
+    _cwd: string,
+    login: GivenLogin | null
+  ): Promise<ProviderReadiness> {
+    if (login) {
+      this.loginProbes.push(login);
+      return this.loginReadiness;
+    }
     this.probes++;
     return this.readiness;
   }
