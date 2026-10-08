@@ -3,6 +3,7 @@ import { useAuth } from "../../data/AuthContext";
 import { ownsTenant } from "../../data/sessionState";
 import InvitationsSection from "./InvitationsSection";
 import MembersSection from "./MembersSection";
+import PeopleSection from "./PeopleSection";
 import RetentionSection from "./RetentionSection";
 
 export default function WorkspacePage() {
@@ -38,6 +39,7 @@ export default function WorkspacePage() {
           </Alert>
         )}
         {canAdminTenant && <RetentionSection tenantId={tenant.id} />}
+        {isOwner && <PeopleSection tenantId={tenant.id} />}
       </Stack>
     </Box>
   );

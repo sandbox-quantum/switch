@@ -1822,6 +1822,18 @@ class CollaborationCore:
             )
         return created
 
+    async def forget_human(self, external_user_id: str, transport_user_id: str) -> None:
+        """Drop what this bridge remembers about a person whose identity was erased.
+
+        Called once their rows are gone and their client is stopped. If they
+        write again they are provisioned afresh, as someone never seen before.
+        """
+        lock = self._human_actor_locks.setdefault(external_user_id, asyncio.Lock())
+        async with lock:
+            self._human_actors.pop(external_user_id, None)
+            self._names_known_good.discard(external_user_id)
+            self._human_user_ids.discard(transport_user_id)
+
     async def _create_human_actor(
         self, external_user_id: str, external_username: str
     ) -> str:

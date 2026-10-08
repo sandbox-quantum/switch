@@ -1487,3 +1487,53 @@ class RetentionPreviewResponse(BaseModel):
 
     message_retention_days: int
     messages_to_delete: int
+
+
+# ── Erasing a person ────────────────────────────────────────────────────────
+
+
+class ClaimantDetail(BaseModel):
+    user_id: str
+    name: str
+
+
+class PersonDetail(BaseModel):
+    """Someone seen in the workspace's rooms through a chat app.
+
+    `kind` is `identity` for a person on a connected app, where `id` is their
+    platform identity, or `former` for a person on an app since disconnected,
+    where `id` is the transport id their messages carry and `bridge_name` is
+    null. Erase by passing `id` in the matching list of the request.
+    """
+
+    id: str
+    kind: Literal["identity", "former"]
+    username: str
+    platform: str
+    bridge_name: str | None
+    message_count: int
+    claimed_by: list[ClaimantDetail]
+
+
+class ErasureCreateRequest(BaseModel):
+    external_user_ids: list[str] = Field(default_factory=list, max_length=50)
+    former_sender_ids: list[str] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def _names_someone(self) -> ErasureCreateRequest:
+        if not self.external_user_ids and not self.former_sender_ids:
+            raise ValueError("name at least one person to erase")
+        return self
+
+
+class ErasureDetail(BaseModel):
+    id: str
+    state: Literal["queued", "running", "done", "failed"]
+    identities: int
+    identities_erased: int
+    messages_deleted: int
+    files_deleted: int
+    error: str | None
+    requested_by_user_id: str | None
+    created_at: datetime
+    completed_at: datetime | None

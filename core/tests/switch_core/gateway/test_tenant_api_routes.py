@@ -36,6 +36,8 @@ from switch_core.db.models import (
     ApiKey,
     AuditEvent,
     Client,
+    CollaborationBridge,
+    ExternalUser,
     GitHubIssuedToken,
     HostedLaunch,
     Invitation,
@@ -51,6 +53,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import BudgetStore
+from switch_core.db.stores.erasure_store import ErasureStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.message_store import MessageStore
@@ -149,6 +152,7 @@ def _app(
     app.dependency_overrides[gw_deps.get_usage_store] = lambda: UsageStore()
     app.dependency_overrides[gw_deps.get_budget_store] = lambda: BudgetStore()
     app.dependency_overrides[gw_deps.get_retention_store] = lambda: RetentionStore()
+    app.dependency_overrides[gw_deps.get_erasure_store] = lambda: ErasureStore()
     app.dependency_overrides[gw_deps.get_protocol] = lambda: _fake_protocol()
     app.dependency_overrides[gw_deps.get_invite_mailer] = lambda: mailer
     app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: (
@@ -2515,3 +2519,198 @@ class TestRetentionRoutes:
 
         assert ninety.json() == {"message_retention_days": 90, "messages_to_delete": 1}
         assert thirty.json() == {"message_retention_days": 30, "messages_to_delete": 2}
+
+
+class TestErasureRoutes:
+    async def _member(
+        self, session_factory: async_sessionmaker[AsyncSession], name: str, role: str
+    ) -> str:
+        user_id = await _make_member(
+            session_factory, name=name, tenant_id=TENANT_A, role=role
+        )
+        return _token(user_id, f"{name}@example.invalid", TENANT_A)
+
+    async def _person(
+        self, session_factory: async_sessionmaker[AsyncSession], username: str
+    ) -> str:
+        async with tenant_session(session_factory, TENANT_A) as session:
+            bridge_client = Client(
+                transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+                display_name="bridge",
+                type="bridge",
+            )
+            person_client = Client(
+                transport_user_id=f"@{username}-{uuid.uuid4().hex[:8]}:test",
+                display_name=username,
+                type="user",
+            )
+            session.add_all([bridge_client, person_client])
+            await session.flush()
+            bridge = CollaborationBridge(
+                type="slack",
+                display_name="Acme Slack",
+                client_id=bridge_client.id,
+                status="active",
+            )
+            session.add(bridge)
+            await session.flush()
+            person = ExternalUser(
+                bridge_id=bridge.id,
+                external_user_id=f"U-{username}",
+                external_username=username,
+                client_id=person_client.id,
+            )
+            session.add(person)
+            await session.commit()
+            return person.id
+
+    async def test_an_owner_lists_people_queues_an_erasure_and_sees_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        token = await self._member(session_factory, "erase-owner", "owner")
+        person_id = await self._person(session_factory, "ana")
+
+        async with _client(_app(session_factory), token) as client:
+            people = await client.get(f"/tenants/{TENANT_A}/people")
+            queued = await client.post(
+                f"/tenants/{TENANT_A}/erasures",
+                json={"external_user_ids": [person_id]},
+            )
+            again = await client.post(
+                f"/tenants/{TENANT_A}/erasures",
+                json={"external_user_ids": [person_id]},
+            )
+            listed = await client.get(f"/tenants/{TENANT_A}/erasures")
+
+        assert people.status_code == 200
+        assert [
+            (p["username"], p["platform"], p["message_count"]) for p in people.json()
+        ] == [("ana", "slack", 0)]
+        assert queued.status_code == 202
+        assert queued.json()["state"] == "queued"
+        assert queued.json()["identities"] == 1
+        assert again.status_code == 409
+        assert [e["id"] for e in listed.json()] == [queued.json()["id"]]
+        async with tenant_session(session_factory, TENANT_A) as session:
+            actions = (
+                await session.execute(
+                    select(AuditEvent.action, AuditEvent.details).where(
+                        AuditEvent.tenant_id == TENANT_A
+                    )
+                )
+            ).all()
+        assert actions == [
+            (
+                "person_erasure.requested",
+                {"external_user_ids": [person_id], "former_participants": 0},
+            )
+        ]
+
+    async def test_a_former_participant_is_listed_and_erased(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        token = await self._member(session_factory, "erase-former", "owner")
+        sender_id = f"@switch-slack-{uuid.uuid4()}-dee:test"
+        async with tenant_session(session_factory, TENANT_A) as session:
+            room = Room(
+                transport_room_id=f"!r-{uuid.uuid4().hex[:8]}:test",
+                name="r",
+                description="r",
+            )
+            session.add(room)
+            await session.flush()
+            await MessageStore().create(
+                session,
+                Message(
+                    room_id=room.id,
+                    transport_event_id="$dee",
+                    sender_id=sender_id,
+                    sender_name="dee",
+                    event_type="m.room.message",
+                    msgtype="m.text",
+                    body="hi",
+                    content={"msgtype": "m.text", "body": "hi"},
+                ),
+                [],
+            )
+            await session.commit()
+
+        async with _client(_app(session_factory), token) as client:
+            people = await client.get(f"/tenants/{TENANT_A}/people")
+            empty = await client.post(f"/tenants/{TENANT_A}/erasures", json={})
+            queued = await client.post(
+                f"/tenants/{TENANT_A}/erasures",
+                json={"former_sender_ids": [sender_id]},
+            )
+
+        assert [
+            (p["id"], p["kind"], p["username"], p["bridge_name"], p["message_count"])
+            for p in people.json()
+        ] == [(sender_id, "former", "dee", None, 1)]
+        assert empty.status_code == 422
+        assert queued.status_code == 202
+        assert queued.json()["identities"] == 1
+
+    async def test_an_admin_cannot_erase_or_list_people(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        token = await self._member(session_factory, "erase-admin", "admin")
+        person_id = await self._person(session_factory, "ana")
+
+        async with _client(_app(session_factory), token) as client:
+            people = await client.get(f"/tenants/{TENANT_A}/people")
+            queued = await client.post(
+                f"/tenants/{TENANT_A}/erasures",
+                json={"external_user_ids": [person_id]},
+            )
+
+        assert people.status_code == 403
+        assert queued.status_code == 403
+
+    async def test_a_person_from_another_workspace_is_not_found(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        await _make_tenant(session_factory, TENANT_B)
+        token = await self._member(session_factory, "erase-cross", "owner")
+        async with tenant_session(session_factory, TENANT_B) as session:
+            other_client = Client(
+                transport_user_id=f"@b-{uuid.uuid4().hex[:8]}:test",
+                display_name="b",
+                type="bridge",
+            )
+            person_client = Client(
+                transport_user_id=f"@p-{uuid.uuid4().hex[:8]}:test",
+                display_name="p",
+                type="user",
+            )
+            session.add_all([other_client, person_client])
+            await session.flush()
+            bridge = CollaborationBridge(
+                type="slack",
+                display_name="B",
+                client_id=other_client.id,
+                status="active",
+            )
+            session.add(bridge)
+            await session.flush()
+            person = ExternalUser(
+                bridge_id=bridge.id,
+                external_user_id="U-b",
+                external_username="b",
+                client_id=person_client.id,
+            )
+            session.add(person)
+            await session.commit()
+            other_person = person.id
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.post(
+                f"/tenants/{TENANT_A}/erasures",
+                json={"external_user_ids": [other_person]},
+            )
+
+        assert response.status_code == 404

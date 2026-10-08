@@ -24,6 +24,7 @@ from switch_core.db.models import (
     MAX_MESSAGE_RETENTION_DAYS,
     GitHubIssuedToken,
     Invitation,
+    PersonErasure,
     ProviderConnection,
     Tenant,
     TenantJoinDomain,
@@ -38,6 +39,11 @@ from switch_core.db.stores.budget_store import (
     BudgetNotFound,
     BudgetStanding,
     BudgetStore,
+)
+from switch_core.db.stores.erasure_store import (
+    ErasureAlreadyQueued,
+    ErasureStore,
+    UnknownIdentity,
 )
 from switch_core.db.stores.invitation_store import (
     InvitationNotUsableError,
@@ -76,6 +82,7 @@ from switch_core.gateway.dependencies import (
     get_budget_store,
     get_client_lifecycle,
     get_config,
+    get_erasure_store,
     get_invitation_store,
     get_invite_mailer,
     get_join_domain_store,
@@ -102,7 +109,10 @@ from switch_core.gateway.schemas import (
     BudgetCreateRequest,
     BudgetResponse,
     BudgetUpdateRequest,
+    ClaimantDetail,
     CurrentTenantResponse,
+    ErasureCreateRequest,
+    ErasureDetail,
     InvitationAcceptRequest,
     InvitationCreateRequest,
     InvitationCreateResponse,
@@ -113,6 +123,7 @@ from switch_core.gateway.schemas import (
     JoinDomainsResponse,
     MemberDetail,
     MemberUpdateRequest,
+    PersonDetail,
     RetentionPolicyRequest,
     RetentionPolicyResponse,
     RetentionPreviewResponse,
@@ -925,6 +936,129 @@ async def clear_retention_policy(
         )
         await session.commit()
     return _retention_response(None, None, None)
+
+
+def _erasure_detail(erasure: PersonErasure) -> ErasureDetail:
+    return ErasureDetail(
+        id=erasure.id,
+        state=erasure.state,  # type: ignore[arg-type]
+        identities=len(erasure.external_user_ids) + len(erasure.former_sender_ids),
+        identities_erased=erasure.identities_erased,
+        messages_deleted=erasure.messages_deleted,
+        files_deleted=erasure.files_deleted,
+        error=erasure.error,
+        requested_by_user_id=erasure.requested_by_user_id,
+        created_at=erasure.created_at,
+        completed_at=erasure.completed_at,
+    )
+
+
+@router.get("/tenants/{tenant_id}/people")
+async def list_people(
+    tenant_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    erasure_store: Annotated[ErasureStore, Depends(get_erasure_store)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+    is_owner: Annotated[bool, Depends(get_tenant_is_owner)],
+) -> list[PersonDetail]:
+    """Everyone seen in the bound tenant's rooms through a chat app, with how
+    many messages each sent and which members claim them, including former
+    participants from apps since disconnected. `owner` only: this is the list
+    a person is erased from."""
+    _require_bound_tenant(tenant_id)
+    _require_owner(is_owner, "erase people")
+    people = [
+        PersonDetail(
+            id=person.external_user_id,
+            kind="identity",
+            username=person.username,
+            platform=person.platform,
+            bridge_name=person.bridge_name,
+            message_count=person.message_count,
+            claimed_by=[
+                ClaimantDetail(user_id=c.user_id, name=c.name)
+                for c in person.claimed_by
+            ],
+        )
+        for person in await erasure_store.list_people(session)
+    ]
+    people += [
+        PersonDetail(
+            id=former.sender_id,
+            kind="former",
+            username=", ".join(former.names) or former.sender_id,
+            platform=former.platform,
+            bridge_name=None,
+            message_count=former.message_count,
+            claimed_by=[],
+        )
+        for former in await erasure_store.list_former_participants(session)
+    ]
+    return sorted(people, key=lambda p: (p.username.lower(), p.id))
+
+
+@router.get("/tenants/{tenant_id}/erasures")
+async def list_erasures(
+    tenant_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    erasure_store: Annotated[ErasureStore, Depends(get_erasure_store)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+    is_owner: Annotated[bool, Depends(get_tenant_is_owner)],
+) -> list[ErasureDetail]:
+    """The bound tenant's erasure requests, newest first. `owner` only."""
+    _require_bound_tenant(tenant_id)
+    _require_owner(is_owner, "erase people")
+    return [
+        _erasure_detail(e) for e in await erasure_store.list_erasures(session, limit=50)
+    ]
+
+
+@router.post("/tenants/{tenant_id}/erasures", status_code=202)
+async def create_erasure(
+    tenant_id: str,
+    body: ErasureCreateRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    erasure_store: Annotated[ErasureStore, Depends(get_erasure_store)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+    is_owner: Annotated[bool, Depends(get_tenant_is_owner)],
+) -> ErasureDetail:
+    """Queue the erasure of one person: every message the named identities
+    sent, their files, and the identities themselves. `owner` only.
+
+    Answered once queued; the work runs in the background within seconds and
+    `GET .../erasures` reports its progress. 404 names an identity that is not
+    in this workspace; 409 means one is already being erased.
+    """
+    _require_bound_tenant(tenant_id)
+    _require_owner(is_owner, "erase people")
+    ids = list(dict.fromkeys(body.external_user_ids))
+    former_ids = list(dict.fromkeys(body.former_sender_ids))
+    try:
+        erasure = await erasure_store.queue(
+            session,
+            external_user_ids=ids,
+            former_sender_ids=former_ids,
+            requested_by_user_id=user.id,
+        )
+    except UnknownIdentity as exc:
+        raise HTTPException(
+            status_code=404, detail="Person not found in this workspace"
+        ) from exc
+    except ErasureAlreadyQueued as exc:
+        raise HTTPException(
+            status_code=409, detail="This person is already being erased"
+        ) from exc
+    await record_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.PERSON_ERASURE_REQUESTED,
+        target_type="person_erasure",
+        target_id=erasure.id,
+        details={"external_user_ids": ids, "former_participants": len(former_ids)},
+    )
+    await session.commit()
+    return _erasure_detail(erasure)
 
 
 @router.get("/tenants/{tenant_id}/invitations")

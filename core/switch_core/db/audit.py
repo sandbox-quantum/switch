@@ -41,6 +41,8 @@ class AuditAction(StrEnum):
     MESSAGING_INSTALL_DISCONNECTED = "messaging_install.disconnected"
     RETENTION_POLICY_SET = "retention_policy.set"
     RETENTION_POLICY_CLEARED = "retention_policy.cleared"
+    PERSON_ERASURE_REQUESTED = "person_erasure.requested"
+    PERSON_ERASURE_COMPLETED = "person_erasure.completed"
 
 
 async def record_audit_event(

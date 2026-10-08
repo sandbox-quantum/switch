@@ -199,7 +199,7 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
 - `docs/design/data-retention.md` — what Switch deletes: the per-workspace
   message-retention window, the orphaned-file sweep, the leftover records
   pruned after a grace period, and a GDPR design note for what is not built
-  (erasing a person, export, workspace deletion, audit-log horizon)
+  (export, workspace deletion, audit-log horizon) and how erasing a person works
 - `docs/old/rds-migration.md` — moving a deployment's Postgres to RDS: the
   proposal and the cutover runbook
 

@@ -1134,6 +1134,56 @@ export async function clearRetentionPolicy(tenantId: string): Promise<RetentionP
   );
 }
 
+// ── Erasing a person ───────────────────────────────────────────────────────
+
+export interface PersonClaimant {
+  user_id: string;
+  name: string;
+}
+
+/** `identity`: someone on a connected app, `id` is their platform identity.
+ * `former`: someone on an app since disconnected, `id` is the sender id their
+ * messages carry, and `bridge_name` is null. */
+export interface Person {
+  id: string;
+  kind: "identity" | "former";
+  username: string;
+  platform: string;
+  bridge_name: string | null;
+  message_count: number;
+  claimed_by: PersonClaimant[];
+}
+
+export type ErasureState = "queued" | "running" | "done" | "failed";
+
+export interface Erasure {
+  id: string;
+  state: ErasureState;
+  identities: number;
+  identities_erased: number;
+  messages_deleted: number;
+  files_deleted: number;
+  error: string | null;
+  requested_by_user_id: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export async function fetchPeople(tenantId: string): Promise<Person[]> {
+  return jsonRequest<Person[]>(`/tenants/${encodeURIComponent(tenantId)}/people`, "GET");
+}
+
+export async function fetchErasures(tenantId: string): Promise<Erasure[]> {
+  return jsonRequest<Erasure[]>(`/tenants/${encodeURIComponent(tenantId)}/erasures`, "GET");
+}
+
+export async function erasePeople(tenantId: string, people: Person[]): Promise<Erasure> {
+  return jsonRequest<Erasure>(`/tenants/${encodeURIComponent(tenantId)}/erasures`, "POST", {
+    external_user_ids: people.filter((p) => p.kind === "identity").map((p) => p.id),
+    former_sender_ids: people.filter((p) => p.kind === "former").map((p) => p.id),
+  });
+}
+
 export async function fetchInvitations(tenantId: string): Promise<Invitation[]> {
   return jsonRequest<Invitation[]>(
     `/tenants/${encodeURIComponent(tenantId)}/invitations`,

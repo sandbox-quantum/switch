@@ -65,6 +65,10 @@ _ALLOWED_MODULES = {
     # enumerate, then bind each tenant and work under its own policy, the same
     # shape as session-activity upkeep.
     "switch_core.retention.service",
+    # The erasure loop works every tenant's queue of person erasures:
+    # enumerate, then bind each tenant and work under its own policy, the
+    # same shape as session-activity upkeep.
+    "switch_core.retention.erasure",
     # The runtime-state sweep reads every tenant's stale rows, one tenant at a
     # time; `register_agent_with_token` resolves a registration credential by
     # its globally unique hash, which is the read that produces a tenant.
