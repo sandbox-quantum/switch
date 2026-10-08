@@ -8,8 +8,10 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackConnectionConfig,
 )
 from switch_core.bridges.collaboration.slack.avatar import (
+    SLACK_ICON_URL_MAX,
     SLACK_SURFACE,
     on_slack_background,
+    slack_icon_argument,
 )
 
 DICEBEAR = generated_icon_url("worker")
@@ -17,6 +19,14 @@ DICEBEAR = generated_icon_url("worker")
 
 def _background(url: str) -> list[str]:
     return parse_qs(urlsplit(url).query).get("backgroundColor", [])
+
+
+def _options(url: str) -> dict[str, list[str]]:
+    """Each option's values, however the URL spells a list of them."""
+    return {
+        key: [item for value in values for item in value.split(",")]
+        for key, values in parse_qs(urlsplit(url).query).items()
+    }
 
 
 def test_gives_a_dicebear_avatar_slacks_background() -> None:
@@ -27,26 +37,35 @@ def test_gives_a_dicebear_avatar_slacks_background() -> None:
 
 def test_keeps_the_rest_of_the_url_intact() -> None:
     # The seed decides which face is drawn: lose it and the agent changes face.
-    query = parse_qs(urlsplit(on_slack_background(DICEBEAR)).query)
-    original = parse_qs(urlsplit(DICEBEAR).query)
+    query = _options(on_slack_background(DICEBEAR))
     assert query["seed"] == ["worker"]
     assert {
         key: values for key, values in query.items() if key != "backgroundColor"
-    } == original
+    } == _options(DICEBEAR)
 
 
-def test_keeps_the_shapes_as_separate_parameters() -> None:
-    # DiceBear refuses a shape list whose commas arrive percent-encoded, which
-    # is what re-encoding a comma list here would produce: every agent's icon
-    # on Slack would fail to load.
+def test_writes_the_shapes_as_one_comma_list() -> None:
+    # Spelled out one parameter per shape, a generated icon runs past the 255
+    # characters Slack accepts, and Slack refuses the whole post. DiceBear
+    # draws the same image from the list, which is kept unencoded.
     adapted = on_slack_background(DICEBEAR)
     assert "%2C" not in adapted
-    assert len(parse_qs(urlsplit(adapted).query)["shapeVariant"]) > 1
+    assert parse_qs(urlsplit(adapted).query)["shapeVariant"] == [
+        ",".join(_options(DICEBEAR)["shapeVariant"])
+    ]
+
+
+def test_a_generated_icon_for_a_uuid_seed_fits_slacks_limit() -> None:
+    # Console seeds a new agent's icon with a UUID.
+    adapted = on_slack_background(
+        generated_icon_url("0faf365b-e9bc-4d38-8438-ab50087065eb")
+    )
+    assert len(adapted) <= SLACK_ICON_URL_MAX
 
 
 def test_leaves_a_background_that_was_already_chosen() -> None:
     chosen = f"{DICEBEAR}&backgroundColor=ff0000"
-    assert on_slack_background(chosen) == chosen
+    assert _background(on_slack_background(chosen)) == ["ff0000"]
 
 
 def test_leaves_an_operators_own_image_alone() -> None:
@@ -93,3 +112,15 @@ def test_the_slack_adapter_applies_it_to_a_resolved_icon() -> None:
 
     resolved = asyncio.run(adapter.agent_icon_url("worker"))
     assert _background(resolved) == [SLACK_SURFACE]
+
+
+def test_hands_slack_an_icon_url_up_to_its_limit() -> None:
+    at_limit = "https://example.com/" + "a" * (SLACK_ICON_URL_MAX - 20)
+    assert len(at_limit) == SLACK_ICON_URL_MAX
+    assert slack_icon_argument(at_limit, "worker") == at_limit
+
+
+def test_sends_no_icon_url_past_slacks_limit() -> None:
+    # Slack refuses the post itself over this, so the message would be lost.
+    over = "https://example.com/" + "a" * (SLACK_ICON_URL_MAX - 19)
+    assert slack_icon_argument(over, "worker") is None
