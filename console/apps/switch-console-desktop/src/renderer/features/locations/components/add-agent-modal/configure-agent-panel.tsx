@@ -241,7 +241,11 @@ export function AgentIdentityFields({
           size={84}
         />
         <span className="text-xs text-foreground-muted">
-          {form.iconIsGenerated ? 'Automatically generated' : 'Custom icon'}
+          {form.iconUrl === null && form.thirdPartyAvatarsEnabled === false
+            ? 'No icon'
+            : form.iconIsGenerated
+              ? 'Automatically generated'
+              : 'Custom icon'}
         </span>
       </div>
 

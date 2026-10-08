@@ -1423,6 +1423,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Console follows a server that keeps names away from avatar services.** On a
+  server with `THIRD_PARTY_AVATARS_ENABLED=false`, Console no longer loads
+  DiceBear or ui-avatars.com images for that server's agents and shows their
+  initials instead. Its icon picker offers only an image link, new agents are
+  created without a generated icon, and it no longer writes generated icons
+  onto existing agents. Until it has heard from a server, Console shows initials
+  rather than send a name. Agents on servers that leave the setting on look as
+  before. Older versions of Console load those images whatever the server says.
 - **Switch cloud on the agents controller.** On a server whose cloud machines
   run the agents controller, choosing Switch cloud in the New agent form starts
   your cloud machine and waits for it to come online (its first start takes a

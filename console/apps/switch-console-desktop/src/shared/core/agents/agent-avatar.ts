@@ -88,6 +88,53 @@ function sequentialSeeds(agentName: string, round: number, count: number): strin
   return Array.from({ length: count }, (_, index) => `${agentName}-${round}-${index}`);
 }
 
+/** The services `isThirdPartyAvatarUrl` matches, any host under them included. */
+const THIRD_PARTY_AVATAR_SERVICES = ['dicebear.com', 'ui-avatars.com'];
+
+/**
+ * Whether `url` is drawn by an outside avatar service: DiceBear, which draws
+ * the generated faces, or ui-avatars.com, which Switch uses for a person
+ * relayed from another platform. Those services see whatever is in the URL and
+ * the address of whoever loads it.
+ *
+ * The server draws the same line (`is_third_party_avatar` in
+ * `core/switch_core/agent_icon.py`) for `THIRD_PARTY_AVATARS_ENABLED`, so the
+ * two must agree, or this app would load an icon the server withholds from
+ * Slack. An unparseable URL names neither service.
+ */
+export function isThirdPartyAvatarUrl(url: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  // A trailing dot names the same host.
+  const host = hostname.replace(/\.+$/, '');
+  return THIRD_PARTY_AVATAR_SERVICES.some(
+    (service) => host === service || host.endsWith(`.${service}`)
+  );
+}
+
+/**
+ * The URL `AgentAvatar` should load, or null to show initials.
+ *
+ * `thirdPartyAvatarsEnabled` is the agent's server's setting, or null while it
+ * is not known. Unknown behaves as disabled, so no name leaves the machine
+ * before the server has said it may.
+ */
+export function resolveAgentAvatarSrc(
+  iconUrl: string | null,
+  name: string,
+  thirdPartyAvatarsEnabled: boolean | null
+): string | null {
+  if (thirdPartyAvatarsEnabled === true) {
+    return iconUrl ?? agentAvatarUrlForName(name);
+  }
+  // An icon on any other host still shows.
+  return iconUrl !== null && !isThirdPartyAvatarUrl(iconUrl) ? iconUrl : null;
+}
+
 /**
  * The letters shown when an agent has no picture to draw — either because the
  * image failed to load or because nothing has been chosen and no name-derived

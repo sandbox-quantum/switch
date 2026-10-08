@@ -211,6 +211,7 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
                   <ChosenAgentTile
                     key={agent.id}
                     agent={agent}
+                    serverId={serverId}
                     subtitle={agentProviderLabel(agent.providerId)}
                     onRemove={() =>
                       setSelected((current) => current.filter((a) => a.id !== agent.id))
@@ -228,7 +229,11 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
               }}
               searchText={(item) => item.name}
               renderItem={(item) => (
-                <AgentPickerRow agent={item} subtitle={agentProviderLabel(item.providerId)} />
+                <AgentPickerRow
+                  agent={item}
+                  serverId={serverId}
+                  subtitle={agentProviderLabel(item.providerId)}
+                />
               )}
               disabled={nothingToAdd}
               placeholder="Search agents to add..."

@@ -308,6 +308,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
                   <ChosenAgentTile
                     key={agent.id}
                     agent={agent}
+                    serverId={serverId || null}
                     subtitle={providerLabel(agent.id)}
                     onRemove={() =>
                       setAgents((current) => current.filter((a) => a.id !== agent.id))
@@ -322,7 +323,11 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               onPick={(next) => setAgents((current) => [...current, next])}
               searchText={(item) => item.name}
               renderItem={(item) => (
-                <AgentPickerRow agent={item} subtitle={providerLabel(item.id)} />
+                <AgentPickerRow
+                  agent={item}
+                  serverId={serverId || null}
+                  subtitle={providerLabel(item.id)}
+                />
               )}
               disabled={agentsQuery.isLoading}
               placeholder={agentsQuery.isLoading ? 'Loading agents…' : 'Search agents to add...'}

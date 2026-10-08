@@ -314,6 +314,7 @@ const RoomRow = observer(function RoomRow({
                     <AgentAvatar
                       name={agent.name}
                       iconUrl={remoteById.get(agent.switchAgentId ?? '')?.iconUrl ?? null}
+                      serverId={serverId}
                       size={22}
                     />
                   </span>

@@ -6,6 +6,7 @@ import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation, getLocationByHostDir } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
+import { type AvatarSettings, fetchAvatarSettings } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
@@ -15,7 +16,7 @@ import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { db } from '@main/db/client';
 import { agents as agentsTable } from '@main/db/schema';
-import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
+import { agentAvatarUrlForName, isThirdPartyAvatarUrl } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -305,21 +306,46 @@ export async function writeNewAgentConfigFile(
   );
 }
 
+/**
+ * The icon to register a new agent with: the one the form chose, or the
+ * name-generated avatar when nothing was chosen — but only when the owning
+ * server allows a name to be sent to DiceBear for that. A server that
+ * disables third-party avatars gets `null` instead, even when
+ * `requestedIconUrl` already carries a third-party URL: the new-agent form
+ * opens on a random DiceBear avatar before anything is known about where the
+ * agent will land, and this is the one place every create path passes through
+ * on the way to the gateway, so it is the backstop regardless of what the
+ * form's own privacy check already caught.
+ */
+function resolveNewAgentIconUrl(
+  requestedIconUrl: string | null,
+  name: string,
+  avatarSettings: AvatarSettings
+): string | null {
+  if (avatarSettings.thirdPartyAvatarsEnabled) {
+    return requestedIconUrl ?? agentAvatarUrlForName(name);
+  }
+  return requestedIconUrl !== null && !isThirdPartyAvatarUrl(requestedIconUrl)
+    ? requestedIconUrl
+    : null;
+}
+
 async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
   const checked = await checkNewAgent(params);
   if (checked.kind !== 'ok') return reportFailedCreate(params, checked);
   const { server, workspace: targetWorkspace, slotAgentId } = checked;
 
-  const registered = await withWorkspaceSession(targetWorkspace.id, (target) =>
-    registerAgentIdentity(target, {
+  const registered = await withWorkspaceSession(targetWorkspace.id, async (target) => {
+    const avatarSettings = await fetchAvatarSettings(target);
+    return registerAgentIdentity(target, {
       name: params.name,
       description: params.description,
       displayName: params.displayName,
       repoDir: params.dir,
       agentType: knownAgentTypeForProvider(params.providerId),
-      iconUrl: params.iconUrl ?? agentAvatarUrlForName(params.name),
-    })
-  );
+      iconUrl: resolveNewAgentIconUrl(params.iconUrl, params.name, avatarSettings),
+    });
+  });
   if (registered.kind !== 'created') return reportFailedCreate(params, registered);
 
   const workdir = await resolveWorkdirFsFor(params.sshHost, params.dir);

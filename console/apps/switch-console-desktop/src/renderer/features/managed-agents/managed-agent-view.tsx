@@ -46,6 +46,7 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
                 <AgentAvatar
                   name={label}
                   iconUrl={agent?.iconUrl ?? null}
+                  serverId={params.serverId}
                   size={16}
                   className="bg-transparent"
                 />
