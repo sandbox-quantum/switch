@@ -40,6 +40,7 @@ export function ownedMachines(
         state: controller.state,
         providers: controller.providers.map(machineProvider),
         acceptsLogins: controller.sealingKey !== null,
+        cloud: controller.kind === 'ec2',
         workspacesDir: controller.workspacesDir,
         local:
           controller.id === local.thisComputer

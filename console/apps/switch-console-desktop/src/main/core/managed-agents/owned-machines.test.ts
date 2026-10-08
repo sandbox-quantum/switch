@@ -70,6 +70,7 @@ describe('ownedMachines', () => {
         workspacesDir: '/data/workspaces',
         local: { kind: 'this-computer' },
         acceptsLogins: false,
+        cloud: false,
       },
       {
         id: 'box',
@@ -80,6 +81,7 @@ describe('ownedMachines', () => {
         workspacesDir: null,
         local: { kind: 'ssh-host', sshHost: 'devbox' },
         acceptsLogins: false,
+        cloud: false,
       },
       {
         id: 'cloud-vm',
@@ -90,7 +92,16 @@ describe('ownedMachines', () => {
         workspacesDir: null,
         local: null,
         acceptsLogins: true,
+        cloud: false,
       },
     ]);
+  });
+
+  it('marks the owner’s Switch cloud machine', () => {
+    const [cloud] = ownedMachines([controller({ id: 'ec2', kind: 'ec2' })], {
+      thisComputer: null,
+      sshHosts: [],
+    });
+    expect(cloud?.cloud).toBe(true);
   });
 });
