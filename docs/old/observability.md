@@ -113,7 +113,10 @@ readiness never gated on it.
 
 A steady `switch.runtime.event_loop_lag` of one or two milliseconds is the
 floor, not a stall: it is how far past its deadline a timer normally wakes.
-The alert on it fires at a thousand times that.
+The alert on it fires at a thousand times that. The reading comes from a probe
+that wakes every 100 ms, so a stall longer than that is always caught and read
+to within 100 ms. `switch.runtime.event_loop_stalls` counts each stall of 50 ms
+or more by duration, which says how often the loop blocks, not only how badly.
 
 **What this does not exercise.** A bare server has no rooms, no agents and no
 bridges, so nine of the twenty-five metrics never appear — everything under

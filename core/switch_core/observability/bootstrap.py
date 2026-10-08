@@ -59,6 +59,7 @@ from switch_core.observability.runtime import (
     GcPauses,
     RuntimeMetrics,
     log_unreadable_sources,
+    watch_event_loop,
 )
 from switch_core.transport.room_cache import RoomCacheStats
 from switch_core.version import switch_core_commit, switch_core_repository_url
@@ -217,6 +218,7 @@ def start_observability(
     gc_pauses = GcPauses()
     gc_pauses.install()
     RuntimeMetrics(lag, gc_pauses).install(registry)
+    tasks.append(asyncio.create_task(watch_event_loop(lag), name="event-loop-probe"))
     registry.register_observer(_state_readings(probes))
     log_unreadable_sources()
 
