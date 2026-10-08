@@ -263,7 +263,7 @@ describe('runControllerStream', () => {
     scripted.sockets = () => scriptedSocket([refused(409, 'stale_generation')], 4409);
     const stop = new AbortController();
     const { ending } = run(scripted, stop.signal);
-    await waitFor(() => scripted.opens.length === 2, 'a second open');
+    await waitFor(() => scripted.opens.length >= 2, 'a second open');
     stop.abort();
     await ending;
   });
@@ -277,7 +277,7 @@ describe('runControllerStream', () => {
       );
     const stop = new AbortController();
     const { ending } = run(scripted, stop.signal);
-    await waitFor(() => scripted.opens.length === 2, 'a second open');
+    await waitFor(() => scripted.opens.length >= 2, 'a second open');
     stop.abort();
     expect(await ending).toBe('stopped');
   });
