@@ -72,9 +72,23 @@ class ChatEnvelope(CamelModel):
 
 
 class CreateChatRequest(CamelModel):
-    agent_id: str
+    """`agentIds` names the chat's agents; `agentId` is the one-agent form
+    earlier clients send. Exactly one of the two is given."""
+
+    agent_id: str | None = None
+    agent_ids: list[str] | None = None
     name: str | None = None
     request_id: str
+
+    def chosen_agents(self) -> list[str]:
+        if (self.agent_id is None) == (self.agent_ids is None):
+            raise ChatError(
+                422,
+                "AGENTS_REQUIRED",
+                "Name the chat's agents in agentIds, or one in agentId; not both.",
+            )
+        ids = [self.agent_id] if self.agent_id is not None else self.agent_ids or []
+        return list(dict.fromkeys(ids))
 
 
 class MessagePage(CamelModel):
@@ -159,7 +173,7 @@ async def create_chat(
     room = await service.create_chat(
         tenant_id,
         user,
-        agent_id=req.agent_id,
+        agent_ids=req.chosen_agents(),
         name=req.name,
         request_id=req.request_id,
     )

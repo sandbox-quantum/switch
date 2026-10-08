@@ -548,17 +548,27 @@ class ChatService:
         tenant_id: str,
         user: User,
         *,
-        agent_id: str,
+        agent_ids: list[str],
         name: str | None,
         request_id: str,
     ) -> Room:
-        """A private direct room with the agent, owned by and joined by the user.
+        """A private room with the agents, owned by and joined by the user.
+
+        One agent makes a direct room, which addresses it without a mention.
+        Several make a private channel, where a message names the agent it is
+        for. Every agent must be one the user may address.
 
         Retrying with the same request id finishes whatever an earlier attempt
         left undone: the room is found by the operation id stamped on it, and
-        the agent's and the user's memberships are re-applied.
+        the agents' and the user's memberships are re-applied.
         """
-        payload_hash = _hash({"agentId": agent_id, "name": name})
+        if not agent_ids:
+            raise ChatError(422, "AGENTS_REQUIRED", "A chat needs at least one agent.")
+        payload_hash = _hash(
+            {"agentId": agent_ids[0], "name": name}
+            if len(agent_ids) == 1
+            else {"agentIds": agent_ids, "name": name}
+        )
         async with self._lock("create", tenant_id, user.id):
             async with tenant_session(self.session_factory, tenant_id) as session:
                 operation = await self._operation(session, user.id, request_id)
@@ -569,9 +579,12 @@ class ChatService:
                             session, tenant_id, user, operation.room_id
                         )
                         return room
-                agent = await self._require_may_use_agent(
-                    session, tenant_id, user, agent_id
-                )
+                agents = [
+                    await self._require_may_use_agent(
+                        session, tenant_id, user, agent_id
+                    )
+                    for agent_id in agent_ids
+                ]
                 if operation is None:
                     await self._claim(
                         session,
@@ -597,10 +610,16 @@ class ChatService:
                     created = await self._room_service.create_room(
                         RoomCreateConfig(
                             name=name
-                            or f"Chat with {agent.display_name or agent.name}",
-                            description=f"Switch Console chat with {agent.name}",
-                            agent_ids=[agent.id],
-                            channel_type="direct",
+                            or "Chat with "
+                            + ", ".join(
+                                agent.display_name or agent.name for agent in agents
+                            ),
+                            description="Switch Console chat with "
+                            + ", ".join(agent.name for agent in agents),
+                            agent_ids=[agent.id for agent in agents],
+                            channel_type=(
+                                "direct" if len(agents) == 1 else "channel_private"
+                            ),
                             internal_only=True,
                             created_by=user.id,
                             owner_id=user.id,

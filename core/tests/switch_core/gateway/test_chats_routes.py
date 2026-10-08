@@ -482,6 +482,87 @@ async def test_creating_twice_with_one_request_id_creates_one_chat(
         assert await session.scalar(select(func.count()).select_from(Room)) == 1
 
 
+async def test_several_agents_make_a_private_channel_with_all_of_them(
+    chats: _Harness,
+) -> None:
+    helper = await chats.agent("helper", owner=chats.alice)
+    other = await chats.agent("other", owner=chats.alice)
+    response = await chats.client.post(
+        "/chats",
+        json={"agentIds": [helper.id, other.id, helper.id], "requestId": "c1"},
+        headers=chats.as_user(chats.alice),
+    )
+    assert response.status_code == 200, response.text
+    chat = response.json()["chat"]
+    assert chat["channelType"] == "channel_private"
+    assert chat["bridgeType"] is None
+    assert sorted(a["id"] for a in chat["agents"]) == sorted([helper.id, other.id])
+    assert chat["name"] == "Chat with helper, other"
+
+    async with chats.factory() as session:
+        clients = set(await RoomStore().get_client_ids(session, chat["roomId"]))
+        member = await chats.service.member_client(session, chats.alice.id)
+        assert member is not None
+        assert {member.id, helper.client_id, other.client_id} <= clients
+
+    sent = await chats.send(
+        chats.alice, chat["roomId"], "s1", "your turn", mentionAgentId=other.id
+    )
+    assert sent.json()["messages"][0]["body"] == "@other your turn"
+
+
+async def test_a_chat_with_several_agents_needs_every_one_allowed(
+    chats: _Harness,
+) -> None:
+    open_agent = await chats.agent("helper", owner=chats.alice)
+    private = await chats.agent(
+        "private", owner=chats.alice, policy=owner_only_policy([]).model_dump()
+    )
+    refused = await chats.client.post(
+        "/chats",
+        json={"agentIds": [open_agent.id, private.id], "requestId": "c1"},
+        headers=chats.as_user(chats.bob),
+    )
+    assert refused.status_code == 403
+    assert _code(refused) == "AGENT_NOT_ALLOWED"
+    async with chats.factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Room)) == 0
+
+
+async def test_the_agents_are_part_of_a_create_request(chats: _Harness) -> None:
+    helper = await chats.agent("helper", owner=chats.alice)
+    other = await chats.agent("other", owner=chats.alice)
+
+    def create(agent_ids: list[str]) -> Any:
+        return chats.client.post(
+            "/chats",
+            json={"agentIds": agent_ids, "requestId": "c1"},
+            headers=chats.as_user(chats.alice),
+        )
+
+    first = await create([helper.id, other.id])
+    assert first.status_code == 200, first.text
+    again = await create([helper.id, other.id])
+    assert again.json()["chat"]["roomId"] == first.json()["chat"]["roomId"]
+    changed = await create([helper.id])
+    assert changed.status_code == 409
+    assert _code(changed) == "REQUEST_REUSED"
+
+
+async def test_a_create_names_its_agents_one_way(chats: _Harness) -> None:
+    helper = await chats.agent("helper", owner=chats.alice)
+    for body in (
+        {"requestId": "c1"},
+        {"requestId": "c2", "agentIds": []},
+        {"requestId": "c3", "agentId": helper.id, "agentIds": [helper.id]},
+    ):
+        response = await chats.client.post(
+            "/chats", json=body, headers=chats.as_user(chats.alice)
+        )
+        assert response.status_code == 422, body
+        assert _code(response) == "AGENTS_REQUIRED"
+
+
 async def test_a_create_that_stopped_after_the_room_committed_is_repaired(
     chats: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
