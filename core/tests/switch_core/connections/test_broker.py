@@ -428,7 +428,7 @@ class TestChecks:
         world = await _world(session_factory)
         async with session_factory() as session:
             other = await _user(session, "bob")
-            await _connect(session, other.id)
+            await _connect(session, other.id, account_id="2002")
             await session.execute(
                 delete(ServiceGrant).where(ServiceGrant.id == world.grant.id)
             )
@@ -441,7 +441,7 @@ class TestChecks:
                 tool_mode="allow",
                 tools=[],
                 resources=RESOURCES,
-                account_id="1001",
+                account_id="2002",
                 created_by=other.id,
             )
             await session.commit()

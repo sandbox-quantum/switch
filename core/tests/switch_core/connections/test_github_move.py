@@ -19,6 +19,7 @@ import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.connections import github_move
 from switch_core.connections.github_move import MOVE, move_github_connections
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -277,3 +278,80 @@ async def test_each_tenant_is_moved_on_its_own(
     }
     assert markers["tenant-b"] == {}
     assert markers[TENANT_ZERO_ID]["connections"] == 1
+
+
+async def test_a_rerun_keeps_the_rows_already_there(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The marker gone (a downgrade of its table) while the moved rows stayed."""
+    await _old_world(session_factory, credential=_credential())
+    await _move(session_factory)
+    async with session_factory() as session:
+        await session.execute(delete(TenantDataMove))
+        await session.commit()
+
+    await _move(session_factory)
+
+    assert len(await _rows(session_factory, ServiceConnection)) == 1
+    assert len(await _rows(session_factory, ServiceGrant)) == 1
+    assert len(await _rows(session_factory, ServiceTokenIssuance)) == 1
+    [marker] = await _rows(session_factory, TenantDataMove)
+    assert marker.details["connections"] == 0
+    assert marker.details["connections_skipped"] == 1
+    assert marker.details["grants_skipped"] == 1
+    assert marker.details["tokens_skipped"] == 1
+
+
+async def test_a_second_person_on_the_same_github_account_is_skipped_loudly(
+    session_factory: async_sessionmaker[AsyncSession], caplog
+) -> None:
+    caplog.set_level(logging.WARNING)
+    world = await _old_world(session_factory, credential=_credential())
+    async with session_factory() as session:
+        other = await _user(session, "grace")
+        session.add(
+            ProviderConnection(
+                user_id=other.id,
+                provider="github",
+                kind="oauth",
+                encrypted_credential=_credential(),
+                verified_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    await _move(session_factory)
+
+    connections = await _rows(session_factory, ServiceConnection)
+    assert len(connections) == 1
+    assert connections[0].user_id in (world["owner"], other.id)
+    [marker] = await _rows(session_factory, TenantDataMove)
+    assert marker.details["connections_skipped"] == 1
+    assert "already has" in caplog.text
+
+
+async def test_a_failing_tenant_does_not_stop_the_others(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch, caplog
+) -> None:
+    await _old_world(session_factory, credential=_credential())
+    async with session_factory() as session:
+        session.add(Tenant(id="tenant-b", slug="tenant-b", name="B"))
+        await session.commit()
+    real = github_move._move
+
+    async def failing(session, keyring, tenant_id):
+        if tenant_id == "tenant-b":
+            raise RuntimeError("synthetic failure")
+        return await real(session, keyring, tenant_id)
+
+    monkeypatch.setattr(github_move, "_move", failing)
+    caplog.set_level(logging.ERROR)
+
+    await move_github_connections(
+        session_factory, TEST_KEYRING, ["tenant-b", TENANT_ZERO_ID]
+    )
+
+    assert len(await _rows(session_factory, ServiceConnection)) == 1
+    markers = {m.tenant_id for m in await _rows(session_factory, TenantDataMove)}
+    assert markers == {TENANT_ZERO_ID}
+    assert "tenant-b" in caplog.text

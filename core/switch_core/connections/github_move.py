@@ -21,7 +21,13 @@ the release that can still be rolled back to.
 
 A row that cannot be read is skipped, never guessed at: it is logged, naming
 the tenant and the user but nothing of the value, and counted. That person
-sees GitHub as not connected and connects it again.
+sees GitHub as not connected and connects it again. So is a row the new tables
+already hold (the marker downgraded away while they stayed), and a second
+person linked to a GitHub account someone else's row already has: what is
+there wins.
+
+A tenant whose move fails is rolled back, marker and all, and logged; the
+other tenants still move, and the failed one is tried again at the next boot.
 """
 
 from __future__ import annotations
@@ -62,6 +68,7 @@ async def move_github_connections(
     tenant_ids: list[str],
 ) -> None:
     """Carry out the move in every tenant that has not had it."""
+    failed: list[str] = []
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             if await session.get(TenantDataMove, (tenant_id, MOVE)) is not None:
@@ -74,12 +81,29 @@ async def move_github_connections(
                 # Another boot claimed this tenant first, and has moved it.
                 await session.rollback()
                 continue
-            counts = await _move(session, keyring, tenant_id)
-            marker.details = counts
-            await session.commit()
+            try:
+                counts = await _move(session, keyring, tenant_id)
+                marker.details = counts
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                logger.exception(
+                    "GitHub move onto service connections failed in tenant %s; "
+                    "nothing was moved there, and the next boot tries again.",
+                    tenant_id,
+                )
+                failed.append(tenant_id)
+                continue
         skipped = sum(v for k, v in counts.items() if k.endswith("_skipped"))
         log = logger.warning if skipped else logger.info
         log("GitHub moved onto service connections in tenant %s: %s", tenant_id, counts)
+    if failed:
+        logger.error(
+            "GitHub move failed in %d tenant(s), whose people see GitHub as not "
+            "connected until it succeeds: %s",
+            len(failed),
+            ", ".join(failed),
+        )
 
 
 async def _move(
@@ -95,7 +119,16 @@ async def _move(
         "tokens_skipped": 0,
     }
 
-    accounts: dict[str, str] = {}
+    existing = {
+        row.user_id: row.account_id
+        for row in await session.scalars(
+            select(ServiceConnection).where(
+                ServiceConnection.tenant_id == tenant_id,
+                ServiceConnection.service == "github",
+            )
+        )
+    }
+    accounts: dict[str, str] = dict(existing)
     rows = await session.scalars(
         select(ProviderConnection).where(
             ProviderConnection.tenant_id == tenant_id,
@@ -114,6 +147,25 @@ async def _move(
             counts["connections_skipped"] += 1
             continue
         account_id, login = identity
+        if row.user_id in existing:
+            logger.warning(
+                "GitHub connection not moved, already there: tenant=%s user=%s.",
+                tenant_id,
+                row.user_id,
+            )
+            counts["connections_skipped"] += 1
+            continue
+        holder = next((u for u, a in accounts.items() if a == account_id), None)
+        if holder is not None:
+            logger.error(
+                "GitHub connection not moved: tenant=%s user=%s links the GitHub "
+                "account user=%s already has. They must connect another account.",
+                tenant_id,
+                row.user_id,
+                holder,
+            )
+            counts["connections_skipped"] += 1
+            continue
         session.add(
             ServiceConnection(
                 tenant_id=tenant_id,
@@ -140,7 +192,14 @@ async def _move(
         )
     }
     grants: dict[str, ServiceGrant] = {}
-    granted_agents: set[str] = set()
+    granted_agents: set[str] = set(
+        await session.scalars(
+            select(ServiceGrant.agent_id).where(
+                ServiceGrant.tenant_id == tenant_id,
+                ServiceGrant.service == "github",
+            )
+        )
+    )
     for launch in launches.values():
         if launch.agent_id is None or launch.state in ("deleting", "deleted"):
             continue
@@ -191,6 +250,14 @@ async def _move(
         counts["grants"] += 1
     await session.flush()
 
+    recorded = set(
+        await session.scalars(
+            select(ServiceTokenIssuance.token_sha256).where(
+                ServiceTokenIssuance.tenant_id == tenant_id,
+                ServiceTokenIssuance.service == "github",
+            )
+        )
+    )
     now = datetime.now(UTC)
     tokens = await session.scalars(
         select(GitHubIssuedToken).where(
@@ -210,6 +277,10 @@ async def _move(
                 type(error).__name__,
                 token.expires_at.isoformat(),
             )
+            counts["tokens_skipped"] += 1
+            continue
+        token_sha256 = hashlib.sha256(plaintext.encode()).hexdigest()
+        if token_sha256 in recorded:
             counts["tokens_skipped"] += 1
             continue
         issued_by = launches.get(token.launch_id)
@@ -242,7 +313,7 @@ async def _move(
                     {} if issued_by is None else _launch_resources(issued_by) or {}
                 ),
                 expires_at=token.expires_at,
-                token_sha256=hashlib.sha256(plaintext.encode()).hexdigest(),
+                token_sha256=token_sha256,
                 encrypted_token=token.encrypted_token,
                 revoke_requested=not live,
                 attempts=token.attempts,

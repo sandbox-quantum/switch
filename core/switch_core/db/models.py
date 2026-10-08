@@ -3287,6 +3287,10 @@ class ServiceConnection(TenantScoped, Base):
     __tablename__ = "service_connections"
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "user_id", "service"),
+        # One Switch user per vendor account in a workspace.
+        UniqueConstraint(
+            "tenant_id", "service", "account_id", name="uq_service_connections_account"
+        ),
         CheckConstraint(
             "status IN ('active', 'needs_reauthorization', 'error')",
             name="ck_service_connections_status",
@@ -3354,6 +3358,8 @@ class ServiceGrant(TenantScoped, Base):
             name="fk_service_grants_connection",
             ondelete="CASCADE",
         ),
+        # The cascade from a disconnect, and every grant lookup by connection.
+        Index("ix_service_grants_connection", "tenant_id", "owner_id", "service"),
         CheckConstraint("access IN ('read', 'write')", name="ck_service_grants_access"),
         CheckConstraint(
             "tool_mode IN ('allow', 'deny')", name="ck_service_grants_tool_mode"
