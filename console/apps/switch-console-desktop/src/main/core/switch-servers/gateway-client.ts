@@ -32,6 +32,12 @@ import {
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
 import { cloudProviderConnectionSchema } from '@shared/core/switch-servers/provider-credential';
 import {
+  SERVICE_CALLBACK_PATH,
+  type ServiceFlowStart,
+  serviceFlowSchema,
+  serviceFlowStartSchema,
+} from '@shared/core/switch-servers/service-connection';
+import {
   type ServiceGrants,
   serviceGrantWarningSchema,
   serviceGrantsSchema,
@@ -2623,6 +2629,97 @@ export async function disconnectGitHub(server: SwitchServer) {
     method: 'DELETE',
   });
   if (response.status === 204) return { warning: null };
+  return z.object({ warning: z.string().nullable() }).parse(await response.json());
+}
+
+const serviceFlows = (service: string) =>
+  `/service-connections/${encodeURIComponent(service)}/flows`;
+
+/**
+ * Begin signing in to `service` through Switch's generic OAuth flow. The URL
+ * the browser is sent to is checked: Core's own authorize step on this server,
+ * or the vendor's page returning to this Console's listener with this state.
+ */
+export async function startServiceConnection(
+  server: SwitchServer,
+  service: string,
+  input: { port: number; state: string; completion_secret: string }
+): Promise<ServiceFlowStart> {
+  if (new URL(server.gatewayUrl).protocol !== 'https:')
+    throw new Error('Service connections require HTTPS.');
+  const value = serviceFlowStartSchema.parse(
+    await (
+      await gatewayFetch(server, serviceFlows(service), {
+        authenticated: true,
+        method: 'POST',
+        body: input,
+      })
+    ).json()
+  );
+  const url = new URL(value.url);
+  const valid =
+    value.id === input.state &&
+    !url.username &&
+    !url.password &&
+    (value.mode === 'core'
+      ? url.origin === new URL(server.gatewayUrl).origin &&
+        url.pathname === `/gateway${serviceFlows(service)}/authorize` &&
+        url.searchParams.get('state') === value.id
+      : url.protocol === 'https:' &&
+        url.searchParams.get('state') === value.id &&
+        url.searchParams.get('redirect_uri') ===
+          `http://127.0.0.1:${input.port}${SERVICE_CALLBACK_PATH}`);
+  if (!valid) throw new Error('The server returned an invalid sign-in URL.');
+  return value;
+}
+export async function getServiceFlow(server: SwitchServer, service: string, id: string) {
+  return serviceFlowSchema.parse(
+    await (
+      await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}`, {
+        authenticated: true,
+      })
+    ).json()
+  );
+}
+export async function completeServiceConnection(
+  server: SwitchServer,
+  service: string,
+  id: string,
+  code: string,
+  completionSecret: string
+) {
+  await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}/complete`, {
+    authenticated: true,
+    method: 'POST',
+    body: { code, completion_secret: completionSecret },
+  });
+}
+export async function confirmServiceConnection(
+  server: SwitchServer,
+  service: string,
+  id: string,
+  completionSecret: string
+) {
+  const response = await gatewayFetch(
+    server,
+    `${serviceFlows(service)}/${encodeURIComponent(id)}/confirm`,
+    { authenticated: true, method: 'POST', body: { completion_secret: completionSecret } }
+  );
+  return z.object({ warning: z.string().nullable() }).parse(await response.json());
+}
+export async function cancelServiceConnection(server: SwitchServer, service: string, id: string) {
+  await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
+/** Disconnect `service`: its grants go with it, and what was issued is revoked. */
+export async function disconnectService(server: SwitchServer, service: string) {
+  const response = await gatewayFetch(
+    server,
+    `/service-connections/${encodeURIComponent(service)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
   return z.object({ warning: z.string().nullable() }).parse(await response.json());
 }
 

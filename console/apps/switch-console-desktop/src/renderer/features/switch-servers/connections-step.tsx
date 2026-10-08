@@ -15,6 +15,7 @@ import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connect
 import { ConnectionIcon } from './connection-icon';
 import { filterConnections } from './connections-filter';
 import { ManagedGitHubStep } from './managed-github-step';
+import { ServiceConnectStep } from './service-connect-step';
 
 const STATUS_LABEL: Record<ConnectionCatalogEntry['status'], string> = {
   connected: 'Connected',
@@ -98,8 +99,7 @@ export function ConnectionsGrid({
             className="grid max-h-96 grid-cols-2 gap-2 overflow-auto"
           >
             {visible.map((connection) => {
-              // GitHub is the one service with a connect step here.
-              const available = connection.connectable && connection.slug === 'github';
+              const available = connection.connectable;
               return (
                 <button
                   key={connection.slug}
@@ -163,19 +163,22 @@ export function ConnectionsStep({
   const catalog = useConnectionCatalog(serverId);
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState<string | null>(null);
+  const back = () => {
+    setOpen(null);
+    void catalog.reload();
+  };
 
   if (open === 'github')
     return (
       <ManagedGitHubStep
         serverId={serverId}
-        onBack={() => {
-          setOpen(null);
-          void catalog.reload();
-        }}
+        onBack={back}
         onSkip={onSkip}
         onContinue={onContinue}
       />
     );
+  const opened = catalog.connections?.find((connection) => connection.slug === open);
+  if (opened) return <ServiceConnectStep serverId={serverId} connection={opened} onBack={back} />;
 
   const githubConnected = catalog.connections?.some(
     (connection) => connection.slug === 'github' && connection.status === 'connected'

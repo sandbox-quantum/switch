@@ -26,6 +26,9 @@ const switchServers = vi.hoisted(() => ({
   getConnectionCatalog: vi.fn(),
   getGitHubConnection: vi.fn(),
   servesServiceConnections: vi.fn(),
+  startServiceConnection: vi.fn(),
+  getServiceFlow: vi.fn(),
+  confirmServiceConnection: vi.fn(),
 }));
 
 vi.mock('@renderer/lib/ipc', () => ({
@@ -271,4 +274,38 @@ it('opens the GitHub step from the grid and returns to it', async () => {
     expect(dialog()!.querySelector('[role="group"][aria-label="Connections"]')).not.toBeNull()
   );
   expect(switchServers.getConnectionCatalog).toHaveBeenCalledTimes(2);
+});
+
+it('connects any connectable service through the generic sign-in', async () => {
+  sdkHost.cloudAgents.mockResolvedValue([]);
+  switchServers.getConnectionCatalog.mockResolvedValue([
+    ...CATALOG,
+    entry('example', 'Example', true, 'not_connected'),
+  ]);
+  switchServers.startServiceConnection.mockResolvedValue('flow-1');
+  switchServers.getServiceFlow.mockResolvedValue({
+    status: 'ready',
+    account: 'ada@example.test',
+    error: null,
+  });
+  switchServers.confirmServiceConnection.mockResolvedValue({ warning: null });
+  await render();
+  const modal = await openConnections();
+  await vi.waitFor(() => expect(button(/Example/, modal)?.disabled).toBe(false));
+
+  await act(async () => button(/Example/, modal)!.click());
+  await vi.waitFor(() => expect(button(/^connect example/i, dialog()!)).toBeDefined());
+  expect(switchServers.getGitHubConnection).not.toHaveBeenCalled();
+  await act(async () => button(/^connect example/i, dialog()!)!.click());
+  expect(switchServers.startServiceConnection).toHaveBeenCalledWith('server', 'example');
+
+  await vi.waitFor(() => expect(dialog()!.textContent).toMatch(/Signed in as ada@example\.test/));
+  await act(async () => button(/^connect ada@example\.test/i, dialog()!)!.click());
+  expect(switchServers.confirmServiceConnection).toHaveBeenCalledWith(
+    'server',
+    'example',
+    'flow-1'
+  );
+  await vi.waitFor(() => expect(dialog()!.textContent).toMatch(/Example connected/));
+  expect(button(/^disconnect$/i, dialog()!)).toBeDefined();
 });

@@ -58,6 +58,10 @@ const {
   startGitHubConnection,
   completeGitHubConnection,
   confirmGitHubConnection,
+  startServiceConnection,
+  completeServiceConnection,
+  confirmServiceConnection,
+  disconnectService,
   getClaudeConnection,
   connectClaude,
   disconnectClaude,
@@ -1280,6 +1284,98 @@ describe('GitHub connection transport', () => {
     expect((fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit])[1].method).toBe(
       'DELETE'
     );
+  });
+});
+
+describe('a service sign-in', () => {
+  const state = 'a'.repeat(43);
+  const input = { port: 12345, state, completion_secret: 'b'.repeat(43) };
+  const flows = 'https://switch.example.com/gateway/service-connections/example/flows';
+  const vendor = (query: Record<string, string>) =>
+    `https://auth.example.test/authorize?${new URLSearchParams(query)}`;
+  const answer = (body: object) =>
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(body)));
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(7200));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('starts, completes and confirms on the service’s own routes', async () => {
+    answer({
+      id: state,
+      mode: 'loopback',
+      url: vendor({ state, redirect_uri: 'http://127.0.0.1:12345/switch-services/callback' }),
+    });
+    expect((await startServiceConnection(SERVER, 'example', input)).mode).toBe('loopback');
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await completeServiceConnection(SERVER, 'example', state, 'SYNTHETIC-CODE', 'b'.repeat(43));
+    answer({ warning: null, consent: 'write' });
+    expect(await confirmServiceConnection(SERVER, 'example', state, 'b'.repeat(43))).toEqual({
+      warning: null,
+    });
+    const calls = fetchMock.mock.calls as unknown as [string, RequestInit][];
+    expect(calls.map(([url]) => url)).toEqual([
+      flows,
+      `${flows}/${state}/complete`,
+      `${flows}/${state}/confirm`,
+    ]);
+    expect(calls.map(([, init]) => JSON.parse(init.body as string))).toEqual([
+      input,
+      { code: 'SYNTHETIC-CODE', completion_secret: 'b'.repeat(43) },
+      { completion_secret: 'b'.repeat(43) },
+    ]);
+  });
+
+  it('accepts Core’s own authorize step on this server in core mode', async () => {
+    answer({ id: state, mode: 'core', url: `${flows}/authorize?state=${state}` });
+    expect((await startServiceConnection(SERVER, 'example', input)).url).toBe(
+      `${flows}/authorize?state=${state}`
+    );
+  });
+
+  it.each([
+    [
+      'another server in core mode',
+      'core',
+      `https://other.example.com/gateway/service-connections/example/flows/authorize?state=${state}`,
+    ],
+    [
+      'a vendor page returning elsewhere',
+      'loopback',
+      vendor({ state, redirect_uri: 'https://attacker.example/cb' }),
+    ],
+    [
+      'a vendor page returning to another port',
+      'loopback',
+      vendor({ state, redirect_uri: 'http://127.0.0.1:1/switch-services/callback' }),
+    ],
+    [
+      'a vendor page with another state',
+      'loopback',
+      vendor({ state: 'wrong', redirect_uri: 'http://127.0.0.1:12345/switch-services/callback' }),
+    ],
+    [
+      'a vendor page over plain HTTP',
+      'loopback',
+      `http://auth.example.test/authorize?state=${state}&redirect_uri=${encodeURIComponent('http://127.0.0.1:12345/switch-services/callback')}`,
+    ],
+  ])('refuses %s', async (_name, mode, url) => {
+    answer({ id: state, mode, url });
+    await expect(startServiceConnection(SERVER, 'example', input)).rejects.toThrow(
+      'invalid sign-in URL'
+    );
+  });
+
+  it('disconnects through the service’s connection', async () => {
+    answer({ warning: 'Revoke it in your Example settings.' });
+    expect(await disconnectService(SERVER, 'example')).toEqual({
+      warning: 'Revoke it in your Example settings.',
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/service-connections/example');
+    expect(init.method).toBe('DELETE');
   });
 });
 
