@@ -224,6 +224,13 @@ class BridgeStartRefused(RuntimeError):
     """
 
 
+class BridgeNotRunning(RuntimeError):
+    """What was asked needs the bridge running, and it is not.
+
+    Usually the moment of a restart, so worth trying again shortly.
+    """
+
+
 class BridgeOperationError(RuntimeError):
     """A platform refused an operation the bridge asked it to perform.
 
