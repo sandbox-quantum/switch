@@ -29,6 +29,11 @@ export interface ProviderRuntime {
   id: string;
   /** The command a person runs on the execution machine to sign the CLI in. */
   loginCommand: string;
+  /**
+   * Environment variables the CLI reads (credentials, endpoints) that a
+   * session host passes through from the machine's environment.
+   */
+  inheritEnv: readonly string[];
   createAdapter(options: ProviderRuntimeOptions): ProviderAdapter;
   /** Whether the CLI is signed in, answered without signing it in. */
   checkSignIn(input: SignInCheckInput): Promise<ProviderReadiness>;
@@ -39,6 +44,7 @@ export function acpProviderRuntime(hooks: AcpProviderHooks): ProviderRuntime {
   return {
     id: hooks.provider,
     loginCommand: hooks.loginCommand,
+    inheritEnv: hooks.inheritEnv ?? [],
     createAdapter: ({ binaryPath, logger }) => createAcpAdapter(hooks, { binaryPath, logger }),
     checkSignIn: (input) => checkAcpSignIn(hooks, input),
   };
@@ -54,6 +60,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
   {
     id: 'claude',
     loginCommand: CLAUDE_LOGIN,
+    inheritEnv: [],
     createAdapter: ({ binaryPath, logger }) =>
       createClaudeAdapter({ claudeExecutablePath: binaryPath, ...(logger ? { logger } : {}) }),
     checkSignIn: checkClaudeSignIn,
@@ -61,6 +68,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
   {
     id: 'codex',
     loginCommand: CODEX_LOGIN,
+    inheritEnv: [],
     createAdapter: ({ binaryPath, logger }) =>
       createCodexAdapter({ binaryPath, ...(logger ? { logger } : {}) }),
     checkSignIn: checkCodexSignIn,
@@ -68,6 +76,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
   {
     id: 'opencode',
     loginCommand: OPENCODE_LOGIN,
+    inheritEnv: [],
     createAdapter: ({ binaryPath, logger, skill }) =>
       createOpencodeAdapter({
         binaryPath,

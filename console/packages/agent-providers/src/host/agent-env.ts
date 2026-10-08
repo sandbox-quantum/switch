@@ -1,3 +1,5 @@
+import { PROVIDER_RUNTIMES } from '../providers/registry';
+
 export const AGENT_ENV_VARS = [
   'ALL_PROXY',
   'ANTHROPIC_API_KEY',
@@ -63,11 +65,12 @@ export const AGENT_ENV_VARS = [
 
 /**
  * What a session host's `execution.inheritEnv` names: the provider variables
- * above plus the basics a CLI needs to find itself, its home and its terminal.
+ * above, those each registered provider's runtime asks for, and the basics a
+ * CLI needs to find itself, its home and its terminal.
  * Console and the headless agents controller both launch hosts with it.
  */
 export const EXECUTION_INHERIT_ENV: readonly string[] = [
-  ...AGENT_ENV_VARS,
+  ...new Set([...AGENT_ENV_VARS, ...PROVIDER_RUNTIMES.flatMap((runtime) => runtime.inheritEnv)]),
   'PATH',
   'HOME',
   'USER',

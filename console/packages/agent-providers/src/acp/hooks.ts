@@ -97,6 +97,12 @@ export interface AcpProviderHooks {
   /** The command a person runs on the execution machine to sign the CLI in. */
   loginCommand: string;
   /**
+   * Environment variables the CLI reads (an API key, an endpoint) that a
+   * session host should pass through from the machine's environment. The
+   * common vendor keys are already passed through for every provider.
+   */
+  inheritEnv?: readonly string[];
+  /**
    * Whether the CLI is signed in, answered without signing it in: a check
    * must never be what changes its answer. `handshake` runs the agent and
    * returns its `initialize` answer. Without this hook the check runs the
