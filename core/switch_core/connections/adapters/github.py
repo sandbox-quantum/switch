@@ -152,18 +152,17 @@ class GitHubAdapter:
     ) -> dict[str, Any]:
         installation_id, repository_ids = _reach(request.resources)
         try:
-            installations = await self._connections.repositories(access_token)
+            reached = await self._connections.installation_repositories(
+                access_token, installation_id, set(repository_ids)
+            )
         except GitHubError as error:
             raise _vendor_error(error) from None
-        installation = next(
-            (i for i in installations if i["id"] == installation_id), None
-        )
-        if installation is None:
+        if reached is None:
             raise ServiceAdapterError(
                 "Your GitHub account no longer reaches the chosen installation of "
                 "the GitHub App."
             )
-        visible = {repo["id"]: repo for repo in installation["repositories"]}
+        visible = {repo["id"]: repo for repo in reached}
         unseen = [i for i in repository_ids if i not in visible]
         if unseen:
             raise ServiceAdapterError(

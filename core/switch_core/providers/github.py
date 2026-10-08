@@ -26,6 +26,33 @@ class GitHubAuthorizationError(GitHubError):
     pass
 
 
+class GitHubNotFoundError(GitHubError):
+    pass
+
+
+# How far a check of one installation pages before it gives up: 10,000
+# repositories, against the 1,000 the picker lists across them all.
+INSTALLATION_PAGES = 100
+
+
+def _repository(repo: object) -> dict:
+    if (
+        not isinstance(repo, dict)
+        or type(repo.get("id")) is not int
+        or not isinstance(repo.get("full_name"), str)
+    ):
+        raise GitHubError("GitHub returned an invalid repository.")
+    permissions = repo.get("permissions", {})
+    return {
+        "id": repo["id"],
+        "name": repo["full_name"],
+        "permissions": {
+            key: isinstance(permissions, dict) and permissions.get(key) is True
+            for key in ("push", "maintain", "admin")
+        },
+    }
+
+
 def rate_limited(response: httpx.Response) -> bool:
     return response.status_code == 429 or (
         response.status_code == 403
@@ -184,6 +211,10 @@ class GitHubConnections:
                 raise GitHubError(
                     "GitHub access was refused. Check repository permissions, organization sign-in, and the App installation."
                 )
+            if response.status_code == 404:
+                raise GitHubNotFoundError(
+                    "GitHub could not complete the request. Check access and try again."
+                )
             if not response.is_success:
                 raise GitHubError(
                     "GitHub could not complete the request. Check access and try again."
@@ -316,26 +347,7 @@ class GitHubConnections:
                 "repositories",
                 token,
             )
-            selected = []
-            for repo in repositories:
-                if (
-                    not isinstance(repo, dict)
-                    or type(repo.get("id")) is not int
-                    or not isinstance(repo.get("full_name"), str)
-                ):
-                    raise GitHubError("GitHub returned an invalid repository.")
-                permissions = repo.get("permissions", {})
-                selected.append(
-                    {
-                        "id": repo["id"],
-                        "name": repo["full_name"],
-                        "permissions": {
-                            key: isinstance(permissions, dict)
-                            and permissions.get(key) is True
-                            for key in ("push", "maintain", "admin")
-                        },
-                    }
-                )
+            selected = [_repository(repo) for repo in repositories]
             result.append(
                 {
                     "id": installation_id,
@@ -344,3 +356,42 @@ class GitHubConnections:
                 }
             )
         return result
+
+    async def installation_repositories(
+        self, token: str, installation_id: int, wanted: set[int]
+    ) -> list[dict] | None:
+        """Those of `wanted` the person reaches through one installation of
+        the App, or None when they no longer reach the installation.
+
+        Pages only that installation, and stops once every one of `wanted` is
+        found, so a large installation elsewhere costs nothing.
+        """
+        missing = set(wanted)
+        found: list[dict] = []
+        for page in range(1, INSTALLATION_PAGES + 1):
+            if not missing:
+                return found
+            try:
+                result = await self.request(
+                    "GET",
+                    f"https://api.github.com/user/installations/{installation_id}"
+                    f"/repositories?per_page=100&page={page}",
+                    token=token,
+                    data=None,
+                )
+            except GitHubNotFoundError:
+                return None
+            batch = result.get("repositories")
+            if not isinstance(batch, list):
+                raise GitHubError("GitHub returned an invalid repository list.")
+            for repo in map(_repository, batch):
+                if repo["id"] in missing:
+                    missing.discard(repo["id"])
+                    found.append(repo)
+            if len(batch) < 100:
+                return found
+        raise GitHubError(
+            "This GitHub App installation reaches more than "
+            f"{INSTALLATION_PAGES * 100} repositories. Limit the app's repository "
+            "access and try again."
+        )
