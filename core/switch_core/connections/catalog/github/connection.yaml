@@ -3,14 +3,17 @@ name: GitHub
 category: Source control
 description: Clone, branch, push and open pull requests in the repository you grant.
 enabled: true
+adapter: github
 auth:
   type: oauth
   refresh: rotating
+token: { kind: minted, max_lifetime: 3600 }
 access:
   read:
     permissions: { contents: read, pull_requests: read }
   write:
     permissions: { contents: write, pull_requests: write }
 tools:
+  mode: listed
   read: []
   write: []

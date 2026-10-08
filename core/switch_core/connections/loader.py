@@ -6,10 +6,15 @@ each session of an agent granted the service is given; placeholder entries
 ship none. The catalog is validated once, at import, so a malformed
 entry stops the server rather than surfacing on the first launch.
 
-An enabled entry also says what each access level reaches (``access``: OAuth
-scopes, or GitHub App permissions), which of the service's tools each level
-offers (``tools``), and how its sign-in is refreshed (``auth.refresh``).
-Placeholder entries may leave those out.
+An enabled entry also names the adapter that reaches the vendor (``adapter``:
+``github``, or the generic ``oauth-mcp``), says what each access level reaches
+(``access``: OAuth scopes, or GitHub App permissions), which of the service's
+tools each level offers (``tools``), how its sign-in is refreshed
+(``auth.refresh``) and what a token it hands out is (``token``). An
+``oauth-mcp`` entry also says how its OAuth client is had and where a sign-in
+may return (``auth.oauth``), how the account's stable id is read
+(``auth.identity``), and the vendor's MCP servers (``mcp``). Placeholder
+entries may leave all of those out.
 """
 
 import re
@@ -23,6 +28,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 CATALOG_ROOT = Path(__file__).parent / "catalog"
 MAX_SKILL_BYTES = 32 * 1024
 SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]{0,62}$"
+HTTPS_URL_PATTERN = r"^https://[^\s/?#]+[^\s#]*$"
+JSON_PATH_PATTERN = r"^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$"
+# A minted token is made for the one issue, so the broker holds it to the hour
+# every token it hands out was always held to.
+MINTED_MAX_LIFETIME = 3600
 SKILL_PATH_RE = re.compile(
     r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}(/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}){0,7}$"
 )
@@ -40,6 +50,57 @@ class CatalogError(RuntimeError):
 AccessLevel = Literal["read", "write"]
 
 
+AdapterName = Literal["github", "oauth-mcp"]
+RedirectMode = Literal["loopback", "core"]
+
+
+class OAuthClient(BaseModel):
+    """How Core has its OAuth client at the vendor, and where a sign-in returns.
+
+    `registration`: `static`, a client the operator registers and names in
+    `<client_settings>_CLIENT_CONFIG_PATH`; or `dynamic`, one Core registers
+    itself on first connect and stores. `redirect`: where the browser may come
+    back with the code, `core` (Core's own callback) or `loopback` (Switch
+    Console's listener on 127.0.0.1), in the order offered. Without
+    `authorization_url` and `token_url`, both are discovered from the MCP
+    server's metadata. `revocation_url` is where a disconnect revokes the
+    sign-in, where the vendor has one.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    registration: Literal["dynamic", "static"]
+    client_settings: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{0,62}$")
+    redirect: list[RedirectMode] = Field(min_length=1)
+    authorization_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    token_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "OAuthClient":
+        if (self.registration == "static") != (self.client_settings is not None):
+            raise ValueError(
+                "client_settings names a static client's settings, and only one's"
+            )
+        if len(set(self.redirect)) != len(self.redirect):
+            raise ValueError("a redirect mode is listed twice")
+        if (self.authorization_url is None) != (self.token_url is None):
+            raise ValueError(
+                "authorization_url and token_url are given together, or discovered"
+            )
+        return self
+
+
+class ConnectionIdentity(BaseModel):
+    """Where the account's stable id is read: a GET of `url` with the access
+    token, and the dotted paths in its JSON answer to the id and to a label
+    people recognise (an email, a login)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    url: str = Field(pattern=HTTPS_URL_PATTERN)
+    account_id: str = Field(pattern=JSON_PATH_PATTERN)
+    label: str = Field(pattern=JSON_PATH_PATTERN)
+
+
 class ConnectionAuth(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     type: Literal["oauth", "api_key"]
@@ -47,6 +108,54 @@ class ConnectionAuth(BaseModel):
     # one, so two refreshes must never race. reusable: the refresh token
     # survives its use. none: the stored secret is used as it is.
     refresh: Literal["rotating", "reusable", "none"] | None = None
+    oauth: OAuthClient | None = None
+    identity: ConnectionIdentity | None = None
+
+
+class TokenPolicy(BaseModel):
+    """What a token the broker hands out is.
+
+    `minted`: made for the one issue and narrowed to the grant (GitHub's
+    installation tokens). `pass_through`: the owner's own access token, shared
+    by every agent they grant, which can be neither narrowed nor revoked per
+    agent. `max_lifetime`, in seconds, is the longest the vendor's token may
+    live; a longer one is refused.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    kind: Literal["minted", "pass_through"]
+    max_lifetime: int = Field(ge=300, le=7 * 24 * 3600)
+
+    @model_validator(mode="after")
+    def _minted_within_the_hour(self) -> "TokenPolicy":
+        if self.kind == "minted" and self.max_lifetime > MINTED_MAX_LIFETIME:
+            raise ValueError(
+                f"a minted token lives at most {MINTED_MAX_LIFETIME} seconds"
+            )
+        return self
+
+
+class McpServer(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    name: str = Field(pattern=SLUG_PATTERN)
+    url: str = Field(pattern=HTTPS_URL_PATTERN)
+
+
+class ConnectionMcp(BaseModel):
+    """The vendor's MCP servers a session calls, each under its own name."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    servers: list[McpServer] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _distinct(self) -> "ConnectionMcp":
+        names = [server.name for server in self.servers]
+        if len(set(names)) != len(names):
+            raise ValueError("two MCP servers share a name")
+        # The session's own Switch server goes by this name.
+        if "switch" in names:
+            raise ValueError("an MCP server may not be named switch")
+        return self
 
 
 class LevelAccess(BaseModel):
@@ -72,14 +181,26 @@ class ConnectionAccess(BaseModel):
 
 
 class ConnectionTools(BaseModel):
-    """The service's tools by level. A write grant gets both lists."""
+    """The service's tools by level.
+
+    `listed`: each level's tools are named, and a write grant gets both lists.
+    `pass_through`: the vendor's own tool list is offered as it is, until its
+    tools are classified by level.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    read: list[str]
-    write: list[str]
+    mode: Literal["listed", "pass_through"]
+    read: list[str] | None = None
+    write: list[str] | None = None
 
     @model_validator(mode="after")
     def _disjoint(self) -> "ConnectionTools":
+        if self.mode == "pass_through":
+            if self.read is not None or self.write is not None:
+                raise ValueError("pass_through tools are not listed by level")
+            return self
+        if self.read is None or self.write is None:
+            raise ValueError("listed tools name a read and a write list")
         both = sorted(set(self.read) & set(self.write))
         if both:
             raise ValueError(f"tools listed under both read and write: {both}")
@@ -93,7 +214,10 @@ class ConnectionDefinition(BaseModel):
     category: str = Field(min_length=1, max_length=64)
     description: str = Field(min_length=1, max_length=200, pattern=r"^[^\n]+$")
     enabled: bool
+    adapter: AdapterName | None = None
     auth: ConnectionAuth
+    token: TokenPolicy | None = None
+    mcp: ConnectionMcp | None = None
     access: ConnectionAccess | None = None
     tools: ConnectionTools | None = None
 
@@ -103,6 +227,8 @@ class ConnectionDefinition(BaseModel):
             missing = [
                 name
                 for name, value in (
+                    ("adapter", self.adapter),
+                    ("token", self.token),
                     ("access", self.access),
                     ("tools", self.tools),
                     ("auth.refresh", self.auth.refresh),
@@ -111,11 +237,53 @@ class ConnectionDefinition(BaseModel):
             ]
             if missing:
                 raise ValueError(f"an enabled entry needs {', '.join(missing)}")
+        if self.adapter == "github":
+            self._check_github()
+        elif self.adapter == "oauth-mcp":
+            self._check_oauth_mcp()
         return self
 
+    def _check_github(self) -> None:
+        if self.auth.oauth is not None or self.auth.identity is not None:
+            raise ValueError(
+                "the github adapter takes its client from the GitHub App settings"
+            )
+        if self.mcp is not None:
+            raise ValueError("the github adapter has no MCP servers")
+        if self.token is not None and self.token.kind != "minted":
+            raise ValueError("the github adapter mints its tokens")
+
+    def _check_oauth_mcp(self) -> None:
+        if self.auth.type != "oauth":
+            raise ValueError("the oauth-mcp adapter signs in with OAuth")
+        if self.enabled:
+            missing = [
+                name
+                for name, value in (
+                    ("auth.oauth", self.auth.oauth),
+                    ("auth.identity", self.auth.identity),
+                    ("mcp", self.mcp),
+                )
+                if value is None
+            ]
+            if missing:
+                raise ValueError(f"an oauth-mcp entry needs {', '.join(missing)}")
+        if self.auth.refresh not in (None, "rotating", "reusable"):
+            raise ValueError("an oauth-mcp sign-in is refreshed: rotating or reusable")
+        if self.token is not None and self.token.kind != "pass_through":
+            raise ValueError("the oauth-mcp adapter passes the owner's token through")
+        if self.tools is not None and self.tools.mode != "pass_through":
+            raise ValueError("an oauth-mcp entry's tools pass through until classified")
+        if self.access is not None and any(
+            level is not None and level.scopes is None
+            for level in (self.access.read, self.access.write)
+        ):
+            raise ValueError("an oauth-mcp entry's levels name OAuth scopes")
+
     def level_tools(self, access: AccessLevel) -> list[str]:
-        """Every tool a grant at `access` may be given."""
-        if self.tools is None:
+        """Every tool a grant at `access` may be given. None are named while
+        the vendor's tools pass through."""
+        if self.tools is None or self.tools.read is None or self.tools.write is None:
             return []
         if access == "read":
             return list(self.tools.read)
