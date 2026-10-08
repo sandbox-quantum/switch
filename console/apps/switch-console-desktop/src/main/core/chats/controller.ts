@@ -173,7 +173,7 @@ export const chatsController = createRPCController({
   list: (serverId: string): Promise<ChatSummary[]> => onServer(serverId, listChats),
   create: (params: {
     serverId: string;
-    agentId: string;
+    agentIds: string[];
     name: string | null;
     requestId: string;
   }): Promise<ChatSummary> => onServer(params.serverId, (server) => createChat(server, params)),

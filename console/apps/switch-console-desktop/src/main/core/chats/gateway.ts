@@ -79,11 +79,20 @@ export async function listChats(server: SwitchServer): Promise<ChatSummary[]> {
   return (await json(server, '/chats', chatListSchema)).chats;
 }
 
+/**
+ * One agent goes as `agentId`, which every server with chats accepts; only a
+ * chat with several needs `agentIds`.
+ */
 export async function createChat(
   server: SwitchServer,
-  input: { agentId: string; name: string | null; requestId: string }
+  input: { agentIds: string[]; name: string | null; requestId: string }
 ): Promise<ChatSummary> {
-  const body: Record<string, string> = { agentId: input.agentId, requestId: input.requestId };
+  const body: Record<string, string | string[]> = {
+    ...(input.agentIds.length === 1
+      ? { agentId: input.agentIds[0] }
+      : { agentIds: input.agentIds }),
+    requestId: input.requestId,
+  };
   if (input.name) body.name = input.name;
   return (await json(server, '/chats', chatCreatedSchema, { method: 'POST', body })).chat;
 }
