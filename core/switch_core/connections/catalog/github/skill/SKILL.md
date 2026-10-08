@@ -16,12 +16,21 @@ work on your own branches.
 - `gh` on your `PATH` is a wrapper that gets a fresh, short-lived token for
   every call. The `git` credential helper does the same for HTTPS to
   github.com. There is nothing to sign in to or renew.
-- `gh` picks the account from, in this order: `-R owner/repo`, `GH_REPO`,
-  and the `origin` remote of the current directory. If only one account is
+- `gh` picks the account from the owner of, in this order: `-R owner/repo`
+  (or `--repo`), the `owner/repo` that `gh repo <command>` names (as in
+  `gh repo clone owner/repo`), `GH_REPO`, and the github.com `origin` remote
+  of the current directory. If none names one and only one account is
   granted, it uses that one. When several accounts are granted, pass
-  `-R owner/repo` (or set `GH_REPO`) outside a clone. The error tells you the
-  granted accounts.
-- To list the repositories of an account you can reach:
+  `-R owner/repo` (or set `GH_REPO`, e.g. for `gh api`) outside a clone. The
+  error tells you the granted accounts.
+- To see the granted accounts, and for each one "all repositories" or the
+  selected ones (or why it is unavailable):
+
+  ```sh
+  sh -c "$(git config --get credential.https://github.com.helper | sed 's/^!//; s/ --git-credential$/ --list/')"
+  ```
+
+  To list every repository of an account granted all repositories:
 
   ```sh
   GH_REPO=<account>/<any-repo> gh api /installation/repositories --paginate --jq '.repositories[].full_name'
