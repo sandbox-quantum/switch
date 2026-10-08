@@ -185,11 +185,19 @@ export async function archiveChat(server: SwitchServer, roomId: string): Promise
   await call(server, `${room(roomId)}/archive`, { method: 'POST' });
 }
 
+/**
+ * The synthetic account that owns agents registered with the deployment's
+ * bootstrap key (`BOOTSTRAP_OWNER_EMAIL` in core's `registration_bootstrap.py`).
+ * It never signs in, so it is nobody to invite. Core holds this address fixed
+ * and refuses to start if any other account claims it.
+ */
+const BOOTSTRAP_OWNER_EMAIL = 'agent-bootstrap@switch.local';
+
 const tenantMembersSchema = z.array(
   z.object({ user_id: z.string(), name: z.string(), email: z.string() })
 );
 
-/** The workspace's members, whom a chat's managers may invite. */
+/** The workspace's people, whom a chat's managers may invite. */
 export async function fetchTenantMembers(
   server: SwitchServer,
   tenantId: string
@@ -199,7 +207,9 @@ export async function fetchTenantMembers(
     `/tenants/${encodeURIComponent(tenantId)}/members`,
     tenantMembersSchema
   );
-  return members.map((member) => ({ userId: member.user_id, name: member.name || member.email }));
+  return members
+    .filter((member) => member.email !== BOOTSTRAP_OWNER_EMAIL)
+    .map((member) => ({ userId: member.user_id, name: member.name || member.email }));
 }
 
 /** Rename uses the room route: a chat's name is its room's name. */
