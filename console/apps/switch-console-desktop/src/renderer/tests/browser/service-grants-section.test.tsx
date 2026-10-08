@@ -14,15 +14,15 @@ import { OWNER_ONLY_POLICY, type ServiceGrants } from '@shared/core/switch-serve
 const agents = vi.hoisted(() => ({ getAgents: vi.fn() }));
 const workspaces = vi.hoisted(() => ({
   getServiceGrants: vi.fn(),
+  getGitHubConnection: vi.fn(),
   setServiceGrant: vi.fn(),
   removeServiceGrant: vi.fn(),
   updateAddressingPolicy: vi.fn(),
 }));
-const switchServers = vi.hoisted(() => ({ getGitHubConnection: vi.fn() }));
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { agents, workspaces, switchServers },
+  rpc: { agents, workspaces },
 }));
 
 import {
@@ -64,12 +64,7 @@ let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 beforeEach(() => {
-  for (const mock of [
-    agents.getAgents,
-    ...Object.values(workspaces),
-    switchServers.getGitHubConnection,
-  ])
-    mock.mockReset();
+  for (const mock of [agents.getAgents, ...Object.values(workspaces)]) mock.mockReset();
   agents.getAgents.mockResolvedValue([
     {
       id: 'local-agent',
@@ -79,7 +74,7 @@ beforeEach(() => {
       switchAgentId: 'agent',
     },
   ]);
-  switchServers.getGitHubConnection.mockResolvedValue(GITHUB);
+  workspaces.getGitHubConnection.mockResolvedValue(GITHUB);
   workspaces.setServiceGrant.mockResolvedValue(null);
   workspaces.removeServiceGrant.mockResolvedValue(null);
   workspaces.updateAddressingPolicy.mockResolvedValue(undefined);
@@ -140,6 +135,23 @@ it('makes the agent owner-only from the warning', async () => {
       policy: OWNER_ONLY_POLICY,
     })
   );
+});
+
+it('says what removing a grant does, and does not, on your computer', async () => {
+  workspaces.getServiceGrants.mockResolvedValue(GRANTED);
+  const el = await render();
+
+  await vi.waitFor(() => expect(button(el, 'Remove')).toBeDefined());
+  expect(button(el, 'Remove')!.title).toContain('may still use your own sign-in');
+  await act(async () => button(el, 'Remove')!.click());
+  await vi.waitFor(() =>
+    expect(el.textContent).toContain('Removing a grant stops Switch giving this access.')
+  );
+  expect(workspaces.removeServiceGrant).toHaveBeenCalledWith({
+    workspaceId: 'workspace',
+    agentId: 'agent',
+    service: 'github',
+  });
 });
 
 it("restores a cloud agent's missing repository grant in one click", async () => {
@@ -208,12 +220,26 @@ it('grants GitHub on the repositories picked, for reading unless asked', async (
 });
 
 it('draws nothing for someone who does not own the agent', async () => {
-  workspaces.getServiceGrants.mockRejectedValue(new Error('Switch gateway returned 404'));
+  workspaces.getServiceGrants.mockResolvedValue(null);
   const el = await render();
 
   await vi.waitFor(() => expect(workspaces.getServiceGrants).toHaveBeenCalled());
   await act(async () => {});
   expect(el.textContent).toBe('');
+});
+
+it('says so when the grants could not be loaded', async () => {
+  workspaces.getServiceGrants.mockRejectedValue(new Error('Switch gateway returned 500'));
+  const el = await render();
+
+  await vi.waitFor(() => expect(el.textContent).toContain('Switch gateway returned 500'));
+});
+
+it("reads the GitHub connection of the agent's own workspace", async () => {
+  workspaces.getServiceGrants.mockResolvedValue(GRANTED);
+  await render();
+
+  await vi.waitFor(() => expect(workspaces.getGitHubConnection).toHaveBeenCalledWith('workspace'));
 });
 
 it("says only what applies to a cloud agent's GitHub grant", async () => {
@@ -225,13 +251,7 @@ it("says only what applies to a cloud agent's GitHub grant", async () => {
   await act(async () =>
     root!.render(
       <QueryClientProvider client={client}>
-        <ServiceGrantsRow
-          workspaceId="workspace"
-          serverId="server"
-          agentId="agent"
-          agentName="reviewer"
-          cloud
-        />
+        <ServiceGrantsRow workspaceId="workspace" agentId="agent" agentName="reviewer" cloud />
       </QueryClientProvider>
     )
   );

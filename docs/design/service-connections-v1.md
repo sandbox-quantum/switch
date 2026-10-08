@@ -293,7 +293,9 @@ Both are mounted with the other agent routes in
   grant, a plain summary of its reach ("Build bot can read and push to 2
   repositories, acting as the GitHub App"; the screens add the repositories'
   names from the owner's GitHub connection), `missing`, and `addressing_open`
-  (`AddressingPolicy.is_open()`), for the warning below. `missing` names a
+  (`AddressingPolicy.admits_others()`: an open policy, or any rule that
+  admits every human or agent, whatever its rooms, a human by an identity the
+  owner has not claimed, or another person's agent), for the warning below. `missing` names a
   grant the agent works without: a live cloud launch with a repository and no
   GitHub grant (the launch could not make it, or someone removed it), with the
   reason and the grant that restores it, which the screens offer in one click.
@@ -389,7 +391,10 @@ through `runAgentHost`.
 - **Loopback endpoint for helpers** (`host/service-endpoint.ts`): a session
   whose agent has a GitHub grant gets a `127.0.0.1` endpoint with a
   per-session bearer, named in its environment as `SWITCH_SERVICE_ENDPOINT` and
-  `SWITCH_SERVICE_TOKEN`. `POST /services/{service}/token` with `{rejected}`
+  `SWITCH_SERVICE_BEARER` (no `KEY`, `SECRET` or `TOKEN` in the name, which
+  Codex's environment policy can strip from what its commands get, depending
+  on its version and settings).
+  `POST /services/{service}/token` with `{rejected}`
   answers `{token, expires_at}`; 404 for a service not granted when the session
   started; 403 with Core's message after a final refusal, which ends the
   service for the rest of that session; 503 with the reason otherwise. An ask
@@ -426,18 +431,48 @@ through `runAgentHost`.
   refusing the token (`HTTP 401`, `Bad credentials`) and reports it, so the
   next command has another.
 - **Laptops and servers, agents with a GitHub grant:** the helper is set, for
-  the session only, through `GIT_CONFIG_*` entries in its environment, for
+  the session only, through `GIT_CONFIG_PARAMETERS` in its environment (as
+  `git -c` passes settings, read by every Git since 1.7.2, and with no name a
+  secret filter takes, unlike `GIT_CONFIG_KEY_*`), for
   `https://github.com` alone: an empty helper entry first clears the helpers
-  met so far for that URL, then Switch's. The user's other credential helpers
-  and Git config are untouched, and SSH remotes still use the user's keys. The
-  grant screen says a GitHub grant replaces the user's own login for that
-  agent's HTTPS access to github.com.
+  met so far for that URL, then Switch's, with `useHttpPath` so it is told the
+  repository. The machine's own helpers for that URL (`machineGitHubHelpers`,
+  in Git's order) go to the helper in `SWITCH_GITHUB_FALLBACK` rather than
+  after it in Git's config, where they would be asked with the path, which a
+  keychain does not store its sign-in under. The user's other credential
+  helpers and Git config are untouched, and SSH remotes still use the user's
+  keys.
+- **Fail open, said:** when Switch gives no token for a request, the helper
+  asks the machine's own helpers itself (without the path, and with the
+  wrapper off `PATH`, so `!gh auth git-credential` reaches the real `gh`) and
+  passes their `store` and `erase` on; the `gh` wrapper runs the real `gh`
+  without a token, so it uses its own login. That covers every reason: Switch
+  unreachable, the grants unreadable, the grant removed or narrowed, GitHub
+  disconnected or re-linked, and a repository the grant does not reach. The
+  endpoint tells the last from the token itself: GitHub answers 404 for a
+  repository outside it, asked once a repository per session; when GitHub
+  cannot say, the token is handed out. `gh` takes the repository as it does
+  (`-R`, `GH_REPO`, the folder's `origin`); a command naming none has the
+  token. Never silently: the helper or wrapper says so on stderr, the session
+  host logs it, and the session shows a `SERVICE_FALLBACK` warning (once per
+  reason or repository) in Console's transcript and the activity on the
+  bridges. The GitHub skill tells the agent to tell the user that such a
+  command acted as the owner, outside the grant. A push to a repository the
+  grant reaches only for reading is not caught: Git does not tell a helper
+  whether it fetches or pushes. The cloud has no machine sign-in to fall
+  back to, so there it fails with the reason.
 - **Agents without a GitHub grant:** nothing is installed, so the agent keeps
   the user's own Git and `gh` logins, as today.
-- **Windows:** the helpers do not run there. Nothing is installed, the session
-  host logs a warning, and the agent uses the machine's own sign-in.
+- **Grants that could not be read** as the session started: the helpers are
+  installed anyway and give no token, so git and `gh` fall back as above,
+  with the fallback said. That holds for an agent with no GitHub grant too,
+  for that session: it cannot be told apart.
+- **Windows:** the helpers do not run there. Nothing is installed, the
+  session shows a `SERVICE_FALLBACK` warning, and the agent uses the
+  machine's own sign-in.
 - **Cloud:** keeps full isolation (every other credential helper cleared,
   prompts off).
+
 - **Under Console:** the scripts set `ELECTRON_RUN_AS_NODE=1` themselves, since
   Console runs agent hosts on Electron's binary and strips `ELECTRON_*` from
   the session's environment; the wrapper keeps it from what `gh` starts.
@@ -450,6 +485,51 @@ through `runAgentHost`.
   by the old GitHub launch variables, is upgraded in place once, with a
   warning; any other difference is still refused. A deployment given a mounted
   personal token is unchanged.
+
+### Fallback: what is available to the agent can be used by it
+
+One rule for every connector. Access through Switch is used first. When
+Switch cannot or will not give it (unreachable, the grants unreadable, the
+grant removed or narrowed, or the resource outside it), the agent uses
+whatever the machine it runs on already gives it, and that is never silent:
+the command's output, the session (`SERVICE_FALLBACK`, shown in Console and
+on the bridges) and the host log say so. Where the machine gives nothing, as
+in the cloud, the command fails with the reason. A connector answers only
+"a token, or none and why"; the fallback and the flag are the host's.
+
+**What removing a grant means.** On the owner's own machine, removing or
+narrowing a grant stops Switch giving that access; it does not take away
+access the machine already has. An agent whose GitHub grant is removed goes
+back to where an agent with no grant is: the owner's own sign-in, if there is
+one, with each use flagged. In the cloud there is no such sign-in, so removing
+the grant ends the agent's GitHub access.
+
+**Shared machines.** "The machine's own sign-in" is whatever the machine the
+agent runs on is signed in as, under the account the session runs as. On a
+laptop that is the owner's. On a shared server or SSH host it can be a service
+account's, or another person's: a fallback there acts as them, flagged the
+same way. Run agents on a shared host under an account whose own sign-ins are
+the ones they should fall back to, or under one with none.
+
+#### What a grant does not do on the owner's machine
+
+On a laptop or server, a GitHub grant adds access through Switch; it does
+not contain the agent. The session runs as the owner, so it still reaches
+whatever the owner's own setup reaches: SSH remotes and their keys, a
+`url.*.insteadOf` rewrite away from `https://github.com`, the real `gh` called
+by its path past the wrapper, and a `GITHUB_TOKEN` or `GH_TOKEN` in the
+environment it inherits. Agents on one machine are not isolated from each
+other either: the session's endpoint bearer is in the environment of
+everything the CLI starts, MCP servers included, and any process running as
+the same user can read it and ask for that agent's token; the wrapper hands
+`gh` (and its extensions, and what they start) the token itself as
+`GH_TOKEN`. Containing an agent is what the cloud deployment is for.
+
+A fallback does not run the plain `gh auth` commands that print or hand out
+the machine's token (`auth token`, `auth status --show-token`,
+`auth git-credential`), to keep it out of transcripts and the bridges. That
+is a speed bump, not a guarantee: it is a denylist, so a `gh alias` for one
+of them gets past it, and the agent can call the real `gh` anyway.
 
 ## GitHub on the new model
 

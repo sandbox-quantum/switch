@@ -3,6 +3,11 @@ import http from 'node:http';
 import { z } from 'zod';
 import type { Redactions } from './redaction';
 import { serviceTokenAnswerSchema } from './service-access';
+import {
+  serviceFallbackNotice,
+  type ServiceNotices,
+  ungrantedRepositoryNotice,
+} from './service-notices';
 import type { HostAsk } from './session-channel';
 
 /** How long a helper waits for its token: Switch may be refreshing the owner's sign-in. */
@@ -10,7 +15,7 @@ const ASK_TIMEOUT_MS = 90_000;
 const MAX_BODY_BYTES = 32 * 1024;
 const PATH = /^\/services\/([a-z0-9][a-z0-9-]{0,62})\/token$/;
 
-/** The session's endpoint as its helpers find it, in `SWITCH_SERVICE_ENDPOINT` and `SWITCH_SERVICE_TOKEN`. */
+/** The session's endpoint as its helpers find it, in `SWITCH_SERVICE_ENDPOINT` and `SWITCH_SERVICE_BEARER`. */
 export type ServiceEndpointServer = { url: string; token: string; close: () => Promise<void> };
 
 /**
@@ -21,20 +26,55 @@ export type ServiceEndpointServer = { url: string; token: string; close: () => P
  * tokens. A refusal that ends the service's use (the grant gone, the
  * connection changed) is final for the rest of this session: the helper is
  * told Switch's reason, then and every time after.
+ *
+ * With `unavailable`, why the grants could not be read as the session
+ * started, every request is refused with that reason.
+ *
+ * A request may name the repository it is for (`owner/name`); one the token
+ * does not reach (`repositoryVisible`, asked once a repository per session) is
+ * refused, as one outside the grant.
+ *
+ * A refusal is not the end of it: the helper then answers nothing and Git (or
+ * `gh`) uses the machine's own sign-in, if it has one. Every refusal is
+ * raised in `notices`, so that is said in the session rather than silent.
  */
 export async function startServiceEndpoint(input: {
   services: string[];
+  unavailable: string | null;
   ask: (ask: HostAsk) => Promise<unknown>;
   redactions: Redactions;
+  notices: ServiceNotices;
+  /** Whether a refused request falls back to the machine's own sign-in, as the notices say. */
+  fallback: boolean;
+  repositoryVisible: (token: string, repository: string) => Promise<boolean | null>;
 }): Promise<ServiceEndpointServer> {
   const secret = randomBytes(32).toString('hex');
   const expected = Buffer.from(`Bearer ${secret}`);
   const ended = new Map<string, string>();
+  const visible = new Map<string, boolean>();
+
+  /** Whether the token reaches `repository`; when GitHub cannot say, it is taken to. */
+  const reaches = async (token: string, repository: string): Promise<boolean> => {
+    const key = repository.toLowerCase();
+    const known = visible.get(key);
+    if (known !== undefined) return known;
+    const checked = await input.repositoryVisible(token, repository);
+    if (checked !== null) visible.set(key, checked);
+    return checked ?? true;
+  };
 
   const token = async (
     service: string,
-    rejected: string | null
-  ): Promise<{ status: number; body: Record<string, unknown> }> => {
+    rejected: string | null,
+    repository: string | null
+  ): Promise<{ status: number; body: Record<string, unknown>; notice?: string }> => {
+    if (input.unavailable !== null)
+      return {
+        status: 403,
+        body: {
+          error: `Switch could not load this agent's grants when this session started (${input.unavailable}), so it hands out no ${service} token in this session. A new session loads them again.`,
+        },
+      };
     if (!input.services.includes(service))
       return {
         status: 404,
@@ -68,6 +108,12 @@ export async function startServiceEndpoint(input: {
     const answer = serviceTokenAnswerSchema.parse(raw);
     if (answer.kind === 'token') {
       input.redactions.add(answer.token);
+      if (repository !== null && !(await reaches(answer.token, repository)))
+        return {
+          status: 403,
+          body: { error: `${repository} is not in this agent's ${service} grant.` },
+          notice: ungrantedRepositoryNotice(service, repository.toLowerCase(), input.fallback),
+        };
       return { status: 200, body: { token: answer.token, expires_at: answer.expiresAt } };
     }
     if (answer.final) {
@@ -117,15 +163,36 @@ export async function startServiceEndpoint(input: {
         reply(400, { error: 'invalid request' });
         return;
       }
-      const parsed = z.object({ rejected: z.string().nullable() }).safeParse(body);
+      const parsed = z
+        .object({
+          rejected: z.string().nullable(),
+          // `gh api` and the like name none; nor does the cloud's Git.
+          repository: z
+            .string()
+            .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
+            .nullable()
+            .default(null),
+        })
+        .safeParse(body);
       if (!parsed.success) {
         reply(400, { error: 'invalid request' });
         return;
       }
-      token(match[1]!, parsed.data.rejected).then(
-        ({ status, body }) => reply(status, body),
-        (error: unknown) =>
-          reply(500, { error: error instanceof Error ? error.message : String(error) })
+      const service = match[1]!;
+      token(service, parsed.data.rejected, parsed.data.repository).then(
+        ({ status, body, notice }) => {
+          // The helper falls back to the machine's own sign-in; say so.
+          if (status !== 200)
+            input.notices.raise(
+              notice ?? serviceFallbackNotice(service, String(body.error), input.fallback)
+            );
+          reply(status, body);
+        },
+        (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          input.notices.raise(serviceFallbackNotice(service, message, input.fallback));
+          reply(500, { error: message });
+        }
       );
     });
   });

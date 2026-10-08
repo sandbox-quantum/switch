@@ -44,23 +44,20 @@ def response_body():
     }
 
 
-def user_access():
-    return AsyncMock(
-        repositories=AsyncMock(
-            return_value=[
-                {
-                    "id": 456,
-                    "repositories": [
-                        {
-                            "id": 789,
-                            "name": "example/project",
-                            "permissions": {"push": True},
-                        }
-                    ],
-                }
-            ]
-        )
-    )
+def user_access(permissions: object = None):
+    """The person's GitHub, reaching repository 789 through installation 456."""
+    repository = {
+        "id": 789,
+        "name": "example/project",
+        "permissions": {"push": True} if permissions is None else permissions,
+    }
+
+    async def reach(token, installation_id, wanted):
+        if installation_id != 456:
+            return None
+        return [repository] if repository["id"] in wanted else []
+
+    return AsyncMock(installation_repositories=AsyncMock(side_effect=reach))
 
 
 async def test_signs_request_and_limits_worker_to_users_selected_repository(
@@ -84,7 +81,9 @@ async def test_signs_request_and_limits_worker_to_users_selected_repository(
     monkeypatch.setattr(httpx.AsyncClient, "post", post)
     github = user_access()
     credential = await issuer.issue(github, "SYNTHETIC-USER-TOKEN", 456, 789)
-    github.repositories.assert_awaited_once_with("SYNTHETIC-USER-TOKEN")
+    github.installation_repositories.assert_awaited_once_with(
+        "SYNTHETIC-USER-TOKEN", 456, {789}
+    )
     assert credential.repository_name == "example/project"
     assert credential.token not in repr(credential)
 
@@ -162,8 +161,7 @@ def test_invalid_key_fails_without_key_material(tmp_path):
 async def test_read_only_repository_cannot_mint_write_token(
     signing, monkeypatch, permissions
 ):
-    github = user_access()
-    github.repositories.return_value[0]["repositories"][0]["permissions"] = permissions
+    github = user_access(permissions)
     post = AsyncMock()
     monkeypatch.setattr(httpx.AsyncClient, "post", post)
     with pytest.raises(GitHubError, match="needs write access"):

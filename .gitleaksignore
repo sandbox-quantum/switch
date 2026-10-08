@@ -5,3 +5,7 @@
 # A placeholder JWT_SECRET_KEY in a migration test's environment, since replaced
 # by SECRET_KEYS; it signed nothing outside that test.
 f1eaba23f82611562b478aaed85687c1bd99e8e0:core/tests/switch_core/test_migration_hosted_merge.py:generic-api-key:947
+
+# A made-up token in a service-token expiry test, never issued by anything;
+# the test now uses one that is not token-shaped.
+ba77a51d9d28c70e0e37b29031983cf6fff477b5:console/packages/agent-providers/src/host/service-access.test.ts:generic-api-key:17

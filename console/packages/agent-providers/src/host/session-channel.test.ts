@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
+import { tokenForms } from './redaction';
 import {
   connectParent,
   HOST_HUNG_UP_MS,
@@ -226,6 +227,51 @@ it("carries a host's question up to the watcher answering for its agent, and the
 
   release();
   await expect(host.ask({ type: 'tools' })).rejects.toThrow('No room watcher is running');
+});
+
+it("shares a token answered to one host with its agent's other hosts, and only theirs", async () => {
+  const links = new SessionLinks();
+  const pipe = (root: string) => {
+    const child = fakeChild();
+    links.attach(root, child as unknown as ChildProcess);
+    const { port } = fakePort();
+    port.send = (message: unknown) => {
+      child.emit('message', message);
+      return true;
+    };
+    child.send = (message, callback) => {
+      port.emit('message', message);
+      callback(null);
+      return true;
+    };
+    const host = connectParent(port);
+    const shared: string[] = [];
+    host.onRedactions((values) => shared.push(...values));
+    return { host, shared };
+  };
+  const token = 'synthetic-service-token';
+  links.answer('agent', async (_caller, ask) =>
+    ask.type === 'service-token'
+      ? { kind: 'token', token, expiresAt: '2026-10-08T12:00:00Z' }
+      : null
+  );
+
+  const asking = pipe('a1');
+  const sibling = pipe('a2');
+  const other = pipe('b1');
+  asking.host.identify(IDENTITY);
+  sibling.host.identify({ ...IDENTITY, sessionId: 'sibling' });
+  other.host.identify({ ...IDENTITY, agentId: 'other-agent', sessionId: 'other' });
+
+  await asking.host.ask({ type: 'service-token', service: 'github', rejected: null });
+
+  expect(sibling.shared).toEqual([...new Set(tokenForms(token))]);
+  expect(asking.shared).toEqual([...new Set(tokenForms(token))]);
+  expect(other.shared).toEqual([]);
+  // A host that starts (or resumes) later is handed what its agent already has.
+  const resumed = pipe('a3');
+  resumed.host.identify({ ...IDENTITY, sessionId: 'resumed' });
+  expect(resumed.shared).toEqual([...new Set(tokenForms(token))]);
 });
 
 it('refuses a question from a host that has not said who it is, and tells who exited', async () => {

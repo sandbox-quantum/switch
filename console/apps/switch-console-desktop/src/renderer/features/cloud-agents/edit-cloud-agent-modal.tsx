@@ -225,7 +225,6 @@ function EditCloudAgentForm({
           />
           <ServiceGrantsRow
             workspaceId={workspaceId}
-            serverId={serverId}
             agentId={agent.id}
             agentName={launch.name}
             cloud

@@ -426,6 +426,8 @@ class HostedLaunch(TenantScoped, Base):
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "id"),
         UniqueConstraint("tenant_id", "name", name="uq_hosted_launch_name"),
+        # Every service token issue and revocation pass looks an agent's launch up.
+        Index("ix_hosted_launches_agent", "tenant_id", "agent_id"),
         CheckConstraint(
             "state IN ('queued', 'provisioning', 'ready', 'error', 'stopping', 'stopped', 'deleting', 'deleted')",
             name="ck_hosted_launch_state",
@@ -3287,6 +3289,10 @@ class ServiceConnection(TenantScoped, Base):
     __tablename__ = "service_connections"
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "user_id", "service"),
+        # One Switch user per vendor account in a workspace.
+        UniqueConstraint(
+            "tenant_id", "service", "account_id", name="uq_service_connections_account"
+        ),
         CheckConstraint(
             "status IN ('active', 'needs_reauthorization', 'error')",
             name="ck_service_connections_status",
@@ -3354,6 +3360,8 @@ class ServiceGrant(TenantScoped, Base):
             name="fk_service_grants_connection",
             ondelete="CASCADE",
         ),
+        # The cascade from a disconnect, and every grant lookup by connection.
+        Index("ix_service_grants_connection", "tenant_id", "owner_id", "service"),
         CheckConstraint("access IN ('read', 'write')", name="ck_service_grants_access"),
         CheckConstraint(
             "tool_mode IN ('allow', 'deny')", name="ck_service_grants_tool_mode"

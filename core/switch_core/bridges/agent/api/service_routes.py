@@ -71,13 +71,14 @@ def _require_path_agent(agent: Agent, agent_id: str) -> None:
 @router.get("/{agent_id}/service-grants")
 async def service_grants(
     agent_id: str,
+    request: Request,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict[str, Any]:
     """The agent's grants and their skills, read when a session starts."""
     _require_path_agent(agent, agent_id)
-    return {"grants": await broker.grants_for(session, agent_id)}
+    return {"grants": await broker.grants_for(session, agent, _principal(request))}
 
 
 @router.post("/{agent_id}/service-tokens/{service}")

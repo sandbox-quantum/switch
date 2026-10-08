@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { serverEventSchema, type ServerEvent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import { Redactions } from './redaction';
+import { Redactions, tokenForms } from './redaction';
 
 /**
  * How long a session host that has finished may take to exit once it has
@@ -124,6 +124,8 @@ const toChildSchema = z.discriminatedUnion('kind', [
   answerSchema,
   /** Answer `busy` once every command queued before this has been taken or refused. */
   z.object({ kind: z.literal('busyBarrier'), id: z.number().int().nonnegative() }),
+  /** Service token values, in every form, that this agent's sessions were handed: scrub them too. */
+  z.object({ kind: z.literal('redactions'), values: z.array(z.string()) }),
 ]);
 
 const fromChildSchema = z.discriminatedUnion('kind', [
@@ -218,6 +220,14 @@ export class SessionLinks {
    * from what they log, and their parent from what it sends to Switch.
    */
   readonly redactions = new Redactions();
+  /**
+   * The same tokens by the agent they were issued for, every form of each. A
+   * session host learns its agent's when it says which session it runs and
+   * each new one as it is answered, so a token fetched by a sibling session,
+   * or before this one resumed, is scrubbed from what it publishes too. Only
+   * the agent's own: no host is handed another agent's tokens.
+   */
+  private readonly agentTokens = new Map<string, Set<string>>();
   private readonly links = new Map<string, Link>();
   private readonly answerers = new Map<string, AskHandler>();
   private readonly exitListeners = new Set<(root: string, identity: HostIdentity | null) => void>();
@@ -269,6 +279,8 @@ export class SessionLinks {
         for (const subscriber of link.subscribers) subscriber(message.event);
       } else if (message.kind === 'identity') {
         link.identity = message.identity;
+        const held = this.agentTokens.get(message.identity.agentId);
+        if (held?.size) shareRedactions(child, root, [...held]);
       } else if (message.kind === 'busy') {
         link.busy = { busy: message.busy, reasons: message.reasons };
         for (const listener of this.busyListeners) listener(root);
@@ -287,8 +299,13 @@ export class SessionLinks {
               if (error) console.warn(`Could not answer the session host at ${root}: ${error}`);
             });
         };
-        this.answerAsk(root, link.identity, message.ask).then(
-          (value) => answer({ ok: true, value: value ?? null }),
+        const asker = link.identity;
+        this.answerAsk(root, asker, message.ask).then(
+          (value) => {
+            if (asker && message.ask.type === 'service-token' && isTokenAnswer(value))
+              this.shareToken(asker.agentId, value.token);
+            answer({ ok: true, value: value ?? null });
+          },
           (error: unknown) =>
             answer({ ok: false, error: error instanceof Error ? error.message : String(error) })
         );
@@ -365,6 +382,18 @@ export class SessionLinks {
       for (const listener of this.exitListeners) listener(root, identity);
       if (failure !== null) for (const listener of this.failureListeners) listener(root, failure);
     });
+  }
+
+  /** Hand a token just answered to every host of the agent it was issued for. */
+  private shareToken(agentId: string, token: string): void {
+    const held = this.agentTokens.get(agentId) ?? new Set<string>();
+    this.agentTokens.set(agentId, held);
+    const forms = [...new Set(tokenForms(token))].filter((form) => !held.has(form));
+    if (!forms.length) return;
+    for (const form of forms) held.add(form);
+    for (const [root, link] of this.links)
+      if (link.child && link.identity?.agentId === agentId)
+        shareRedactions(link.child, root, forms);
   }
 
   private async answerAsk(
@@ -597,9 +626,28 @@ export type ParentChannel = {
   busy: (state: BusyState, barrier: number | null) => void;
   /** Answer each `busyBarrier` with this, once it resolves. */
   onBarrier: (handler: () => Promise<BusyState>) => void;
+  /** Take the token values the parent shares, including any sent before this was called. */
+  onRedactions: (handler: (values: string[]) => void) => void;
   /** Stop answering requests, so the parent reads the host as going. */
   close: () => void;
 };
+
+function shareRedactions(child: ChildProcess, root: string, values: string[]): void {
+  if (!child.connected) return;
+  child.send({ kind: 'redactions', values }, (error) => {
+    if (error)
+      console.warn(`Could not share token redactions with the session host at ${root}: ${error}`);
+  });
+}
+
+function isTokenAnswer(value: unknown): value is { kind: 'token'; token: string } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { kind?: unknown }).kind === 'token' &&
+    typeof (value as { token?: unknown }).token === 'string'
+  );
+}
 
 /** How long a host waits for its parent to answer; a tool call may upload files. */
 const ASK_TIMEOUT_MS = 5 * 60 * 1000;
@@ -618,6 +666,8 @@ export function connectParent(port: ParentPort): ParentChannel {
   };
   let handlers: SessionRequestHandlers | null = null;
   let barrier: (() => Promise<BusyState>) | null = null;
+  let redactionHandler: ((values: string[]) => void) | null = null;
+  const sharedEarly: string[] = [];
   let serving = true;
   let nextAsk = 0;
   const asks = new Map<
@@ -642,6 +692,11 @@ export function connectParent(port: ParentPort): ParentChannel {
       clearTimeout(pending.timer);
       if (message.ok) pending.resolve(message.value);
       else pending.reject(new Error(message.error ?? 'The parent refused.'));
+      return;
+    }
+    if (message.kind === 'redactions') {
+      if (redactionHandler) redactionHandler(message.values);
+      else sharedEarly.push(...message.values);
       return;
     }
     if (message.kind === 'busyBarrier') {
@@ -689,6 +744,10 @@ export function connectParent(port: ParentPort): ParentChannel {
     busy: (state, id) => send({ kind: 'busy', ...state, ...(id === null ? {} : { barrier: id }) }),
     onBarrier: (handler) => {
       barrier = handler;
+    },
+    onRedactions: (handler) => {
+      redactionHandler = handler;
+      if (sharedEarly.length) handler(sharedEarly.splice(0));
     },
     ask: (ask) => {
       if (!port.connected)

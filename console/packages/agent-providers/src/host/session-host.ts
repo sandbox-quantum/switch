@@ -432,6 +432,11 @@ export class HostedSession {
     return this.publish({ type: 'notice', level: 'error', code: 'ROOM_DELIVERY_FAILED', message });
   }
 
+  /** A service the session reaches some other way than through Switch: said, not silent. */
+  serviceFallback(message: string): Promise<void> {
+    return this.publish({ type: 'notice', level: 'warning', code: 'SERVICE_FALLBACK', message });
+  }
+
   roomDeliveryResumed(): Promise<void> {
     return this.publish({
       type: 'notice',

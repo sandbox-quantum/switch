@@ -20,6 +20,7 @@ import { OWNER_ONLY_POLICY, type ServiceGrant } from '@shared/core/switch-server
 import {
   CLOUD_GITHUB_GRANT_NOTES,
   GITHUB_GRANT_NOTES,
+  REMOVED_GRANT_NOTE,
   grantedRepositoryIds,
   grantedRepositoryNames,
 } from './service-grants';
@@ -56,7 +57,6 @@ export function ServiceGrantsSettingsSection({
   return (
     <ServiceGrantsRow
       workspaceId={agent.workspaceId as string}
-      serverId={agent.serverId as string}
       agentId={agent.switchAgentId as string}
       agentName={agent.name}
       cloud={false}
@@ -70,13 +70,11 @@ export function ServiceGrantsSettingsSection({
  */
 export function ServiceGrantsRow({
   workspaceId,
-  serverId,
   agentId,
   agentName,
   cloud,
 }: {
   workspaceId: string;
-  serverId: string;
   /** The agent's id in Switch. */
   agentId: string;
   agentName: string;
@@ -91,9 +89,10 @@ export function ServiceGrantsRow({
     queryFn: () => rpc.workspaces.getServiceGrants({ workspaceId, agentId }),
     retry: false,
   });
+  // The agent's workspace, not whichever one is active on its server.
   const github = useQuery({
-    queryKey: ['cloud-agent-github', serverId],
-    queryFn: () => rpc.switchServers.getGitHubConnection(serverId),
+    queryKey: ['workspace-github', workspaceId],
+    queryFn: () => rpc.workspaces.getGitHubConnection(workspaceId),
     retry: false,
   });
 
@@ -116,8 +115,14 @@ export function ServiceGrantsRow({
         <Spinner /> Loading service access…
       </p>
     );
-  // Only the agent's owner sees its grants; anyone else is answered as if it had none.
-  if (grants.isError) return null;
+  if (grants.isError)
+    return (
+      <span className="text-xs text-destructive">
+        {failureText(grants.error, 'Could not load service access.')}
+      </span>
+    );
+  // Only the agent's owner sees its grants; anyone else is shown nothing.
+  if (grants.data === null) return null;
 
   const githubGrant = grants.data.grants.find((grant) => grant.service === 'github') ?? null;
   return (
@@ -190,10 +195,16 @@ export function ServiceGrantsRow({
           github={github.data}
           busy={change.isPending}
           onChange={grant.service === 'github' ? () => setEditing(true) : null}
+          removeNote={cloud ? null : REMOVED_GRANT_NOTE}
           onRemove={() =>
-            change.mutate(() =>
-              rpc.workspaces.removeServiceGrant({ workspaceId, agentId, service: grant.service })
-            )
+            change.mutate(async () => {
+              const warning = await rpc.workspaces.removeServiceGrant({
+                workspaceId,
+                agentId,
+                service: grant.service,
+              });
+              return [warning, cloud ? null : REMOVED_GRANT_NOTE].filter(Boolean).join(' ') || null;
+            })
           }
         />
       ))}
@@ -222,12 +233,15 @@ function GrantCard({
   github,
   busy,
   onChange,
+  removeNote,
   onRemove,
 }: {
   grant: ServiceGrant;
   github: GitHubConnection | undefined;
   busy: boolean;
   onChange: (() => void) | null;
+  /** What removing it does on the owner's own machine; null in the cloud. */
+  removeNote: string | null;
   onRemove: () => void;
 }) {
   return (
@@ -240,7 +254,13 @@ function GrantCard({
             Change
           </Button>
         )}
-        <Button size="sm" variant="ghost" disabled={busy} onClick={onRemove}>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={busy}
+          title={removeNote ?? undefined}
+          onClick={onRemove}
+        >
           Remove
         </Button>
       </div>

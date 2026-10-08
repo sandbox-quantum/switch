@@ -4,7 +4,8 @@ Three tenant-scoped tables for connecting a person's own accounts on outside
 services and granting them to that person's agents:
 
 - `service_connections`, one person's sign-in to one service, keyed by
-  tenant, user and service. The secret is keyring-encrypted JSON.
+  tenant, user and service, with one link per vendor account in a tenant.
+  The secret is keyring-encrypted JSON.
 - `service_grants`, an agent's use of its owner's connection. Its key to the
   connection is (tenant, owner, service), so disconnecting removes the grants
   and a grant can never name another person's connection.
@@ -82,6 +83,12 @@ def upgrade() -> None:
         _timestamp("created_at"),
         _timestamp("updated_at"),
         sa.PrimaryKeyConstraint("tenant_id", "user_id", "service"),
+        sa.UniqueConstraint(
+            "tenant_id",
+            "service",
+            "account_id",
+            name="uq_service_connections_account",
+        ),
         sa.ForeignKeyConstraint(
             ["tenant_id"], ["tenants.id"], name="fk_service_connections_tenant"
         ),
@@ -141,6 +148,14 @@ def upgrade() -> None:
             "tool_mode IN ('allow', 'deny')", name="ck_service_grants_tool_mode"
         ),
     )
+    op.create_index(
+        "ix_hosted_launches_agent", "hosted_launches", ["tenant_id", "agent_id"]
+    )
+    op.create_index(
+        "ix_service_grants_connection",
+        "service_grants",
+        ["tenant_id", "owner_id", "service"],
+    )
 
     op.create_table(
         "service_token_issuances",
@@ -197,5 +212,7 @@ def downgrade() -> None:
         "ix_service_token_issuances_created_at", table_name="service_token_issuances"
     )
     op.drop_table("service_token_issuances")
+    op.drop_index("ix_service_grants_connection", table_name="service_grants")
+    op.drop_index("ix_hosted_launches_agent", table_name="hosted_launches")
     op.drop_table("service_grants")
     op.drop_table("service_connections")

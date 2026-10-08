@@ -58,10 +58,18 @@ def _request(access: str, resources: dict) -> IssueRequest:
     )
 
 
+async def _reach(token: str, installation_id: int, wanted: set[int]) -> list | None:
+    """`installation_repositories` over `INSTALLATIONS`."""
+    for installation in INSTALLATIONS:
+        if installation["id"] == installation_id:
+            return [r for r in installation["repositories"] if r["id"] in wanted]
+    return None
+
+
 @pytest.fixture
 def github() -> AsyncMock:
     connections = AsyncMock()
-    connections.repositories = AsyncMock(return_value=INSTALLATIONS)
+    connections.installation_repositories = AsyncMock(side_effect=_reach)
     return connections
 
 
@@ -158,7 +166,7 @@ class TestGrantChecks:
     ) -> None:
         with pytest.raises(ServiceAdapterError, match="1 to 500"):
             await adapter.check_grant("gho_user", _request("read", resources))
-        github.repositories.assert_not_called()
+        github.installation_repositories.assert_not_called()
 
     async def test_an_installation_the_person_no_longer_reaches(
         self, adapter: GitHubAdapter
@@ -189,7 +197,9 @@ class TestGrantChecks:
     async def test_a_revoked_sign_in_needs_reauthorization(
         self, adapter: GitHubAdapter, github: AsyncMock
     ) -> None:
-        github.repositories = AsyncMock(side_effect=GitHubAuthorizationError("401"))
+        github.installation_repositories = AsyncMock(
+            side_effect=GitHubAuthorizationError("401")
+        )
         with pytest.raises(ReauthorizationRequiredError):
             await adapter.check_grant(
                 "gho_user",
@@ -205,7 +215,9 @@ class TestIssue:
             "gho_user",
             _request("read", {"installation_id": 456, "repository_ids": [789]}),
         )
-        github.repositories.assert_awaited_once_with("gho_user")
+        github.installation_repositories.assert_awaited_once_with(
+            "gho_user", 456, {789}
+        )
         signer.mint.assert_awaited_once_with(
             456, [789], {"contents": "read", "pull_requests": "read"}
         )

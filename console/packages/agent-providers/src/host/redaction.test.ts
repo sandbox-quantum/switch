@@ -1,7 +1,14 @@
 import type { FileHandle } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
-import { LogRedactor, pipeRedactedLogs, Redactions, redactText, tokenForms } from './redaction';
+import {
+  LogRedactor,
+  pipeRedactedLogs,
+  Redactions,
+  redactText,
+  ShapeLineRedactor,
+  tokenForms,
+} from './redaction';
 
 function redactChunks(chunks: Buffer[], values: string[]): Buffer {
   const redactor = new LogRedactor(() => values);
@@ -123,4 +130,110 @@ it('says how much of a text could still turn into a value', () => {
   expect(redactions.unfinished('nothing here.')).toBe(0);
   // Every token's base64 form starts with that of `x-access-token:`.
   expect(redactions.unfinished('nothing here')).toBe(1);
+});
+
+describe('token shapes in logs', () => {
+  const token = `ghs_${'A1b2C3d4E5'.repeat(3)}xyz789`;
+
+  it('redacts a GitHub token split over chunks, line by line', () => {
+    const shapes = new ShapeLineRedactor();
+    const line = Buffer.from(`push to https://x-access-token:${token}@github.com — ✓\nnext`);
+    const chunks = [line.subarray(0, 40), line.subarray(40, 41), line.subarray(41)];
+
+    const output = Buffer.concat([...chunks.map((chunk) => shapes.push(chunk)), shapes.finish()]);
+
+    expect(output.toString()).toBe(
+      'push to https://x-access-token:[REDACTED]@github.com — ✓\nnext'
+    );
+  });
+
+  it('never cuts a long line through a token that runs on into the next chunk', () => {
+    const shapes = new ShapeLineRedactor();
+    // The line passes the limit inside the token, which ends in the next chunk.
+    const before = Buffer.from(`${'a'.repeat(64 * 1024 - 10)} ${token.slice(0, 20)}`);
+    const after = Buffer.from(`${token.slice(20)} done\n`);
+    const output = Buffer.concat([shapes.push(before), shapes.push(after), shapes.finish()]);
+    expect(output.toString()).toBe(`${'a'.repeat(64 * 1024 - 10)} [REDACTED] done\n`);
+  });
+
+  it('writes an unended line once it is long, still redacted', () => {
+    const shapes = new ShapeLineRedactor();
+    const long = Buffer.from(`${'é'.repeat(40_000)} ${token} `);
+    const written = shapes.push(long);
+    expect(written.length).toBeGreaterThan(0);
+    expect(Buffer.concat([written, shapes.finish()]).toString()).toBe(
+      `${'é'.repeat(40_000)} [REDACTED] `
+    );
+  });
+});
+
+describe('tokens no exact value catches', () => {
+  // Synthetic: the shape of a GitHub installation token, not a real one.
+  const installation = `ghs_${'A1b2C3d4E5'.repeat(3)}xyz789`;
+
+  it('redacts a GitHub token this process never issued, in each form', () => {
+    const redactions = new Redactions();
+    const [, , basic] = tokenForms(installation);
+
+    expect(redactions.text(`git push https://x-access-token:${installation}@github.com/o/r`)).toBe(
+      'git push https://x-access-token:[REDACTED]@github.com/o/r'
+    );
+    expect(redactions.value({ header: `Basic ${basic}`, n: 1 })).toEqual({
+      header: 'Basic [REDACTED]',
+      n: 1,
+    });
+  });
+
+  it('redacts a GitHub token glued to what precedes it, as escaped or encoded text has it', () => {
+    const redactions = new Redactions();
+    expect(redactions.text(`{"out":"done\\n${installation}"}`)).toBe('{"out":"done\\n[REDACTED]"}');
+    expect(redactions.text(`url=https%3A%2F%2Fx-access-token%3A${installation}%40github.com`)).toBe(
+      'url=https%3A%2F%2Fx-access-token%3A[REDACTED]%40github.com'
+    );
+  });
+
+  it('redacts what is left of a GitHub token cut short', () => {
+    const redactions = new Redactions();
+    expect(redactions.text(`git push https://x-access-token:${installation.slice(0, 20)}…`)).toBe(
+      'git push https://x-access-token:[REDACTED]…'
+    );
+  });
+
+  it('leaves prose that merely starts like a token', () => {
+    const redactions = new Redactions();
+    expect(redactions.text('ghost_writer gh_cli ghs_ab and gho_')).toBe(
+      'ghost_writer gh_cli ghs_ab and gho_'
+    );
+    expect(redactions.text('laughs_total highs_and_lows weighs_more')).toBe(
+      'laughs_total highs_and_lows weighs_more'
+    );
+  });
+
+  it('does not hold back a long run that only looks like a token', () => {
+    const shapes = new ShapeLineRedactor();
+    const written = shapes.push(Buffer.from(`ghs_${'a'.repeat(200 * 1024)}`));
+    expect(written.length).toBeGreaterThan(0);
+    // All but the last line-tail was written, not held.
+    expect(shapes.finish().length).toBeLessThanOrEqual(256);
+  });
+
+  it('redacts the cut-off start of an issued token at the end of a title', () => {
+    const redactions = new Redactions();
+    const token = 'synthetic-issued-token-with-no-shape-0123456789';
+    redactions.add(token);
+    // How the Claude adapter cuts a command title, through the token.
+    const title = `curl -H "Authorization: Bearer ${token.slice(0, 39)}…`;
+
+    const shown = redactions.value({ title }).title;
+
+    expect(shown).toBe('curl -H "Authorization: Bearer [REDACTED]…');
+    // The same cut without the ellipsis, as OpenCode's.
+    expect(redactions.text(title.slice(0, -1))).toBe('curl -H "Authorization: Bearer [REDACTED]');
+  });
+
+  it('leaves a title whose end shares only a few characters with a token', () => {
+    const redactions = new Redactions();
+    redactions.add('synthetic-issued-token');
+    expect(redactions.text('see the synth…')).toBe('see the synth…');
+  });
 });

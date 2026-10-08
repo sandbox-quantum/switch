@@ -13,6 +13,11 @@ import pytest
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.addressing import (
+    AddressingPolicy,
+    AddressingRule,
+    owner_and_owner_agents_policy,
+)
 from switch_core.connections.adapters import ServiceAdapterError
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
@@ -25,6 +30,7 @@ from switch_core.db.models import (
     ServiceGrant,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.connections.service_harness import (
@@ -150,6 +156,12 @@ class TestConnections:
         assert response.json() == {"warning": None}
         assert len(vendor.connections_revoked) == 1
         assert again.status_code == 404
+        # The message where every client reads it, and the reason beside it.
+        assert again.json() == {
+            "detail": "GitHub is not connected.",
+            "code": "connector_not_connected",
+            "retryable": False,
+        }
         async with harness.session_factory() as session:
             assert await STORE.list_grants(session, agent_id) == []
         assert (await _actions(harness))[-1] == AuditAction.SERVICE_DISCONNECTED
@@ -185,6 +197,43 @@ class TestGrants:
         assert listed.status_code == 200, listed.text
         assert listed.json()["addressing_open"] is True
         assert [g["service"] for g in listed.json()["grants"]] == ["github"]
+
+    @pytest.mark.parametrize(
+        ("policy", "warned"),
+        [
+            (owner_and_owner_agents_policy(), False),
+            (
+                AddressingPolicy(
+                    rules=[
+                        *owner_and_owner_agents_policy().rules,
+                        AddressingRule(rooms=["room-x"], users="*", agents=[]),
+                    ]
+                ),
+                True,
+            ),
+        ],
+        ids=["owner-and-their-agents", "anyone-in-one-room"],
+    )
+    async def test_the_warning_follows_who_else_can_address_the_agent(
+        self, harness: Harness, policy: AddressingPolicy, warned: bool
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        agent_id, _ = await agent_with_key(harness.session_factory, owner, "builder")
+        async with harness.session_factory() as session:
+            await session.execute(
+                update(Agent)
+                .where(Agent.id == agent_id)
+                .values(addressing_policy=policy.model_dump())
+            )
+            await session.commit()
+
+        async with harness.client() as client:
+            listed = await client.get(
+                f"/gateway/agents/{agent_id}/service-grants",
+                cookies=cookies_for(owner),
+            )
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["addressing_open"] is warned
 
     async def test_a_cloud_agent_without_its_repository_grant_is_shown_it(
         self, harness: Harness
@@ -360,6 +409,31 @@ class TestGrants:
         )
         assert response.status_code == 200, response.text
         assert vendor.revoked == [issued]
+
+    async def test_a_narrowing_whose_revocation_fails_is_saved_and_says_so(
+        self, harness: Harness, vendor: FakeVendor, monkeypatch
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        agent_id, key = await agent_with_key(harness.session_factory, owner, "builder")
+        await connect(harness.session_factory, owner.id)
+        await _put(
+            harness, owner, agent_id, {"access": "write", "resources": RESOURCES}
+        )
+        await _token_for(harness, agent_id, key)
+
+        async def lock_timeout(*args, **kwargs):
+            raise RuntimeError("Synthetic lock timeout")
+
+        monkeypatch.setattr(ServiceConnectionStore, "claim_revocations", lock_timeout)
+        narrower = {"installation_id": 7, "repository_ids": [70]}
+        response = await _put(
+            harness, owner, agent_id, {"access": "write", "resources": narrower}
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["grant"]["resources"] == narrower
+        assert response.json()["warning"] is not None
+        assert vendor.revoked == []
 
     async def test_narrowing_a_grant_that_gave_nothing_out(
         self, harness: Harness, vendor: FakeVendor

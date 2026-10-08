@@ -8,20 +8,81 @@ or an issued token.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from sqlalchemy import delete, exists, func, select, text, update
+from sqlalchemy import and_, delete, exists, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
+    AgentController,
+    AgentDefinition,
+    HostedLaunch,
+    HostedMachine,
     ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
     TenantMember,
     require_tenant_id,
 )
+from switch_core.db.stores.hosted_machine_store import lock_launch
+
+# A cloud machine that is not, or is no longer meant to be, up; an idle sleep
+# is a stop.
+MACHINE_DOWN = ("stopping", "stopped", "error", "retained", "deleting", "deleted")
+
+
+def cloud_launch_status(
+    launch_desired: str,
+    launch_state: str,
+    machine_desired: str | None,
+    machine_state: str | None,
+) -> Literal["running", "starting", "down"]:
+    """Whether a cloud launch's worker may be given service tokens: `running`
+    when the launch is meant to run and not failed, on a machine (if it has
+    one yet) meant to run and up; `starting` when that machine is meant to run
+    but not up yet (waking), which a retry gets past; `down` otherwise."""
+    if launch_desired != "running" or launch_state in ("error", "deleting", "deleted"):
+        return "down"
+    if machine_desired is None:
+        return "running"
+    if machine_desired != "running" or machine_state in (
+        "error",
+        "deleting",
+        "deleted",
+    ):
+        return "down"
+    # Meant to run but not back yet: waking, or re-claimed from retained,
+    # which stays retained until it reconnects.
+    if machine_state in ("stopping", "stopped", "retained"):
+        return "starting"
+    return "running"
+
+
+def cloud_launches_of(agent_id: Any) -> Any:
+    """The agent's cloud launches with their machines, as `cloud_launch_status` reads them."""
+    return (
+        select(
+            HostedLaunch.desired_state,
+            HostedLaunch.state,
+            HostedMachine.desired_state,
+            HostedMachine.state,
+        )
+        .select_from(HostedLaunch)
+        .outerjoin(
+            HostedMachine,
+            and_(
+                HostedMachine.tenant_id == HostedLaunch.tenant_id,
+                HostedMachine.id == HostedLaunch.machine_id,
+            ),
+        )
+        .where(
+            HostedLaunch.tenant_id == require_tenant_id(),
+            HostedLaunch.agent_id == agent_id,
+            HostedLaunch.state != "deleted",
+        )
+    )
 
 
 class ServiceConnectionBusy(Exception):
@@ -55,6 +116,37 @@ class ServiceConnectionStore:
             if getattr(error.orig, "sqlstate", None) == "55P03":
                 raise ServiceConnectionBusy(
                     "The connection is busy. Please retry."
+                ) from None
+            raise
+
+    async def lock_cloud_launches(self, session: AsyncSession, agent_id: str) -> None:
+        """Hold the agent's cloud launches against a lifecycle change, for this
+        transaction.
+
+        Taken before the connection lock: a lifecycle step holds its launch's
+        lock while it deletes the agent, and the agent's grants with it.
+        """
+        launch_ids = list(
+            await session.scalars(
+                select(HostedLaunch.id)
+                .where(
+                    HostedLaunch.tenant_id == require_tenant_id(),
+                    HostedLaunch.agent_id == agent_id,
+                    HostedLaunch.state != "deleted",
+                )
+                .order_by(HostedLaunch.id)
+            )
+        )
+        if not launch_ids:
+            return
+        await session.execute(text("SET LOCAL lock_timeout = '25s'"))
+        try:
+            for launch_id in launch_ids:
+                await lock_launch(session, launch_id)
+        except DBAPIError as error:
+            if getattr(error.orig, "sqlstate", None) == "55P03":
+                raise ServiceConnectionBusy(
+                    "The agent's cloud launch is busy. Please retry."
                 ) from None
             raise
 
@@ -333,7 +425,10 @@ class ServiceConnectionStore:
         )
 
     async def queue_orphaned(self, session: AsyncSession) -> None:
-        """Queue every live token whose grant, or owner's membership, is gone.
+        """Queue every live token whose grant, or owner's membership, is gone,
+        every one issued to a controller that is revoked or no longer hosts
+        the agent, and every one of a cloud agent whose launch or machine is
+        not running.
 
         A missing connection needs no test of its own: deleting one deletes
         its grants. Deleting an agent does the same, so its tokens are queued
@@ -352,10 +447,43 @@ class ServiceConnectionStore:
                 TenantMember.user_id == ServiceTokenIssuance.owner_id,
             )
         )
+        controller_live = exists(
+            select(AgentController.id).where(
+                AgentController.tenant_id == tenant_id,
+                AgentController.id == ServiceTokenIssuance.controller_id,
+                AgentController.revoked_at.is_(None),
+            )
+        )
+        bound = exists(
+            select(AgentDefinition.id).where(
+                AgentDefinition.tenant_id == tenant_id,
+                AgentDefinition.agent_id == ServiceTokenIssuance.agent_id,
+                AgentDefinition.controller_id == ServiceTokenIssuance.controller_id,
+            )
+        )
+        held = (ServiceTokenIssuance.principal != "controller") | (
+            controller_live & bound
+        )
+        launches = cloud_launches_of(ServiceTokenIssuance.agent_id)
+        running = exists(
+            launches.where(
+                HostedLaunch.desired_state == "running",
+                HostedLaunch.state.not_in(("error", "deleting", "deleted")),
+                or_(
+                    HostedLaunch.machine_id.is_(None),
+                    and_(
+                        HostedMachine.desired_state == "running",
+                        HostedMachine.state.not_in(MACHINE_DOWN),
+                    ),
+                ),
+            )
+        )
+        # A cloud agent's tokens go when its launch or its machine stops.
+        cloud_up = ~exists(launches) | running
         await self.queue_revocation(
             session,
             ServiceTokenIssuance.revoke_requested.is_(False),
-            ~(granted & member),
+            ~(granted & member & held & cloud_up),
         )
 
     async def clear_expired(self, session: AsyncSession, now: datetime) -> None:

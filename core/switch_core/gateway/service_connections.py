@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +27,7 @@ from switch_core.connections.broker import (
 )
 from switch_core.connections.loader import CATALOG, AccessLevel
 from switch_core.db.models import Agent, ServiceGrant, User, require_tenant_id
+from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.gateway.auth import get_current_user
@@ -36,8 +38,18 @@ router = APIRouter()
 STORE = ServiceConnectionStore()
 
 
-def _refused(error: ServiceError) -> HTTPException:
-    return HTTPException(status_code=error.status_code, detail=error.message)
+def service_refusal(error: ServiceError) -> JSONResponse:
+    """A refusal as the gateway answers one: `detail` the message, as every
+    client already reads it, with the reason `code` and whether a retry can
+    succeed beside it."""
+    return JSONResponse(
+        status_code=error.status_code,
+        content={
+            "detail": error.message,
+            "code": error.code,
+            "retryable": error.retryable,
+        },
+    )
 
 
 async def _owned_agent(session: AsyncSession, agent_id: str, user: User) -> Agent:
@@ -107,18 +119,18 @@ async def list_service_connections(
     return {"connections": entries}
 
 
-@router.delete("/service-connections/{service}")
+@router.delete("/service-connections/{service}", response_model=None)
 async def disconnect_service(
     service: str,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
-) -> dict[str, Any]:
+) -> dict[str, Any] | JSONResponse:
     """Disconnect: the grants on it go with it, and what was issued is revoked."""
     try:
         warning = await broker.disconnect(session, user.id, service)
     except ServiceError as error:
-        raise _refused(error) from None
+        return service_refusal(error)
     return {"warning": warning}
 
 
@@ -140,8 +152,26 @@ async def list_service_grants(
     return {
         "grants": [_grant_view(broker, agent, grant) for grant in grants],
         "missing": await _missing_grants(session, agent, user, grants),
-        "addressing_open": parse_policy(agent.addressing_policy).is_open(),
+        "addressing_open": await _others_can_address(session, agent, user),
     }
+
+
+async def _others_can_address(session: AsyncSession, agent: Agent, owner: User) -> bool:
+    """Whether someone other than the owner, or another person's agent, may
+    address the agent: what makes its grants usable by them."""
+    policy = parse_policy(agent.addressing_policy)
+    if policy.is_open():
+        return True
+    identities = await ExternalUserStore().get_by_user(session, owner.id)
+    own_agents = await session.scalars(
+        select(Agent.id).where(
+            Agent.tenant_id == require_tenant_id(), Agent.owner_id == owner.id
+        )
+    )
+    return policy.admits_others(
+        owner_identity_ids={identity.id for identity in identities},
+        owner_agent_ids=set(own_agents),
+    )
 
 
 async def _missing_grants(
@@ -185,7 +215,7 @@ class GrantBody(BaseModel):
     resources: dict[str, Any]
 
 
-@router.put("/agents/{agent_id}/service-grants/{service}")
+@router.put("/agents/{agent_id}/service-grants/{service}", response_model=None)
 async def set_service_grant(
     agent_id: str,
     service: str,
@@ -193,7 +223,7 @@ async def set_service_grant(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
-) -> dict[str, Any]:
+) -> dict[str, Any] | JSONResponse:
     """Create or replace the grant. With no `access` it reads."""
     agent = await _owned_agent(session, agent_id, user)
     if known_agent_for(agent) is None:
@@ -217,18 +247,18 @@ async def set_service_grant(
             resources=body.resources,
         )
     except ServiceError as error:
-        raise _refused(error) from None
+        return service_refusal(error)
     return {"grant": _grant_view(broker, agent, grant), "warning": warning}
 
 
-@router.delete("/agents/{agent_id}/service-grants/{service}")
+@router.delete("/agents/{agent_id}/service-grants/{service}", response_model=None)
 async def remove_service_grant(
     agent_id: str,
     service: str,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
-) -> dict[str, Any]:
+) -> dict[str, Any] | JSONResponse:
     """Remove the grant; tokens issued under it are revoked."""
     agent = await _owned_agent(session, agent_id, user)
     grant = await STORE.get_grant(session, agent.id, service)
@@ -237,5 +267,5 @@ async def remove_service_grant(
     try:
         warning = await broker.revoke_grant(session, grant, user.id)
     except ServiceError as error:
-        raise _refused(error) from None
+        return service_refusal(error)
     return {"warning": warning}

@@ -93,17 +93,10 @@ class GitHubInstallationCredentials:
             or repository_id <= 0
         ):
             raise GitHubError("Choose a valid GitHub installation and repository.")
-        installations = await github.repositories(user_token)
-        repository = next(
-            (
-                repo
-                for installation in installations
-                if installation["id"] == installation_id
-                for repo in installation["repositories"]
-                if repo["id"] == repository_id
-            ),
-            None,
+        reached = await github.installation_repositories(
+            user_token, installation_id, {repository_id}
         )
+        repository = next(iter(reached or []), None)
         if repository is None:
             raise GitHubError(
                 "Your GitHub account no longer has access to the selected repository."

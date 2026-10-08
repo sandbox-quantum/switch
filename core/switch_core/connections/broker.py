@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from sqlalchemy import select, text
+from sqlalchemy import exists, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import Request
 
@@ -51,6 +51,8 @@ from switch_core.connections.shielded import finish_shielded
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
+    AgentController,
+    AgentDefinition,
     ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
@@ -61,6 +63,8 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.service_connection_store import (
     ServiceConnectionBusy,
     ServiceConnectionStore,
+    cloud_launch_status,
+    cloud_launches_of,
 )
 from switch_core.keys import Keyring
 from switch_core.observability.catalogue import SERVICE_TOKEN_REQUESTS
@@ -94,6 +98,13 @@ TOKEN_LIFETIME = timedelta(hours=1)
 TOKEN_LEEWAY = timedelta(seconds=60)
 REFRESH_BEFORE = timedelta(minutes=5)
 REVOCATION_BATCH = 8
+# How long one revocation call keeps taking batches before it leaves the rest
+# to the next: a bulk change (a stop, a disconnect, a member removed) queues
+# more than one batch, and a token left for the five-minute tick may outlive
+# its own hour before it is reached. Short of a request's own timeout
+# (Console waits 30 s), with a batch's vendor calls (8 s) on top, so a slow
+# disconnect or stop does not read as failed when it worked.
+REVOCATION_BUDGET_SECONDS = 10.0
 REVOCATION_CLAIM = timedelta(seconds=90)
 VENDOR_CALL_SECONDS = 8
 ACCESS_WARNING = "Some access already given out may remain for up to 1 hour."
@@ -194,6 +205,16 @@ def _narrows(
     return False
 
 
+def _require_owners_controller(principal: Principal, owner_id: str | None) -> None:
+    if principal.kind == "controller" and principal.controller_owner_id != owner_id:
+        raise ServiceError(
+            403,
+            FORBIDDEN,
+            "This controller belongs to someone other than the agent's owner.",
+            retryable=False,
+        )
+
+
 def get_service_broker(request: Request) -> ServiceBroker:
     """The broker `main` installs on the agent bridge and the gateway."""
     broker = getattr(request.app.state, "service_broker", None)
@@ -222,6 +243,9 @@ class ServiceBroker:
         self._adapters = adapters
         self._store = store
         self._token_retention = token_retention
+        # The access token being fetched for each connection, by (tenant,
+        # owner, service), for callers that ask while it is.
+        self._fetching: dict[tuple[str, str, str], asyncio.Task[str]] = {}
 
     def _entry(self, service: str) -> Connection:
         entry = self._catalog.get(service)
@@ -308,6 +332,25 @@ class ServiceBroker:
                 "This agent's owner is no longer a member of the workspace.",
                 retryable=False,
             )
+        statuses = {
+            cloud_launch_status(*launch)
+            for launch in await session.execute(cloud_launches_of(agent_id))
+        }
+        if statuses and "running" not in statuses:
+            if "starting" in statuses:
+                raise ServiceError(
+                    503,
+                    INTERNAL,
+                    f"Agent {agent.name}'s cloud machine is starting. Please retry.",
+                    retryable=True,
+                )
+            raise ServiceError(
+                403,
+                FORBIDDEN,
+                f"Agent {agent.name} is a cloud agent whose launch or machine is not "
+                f"running, so it is issued no {name} token.",
+                retryable=False,
+            )
 
         grant = await (
             self._store.get_grant_to_record if to_record else self._store.get_grant
@@ -327,11 +370,27 @@ class ServiceBroker:
                 f"This agent's {name} grant was made by someone other than its owner.",
                 retryable=False,
             )
-        if principal.kind == "controller" and principal.controller_owner_id != owner_id:
+        _require_owners_controller(principal, owner_id)
+        if principal.kind == "controller" and not await session.scalar(
+            select(
+                exists().where(
+                    AgentController.tenant_id == tenant_id,
+                    AgentController.id == principal.controller_id,
+                    AgentController.revoked_at.is_(None),
+                )
+                & exists().where(
+                    AgentDefinition.tenant_id == tenant_id,
+                    AgentDefinition.agent_id == agent_id,
+                    AgentDefinition.controller_id == principal.controller_id,
+                )
+            )
+        ):
+            # Checked again as the token is recorded, so a revocation or a
+            # move that lands while it is issued takes it back.
             raise ServiceError(
                 403,
                 FORBIDDEN,
-                "This controller belongs to someone other than the agent's owner.",
+                "This controller is revoked, or no longer hosts the agent.",
                 retryable=False,
             )
 
@@ -418,7 +477,7 @@ class ServiceBroker:
             metrics().increment(
                 SERVICE_TOKEN_REQUESTS,
                 {
-                    "service": service if service in self._catalog else "unknown",
+                    "connector": service if service in self._catalog else "unknown",
                     "outcome": outcome,
                 },
             )
@@ -481,9 +540,11 @@ class ServiceBroker:
 
         A disconnect or a removed grant takes the same lock, so either it
         commits first, the checks below fail and the token is discarded, or
-        this record commits first and its revocation covers the token.
+        this record commits first and its revocation covers the token. A cloud
+        launch's stop or removal is ordered the same way by its launch lock.
         """
         try:
+            await self._store.lock_cloud_launches(session, decision.agent_id)
             await self._store.lock_connection(
                 session, decision.owner_id, decision.service
             )
@@ -617,10 +678,30 @@ class ServiceBroker:
         In a transaction of its own, which outlives the caller being
         cancelled: a rotating refresh spends the old refresh token, so the new
         one must be stored once the vendor has returned it.
+
+        Callers asking for one connection at once share one fetch. The
+        connection's lock still serialises refreshes, but every agent of an
+        owner renewing together would otherwise each hold a database
+        connection queued on that lock while one refresh takes its time, and
+        give up at the lock's timeout.
         """
-        return await finish_shielded(
-            self._fresh_access_token(require_tenant_id(), owner_id, service, adapter)
-        )
+        key = (require_tenant_id(), owner_id, service)
+        fetching = self._fetching.get(key)
+        if fetching is None:
+            fetching = asyncio.create_task(self._fresh_access_token(*key, adapter))
+            self._fetching[key] = fetching
+            fetching.add_done_callback(lambda done: self._fetched(key, done))
+        return await asyncio.shield(fetching)
+
+    def _fetched(self, key: tuple[str, str, str], done: asyncio.Task[str]) -> None:
+        if self._fetching.get(key) is done:
+            del self._fetching[key]
+        # Its callers see a failure; one none of them stayed to see is logged.
+        if not done.cancelled() and (error := done.exception()) is not None:
+            if not isinstance(error, ServiceError):
+                logger.error(
+                    "Fetching a %s access token failed", key[2], exc_info=error
+                )
 
     async def _fresh_access_token(
         self, tenant_id: str, owner_id: str, service: str, adapter: ServiceAdapter
@@ -729,11 +810,16 @@ class ServiceBroker:
     # ── Access changes ───────────────────────────────────────────────────────
 
     async def grants_for(
-        self, session: AsyncSession, agent_id: str
+        self, session: AsyncSession, agent: Agent, principal: Principal
     ) -> list[dict[str, Any]]:
-        """The agent's grants as its host reads them when a session starts."""
+        """The agent's grants as its host reads them when a session starts.
+
+        A controller reads them only for its owner's agents, the same rule
+        issuing holds it to.
+        """
+        _require_owners_controller(principal, agent.owner_id)
         grants = []
-        for grant in await self._store.list_grants(session, agent_id):
+        for grant in await self._store.list_grants(session, agent.id):
             entry = self._catalog.get(grant.service)
             skill = None if entry is None else entry.skill_files.get("SKILL.md")
             grants.append(
@@ -1202,36 +1288,45 @@ class ServiceBroker:
 
         Run after an access change has committed, so a failure here leaves the
         change in place and the tokens queued: it is logged, and the periodic
-        tick tries again.
+        tick tries again. The pass runs in a session of its own: a failure
+        rolls that back, never `session`, whose rows the caller may still be
+        reading for its response.
         """
         if session.in_transaction():
             raise RuntimeError("Commit the access change before revoking its tokens.")
+        deadline = time.monotonic() + REVOCATION_BUDGET_SECONDS
         try:
-            return await self._revoke_pending(session, conditions)
+            async with tenant_session(
+                self._session_factory, require_tenant_id()
+            ) as own:
+                # Batch after batch, until none remain, a batch revokes nothing
+                # (what is left keeps failing: the tick tries again), or a
+                # whole batch's vendor calls no longer fit in the time. A
+                # failed token sorts last, by its attempts.
+                while True:
+                    revoked, pending = await self._revoke_pending(own, conditions)
+                    if (
+                        not pending
+                        or not revoked
+                        or time.monotonic() + VENDOR_CALL_SECONDS > deadline
+                    ):
+                        return pending
         except Exception as error:
             logger.error(
                 "Service token revocation is pending after a failed pass: "
                 "error_type=%s",
                 type(error).__name__,
             )
-            try:
-                await session.rollback()
-            except Exception as rollback_error:
-                logger.error(
-                    "Service token revocation rollback failed: error_type=%s",
-                    type(rollback_error).__name__,
-                )
             return True
 
     async def _revoke_pending(
         self, session: AsyncSession, conditions: tuple[Any, ...]
-    ) -> bool:
+    ) -> tuple[int, bool]:
+        """One batch: how many it revoked, and whether any remain."""
         # Most workspaces hold no token at any moment: one read, and done.
         if not await self._store.holds_tokens(session):
-            # A commit, not a rollback: a rollback would expire every row the
-            # caller still holds in this session.
             await session.commit()
-            return False
+            return 0, False
         tenant_id = require_tenant_id()
         now = datetime.now(UTC)
         await session.execute(text("SET LOCAL lock_timeout = '2s'"))
@@ -1284,7 +1379,7 @@ class ServiceBroker:
         )
         pending = await self._store.revocation_pending(session, conditions)
         await session.commit()
-        return pending
+        return len(revoked), pending
 
     async def prune(self, session: AsyncSession) -> int:
         """Delete the bound tenant's issuance records past retention; commits."""

@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from switch_core.connections.adapters.github import GitHubAdapter
 from switch_core.connections.broker import ServiceBroker
@@ -331,6 +331,8 @@ async def test_github_identity_cannot_link_to_another_workspace_user(github_app)
     response = await confirm(client, second)
     assert response.status_code == 409
     assert "already linked" in response.json()["detail"]
+    assert response.json()["code"] == "account_linked_elsewhere"
+    assert response.json()["retryable"] is False
     async with factory() as session:
         rows = (await session.scalars(select(ServiceConnection))).all()
         assert len(rows) == 1
@@ -376,22 +378,11 @@ async def test_concurrent_refresh_exchanges_once_and_saves_on_cancel(github_app)
     github.exchange.side_effect = refresh
     first = asyncio.create_task(client.get(BASE))
     await asyncio.wait_for(entered.wait(), 5)
+    # The second shares the fetch under way rather than starting its own; the
+    # cancelled first must not take that fetch, or its new sign-in, with it.
     second = asyncio.create_task(client.get(BASE))
-    deadline = asyncio.get_running_loop().time() + 5
-    while True:
-        async with factory() as session:
-            waiting = await session.scalar(
-                text(
-                    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid::bigint = (hashtextextended(:key, 0) & 4294967295))"
-                ),
-                {"key": f"service-connection:{require_tenant_id()}:github-user:github"},
-            )
-        if waiting:
-            break
-        assert asyncio.get_running_loop().time() < deadline, (
-            "Second refresh never waited for the GitHub lock"
-        )
-        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.2)
+    assert not second.done()
     first.cancel()
     await asyncio.sleep(0)
     first.cancel()

@@ -718,11 +718,11 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Service tokens per second, by service and outcome (issued, or the refusal's reason code)",
+        "title": "Service tokens per second, by connector and outcome (issued, or the refusal's reason code)",
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.service_tokens.requests{$env,$service} by {service,outcome}.as_rate()",
+            "q": "sum:switch.service_tokens.requests{$env,$service} by {connector,outcome}.as_rate()",
             "display_type": "bars"
           }
         ]
