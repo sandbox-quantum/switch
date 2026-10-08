@@ -1,16 +1,18 @@
 import { Lock, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import type { ChatMessage, ChatSummary } from '@shared/core/chats/chats';
 import { agentActivities } from '../stores/activities';
 import type { AgentActivity } from '../stores/chat-activity-store';
+import type { ChatTimeline } from '../stores/chat-timeline-store';
 import { chatsStore } from '../stores/chats';
 import {
   MessageScroller,
   MessageScrollerButton,
   MessageScrollerContent,
   MessageScrollerViewport,
+  useMessageScroller,
 } from '../ui/message-scroller';
 import { ChatComposer } from './chat-composer';
 import { ChatHeader } from './chat-header';
@@ -180,6 +182,7 @@ export const ChatPanel = observer(function ChatPanel({
           </MessageScrollerContent>
         </MessageScrollerViewport>
         <MessageScrollerButton className="absolute bottom-3 left-1/2 -translate-x-1/2" />
+        <FollowOwnSends timeline={timeline} />
       </MessageScroller>
       <ActivityUnavailable activities={activities} />
       <ChatComposer
@@ -199,6 +202,22 @@ export const ChatPanel = observer(function ChatPanel({
       />
     </div>
   );
+});
+
+/**
+ * Sending from here jumps to the end and resumes following, wherever the
+ * reader had scrolled to: what they just sent is what they want to see.
+ */
+const FollowOwnSends = observer(function FollowOwnSends({ timeline }: { timeline: ChatTimeline }) {
+  const { scrollToEnd } = useMessageScroller();
+  const latest = timeline.pending.at(-1)?.requestId ?? null;
+  const seen = useRef(latest);
+  useEffect(() => {
+    if (latest === null || latest === seen.current) return;
+    seen.current = latest;
+    scrollToEnd();
+  }, [latest, scrollToEnd]);
+  return null;
 });
 
 /**
