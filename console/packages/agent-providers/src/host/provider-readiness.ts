@@ -1,11 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
-import {
-  ANTIGRAVITY_SIGN_IN,
-  createAntigravityClient,
-  initializeAntigravity,
-} from '../antigravity/runtime';
+import { acpInitialize } from '../acp/acp-adapter';
+import { ANTIGRAVITY_SIGN_IN, antigravityLaunch } from '../antigravity/runtime';
 import { startOpencodeServer, stopOpencodeServer } from '../opencode/server';
 import { JsonRpcError, noopLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
 
@@ -110,13 +107,18 @@ export async function checkProviderReadiness(input: {
       return parseAuthentication(input.provider, output);
     }
     if (input.provider === 'antigravity') {
-      client = await createAntigravityClient({ ...input, logger: noopLogger, onExit: () => {} });
+      client = new StdioJsonRpcClient({
+        ...(await antigravityLaunch(input)),
+        cwd: input.cwd,
+        logger: noopLogger,
+        onExit: () => {},
+      });
       // Handshake only. This used to call `authenticate`, which does not test
       // the sign-in — it performs it, opening a browser, and then reported
       // "signed in" whether or not anything had happened. `authMethods` is the
       // agent's own answer to the question being asked: the sign-ins it still
       // wants. Empty means none outstanding.
-      const initialized = await initializeAntigravity(client);
+      const initialized = await acpInitialize(client);
       return initialized.authMethods?.length
         ? result('unauthenticated', ANTIGRAVITY_SIGN_IN)
         : result('authenticated', 'Signed in to Antigravity ACP.');

@@ -37,11 +37,18 @@ export { createOpencodeAdapter, OpencodeAdapter } from './opencode/opencode-adap
 export type { OpencodeSkill } from './opencode/server';
 export type { CodexAdapterOptions } from './codex/codex-adapter';
 export { CodexAdapter, createCodexAdapter } from './codex/codex-adapter';
-export { AntigravityAdapter, createAntigravityAdapter } from './antigravity/antigravity-adapter';
-export type { AntigravityAdapterOptions } from './antigravity/antigravity-adapter';
-
-export { CursorAdapter, createCursorAdapter } from './cursor/cursor-adapter';
-export type { CursorAdapterOptions } from './cursor/cursor-adapter';
+export { AcpAdapter, createAcpAdapter } from './acp/acp-adapter';
+export type {
+  AcpAdapterOptions,
+  AcpExtensionRegistrar,
+  AcpLaunch,
+  AcpLaunchInput,
+  AcpProviderHooks,
+  AcpSelectedAnswer,
+  AcpSessionContext,
+} from './acp/hooks';
+export { antigravityAcp, createAntigravityAdapter } from './antigravity/antigravity-adapter';
+export { cursorAcp, createCursorAdapter } from './cursor/cursor-adapter';
 export { ChatProjector } from './session-v1/chat-projector';
 export { EventOutbox } from './session-v1/event-outbox';
 export { HostConnection } from './host/client';
