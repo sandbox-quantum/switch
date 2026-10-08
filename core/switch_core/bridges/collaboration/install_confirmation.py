@@ -29,6 +29,7 @@ from datetime import timedelta
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
 from switch_core.bridges.collaboration.install import InstallGrant
+from switch_core.bridges.collaboration.install_state import RETURN_TO_VALUES, ReturnTo
 from switch_core.keys import Keyring, Purpose
 
 #: How long the approver has to choose on the confirmation page.
@@ -44,6 +45,7 @@ class InstallTicket:
     tenant_id: str
     state_id: str
     platform: str
+    return_to: ReturnTo
     grant: InstallGrant
 
 
@@ -57,6 +59,7 @@ def seal(ticket: InstallTicket, *, keyring: Keyring) -> str:
             "tid": ticket.tenant_id,
             "sid": ticket.state_id,
             "plat": ticket.platform,
+            "rt": ticket.return_to,
             "ws": ticket.grant.external_workspace_id,
             "name": ticket.grant.workspace_name,
             "tok": ticket.grant.bot_token,
@@ -82,10 +85,15 @@ def open_ticket(token: str, *, keyring: Keyring) -> InstallTicket:
             "install confirmation is not one this deployment issued, or has expired"
         ) from None
     decoded = json.loads(raw)
+    # A ticket sealed before `rt` existed came from the dashboard.
+    return_to = decoded.get("rt", "dashboard")
+    if return_to not in RETURN_TO_VALUES:
+        raise InstallTicketError("install confirmation is malformed")
     return InstallTicket(
         tenant_id=decoded["tid"],
         state_id=decoded["sid"],
         platform=decoded["plat"],
+        return_to=return_to,
         grant=InstallGrant(
             external_workspace_id=decoded["ws"],
             workspace_name=decoded["name"],

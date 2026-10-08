@@ -11,13 +11,15 @@ the leg the outside world reaches. `/gateway` is not routed here from the
 public load balancer at all, and it would not help if it were — it is
 cookie-authenticated and this caller has no cookie of ours.
 
-**The reply is a page, not a redirect.** Sending the browser on to the gateway
-would work today, when the person installing is an operator who can reach it,
-and would break the moment the same flow is offered to a customer who cannot:
-the gateway is on a private hostname and the callback is not. So the outcome is
-rendered here, in one self-contained page, on the origin the browser already
-reached. It is deliberately plain; when there is a place to send people, this
-becomes a redirect and the page becomes its fallback.
+**A finished install goes back to whoever started it.** The dashboard starts
+an install in its own tab, so a Connect sends that tab back to its Messaging
+Apps page (`FRONTEND_BASE_URL`). Switch Console starts one in the system
+browser, so a Connect renders the "Opening Switch Console…" handoff page, which
+opens a `switchdash://installed` deeplink and brings the app forward; the
+Console is already watching for the new connection. Everything short of that —
+the confirmation itself, a cancel, a refusal — is rendered here as one
+self-contained page on the origin the browser already reached, and so is a
+dashboard install's success when the deployment names no dashboard.
 
 The event routes answer nobody who reads English, so they answer in status
 codes and say the rest in the log.
@@ -28,10 +30,12 @@ from __future__ import annotations
 import html
 import logging
 from typing import Annotated, Literal
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, BackgroundTasks, Form, Query, Request, Response
-from starlette.responses import HTMLResponse, PlainTextResponse
+from starlette.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
+from switch_core.bridges.agent.deeplink import render_handoff_page
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX,
     InboundWebhook,
@@ -58,6 +62,7 @@ from switch_core.db.stores.messaging_install_store import (
     MessagingInstallClaimedError,
     MessagingInstallStateError,
 )
+from switch_core.deeplinks import installed_deeplink
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +107,21 @@ _PAGE_HEADERS = {
 }
 
 
+#: The handoff page runs one inline script (it navigates to the deeplink and
+#: notices when the app takes focus) and draws inline SVG; nothing else loads.
+_HANDOFF_HEADERS = {
+    **_PAGE_HEADERS,
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    ),
+}
+
+#: Navigation-only headers for a redirect: nothing to frame, nothing to cache,
+#: and the callback's query string must not leak onward as a referrer.
+_REDIRECT_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+
+
 def _page(*, title: str, detail: str, status: int, extra: str = "") -> HTMLResponse:
     return HTMLResponse(
         _PAGE.format(title=html.escape(title), detail=html.escape(detail), extra=extra),
@@ -133,13 +153,20 @@ def _confirmation_page(pending: PendingInstall) -> HTMLResponse:
 
 def create_messaging_install_router(
     service: MessagingInstallService,
+    *,
+    dashboard_url: str | None,
 ) -> APIRouter:
     """Build the public install routes over one already-configured service.
 
     A factory closing over the service rather than a module-level router with
     dependencies, because this app has no dependency-injection module of its
     own and adding one for a single object would be the larger change.
+
+    `dashboard_url` is the operator UI's origin. With it, a finished install
+    redirects back to the Messaging Apps page; without it, the outcome is a
+    page here.
     """
+    dashboard = dashboard_url.rstrip("/") if dashboard_url else None
     router = APIRouter(prefix=PUBLIC_PATH_PREFIX)
 
     @router.get("/{platform}/oauth/callback")
@@ -206,7 +233,7 @@ def create_messaging_install_router(
         platform: str,
         ticket: Annotated[str, Form()],
         decision: Annotated[Literal["connect", "cancel"], Form()],
-    ) -> HTMLResponse:
+    ) -> Response:
         try:
             if decision == "cancel":
                 try:
@@ -236,7 +263,7 @@ def create_messaging_install_router(
                     ),
                     status=200,
                 )
-            install = await service.confirm(platform=platform, ticket=ticket)
+            confirmed = await service.confirm(platform=platform, ticket=ticket)
         except (InstallTicketError, InstallPlatformMismatch) as failure:
             logger.warning("Refused a %s install confirmation: %s", platform, failure)
             return _page(
@@ -266,6 +293,19 @@ def create_messaging_install_router(
                 status=400,
             )
 
+        install = confirmed.install
+        if confirmed.return_to == "console":
+            return HTMLResponse(
+                render_handoff_page(installed_deeplink(install.platform)),
+                headers=_HANDOFF_HEADERS,
+            )
+        if dashboard is not None:
+            query = urlencode({"installed": install.platform})
+            return RedirectResponse(
+                f"{dashboard}/collaborations?{query}",
+                status_code=303,
+                headers=_REDIRECT_HEADERS,
+            )
         return _page(
             title="Switch is connected",
             detail=(

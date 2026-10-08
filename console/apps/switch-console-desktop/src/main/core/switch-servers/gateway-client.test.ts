@@ -1313,6 +1313,7 @@ describe("installing the deployment's own messaging app", () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://switch.example.com/gateway/messaging-apps/slack/install');
     expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({ return_to: 'console' });
   });
 
   it('raises when the deployment has no app for the platform', async () => {

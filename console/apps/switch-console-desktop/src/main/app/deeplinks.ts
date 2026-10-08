@@ -69,9 +69,29 @@ function focusWindow(): void {
   win.focus();
 }
 
+/**
+ * `switchdash://installed?platform=…`: the server's install callback hands the
+ * browser back here once a messaging workspace is connected. Bringing the app
+ * forward is the whole of it — the connect panel that started the install is
+ * already watching for the new connection.
+ */
+function isInstalledDeeplink(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === `${DEEPLINK_SCHEME}:` && url.hostname === 'installed';
+  } catch {
+    return false;
+  }
+}
+
 /** Parse, focus the app, and hand the deeplink to the renderer (or buffer it
  * when the renderer isn't up yet). */
 export function handleDeeplinkUrl(rawUrl: string): void {
+  if (isInstalledDeeplink(rawUrl)) {
+    log.info('deeplink: messaging app installed', { rawUrl });
+    focusWindow();
+    return;
+  }
   const parsed = parseSessionDeeplink(rawUrl);
   if (!parsed) return;
   focusWindow();

@@ -28,7 +28,9 @@ _MASTER = "a" * 40
 _KEYRING = Keyring.parse(f"k1:{_MASTER}", legacy_secret=None)
 _LEGACY = "test-jwt-secret"
 
-_STATE = InstallState(tenant_id="tenant-a", state_id="state-1", platform="slack")
+_STATE = InstallState(
+    tenant_id="tenant-a", state_id="state-1", platform="slack", return_to="dashboard"
+)
 
 
 def test_a_minted_state_verifies_back_to_what_went_in() -> None:
@@ -39,6 +41,39 @@ def test_the_token_is_safe_in_a_url() -> None:
     """It travels as a query parameter through a redirect the platform builds."""
     token = mint(_STATE, keyring=_KEYRING)
     assert all(c.isalnum() or c in "-_." for c in token)
+
+
+def _sign(decoded: dict[str, str]) -> str:
+    """A token over an arbitrary payload, signed as this deployment would."""
+    payload = (
+        base64.urlsafe_b64encode(json.dumps(decoded).encode()).decode().rstrip("=")
+    )
+    signature = hmac.new(
+        _KEYRING.derive(Purpose.INSTALL_STATE), payload.encode(), hashlib.sha256
+    ).digest()
+    return f"v1.{payload}.{base64.urlsafe_b64encode(signature).decode().rstrip('=')}"
+
+
+class TestReturnTo:
+    def test_a_console_install_verifies_back_to_the_console(self) -> None:
+        state = InstallState(
+            tenant_id="tenant-a",
+            state_id="state-1",
+            platform="slack",
+            return_to="console",
+        )
+        assert verify(mint(state, keyring=_KEYRING), keyring=_KEYRING) == state
+
+    def test_a_state_minted_before_return_to_goes_to_the_dashboard(self) -> None:
+        token = _sign({"tid": "tenant-a", "sid": "state-1", "plat": "slack"})
+        assert verify(token, keyring=_KEYRING).return_to == "dashboard"
+
+    def test_an_unknown_destination_is_refused(self) -> None:
+        token = _sign(
+            {"tid": "tenant-a", "sid": "state-1", "plat": "slack", "rt": "elsewhere"}
+        )
+        with pytest.raises(InstallStateError, match="malformed"):
+            verify(token, keyring=_KEYRING)
 
 
 class TestForgery:

@@ -112,6 +112,11 @@ _HANDOFF_PAGE = """<!doctype html>
 """
 
 
+def render_handoff_page(target: str) -> str:
+    """The handoff page for a `switchdash://` target, escaped for the href."""
+    return _HANDOFF_PAGE.format(target=escape(target, quote=True))
+
+
 @router.get("/deeplink/session")
 async def redirect_session_deeplink(request: Request) -> HTMLResponse:
     """Hand the browser off to the `switchdash://session?…` deeplink.
@@ -125,4 +130,4 @@ async def redirect_session_deeplink(request: Request) -> HTMLResponse:
     (its `/deeplink` prefix is in the Bearer middleware's public allowlist).
     """
     target = gateway_query_to_switchdash(request.url.query)
-    return HTMLResponse(_HANDOFF_PAGE.format(target=escape(target, quote=True)))
+    return HTMLResponse(render_handoff_page(target))

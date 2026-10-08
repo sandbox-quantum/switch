@@ -929,6 +929,7 @@ export async function beginAppInstall(platform: string): Promise<string> {
   const res = await jsonRequest<{ authorize_url: string }>(
     `/messaging-apps/${platform}/install`,
     "POST",
+    { return_to: "dashboard" },
   );
   return res.authorize_url;
 }

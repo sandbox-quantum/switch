@@ -25,9 +25,11 @@ from .test_install_service import _ORIGIN, _begin, _fixture
 pytestmark = pytest.mark.no_ambient_tenant
 
 
-def _client(service: object) -> httpx.AsyncClient:
+def _client(service: object, dashboard_url: str | None = None) -> httpx.AsyncClient:
     app = FastAPI()
-    app.include_router(create_messaging_install_router(service))  # type: ignore[arg-type]
+    app.include_router(
+        create_messaging_install_router(service, dashboard_url=dashboard_url)  # type: ignore[arg-type]
+    )
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=_ORIGIN)
 
 
@@ -83,6 +85,56 @@ async def test_connect_on_the_page_finishes_the_install(
     assert connected.status_code == 200
     assert "Switch is connected" in connected.text
     assert again.status_code == 400
+    assert len(fixture.lifecycle.registered) == 1
+
+
+async def test_connect_returns_to_the_dashboard_when_there_is_one(
+    rls_harness: RLSHarness,
+) -> None:
+    fixture = await _fixture(rls_harness)
+    state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+
+    async with _client(fixture.service, "https://switch.example.com/") as client:
+        page = await client.get(
+            "/messaging/slack/oauth/callback",
+            params={"code": "the-code", "state": state},
+        )
+        connected = await client.post(
+            "/messaging/slack/oauth/confirm",
+            data={"ticket": _ticket(page.text), "decision": "connect"},
+        )
+
+    assert connected.status_code == 303
+    assert (
+        connected.headers["location"]
+        == "https://switch.example.com/collaborations?installed=slack"
+    )
+    assert connected.headers["cache-control"] == "no-store"
+    assert len(fixture.lifecycle.registered) == 1
+
+
+async def test_a_console_install_hands_off_to_switch_console(
+    rls_harness: RLSHarness,
+) -> None:
+    fixture = await _fixture(rls_harness)
+    state = await _begin(
+        rls_harness.restricted, fixture, fixture.tenant_a, return_to="console"
+    )
+
+    async with _client(fixture.service, "https://switch.example.com") as client:
+        page = await client.get(
+            "/messaging/slack/oauth/callback",
+            params={"code": "the-code", "state": state},
+        )
+        connected = await client.post(
+            "/messaging/slack/oauth/confirm",
+            data={"ticket": _ticket(page.text), "decision": "connect"},
+        )
+
+    assert connected.status_code == 200
+    assert 'href="switchdash://installed?platform=slack"' in connected.text
+    assert "frame-ancestors 'none'" in connected.headers["content-security-policy"]
+    assert connected.headers["cache-control"] == "no-store"
     assert len(fixture.lifecycle.registered) == 1
 
 

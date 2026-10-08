@@ -81,6 +81,7 @@ from switch_core.bridges.collaboration.install_confirmation import (
 )
 from switch_core.bridges.collaboration.install_state import (
     InstallState,
+    ReturnTo,
     mint,
     verify,
 )
@@ -170,6 +171,14 @@ class PendingInstall:
     ticket: str
 
 
+@dataclass(frozen=True)
+class ConfirmedInstall:
+    """A connected install, and where the approver's browser goes next."""
+
+    install: MessagingInstall
+    return_to: ReturnTo
+
+
 class InstallPlatformMismatch(RuntimeError):
     """A state minted for one platform arrived at another's callback.
 
@@ -218,7 +227,14 @@ class MessagingInstallService:
     def platforms(self) -> list[str]:
         return self._installers.platforms()
 
-    async def begin(self, session: AsyncSession, *, platform: str, user_id: str) -> str:
+    async def begin(
+        self,
+        session: AsyncSession,
+        *,
+        platform: str,
+        user_id: str,
+        return_to: ReturnTo,
+    ) -> str:
         """Start an install and return where to send the browser.
 
         Runs on the caller's own scoped session, so the tenant recorded is the
@@ -231,7 +247,10 @@ class MessagingInstallService:
         )
         token = mint(
             InstallState(
-                tenant_id=state.tenant_id, state_id=state.id, platform=platform
+                tenant_id=state.tenant_id,
+                state_id=state.id,
+                platform=platform,
+                return_to=return_to,
             ),
             keyring=self._keyring,
         )
@@ -303,13 +322,14 @@ class MessagingInstallService:
                     tenant_id=state.tenant_id,
                     state_id=state.state_id,
                     platform=platform,
+                    return_to=state.return_to,
                     grant=grant,
                 ),
                 keyring=self._keyring,
             ),
         )
 
-    async def confirm(self, *, platform: str, ticket: str) -> MessagingInstall:
+    async def confirm(self, *, platform: str, ticket: str) -> ConfirmedInstall:
         """The approver chose Connect: claim the workspace and build its bridge."""
         opened = self._open(platform, ticket)
         installer = self._installers.get(platform)
@@ -428,7 +448,7 @@ class MessagingInstallService:
                 opened.tenant_id,
                 bridge.id,
             )
-            return attached
+            return ConfirmedInstall(install=attached, return_to=opened.return_to)
 
     async def cancel(self, *, platform: str, ticket: str) -> InstallGrant:
         """The approver chose Cancel: give the credential back, then record it.

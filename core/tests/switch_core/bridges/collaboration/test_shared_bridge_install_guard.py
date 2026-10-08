@@ -100,7 +100,7 @@ async def _shared_app(harness: RLSHarness) -> tuple[MessagingInstallService, _Id
     base.service = service
     state = await _begin(harness.restricted, base, base.tenant_a)
     pending = await service.complete(platform="slack", code="c", state_token=state)
-    install = await service.confirm(platform="slack", ticket=pending.ticket)
+    install = (await service.confirm(platform="slack", ticket=pending.ticket)).install
     assert install.bridge_id is not None
     return service, _Ids(
         tenant_a=base.tenant_a,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ipaddress import ip_address
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 # Scheme + host of the Switch Console session deeplink Switch Console reports with its
 # runtime state, e.g. `switchdash://session?server=…&agent=…&room=…&session=…`.
@@ -9,6 +9,10 @@ from urllib.parse import urlsplit
 # deeplink is `scheme == "switchdash"` and `netloc == "session"`.
 _DEEPLINK_SCHEME = "switchdash"
 _DEEPLINK_HOST = "session"
+
+# Host of the deeplink a finished messaging-app install hands Switch Console:
+# `switchdash://installed?platform=slack`.
+_INSTALLED_HOST = "installed"
 
 # Gateway path that hands the browser off to the reconstructed `switchdash://`
 # deeplink.
@@ -120,3 +124,8 @@ def gateway_query_to_switchdash(query: str) -> str:
     """
     suffix = f"?{query}" if query else ""
     return f"{_DEEPLINK_SCHEME}://{_DEEPLINK_HOST}{suffix}"
+
+
+def installed_deeplink(platform: str) -> str:
+    """The `switchdash://installed?…` deeplink for a just-connected workspace."""
+    return f"{_DEEPLINK_SCHEME}://{_INSTALLED_HOST}?{urlencode({'platform': platform})}"

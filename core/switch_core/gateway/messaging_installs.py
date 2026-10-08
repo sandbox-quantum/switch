@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.collaboration.install import MessagingInstallError
 from switch_core.bridges.collaboration.install_service import MessagingInstallService
+from switch_core.bridges.collaboration.install_state import ReturnTo
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import User, require_tenant_id
 from switch_core.db.stores.messaging_install_store import MessagingInstallNotFound
@@ -32,6 +33,12 @@ router = APIRouter()
 
 class InstallStart(BaseModel):
     authorize_url: str
+
+
+class InstallStartRequest(BaseModel):
+    """Which client started the install, so the finished one returns to it."""
+
+    return_to: ReturnTo
 
 
 class InstallablePlatforms(BaseModel):
@@ -100,10 +107,15 @@ async def begin_install(
     session: Annotated[AsyncSession, Depends(get_session)],
     service: Annotated[MessagingInstallService | None, Depends(get_install_service)],
     user: Annotated[User, Depends(require_tenant_admin)],
+    body: InstallStartRequest | None = None,
 ) -> InstallStart:
+    # No body is a client from before `return_to` existed — the dashboard, or
+    # a Switch Console build too old to say — and the dashboard is where both
+    # used to be sent.
+    return_to: ReturnTo = "dashboard" if body is None else body.return_to
     try:
         authorize_url = await _require_installs(service).begin(
-            session, platform=platform, user_id=user.id
+            session, platform=platform, user_id=user.id, return_to=return_to
         )
     except MessagingInstallError as failure:
         raise HTTPException(status_code=404, detail=str(failure)) from failure
@@ -115,7 +127,7 @@ async def begin_install(
         action=AuditAction.MESSAGING_INSTALL_STARTED,
         target_type="messaging_install",
         target_id=None,
-        details={"platform": platform},
+        details={"platform": platform, "return_to": return_to},
     )
     await session.commit()
     logger.info("Started a %s install for user %s", platform, user.id)

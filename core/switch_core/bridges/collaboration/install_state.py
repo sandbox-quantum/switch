@@ -41,8 +41,14 @@ import hashlib
 import hmac
 import json
 from dataclasses import dataclass
+from typing import Literal, get_args
 
 from switch_core.keys import Keyring, Purpose
+
+#: Where the browser goes once the install is connected: back to the web
+#: dashboard, or handed to Switch Console, whichever started it.
+ReturnTo = Literal["dashboard", "console"]
+RETURN_TO_VALUES: tuple[str, ...] = get_args(ReturnTo)
 
 #: How a state was signed with `JWT_SECRET_KEY` before `SECRET_KEYS`; kept so
 #: a state in flight across the upgrade still verifies.
@@ -68,12 +74,14 @@ class InstallState:
     `tenant_id` is trusted *because* the signature verified, and is bound to
     the session before anything else happens. `state_id` names the row to burn.
     `platform` is carried so the callback route's own path cannot be used to
-    redeem a state minted for a different platform.
+    redeem a state minted for a different platform. `return_to` is signed with
+    the rest so nothing on the round trip can redirect a finished install.
     """
 
     tenant_id: str
     state_id: str
     platform: str
+    return_to: ReturnTo
 
 
 def _verification_keys(keyring: Keyring) -> list[bytes]:
@@ -99,7 +107,12 @@ def mint(state: InstallState, *, keyring: Keyring) -> str:
     """Sign a state for the platform to hand back to us unchanged."""
     payload = _b64(
         json.dumps(
-            {"tid": state.tenant_id, "sid": state.state_id, "plat": state.platform},
+            {
+                "tid": state.tenant_id,
+                "sid": state.state_id,
+                "plat": state.platform,
+                "rt": state.return_to,
+            },
             separators=(",", ":"),
             sort_keys=True,
         ).encode()
@@ -138,10 +151,15 @@ def verify(token: str, *, keyring: Keyring) -> InstallState:
 
     try:
         decoded = json.loads(_unb64(payload))
+        # A state minted before `rt` existed came from the dashboard.
+        return_to = decoded.get("rt", "dashboard")
+        if return_to not in RETURN_TO_VALUES:
+            raise ValueError(return_to)
         return InstallState(
             tenant_id=decoded["tid"],
             state_id=decoded["sid"],
             platform=decoded["plat"],
+            return_to=return_to,
         )
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError, AttributeError):
         raise InstallStateError("install state is malformed") from None

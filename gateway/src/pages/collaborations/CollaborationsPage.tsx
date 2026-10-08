@@ -20,6 +20,7 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
+import { useSearchParams } from "react-router";
 import DataTable from "../../components/DataTable";
 import { type BridgeDetail, deleteBridge, updateBridge } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
@@ -46,6 +47,19 @@ export default function CollaborationsPage() {
   const [savingId, setSavingId] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [installTarget, setInstallTarget] = useState<BridgeDetail | null>(null);
+  // Set by the install callback, which sends the browser back here once a
+  // workspace is connected.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const installedPlatform = searchParams.get("installed");
+  const dismissInstalled = useCallback(() => {
+    setSearchParams(
+      (params) => {
+        params.delete("installed");
+        return params;
+      },
+      { replace: true },
+    );
+  }, [setSearchParams]);
 
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
@@ -225,6 +239,12 @@ export default function CollaborationsPage() {
           </Button>
         )}
       </Stack>
+
+      {installedPlatform && (
+        <Alert severity="success" sx={{ mb: 2 }} onClose={dismissInstalled}>
+          The {titleCase(installedPlatform)} workspace is connected to Switch.
+        </Alert>
+      )}
 
       {loading ? (
         <CircularProgress />

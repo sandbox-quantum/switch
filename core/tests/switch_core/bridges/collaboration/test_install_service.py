@@ -41,6 +41,7 @@ from switch_core.bridges.collaboration.install_service import (
 from switch_core.bridges.collaboration.install_state import (
     InstallState,
     InstallStateError,
+    ReturnTo,
     mint,
 )
 from switch_core.bridges.collaboration.lifecycle_service import BridgeClaimConflict
@@ -248,11 +249,16 @@ async def _fixture(harness: RLSHarness, *, tokenless: bool = False) -> _Fixture:
     return fixture
 
 
-async def _begin(factory: async_sessionmaker, fixture: _Fixture, tenant_id: str) -> str:
+async def _begin(
+    factory: async_sessionmaker,
+    fixture: _Fixture,
+    tenant_id: str,
+    return_to: ReturnTo = "dashboard",
+) -> str:
     """Start an install as `tenant_id` and return the state it minted."""
     async with tenant_session(factory, tenant_id) as session:
         url = await fixture.service.begin(
-            session, platform="slack", user_id=fixture.user_id
+            session, platform="slack", user_id=fixture.user_id, return_to=return_to
         )
         await session.commit()
     return parse_qs(urlparse(url).query)["state"][0]
@@ -271,7 +277,8 @@ async def _land(fixture: _Fixture, state: str) -> MessagingInstall:
     pending = await fixture.service.complete(
         platform="slack", code="the-code", state_token=state
     )
-    return await fixture.service.confirm(platform="slack", ticket=pending.ticket)
+    confirmed = await fixture.service.confirm(platform="slack", ticket=pending.ticket)
+    return confirmed.install
 
 
 async def _reread(
@@ -385,7 +392,10 @@ class TestWhatTheCallbackWillNotDo:
 
         forged = mint(
             InstallState(
-                tenant_id=fixture.tenant_b, state_id=state_id, platform="slack"
+                tenant_id=fixture.tenant_b,
+                state_id=state_id,
+                platform="slack",
+                return_to="dashboard",
             ),
             keyring=_KEYRING,
         )
@@ -411,7 +421,10 @@ class TestWhatTheCallbackWillNotDo:
         fixture = await _fixture(rls_harness)
         forged = mint(
             InstallState(
-                tenant_id=fixture.tenant_a, state_id="whatever", platform="teams"
+                tenant_id=fixture.tenant_a,
+                state_id="whatever",
+                platform="teams",
+                return_to="dashboard",
             ),
             keyring=_KEYRING,
         )

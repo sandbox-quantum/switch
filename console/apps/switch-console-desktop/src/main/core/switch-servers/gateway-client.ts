@@ -1208,8 +1208,10 @@ export async function fetchInstallablePlatforms(server: SwitchServer): Promise<s
  * Start installing the deployment's app for `platform` into the workspace the
  * session is bound to. Returns the platform's consent URL, which must be
  * opened in a real browser: the platform refuses to render it in a frame, and
- * the server finishes the install on its own public callback, so nothing comes
- * back to Switch Console but the new bridge.
+ * the server finishes the install on its own public callback. Asking for
+ * `return_to: 'console'` makes that callback hand the browser back here with a
+ * `switchdash://installed` deeplink; the new bridge is still how the install
+ * is recognised.
  */
 export async function beginMessagingAppInstall(
   server: SwitchServer,
@@ -1218,7 +1220,7 @@ export async function beginMessagingAppInstall(
   const res = await gatewayFetch(
     server,
     `/messaging-apps/${encodeURIComponent(platform)}/install`,
-    { authenticated: true, method: 'POST' }
+    { authenticated: true, method: 'POST', body: { return_to: 'console' } }
   );
   const json = (await res.json()) as { authorize_url: string };
   return json.authorize_url;
