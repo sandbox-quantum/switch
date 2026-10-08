@@ -29,6 +29,7 @@ from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.keys import Keyring
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import NullSink
+from switch_core.trust.client import NullTrustClient
 
 
 def _telemetry() -> TelemetryService:
@@ -63,6 +64,7 @@ def _build(telemetry: TelemetryService) -> Any:
         config=_config(),
         approval_outcomes=object(),  # type: ignore[arg-type]
         controller_auth=None,
+        trust_client=NullTrustClient(),
         telemetry=telemetry,
     )
     return protocol

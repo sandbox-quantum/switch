@@ -74,6 +74,7 @@ from switch_core.tenant_context import bind_tenant_id, tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
+from switch_core.trust.client import NullTrustClient
 from tests.benchmarks.instrumentation import (
     RequestCounter,
     TracingMiddleware,
@@ -557,6 +558,7 @@ async def _serve(
         config=config,
         approval_outcomes=ApprovalOutcomes(activity_listener, activity),
         controller_auth=None,
+        trust_client=NullTrustClient(),
         connections=connections,
     )
 

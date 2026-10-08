@@ -176,6 +176,7 @@ from switch_core.tenant_context import no_tenant
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
+from switch_core.trust.setup import build_trust_client
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -519,6 +520,9 @@ async def run(config: SwitchConfig) -> None:
         config, session_factory, switch_core_version()
     )
 
+    # ── Switch Trust guardrails ──────────────────────────────────────────────
+    trust_client, trust_http = build_trust_client(config)
+
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
         reference_store=reference_store,
@@ -642,6 +646,7 @@ async def run(config: SwitchConfig) -> None:
         session_activity_service=AgentSessionActivityService(session_factory),
         connections=connections,
         telemetry=telemetry,
+        trust_client=trust_client,
     )
 
     # ── Room service ─────────────────────────────────────────────────────────
@@ -705,6 +710,7 @@ async def run(config: SwitchConfig) -> None:
         controller_auth=management.authenticator if management is not None else None,
         connections=connections,
         telemetry=telemetry,
+        trust_client=trust_client,
     )
     # Every close reports, whichever of the five paths did it — and only for a
     # connection the handler saw start.
@@ -936,6 +942,8 @@ async def run(config: SwitchConfig) -> None:
                 # product event is the least valuable thing in it.
                 await protocol.sessions.aclose()
                 await _drain_telemetry(telemetry, telemetry_http)
+                if trust_http is not None:
+                    await trust_http.aclose()
                 await observability.aclose()
                 # So a probe during teardown gets a 503 rather than the last
                 # cached answer, which may still say ready.

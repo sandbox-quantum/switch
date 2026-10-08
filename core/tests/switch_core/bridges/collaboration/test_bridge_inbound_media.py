@@ -9,6 +9,7 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     InboundMessage,
 )
+from switch_core.trust.client import NullTrustClient
 
 
 class _FakeHumanActor:
@@ -94,6 +95,7 @@ def _fake_bridge() -> SimpleNamespace:
         _is_registered_agent=_is_registered_agent,
         _ensure_human_in_room=_ensure_human_in_room,
         _record_message_map=_record_message_map,
+        _trust_client=NullTrustClient(),
         human_actor=human_actor,
         recorded=recorded,
     )

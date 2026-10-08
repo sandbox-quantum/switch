@@ -18,6 +18,7 @@ from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.keys import Keyring
 from switch_core.management.controller_routes import router as controller_router
+from switch_core.trust.client import NullTrustClient
 
 _CHART = Path(__file__).resolve().parents[3] / "deploy/remote/helm/switch"
 
@@ -61,6 +62,7 @@ def _served_prefixes() -> set[str]:
         config=_config(),
         approval_outcomes=object(),  # type: ignore[arg-type]
         controller_auth=None,
+        trust_client=NullTrustClient(),
     )
     prefixes = set(_ADDED_IN_MAIN)
     # The agents controller's routes join the agent bridge app only when agent

@@ -28,6 +28,7 @@ from switch_core.telemetry.session_start import (
     SessionStartLimiter,
     default_session_start_limiter,
 )
+from switch_core.trust.client import TrustClient
 
 if TYPE_CHECKING:
     from switch_core.session_activity.outcomes import ApprovalOutcomes
@@ -54,6 +55,7 @@ def init_dependencies(
     session_factory: Any,
     config: Any,
     approval_outcomes: ApprovalOutcomes,
+    trust_client: TrustClient,
     telemetry: TelemetryService | None = None,
 ) -> None:
     _state["agent_store"] = agent_store
@@ -73,6 +75,7 @@ def init_dependencies(
     _state["session_factory"] = session_factory
     _state["config"] = config
     _state["telemetry"] = telemetry
+    _state["trust_client"] = trust_client
     _state["session_start_limiter"] = default_session_start_limiter()
 
     _state["protocol"] = AgentCore(
@@ -93,6 +96,7 @@ def init_dependencies(
         session_factory=session_factory,
         config=config,
         approval_outcomes=approval_outcomes,
+        trust_client=trust_client,
         telemetry=telemetry,
     )
 

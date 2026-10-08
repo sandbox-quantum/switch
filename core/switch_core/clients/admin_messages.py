@@ -106,6 +106,7 @@ class AdminMessageType(StrEnum):
     SELF_MENTION_UNALIASED = "self_mention_unaliased"
     NO_AGENTS = "no_agents"
     RUN_NOTICE = "run_notice"
+    TRUST_BLOCKED = "trust_blocked"
 
 
 def admin_extra_content(message_type: AdminMessageType | None) -> dict[str, object]:
