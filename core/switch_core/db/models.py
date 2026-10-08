@@ -284,17 +284,7 @@ class ApiKey(TenantScoped, Base):
 
 class ProviderConnection(TenantScoped, Base):
     __tablename__ = "provider_connections"
-    __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "user_id", "provider"),
-        CheckConstraint(
-            "provider IN ('claude', 'github', 'codex', 'opencode', 'cursor', 'antigravity')",
-            name="ck_provider_connections_provider",
-        ),
-        CheckConstraint(
-            "(provider = 'claude' AND kind IN ('api-key', 'setup-token')) OR (provider = 'github' AND kind = 'oauth') OR (provider = 'codex' AND kind IN ('api-key', 'auth-json')) OR (provider = 'cursor' AND kind = 'api-key') OR (provider IN ('opencode', 'antigravity') AND kind = 'auth-json')",
-            name="ck_provider_connections_kind",
-        ),
-    )
+    __table_args__ = (PrimaryKeyConstraint("tenant_id", "user_id", "provider"),)
 
     user_id: Mapped[str] = mapped_column(
         Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
