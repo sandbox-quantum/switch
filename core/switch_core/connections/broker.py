@@ -238,6 +238,9 @@ class ServiceBroker:
         self._adapters = adapters
         self._store = store
         self._token_retention = token_retention
+        # The access token being fetched for each connection, by (tenant,
+        # owner, service), for callers that ask while it is.
+        self._fetching: dict[tuple[str, str, str], asyncio.Task[str]] = {}
 
     def _entry(self, service: str) -> Connection:
         entry = self._catalog.get(service)
@@ -649,10 +652,30 @@ class ServiceBroker:
         In a transaction of its own, which outlives the caller being
         cancelled: a rotating refresh spends the old refresh token, so the new
         one must be stored once the vendor has returned it.
+
+        Callers asking for one connection at once share one fetch. The
+        connection's lock still serialises refreshes, but every agent of an
+        owner renewing together would otherwise each hold a database
+        connection queued on that lock while one refresh takes its time, and
+        give up at the lock's timeout.
         """
-        return await finish_shielded(
-            self._fresh_access_token(require_tenant_id(), owner_id, service, adapter)
-        )
+        key = (require_tenant_id(), owner_id, service)
+        fetching = self._fetching.get(key)
+        if fetching is None:
+            fetching = asyncio.create_task(self._fresh_access_token(*key, adapter))
+            self._fetching[key] = fetching
+            fetching.add_done_callback(lambda done: self._fetched(key, done))
+        return await asyncio.shield(fetching)
+
+    def _fetched(self, key: tuple[str, str, str], done: asyncio.Task[str]) -> None:
+        if self._fetching.get(key) is done:
+            del self._fetching[key]
+        # Its callers see a failure; one none of them stayed to see is logged.
+        if not done.cancelled() and (error := done.exception()) is not None:
+            if not isinstance(error, ServiceError):
+                logger.error(
+                    "Fetching a %s access token failed", key[2], exc_info=error
+                )
 
     async def _fresh_access_token(
         self, tenant_id: str, owner_id: str, service: str, adapter: ServiceAdapter

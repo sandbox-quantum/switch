@@ -270,6 +270,28 @@ class TestIssue:
         )
         assert stored["login"] == "ada-gh"
 
+    async def test_issues_at_once_share_one_fetch_rather_than_queue_on_the_lock(
+        self, broker, session_factory, vendor, monkeypatch
+    ) -> None:
+        world = await _world(session_factory, expires_in=60)
+        locked = 0
+        lock = ServiceConnectionStore.lock_connection
+
+        async def counting(self, session, user_id, service):
+            nonlocal locked
+            locked += 1
+            await lock(self, session, user_id, service)
+
+        monkeypatch.setattr(ServiceConnectionStore, "lock_connection", counting)
+        issued = await asyncio.gather(
+            *(_issue(broker, session_factory, world.agent.id) for _ in range(6))
+        )
+
+        assert vendor.refreshes == 1
+        assert len({token.token for token in issued}) == 6
+        # One for the shared fetch, one per record.
+        assert locked == 1 + 6
+
     async def test_a_refused_refresh_needs_reauthorization_with_the_fix(
         self, broker, session_factory, vendor
     ) -> None:
