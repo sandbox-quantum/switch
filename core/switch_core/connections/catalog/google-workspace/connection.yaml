@@ -18,8 +18,10 @@ auth:
     token_url: https://oauth2.googleapis.com/token
     revocation_url: https://oauth2.googleapis.com/revoke
     # Google hands out a refresh token only for offline access, and again on
-    # a later sign-in only when consent is asked for.
-    prompt: consent
+    # a later sign-in only when consent is asked for. The account chooser
+    # comes first, so a browser signed in to another Google account (a
+    # personal one, or another organization's) does not pick it unasked.
+    prompt: consent select_account
     authorization_params: { access_type: offline }
     # Shown after "Not set up on this server." where the settings are unset.
     setup_note: Its operator registers an internal Google app; see the docs.

@@ -271,6 +271,10 @@ Built from a spike against a test Workspace with an Internal app:
 - **Offline access.** Google returns a refresh token only for
   `access_type=offline`, and on a later sign-in only with `prompt=consent`;
   both go with every authorization. Refresh tokens are reusable.
+- **The account chooser first.** `prompt` also carries `select_account`, so a
+  browser signed in to another Google account (a personal one, or another
+  organization's) does not pick it unasked. `prompt` takes several values,
+  space-separated, as OAuth writes them.
 - **Tokens.** Access tokens lived 3,599 s; `max_lifetime` is 3,920, Google's
   documented sample. Agents still ask again hourly.
 - **The account** is OpenID's `sub`, labelled by `email`, from userinfo.

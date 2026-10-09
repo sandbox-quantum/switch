@@ -76,7 +76,9 @@ class OAuthClient(BaseModel):
     `loopback_ports`: the only ports Switch Console's listener may use, for a
     vendor that matches a loopback redirect exactly, port included; without
     them any port is used. `prompt` is sent with every authorization, for a
-    vendor that needs it (`consent`, to consent to a narrower set of scopes).
+    vendor that needs it (`consent`, to consent to a narrower set of scopes;
+    `select_account`, to let the person choose the account), one value or
+    several separated by spaces, as OAuth writes it.
     So are `authorization_params`, which only a vendor-specific key may name
     (`access_type: offline`, for a vendor that hands out a refresh token only
     when asked), never one Core sets itself.
@@ -89,7 +91,10 @@ class OAuthClient(BaseModel):
     loopback_ports: list[Annotated[int, Field(ge=1024, le=65535)]] | None = Field(
         default=None, min_length=1, max_length=10
     )
-    prompt: Literal["consent", "login", "select_account"] | None = None
+    prompt: str | None = Field(
+        default=None,
+        pattern=r"^(consent|login|select_account)( (consent|login|select_account)){0,2}$",
+    )
     authorization_params: dict[
         AuthorizationParam, Annotated[str, Field(pattern=r"^[A-Za-z0-9._~-]{1,64}$")]
     ] = Field(default_factory=dict)
@@ -103,6 +108,10 @@ class OAuthClient(BaseModel):
 
     @model_validator(mode="after")
     def _consistent(self) -> "OAuthClient":
+        if self.prompt is not None:
+            prompts = self.prompt.split(" ")
+            if len(set(prompts)) != len(prompts):
+                raise ValueError("a prompt value is listed twice")
         if (self.registration == "static") != (self.client_settings is not None):
             raise ValueError(
                 "client_settings names a static client's settings, and only one's"

@@ -186,7 +186,7 @@ class TestSignIn:
             await _connect(world, client, ada)
         [authorization] = world.google.authorizations
         assert authorization["access_type"] == "offline"
-        assert authorization["prompt"] == "consent"
+        assert authorization["prompt"] == "consent select_account"
         assert authorization["redirect_uri"] == f"{PUBLIC}{FLOWS}/callback"
         assert "resource" not in authorization
         scopes = authorization["scope"].split()

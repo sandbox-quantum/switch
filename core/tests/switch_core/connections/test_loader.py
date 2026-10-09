@@ -55,7 +55,7 @@ def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_mu
     # A refresh token comes only with offline access, and again on a later
     # sign-in only when consent is asked for.
     assert oauth.authorization_params == {"access_type": "offline"}
-    assert oauth.prompt == "consent"
+    assert oauth.prompt == "consent select_account"
     assert oauth.revocation_url == "https://oauth2.googleapis.com/revoke"
     assert definition.auth.refresh == "reusable"
     assert definition.auth.identity is not None
@@ -431,6 +431,18 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.level_tools("write") == []
 
 
+def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    prompt: consent select_account\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None and oauth.prompt == "consent select_account"
+
+
 def test_loads_a_static_client_with_its_endpoints(catalog_copy):
     _write_example(
         catalog_copy,
@@ -537,6 +549,21 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n",
             "    redirect: [loopback, core]\n    prompt: always\n",
             "prompt",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    prompt: consent none\n",
+            "prompt",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    prompt: consent  login\n",
+            "prompt",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    prompt: consent consent\n",
+            "listed twice",
         ),
         (
             "    redirect: [loopback, core]\n",
