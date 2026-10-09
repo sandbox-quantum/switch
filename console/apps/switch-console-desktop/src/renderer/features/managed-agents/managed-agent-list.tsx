@@ -47,10 +47,9 @@ const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: Ma
   const machines = useOwnedMachines(agent.serverId);
   const label = managedAgentLabel(agent);
   const provider = agent.definition.provider;
-  const state = managedAgentState(agent);
-  const thisComputer =
-    machines.data?.find((machine) => machine.id === agent.machine?.id)?.local?.kind ===
-    'this-computer';
+  const machine = machines.data?.find((candidate) => candidate.id === agent.machine?.id) ?? null;
+  const state = managedAgentState(agent, machine);
+  const thisComputer = machine?.local?.kind === 'this-computer';
   const machineDown = agent.machine !== null && agent.machine.state !== 'online';
   return (
     <SidebarAgentRow

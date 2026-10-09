@@ -667,9 +667,12 @@ export default function MachinesPage() {
         <DialogContent>
           <DialogContentText>
             The machine's controller loses access to Switch immediately, and if it is online
-            it stops every agent it runs. Agents placed on it stay placed, and offline, until
-            you move them to another machine or stop managing them. Enrolling the machine again
-            needs a new code.
+            it stops every agent it runs. The provider logins given to it are deleted.
+          </DialogContentText>
+          <DialogContentText sx={{ mt: 1 }}>
+            {revokeTarget?.kind === "ec2"
+              ? "This is a Switch cloud machine: on its next start it enrolls again by itself and its agents move to the new controller, but they cannot answer until you give the machine its logins again in Switch Console."
+              : "Agents placed on it stay placed, and offline, until you move them to another machine or stop managing them. Enrolling the machine again needs a new code, and its logins have to be given again."}
           </DialogContentText>
         </DialogContent>
         <DialogActions>

@@ -53,6 +53,7 @@ import {
 } from './managed-agent-changes';
 import { managedAgentLabel } from './managed-agent-state';
 import { ManagedMachinePill } from './managed-machine-card';
+import { ProviderLoginNotice } from './provider-login-notice';
 import {
   MANAGED_AGENTS_KEY,
   useAdvancedConfigSchema,
@@ -229,6 +230,7 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
           />
 
           <div className="flex flex-col gap-10">
+            <ProviderLoginNotice agent={agent} machine={machine} />
             <AgentInstructionsField
               value={draft.instructions}
               onChange={(value) => setValue('instructions', value)}

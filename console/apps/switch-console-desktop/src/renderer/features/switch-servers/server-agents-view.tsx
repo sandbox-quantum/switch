@@ -13,6 +13,7 @@ import {
 } from '@renderer/features/managed-agents/managed-agent-state';
 import {
   useManagedAgents,
+  useOwnedMachines,
   withoutManaged,
 } from '@renderer/features/managed-agents/use-managed-agents';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
@@ -126,7 +127,9 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
 function ManagedAgentCard({ agent }: { agent: ManagedAgentView }) {
   const { navigate } = useNavigate();
   const label = managedAgentLabel(agent);
-  const state = managedAgentState(agent);
+  const machines = useOwnedMachines(agent.serverId);
+  const machine = machines.data?.find((candidate) => candidate.id === agent.machine?.id) ?? null;
+  const state = managedAgentState(agent, machine);
   const provider = providerDisplayName(agent.definition.provider) ?? agent.definition.provider;
   return (
     <div className="group relative flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] transition-colors hover:bg-[var(--fill)]">
