@@ -5,6 +5,7 @@ import {
   machineTone,
   machineWorkspaceFor,
   managedAgentState,
+  providerLoginProblem,
 } from './managed-agent-state';
 
 const AGENT: ManagedAgentView = {
@@ -32,49 +33,52 @@ const AGENT: ManagedAgentView = {
 
 describe('managedAgentState', () => {
   it('is running once its machine says it runs and is connected', () => {
-    expect(managedAgentState(AGENT)).toEqual({ label: 'Running', tone: 'ok', detail: null });
+    expect(managedAgentState(AGENT, null)).toEqual({ label: 'Running', tone: 'ok', detail: null });
   });
 
   it('is connecting while it runs but has not connected to Switch', () => {
     expect(
-      managedAgentState({ ...AGENT, status: { ...AGENT.status!, attached: false } }).label
+      managedAgentState({ ...AGENT, status: { ...AGENT.status!, attached: false } }, null).label
     ).toBe('Connecting');
   });
 
   it('is starting before its machine reports it', () => {
-    expect(managedAgentState({ ...AGENT, status: null }).label).toBe('Starting');
+    expect(managedAgentState({ ...AGENT, status: null }, null).label).toBe('Starting');
   });
 
   it('says why it failed, in its machine’s words', () => {
     expect(
-      managedAgentState({
-        ...AGENT,
-        status: {
-          process: 'failed',
-          attached: false,
-          reason: 'crash_loop',
-          detail: 'Exited 1',
-          directory: null,
+      managedAgentState(
+        {
+          ...AGENT,
+          status: {
+            process: 'failed',
+            attached: false,
+            reason: 'crash_loop',
+            detail: 'Exited 1',
+            directory: null,
+          },
         },
-      })
+        null
+      )
     ).toEqual({ label: 'Failed', tone: 'problem', detail: 'Exited 1' });
   });
 
   it('is stopping until its machine stops it, then stopped', () => {
-    expect(managedAgentState({ ...AGENT, desiredState: 'stopped' }).label).toBe('Stopping');
-    expect(managedAgentState({ ...AGENT, desiredState: 'stopped', status: null }).label).toBe(
+    expect(managedAgentState({ ...AGENT, desiredState: 'stopped' }, null).label).toBe('Stopping');
+    expect(managedAgentState({ ...AGENT, desiredState: 'stopped', status: null }, null).label).toBe(
       'Stopped'
     );
   });
 
   it('says its machine is offline or gone rather than guessing at the agent', () => {
     expect(
-      managedAgentState({ ...AGENT, machine: { ...AGENT.machine!, state: 'unknown' } }).label
+      managedAgentState({ ...AGENT, machine: { ...AGENT.machine!, state: 'unknown' } }, null).label
     ).toBe('Machine offline');
     expect(
-      managedAgentState({ ...AGENT, machine: { ...AGENT.machine!, state: 'revoked' } }).label
+      managedAgentState({ ...AGENT, machine: { ...AGENT.machine!, state: 'revoked' } }, null).label
     ).toBe('Machine removed');
-    expect(managedAgentState({ ...AGENT, machine: null }).label).toBe('No machine');
+    expect(managedAgentState({ ...AGENT, machine: null }, null).label).toBe('No machine');
   });
 });
 
@@ -137,12 +141,54 @@ describe('machineProblem', () => {
         ...LAPTOP,
         providers: [{ provider: 'claude', ready: false, problem: 'not logged in' }],
       })
-    ).toBe('Claude Code is not ready on laptop: not logged in.');
+    ).toBe('Claude Code is not logged in on laptop');
   });
 
   it('is quiet, not alarming, while the agent is stopped', () => {
     const stopped = { ...AGENT, desiredState: 'stopped' as const, status: null };
     expect(machineProblem(stopped, LAPTOP)).toBeNull();
     expect(machineTone(stopped, LAPTOP)).toBe('idle');
+  });
+});
+
+describe('an agent whose provider cannot sign in on its machine', () => {
+  const loggedOut = (problem: string): OwnedMachine => ({
+    ...LAPTOP,
+    providers: [{ provider: 'claude', ready: false, problem }],
+  });
+
+  it('is not shown running: it cannot answer', () => {
+    expect(managedAgentState(AGENT, loggedOut('not logged in'))).toEqual({
+      label: 'Not logged in',
+      tone: 'problem',
+      detail: 'Claude Code is not logged in on laptop',
+    });
+    expect(managedAgentState(AGENT, loggedOut('login expired')).label).toBe('Login expired');
+    expect(providerLoginProblem(AGENT, loggedOut('not logged in'))).toEqual({
+      provider: 'claude',
+      name: 'Claude Code',
+      problem: 'not logged in',
+    });
+  });
+
+  it('is left alone while the machine has not checked, or the agent is stopped', () => {
+    expect(managedAgentState(AGENT, loggedOut('login not checked yet')).label).toBe('Running');
+    expect(
+      managedAgentState(
+        { ...AGENT, desiredState: 'stopped', status: null },
+        loggedOut('not logged in')
+      ).label
+    ).toBe('Stopped');
+  });
+
+  it('is judged by its own provider only', () => {
+    const codexOut = {
+      ...LAPTOP,
+      providers: [
+        { provider: 'claude', ready: true, problem: null },
+        { provider: 'codex', ready: false, problem: 'not logged in' },
+      ],
+    };
+    expect(managedAgentState(AGENT, codexOut).label).toBe('Running');
   });
 });

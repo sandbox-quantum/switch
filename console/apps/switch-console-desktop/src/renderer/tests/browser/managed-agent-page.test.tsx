@@ -248,3 +248,32 @@ it('shows where the machine will make the agent’s directory when nothing names
     expect(container.querySelector('[title="/home/me/workspaces/pm-agent"]')).not.toBeNull()
   );
 });
+
+it('says the provider cannot sign in on the machine, and gives it the login from there', async () => {
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  managedAgents.machines.mockResolvedValue([
+    {
+      ...LAPTOP,
+      acceptsLogins: true,
+      providers: [{ provider: 'claude', ready: false, problem: 'not logged in' }],
+    },
+  ]);
+  act(() => root.unmount());
+  root = createRoot(container);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={client}>
+        <ManagedAgentPage agent={AGENT} />
+      </QueryClientProvider>
+    );
+  });
+  await vi.waitFor(() =>
+    expect(container.textContent).toContain(
+      'Claude Code is not logged in on laptop, so this agent cannot answer.'
+    )
+  );
+  await act(async () => button(/^Give login$/)!.click());
+  expect(container.textContent).toContain('Give laptop a Claude Code login');
+  expect(container.querySelector('input[aria-label="Setup token"]')).not.toBeNull();
+});

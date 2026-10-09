@@ -8,8 +8,35 @@ export type ManagedAgentState = {
   detail: string | null;
 };
 
-/** How a managed agent is doing, from what the server says of it and of its machine. */
-export function managedAgentState(agent: ManagedAgentView): ManagedAgentState {
+/**
+ * The agent's provider, when its machine reports it cannot sign in there: not
+ * installed, not logged in, or its login expired. Null while the machine has
+ * not checked, and when `machine` (the owner's machine as the server lists it)
+ * is not known.
+ */
+export function providerLoginProblem(
+  agent: ManagedAgentView,
+  machine: OwnedMachine | null
+): { provider: string; name: string; problem: string } | null {
+  const entry = machine?.providers.find((item) => item.provider === agent.definition.provider);
+  if (!entry || entry.ready || entry.problem === null) return null;
+  if (!['not installed', 'not logged in', 'login expired'].includes(entry.problem)) return null;
+  return {
+    provider: entry.provider,
+    name: providerDisplayName(entry.provider) ?? entry.provider,
+    problem: entry.problem,
+  };
+}
+
+/**
+ * How a managed agent is doing, from what the server says of it and of its
+ * machine. A running agent whose provider cannot sign in on its machine is not
+ * well: it fails on its next turn.
+ */
+export function managedAgentState(
+  agent: ManagedAgentView,
+  machine: OwnedMachine | null
+): ManagedAgentState {
   const status = agent.status;
   const detail = status?.detail ?? status?.reason ?? null;
   if (!agent.machine) return { label: 'No machine', tone: 'problem', detail: null };
@@ -24,6 +51,13 @@ export function managedAgentState(agent: ManagedAgentView): ManagedAgentState {
   }
   if (agent.machine.state !== 'online')
     return { label: 'Machine offline', tone: 'problem', detail: null };
+  const login = providerLoginProblem(agent, machine);
+  if (login)
+    return {
+      label: login.problem.charAt(0).toUpperCase() + login.problem.slice(1),
+      tone: 'problem',
+      detail: `${login.name} is ${login.problem} on ${agent.machine.name}`,
+    };
   if (!status) return { label: 'Starting', tone: 'busy', detail: null };
   switch (status.process) {
     case 'running':
@@ -74,7 +108,7 @@ export function machineProblem(
     return `${name} was removed from your machines, so nothing runs this agent.`;
   if (agent.machine.state !== 'online')
     return `${name} stopped answering. The agent resumes when it reconnects.`;
-  const state = managedAgentState(agent);
+  const state = managedAgentState(agent, machine);
   if (state.tone === 'problem')
     return state.detail ?? `The agent ${state.label.toLowerCase()} on ${name}.`;
   const provider = machine?.providers.find((entry) => entry.provider === agent.definition.provider);
@@ -91,5 +125,5 @@ export function machineTone(
   machine: OwnedMachine | null
 ): 'ok' | 'problem' | 'idle' {
   if (machineProblem(agent, machine) !== null) return 'problem';
-  return managedAgentState(agent).tone === 'ok' ? 'ok' : 'idle';
+  return managedAgentState(agent, machine).tone === 'ok' ? 'ok' : 'idle';
 }

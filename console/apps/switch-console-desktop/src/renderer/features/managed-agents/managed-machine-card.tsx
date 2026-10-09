@@ -67,7 +67,7 @@ function MachineCard({
   machinesError: unknown;
 }) {
   const problem = machineProblem(agent, machine);
-  const state = managedAgentState(agent);
+  const state = managedAgentState(agent, machine);
   const Icon =
     machine?.local?.kind === 'this-computer'
       ? Laptop

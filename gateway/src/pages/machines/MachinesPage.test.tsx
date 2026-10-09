@@ -199,7 +199,23 @@ describe("MachinesPage", () => {
     fireEvent.click(await screen.findByLabelText("Revoke laptop"));
     const text = (await screen.findByText(/loses access to Switch immediately/)).textContent ?? "";
     expect(text).not.toMatch(/key/);
-    expect(text).toMatch(/stay placed, and offline, until you move them/);
+    expect(text).toMatch(/provider logins given to it are deleted/);
+    expect(
+      (await screen.findByText(/stay placed, and offline, until you move them/)).textContent,
+    ).toMatch(/logins have to be given again/);
+  });
+
+  it("tells the owner a Switch cloud machine's agents need their logins again", async () => {
+    mockManagement({
+      "GET /controllers": [200, [{ ...laptop, kind: "ec2", name: "Switch cloud" }]],
+      "GET /agents": [200, [pmAgent]],
+      "GET /operations": [200, []],
+    });
+    render(<MachinesPage />);
+    fireEvent.click(await screen.findByLabelText("Revoke Switch cloud"));
+    expect(
+      (await screen.findByText(/enrolls again by itself/)).textContent,
+    ).toMatch(/give the machine its logins again in Switch Console/);
   });
 
   it("says when agent management is off instead of showing an empty page", async () => {
