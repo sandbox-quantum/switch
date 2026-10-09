@@ -6,8 +6,8 @@ function server(overrides: Partial<SwitchServer>): SwitchServer {
   return {
     id: 'id',
     name: 'name',
-    gatewayUrl: 'http://localhost:1',
-    apiUrl: 'http://localhost:2',
+    url: 'http://localhost:2',
+    dashboardUrl: 'http://localhost:1',
     managed: true,
     managementKind: 'local',
     sshHost: null,

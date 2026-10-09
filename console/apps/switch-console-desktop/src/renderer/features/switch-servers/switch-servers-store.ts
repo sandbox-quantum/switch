@@ -445,10 +445,10 @@ export class SwitchServersStore {
     }
   }
 
-  async addServer(name: string, gatewayUrl: string, apiUrl: string): Promise<SwitchServer | null> {
+  async addServer(name: string, url: string): Promise<SwitchServer | null> {
     this.clearError();
     try {
-      const created = await rpc.switchServers.addServer({ name, gatewayUrl, apiUrl });
+      const created = await rpc.switchServers.addServer({ name, url });
       const [servers, installIsEmpty] = await Promise.all([
         rpc.switchServers.listServers(),
         rpc.onboarding.installIsEmpty(),
@@ -513,15 +513,10 @@ export class SwitchServersStore {
     return found;
   }
 
-  async updateServer(
-    id: string,
-    name: string,
-    gatewayUrl: string,
-    apiUrl: string
-  ): Promise<UpdateServerResult | null> {
+  async updateServer(id: string, name: string, url: string): Promise<UpdateServerResult | null> {
     this.clearError();
     try {
-      const result = await rpc.switchServers.updateServer({ id, name, gatewayUrl, apiUrl });
+      const result = await rpc.switchServers.updateServer({ id, name, url });
       const servers = await rpc.switchServers.listServers();
       runInAction(() => {
         this.servers = servers;

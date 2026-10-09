@@ -40,7 +40,7 @@ import {
 } from '@shared/events/remoteSwitchServerEvents';
 import { hostAccount, readRegister, writeRecord } from './console-register';
 import { readVersionStatus } from './deployed-version';
-import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
+import { managedServerAddresses, type LocalServerPorts } from './free-port';
 import { createRemoteServerHost, type RemoteServerHost } from './host/remote-host';
 import { hostSlug, remoteSecretsKey } from './host/remote-identity';
 import {
@@ -683,19 +683,16 @@ export class RemoteServerService {
     serverId: string,
     ports: LocalServerPorts
   ): Promise<boolean> {
-    const gatewayUrl = gatewayUrlFor(ports);
-    const apiUrl = apiUrlFor(ports);
+    const addresses = managedServerAddresses(ports);
     const record = await getRemoteManagedServer(sshHost);
-    if (!record || (record.gatewayUrl === gatewayUrl && record.apiUrl === apiUrl)) return false;
+    if (!record || (record.url === addresses.url && record.dashboardUrl === addresses.dashboardUrl))
+      return false;
     log.info(`remote-switch-server: the stack on ${sshHost} now publishes different ports`, {
       serverId,
-      from: record.gatewayUrl,
-      to: gatewayUrl,
+      from: record.url,
+      to: addresses.url,
     });
-    await ensureManagedServer(
-      { name: record.name, gatewayUrl, apiUrl },
-      { kind: 'remote', sshHost }
-    );
+    await ensureManagedServer({ name: record.name, ...addresses }, { kind: 'remote', sshHost });
     return true;
   }
 

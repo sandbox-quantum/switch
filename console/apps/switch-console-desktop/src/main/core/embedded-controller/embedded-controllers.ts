@@ -86,7 +86,7 @@ export const embeddedControllerService = new EmbeddedControllerService({
     },
   }),
   records: new EnrollmentFile(() => join(base(), 'state.json')),
-  serverApiUrl: async (serverId) => (await getServer(serverId))?.apiUrl ?? null,
+  serverApiUrl: async (serverId) => (await getServer(serverId))?.url ?? null,
   secrets: encryptedAppSecretsStore,
   management: gatewayManagementPort,
   files: {

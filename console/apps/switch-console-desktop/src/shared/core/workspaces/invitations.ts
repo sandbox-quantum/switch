@@ -73,13 +73,14 @@ export function invitationStatus(invitation: Invitation, now: number): Invitatio
 /**
  * The link an invitee opens or pastes into Switch Console.
  *
- * Built from the gateway's own address, as the server's dashboard builds it
- * from the page it is served on: both are the origin that answers `/gateway`.
- * The token rides in the fragment, which a browser never sends, so it stays out
- * of proxy and access logs.
+ * Built from where the server's dashboard is served, as the dashboard builds it
+ * from the page it is on: the link opens the dashboard's invite page, and
+ * Switch Console finds the server again from its address. The token rides in
+ * the fragment, which a browser never sends, so it stays out of proxy and
+ * access logs.
  */
-export function inviteLink(gatewayUrl: string, token: string): string {
-  return `${gatewayUrl.replace(/\/+$/, '')}/invite#token=${encodeURIComponent(token)}`;
+export function inviteLink(dashboardOrigin: string, token: string): string {
+  return `${dashboardOrigin.replace(/\/+$/, '')}/invite#token=${encodeURIComponent(token)}`;
 }
 
 /**

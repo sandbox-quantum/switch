@@ -290,8 +290,8 @@ describe('starting a shared stack', () => {
     expect(ensureManagedServerMock).toHaveBeenCalledWith(
       {
         name: 'Team server',
-        gatewayUrl: 'http://localhost:41000',
-        apiUrl: 'http://localhost:41001',
+        url: 'http://localhost:41001',
+        dashboardUrl: 'http://localhost:41000',
       },
       { kind: 'remote', sshHost: 'vm-1' }
     );
@@ -300,6 +300,15 @@ describe('starting a shared stack', () => {
       'admin@switch.local',
       'host-admin-pw'
     );
+  });
+
+  it('waits for the server on its own address, the one everything else will use', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    const { host } = sharedHost();
+
+    await startStack(startOptions(host));
+
+    expect(waitForHealthMock).toHaveBeenCalledWith('http://localhost:41001', expect.anything());
   });
 
   it('brings this account’s working dir in step with the stack before checking its version', async () => {
@@ -668,7 +677,7 @@ describe('connecting to a shared stack', () => {
     expect(await connectStack(connectOptions(host))).toEqual({
       kind: 'error',
       message:
-        'The Switch server on vm-1 is running, but did not answer at http://localhost:41000.',
+        'The Switch server on vm-1 is running, but did not answer at http://localhost:41001.',
     });
     expect(ensureManagedServerMock).not.toHaveBeenCalled();
   });
@@ -1006,7 +1015,7 @@ describe('what a start makes sure of before it changes anything', () => {
     await startStack(startOptions(host));
 
     expect(checkNetworking).toHaveBeenCalledWith(hostPorts);
-    expect(assertManagedServerUrlFreeMock).toHaveBeenCalledWith('http://localhost:41000', {
+    expect(assertManagedServerUrlFreeMock).toHaveBeenCalledWith('http://localhost:41001', {
       kind: 'remote',
       sshHost: 'vm-1',
     });

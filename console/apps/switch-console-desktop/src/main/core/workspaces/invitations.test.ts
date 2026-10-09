@@ -10,8 +10,8 @@ const leased = vi.hoisted(() => [] as string[]);
 const SERVER = vi.hoisted(() => ({
   id: 'srv-1',
   name: 'switch.example.com',
-  gatewayUrl: 'https://switch.example.com/',
-  apiUrl: 'https://switch.example.com',
+  url: 'https://switch.example.com/',
+  dashboardUrl: null as string | null,
 }));
 
 vi.mock('./workspaces-store', () => ({ requireWorkspace }));
@@ -63,7 +63,7 @@ describe('workspace invitations', () => {
     expect(leased).toEqual(['ws-1']);
   });
 
-  it('hands back the link built from the gateway address, never the bare token', async () => {
+  it('hands back the link built from the server’s address, never the bare token', async () => {
     createInvitation.mockResolvedValue({
       invitation: INVITATION,
       token: 'a+b/c',
@@ -89,6 +89,27 @@ describe('workspace invitations', () => {
       link: 'https://switch.example.com/invite#token=a%2Bb%2Fc',
       emailDelivery: 'not_requested',
     });
+  });
+
+  it('builds the link on the dashboard address an older server keeps apart', async () => {
+    createInvitation.mockResolvedValue({
+      invitation: INVITATION,
+      token: 'tok',
+      emailDelivery: 'not_requested',
+    });
+    SERVER.dashboardUrl = 'https://switch-gateway.example.com';
+    try {
+      const created = await createWorkspaceInvitation({
+        workspaceId: 'ws-1',
+        role: 'member',
+        email: null,
+        expiresInHours: 168,
+        usesRemaining: 1,
+      });
+      expect(created.link).toBe('https://switch-gateway.example.com/invite#token=tok');
+    } finally {
+      SERVER.dashboardUrl = null;
+    }
   });
 
   it('revokes one by id on the workspace tenant', async () => {

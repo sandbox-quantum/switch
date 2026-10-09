@@ -67,7 +67,7 @@ export const hostControllerService = new HostControllerService({
         );
       }
     },
-    serverApiUrl: async (serverId) => (await getServer(serverId))?.apiUrl ?? null,
+    serverApiUrl: async (serverId) => (await getServer(serverId))?.url ?? null,
     read: async (workspaceId, controllerId) => {
       try {
         return await withReachableWorkspaceSession(workspaceId, async (server) => {

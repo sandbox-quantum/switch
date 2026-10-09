@@ -30,13 +30,13 @@ const { openAuthenticatedGatewayPage } = await import('./gateway-web');
 const SERVER = {
   id: 'srv-1',
   name: 'S',
-  gatewayUrl: 'http://127.0.0.1:8080',
+  url: 'http://127.0.0.1:8080',
   managed: false,
 } as never;
 const MANAGED = {
   id: 'srv-local',
   name: 'Local',
-  gatewayUrl: 'http://127.0.0.1:8080',
+  url: 'http://127.0.0.1:8080',
   managed: true,
 } as never;
 
@@ -45,12 +45,12 @@ describe('openAuthenticatedGatewayPage', () => {
     vi.clearAllMocks();
   });
 
-  it('rejects a url that is not on the gateway origin, before opening anything', async () => {
+  it('rejects a url that is not on the dashboard origin, before opening anything', async () => {
     getSessionCookie.mockResolvedValue('jwt');
 
     await expect(
       openAuthenticatedGatewayPage(SERVER, 'http://evil.example.com/agents/1')
-    ).rejects.toThrow(/gateway origin/);
+    ).rejects.toThrow(/dashboard origin/);
     expect(BrowserWindow).not.toHaveBeenCalled();
     expect(cookiesSet).not.toHaveBeenCalled();
   });
@@ -72,6 +72,29 @@ describe('openAuthenticatedGatewayPage', () => {
     expect(fromPartition).toHaveBeenCalledWith('persist:switch-gateway:srv-1');
     expect(loadURL).toHaveBeenCalledWith('http://127.0.0.1:8080/agents/abc');
     expect(reauthenticateManagedServer).not.toHaveBeenCalled();
+  });
+
+  it('opens pages on the dashboard address a server keeps apart, and nowhere else', async () => {
+    getSessionCookie.mockResolvedValue('stored-jwt');
+    const split = {
+      id: 'srv-split',
+      name: 'Split',
+      url: 'https://switch-api.example.com',
+      dashboardUrl: 'https://switch-gateway.example.com',
+      managed: false,
+    } as never;
+
+    await expect(
+      openAuthenticatedGatewayPage(split, 'https://switch-api.example.com/rooms/1')
+    ).rejects.toThrow(/not on the dashboard origin https:\/\/switch-gateway\.example\.com/);
+    expect(cookiesSet).not.toHaveBeenCalled();
+
+    await openAuthenticatedGatewayPage(split, 'https://switch-gateway.example.com/rooms/1');
+
+    expect(cookiesSet).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://switch-gateway.example.com', secure: true })
+    );
+    expect(loadURL).toHaveBeenCalledWith('https://switch-gateway.example.com/rooms/1');
   });
 
   it('mints a session for the managed server when none is stored', async () => {

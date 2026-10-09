@@ -41,7 +41,7 @@ export const embeddedControllerController = createRPCController({
   defaultWorkspace: async (params: { serverId: string; name: string }): Promise<string | null> => {
     const server = await getServer(params.serverId);
     if (!server) throw new Error(`No server ${params.serverId} in Console.`);
-    const path = defaultWorkspacePath(serverWorkspacesDir(homedir(), server.apiUrl), params.name);
+    const path = defaultWorkspacePath(serverWorkspacesDir(homedir(), server.url), params.name);
     if (path === null) return null;
     const home = homedir();
     return path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;

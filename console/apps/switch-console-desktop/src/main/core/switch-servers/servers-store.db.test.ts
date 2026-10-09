@@ -40,10 +40,16 @@ vi.mock('@main/core/telemetry/telemetry-service', () => ({
 const {
   addServer,
   assertManagedServerUrlFree,
+  clearDashboardUrl,
+  DuplicateServerUrlError,
   ensureManagedServer,
+  findServerByUrl,
+  findServerByWebAddress,
+  getServer,
   removeServer,
   renameServer,
   setActiveServerId,
+  updateServer,
 } = await import('./servers-store');
 const { getActiveWorkspaceId } = await import('@main/core/workspaces/workspaces-store');
 
@@ -64,12 +70,12 @@ describe('servers-store: rename & delete', () => {
   });
 
   describe('renameServer', () => {
-    it('updates only the name, leaving URLs and managed metadata untouched', async () => {
+    it('updates only the name, leaving addresses and managed metadata untouched', async () => {
       await fixture.db.insert(switchServers).values({
         id: 'remote-1',
         name: 'Old name',
-        gatewayUrl: 'https://gw.example.com',
-        apiUrl: 'https://api.example.com',
+        url: 'https://switch.example.com',
+        dashboardUrl: 'https://switch-dashboard.example.com',
         managed: true,
         managementKind: 'remote',
         sshHost: 'host-a',
@@ -78,8 +84,8 @@ describe('servers-store: rename & delete', () => {
       const renamed = await renameServer({ id: 'remote-1', name: '  New name  ' });
 
       expect(renamed.name).toBe('New name');
-      expect(renamed.gatewayUrl).toBe('https://gw.example.com');
-      expect(renamed.apiUrl).toBe('https://api.example.com');
+      expect(renamed.url).toBe('https://switch.example.com');
+      expect(renamed.dashboardUrl).toBe('https://switch-dashboard.example.com');
       expect(renamed.managed).toBe(true);
       expect(renamed.managementKind).toBe('remote');
       expect(renamed.sshHost).toBe('host-a');
@@ -91,34 +97,34 @@ describe('servers-store: rename & delete', () => {
   });
 
   describe('ensureManagedServer name preservation', () => {
-    it('keeps a renamed managed server name across a restart (only URLs refresh)', async () => {
+    it('keeps a renamed managed server name across a restart (only addresses refresh)', async () => {
       // First start: registers the local managed row under the default name.
       const created = await ensureManagedServer(
         {
           name: 'Local Switch server',
-          gatewayUrl: 'http://localhost:8080',
-          apiUrl: 'http://localhost:8081',
+          url: 'http://localhost:8080',
+          dashboardUrl: 'http://localhost:8081',
         },
         { kind: 'local' }
       );
       // User renames it.
       await renameServer({ id: created.id, name: 'My box' });
 
-      // Restart repicks ports (new URLs) and passes the hardcoded default name.
+      // Restart repicks ports (new addresses) and passes the hardcoded default name.
       const restarted = await ensureManagedServer(
         {
           name: 'Local Switch server',
-          gatewayUrl: 'http://localhost:9090',
-          apiUrl: 'http://localhost:9091',
+          url: 'http://localhost:9090',
+          dashboardUrl: 'http://localhost:9091',
         },
         { kind: 'local' }
       );
 
       expect(restarted.id).toBe(created.id);
-      // The rename survives; the URLs still refresh to the new ports.
+      // The rename survives; the addresses still refresh to the new ports.
       expect(restarted.name).toBe('My box');
-      expect(restarted.gatewayUrl).toBe('http://localhost:9090');
-      expect(restarted.apiUrl).toBe('http://localhost:9091');
+      expect(restarted.url).toBe('http://localhost:9090');
+      expect(restarted.dashboardUrl).toBe('http://localhost:9091');
     });
   });
 
@@ -127,8 +133,7 @@ describe('servers-store: rename & delete', () => {
       await fixture.db.insert(switchServers).values({
         id: 'x',
         name: 'x',
-        gatewayUrl: 'http://localhost:1',
-        apiUrl: 'http://localhost:2',
+        url: 'http://localhost:1',
         ...values,
       });
     }
@@ -137,8 +142,8 @@ describe('servers-store: rename & delete', () => {
       await insertServer({
         id: 'local-1',
         name: 'My local server',
-        gatewayUrl: 'http://localhost:41000',
-        apiUrl: 'http://localhost:41001',
+        url: 'http://localhost:41000',
+        dashboardUrl: 'http://localhost:41001',
         managed: true,
         managementKind: 'local',
       });
@@ -147,8 +152,8 @@ describe('servers-store: rename & delete', () => {
         ensureManagedServer(
           {
             name: 'Team server',
-            gatewayUrl: 'http://localhost:41000',
-            apiUrl: 'http://localhost:41001',
+            url: 'http://localhost:41000',
+            dashboardUrl: 'http://localhost:41001',
           },
           { kind: 'remote', sshHost: 'vm-1' }
         )
@@ -166,8 +171,8 @@ describe('servers-store: rename & delete', () => {
       await insertServer({
         id: 'local-1',
         name: 'My local server',
-        gatewayUrl: 'http://localhost:41000',
-        apiUrl: 'http://localhost:41001',
+        url: 'http://localhost:41000',
+        dashboardUrl: 'http://localhost:41001',
         managed: true,
         managementKind: 'local',
       });
@@ -185,7 +190,7 @@ describe('servers-store: rename & delete', () => {
       await insertServer({
         id: 'remote-1',
         name: 'Team server',
-        gatewayUrl: 'http://localhost:41000',
+        url: 'http://localhost:41000',
         managed: true,
         managementKind: 'remote',
         sshHost: 'vm-1',
@@ -193,7 +198,7 @@ describe('servers-store: rename & delete', () => {
 
       await expect(
         ensureManagedServer(
-          { name: 'Local', gatewayUrl: 'http://localhost:41000', apiUrl: 'http://localhost:41001' },
+          { name: 'Local', url: 'http://localhost:41000', dashboardUrl: 'http://localhost:41001' },
           { kind: 'local' }
         )
       ).rejects.toThrow(/on this computer/);
@@ -203,7 +208,7 @@ describe('servers-store: rename & delete', () => {
       await insertServer({
         id: 'remote-2',
         name: 'Other VM',
-        gatewayUrl: 'http://localhost:41000',
+        url: 'http://localhost:41000',
         managed: true,
         managementKind: 'remote',
         sshHost: 'vm-2',
@@ -211,7 +216,7 @@ describe('servers-store: rename & delete', () => {
 
       await expect(
         ensureManagedServer(
-          { name: 'Team', gatewayUrl: 'http://localhost:41000', apiUrl: 'http://localhost:41001' },
+          { name: 'Team', url: 'http://localhost:41000', dashboardUrl: 'http://localhost:41001' },
           { kind: 'remote', sshHost: 'vm-1' }
         )
       ).rejects.toThrow(/runs on vm-2/);
@@ -221,12 +226,12 @@ describe('servers-store: rename & delete', () => {
       await insertServer({
         id: 'external-1',
         name: 'Tunnel to the VM',
-        gatewayUrl: 'http://localhost:41000',
-        apiUrl: 'http://localhost:41001',
+        url: 'http://localhost:41000',
+        dashboardUrl: 'http://localhost:41001',
       });
 
       const adopted = await ensureManagedServer(
-        { name: 'Team', gatewayUrl: 'http://localhost:41000', apiUrl: 'http://localhost:41001' },
+        { name: 'Team', url: 'http://localhost:41000', dashboardUrl: 'http://localhost:41001' },
         { kind: 'remote', sshHost: 'vm-1' }
       );
 
@@ -242,8 +247,8 @@ describe('servers-store: rename & delete', () => {
       await insertServer({
         id: 'remote-1',
         name: 'Team',
-        gatewayUrl: 'http://localhost:3300',
-        apiUrl: 'http://localhost:8000',
+        url: 'http://localhost:3300',
+        dashboardUrl: 'http://localhost:8000',
         managed: true,
         managementKind: 'remote',
         sshHost: 'vm-1',
@@ -251,14 +256,13 @@ describe('servers-store: rename & delete', () => {
       await insertServer({
         id: 'external-1',
         name: 'Company server',
-        gatewayUrl: 'http://localhost:41000',
-        apiUrl: 'http://localhost:41001',
+        url: 'http://localhost:41000',
+        dashboardUrl: 'http://localhost:41001',
       });
 
-      // Without the check this is a raw unique-index failure.
       await expect(
         ensureManagedServer(
-          { name: 'Team', gatewayUrl: 'http://localhost:41000', apiUrl: 'http://localhost:41001' },
+          { name: 'Team', url: 'http://localhost:41000', dashboardUrl: 'http://localhost:41001' },
           { kind: 'remote', sshHost: 'vm-1' }
         )
       ).rejects.toThrow(/already the address of “Company server”/);
@@ -268,22 +272,22 @@ describe('servers-store: rename & delete', () => {
       await insertServer({
         id: 'remote-1',
         name: 'Team',
-        gatewayUrl: 'http://localhost:3300',
-        apiUrl: 'http://localhost:8000',
+        url: 'http://localhost:3300',
+        dashboardUrl: 'http://localhost:8000',
         managed: true,
         managementKind: 'remote',
         sshHost: 'vm-1',
       });
 
       const moved = await ensureManagedServer(
-        { name: 'ignored', gatewayUrl: 'http://localhost:41000', apiUrl: 'http://localhost:41001' },
+        { name: 'ignored', url: 'http://localhost:41000', dashboardUrl: 'http://localhost:41001' },
         { kind: 'remote', sshHost: 'vm-1' }
       );
 
       expect(moved).toMatchObject({
         id: 'remote-1',
         name: 'Team',
-        gatewayUrl: 'http://localhost:41000',
+        url: 'http://localhost:41000',
       });
     });
   });
@@ -293,8 +297,8 @@ describe('servers-store: rename & delete', () => {
       await ensureManagedServer(
         {
           name: 'Local Switch server',
-          gatewayUrl: 'http://localhost:8080',
-          apiUrl: 'http://localhost:8081',
+          url: 'http://localhost:8080',
+          dashboardUrl: 'http://localhost:8081',
         },
         { kind: 'local' }
       );
@@ -310,8 +314,8 @@ describe('servers-store: rename & delete', () => {
       await ensureManagedServer(
         {
           name: 'Remote Switch server',
-          gatewayUrl: 'http://localhost:8080',
-          apiUrl: 'http://localhost:8081',
+          url: 'http://localhost:8080',
+          dashboardUrl: 'http://localhost:8081',
         },
         { kind: 'remote', sshHost: 'host-a' }
       );
@@ -327,14 +331,14 @@ describe('servers-store: rename & delete', () => {
       const ref = { kind: 'local' } as const;
       const params = {
         name: 'Local Switch server',
-        gatewayUrl: 'http://localhost:8080',
-        apiUrl: 'http://localhost:8081',
+        url: 'http://localhost:8080',
+        dashboardUrl: 'http://localhost:8081',
       };
       await ensureManagedServer(params, ref);
       telemetryMocks.trackEvent.mockClear();
 
       await ensureManagedServer(
-        { ...params, gatewayUrl: 'http://localhost:9090', apiUrl: 'http://localhost:9091' },
+        { ...params, url: 'http://localhost:9090', dashboardUrl: 'http://localhost:9091' },
         ref
       );
 
@@ -346,11 +350,7 @@ describe('servers-store: rename & delete', () => {
     it('leaves an externally-hosted server for its one caller to report', async () => {
       // The controller owns both outcomes of that add, so that one press of Add
       // cannot produce a success here and a failure there.
-      await addServer({
-        name: 'External server',
-        gatewayUrl: 'https://gw.example.com',
-        apiUrl: 'https://api.example.com',
-      });
+      await addServer({ name: 'External server', url: 'https://switch.example.com' });
 
       expect(telemetryMocks.trackEvent).not.toHaveBeenCalled();
     });
@@ -361,8 +361,8 @@ describe('servers-store: rename & delete', () => {
       await fixture.db.insert(switchServers).values({
         id: 'srv-ext',
         name: 'External',
-        gatewayUrl: 'https://gw.example.com',
-        apiUrl: 'https://api.example.com',
+        url: 'https://switch.example.com',
+        dashboardUrl: 'https://switch-dashboard.example.com',
       });
 
       await removeServer('srv-ext');
@@ -376,8 +376,7 @@ describe('servers-store: rename & delete', () => {
       await fixture.db.insert(switchServers).values({
         id: 'srv-rm',
         name: 'Remote',
-        gatewayUrl: 'https://gw2.example.com',
-        apiUrl: 'https://api2.example.com',
+        url: 'https://switch2.example.com',
         managed: true,
         managementKind: 'remote',
         sshHost: 'build-box',
@@ -408,8 +407,8 @@ describe('servers-store: rename & delete', () => {
       await fixture.db.insert(switchServers).values({
         id: 'srv-1',
         name: 'Server',
-        gatewayUrl: 'https://gw.example.com',
-        apiUrl: 'https://api.example.com',
+        url: 'https://switch.example.com',
+        dashboardUrl: 'https://switch-dashboard.example.com',
       });
       await fixture.db.insert(workspaces).values({ id: 'ws-1', serverId: 'srv-1', name: 'Server' });
       await fixture.db.insert(agents).values([
@@ -463,8 +462,7 @@ describe('selecting a server', () => {
     await fixture.db.insert(switchServers).values({
       id: 'srv-1',
       name: 'Local dev',
-      gatewayUrl: 'https://srv-1.example.com',
-      apiUrl: 'https://api-srv-1.example.com',
+      url: 'https://srv-1.example.com',
     });
   });
 
@@ -569,5 +567,188 @@ describe('selecting a server', () => {
 
   it('refuses a server with no workspace at all', async () => {
     await expect(setActiveServerId('srv-1')).rejects.toThrow('no workspace');
+  });
+});
+
+describe('servers-store: one address per server', () => {
+  let fixture: Awaited<ReturnType<typeof openFixture>>;
+
+  beforeEach(async () => {
+    fixture = await openFixture('empty');
+    mocks.db = fixture.db;
+    fixture.sqlite.pragma('foreign_keys = OFF');
+    telemetryMocks.trackEvent.mockReset();
+  });
+
+  afterEach(() => {
+    fixture.close();
+    mocks.db = undefined;
+  });
+
+  async function insertServer(values: Partial<typeof switchServers.$inferInsert>) {
+    await fixture.db.insert(switchServers).values({ id: 'x', name: 'x', url: 'x', ...values });
+  }
+
+  describe('addServer', () => {
+    it('stores the address without a trailing slash and with no separate dashboard', async () => {
+      const added = await addServer({ name: '  Team  ', url: ' https://switch.example.com/ ' });
+
+      expect(added).toMatchObject({
+        name: 'Team',
+        url: 'https://switch.example.com',
+        dashboardUrl: null,
+        managed: false,
+      });
+    });
+
+    it('refuses an address another server already has, naming it', async () => {
+      await insertServer({ id: 'a', name: 'Company server', url: 'https://switch.example.com' });
+
+      const adding = addServer({ name: 'Again', url: 'https://switch.example.com/' });
+
+      await expect(adding).rejects.toBeInstanceOf(DuplicateServerUrlError);
+      await expect(adding).rejects.toThrow(
+        'https://switch.example.com is already the address of “Company server”.'
+      );
+      expect(await fixture.db.select().from(switchServers)).toHaveLength(1);
+    });
+  });
+
+  describe('updateServer', () => {
+    it('drops a separate dashboard address when the server’s address changes', async () => {
+      await insertServer({
+        id: 'a',
+        name: 'Split',
+        url: 'https://switch-api.example.com',
+        dashboardUrl: 'https://switch-gateway.example.com',
+      });
+
+      const saved = await updateServer({ id: 'a', name: 'Split', url: 'https://new.example.com' });
+
+      expect(saved).toMatchObject({ url: 'https://new.example.com', dashboardUrl: null });
+    });
+
+    it('keeps a separate dashboard address when only the name changes', async () => {
+      await insertServer({
+        id: 'a',
+        name: 'Split',
+        url: 'https://switch-api.example.com',
+        dashboardUrl: 'https://switch-gateway.example.com',
+      });
+
+      const saved = await updateServer({
+        id: 'a',
+        name: 'Renamed',
+        url: 'https://switch-api.example.com/',
+      });
+
+      expect(saved).toMatchObject({
+        name: 'Renamed',
+        url: 'https://switch-api.example.com',
+        dashboardUrl: 'https://switch-gateway.example.com',
+      });
+    });
+
+    it('refuses to move a server onto another server’s address', async () => {
+      await insertServer({ id: 'a', name: 'First', url: 'https://one.example.com' });
+      await insertServer({ id: 'b', name: 'Second', url: 'https://two.example.com' });
+
+      await expect(
+        updateServer({ id: 'b', name: 'Second', url: 'https://one.example.com' })
+      ).rejects.toThrow('already the address of “First”');
+      expect((await getServer('b'))?.url).toBe('https://two.example.com');
+    });
+
+    it('throws for an unknown server id', async () => {
+      await expect(
+        updateServer({ id: 'nope', name: 'x', url: 'https://x.example.com' })
+      ).rejects.toThrow('No Switch server with id nope');
+    });
+  });
+
+  describe('finding a server by address', () => {
+    it('finds a server by its address, however the slash is written', async () => {
+      await insertServer({ id: 'a', name: 'Team', url: 'https://switch.example.com' });
+
+      expect((await findServerByUrl('https://switch.example.com/'))?.id).toBe('a');
+      expect(await findServerByUrl('https://other.example.com')).toBeNull();
+    });
+
+    it('finds a server by its own address or by the dashboard address it keeps', async () => {
+      await insertServer({
+        id: 'split',
+        name: 'Split',
+        url: 'https://switch-api.example.com',
+        dashboardUrl: 'https://switch-gateway.example.com',
+      });
+
+      expect((await findServerByWebAddress('https://switch-api.example.com'))?.id).toBe('split');
+      expect((await findServerByWebAddress('https://SWITCH-GATEWAY.example.com/'))?.id).toBe(
+        'split'
+      );
+      expect(await findServerByWebAddress('https://elsewhere.example.com')).toBeNull();
+      expect(await findServerByWebAddress('not an address')).toBeNull();
+    });
+
+    it('prefers a server whose own address it is over one that keeps it for its dashboard', async () => {
+      await insertServer({
+        id: 'old',
+        name: 'Old',
+        url: 'https://old-api.example.com',
+        dashboardUrl: 'https://switch.example.com',
+      });
+      await insertServer({ id: 'new', name: 'New', url: 'https://switch.example.com' });
+
+      expect((await findServerByWebAddress('https://switch.example.com'))?.id).toBe('new');
+    });
+  });
+
+  describe('clearDashboardUrl', () => {
+    it('forgets the separate dashboard address of the address that was checked', async () => {
+      await insertServer({
+        id: 'a',
+        url: 'https://switch-api.example.com',
+        dashboardUrl: 'https://switch-gateway.example.com',
+      });
+
+      await clearDashboardUrl('a', 'https://switch-api.example.com');
+
+      expect((await getServer('a'))?.dashboardUrl).toBeNull();
+    });
+
+    it('leaves it alone when the server has moved since the check', async () => {
+      await insertServer({
+        id: 'a',
+        url: 'https://moved.example.com',
+        dashboardUrl: 'https://switch-gateway.example.com',
+      });
+
+      await clearDashboardUrl('a', 'https://switch-api.example.com');
+
+      expect((await getServer('a'))?.dashboardUrl).toBe('https://switch-gateway.example.com');
+    });
+  });
+
+  describe('managed servers', () => {
+    it('registers a managed stack with its dashboard container’s address', async () => {
+      const server = await ensureManagedServer(
+        { name: 'Local', url: 'http://localhost:8010/', dashboardUrl: 'http://localhost:3010/' },
+        { kind: 'local' }
+      );
+
+      expect(server).toMatchObject({
+        url: 'http://localhost:8010',
+        dashboardUrl: 'http://localhost:3010',
+      });
+    });
+
+    it('registers one with no dashboard address when its stack has none', async () => {
+      const server = await ensureManagedServer(
+        { name: 'Local', url: 'http://localhost:8010', dashboardUrl: null },
+        { kind: 'local' }
+      );
+
+      expect(server.dashboardUrl).toBeNull();
+    });
   });
 });

@@ -88,7 +88,7 @@ vi.mock('@main/core/workspaces/workspaces-store', () => ({
 const mockServer = vi.hoisted(() => ({
   id: 'srv-1',
   name: 'Switch',
-  apiUrl: 'https://switch.example.com',
+  url: 'https://switch.example.com',
 }));
 vi.mock('@main/core/workspaces/workspace-session', () => ({
   withWorkspaceSession: (_workspaceId: string, fn: (server: unknown) => unknown) => fn(mockServer),

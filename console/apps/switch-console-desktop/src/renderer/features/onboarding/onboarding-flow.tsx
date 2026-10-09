@@ -348,13 +348,13 @@ function currentPage(
       break;
   }
 
-  // An invite link for a server this install does not know gives its address,
-  // which is the gateway's and usually the API's too. Both stay editable.
+  // An invite link for a server this install does not know gives the address
+  // its dashboard is on, which on a current server is the server's own. It stays
+  // editable, and saving it catches an older server's separate dashboard.
   const inviteOrigin = onboardingStore.invite?.origin ?? null;
   return (
     <ExternalServerStep
-      initialGatewayUrl={inviteOrigin}
-      initialApiUrl={inviteOrigin}
+      initialUrl={inviteOrigin}
       initialName={null}
       serverId={null}
       isEdit={false}
@@ -468,7 +468,7 @@ function WhoRunsPage({
           <ChoiceCard
             icon={<Link2 className="size-5" />}
             title="It's already running"
-            description="Connect by URL to a Switch gateway your team or someone else operates. You'll need its gateway and API addresses."
+            description="Connect to a Switch server your team or someone else operates. You'll need its address."
             onClick={onExternal}
           />
         </div>

@@ -45,12 +45,12 @@ import { switchServersStore } from './switch-servers-store';
 import { useSwitchCloud } from './use-switch-cloud';
 
 /**
- * Turn a server-API-URL cascade into a user-facing toast: confirm how many
+ * Turn a server-address cascade into a user-facing toast: confirm how many
  * agents were re-pointed (and that running sessions need a restart), and flag
  * any that failed so the edit never looks cleanly done when it wasn't.
  */
 function notifyPropagation(propagation: ServerApiUrlPropagation): void {
-  if (!propagation.apiUrlChanged) return;
+  if (!propagation.urlChanged) return;
   const updated = propagation.agents.filter((a) => a.outcome === 'updated');
   const failed = propagation.agents.filter((a) => a.outcome === 'failed');
 
@@ -67,16 +67,14 @@ function notifyPropagation(propagation: ServerApiUrlPropagation): void {
     toast({
       title: `Updated ${updated.length} agent config${updated.length === 1 ? '' : 's'}`,
       description:
-        'Each agent now points at the new API URL. Restart any running sessions to pick it up.',
+        'Each agent now points at the new address. Restart any running sessions to pick it up.',
     });
   }
 }
 
 type Props = BaseModalProps<void> & {
-  /** Prefill the gateway URL. */
-  initialGatewayUrl?: string;
-  /** Prefill the API (agent bridge) URL. */
-  initialApiUrl?: string;
+  /** Prefill the server's address. */
+  initialUrl?: string;
   /** Prefill the name. */
   initialName?: string;
   /** When set, the modal edits this existing server instead of adding one. */
@@ -311,8 +309,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
     <ExternalServerStep
       onSuccess={props.onSuccess}
       onClose={props.onClose}
-      initialGatewayUrl={props.initialGatewayUrl ?? null}
-      initialApiUrl={props.initialApiUrl ?? null}
+      initialUrl={props.initialUrl ?? null}
       initialName={props.initialName ?? null}
       serverId={props.serverId ?? null}
       isEdit={isEdit}
@@ -418,7 +415,7 @@ function ChooseStep({
         <ChoiceCard
           icon={<Globe className="size-5" />}
           title="Connect to an existing server"
-          description="Point Switch Console at a Switch gateway someone else runs, by URL."
+          description="Point Switch Console at a Switch server someone else runs, by its address."
           onClick={onExternal}
         />
       </div>
@@ -1064,20 +1061,19 @@ function looksLikeUrl(value: string): boolean {
  * theirs. The hostname is what they would have typed anyway, and renaming is a
  * click away once there is a sidebar to see it in.
  */
-function nameFromGatewayUrl(gatewayUrl: string): string {
+function nameFromUrl(url: string): string {
   // The host rather than the hostname: two servers on one machine differ only
   // by port, and a sidebar with two rows both called `localhost` names neither
   // of them. An IPv6 address keeps its brackets, which is how an address with
   // a port beside it is written.
-  return new URL(gatewayUrl).host;
+  return new URL(url).host;
 }
 
 export const ExternalServerStep = observer(function ExternalServerStep({
   onSuccess,
   onClose,
   onBack,
-  initialGatewayUrl,
-  initialApiUrl,
+  initialUrl,
   initialName,
   serverId,
   isEdit,
@@ -1085,8 +1081,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
   existing,
   onConnected,
 }: {
-  initialGatewayUrl: string | null;
-  initialApiUrl: string | null;
+  initialUrl: string | null;
   initialName: string | null;
   serverId: string | null;
   isEdit: boolean;
@@ -1102,29 +1097,22 @@ export const ExternalServerStep = observer(function ExternalServerStep({
   onConnected: (server: SwitchServer) => void;
 }) {
   const [name, setName] = useState(initialName ?? existing?.name ?? '');
-  const [gatewayUrl, setGatewayUrl] = useState(initialGatewayUrl ?? existing?.gatewayUrl ?? '');
-  const [apiUrl, setApiUrl] = useState(initialApiUrl ?? existing?.apiUrl ?? '');
+  const [url, setUrl] = useState(initialUrl ?? existing?.url ?? '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const trimmedName = name.trim();
-  const trimmedGateway = gatewayUrl.trim();
-  const trimmedApi = apiUrl.trim();
-  const gatewayValid = looksLikeUrl(trimmedGateway);
-  const apiValid = looksLikeUrl(trimmedApi);
+  const trimmedUrl = url.trim();
+  const urlValid = looksLikeUrl(trimmedUrl);
   // In edit mode the name is owned by the separate Rename action, and on first
-  // run it comes from the gateway, so neither shows the field or requires it.
+  // run it comes from the address, so neither shows the field or requires it.
   const asksForName = !isEdit && !firstRun;
-  const isValid = (!asksForName || trimmedName.length > 0) && gatewayValid && apiValid;
-  const submittedName = firstRun && gatewayValid ? nameFromGatewayUrl(trimmedGateway) : trimmedName;
+  const isValid = (!asksForName || trimmedName.length > 0) && urlValid;
+  const submittedName = firstRun && urlValid ? nameFromUrl(trimmedUrl) : trimmedName;
 
-  const gatewayMessage =
-    trimmedGateway.length > 0 && !gatewayValid
-      ? 'Enter a full URL, e.g. https://switch-gateway.example.com'
-      : undefined;
-  const apiMessage =
-    trimmedApi.length > 0 && !apiValid
-      ? 'Enter a full URL, e.g. https://switch-api.example.com'
+  const urlMessage =
+    trimmedUrl.length > 0 && !urlValid
+      ? 'Enter a full address, e.g. https://switch.example.com'
       : undefined;
 
   // The row this form writes to, when one already exists: the server being
@@ -1136,12 +1124,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
     setSubmitting(true);
     setError(null);
     if (savedId) {
-      const result = await switchServersStore.updateServer(
-        savedId,
-        submittedName,
-        trimmedGateway,
-        trimmedApi
-      );
+      const result = await switchServersStore.updateServer(savedId, submittedName, trimmedUrl);
       if (!result) {
         setError(switchServersStore.errorText ?? 'Could not save the server.');
         setSubmitting(false);
@@ -1153,7 +1136,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
         return;
       }
     } else {
-      const saved = await switchServersStore.addServer(submittedName, trimmedGateway, trimmedApi);
+      const saved = await switchServersStore.addServer(submittedName, trimmedUrl);
       if (!saved) {
         setError(switchServersStore.errorText ?? 'Could not add the server.');
         setSubmitting(false);
@@ -1163,7 +1146,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
       return;
     }
     onSuccess();
-  }, [isValid, isEdit, savedId, submittedName, trimmedGateway, trimmedApi, onSuccess, onConnected]);
+  }, [isValid, isEdit, savedId, submittedName, trimmedUrl, onSuccess, onConnected]);
 
   // First run is asked before the saved row, because a page that goes on to the
   // sign-in must not offer "Save changes" — the user stepped back to fix an
@@ -1192,7 +1175,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
             ? 'Connect to your server'
             : 'Connect to an existing server'
       }
-      subtitle={firstRun ? 'Whoever set it up can give you these addresses.' : null}
+      subtitle={firstRun ? 'Whoever set it up can give you its address.' : null}
       /* Editing a connection is one dialog rather than a flow, and a pager on
          it would invent pages either side that do not exist. */
       pager={
@@ -1232,35 +1215,20 @@ export const ExternalServerStep = observer(function ExternalServerStep({
           </Field>
         )}
         <Field>
-          <FieldLabel>Gateway URL</FieldLabel>
+          <FieldLabel>Server address</FieldLabel>
           <Input
-            value={gatewayUrl}
-            onChange={(e) => setGatewayUrl(e.target.value)}
-            placeholder="https://switch-gateway.example.com"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://switch.example.com"
             autoFocus={isEdit || firstRun}
-          />
-          {firstRun && (
-            <p className="mt-1 text-xs text-foreground-muted">Where the app and its chat live.</p>
-          )}
-          {gatewayMessage && <p className="mt-1 text-xs text-destructive">{gatewayMessage}</p>}
-        </Field>
-        <Field>
-          <FieldLabel>API URL</FieldLabel>
-          <Input
-            value={apiUrl}
-            onChange={(e) => setApiUrl(e.target.value)}
-            placeholder="https://switch-api.example.com"
             onKeyDown={(e) => {
               if (e.key === 'Enter') void handleSubmit();
             }}
           />
           {firstRun && (
-            <p className="mt-1 text-xs text-foreground-muted">
-              Where agents connect. Often the same host on a different port — whoever set the server
-              up knows which.
-            </p>
+            <p className="mt-1 text-xs text-foreground-muted">The address its agents connect to.</p>
           )}
-          {apiMessage && <p className="mt-1 text-xs text-destructive">{apiMessage}</p>}
+          {urlMessage && <p className="mt-1 text-xs text-destructive">{urlMessage}</p>}
           {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
         </Field>
         {firstRun && (
@@ -1352,7 +1320,7 @@ export const SignInStep = observer(function SignInStep({
       <ServerSignInFields
         signIn={signIn}
         idPrefix="connect-server-sign-in"
-        gatewayUrl={server.gatewayUrl}
+        serverUrl={server.url}
         onSignedIn={onSignedIn}
       />
     </WizardFrame>

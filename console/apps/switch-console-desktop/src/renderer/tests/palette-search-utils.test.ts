@@ -101,8 +101,8 @@ describe('matchRooms', () => {
 
 function server(over: Pick<SwitchServer, 'id' | 'name'> & Partial<SwitchServer>): SwitchServer {
   return {
-    gatewayUrl: 'https://gateway.example',
-    apiUrl: 'https://api.example',
+    url: 'https://api.example',
+    dashboardUrl: 'https://gateway.example',
     managed: false,
     managementKind: null,
     sshHost: null,
@@ -115,7 +115,7 @@ function server(over: Pick<SwitchServer, 'id' | 'name'> & Partial<SwitchServer>)
 describe('matchServers', () => {
   const SERVERS = [
     server({ id: 's1', name: 'production' }),
-    server({ id: 's2', name: 'staging', gatewayUrl: 'https://switch.internal' }),
+    server({ id: 's2', name: 'staging', url: 'https://switch.internal' }),
   ];
 
   it('matches on name', () => {

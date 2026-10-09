@@ -50,8 +50,8 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
 const SERVER = vi.hoisted(() => ({
   id: 'srv-1',
   name: 'switch.example.com',
-  gatewayUrl: 'https://switch.example.com',
-  apiUrl: 'https://switch.example.com',
+  url: 'https://switch.example.com',
+  dashboardUrl: null,
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
@@ -201,7 +201,8 @@ describe('joining from an invite link', () => {
     await pasteLink(el, LINK);
 
     const fields = [...el.querySelectorAll<HTMLInputElement>('input')].map((i) => i.value);
-    expect(fields).toEqual(['https://switch.example.com', 'https://switch.example.com']);
+    // One address to fill, the link's: a current server's dashboard is on its own address.
+    expect(fields).toEqual(['https://switch.example.com']);
     expect(onboardingStore.invite?.token).toBe('tok-1');
   });
 

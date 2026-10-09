@@ -368,7 +368,7 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
               key={server.id}
               server={server}
               query={query}
-              official={cloudOrigin !== null && originOf(server.gatewayUrl) === cloudOrigin}
+              official={cloudOrigin !== null && originOf(server.url) === cloudOrigin}
             />
           ))}
           {!anyMatch && (
@@ -433,9 +433,9 @@ function originOf(url: string): string | null {
 /** Where a server is, as its heading says it: the host and port it answers on. */
 function serverAddress(server: SwitchServer): string {
   try {
-    return new URL(server.gatewayUrl).host;
+    return new URL(server.url).host;
   } catch {
-    return server.gatewayUrl;
+    return server.url;
   }
 }
 

@@ -87,18 +87,16 @@ export function matchRooms(rooms: RemoteRoomSummary[], query: string): SearchIte
   );
 }
 
-/** Matches Switch servers. Also matches on gateway URL, since a server is as
- *  often recognised by where it lives as by what it was named. */
+/** Matches Switch servers. Also matches on the server's address, since a server
+ *  is as often recognised by where it lives as by what it was named. */
 export function matchServers(servers: SwitchServer[], query: string): SearchItem[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
 
   return finalise(
     servers.flatMap((server) => {
-      const score = rank(server.name, q) ?? rank(server.gatewayUrl, q);
-      return score === null
-        ? []
-        : [item('server', server.id, server.name, server.gatewayUrl, score)];
+      const score = rank(server.name, q) ?? rank(server.url, q);
+      return score === null ? [] : [item('server', server.id, server.name, server.url, score)];
     })
   );
 }

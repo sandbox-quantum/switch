@@ -34,7 +34,7 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { dashboardOrigin, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { localServerStore } from './local-server-store';
 import { LocalServerControls } from './LocalServerControls';
 import { managedTelemetryNotice } from './managed-telemetry-notice';
@@ -279,8 +279,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
                       showEditServerModal({
                         serverId,
                         initialName: server.name,
-                        initialGatewayUrl: server.gatewayUrl,
-                        initialApiUrl: server.apiUrl,
+                        initialUrl: server.url,
                       })
                     }
                   >
@@ -403,7 +402,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
               onClick={() =>
                 void rpc.switchServers.openGatewayPage({
                   serverId: server.id,
-                  url: server.gatewayUrl,
+                  url: dashboardOrigin(server),
                 })
               }
             >

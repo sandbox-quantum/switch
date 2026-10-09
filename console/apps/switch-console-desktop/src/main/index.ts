@@ -34,6 +34,7 @@ import { searchService } from './core/search/search-service';
 import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
+import { retireDashboardFallbacks } from './core/switch-servers/server-address';
 import { currentInternalFlag } from './core/telemetry/internal-account';
 import { readThisLaunch, reportLaunch } from './core/telemetry/launch-history';
 import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
@@ -199,6 +200,13 @@ void app.whenReady().then(async () => {
     .catch((error: unknown) => {
       log.error('Workspace reconcile could not run; every server was left as it was:', error);
     });
+
+  // A server registered with a separate dashboard address keeps it until the
+  // server serves its own dashboard and the old address has gone. Unawaited
+  // for the same reason as the reconcile: it asks every external server.
+  void retireDashboardFallbacks().catch((error: unknown) => {
+    log.error('Could not check which servers still need a separate dashboard address:', error);
+  });
 
   const dependenciesReady = localDependencyManager.probeAll().catch((e: unknown) => {
     log.error('Failed to probe dependencies:', e);

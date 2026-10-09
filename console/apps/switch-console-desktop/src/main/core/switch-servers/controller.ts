@@ -64,10 +64,12 @@ import {
 } from './github-browser-flow';
 import { deleteManagedClaudeCredential } from './managed-claude-credential';
 import { hostUnreachable, requireReachableServer, requireServer } from './require-server';
+import { assertServerAddress } from './server-address';
 import {
   addServer,
   deleteSessionCookie,
-  findServerByGatewayUrl,
+  findServerByUrl,
+  findServerByWebAddress,
   getServer,
   listServers,
   removeServer,
@@ -162,15 +164,15 @@ function reportSignIn(
  *
  * Idempotent because the first-run flow walks back and forth over it: going
  * back from sign-in and choosing the Cloud again must land on the same row,
- * and the gateway URL is unique, so a second insert would fail rather than
- * duplicate. Reported only when a row is actually added.
+ * and a server's address is not added twice, so a second insert would fail
+ * rather than duplicate. Reported only when a row is actually added.
  */
 async function registerSwitchCloud({ url }: SwitchCloudEndpoint): Promise<SwitchServer> {
-  const existing = await findServerByGatewayUrl(url);
+  const existing = await findServerByUrl(url);
   if (existing) return existing;
   let server: SwitchServer;
   try {
-    server = await addServer({ name: SWITCH_CLOUD_NAME, gatewayUrl: url, apiUrl: url });
+    server = await addServer({ name: SWITCH_CLOUD_NAME, url });
   } catch (error) {
     trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
     throw error;
@@ -212,6 +214,7 @@ export const switchServersController = createRPCController({
   addServer: async (params: AddServerParams): Promise<SwitchServer> => {
     let server: SwitchServer;
     try {
+      await assertServerAddress(params.url);
       server = await addServer(params);
     } catch (error) {
       trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
@@ -231,39 +234,41 @@ export const switchServersController = createRPCController({
   /**
    * The server an invite link points at, as far as this install can reach it.
    *
-   * A server already registered here is handed back as it is. Switch Cloud is
-   * registered on the spot when the link is for it, since its addresses are the
-   * build's and there is nothing to ask. Any other server is unknown: an invite
-   * link names the server's web address and nothing else, and where its agents
-   * connect is not something to guess, so the caller has to ask.
+   * A server already registered here is handed back as it is, whether the link
+   * names its address or the separate dashboard address an older server keeps.
+   * Switch Cloud is registered on the spot when the link is for it, since its
+   * address is the build's and there is nothing to ask. Any other server is
+   * unknown, and the caller offers the link's address to add: on a current
+   * server that is the server's own, and adding checks it really is.
    */
   serverForInvite: async (origin: string): Promise<InviteServer> => {
     const cloud = switchCloudEndpoint();
     if (cloud && new URL(cloud.url).origin === new URL(origin).origin) {
       return { kind: 'known', server: await registerSwitchCloud(cloud), via: 'cloud' };
     }
-    const existing = await findServerByGatewayUrl(origin);
+    const existing = await findServerByWebAddress(origin);
     if (existing) return { kind: 'known', server: existing, via: 'external' };
     return { kind: 'unknown', origin };
   },
 
   updateServer: async (params: UpdateServerParams): Promise<UpdateServerResult> => {
     const previous = await requireServer(params.id);
+    if (previous.url !== params.url.trim().replace(/\/+$/, '')) {
+      await assertServerAddress(params.url);
+    }
     const server = await updateServer(params);
 
-    // The API URL is what an agent's SWITCH_API_ENDPOINT points at. When it
+    // The address is what an agent's SWITCH_API_ENDPOINT points at. When it
     // changes, cascade it to every member agent's stored config so they don't
     // keep authenticating against the stale endpoint (CHOO-1431). Compare the
     // saved (normalised) values so a no-op edit doesn't rewrite configs.
-    const apiUrlChanged = previous.apiUrl !== server.apiUrl;
-    const propagatedAgents = apiUrlChanged
-      ? await propagateServerApiUrl(server.id, server.apiUrl)
-      : [];
+    const urlChanged = previous.url !== server.url;
+    const propagatedAgents = urlChanged ? await propagateServerApiUrl(server.id, server.url) : [];
     // The managed agents this computer runs reach the server through its
     // controller, which has to reconnect at the new address too.
-    if (apiUrlChanged) await embeddedControllerService.followServerApiUrl(server.id);
+    if (urlChanged) await embeddedControllerService.followServerApiUrl(server.id);
 
-    return { server, propagation: { apiUrlChanged, agents: propagatedAgents } };
+    return { server, propagation: { urlChanged, agents: propagatedAgents } };
   },
 
   renameServer: (params: RenameServerParams): Promise<SwitchServer> => renameServer(params),

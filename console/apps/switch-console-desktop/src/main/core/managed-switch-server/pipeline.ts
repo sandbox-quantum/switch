@@ -30,7 +30,7 @@ import {
 } from './constants';
 import { classifyVersionDrift, readDeployedVersion } from './deployed-version';
 import { buildEnvFile, keysDisagreeing, telemetryRequested } from './env-file';
-import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
+import { apiUrlFor, managedServerAddresses, type LocalServerPorts } from './free-port';
 import { waitForHealth } from './health';
 import type { ServerHost } from './host/types';
 import { finishUpgrade, type OwedUpgrade, prepareUpgrade } from './managed-upgrade';
@@ -432,11 +432,7 @@ async function registerAndSignIn(
   onMessage: (message: string) => void
 ): Promise<string> {
   const server = await ensureManagedServer(
-    {
-      name: serverName,
-      gatewayUrl: gatewayUrlFor(settings.ports),
-      apiUrl: apiUrlFor(settings.ports),
-    },
+    { name: serverName, ...managedServerAddresses(settings.ports) },
     ref
   );
   if (activate) await setActiveServerId(server.id);
@@ -532,7 +528,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // this Console without it.
   const settings = await portsReachableHere(host, plan, await settingsFor(host, plan));
   await host.checkNetworking(settings.ports);
-  await assertManagedServerUrlFree(gatewayUrlFor(settings.ports), ref);
+  await assertManagedServerUrlFree(apiUrlFor(settings.ports), ref);
 
   onMessage('Checking the deployed version…');
   const downgrade = await refuseDowngrade(host, checkoutRoot);
@@ -614,7 +610,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   await host.establishNetworking(settings.ports);
 
   onMessage('Waiting for the server to become healthy…');
-  const healthy = await waitForHealth(gatewayUrlFor(settings.ports), { signal });
+  const healthy = await waitForHealth(apiUrlFor(settings.ports), { signal });
   if (!healthy) {
     return { kind: 'error', message: 'The server did not become healthy in time.' };
   }
@@ -704,11 +700,11 @@ export async function connectStack(opts: ConnectStackOptions): Promise<ConnectSt
   await host.establishNetworking(settings.ports);
 
   onMessage('Waiting for the server to answer…');
-  const gatewayUrl = gatewayUrlFor(settings.ports);
-  if (!(await waitForHealth(gatewayUrl, { signal }))) {
+  const url = apiUrlFor(settings.ports);
+  if (!(await waitForHealth(url, { signal }))) {
     return {
       kind: 'error',
-      message: `The Switch server on ${host.label} is running, but did not answer at ${gatewayUrl}.`,
+      message: `The Switch server on ${host.label} is running, but did not answer at ${url}.`,
     };
   }
 

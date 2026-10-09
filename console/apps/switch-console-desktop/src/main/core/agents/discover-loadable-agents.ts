@@ -131,8 +131,8 @@ export async function discoverLoadableAgentsOnHost(
             viewerIsOwner: !!(me && info?.ownerId && info.ownerId === me.id),
             description: info?.description ?? null,
             source: 'server',
-            endpointMismatch: !sameApiEndpoint(agent.apiEndpoint, server.apiUrl),
-            blockedReason: blockedReasonFor(agent, server.apiUrl),
+            endpointMismatch: !sameApiEndpoint(agent.apiEndpoint, server.url),
+            blockedReason: blockedReasonFor(agent, server.url),
           });
         }
       } catch (error) {
@@ -151,7 +151,7 @@ export async function discoverLoadableAgentsOnHost(
   }
 
   // --- Source 2: Bounded $HOME scan (opt-in) ---
-  if (!params.includeHomeScan) return { agents: [...seen.values()], serverApiUrl: server.apiUrl };
+  if (!params.includeHomeScan) return { agents: [...seen.values()], serverApiUrl: server.url };
   try {
     const scannedDirs = await findSwitchAgentDirsOnHost(params.sshHost);
     for (const dir of scannedDirs) {
@@ -176,8 +176,8 @@ export async function discoverLoadableAgentsOnHost(
               viewerIsOwner: false,
               description: null,
               source: 'scan',
-              endpointMismatch: !sameApiEndpoint(agent.apiEndpoint, server.apiUrl),
-              blockedReason: blockedReasonFor(agent, server.apiUrl),
+              endpointMismatch: !sameApiEndpoint(agent.apiEndpoint, server.url),
+              blockedReason: blockedReasonFor(agent, server.url),
             });
           }
         }
@@ -196,7 +196,7 @@ export async function discoverLoadableAgentsOnHost(
     });
   }
 
-  return { agents: [...seen.values()], serverApiUrl: server.apiUrl };
+  return { agents: [...seen.values()], serverApiUrl: server.url };
 }
 
 function blockedReasonFor(agent: DiscoveredConfiguredAgent, serverApiUrl: string): string | null {
@@ -279,8 +279,8 @@ export async function discoverLoadableAgentsInDir(params: {
     viewerIsOwner: false,
     description: null,
     source: 'scan' as const,
-    endpointMismatch: !sameApiEndpoint(agent.apiEndpoint, server.apiUrl),
-    blockedReason: blockedReasonFor(agent, server.apiUrl),
+    endpointMismatch: !sameApiEndpoint(agent.apiEndpoint, server.url),
+    blockedReason: blockedReasonFor(agent, server.url),
   }));
-  return { agents, serverApiUrl: server.apiUrl };
+  return { agents, serverApiUrl: server.url };
 }

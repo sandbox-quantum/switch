@@ -23,7 +23,7 @@ const { createRoomOnServer } = await import('./create-room');
 const SERVER = {
   id: 'srv-1',
   name: 'S',
-  gatewayUrl: 'https://switch.example.com',
+  url: 'https://switch.example.com',
   managed: false,
 } as never;
 
