@@ -827,6 +827,28 @@
     {
       "definition": {
         "type": "timeseries",
+        "title": "Repeated refusals answered 429 per second, by the route that refused them",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.http.refusals_throttled{$env,$service} by {route}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "warm"
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 71,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
         "title": "Database sessions for this server's role, by state (the database's view)",
         "show_legend": true,
         "requests": [
@@ -838,7 +860,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 71,
+        "y": 75,
         "width": 6,
         "height": 4
       }
@@ -857,7 +879,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 71,
+        "y": 75,
         "width": 6,
         "height": 4
       }
@@ -880,7 +902,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 75,
+        "y": 79,
         "width": 6,
         "height": 4
       }
@@ -903,7 +925,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 75,
+        "y": 79,
         "width": 6,
         "height": 4
       }
@@ -926,7 +948,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 79,
+        "y": 83,
         "width": 6,
         "height": 4
       }
@@ -949,7 +971,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 79,
+        "y": 83,
         "width": 6,
         "height": 4
       }
@@ -968,7 +990,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 83,
+        "y": 87,
         "width": 6,
         "height": 4
       }
@@ -987,7 +1009,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 83,
+        "y": 87,
         "width": 6,
         "height": 4
       }
@@ -1007,7 +1029,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 87,
+        "y": 91,
         "width": 12,
         "height": 2
       }
@@ -1026,7 +1048,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 89,
+        "y": 93,
         "width": 6,
         "height": 4
       }
@@ -1053,7 +1075,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 89,
+        "y": 93,
         "width": 6,
         "height": 4
       }
@@ -1076,7 +1098,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 93,
+        "y": 97,
         "width": 6,
         "height": 4
       }
@@ -1095,7 +1117,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 93,
+        "y": 97,
         "width": 6,
         "height": 4
       }
