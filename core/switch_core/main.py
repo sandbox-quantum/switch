@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
 import logging
 import os
@@ -1097,6 +1098,7 @@ async def run(config: SwitchConfig) -> None:
     # just-started clients accept the invites on their first sync.
     await room_service.reconcile_room_clients()
 
+    _freeze_boot_objects()
     logger.info(
         "Switch is running on http://%s:%d", config.server_host, config.server_port
     )
@@ -1136,6 +1138,24 @@ async def run(config: SwitchConfig) -> None:
         )
 
     await server.serve()
+
+
+def _freeze_boot_objects() -> None:
+    """Take everything boot created out of the garbage collector's way.
+
+    A full collection walks every tracked object while holding the interpreter
+    lock, and most of the heap is what boot built and keeps for the life of the
+    process: modules, the ORM's mappers, the app's routes. Walking that once a
+    minute is what stalls the event loop for hundreds of milliseconds.
+    `gc.freeze` moves it to a permanent generation the collector skips, so
+    full collections only walk what was allocated since.
+    """
+    gc.collect()
+    gc.freeze()
+    logger.info(
+        "Froze %d objects created during boot out of garbage collection.",
+        gc.get_freeze_count(),
+    )
 
 
 async def _seed_admin_user(
