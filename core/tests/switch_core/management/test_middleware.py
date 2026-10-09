@@ -311,6 +311,7 @@ class TestTheFlagOff:
             approval_outcomes=object(),  # type: ignore[arg-type]
             controller_auth=None,
             trust_client=NullTrustClient(),
+            gateway_ui=None,
         )
         paths = [getattr(route, "path", "") for route in app.routes]
         assert paths

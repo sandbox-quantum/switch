@@ -25,6 +25,15 @@ from switch_core.observability.metrics import metrics
 # endpoint it is attacker-chosen.
 UNMATCHED_ROUTE = "unmatched"
 
+# Every file and page of the operator dashboard, which switch-core serves ahead
+# of its router (`gateway/ui.py`), so no route template is ever set for one. One
+# label for all of them: the path is the page, and the page is not this server's
+# behaviour.
+GATEWAY_UI_ROUTE = "gateway-ui"
+
+# Set on the scope by the dashboard middleware when it answers a request itself.
+GATEWAY_UI_SCOPE_KEY = "switch.gateway_ui"
+
 # A request whose response never started — the client went away mid-flight, or
 # the app raised before sending anything.
 NO_STATUS = "none"
@@ -58,6 +67,8 @@ def route_label(scope: Scope) -> str:
     the prefix is "already there" looks like a guard but silently drops it from
     any inner route whose name starts with the mount's own string.
     """
+    if scope.get(GATEWAY_UI_SCOPE_KEY):
+        return GATEWAY_UI_ROUTE
     route = scope.get("route")
     path = getattr(route, "path", None)
     if not isinstance(path, str) or not path:
