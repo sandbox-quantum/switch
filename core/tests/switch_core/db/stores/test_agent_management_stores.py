@@ -235,14 +235,14 @@ class TestEnrollmentCodes:
                 owner_id=owner.id,
                 api_key_id=live.id,
                 expires_at=NOW + timedelta(minutes=10),
-                hosted_machine_id=None,
+                machine_workspace_id=None,
             )
             await CONTROLLERS.create_enrollment_code(
                 session,
                 owner_id=owner.id,
                 api_key_id=stale.id,
                 expires_at=NOW - timedelta(seconds=1),
-                hosted_machine_id=None,
+                machine_workspace_id=None,
             )
             first = await CONTROLLERS.consume_enrollment_code(
                 session, TENANT_ZERO_ID, live.id, NOW

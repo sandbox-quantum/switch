@@ -25,6 +25,7 @@ from switch_hosted_controller.store import CapacityError, MachineStore
 
 VOLUME_ID = "vol-0123456789abcdef0"
 CODE = "swce_SyntheticEnrollmentCode0000"
+SEAT = "5e1c2b4a-0000-4000-8000-0000000000a1"
 OTHER_MACHINE_ID = "3f1c2b4a-0000-4000-8000-000000000002"
 
 
@@ -47,7 +48,7 @@ def prepared_machine(**overrides) -> dict:
         "revision": 1,
         "bundle_revision": 1,
         "api_endpoint": "https://switch.example.test/agent-api",
-        "controller": {"id": None, "enrollment_code": CODE},
+        "controllers": [{"key": SEAT, "id": None, "enrollment_code": CODE}],
         **overrides,
     }
 
@@ -105,12 +106,12 @@ def test_launch_retry_reuses_the_row_and_prepares_once(tmp_path):
     assert machine.bundle_token == str(uuid5(NAMESPACE_URL, f"{MACHINE_ID}:1"))
     assert machine.bundle == json.dumps(
         {
-            "version": 4,
+            "version": 5,
             "installationId": cfg.installation_id,
             "machineId": MACHINE_ID,
             "dataVolumeId": VOLUME_ID,
             "apiEndpoint": "https://switch.example.test/agent-api",
-            "controller": {"id": None, "enrollmentCode": CODE},
+            "controllers": [{"key": SEAT, "id": None, "enrollmentCode": CODE}],
         },
         separators=(",", ":"),
     )
@@ -132,7 +133,7 @@ def test_machine_without_a_controller_writes_no_bundle(tmp_path):
     store = open_store(cfg)
     gateway = make_gateway(cfg, store)
     prepared = prepared_machine()
-    del prepared["controller"]
+    del prepared["controllers"]
     gateway.request = Mock(return_value=prepared)
     core = CoreMachine.parse(core_machine())
     gateway.sync_machine(core)
@@ -298,13 +299,17 @@ def test_core_machine_list_and_prepare_produce_the_bundle(tmp_path):
     )
     assert machine.bundle_token == bundle_token(listed["machine_id"], listed["revision"])
     assert json.loads(machine.bundle) == {
-        "version": 4,
+        "version": 5,
         "installationId": "inst-test",
         "machineId": prepared["machine_id"],
         "dataVolumeId": listed["data_volume_id"],
         "apiEndpoint": prepared["api_endpoint"],
-        "controller": {"id": None, "enrollmentCode": prepared["controller"]["enrollment_code"]},
+        "controllers": [
+            {"key": entry["key"], "id": entry["id"], "enrollmentCode": entry["enrollment_code"]}
+            for entry in prepared["controllers"]
+        ],
     }
+    assert prepared["controllers"]
     store.close()
 
 
@@ -539,31 +544,105 @@ def test_invalid_core_machine_does_not_block_the_others(tmp_path):
     store.close()
 
 
-@pytest.mark.parametrize(
-    "controller",
-    [
-        None,
-        {"id": None, "enrollment_code": None},
-        {"id": None, "enrollment_code": "swcc_not-a-code-at-all-0000"},
-        {"id": "not-a-uuid", "enrollment_code": None},
-        {"id": MACHINE_ID, "enrollment_code": "swce_SyntheticEnrollmentCode0000"},
-    ],
-)
-def test_a_controller_bundle_refuses_what_is_not_one(tmp_path, controller):
+SEAT_B = "5e1c2b4a-0000-4000-8000-0000000000b1"
+SEAT_C = "5e1c2b4a-0000-4000-8000-0000000000c1"
+CONTROLLER_ID = "9a1c2b4a-0000-4000-8000-0000000000aa"
+
+
+def seat(key: str, *, controller_id: str | None = None, code: str | None = CODE) -> dict:
+    return {"key": key, "id": controller_id, "enrollment_code": None if controller_id else code}
+
+
+def test_a_bundle_carries_one_controller_per_workspace_in_cores_order(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    machine = store.record_volume(
+        insert_machine(store, cfg, MACHINE_ID).machine_id, VOLUME_ID, cfg.availability_zone
+    )
+    other_code = "swce_SyntheticEnrollmentCode0001"
+    prepared = prepared_machine(
+        controllers=[
+            seat(SEAT_C, code=other_code),
+            seat(SEAT, controller_id=CONTROLLER_ID),
+            {**seat(SEAT_B), "key": SEAT_B.upper()},
+        ]
+    )
+    assert make_gateway(cfg, store).bundle(prepared, machine) == {
+        "version": 5,
+        "installationId": cfg.installation_id,
+        "machineId": MACHINE_ID,
+        "dataVolumeId": VOLUME_ID,
+        "apiEndpoint": "https://switch.example.test/agent-api",
+        "controllers": [
+            {"key": SEAT_C, "id": None, "enrollmentCode": other_code},
+            {"key": SEAT, "id": CONTROLLER_ID, "enrollmentCode": None},
+            {"key": SEAT_B, "id": None, "enrollmentCode": CODE},
+        ],
+    }
+    store.close()
+
+
+def test_a_bundle_takes_up_to_eight_controllers(tmp_path):
     cfg = config(tmp_path)
     store = open_store(cfg)
     machine = insert_machine(store, cfg, MACHINE_ID)
-    prepared = {**prepared_machine(), "controller": controller}
-    with pytest.raises((ConfigError, ValueError)):
+    keys = [f"5e1c2b4a-0000-4000-8000-00000000000{index}" for index in range(8)]
+    prepared = prepared_machine(controllers=[seat(key) for key in keys])
+    bundle = make_gateway(cfg, store).bundle(prepared, machine)
+    assert [entry["key"] for entry in bundle["controllers"]] == keys
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "controllers",
+    [
+        None,
+        {"key": SEAT, "id": None, "enrollment_code": CODE},
+        [],
+        [seat(f"5e1c2b4a-0000-4000-8000-00000000000{index}") for index in range(9)],
+        [seat(SEAT), seat(SEAT, controller_id=CONTROLLER_ID)],
+        [seat(SEAT), seat(SEAT.upper())],
+        [None],
+        ["not-a-controller"],
+        [{"id": None, "enrollment_code": CODE}],
+        [{"key": None, "id": None, "enrollment_code": CODE}],
+        [{"key": "not-a-uuid", "id": None, "enrollment_code": CODE}],
+        [{"key": 7, "id": None, "enrollment_code": CODE}],
+        [{"key": SEAT, "id": None, "enrollment_code": None}],
+        [{"key": SEAT}],
+        [{"key": SEAT, "id": None, "enrollment_code": "swcc_not-a-code-at-all-0000"}],
+        [{"key": SEAT, "id": "not-a-uuid", "enrollment_code": None}],
+        [{"key": SEAT, "id": 7, "enrollment_code": None}],
+        [{"key": SEAT, "id": CONTROLLER_ID, "enrollment_code": CODE}],
+        [seat(SEAT_B), {"key": SEAT, "id": CONTROLLER_ID, "enrollment_code": CODE}],
+    ],
+)
+def test_a_controller_bundle_refuses_what_is_not_one(tmp_path, controllers):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    machine = insert_machine(store, cfg, MACHINE_ID)
+    prepared = prepared_machine(controllers=controllers)
+    with pytest.raises(ConfigError):
         make_gateway(cfg, store).bundle(prepared, machine)
     store.close()
 
 
-def test_an_enrolled_controller_machine_gets_its_controller_and_no_code(tmp_path):
+def test_a_prepare_with_the_former_single_controller_is_refused(tmp_path):
     cfg = config(tmp_path)
     store = open_store(cfg)
     machine = insert_machine(store, cfg, MACHINE_ID)
-    prepared = {**prepared_machine(), "controller": {"id": MACHINE_ID, "enrollment_code": None}}
+    prepared = prepared_machine(controller={"id": None, "enrollment_code": CODE})
+    del prepared["controllers"]
+    with pytest.raises(ConfigError):
+        make_gateway(cfg, store).bundle(prepared, machine)
+    store.close()
+
+
+def test_an_enrolled_controller_gets_its_controller_and_no_code(tmp_path):
+    cfg = config(tmp_path)
+    store = open_store(cfg)
+    machine = insert_machine(store, cfg, MACHINE_ID)
+    prepared = prepared_machine(controllers=[seat(SEAT, controller_id=CONTROLLER_ID)])
     bundle = make_gateway(cfg, store).bundle(prepared, machine)
-    assert bundle["controller"] == {"id": MACHINE_ID, "enrollmentCode": None}
+    assert bundle["controllers"] == [{"key": SEAT, "id": CONTROLLER_ID, "enrollmentCode": None}]
     store.close()

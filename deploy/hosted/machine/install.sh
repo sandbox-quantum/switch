@@ -6,11 +6,12 @@
 # Run as root while the AMI is built, after Node.js 24 is at /opt/switch/node
 # and the provider CLIs are under /opt/switch (never under a home directory:
 # agents run as users of their own and cannot reach one). It installs the
-# controller at /opt/switch/controller, makes the controller's user and the
-# agents' users and group with fixed ids (the data volume outlives the root
-# volume, so its files must keep meaning the same users on every instance),
-# and installs the boot service that mounts the data volume and starts the
-# controller (switch_machine_boot.py).
+# controller at /opt/switch/controller, makes the first controller's user and
+# its agents' users and group with fixed ids (the data volume outlives the root
+# volume, so its files must keep meaning the same users on every instance; the
+# boot makes the other controllers' with ids of their own), and installs the
+# boot service that mounts the data volume and starts the controllers
+# (switch_machine_boot.py).
 set -eu
 
 if [ "$(id -u)" -ne 0 ]; then

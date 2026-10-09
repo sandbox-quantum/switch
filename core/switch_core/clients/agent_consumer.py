@@ -53,7 +53,7 @@ from switch_core.clients.mentions import (
     strip_emphasis as _strip_emphasis,
 )
 from switch_core.clients.room_meta import RoomMeta
-from switch_core.db.models import Agent, HostedMachine
+from switch_core.db.models import Agent, CloudMachine
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
@@ -245,7 +245,7 @@ class CloudMachineState:
     owner_stopped: bool
 
     @classmethod
-    def of(cls, machine: HostedMachine) -> CloudMachineState:
+    def of(cls, machine: CloudMachine) -> CloudMachineState:
         return cls(
             state=machine.state,
             revision=machine.revision,

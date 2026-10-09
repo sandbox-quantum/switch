@@ -1,4 +1,4 @@
-"""Rows for hosted-machine tests, written straight to the session (flushed, not committed)."""
+"""Rows for cloud-machine tests, written straight to the session (flushed, not committed)."""
 
 from __future__ import annotations
 
@@ -13,8 +13,17 @@ from switch_core.db.models import (
     AgentDefinition,
     ApiKey,
     Client,
-    HostedMachine,
+    CloudMachine,
+    MachineWorkspace,
+    Tenant,
 )
+from switch_core.db.stores.hosted_machine_store import workspace_on
+
+
+async def add_tenant(session: AsyncSession, tenant_id: str) -> None:
+    """Another workspace on the server."""
+    session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
+    await session.flush()
 
 
 async def seed_machine(
@@ -25,9 +34,9 @@ async def seed_machine(
     desired_state: str,
     stop_reason: str | None,
     revision: int,
-) -> HostedMachine:
+) -> CloudMachine:
     now = datetime.now(UTC)
-    machine = HostedMachine(
+    machine = CloudMachine(
         id=str(uuid4()),
         owner_id=owner_id,
         state=state,
@@ -40,19 +49,38 @@ async def seed_machine(
     )
     session.add(machine)
     await session.flush()
+    await add_workspace(session, machine, created_at=now)
     return machine
 
 
+async def add_workspace(
+    session: AsyncSession, machine: CloudMachine, *, created_at: datetime
+) -> MachineWorkspace:
+    """The bound workspace's row on `machine`: the machine serves it."""
+    workspace = MachineWorkspace(
+        id=str(uuid4()),
+        machine_id=machine.id,
+        owner_id=machine.owner_id,
+        created_at=created_at,
+    )
+    session.add(workspace)
+    await session.flush()
+    return workspace
+
+
 async def link_controller(
-    session: AsyncSession, machine: HostedMachine
+    session: AsyncSession, machine: CloudMachine
 ) -> AgentController:
-    """The cloud controller the machine enrolled as, linked to it."""
+    """The cloud controller the machine enrolled as in the bound workspace,
+    linked to the workspace's row on it."""
+    workspace = await workspace_on(session, machine.id)
+    assert workspace is not None
     controller = AgentController(
         owner_id=machine.owner_id, name="Switch cloud", kind="ec2"
     )
     session.add(controller)
     await session.flush()
-    machine.controller_id = controller.id
+    workspace.controller_id = controller.id
     await session.flush()
     return controller
 

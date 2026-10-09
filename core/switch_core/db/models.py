@@ -311,40 +311,37 @@ class ProviderConnection(TenantScoped, Base):
     )
 
 
-class HostedMachine(TenantScoped, Base):
-    """One user's cloud VM, whose agents controller runs that user's cloud agents."""
+class CloudMachine(Base):
+    """One user's Switch cloud VM, whichever workspaces it serves.
 
-    __tablename__ = "hosted_machines"
+    Global, as the person who owns it is: one VM and one disk per user, with
+    one lifecycle. What it runs in each workspace is that workspace's
+    `MachineWorkspace` row, which is scoped. Nothing here names a workspace.
+    """
+
+    __tablename__ = "cloud_machines"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "id"),
         CheckConstraint(
             "state IN ('queued', 'provisioning', 'ready', 'stopping', 'stopped', 'error', 'retained', 'deleting', 'deleted')",
-            name="ck_hosted_machine_state",
+            name="ck_cloud_machine_state",
         ),
         CheckConstraint(
             "desired_state IN ('running', 'stopped', 'retained', 'deleted')",
-            name="ck_hosted_machine_desired_state",
+            name="ck_cloud_machine_desired_state",
         ),
         CheckConstraint(
             "stop_reason IS NULL OR stop_reason IN ('idle', 'owner')",
-            name="ck_hosted_machine_stop_reason",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "controller_id"],
-            ["agent_controllers.tenant_id", "agent_controllers.id"],
-            name="fk_hosted_machines_controller",
-            ondelete="SET NULL (controller_id)",
+            name="ck_cloud_machine_stop_reason",
         ),
         Index(
-            "uq_hosted_machine_owner",
-            "tenant_id",
+            "uq_cloud_machine_owner",
             "owner_id",
             unique=True,
             postgresql_where=text("state <> 'deleted'"),
         ),
     )
 
-    id: Mapped[str] = mapped_column(Text, nullable=False)
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
     owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False)
     desired_state: Mapped[str] = mapped_column(
@@ -356,17 +353,13 @@ class HostedMachine(TenantScoped, Base):
     data_volume_id: Mapped[str | None] = mapped_column(Text)
     instance_id: Mapped[str | None] = mapped_column(Text)
     retain_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # The agents controller the machine enrolled as, with a one-time code
-    # minted for it; the owner's managed agents placed on it run there.
-    controller_id: Mapped[str | None] = mapped_column(Text)
-    # The code the machine enrolls with, kept for the revision it was issued
-    # at, so every retry of that revision hands over the same one.
-    enrollment_code_encrypted: Mapped[str | None] = mapped_column(Text)
-    enrollment_code_revision: Mapped[int | None] = mapped_column(Integer)
     active_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # The machine's disk and memory, and per workspace (keyed by its
+    # `MachineWorkspace` id) when its controller last reported and how many
+    # sessions it ran: `{disk, memory, controllers: {id: {at, sessions_running}}}`.
     heartbeat: Mapped[dict | None] = mapped_column(JSONB)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    #: When Core first saw the controller report `running` for this revision.
+    #: When Core first saw the machine reported `running` for this revision.
     running_observed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
@@ -376,6 +369,41 @@ class HostedMachine(TenantScoped, Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class MachineWorkspace(TenantScoped, Base):
+    """A workspace on its owner's cloud machine: the agents controller the
+    machine runs for this workspace, enrolled with a one-time code minted here.
+    The owner's managed agents placed on that controller run on the machine."""
+
+    __tablename__ = "machine_workspaces"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "controller_id"],
+            ["agent_controllers.tenant_id", "agent_controllers.id"],
+            name="fk_machine_workspaces_controller",
+            ondelete="SET NULL (controller_id)",
+        ),
+        UniqueConstraint(
+            "tenant_id", "machine_id", name="uq_machine_workspaces_machine"
+        ),
+        Index("ix_machine_workspaces_machine_id", "machine_id"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, nullable=False)
+    machine_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("cloud_machines.id"), nullable=False
+    )
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    controller_id: Mapped[str | None] = mapped_column(Text)
+    # The code the controller enrolls with, kept for the machine revision it
+    # was issued at, so every retry of that revision hands over the same one.
+    enrollment_code_encrypted: Mapped[str | None] = mapped_column(Text)
+    enrollment_code_revision: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
@@ -2902,9 +2930,9 @@ class AgentControllerEnrollmentCode(TenantScoped, Base):
             name="fk_agent_controller_enrollment_codes_controller",
         ),
         ForeignKeyConstraint(
-            ["tenant_id", "hosted_machine_id"],
-            ["hosted_machines.tenant_id", "hosted_machines.id"],
-            name="fk_agent_controller_enrollment_codes_hosted_machine",
+            ["tenant_id", "machine_workspace_id"],
+            ["machine_workspaces.tenant_id", "machine_workspaces.id"],
+            name="fk_agent_controller_enrollment_codes_machine_workspace",
         ),
         Index("ix_agent_controller_enrollment_codes_tenant_id", "tenant_id"),
     )
@@ -2921,7 +2949,7 @@ class AgentControllerEnrollmentCode(TenantScoped, Base):
     controller_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Set for a code minted for a Switch cloud machine: what enrolls with it
     # is that machine's controller.
-    hosted_machine_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    machine_workspace_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

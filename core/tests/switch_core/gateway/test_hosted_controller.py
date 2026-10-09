@@ -12,18 +12,28 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import (
+    TENANT_ZERO_ID,
     AgentController,
-    HostedMachine,
+    AgentDefinition,
+    CloudMachine,
+    MachineWorkspace,
     TenantMember,
     User,
     require_tenant_id,
 )
-from switch_core.db.stores.hosted_machine_store import HostedMachineStore, lock_claims
+from switch_core.db.stores.hosted_machine_store import (
+    CloudMachineStore,
+    lock_claims,
+    workspace_on,
+)
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.cloud_controllers import (
+    controller_machine_idle,
+    controller_reports,
     record_controller_status,
     set_cloud_enrollment,
 )
@@ -36,7 +46,10 @@ from switch_core.gateway.hosted_controller import router
 from switch_core.gateway.hosted_machines import router as machines_router
 from switch_core.keys import Keyring
 from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.tenant_context import tenant_scope
 from tests.switch_core.hosted_machine_helpers import (
+    add_tenant,
+    add_workspace,
     link_controller,
     place_managed_agent,
     seed_machine,
@@ -63,15 +76,16 @@ def fixture(name: str) -> dict:
 
 
 class FakeEnrollment:
-    """Agent management's side of enrollment: mints a fresh code per call."""
+    """Agent management's side of enrollment: mints a fresh code per call,
+    noting the workspace it was minted in and the workspace row it is for."""
 
     def __init__(self) -> None:
-        self.minted: list[tuple[str, int]] = []
+        self.minted: list[tuple[str, str]] = []
 
     async def machine_enrollment_code(
-        self, session: AsyncSession, machine: HostedMachine, now: datetime
+        self, session: AsyncSession, workspace: MachineWorkspace, now: datetime
     ) -> str:
-        self.minted.append((machine.id, machine.revision))
+        self.minted.append((require_tenant_id(), workspace.id))
         return f"swce_synthetic-{len(self.minted)}"
 
 
@@ -80,6 +94,8 @@ class ControllerApp:
     client: httpx.AsyncClient
     factory: async_sessionmaker[AsyncSession]
     machine_id: str
+    #: The machine's row in the bound workspace (tenant zero).
+    workspace_id: str
     owner_id: str
     config: SimpleNamespace
     settings: HostedControllerSettings
@@ -107,9 +123,11 @@ async def controller_app(session_factory):
             stop_reason=None,
             revision=1,
         )
+        workspace = await workspace_on(session, machine.id)
+        assert workspace is not None
         await session.commit()
     settings = HostedControllerSettings(
-        tenant_id=require_tenant_id(),
+        allowed_tenant_ids=[require_tenant_id()],
         token=TOKEN,
         agent_api_endpoint="https://switch.example.com/api/agent",
     )
@@ -146,6 +164,7 @@ async def controller_app(session_factory):
                 client=client,
                 factory=session_factory,
                 machine_id=machine.id,
+                workspace_id=workspace.id,
                 owner_id=owner.id,
                 config=config,
                 settings=settings,
@@ -155,16 +174,24 @@ async def controller_app(session_factory):
         set_cloud_enrollment(None)
 
 
-async def machine_of(factory, machine_id: str) -> HostedMachine:
+async def machine_of(factory, machine_id: str) -> CloudMachine:
     async with factory() as session:
-        machine = await session.get(HostedMachine, (require_tenant_id(), machine_id))
+        machine = await session.get(CloudMachine, machine_id)
         assert machine is not None
         return machine
 
 
+async def workspace_of(factory, machine_id: str) -> MachineWorkspace:
+    """The bound workspace's row on the machine."""
+    async with factory() as session:
+        workspace = await workspace_on(session, machine_id)
+        assert workspace is not None
+        return workspace
+
+
 async def update_machine(factory, machine_id: str, **values) -> None:
     async with factory() as session:
-        machine = await session.get(HostedMachine, (require_tenant_id(), machine_id))
+        machine = await session.get(CloudMachine, machine_id)
         assert machine is not None
         for key, value in values.items():
             setattr(machine, key, value)
@@ -172,12 +199,11 @@ async def update_machine(factory, machine_id: str, **values) -> None:
 
 
 async def enrolled(app: ControllerApp, *, agents: int) -> tuple[str, list[str]]:
-    """Link the machine to the controller it enrolled as, with `agents`
-    managed agents placed on it; the controller and agent ids."""
+    """Link the machine to the controller it enrolled as in the bound
+    workspace, with `agents` managed agents placed on it; the controller and
+    agent ids."""
     async with app.factory() as session:
-        machine = await session.get(
-            HostedMachine, (require_tenant_id(), app.machine_id)
-        )
+        machine = await session.get(CloudMachine, app.machine_id)
         assert machine is not None
         controller = await link_controller(session, machine)
         placed = [
@@ -194,10 +220,63 @@ async def enrolled(app: ControllerApp, *, agents: int) -> tuple[str, list[str]]:
 
 
 async def report_status(app: ControllerApp, controller_id: str, **reading) -> None:
-    """A status report from the machine's controller."""
+    """A status report from the machine's controller in the bound workspace."""
     async with app.factory() as session:
         await record_controller_status(session, controller_id, reading)
         await session.commit()
+
+
+@dataclass
+class Joined:
+    tenant_id: str
+    workspace_id: str
+    controller_id: str | None
+    agent_ids: list[str]
+
+
+async def join_workspace(
+    app: ControllerApp, tenant_id: str, *, agents: int | None, member: bool
+) -> Joined:
+    """Another workspace on the owner's machine, joined after the first: the
+    owner a member there when `member`, its controller enrolled with `agents`
+    placed on it unless `agents` is None."""
+    async with app.factory() as session:
+        await add_tenant(session, tenant_id)
+        await session.commit()
+    with tenant_scope(tenant_id):
+        async with app.factory() as session:
+            if member:
+                session.add(
+                    TenantMember(
+                        tenant_id=tenant_id, user_id=app.owner_id, role="member"
+                    )
+                )
+            machine = await session.get(CloudMachine, app.machine_id)
+            assert machine is not None
+            workspace = await add_workspace(
+                session, machine, created_at=datetime.now(UTC) + timedelta(seconds=1)
+            )
+            controller_id = None
+            placed = []
+            if agents is not None:
+                controller = await link_controller(session, machine)
+                controller_id = controller.id
+                placed = [
+                    await place_managed_agent(
+                        session,
+                        owner_id=app.owner_id,
+                        controller_id=controller.id,
+                        name=f"{tenant_id}-agent-{index}",
+                    )
+                    for index in range(agents)
+                ]
+            await session.commit()
+    return Joined(
+        tenant_id=tenant_id,
+        workspace_id=workspace.id,
+        controller_id=controller_id,
+        agent_ids=[definition.agent_id for definition in placed],
+    )
 
 
 async def list_machines(client) -> list[dict]:
@@ -248,7 +327,10 @@ async def test_controller_requires_its_own_credential(controller_app):
             )
             assert response.status_code == 401
     saved = await machine_of(app.factory, app.machine_id)
-    assert (saved.state, saved.enrollment_code_revision) == ("queued", None)
+    assert saved.state == "queued"
+    assert (
+        await workspace_of(app.factory, app.machine_id)
+    ).enrollment_code_revision is None
     assert app.enrollment.minted == []
 
 
@@ -289,7 +371,7 @@ async def test_machines_lists_every_live_machine_with_the_contract_keys(
         "revision": 1,
         "data_volume_id": None,
         "retain_until": None,
-        "bundle_revision": None,
+        "bundle_revision": 1,
     }
 
 
@@ -433,16 +515,23 @@ async def test_prepare_hands_over_one_enrollment_code_per_revision(controller_ap
     body = first.json()
     contract = fixture("prepare_controller_response.json")
     assert set(body) == set(contract)
-    assert set(body["controller"]) == set(contract["controller"])
+    [entry] = body["controllers"]
+    assert set(entry) == set(contract["controllers"][0])
     assert body["machine_id"] == app.machine_id
     assert body["revision"] == body["bundle_revision"] == 1
     assert body["api_endpoint"] == app.settings.agent_api_endpoint
-    assert body["controller"] == {"id": None, "enrollment_code": "swce_synthetic-1"}
-    assert app.enrollment.minted == [(app.machine_id, 1)]
+    assert entry == {
+        "key": app.workspace_id,
+        "id": None,
+        "enrollment_code": "swce_synthetic-1",
+    }
+    minted = (require_tenant_id(), app.workspace_id)
+    assert app.enrollment.minted == [minted]
     saved = await machine_of(app.factory, app.machine_id)
     assert saved.state == "provisioning"
-    assert saved.enrollment_code_revision == 1
-    assert "swce_synthetic-1" not in (saved.enrollment_code_encrypted or "")
+    workspace = await workspace_of(app.factory, app.machine_id)
+    assert workspace.enrollment_code_revision == 1
+    assert "swce_synthetic-1" not in (workspace.enrollment_code_encrypted or "")
     [item] = await list_machines(app.client)
     assert item["bundle_revision"] == 1
     assert "swce_" not in json.dumps(item)
@@ -450,9 +539,13 @@ async def test_prepare_hands_over_one_enrollment_code_per_revision(controller_ap
     await update_machine(app.factory, app.machine_id, revision=2)
     rotated = (await prepare(app.client, app.machine_id)).json()
     assert rotated["revision"] == rotated["bundle_revision"] == 2
-    assert rotated["controller"] == {"id": None, "enrollment_code": "swce_synthetic-2"}
-    assert app.enrollment.minted == [(app.machine_id, 1), (app.machine_id, 2)]
-    assert (await machine_of(app.factory, app.machine_id)).enrollment_code_revision == 2
+    assert rotated["controllers"] == [
+        {"key": app.workspace_id, "id": None, "enrollment_code": "swce_synthetic-2"}
+    ]
+    assert app.enrollment.minted == [minted, minted]
+    assert (
+        await workspace_of(app.factory, app.machine_id)
+    ).enrollment_code_revision == 2
 
 
 async def test_prepare_names_the_controller_the_machine_enrolled_as(controller_app):
@@ -460,10 +553,9 @@ async def test_prepare_names_the_controller_the_machine_enrolled_as(controller_a
     controller_id, _ = await enrolled(app, agents=0)
     response = await prepare(app.client, app.machine_id)
     assert response.status_code == 200, response.text
-    assert response.json()["controller"] == {
-        "id": controller_id,
-        "enrollment_code": None,
-    }
+    assert response.json()["controllers"] == [
+        {"key": app.workspace_id, "id": controller_id, "enrollment_code": None}
+    ]
     assert app.enrollment.minted == []
 
 
@@ -478,10 +570,9 @@ async def test_prepare_mints_a_code_again_once_the_controller_is_revoked(
         await session.commit()
     response = await prepare(app.client, app.machine_id)
     assert response.status_code == 200, response.text
-    assert response.json()["controller"] == {
-        "id": None,
-        "enrollment_code": "swce_synthetic-1",
-    }
+    assert response.json()["controllers"] == [
+        {"key": app.workspace_id, "id": None, "enrollment_code": "swce_synthetic-1"}
+    ]
 
 
 async def test_prepare_leaves_a_machine_past_queued_in_its_state(controller_app):
@@ -504,7 +595,7 @@ async def test_prepare_refuses_unknown_and_deleted_machines(controller_app):
         assert deleted.status_code == 409
         assert deleted.json() == {"detail": "machine is deleted"}
     assert (
-        await machine_of(app.factory, app.machine_id)
+        await workspace_of(app.factory, app.machine_id)
     ).enrollment_code_revision is None
     assert app.enrollment.minted == []
 
@@ -521,9 +612,144 @@ async def test_prepare_for_a_departed_owner_errors_the_machine(controller_app):
     assert "enrollment_code" not in response.text
     saved = await machine_of(app.factory, app.machine_id)
     assert saved.state == "error"
-    assert "workspace member" in saved.error
-    assert saved.enrollment_code_revision is None
+    assert "no longer a member of any workspace it serves" in saved.error
+    assert (
+        await workspace_of(app.factory, app.machine_id)
+    ).enrollment_code_revision is None
     assert app.enrollment.minted == []
+
+
+async def test_prepare_lists_a_controller_per_workspace_oldest_first(controller_app):
+    app = controller_app
+    second = await join_workspace(app, "tenant-b", agents=None, member=True)
+    third = await join_workspace(app, "tenant-c", agents=0, member=True)
+    first = await prepare(app.client, app.machine_id)
+    assert first.status_code == 200, first.text
+    assert first.json()["controllers"] == [
+        {"key": app.workspace_id, "id": None, "enrollment_code": "swce_synthetic-1"},
+        {
+            "key": second.workspace_id,
+            "id": None,
+            "enrollment_code": "swce_synthetic-2",
+        },
+        {"key": third.workspace_id, "id": third.controller_id, "enrollment_code": None},
+    ]
+    # Each code is minted in the workspace whose controller enrolls with it.
+    assert app.enrollment.minted == [
+        (TENANT_ZERO_ID, app.workspace_id),
+        ("tenant-b", second.workspace_id),
+    ]
+    with tenant_scope("tenant-b"):
+        assert (
+            await workspace_of(app.factory, app.machine_id)
+        ).enrollment_code_revision == 1
+    again = await prepare(app.client, app.machine_id)
+    assert again.json() == first.json()
+    assert len(app.enrollment.minted) == 2
+
+
+async def test_prepare_skips_a_workspace_its_owner_left(controller_app):
+    app = controller_app
+    left = await join_workspace(app, "tenant-b", agents=None, member=False)
+    stayed = await join_workspace(app, "tenant-c", agents=None, member=True)
+    async with app.factory() as session:
+        await session.delete(
+            await session.get(TenantMember, (TENANT_ZERO_ID, app.owner_id))
+        )
+        await session.commit()
+    response = await prepare(app.client, app.machine_id)
+    assert response.status_code == 200, response.text
+    assert response.json()["controllers"] == [
+        {"key": stayed.workspace_id, "id": None, "enrollment_code": "swce_synthetic-1"}
+    ]
+    assert app.enrollment.minted == [("tenant-c", stayed.workspace_id)]
+    saved = await machine_of(app.factory, app.machine_id)
+    assert (saved.state, saved.error) == ("provisioning", None)
+    with tenant_scope(left.tenant_id):
+        assert (
+            await workspace_of(app.factory, app.machine_id)
+        ).enrollment_code_revision is None
+
+
+async def test_each_workspace_s_controller_reports_on_its_own(controller_app):
+    app = controller_app
+    here, _ = await enrolled(app, agents=0)
+    there = await join_workspace(app, "tenant-b", agents=0, member=True)
+    await report_status(app, here, sessions_running=0, disk_free_bytes=1)
+    with tenant_scope(there.tenant_id):
+        await report_status(app, there.controller_id, sessions_running=3)
+    machine = await machine_of(app.factory, app.machine_id)
+    reports = controller_reports(machine)
+    assert set(reports) == {app.workspace_id, there.workspace_id}
+    assert (
+        reports[app.workspace_id]["sessions_running"],
+        reports[there.workspace_id]["sessions_running"],
+    ) == (0, 3)
+    now = datetime.now(UTC)
+    assert not controller_machine_idle(machine, timedelta(0), now)
+    with tenant_scope(there.tenant_id):
+        await report_status(app, there.controller_id, sessions_running=0)
+    machine = await machine_of(app.factory, app.machine_id)
+    assert controller_machine_idle(machine, timedelta(0), datetime.now(UTC))
+
+
+async def test_a_machine_sleeps_only_once_every_workspace_is_idle(controller_app):
+    app = controller_app
+    await _idle_ready(app, minutes=30)
+    there = await join_workspace(app, "tenant-b", agents=1, member=True)
+    reported = datetime.now(UTC) - timedelta(minutes=1)
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        heartbeat=heartbeat_of(
+            {app.workspace_id: (reported, 0), there.workspace_id: (reported, 2)}
+        ),
+    )
+    [item] = await list_machines(app.client)
+    assert (item["desired_state"], item["revision"]) == ("running", 1)
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        heartbeat=heartbeat_of(
+            {app.workspace_id: (reported, 0), there.workspace_id: (reported, 0)}
+        ),
+    )
+    [item] = await list_machines(app.client)
+    assert (item["desired_state"], item["revision"]) == ("stopped", 2)
+
+
+async def test_a_machine_is_retained_only_once_no_workspace_has_an_agent(
+    controller_app,
+):
+    app = controller_app
+    await _idle_ready(app, minutes=30, agents=0)
+    there = await join_workspace(app, "tenant-b", agents=1, member=True)
+    reported = datetime.now(UTC) - timedelta(minutes=1)
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        heartbeat=heartbeat_of(
+            {app.workspace_id: (reported, 0), there.workspace_id: (reported, 0)}
+        ),
+    )
+    [item] = await list_machines(app.client)
+    # Workspace B still has an agent on it, so the machine sleeps on its disk.
+    assert (item["desired_state"], item["revision"]) == ("stopped", 2)
+    assert (await machine_of(app.factory, app.machine_id)).stop_reason == "idle"
+
+    with tenant_scope(there.tenant_id):
+        async with app.factory() as session:
+            for definition in await session.scalars(
+                select(AgentDefinition).where(
+                    AgentDefinition.controller_id == there.controller_id
+                )
+            ):
+                await session.delete(definition)
+            await session.commit()
+    before = datetime.now(UTC)
+    [item] = await list_machines(app.client)
+    assert (item["desired_state"], item["revision"]) == ("retained", 3)
+    assert before + timedelta(days=7) <= datetime.fromisoformat(item["retain_until"])
 
 
 async def test_controller_observation_fixture_is_accepted(controller_app):
@@ -799,6 +1025,19 @@ async def test_retention_sweep_keeps_an_errored_machine_inside_its_window(
     assert item["retain_until"] == until.isoformat()
 
 
+def heartbeat_of(reports: dict[str, tuple[datetime, int | None]]) -> dict:
+    """A heartbeat with, per workspace row on the machine, when its controller
+    last reported and how many sessions it said ran."""
+    return {
+        "disk": None,
+        "memory": None,
+        "controllers": {
+            key: {"at": at.isoformat(), "sessions_running": sessions}
+            for key, (at, sessions) in reports.items()
+        },
+    }
+
+
 async def _idle_ready(
     app: ControllerApp,
     *,
@@ -812,16 +1051,13 @@ async def _idle_ready(
     minutes ago. The controller id."""
     app.config.hosted_idle_stop_minutes = minutes
     controller_id, _ = await enrolled(app, agents=agents)
-    heartbeat: dict = {"disk": None, "memory": None}
-    if sessions is not None:
-        heartbeat["sessions_running"] = sessions
     now = datetime.now(UTC)
     await update_machine(
         app.factory,
         app.machine_id,
         state="ready",
         active_at=now - timedelta(minutes=31),
-        heartbeat=heartbeat,
+        heartbeat=heartbeat_of({app.workspace_id: (now - reported, sessions)}),
         heartbeat_at=now - reported,
         running_observed_at=now - timedelta(hours=1),
     )
@@ -942,8 +1178,10 @@ async def _empty_machine(app: ControllerApp, **values) -> tuple[str, str]:
             stop_reason=None,
             revision=1,
         )
+        workspace = await workspace_on(session, machine.id)
+        assert workspace is not None
         machine.active_at = datetime.now(UTC) - timedelta(minutes=31)
-        machine.heartbeat = {"disk": None, "memory": None, "sessions_running": 0}
+        machine.heartbeat = heartbeat_of({workspace.id: (datetime.now(UTC), 0)})
         machine.heartbeat_at = datetime.now(UTC)
         for key, value in values.items():
             setattr(machine, key, value)
@@ -1045,11 +1283,12 @@ async def test_recently_errored_empty_machine_is_left_alone(controller_app):
     )
 
 
-async def _claim(factory, owner_id: str) -> HostedMachine:
+async def _claim(factory, owner_id: str) -> CloudMachine:
     async with factory() as session:
         await lock_claims(session)
-        machine = await HostedMachineStore().claim(
+        machine, _workspace = await CloudMachineStore().claim(
             session,
+            factory,
             owner_id=owner_id,
             capacity=2,
             now=datetime.now(UTC),
@@ -1075,3 +1314,27 @@ async def test_released_machine_is_revived_or_replaced_by_a_claim(controller_app
     replaced = await _claim(app.factory, owner_id)
     assert replaced.id != machine_id
     assert replaced.desired_state == "running"
+
+
+async def test_a_workspace_its_owner_left_no_longer_keeps_the_machine_awake(
+    controller_app,
+):
+    app = controller_app
+    here, _ = await enrolled(app, agents=0)
+    left = await join_workspace(app, "tenant-b", agents=0, member=True)
+    await report_status(app, here, sessions_running=0)
+    with tenant_scope(left.tenant_id):
+        await report_status(app, left.controller_id, sessions_running=0)
+        async with app.factory() as session:
+            await session.delete(
+                await session.get(TenantMember, (left.tenant_id, app.owner_id))
+            )
+            await session.commit()
+    assert set(controller_reports(await machine_of(app.factory, app.machine_id))) == {
+        app.workspace_id,
+        left.workspace_id,
+    }
+    response = await prepare(app.client, app.machine_id)
+    assert response.status_code == 200, response.text
+    machine = await machine_of(app.factory, app.machine_id)
+    assert set(controller_reports(machine)) == {app.workspace_id}
