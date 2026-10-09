@@ -271,10 +271,17 @@ def build_metrics_payload(
     end_nanos: int,
 ) -> dict[str, Any]:
     """One export interval's metrics as a single OTLP request body."""
+    attributes = resource.attributes()
+    if resource.environment:
+        # Behind the Flint relay `env` is the relay's own and
+        # `deployment.environment` is dropped; `flint_env` is a key it keeps.
+        # Metrics only: on product telemetry the same key names the Amplitude
+        # project, which the telemetry sink sets itself.
+        attributes["flint_env"] = resource.environment
     return {
         "resourceMetrics": [
             {
-                "resource": {"attributes": otlp_attributes(resource.attributes())},
+                "resource": {"attributes": otlp_attributes(attributes)},
                 "scopeMetrics": [
                     {
                         "scope": {
