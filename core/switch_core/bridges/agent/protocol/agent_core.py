@@ -60,7 +60,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.budgets import BudgetGuard
-from switch_core.clients.actor import SystemActor
+from switch_core.clients.actor import AgentActor, SystemActor
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
 from switch_core.clients.admin_messages import (
     AdminMessageType,
@@ -1231,21 +1231,26 @@ class AgentCore:
         room: RoomDescriptor,
         content: str,
         thread_root_id: str | None,
-        agent_name: str,
+        client: AgentActor,
     ) -> str:
         """Check agent-authored content against Switch Trust before it is
         sent. Returns the content to actually send — unchanged, redacted, or
         carrying a short non-blocking annotation. Raises
-        `GuardrailBlockedError` on a BLOCKED verdict, having already posted a
-        notice in the room in place of the real content."""
+        `GuardrailBlockedError` on a BLOCKED verdict, or on a REDACTED verdict
+        Switch Trust gave us nothing to redact with — sending the original
+        content then would be indistinguishable from not checking at all —
+        having already posted a notice in the room in place of the real
+        content."""
         check = await check_message(
             self.trust_client,
             role="assistant",
             content=content,
             room_id=room.id,
         )
-        if check.blocked:
-            await self._post_trust_blocked_notice(room, thread_root_id, agent_name)
+        if check.blocked or (
+            check.outcome == "redacted" and check.redacted_content is None
+        ):
+            await self._post_trust_blocked_notice(room, thread_root_id, client)
             raise GuardrailBlockedError(check)
         if check.redacted_content is not None:
             content = check.redacted_content
@@ -1255,7 +1260,7 @@ class AgentCore:
         return content
 
     async def _post_trust_blocked_notice(
-        self, room: RoomDescriptor, thread_root_id: str | None, agent_name: str
+        self, room: RoomDescriptor, thread_root_id: str | None, client: AgentActor
     ) -> None:
         """Tell the room a response was blocked, in place of sending it."""
         admin = next(
@@ -1271,8 +1276,8 @@ class AgentCore:
         try:
             await admin.send_admin(
                 room.transport_room_id,
-                f"🚫 A response from @{agent_name} was blocked by Switch Trust "
-                "and was not sent.",
+                f"🚫 A response from @{client.agent.name} was blocked by Switch "
+                "Trust and was not sent.",
                 message_type=AdminMessageType.TRUST_BLOCKED,
                 thread_root_id=thread_root_id,
             )
@@ -1344,9 +1349,7 @@ class AgentCore:
             thread_root_id = await self._resolve_thread_root(
                 client, room.transport_room_id, thread_id
             )
-        content = await self._enforce_trust(
-            room, content, thread_root_id, client.agent.name
-        )
+        content = await self._enforce_trust(room, content, thread_root_id, client)
         event_id = await client.send_message(
             room.transport_room_id,
             content,
@@ -1815,7 +1818,7 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        detail = await self._enforce_trust(room, detail, None, client.agent.name)
+        detail = await self._enforce_trust(room, detail, None, client)
         await client.send_message(
             room.transport_room_id, f"*{detail}*", format="markdown", metered=True
         )
@@ -2544,7 +2547,7 @@ class AgentCore:
 
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
-            outcome = await self._enforce_trust(room, outcome, None, client.agent.name)
+            outcome = await self._enforce_trust(room, outcome, None, client)
             await client.send_event(
                 room.transport_room_id,
                 "com.switch.task.finalise",

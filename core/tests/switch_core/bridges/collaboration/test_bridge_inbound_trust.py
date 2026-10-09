@@ -43,8 +43,9 @@ class _FakeHumanActor:
 
 
 class _FakeAdapter:
-    def __init__(self) -> None:
+    def __init__(self, *, raise_on_admin_message: bool = False) -> None:
         self.admin_messages: list[tuple[str, str, str | None, str]] = []
+        self._raise_on_admin_message = raise_on_admin_message
 
     def translate_inbound(self, content: str) -> str:
         return content
@@ -57,6 +58,8 @@ class _FakeAdapter:
         *,
         message_type: str,
     ) -> None:
+        if self._raise_on_admin_message:
+            raise RuntimeError("platform unavailable")
         self.admin_messages.append((channel_id, body, root_or_ref, message_type))
 
 
@@ -98,6 +101,11 @@ def _bridge(
         _channel_to_room={"chan-1": ("room-uuid", TRANSPORT_ROOM_ID)},
         _channel_locks={},
         _trust_client=trust_client,
+    )
+    # The real implementation, not a re-fake of it: exercises its try/except
+    # around a failing platform notify, same as production.
+    bridge._post_trust_notice = lambda msg, body, message_type: (
+        CollaborationCore._post_trust_notice(bridge, msg, body, message_type)
     )
     bridge.relayed = relayed
     return bridge
@@ -169,6 +177,56 @@ async def test_redacted_message_reaches_the_room_redacted_and_sender_is_notified
     assert "pii/email" in body
     assert root_or_ref == "mm-post-1"
     assert message_type == AdminMessageType.TRUST_REDACTED.value
+
+
+async def test_redacted_outcome_with_nothing_to_redact_is_treated_as_blocked() -> None:
+    """`redacted_content` can stay `None` even on a REDACTED verdict (no
+    finding carried usable detected text) — sending the original content then
+    would be indistinguishable from not checking at all."""
+    human_actor = _FakeHumanActor()
+    adapter = _FakeAdapter()
+    result = TrustCheckResult(
+        outcome="redacted",
+        policy_id="policy-1",
+        policy_name="default",
+        findings=(
+            TrustFinding(category="pii/email", detector_name="email", severity="high"),
+        ),
+        redacted_content=None,
+    )
+    bridge = _bridge(human_actor, adapter, _FixedTrustClient(result))
+
+    await CollaborationCore._handle_inbound_message(
+        bridge, _message("my email is alice@example.com")
+    )
+
+    assert human_actor.sent == []
+    assert len(adapter.admin_messages) == 1
+    _, body, _, message_type = adapter.admin_messages[0]
+    assert "blocked by Switch Trust" in body
+    assert message_type == AdminMessageType.TRUST_BLOCKED.value
+
+
+async def test_a_failed_redaction_notice_does_not_block_the_redacted_message() -> None:
+    human_actor = _FakeHumanActor()
+    adapter = _FakeAdapter(raise_on_admin_message=True)
+    result = TrustCheckResult(
+        outcome="redacted",
+        policy_id="policy-1",
+        policy_name="default",
+        findings=(
+            TrustFinding(category="pii/email", detector_name="email", severity="high"),
+        ),
+        redacted_content="my email is [redacted]",
+    )
+    bridge = _bridge(human_actor, adapter, _FixedTrustClient(result))
+
+    await CollaborationCore._handle_inbound_message(
+        bridge, _message("my email is alice@example.com")
+    )
+
+    # The notice failed, but the redacted message still reached the room.
+    assert human_actor.sent == [(TRANSPORT_ROOM_ID, "my email is [redacted]")]
 
 
 async def test_allowed_message_is_relayed_unaffected() -> None:

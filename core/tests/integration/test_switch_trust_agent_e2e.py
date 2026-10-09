@@ -151,6 +151,43 @@ async def test_blocked_agent_message_is_not_sent_and_names_the_agent(
     assert trust_client.room_ids == [room_id]
 
 
+async def test_redacted_outcome_with_nothing_to_redact_is_not_sent(
+    harness: Harness, session_env: SessionEnv
+) -> None:
+    """`redacted_content` can stay `None` even on a REDACTED verdict (no
+    finding carried usable detected text) — sending the original content then
+    would be indistinguishable from not checking at all."""
+    agent_id, room_id = await _setup_room(
+        harness, session_env, "e2e-trust-redacted-empty", with_admin=True
+    )
+    harness.protocol.trust_client = _FixedTrustClient(
+        TrustCheckResult(
+            outcome="redacted",
+            policy_id="policy-1",
+            policy_name="default",
+            findings=(
+                TrustFinding(
+                    category="pii/email", detector_name="email", severity="high"
+                ),
+            ),
+            redacted_content=None,
+        )
+    )
+
+    with pytest.raises(GuardrailBlockedError):
+        await harness.protocol.send_message(
+            agent_id, room_id, "my email is agent@example.com"
+        )
+
+    rows = await _timeline_messages(harness, session_env, room_id)
+    assert not any(
+        "my email is agent@example.com" in row.content.get("body", "") for row in rows
+    )
+    admin_rows = [row for row in rows if "com.switch.admin" in row.content]
+    assert len(admin_rows) == 1
+    assert admin_rows[0].content["com.switch.admin"]["type"] == "trust_blocked"
+
+
 async def test_allowed_agent_message_is_sent_unaffected(
     harness: Harness, session_env: SessionEnv
 ) -> None:
