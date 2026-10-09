@@ -130,13 +130,9 @@ def create_gateway_app(
         if config.hosted_controller_config_path
         else None
     )
-    if config.hosted_launch_capacity and (
-        app.state.hosted_controller_settings is None
-        or len(app.state.hosted_controller_settings.machine_slots)
-        < config.hosted_launch_capacity
-    ):
+    if config.hosted_launch_capacity and app.state.hosted_controller_settings is None:
         raise ValueError(
-            "Cloud machine capacity requires enough configured machine slots."
+            "HOSTED_LAUNCH_CAPACITY above 0 requires HOSTED_CONTROLLER_CONFIG_PATH."
         )
     app.include_router(hosted_machines_router, tags=["hosted-machines"])
     app.include_router(hosted_controller_router, tags=["hosted-controller"])

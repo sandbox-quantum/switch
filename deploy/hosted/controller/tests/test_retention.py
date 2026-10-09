@@ -12,7 +12,7 @@ def test_data_volume_delete_on_termination_is_explicitly_disabled(tmp_path: Path
     machine = store.record_volume(
         machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone
     )
-    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0", None)
     client = ec2_client()
     with Stubber(client) as stubber:
         stubber.add_response(

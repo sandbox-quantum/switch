@@ -117,7 +117,6 @@ async def ensure_machine(
     return await machines.claim(
         session,
         owner_id=owner_id,
-        slots=list(settings.machine_slots),
         capacity=config.hosted_launch_capacity,
         now=datetime.now(UTC),
     )

@@ -22,19 +22,6 @@ variable "allowed_instance_types" {
     error_message = "At least one explicitly approved worker type is required."
   }
 }
-variable "machine_slots" {
-  description = "Pre-created per-machine-slot secrets; never put secret values in Terraform."
-  type        = map(object({ secret_arn = string, kms_key_arn = string }))
-  validation {
-    condition     = length(var.machine_slots) > 0 && alltrue([for id in keys(var.machine_slots) : can(regex("^[a-z0-9][a-z0-9-]{2,39}$", id))])
-    error_message = "Declare at least one machine slot using lowercase 3–40 character IDs."
-  }
-  validation {
-    condition     = length(distinct([for slot in values(var.machine_slots) : slot.secret_arn])) == length(var.machine_slots)
-    error_message = "Each machine slot must have a distinct assignment secret."
-  }
-}
-
 variable "root_volume_gib" {
   type    = number
   default = 20

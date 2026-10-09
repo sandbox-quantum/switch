@@ -20,6 +20,7 @@ MACHINE_NEEDS_ATTENTION = (
 MACHINE_NEEDS_ADMIN = (
     "Your cloud machine needs attention. Contact your server administrator."
 )
+MACHINES_FULL = "Every Switch cloud machine on this server is in use. Try again later."
 MACHINE_BEING_REMOVED = (
     "Your previous cloud machine is being removed. Try again in a minute."
 )
@@ -148,14 +149,13 @@ class HostedMachineStore:
         session: AsyncSession,
         *,
         owner_id: str,
-        slots: list[str],
         capacity: int,
         now: datetime,
     ) -> HostedMachine:
-        """The owner's machine, reused or newly placed on a free slot.
+        """The owner's machine, reused or newly claimed within `capacity`.
 
         The caller holds `lock_claims`, so no other claim in the tenant can
-        take the same slot or count towards capacity meanwhile.
+        count towards capacity meanwhile.
         """
         tenant_id = require_tenant_id()
         machine = await self.live_for_owner(session, owner_id)
@@ -178,30 +178,21 @@ class HostedMachineStore:
             await session.flush()
             return machine
 
-        used = set(
-            await session.scalars(
-                select(HostedMachine.slot_id).where(
-                    HostedMachine.tenant_id == tenant_id,
-                    HostedMachine.state != "deleted",
-                )
-            )
-        )
-        slot_id = next((slot for slot in slots if slot not in used), None)
-        if len(used) >= capacity or slot_id is None:
-            raise HostedMachineConflict("no machine slot available")
-        generation = await session.scalar(
-            select(func.max(HostedMachine.generation)).where(
+        live = await session.scalar(
+            select(func.count())
+            .select_from(HostedMachine)
+            .where(
                 HostedMachine.tenant_id == tenant_id,
-                HostedMachine.slot_id == slot_id,
+                HostedMachine.state != "deleted",
             )
         )
+        if (live or 0) >= capacity:
+            raise HostedMachineConflict(MACHINES_FULL)
         machine_id = str(uuid4())
         await lock_machine(session, machine_id)
         machine = HostedMachine(
             id=machine_id,
             owner_id=owner_id,
-            slot_id=slot_id,
-            generation=(generation or 0) + 1,
             state="queued",
             desired_state="running",
             active_at=now,

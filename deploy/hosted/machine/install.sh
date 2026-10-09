@@ -43,10 +43,6 @@ for command in python3 lsblk wipefs udevadm mkfs.ext4 findmnt systemd-mount syst
   }
 done
 [ -d /etc/polkit-1/rules.d ] || { echo "polkit (polkitd) must be installed" >&2; exit 1; }
-python3 -c 'import boto3' >/dev/null 2>&1 || {
-  echo "missing required image Python module: boto3" >&2
-  exit 1
-}
 
 node=/opt/switch/node/bin/node
 case "$("$node" --version)" in

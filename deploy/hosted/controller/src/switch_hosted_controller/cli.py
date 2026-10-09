@@ -16,7 +16,7 @@ from typing import Any
 import boto3
 
 from .cloud import Ec2Cloud
-from .config import ConfigError, ControllerConfig, validate_slot_id
+from .config import ConfigError, ControllerConfig
 from .gateway import Gateway, GatewayConfig
 from .health import check_health
 from .lock import ControllerAlreadyRunning, ControllerLock
@@ -31,17 +31,16 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--gateway-config", type=Path)
     subparsers = result.add_subparsers(dest="command", required=True)
 
-    create = subparsers.add_parser("create", help="create a machine in one configured slot")
-    create.add_argument("slot_id")
+    create = subparsers.add_parser("create", help="create a machine")
     create.add_argument("--instance-type", required=True)
 
     for command in ("start", "stop", "status"):
         child = subparsers.add_parser(command)
-        child.add_argument("slot_id")
+        child.add_argument("machine_id")
 
     delete = subparsers.add_parser("delete")
-    delete.add_argument("slot_id")
-    delete.add_argument("--confirm-slot-id", required=True)
+    delete.add_argument("machine_id")
+    delete.add_argument("--confirm-machine-id", required=True)
     cleanup = delete.add_mutually_exclusive_group(required=True)
     cleanup.add_argument("--retain-volume", action="store_true")
     cleanup.add_argument("--delete-volume", action="store_true")
@@ -49,7 +48,7 @@ def parser() -> argparse.ArgumentParser:
     upgrade = subparsers.add_parser(
         "upgrade", help="use the configured image after the old instance is stopped and terminated"
     )
-    upgrade.add_argument("slot_id")
+    upgrade.add_argument("machine_id")
     upgrade.add_argument("--confirm-instance-id", required=True)
 
     subparsers.add_parser("list")
@@ -79,19 +78,13 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
     store = MachineStore(config.state_db_path, config.fingerprint())
     try:
         if args.command == "create":
-            slot_id = validate_slot_id(args.slot_id)
             if args.instance_type not in config.allowed_instance_types:
                 raise ConfigError("instance type is not in allowed_instance_types")
-            slot = config.slot(slot_id)
             machine = store.insert(
                 machine_id=str(uuid.uuid4()),
-                slot_id=slot_id,
-                generation=store.next_generation(slot_id),
                 core_revision=0,
                 instance_type=args.instance_type,
                 image_id=config.image_id,
-                assignment_secret_arn=slot.assignment_secret_arn,
-                instance_profile_arn=slot.instance_profile_arn,
                 max_machines=config.max_machines,
             )
             _print_machine(machine)
@@ -101,8 +94,11 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
                 json.dumps([_machine_output(machine) for machine in store.list()], sort_keys=True)
             )
             return 0
-        slot_id = validate_slot_id(args.slot_id)
-        machine = store.latest(slot_id)
+        try:
+            machine_id = str(uuid.UUID(args.machine_id))
+        except ValueError:
+            raise ConfigError("machine_id must be a machine's UUID") from None
+        machine = store.get(machine_id)
         if args.command == "status":
             _print_machine(machine)
             return 0
@@ -113,8 +109,8 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
             _print_machine(store.set_desired(machine.machine_id, DesiredState.STOPPED, None))
             return 0
         if args.command == "delete":
-            if args.confirm_slot_id != slot_id:
-                raise StoreError("--confirm-slot-id must exactly match slot_id")
+            if args.confirm_machine_id != machine.machine_id:
+                raise StoreError("--confirm-machine-id must exactly match machine_id")
             desired = DesiredState.DELETED if args.delete_volume else DesiredState.RETAINED
             _print_machine(store.set_desired(machine.machine_id, desired, None))
             return 0
@@ -156,14 +152,7 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
             ec2 = boto3.client("ec2", region_name=config.region)
             reconciler = Reconciler(store, Ec2Cloud(ec2, config))
             gateway = (
-                Gateway(
-                    GatewayConfig.load(gateway_path),
-                    config,
-                    store,
-                    boto3.client("secretsmanager", region_name=config.region),
-                )
-                if gateway_path
-                else None
+                Gateway(GatewayConfig.load(gateway_path), config, store) if gateway_path else None
             )
             _touch_health()
             if command == "reconcile-once":
@@ -228,8 +217,6 @@ def _print_machine(machine: Machine) -> None:
 def _machine_output(machine: Machine) -> dict[str, Any]:
     return {
         "machine_id": machine.machine_id,
-        "slot_id": machine.slot_id,
-        "generation": machine.generation,
         "instance_type": machine.instance_type,
         "desired_state": machine.desired_state.value,
         "desired_revision": machine.desired_revision,

@@ -84,7 +84,6 @@ def _hosted_app(
     app.state.hosted_controller_settings = HostedControllerSettings(
         tenant_id=require_tenant_id(),
         token=TOKEN,
-        machine_slots=["slot-a"],
         agent_api_endpoint=API_ENDPOINT,
     )
     app.include_router(controller_router)
@@ -120,7 +119,6 @@ async def _claim(
         machine = await HostedMachineStore().claim(
             session,
             owner_id=owner.id,
-            slots=["slot-a"],
             capacity=1,
             now=datetime.now(UTC),
         )

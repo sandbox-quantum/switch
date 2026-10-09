@@ -17,6 +17,7 @@ from switch_core.db.stores.hosted_machine_store import (
     MACHINE_BEING_REMOVED,
     MACHINE_NEEDS_ADMIN,
     MACHINE_NEEDS_ATTENTION,
+    MACHINES_FULL,
 )
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import decode_jwt, get_current_user, verify_password
@@ -46,9 +47,7 @@ async def signup_app(session_factory):
     app = FastAPI()
     app.include_router(auth_router)
     app.include_router(machine_router)
-    app.state.hosted_controller_settings = SimpleNamespace(
-        tenant_id=TENANT_ZERO_ID, machine_slots=["slot-a", "slot-b"]
-    )
+    app.state.hosted_controller_settings = SimpleNamespace(tenant_id=TENANT_ZERO_ID)
     config = SimpleNamespace(
         gateway_signup_open=True,
         gateway_signup_mode="default_tenant",
@@ -261,7 +260,7 @@ async def test_signup_succeeds_without_cloud_capacity(signup_app, caplog):
     await _user(app, "new.person@example.com")
 
 
-async def test_signup_succeeds_when_every_slot_is_taken(signup_app):
+async def test_signup_succeeds_when_every_machine_is_in_use(signup_app):
     app = signup_app
     app.config.hosted_launch_capacity = 1
     assert (await _signup(app, email="first@example.com")).status_code == 201
@@ -269,7 +268,7 @@ async def test_signup_succeeds_when_every_slot_is_taken(signup_app):
     assert response.status_code == 201, response.text
     assert response.json()["machine"] == {
         "status": "unavailable",
-        "reason": "no machine slot available",
+        "reason": MACHINES_FULL,
     }
     assert len(await _machines(app)) == 1
 

@@ -21,23 +21,19 @@ async def seed_machine(
     session: AsyncSession,
     *,
     owner_id: str,
-    slot_id: str,
     state: str,
     desired_state: str,
     stop_reason: str | None,
     revision: int,
-    generation: int,
 ) -> HostedMachine:
     now = datetime.now(UTC)
     machine = HostedMachine(
         id=str(uuid4()),
         owner_id=owner_id,
-        slot_id=slot_id,
         state=state,
         desired_state=desired_state,
         stop_reason=stop_reason,
         revision=revision,
-        generation=generation,
         active_at=now,
         created_at=now,
         updated_at=now,

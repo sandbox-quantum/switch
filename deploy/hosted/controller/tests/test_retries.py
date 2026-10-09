@@ -5,7 +5,14 @@ from unittest.mock import Mock
 import pytest
 from botocore.exceptions import ClientError
 from botocore.stub import Stubber
-from test_controller import config, ec2_client, instance, store_and_machine, volume
+from test_controller import (
+    config,
+    ec2_client,
+    instance,
+    store_and_machine,
+    volume,
+    with_bundle,
+)
 
 from switch_hosted_controller.cloud import Ec2Cloud
 from switch_hosted_controller.model import DesiredState, ObservedState
@@ -70,8 +77,7 @@ def ready_to_launch(tmp_path: Path):
     machine = store.record_volume(
         machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone
     )
-    machine = store.require_bundle(machine.machine_id, 1, "bundle-1")
-    machine = store.record_bundle(machine.machine_id, "bundle-1")
+    machine = with_bundle(store, machine.machine_id, 1)
     cloud = Mock(spec=Ec2Cloud)
     cloud.get_volume.return_value = volume(cfg, machine)
     cloud.get_instance.return_value = None
@@ -219,7 +225,7 @@ def launched_instance(tmp_path: Path):
     machine = store.record_volume(
         machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone
     )
-    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0", None)
     cloud = Mock()
     cloud.get_volume.return_value = volume(cfg, machine)
     return cfg, store, machine, cloud
@@ -249,7 +255,7 @@ def test_recovery_limit_applies_per_operation(tmp_path: Path):
     for index in range(3):
         replaced = reconciler.reconcile(machine.machine_id)
         assert replaced.recovery_count == index + 1
-        store.record_instance(machine.machine_id, "i-0123456789abcdef0")
+        store.record_instance(machine.machine_id, "i-0123456789abcdef0", None)
     reconciler.reconcile_all()
     assert store.get(machine.machine_id).observed_state is ObservedState.NEEDS_ATTENTION
 
@@ -259,6 +265,6 @@ def test_recovery_limit_applies_per_operation(tmp_path: Path):
     replaced = reconciler.reconcile(machine.machine_id)
     assert replaced.instance_id is None
     assert replaced.recovery_count == 0
-    store.record_instance(machine.machine_id, "i-0123456789abcdef0")
+    store.record_instance(machine.machine_id, "i-0123456789abcdef0", None)
     assert reconciler.reconcile(machine.machine_id).recovery_count == 1
     store.close()

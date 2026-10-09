@@ -63,8 +63,6 @@ async def controller_session(
 def machine_item(machine: HostedMachine) -> dict:
     return {
         "machine_id": machine.id,
-        "slot_id": machine.slot_id,
-        "generation": machine.generation,
         "state": machine.state,
         "desired_state": machine.desired_state,
         "revision": machine.revision,
@@ -267,8 +265,6 @@ async def prepare(
         machine.updated_at = now
     result = {
         "machine_id": machine.id,
-        "slot_id": machine.slot_id,
-        "generation": machine.generation,
         "revision": machine.revision,
         "bundle_revision": machine.revision,
         "api_endpoint": settings.agent_api_endpoint,

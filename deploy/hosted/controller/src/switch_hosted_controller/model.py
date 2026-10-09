@@ -27,8 +27,6 @@ class ObservedState(StrEnum):
 @dataclass(frozen=True)
 class Machine:
     machine_id: str
-    slot_id: str
-    generation: int
     desired_state: DesiredState
     desired_revision: int
     operation_id: str
@@ -36,8 +34,6 @@ class Machine:
     retain_until: datetime | None
     instance_type: str
     image_id: str
-    assignment_secret_arn: str
-    instance_profile_arn: str
     instance_id: str | None
     previous_instance_id: str | None
     instance_seq: int
@@ -59,3 +55,5 @@ class Machine:
     required_bundle_revision: int | None
     required_bundle_token: str | None
     bundle_token: str | None
+    bundle: str | None
+    instance_bundle_token: str | None

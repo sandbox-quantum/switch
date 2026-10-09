@@ -57,7 +57,7 @@
         "max_machines",
         "root_volume_gib",
         "data_volume_gib",
-        "machine_slots",
+        "instance_profile_arn",
         "poll_interval_seconds"
       ]
     },

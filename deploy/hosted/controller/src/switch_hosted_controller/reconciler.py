@@ -78,7 +78,7 @@ class Reconciler:
         instance = self._cloud.get_instance(machine)
         if machine.instance_id is None:
             if instance is not None:
-                return self._store.record_instance(machine.machine_id, instance["InstanceId"])
+                return self._store.record_instance(machine.machine_id, instance["InstanceId"], None)
             if volume["State"] != "available" or (
                 not machine.instance_launch_issued and not _bundle_ready(machine)
             ):
@@ -103,7 +103,9 @@ class Reconciler:
                 if rejected(exc):
                     self._store.clear_unlaunched_instance(machine)
                 raise
-            return self._store.record_instance(machine.machine_id, instance_id)
+            return self._store.record_instance(
+                machine.machine_id, instance_id, machine.bundle_token
+            )
         if instance is None:
             return self._attention(
                 claim,
@@ -127,6 +129,11 @@ class Reconciler:
             return self._store.replace_terminated(terminated, unexpected=unexpected)
         if state == "stopped":
             if _bundle_ready(machine) and self._unchanged(claim, DesiredState.RUNNING):
+                if machine.instance_bundle_token != machine.bundle_token:
+                    self._cloud.replace_user_data(machine)
+                    machine = self._store.record_instance_bundle(
+                        machine.machine_id, instance["InstanceId"], machine.bundle_token
+                    )
                 self._cloud.start_instance(machine)
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
         if state in {"pending", "stopping", "shutting-down"}:
@@ -164,7 +171,7 @@ class Reconciler:
         instance = self._cloud.get_instance(machine)
         if machine.instance_id is None:
             if instance is not None:
-                return self._store.record_instance(machine.machine_id, instance["InstanceId"])
+                return self._store.record_instance(machine.machine_id, instance["InstanceId"], None)
             if machine.instance_launch_intent and not machine.instance_launch_issued:
                 self._store.cancel_queued_instance_launch(claim)
                 return self._store.set_observed(claim, ObservedState.STOPPED, None)
@@ -271,7 +278,7 @@ class Reconciler:
                     return self._store.set_observed(claim, busy, None)
                 self._store.clear_unlaunched_instance(machine)
                 return None
-            return self._store.record_instance(machine.machine_id, instance["InstanceId"])
+            return self._store.record_instance(machine.machine_id, instance["InstanceId"], None)
         if machine.instance_id is None:
             return None
         instance = self._cloud.get_instance(machine)

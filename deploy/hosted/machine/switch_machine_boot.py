@@ -3,7 +3,8 @@
 
 Runs as root, once per boot, before the controller's service
 (`switch-machine-boot.service`). It reads the bundle the hosted controller
-wrote for this machine, mounts the machine's own data volume on /data,
+gave this machine as its instance's user data, mounts the machine's own data
+volume on /data,
 enrolls `switch-agent-controller` with the one-time code in the bundle when
 the data volume holds no live enrollment yet, and sets it up to run every
 agent as a Linux user of its own (`install-service --separate-users`), its
@@ -30,12 +31,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
+from urllib.request import OpenerDirector, ProxyHandler, Request, build_opener
 
 logger = logging.getLogger("switch-machine-boot")
 
 DATA_MOUNT = Path("/data")
-ASSIGNMENT_PATH = Path("/etc/switch-hosted/assignment.json")
 MACHINE_CONFIG_PATH = Path("/etc/switch-hosted/machine.json")
 LOCK_PATH = Path("/run/lock/switch-machine-boot.lock")
 MARKER_NAME = ".switch-machine.json"
@@ -45,29 +47,25 @@ CODE_RECORD_NAME = ".switch-controller-code"
 AGENTS_DIR_NAME = "agents"
 SYSTEMD_MOUNT = "/usr/bin/systemd-mount"
 VOLUME_RE = re.compile(r"^vol-[0-9a-f]{8,17}$")
-SECRET_ARN_RE = re.compile(
-    r"^arn:(aws|aws-us-gov|aws-cn):secretsmanager:([a-z]{2}(?:-gov)?-[a-z]+-\d):([0-9]{12}):secret:([A-Za-z0-9/_+=.@-]+)$"
-)
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/+\-]{0,199}$")
 ENROLLMENT_CODE_RE = re.compile(r"^swce_[A-Za-z0-9_-]{16,128}$")
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 MAX_JSON_BYTES = 128 * 1024
 VOLUME_WAIT_SECONDS = 600
-SECRET_WAIT_SECONDS = 300
+METADATA_WAIT_SECONDS = 300
+# Instance metadata, IMDSv2: agents cannot reach it, root can.
+METADATA_URL = "http://169.254.169.254/latest"
+# The exit status of an instance the hosted controller did not launch, which
+# has nothing to boot from: systemd does not run it again.
+NO_BUNDLE_EXIT = 3
 
 
 class BootError(RuntimeError):
     """Booting cannot go on; the message says why."""
 
 
-@dataclass(frozen=True)
-class Assignment:
-    installation_id: str
-    slot_id: str
-    generation: int
-    secret_id: str
-    secret_region: str
-    volume_id: str
+class NoBundle(BootError):
+    """The instance's user data is no bundle: the hosted controller did not launch it."""
 
 
 @dataclass(frozen=True)
@@ -81,7 +79,9 @@ class MachineConfig:
 
 @dataclass(frozen=True)
 class Bundle:
+    installation_id: str
     machine_id: str
+    volume_id: str
     api_endpoint: str
     controller_id: str | None
     enrollment_code: str | None
@@ -107,48 +107,6 @@ def _identifier(value: Any, what: str) -> str:
     if not isinstance(value, str) or not IDENTIFIER_RE.fullmatch(value):
         raise BootError(f"The {what} is invalid.")
     return value
-
-
-def load_assignment(path: Path = ASSIGNMENT_PATH) -> Assignment:
-    """What the hosted controller wrote into the instance's user data."""
-    value = _load_json(path, "machine assignment")
-    if not isinstance(value, dict):
-        raise BootError("The machine assignment is not an object.")
-    optional = {"previousInstanceId"}
-    value = _strict(
-        {key: item for key, item in value.items() if key not in optional},
-        {
-            "version",
-            "installationId",
-            "slotId",
-            "generation",
-            "assignmentSecretId",
-            "dataVolumeId",
-            "dataDevice",
-            "mountPath",
-        },
-        "machine assignment",
-    )
-    if value["version"] != 2 or value["mountPath"] != str(DATA_MOUNT):
-        raise BootError("The machine assignment is not one this image reads.")
-    generation = value["generation"]
-    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
-        raise BootError("The machine assignment's generation is invalid.")
-    volume_id = value["dataVolumeId"]
-    if not isinstance(volume_id, str) or not VOLUME_RE.fullmatch(volume_id):
-        raise BootError("The machine assignment's data volume is invalid.")
-    secret_id = value["assignmentSecretId"]
-    matched = SECRET_ARN_RE.fullmatch(secret_id) if isinstance(secret_id, str) else None
-    if matched is None:
-        raise BootError("The machine assignment's secret is not a Secrets Manager ARN.")
-    return Assignment(
-        installation_id=_identifier(value["installationId"], "installation id"),
-        slot_id=_identifier(value["slotId"], "slot id"),
-        generation=generation,
-        secret_id=secret_id,
-        secret_region=matched.group(2),
-        volume_id=volume_id,
-    )
 
 
 def load_machine_config(path: Path = MACHINE_CONFIG_PATH) -> MachineConfig:
@@ -180,29 +138,28 @@ def load_machine_config(path: Path = MACHINE_CONFIG_PATH) -> MachineConfig:
     )
 
 
-def parse_bundle(raw: str, assignment: Assignment) -> Bundle:
+def parse_bundle(raw: str) -> Bundle:
     """The bundle for this machine, as `Gateway.bundle` in the hosted controller writes it."""
     try:
         value = json.loads(raw)
     except ValueError:
-        raise BootError("The machine bundle is not JSON.") from None
+        raise NoBundle(
+            "This instance's user data is not a machine bundle: only an instance the "
+            "hosted controller launched can boot as a Switch cloud machine."
+        ) from None
     value = _strict(
         value,
-        {"version", "machineId", "assignment", "apiEndpoint", "controller"},
+        {"version", "installationId", "machineId", "dataVolumeId", "apiEndpoint", "controller"},
         "machine bundle",
     )
-    if value["version"] != 3:
+    if value["version"] != 4:
         raise BootError("The machine bundle's version is not one this image reads.")
-    if value["assignment"] != {
-        "installationId": assignment.installation_id,
-        "slotId": assignment.slot_id,
-        "generation": assignment.generation,
-        "dataVolumeId": assignment.volume_id,
-    }:
-        raise BootError("The machine bundle is for another machine than this one.")
     machine_id = value["machineId"]
     if not isinstance(machine_id, str) or not UUID_RE.fullmatch(machine_id):
         raise BootError("The machine bundle's machine id is invalid.")
+    volume_id = value["dataVolumeId"]
+    if not isinstance(volume_id, str) or not VOLUME_RE.fullmatch(volume_id):
+        raise BootError("The machine bundle's data volume is invalid.")
     endpoint = value["apiEndpoint"]
     url = urlsplit(endpoint) if isinstance(endpoint, str) else None
     if url is None or url.scheme != "https" or not url.hostname:
@@ -221,11 +178,61 @@ def parse_bundle(raw: str, assignment: Assignment) -> Bundle:
     elif not isinstance(code, str) or not ENROLLMENT_CODE_RE.fullmatch(code):
         raise BootError("The machine bundle holds neither a controller nor an enrollment code.")
     return Bundle(
+        installation_id=_identifier(value["installationId"], "installation id"),
         machine_id=machine_id,
+        volume_id=volume_id,
         api_endpoint=endpoint,
         controller_id=controller_id,
         enrollment_code=code,
     )
+
+
+def _user_data(opener: OpenerDirector) -> str:
+    token_request = Request(
+        f"{METADATA_URL}/api/token",
+        method="PUT",
+        headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"},
+    )
+    with opener.open(token_request, timeout=5) as response:
+        token = response.read().decode()
+    request = Request(f"{METADATA_URL}/user-data", headers={"X-aws-ec2-metadata-token": token})
+    try:
+        with opener.open(request, timeout=5) as response:
+            raw = response.read(MAX_JSON_BYTES + 1)
+    except HTTPError as error:
+        if error.code == 404:
+            raise NoBundle(
+                "This instance has no user data: only an instance the hosted controller "
+                "launched can boot as a Switch cloud machine."
+            ) from None
+        raise
+    if len(raw) > MAX_JSON_BYTES:
+        raise BootError("The instance's user data is too large to be a machine bundle.")
+    return raw.decode()
+
+
+def read_bundle(
+    opener: OpenerDirector | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    wait_seconds: float = METADATA_WAIT_SECONDS,
+) -> Bundle:
+    """The bundle in the instance's user data, read on every boot: the hosted
+    controller replaces it while the instance is stopped when the machine must
+    enroll again. Instance metadata is waited for a while."""
+    opener = opener or build_opener(ProxyHandler({}))
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            raw = _user_data(opener)
+            break
+        except BootError:
+            raise
+        except Exception as error:
+            if time.monotonic() > deadline:
+                raise BootError(f"The instance's user data cannot be read: {error}") from None
+            logger.warning("Waiting for instance metadata: %s", error)
+            sleep(5)
+    return parse_bundle(raw)
 
 
 class Commands:
@@ -254,30 +261,6 @@ class Commands:
                 f"{': ' + detail[-1] if detail else ''}."
             )
         return completed.stdout
-
-
-def read_bundle(
-    assignment: Assignment,
-    client: Any,
-    sleep: Callable[[float], None] = time.sleep,
-    wait_seconds: float = SECRET_WAIT_SECONDS,
-) -> Bundle:
-    """The current bundle, waiting a while for one the hosted controller is still writing."""
-    deadline = time.monotonic() + wait_seconds
-    while True:
-        try:
-            response = client.get_secret_value(
-                SecretId=assignment.secret_id, VersionStage="AWSCURRENT"
-            )
-            raw = response.get("SecretString")
-            if not isinstance(raw, str):
-                raise BootError("The machine bundle is not a string.")
-            return parse_bundle(raw, assignment)
-        except Exception as error:
-            if time.monotonic() > deadline:
-                raise BootError(f"The machine bundle cannot be read: {error}") from None
-            logger.warning("Waiting for the machine bundle: %s", error)
-            sleep(10)
 
 
 def _data_device(commands: Commands, volume_id: str) -> dict[str, Any] | None:
@@ -351,15 +334,15 @@ def prepare_storage(
     commands.run([SYSTEMD_MOUNT, "--type=ext4", "--options=nodev,nosuid", path, str(DATA_MOUNT)])
 
 
-def reconcile_marker(data: Path, assignment: Assignment, machine_id: str) -> None:
+def reconcile_marker(data: Path, bundle: Bundle) -> None:
     """Records which machine the data volume belongs to, and refuses one that
     belongs to another: an agent's data never reaches someone else's machine."""
     marker = data / MARKER_NAME
     wanted = {
         "version": 1,
-        "installationId": assignment.installation_id,
-        "machineId": machine_id,
-        "volumeId": assignment.volume_id,
+        "installationId": bundle.installation_id,
+        "machineId": bundle.machine_id,
+        "volumeId": bundle.volume_id,
     }
     if marker.exists():
         if marker.is_symlink():
@@ -401,7 +384,6 @@ def _as_controller(config: MachineConfig, arguments: list[str]) -> list[str]:
 def start_controller(
     commands: Commands,
     config: MachineConfig,
-    assignment: Assignment,
     bundle: Bundle,
     now: Callable[[], float] = time.time,
 ) -> None:
@@ -519,16 +501,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         with acquire_lock():
-            assignment = load_assignment()
+            bundle = read_bundle()
             config = load_machine_config()
-            import boto3  # type: ignore[import-not-found]
-
-            client = boto3.client("secretsmanager", region_name=assignment.secret_region)
-            bundle = read_bundle(assignment, client)
             commands = Commands()
-            prepare_storage(commands, assignment.volume_id)
-            reconcile_marker(DATA_MOUNT, assignment, bundle.machine_id)
-            start_controller(commands, config, assignment, bundle)
+            prepare_storage(commands, bundle.volume_id)
+            reconcile_marker(DATA_MOUNT, bundle)
+            start_controller(commands, config, bundle)
+    except NoBundle as error:
+        logger.error("%s", error)
+        return NO_BUNDLE_EXIT
     except BootError as error:
         logger.error("%s", error)
         return 1

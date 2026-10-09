@@ -329,7 +329,6 @@ class HostedMachine(TenantScoped, Base):
             "stop_reason IS NULL OR stop_reason IN ('idle', 'owner')",
             name="ck_hosted_machine_stop_reason",
         ),
-        CheckConstraint("generation >= 1", name="ck_hosted_machine_generation"),
         ForeignKeyConstraint(
             ["tenant_id", "controller_id"],
             ["agent_controllers.tenant_id", "agent_controllers.id"],
@@ -343,26 +342,10 @@ class HostedMachine(TenantScoped, Base):
             unique=True,
             postgresql_where=text("state <> 'deleted'"),
         ),
-        Index(
-            "uq_hosted_machine_slot",
-            "tenant_id",
-            "slot_id",
-            unique=True,
-            postgresql_where=text("state <> 'deleted'"),
-        ),
-        Index(
-            "uq_hosted_machine_generation",
-            "tenant_id",
-            "slot_id",
-            "generation",
-            unique=True,
-        ),
     )
 
     id: Mapped[str] = mapped_column(Text, nullable=False)
     owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
-    slot_id: Mapped[str] = mapped_column(Text, nullable=False)
-    generation: Mapped[int] = mapped_column(Integer, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False)
     desired_state: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="running"

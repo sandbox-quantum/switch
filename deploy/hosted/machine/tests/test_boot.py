@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import subprocess
 import sys
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
@@ -18,18 +20,10 @@ boot = importlib.util.module_from_spec(spec)
 sys.modules["switch_machine_boot"] = boot
 spec.loader.exec_module(boot)
 
-SECRET = "arn:aws:secretsmanager:eu-west-1:000000000000:secret:switch/slot-a"
 MACHINE_ID = "3f1c2b4a-0000-4000-8000-000000000001"
 CONTROLLER_ID = "9a1c2b4a-0000-4000-8000-0000000000aa"
 CODE = "swce_SyntheticEnrollmentCode0000"
-ASSIGNMENT = boot.Assignment(
-    installation_id="inst-test",
-    slot_id="slot-a",
-    generation=1,
-    secret_id=SECRET,
-    secret_region="eu-west-1",
-    volume_id="vol-0123456789abcdef0",
-)
+VOLUME_ID = "vol-0123456789abcdef0"
 CONFIG = boot.MachineConfig(
     controller_user="switch-controller",
     node="/opt/switch/node/bin/node",
@@ -42,14 +36,10 @@ CONFIG = boot.MachineConfig(
 def bundle(**controller) -> str:
     return json.dumps(
         {
-            "version": 3,
+            "version": 4,
+            "installationId": "inst-test",
             "machineId": MACHINE_ID,
-            "assignment": {
-                "installationId": "inst-test",
-                "slotId": "slot-a",
-                "generation": 1,
-                "dataVolumeId": "vol-0123456789abcdef0",
-            },
+            "dataVolumeId": VOLUME_ID,
             "apiEndpoint": "https://switch.example.test/agent-api",
             "controller": {"id": None, "enrollmentCode": CODE, **controller},
         }
@@ -83,31 +73,17 @@ class FakeCommands:
         return [call for call in self.calls if word in call]
 
 
-def test_the_assignment_and_bundle_are_read_strictly(tmp_path):
-    assignment = tmp_path / "assignment.json"
-    assignment.write_text(
-        json.dumps(
-            {
-                "version": 2,
-                "installationId": "inst-test",
-                "slotId": "slot-a",
-                "generation": 1,
-                "assignmentSecretId": SECRET,
-                "dataVolumeId": "vol-0123456789abcdef0",
-                "dataDevice": "/dev/sdf",
-                "mountPath": "/data",
-                "previousInstanceId": "i-0123456789abcdef0",
-            }
-        )
+def test_the_bundle_is_read_strictly():
+    parsed = boot.parse_bundle(bundle())
+    assert parsed == boot.Bundle(
+        installation_id="inst-test",
+        machine_id=MACHINE_ID,
+        volume_id=VOLUME_ID,
+        api_endpoint="https://switch.example.test/agent-api",
+        controller_id=None,
+        enrollment_code=CODE,
     )
-    assert boot.load_assignment(assignment) == ASSIGNMENT
-    parsed = boot.parse_bundle(bundle(), ASSIGNMENT)
-    assert (parsed.machine_id, parsed.enrollment_code, parsed.controller_id) == (
-        MACHINE_ID,
-        CODE,
-        None,
-    )
-    enrolled = boot.parse_bundle(bundle(id=CONTROLLER_ID, enrollmentCode=None), ASSIGNMENT)
+    enrolled = boot.parse_bundle(bundle(id=CONTROLLER_ID, enrollmentCode=None))
     assert (enrolled.controller_id, enrolled.enrollment_code) == (CONTROLLER_ID, None)
 
 
@@ -117,14 +93,66 @@ def test_the_assignment_and_bundle_are_read_strictly(tmp_path):
         bundle(enrollmentCode=None),
         bundle(enrollmentCode="swcc_a-long-lived-credential-00"),
         bundle(id=CONTROLLER_ID),
-        bundle().replace("slot-a", "slot-b"),
+        bundle().replace('"version": 4', '"version": 3'),
+        bundle().replace(VOLUME_ID, "vol-nope"),
         bundle().replace("https://", "http://"),
-        "not json",
+        json.dumps({**json.loads(bundle()), "slotId": "slot-a"}),
     ],
 )
-def test_a_bundle_that_is_not_this_machines_is_refused(raw):
+def test_a_bundle_this_image_does_not_read_is_refused(raw):
     with pytest.raises(boot.BootError):
-        boot.parse_bundle(raw, ASSIGNMENT)
+        boot.parse_bundle(raw)
+
+
+def test_user_data_that_is_not_a_bundle_is_not_a_cloud_machine():
+    with pytest.raises(boot.NoBundle, match="not a machine bundle"):
+        boot.parse_bundle("#cloud-config\nruncmd: []\n")
+
+
+class FakeMetadata:
+    """Instance metadata (IMDSv2), answering from a list of user data answers."""
+
+    def __init__(self, *answers) -> None:
+        self.answers = list(answers)
+        self.requests = []
+
+    def open(self, request, timeout):
+        self.requests.append(request)
+        if request.full_url.endswith("/api/token"):
+            assert request.get_method() == "PUT"
+            return io.BytesIO(b"metadata-token")
+        assert request.get_header("X-aws-ec2-metadata-token") == "metadata-token"
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return io.BytesIO(answer.encode())
+
+
+def test_the_bundle_is_read_from_the_instance_user_data_once_metadata_answers():
+    metadata = FakeMetadata(OSError("connection refused"), bundle())
+    waits = []
+    read = boot.read_bundle(metadata, sleep=waits.append, wait_seconds=60)
+    assert read.machine_id == MACHINE_ID
+    assert waits == [5]
+    assert [request.full_url for request in metadata.requests] == [
+        f"{boot.METADATA_URL}/api/token",
+        f"{boot.METADATA_URL}/user-data",
+        f"{boot.METADATA_URL}/api/token",
+        f"{boot.METADATA_URL}/user-data",
+    ]
+
+
+def test_an_instance_without_user_data_is_not_waited_for():
+    missing = HTTPError(f"{boot.METADATA_URL}/user-data", 404, "Not Found", {}, None)
+    with pytest.raises(boot.NoBundle, match="hosted controller"):
+        boot.read_bundle(FakeMetadata(missing), sleep=pytest.fail, wait_seconds=60)
+
+
+def test_metadata_that_never_answers_fails_the_boot():
+    with pytest.raises(boot.BootError, match="cannot be read"):
+        boot.read_bundle(
+            FakeMetadata(OSError("unreachable")), sleep=lambda _: None, wait_seconds=-1
+        )
 
 
 LSBLK_BLANK = json.dumps(
@@ -159,7 +187,7 @@ def test_a_blank_volume_is_formatted_and_mounted(monkeypatch, tmp_path):
             "findmnt": [(1, "")],
         }
     )
-    boot.prepare_storage(commands, ASSIGNMENT.volume_id, sleep=lambda _: None)
+    boot.prepare_storage(commands, VOLUME_ID, sleep=lambda _: None)
     assert commands.ran("/usr/sbin/mkfs.ext4")[0][-1] == "/dev/nvme1n1"
     assert commands.ran(boot.SYSTEMD_MOUNT)[0][-2:] == ["/dev/nvme1n1", str(tmp_path / "data")]
 
@@ -172,7 +200,7 @@ def test_a_volume_attached_late_is_waited_for_and_a_formatted_one_kept(monkeypat
             "findmnt": [(1, "")],
         }
     )
-    boot.prepare_storage(commands, ASSIGNMENT.volume_id, sleep=lambda _: None)
+    boot.prepare_storage(commands, VOLUME_ID, sleep=lambda _: None)
     assert commands.ran("/usr/sbin/mkfs.ext4") == []
     assert len(commands.ran(boot.SYSTEMD_MOUNT)) == 1
 
@@ -183,21 +211,24 @@ def test_a_disk_with_unknown_contents_is_never_formatted(monkeypatch, tmp_path):
         {"lsblk": [(0, LSBLK_BLANK)], "wipefs": [(0, '{"signatures": [{"type": "xfs"}]}')]}
     )
     with pytest.raises(boot.BootError, match="not blank"):
-        boot.prepare_storage(commands, ASSIGNMENT.volume_id, sleep=lambda _: None)
+        boot.prepare_storage(commands, VOLUME_ID, sleep=lambda _: None)
     assert commands.ran("/usr/sbin/mkfs.ext4") == []
 
 
 def test_the_volume_marker_refuses_another_machines_disk(tmp_path):
-    boot.reconcile_marker(tmp_path, ASSIGNMENT, MACHINE_ID)
-    boot.reconcile_marker(tmp_path, ASSIGNMENT, MACHINE_ID)
+    boot.reconcile_marker(tmp_path, boot.parse_bundle(bundle()))
+    boot.reconcile_marker(
+        tmp_path, boot.parse_bundle(bundle(id=CONTROLLER_ID, enrollmentCode=None))
+    )
+    other = bundle().replace(MACHINE_ID, "3f1c2b4a-0000-4000-8000-000000000002")
     with pytest.raises(boot.BootError, match="another machine"):
-        boot.reconcile_marker(tmp_path, ASSIGNMENT, "3f1c2b4a-0000-4000-8000-000000000002")
+        boot.reconcile_marker(tmp_path, boot.parse_bundle(other))
 
 
 def test_a_fresh_machine_enrolls_then_runs_its_agents_as_users_of_their_own(monkeypatch, tmp_path):
     monkeypatch.setattr(boot, "DATA_MOUNT", tmp_path)
     commands = FakeCommands({" status ": [(1, "Not enrolled.")]})
-    boot.start_controller(commands, CONFIG, ASSIGNMENT, boot.parse_bundle(bundle(), ASSIGNMENT))
+    boot.start_controller(commands, CONFIG, boot.parse_bundle(bundle()))
     [enroll] = commands.ran("enroll")
     assert enroll[:6] == [
         "/usr/sbin/runuser",
@@ -227,8 +258,7 @@ def test_an_enrolled_machine_only_starts_its_controller(monkeypatch, tmp_path):
     boot.start_controller(
         commands,
         CONFIG,
-        ASSIGNMENT,
-        boot.parse_bundle(bundle(id=CONTROLLER_ID, enrollmentCode=None), ASSIGNMENT),
+        boot.parse_bundle(bundle(id=CONTROLLER_ID, enrollmentCode=None)),
     )
     assert commands.ran("enroll") == []
     assert len(commands.ran("install-service")) == 1
@@ -240,9 +270,7 @@ def test_a_new_code_sets_a_revoked_enrollment_aside(monkeypatch, tmp_path):
     (tmp_path / ".switch-controller" / "controller.db").write_text("old")
     (tmp_path / ".switch-controller-code").write_text(hashlib.sha256(b"swce_old").hexdigest())
     commands = FakeCommands({" status ": [(0, "Controller: old")]})
-    boot.start_controller(
-        commands, CONFIG, ASSIGNMENT, boot.parse_bundle(bundle(), ASSIGNMENT), now=lambda: 7
-    )
+    boot.start_controller(commands, CONFIG, boot.parse_bundle(bundle()), now=lambda: 7)
     assert (tmp_path / ".switch-controller.replaced-7" / "controller.db").read_text() == "old"
     assert not (tmp_path / ".switch-controller" / "controller.db").exists()
     assert len(commands.ran("enroll")) == 1
@@ -254,15 +282,13 @@ def test_a_new_code_sets_a_revoked_enrollment_aside(monkeypatch, tmp_path):
 def test_an_enrollment_made_with_this_code_is_kept_when_the_boot_runs_again(monkeypatch, tmp_path):
     monkeypatch.setattr(boot, "DATA_MOUNT", tmp_path)
     first = FakeCommands({" status ": [(1, "Not enrolled.")]})
-    boot.start_controller(first, CONFIG, ASSIGNMENT, boot.parse_bundle(bundle(), ASSIGNMENT))
+    boot.start_controller(first, CONFIG, boot.parse_bundle(bundle()))
     assert len(first.ran("enroll")) == 1
     # It failed after enrolling: systemd starts the boot again, and Switch,
     # which has not linked the controller yet, still hands over the code.
     (tmp_path / ".switch-controller" / "controller.db").write_text("enrolled")
     again = FakeCommands({" status ": [(0, "Controller: new")]})
-    boot.start_controller(
-        again, CONFIG, ASSIGNMENT, boot.parse_bundle(bundle(), ASSIGNMENT), now=lambda: 7
-    )
+    boot.start_controller(again, CONFIG, boot.parse_bundle(bundle()), now=lambda: 7)
     assert again.ran("enroll") == []
     assert not (tmp_path / ".switch-controller.replaced-7").exists()
     assert (tmp_path / ".switch-controller" / "controller.db").read_text() == "enrolled"
@@ -276,7 +302,6 @@ def test_no_enrollment_and_no_code_says_what_to_do(monkeypatch, tmp_path):
         boot.start_controller(
             commands,
             CONFIG,
-            ASSIGNMENT,
-            boot.parse_bundle(bundle(id=CONTROLLER_ID, enrollmentCode=None), ASSIGNMENT),
+            boot.parse_bundle(bundle(id=CONTROLLER_ID, enrollmentCode=None)),
         )
     assert commands.ran("install-service") == []

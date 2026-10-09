@@ -1,12 +1,11 @@
-import base64
 import json
+import uuid
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
 
 from switch_hosted_controller import cli
-from switch_hosted_controller.cloud import Ec2Cloud
 from switch_hosted_controller.config import ControllerConfig
 from switch_hosted_controller.model import DesiredState, ObservedState
 from switch_hosted_controller.store import MachineStore
@@ -40,17 +39,15 @@ def observe(config_path: Path, machine_id: str, observed: ObservedState) -> None
         store.close()
 
 
-def test_create_status_and_delete_are_keyed_by_slot(capsys, config_path):
-    code, created = run(capsys, config_path, "create", "slot-a", "--instance-type", "m6i.large")
+def test_create_status_and_delete_are_keyed_by_machine_id(capsys, config_path):
+    code, created = run(capsys, config_path, "create", "--instance-type", "m6i.large")
     assert code == 0
-    assert created["slot_id"] == "slot-a"
-    assert created["generation"] == 1
+    machine_id = created["machine_id"]
+    assert str(uuid.UUID(machine_id)) == machine_id
     assert created["desired_state"] == "running"
     assert created["retain_until"] is None
     assert set(created) == {
         "machine_id",
-        "slot_id",
-        "generation",
         "instance_type",
         "desired_state",
         "desired_revision",
@@ -61,47 +58,66 @@ def test_create_status_and_delete_are_keyed_by_slot(capsys, config_path):
         "retain_until",
         "error",
     }
-    assert run(capsys, config_path, "status", "slot-a")[1] == created
+    assert run(capsys, config_path, "status", machine_id)[1] == created
 
+    code, error = run(capsys, config_path, "create", "--instance-type", "m6i.large")
+    assert code == 2
+    assert "capacity" in error["error"]
+
+    other_id = str(uuid.uuid4())
     code, error = run(
-        capsys, config_path, "delete", "slot-a", "--confirm-slot-id", "slot-b", "--retain-volume"
+        capsys,
+        config_path,
+        "delete",
+        machine_id,
+        "--confirm-machine-id",
+        other_id,
+        "--retain-volume",
     )
     assert code == 2
-    assert "confirm-slot-id" in error["error"]
+    assert "confirm-machine-id" in error["error"]
 
     code, retained = run(
-        capsys, config_path, "delete", "slot-a", "--confirm-slot-id", "slot-a", "--retain-volume"
+        capsys,
+        config_path,
+        "delete",
+        machine_id,
+        "--confirm-machine-id",
+        machine_id,
+        "--retain-volume",
     )
     assert code == 0
     assert retained["desired_state"] == "retained"
-    observe(config_path, created["machine_id"], ObservedState.RETAINED)
+    observe(config_path, machine_id, ObservedState.RETAINED)
     code, deleted = run(
-        capsys, config_path, "delete", "slot-a", "--confirm-slot-id", "slot-a", "--delete-volume"
+        capsys,
+        config_path,
+        "delete",
+        machine_id,
+        "--confirm-machine-id",
+        machine_id,
+        "--delete-volume",
     )
     assert code == 0
     assert deleted["desired_state"] == "deleted"
 
-    code, error = run(capsys, config_path, "create", "slot-a", "--instance-type", "m6i.large")
-    assert code == 2
-    observe(config_path, created["machine_id"], ObservedState.DELETED)
-    code, reused = run(capsys, config_path, "create", "slot-a", "--instance-type", "m6i.large")
+    code, replacement = run(capsys, config_path, "create", "--instance-type", "m6i.large")
     assert code == 0
-    assert reused["generation"] == 2
-    assert reused["machine_id"] != created["machine_id"]
-    assert run(capsys, config_path, "status", "slot-a")[1] == reused
+    assert replacement["machine_id"] != machine_id
+    assert run(capsys, config_path, "status", machine_id)[1]["desired_state"] == "deleted"
+    assert run(capsys, config_path, "status", replacement["machine_id"])[1] == replacement
     code, listed = run(capsys, config_path, "list")
-    assert [(item["slot_id"], item["generation"]) for item in listed] == [
-        ("slot-a", 1),
-        ("slot-a", 2),
-    ]
+    assert sorted(item["machine_id"] for item in listed) == sorted(
+        [machine_id, replacement["machine_id"]]
+    )
 
 
 @pytest.mark.parametrize(
     "argv",
     [
-        ("create", "slot-a", "--instance-type", "m6i.xlarge"),
-        ("create", "slot-z", "--instance-type", "m6i.large"),
-        ("status", "slot-a"),
+        ("create", "--instance-type", "m6i.xlarge"),
+        ("status", "3f1c2b4a-0000-4000-8000-000000000001"),
+        ("status", "not-a-uuid"),
     ],
 )
 def test_invalid_requests_exit_2(capsys, config_path, argv):
@@ -115,25 +131,25 @@ def stopped_with_instance(config_path: Path, machine_id: str) -> None:
     store = MachineStore(config.state_db_path, config.fingerprint())
     try:
         store.record_volume(machine_id, "vol-0123456789abcdef0", config.availability_zone)
-        store.record_instance(machine_id, "i-0123456789abcdef0")
+        store.record_instance(machine_id, "i-0123456789abcdef0", "bundle-1")
         store.set_desired(machine_id, DesiredState.STOPPED, None)
     finally:
         store.close()
 
 
-def upgrade(capsys, config_path: Path):
+def upgrade(capsys, config_path: Path, machine_id: str):
     return run(
         capsys,
         config_path,
         "upgrade",
-        "slot-a",
+        machine_id,
         "--confirm-instance-id",
         "i-0123456789abcdef0",
     )
 
 
 def test_upgrade_moves_the_machine_onto_the_new_image(capsys, config_path):
-    _, created = run(capsys, config_path, "create", "slot-a", "--instance-type", "m6i.large")
+    _, created = run(capsys, config_path, "create", "--instance-type", "m6i.large")
     stopped_with_instance(config_path, created["machine_id"])
     raw = json.loads(config_path.read_text())
     raw["image_id"] = "ami-11111111111111111"
@@ -144,8 +160,10 @@ def test_upgrade_moves_the_machine_onto_the_new_image(capsys, config_path):
     ):
         cloud.return_value.get_instance.return_value = {"State": {"Name": "terminated"}}
         cloud.return_value.get_volume.return_value = {"State": "available", "Attachments": []}
-        code, _ = upgrade(capsys, config_path)
+        code, upgraded = upgrade(capsys, config_path, created["machine_id"])
     assert code == 0
+    assert upgraded["instance_id"] is None
+    assert upgraded["instance_seq"] == created["instance_seq"] + 1
     config = ControllerConfig.load(config_path)
     store = MachineStore(config.state_db_path, config.fingerprint())
     try:
@@ -153,11 +171,9 @@ def test_upgrade_moves_the_machine_onto_the_new_image(capsys, config_path):
     finally:
         store.close()
     assert machine.image_id == "ami-11111111111111111"
-    user_data = Ec2Cloud(Mock(), config)._user_data(machine)
-    encoded = next(
-        line.split("content: ", 1)[1] for line in user_data.splitlines() if "content: " in line
-    )
-    assert json.loads(base64.b64decode(encoded))["previousInstanceId"] == "i-0123456789abcdef0"
+    assert machine.previous_instance_id == "i-0123456789abcdef0"
+    assert machine.data_volume_id == "vol-0123456789abcdef0"
+    assert machine.instance_bundle_token is None
 
 
 class OneIteration:

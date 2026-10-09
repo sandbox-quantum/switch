@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import base64
 import hashlib
-import json
 from typing import Any
 
 from botocore.exceptions import ClientError
@@ -53,9 +51,7 @@ class Ec2Cloud:
     def discover_volume(self, machine: Machine) -> dict[str, Any] | None:
         volumes = self._describe_volumes(Filters=self._resource_filters(machine, "data"))
         if len(volumes) > 1:
-            raise CloudResourceError(
-                "multiple controller-owned data volumes exist for machine slot"
-            )
+            raise CloudResourceError("multiple controller-owned data volumes exist for the machine")
         if not volumes:
             return None
         self._validate_volume(volumes[0], machine)
@@ -93,7 +89,7 @@ class Ec2Cloud:
         instances = self._describe_instances(Filters=self._resource_filters(machine, "worker"))
         active = [instance for instance in instances if instance["State"]["Name"] != "terminated"]
         if len(active) > 1:
-            raise CloudResourceError("multiple controller-owned instances exist for machine slot")
+            raise CloudResourceError("multiple controller-owned instances exist for the machine")
         if not active:
             return None
         self._validate_instance(active[0], machine)
@@ -147,13 +143,15 @@ class Ec2Cloud:
     def run_instance(self, machine: Machine) -> str:
         if machine.data_volume_id is None:
             raise CloudResourceError("cannot launch without a recorded data volume")
+        if machine.bundle is None:
+            raise CloudResourceError("cannot launch without a prepared bundle")
         response = self._ec2.run_instances(
             ImageId=machine.image_id,
             InstanceType=machine.instance_type,
             MinCount=1,
             MaxCount=1,
             ClientToken=self._launch_token(machine),
-            IamInstanceProfile={"Arn": machine.instance_profile_arn},
+            IamInstanceProfile={"Arn": self._config.instance_profile_arn},
             Placement={"AvailabilityZone": self._config.availability_zone},
             NetworkInterfaces=[
                 {
@@ -189,7 +187,7 @@ class Ec2Cloud:
                 {"ResourceType": "volume", "Tags": self._tags(machine, "root")},
                 {"ResourceType": "network-interface", "Tags": self._tags(machine, "network")},
             ],
-            UserData=self._user_data(machine),
+            UserData=machine.bundle,
         )
         instances = response.get("Instances", [])
         if len(instances) != 1:
@@ -215,6 +213,14 @@ class Ec2Cloud:
                     "Ebs": {"DeleteOnTermination": False, "VolumeId": machine.data_volume_id},
                 }
             ],
+        )
+
+    def replace_user_data(self, machine: Machine) -> None:
+        """Give the stopped instance the machine's current bundle to boot from."""
+        if machine.instance_id is None or machine.bundle is None:
+            raise CloudResourceError("cannot set user data without a recorded instance and bundle")
+        self._ec2.modify_instance_attribute(
+            InstanceId=machine.instance_id, UserData={"Value": machine.bundle.encode()}
         )
 
     def start_instance(self, machine: Machine) -> None:
@@ -269,7 +275,7 @@ class Ec2Cloud:
         if instance.get("State", {}).get("Name") in {"shutting-down", "terminated"}:
             return
         profile = instance.get("IamInstanceProfile") or {}
-        if profile.get("Arn") != machine.instance_profile_arn:
+        if profile.get("Arn") != self._config.instance_profile_arn:
             raise CloudResourceError("instance profile differs from immutable spec")
         if instance.get("SubnetId") != self._config.subnet_id:
             raise CloudResourceError("instance is in the wrong subnet")
@@ -313,8 +319,6 @@ class Ec2Cloud:
     def _tags(self, machine: Machine, purpose: str) -> list[dict[str, str]]:
         return [
             {"Key": "switch:installation-id", "Value": self._config.installation_id},
-            {"Key": "switch:slot-id", "Value": machine.slot_id},
-            {"Key": "switch:generation", "Value": str(machine.generation)},
             {"Key": "switch:machine-id", "Value": machine.machine_id},
             {"Key": "switch:purpose", "Value": purpose},
             {"Key": "switch:managed-by", "Value": MANAGED_BY},
@@ -323,8 +327,6 @@ class Ec2Cloud:
     def _resource_filters(self, machine: Machine, purpose: str) -> list[dict[str, Any]]:
         return [
             {"Name": "tag:switch:installation-id", "Values": [self._config.installation_id]},
-            {"Name": "tag:switch:slot-id", "Values": [machine.slot_id]},
-            {"Name": "tag:switch:generation", "Values": [str(machine.generation)]},
             {"Name": "tag:switch:machine-id", "Values": [machine.machine_id]},
             {"Name": "tag:switch:purpose", "Values": [purpose]},
             {"Name": "tag:switch:managed-by", "Values": [MANAGED_BY]},
@@ -334,40 +336,8 @@ class Ec2Cloud:
         return self._token(machine, f"instance-{machine.instance_seq}")
 
     def _token(self, machine: Machine, resource: str) -> str:
-        # The machine id keeps tokens apart when a new database restarts the
-        # generations of an installation's slots, which EC2 remembers.
-        material = (
-            f"{self._config.installation_id}:{machine.slot_id}:{machine.generation}:"
-            f"{machine.machine_id}:{resource}"
-        )
+        material = f"{self._config.installation_id}:{machine.machine_id}:{resource}"
         return f"switch-m-{hashlib.sha256(material.encode()).hexdigest()[:48]}"
-
-    def _user_data(self, machine: Machine) -> str:
-        metadata: dict[str, Any] = {
-            "version": 2,
-            "installationId": self._config.installation_id,
-            "slotId": machine.slot_id,
-            "generation": machine.generation,
-            "assignmentSecretId": machine.assignment_secret_arn,
-            "dataVolumeId": machine.data_volume_id,
-            "dataDevice": DATA_DEVICE,
-            "mountPath": "/data",
-        }
-        if machine.previous_instance_id:
-            metadata["previousInstanceId"] = machine.previous_instance_id
-        encoded = base64.b64encode(json.dumps(metadata, separators=(",", ":")).encode()).decode()
-        return "\n".join(
-            [
-                "#cloud-config",
-                "write_files:",
-                "  - path: /etc/switch-hosted/assignment.json",
-                "    owner: root:root",
-                "    permissions: '0600'",
-                "    encoding: b64",
-                f"    content: {encoded}",
-                "",
-            ]
-        )
 
     def _describe_instances(self, **kwargs: Any) -> list[dict[str, Any]]:
         instances: list[dict[str, Any]] = []

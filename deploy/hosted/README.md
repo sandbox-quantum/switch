@@ -3,8 +3,7 @@
 A Switch cloud machine is an EC2 VM, one per user, that runs the standard
 `switch-agent-controller`: the program a laptop or an SSH host runs agents
 with. The user's managed agents placed on it run there, each as a Linux user
-of its own. Each machine has a retained, encrypted EBS data disk and uses one
-slot of the operator's pool.
+of its own. Each machine has a retained, encrypted EBS data disk.
 
 This directory holds what runs the machines:
 
@@ -16,7 +15,8 @@ This directory holds what runs the machines:
 - `machine/`: the machine image and its boot. See [its README](machine/README.md)
   for how a machine enrolls its controller and starts.
 - `terraform/`: a separate VPC, a private subnet with NAT egress and no inbound
-  access, the machines' roles, and an IRSA role for the hosted controller.
+  access, the machines' one instance role, which holds no permissions, and an
+  IRSA role for the hosted controller.
 - `chart/`: the hosted controller's chart: a digest-pinned image, one replica
   with a Recreate rollout, a private retained volume for its database, and no
   exposed port.
@@ -30,10 +30,11 @@ Picking "Switch cloud" in Switch Console claims the user's machine
 (`POST /gateway/hosted-machines/ensure`) and creates a managed agent on its
 controller once the machine is ready. Self sign-up claims one too, so it warms
 while the user signs in. The hosted controller polls Core for the machines that
-should exist, creates the data volume, writes the slot's assignment secret
-with a bundle that carries a one-time enrollment code, and launches the VM. The
-machine enrolls its controller with that code, and its status reports are its
-heartbeat from then on.
+should exist, creates the data volume, and launches the VM with a bundle that
+carries a one-time enrollment code as its user data. The machine enrolls its
+controller with that code, and its status reports are its heartbeat from then
+on. When the machine must enroll again, the hosted controller replaces the user
+data of the stopped instance before starting it.
 
 Provider logins are given to the machine on demand from Switch Console, sealed
 to its controller's own key: Core relays only ciphertext.
@@ -45,11 +46,11 @@ Core needs agent management (`AGENT_MANAGEMENT_ENABLED`, with
 above 0 without it.
 
 Mount a private JSON file through `HOSTED_CONTROLLER_CONFIG_PATH` with
-`tenant_id`, a dedicated `token` of at least 32 characters, `machine_slots` and
-the HTTPS `agent_api_endpoint` the machines enroll against. `machine_slots` is a
-list of 1–100 unique slot IDs, the keys of the Terraform `machine_slots`
-variable. Core refuses unknown keys. Set `HOSTED_LAUNCH_CAPACITY` no higher than
-the number of slots; 0 disables cloud machines. The backend chart exposes
+`tenant_id`, a dedicated `token` of at least 32 characters and the HTTPS
+`agent_api_endpoint` the machines enroll against. Core refuses unknown keys.
+`HOSTED_LAUNCH_CAPACITY` is how many machines may exist at once, 0–100; 0
+disables cloud machines. Keep it no higher than the hosted controller's
+`max_machines`. The backend chart exposes
 `switchCore.hostedControllerSecret` (file `controller.json`),
 `switchCore.hostedLaunchCapacity`, `switchCore.hostedIdleStopMinutes` and
 `switchCore.hostedDiskRetentionDays`.
@@ -71,24 +72,23 @@ this public repository.
 2. Bake the machine image as [machine/README.md](machine/README.md) describes.
    It must have the configured root device name and exactly one EBS root
    mapping. Disks are created with `alias/aws/ebs`.
-3. Create one assignment secret per machine slot, outside Terraform, with no
-   value. The hosted controller writes the bundle itself; it never holds a
-   long-lived credential.
-4. Configure Terraform in the private deployment overlay: the image, AZ,
-   CIDRs, allowed instance types, the controller's namespace and service account,
-   and each slot's secret in `machine_slots`. Review the plan before applying.
-   Each machine can read only its own slot's secret.
-5. Build the hosted controller image and record its digest. Put Terraform's
-   subnet, security group, AZ and `machine_slots` outputs into the controller
-   configuration, and deploy the chart with its IRSA role and a CSI-backed
-   StorageClass.
+3. Configure Terraform in the private deployment overlay: the image, AZ,
+   CIDRs, allowed instance types, and the controller's namespace and service
+   account. Review the plan before applying.
+4. Build the hosted controller image and record its digest. Put Terraform's
+   subnet, security group, AZ and `machine_instance_profile_arn` outputs into
+   the controller configuration, and deploy the chart with its IRSA role and a
+   CSI-backed StorageClass.
 
 The network has its own NAT gateway and public IPv4 address, which cost money
 while machines are stopped too. Machines need the Switch API, the model
 providers' APIs and the package registries. There is no peering, no SSH
 ingress and no Docker socket. VPC NACLs block RFC1918 egress but not IMDS or the
 AWS resolver: agents cannot reach instance metadata (their units deny it), but
-grant the instance role no infrastructure authority anyway.
+grant the instance role no authority anyway. The boot reads the machine's
+bundle from instance metadata as root. Anyone in the AWS account who can read
+an instance's user data can read its enrollment code, which is spent at the
+first boot and expires after 30 minutes.
 
 ## Controller configuration
 
@@ -96,11 +96,12 @@ The chart takes a non-secret `controllerConfig` map:
 
 - `installation_id`, `region`, `availability_zone`, `subnet_id`, `security_group_ids`
 - `image_id`, `root_device_name`, `allowed_instance_types`
-- `max_machines`: 1–100, no more than the number of slots. It caps both the
-  machines not deleted and the running instances.
+- `max_machines`: 1–100. It caps both the machines not deleted and the
+  running instances.
 - `root_volume_gib`, `data_volume_gib`, `poll_interval_seconds`
-- `machine_slots`: slot ID to `{instance_profile_arn, assignment_secret_arn}`,
-  from the Terraform output.
+- `instance_profile_arn`: the machines' instance profile, the Terraform
+  `machine_instance_profile_arn` output. An instance that runs with another
+  profile needs attention, so do not change it while machines exist.
 
 The chart fixes `state_db_path` and `lock_path` on its retained volume; a
 standalone installation must give absolute paths for both. Back up the database.
@@ -108,9 +109,8 @@ Never run two installations with the same installation ID, scale the
 Deployment, or bypass the lock. The probes check a local progress timestamp, not
 cloud or provider readiness.
 
-The hosted controller may provision every configured slot. Audit the secrets'
-resource policies as well as the identity policies: a broad resource policy can
-undo the separation between machines.
+The hosted controller may change only the data retention and the user data of
+the instances it tagged as its own.
 
 ## Operator commands
 
@@ -118,27 +118,26 @@ Run them in the controller pod, with the same configuration and database. They
 queue desired state for the running reconciler.
 
 ```sh
-switch-hosted-controller --config /etc/switch-hosted/controller.json create example-slot --instance-type c7i.2xlarge
-switch-hosted-controller --config /etc/switch-hosted/controller.json status example-slot
-switch-hosted-controller --config /etc/switch-hosted/controller.json stop example-slot
-switch-hosted-controller --config /etc/switch-hosted/controller.json start example-slot
-switch-hosted-controller --config /etc/switch-hosted/controller.json delete example-slot --confirm-slot-id example-slot --retain-volume
-switch-hosted-controller --config /etc/switch-hosted/controller.json upgrade example-slot --confirm-instance-id i-0123456789abcdef0
 switch-hosted-controller --config /etc/switch-hosted/controller.json list
+switch-hosted-controller --config /etc/switch-hosted/controller.json status <machine-id>
+switch-hosted-controller --config /etc/switch-hosted/controller.json stop <machine-id>
+switch-hosted-controller --config /etc/switch-hosted/controller.json start <machine-id>
+switch-hosted-controller --config /etc/switch-hosted/controller.json delete <machine-id> --confirm-machine-id <machine-id> --retain-volume
+switch-hosted-controller --config /etc/switch-hosted/controller.json upgrade <machine-id> --confirm-instance-id i-0123456789abcdef0
 ```
 
 `upgrade` moves a stopped machine whose instance is terminated onto the
 configured image, keeping its disk. A queued command is not confirmation that
-AWS has done it. Deletion needs `--confirm-slot-id` and exactly one of
+AWS has done it. Deletion needs `--confirm-machine-id` and exactly one of
 `--retain-volume` or `--delete-volume`. Deleting a machine does not remove
-secrets, snapshots, roles, the NAT gateway or the controller's database.
+snapshots, roles, the NAT gateway or the controller's database.
 
 ## Machine lifecycle
 
 When the last managed agent leaves a user's machine, its instance is
 terminated and its disk kept for `HOSTED_DISK_RETENTION_DAYS`. A new agent in
 that time starts the machine again on the kept disk; after it, the disk is
-deleted and the slot returns to the pool with a new generation.
+deleted and the machine with it.
 
 An idle machine is put to sleep after `HOSTED_IDLE_STOP_MINUTES`: its
 controller reports no running session and nothing kept it active. A message
@@ -147,12 +146,29 @@ owner stopped stays stopped.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `HOSTED_LAUNCH_CAPACITY` | 0 | Machines at once. No more than the slots. 0 disables. |
+| `HOSTED_LAUNCH_CAPACITY` | 0 | Machines at once, at most 100. 0 disables. |
 | `HOSTED_IDLE_STOP_MINUTES` | 30 | Idle minutes before a machine sleeps. 0 disables. At most 1440. |
 | `HOSTED_DISK_RETENTION_DAYS` | 7 | Days a disk is kept after its last agent leaves. 1–90. |
 
 A machine that does not start, or whose controller does not report, within 10
 minutes goes to error. Use Retry in Switch Console.
+
+## Moving off machine slots
+
+Machines used to borrow one of a fixed pool of slots, each an IAM role and an
+assignment secret the machine read its bundle from at boot. A machine placed on
+a slot cannot move off it: its image reads the slot's secret, which is gone.
+Before upgrading an installation that has cloud machines:
+
+1. Remove every cloud agent in Switch Console and wait until Core shows no
+   cloud machine, or remove the machines in Core directly.
+2. Terminate their instances and delete their data disks.
+3. Delete the hosted controller's state database, or let it start: it forgets
+   a slot-era database whose machines are all deleted, and refuses one that
+   still has a live machine.
+4. Apply Terraform, which removes the slots' roles, and delete the slots'
+   assignment secrets and their KMS key yourself.
+5. Bake an image from this `machine/` and set it as `image_id`.
 
 ## GitHub connections
 

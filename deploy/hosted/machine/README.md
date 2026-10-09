@@ -12,22 +12,27 @@ machine.
    machine. Until a controller enrolls for the machine, Core answers with a
    one-time **enrollment code**. The code is bound to the machine and is valid
    for 30 minutes. A retry of the same revision gets the same code.
-3. The hosted controller writes the bundle to the slot's assignment secret,
-   then launches the instance from this image:
+3. The hosted controller launches the instance from this image with the bundle
+   as its user data:
 
    ```json
-   {"version": 3, "machineId": "…",
-    "assignment": {"installationId": "…", "slotId": "…", "generation": 1, "dataVolumeId": "vol-…"},
+   {"version": 4, "installationId": "…", "machineId": "…", "dataVolumeId": "vol-…",
     "apiEndpoint": "https://…",
     "controller": {"id": null, "enrollmentCode": "swce_…"}}
    ```
 
    Once the machine has a controller, `controller.id` names it and
    `enrollmentCode` is null. The bundle never holds a long-lived credential.
+   The hosted controller gives a stopped instance the bundle of the machine's
+   current revision before it starts it.
 4. `switch-machine-boot.service` runs as root at every boot
    (`switch_machine_boot.py`):
-   - It reads the bundle and waits for the data volume, which is attached
-     after the instance starts.
+   - It reads the bundle from the instance's user data (IMDSv2) on every boot,
+     so a bundle replaced while the instance was stopped is the one used. An
+     instance with no user data was not launched by the hosted controller: the
+     boot stops there and is not retried.
+   - It waits for the data volume, which is attached after the instance
+     starts.
    - It formats the volume only if it is blank, then mounts it on `/data`
      (`nodev,nosuid`).
    - It checks the volume's marker (`/data/.switch-machine.json`), so the disk
@@ -67,7 +72,7 @@ directory. Then, as root:
 
 `install.sh` does the following:
 
-- Checks the commands the boot needs, and that polkit and boto3 are present.
+- Checks the commands the boot needs, and that polkit is present.
 - Installs the controller at `/opt/switch/controller`.
 - Creates the controller's user `switch-controller` (uid 2000), the agents'
   group `switch-agents-2000` (gid 2001) and one user per agent,

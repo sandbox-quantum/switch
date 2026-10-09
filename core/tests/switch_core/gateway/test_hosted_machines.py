@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from switch_core.db.models import HostedMachine, require_tenant_id
+from switch_core.db.stores.hosted_machine_store import MACHINES_FULL
 from switch_core.gateway.auth import get_current_user
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     ControllerApp,
@@ -287,7 +288,6 @@ async def test_ensure_returns_the_owner_s_machine_and_claims_one_when_missing(
             HostedMachine, (require_tenant_id(), body["machine_id"])
         )
         assert machine is not None
-        assert machine.slot_id == "slot-a"
 
 
 async def test_ensure_wakes_a_sleeping_machine_but_not_one_its_owner_stopped(
@@ -329,7 +329,7 @@ async def test_ensure_returns_a_machine_in_error_as_it_is(controller_app):  # no
     assert (response.json()["state"], response.json()["revision"]) == ("error", 1)
 
 
-async def test_ensure_refuses_when_no_slot_is_free(controller_app):  # noqa: F811
+async def test_ensure_refuses_when_every_machine_is_in_use(controller_app):  # noqa: F811
     app = controller_app
     app.config.hosted_launch_capacity = 1
     fastapi_app = app.client._transport.app
@@ -338,7 +338,7 @@ async def test_ensure_refuses_when_no_slot_is_free(controller_app):  # noqa: F81
     )
     refused = await _ensure(app)
     assert refused.status_code == 409
-    assert refused.json() == {"detail": "no machine slot available"}
+    assert refused.json() == {"detail": MACHINES_FULL}
 
 
 @pytest.mark.parametrize("disabled", ["capacity", "settings", "tenant"])

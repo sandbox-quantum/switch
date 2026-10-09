@@ -49,8 +49,6 @@ HEADERS = {"Authorization": "Bearer " + TOKEN}
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "hosted_machines"
 MACHINE_ITEM_KEYS = {
     "machine_id",
-    "slot_id",
-    "generation",
     "state",
     "desired_state",
     "revision",
@@ -104,18 +102,15 @@ async def controller_app(session_factory):
         machine = await seed_machine(
             session,
             owner_id=owner.id,
-            slot_id="slot-a",
             state="queued",
             desired_state="running",
             stop_reason=None,
             revision=1,
-            generation=1,
         )
         await session.commit()
     settings = HostedControllerSettings(
         tenant_id=require_tenant_id(),
         token=TOKEN,
-        machine_slots=["slot-a", "slot-b"],
         agent_api_endpoint="https://switch.example.com/api/agent",
     )
     config = SimpleNamespace(
@@ -275,12 +270,10 @@ async def test_machines_lists_every_live_machine_with_the_contract_keys(
         gone = await seed_machine(
             session,
             owner_id=app.owner_id,
-            slot_id="slot-b",
             state="deleted",
             desired_state="deleted",
             stop_reason=None,
             revision=3,
-            generation=1,
         )
         await session.commit()
     items = await list_machines(app.client)
@@ -291,8 +284,6 @@ async def test_machines_lists_every_live_machine_with_the_contract_keys(
     assert set(contract) == MACHINE_ITEM_KEYS
     assert items[0] == {
         "machine_id": app.machine_id,
-        "slot_id": "slot-a",
-        "generation": 1,
         "state": "queued",
         "desired_state": "running",
         "revision": 1,
@@ -444,8 +435,6 @@ async def test_prepare_hands_over_one_enrollment_code_per_revision(controller_ap
     assert set(body) == set(contract)
     assert set(body["controller"]) == set(contract["controller"])
     assert body["machine_id"] == app.machine_id
-    assert body["slot_id"] == "slot-a"
-    assert body["generation"] == 1
     assert body["revision"] == body["bundle_revision"] == 1
     assert body["api_endpoint"] == app.settings.agent_api_endpoint
     assert body["controller"] == {"id": None, "enrollment_code": "swce_synthetic-1"}
@@ -948,12 +937,10 @@ async def _empty_machine(app: ControllerApp, **values) -> tuple[str, str]:
         machine = await seed_machine(
             session,
             owner_id=owner.id,
-            slot_id="slot-b",
             state="ready",
             desired_state="running",
             stop_reason=None,
             revision=1,
-            generation=1,
         )
         machine.active_at = datetime.now(UTC) - timedelta(minutes=31)
         machine.heartbeat = {"disk": None, "memory": None, "sessions_running": 0}
@@ -1064,7 +1051,6 @@ async def _claim(factory, owner_id: str) -> HostedMachine:
         machine = await HostedMachineStore().claim(
             session,
             owner_id=owner_id,
-            slots=["slot-a", "slot-b"],
             capacity=2,
             now=datetime.now(UTC),
         )
@@ -1088,4 +1074,4 @@ async def test_released_machine_is_revived_or_replaced_by_a_claim(controller_app
     )
     replaced = await _claim(app.factory, owner_id)
     assert replaced.id != machine_id
-    assert (replaced.slot_id, replaced.desired_state) == ("slot-b", "running")
+    assert replaced.desired_state == "running"

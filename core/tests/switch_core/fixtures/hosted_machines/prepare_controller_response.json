@@ -1,7 +1,5 @@
 {
   "machine_id": "3f1c2b4a-0000-4000-8000-000000000001",
-  "slot_id": "slot-a",
-  "generation": 1,
   "revision": 1,
   "bundle_revision": 1,
   "api_endpoint": "https://switch.example.test/agent-api",
