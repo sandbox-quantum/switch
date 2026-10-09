@@ -310,6 +310,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
       onSuccess={props.onSuccess}
       onClose={props.onClose}
       initialUrl={props.initialUrl ?? null}
+      dashboardHint={null}
       initialName={props.initialName ?? null}
       serverId={props.serverId ?? null}
       isEdit={isEdit}
@@ -1074,6 +1075,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
   onClose,
   onBack,
   initialUrl,
+  dashboardHint,
   initialName,
   serverId,
   isEdit,
@@ -1082,6 +1084,10 @@ export const ExternalServerStep = observer(function ExternalServerStep({
   onConnected,
 }: {
   initialUrl: string | null;
+  /** Where the server's dashboard was reached, when the form was opened from a
+   * link to it (an invite). Passed on so an older server, whose dashboard is
+   * not on its own address, keeps somewhere to open dashboard pages. */
+  dashboardHint: string | null;
   initialName: string | null;
   serverId: string | null;
   isEdit: boolean;
@@ -1136,7 +1142,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
         return;
       }
     } else {
-      const saved = await switchServersStore.addServer(submittedName, trimmedUrl);
+      const saved = await switchServersStore.addServer(submittedName, trimmedUrl, dashboardHint);
       if (!saved) {
         setError(switchServersStore.errorText ?? 'Could not add the server.');
         setSubmitting(false);
@@ -1146,7 +1152,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
       return;
     }
     onSuccess();
-  }, [isValid, isEdit, savedId, submittedName, trimmedUrl, onSuccess, onConnected]);
+  }, [isValid, isEdit, savedId, submittedName, trimmedUrl, dashboardHint, onSuccess, onConnected]);
 
   // First run is asked before the saved row, because a page that goes on to the
   // sign-in must not offer "Save changes" — the user stepped back to fix an

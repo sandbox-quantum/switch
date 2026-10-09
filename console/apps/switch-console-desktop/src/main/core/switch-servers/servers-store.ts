@@ -18,6 +18,7 @@ import { db } from '@main/db/client';
 import { type SwitchServerRow, switchServers } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 import {
+  normaliseServerUrl,
   urlOrigin,
   type AddServerParams,
   type ManagedServerParams,
@@ -56,10 +57,8 @@ function mapRow(row: SwitchServerRow): SwitchServer {
   };
 }
 
-/** Strip a trailing slash so `${url}/gateway` never doubles up. */
-function normaliseUrl(url: string): string {
-  return url.trim().replace(/\/+$/, '');
-}
+/** The spelling an address is stored and compared in; see {@link normaliseServerUrl}. */
+const normaliseUrl = normaliseServerUrl;
 
 /**
  * Find the registered server an agent endpoint belongs to, by matching the
@@ -260,9 +259,14 @@ export async function findServerByWebAddress(address: string): Promise<SwitchSer
   );
 }
 
+/**
+ * Compared in the normalised spelling on both sides rather than by the column:
+ * a row saved before addresses were normalised, or carried over by migration
+ * 0052, may be stored in another spelling of the same address.
+ */
 async function getServerByUrl(url: string): Promise<SwitchServer | null> {
-  const [row] = await db.select().from(switchServers).where(eq(switchServers.url, url)).limit(1);
-  return row ? mapRow(row) : null;
+  const target = normaliseUrl(url);
+  return (await listServers()).find((server) => normaliseUrl(server.url) === target) ?? null;
 }
 
 /** A server is already registered at the address being saved. */
@@ -273,22 +277,35 @@ export class DuplicateServerUrlError extends Error {
   }
 }
 
-/** Refuse `url` when a server other than `exceptId` already has it. */
-async function assertUrlFree(url: string, exceptId: string | null): Promise<void> {
-  const holder = await getServerByUrl(url);
-  if (holder && holder.id !== exceptId) throw new DuplicateServerUrlError(url, holder);
+type StoreTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Refuse `url` when a server other than `exceptId` already has it. Read inside
+ * the transaction that writes the row: with no unique index to fall back on,
+ * that is what keeps two saves of one address from both passing the check.
+ */
+function assertUrlFree(tx: StoreTransaction, url: string, exceptId: string | null): void {
+  const holder = tx
+    .select()
+    .from(switchServers)
+    .all()
+    .map(mapRow)
+    .find((server) => normaliseUrl(server.url) === url && server.id !== exceptId);
+  if (holder) throw new DuplicateServerUrlError(url, holder);
 }
 
 export async function addServer(params: AddServerParams): Promise<SwitchServer> {
   const url = normaliseUrl(params.url);
-  await assertUrlFree(url, null);
+  const dashboardUrl = params.dashboardUrl === null ? null : normaliseUrl(params.dashboardUrl);
   const server = db.transaction((tx) => {
+    assertUrlFree(tx, url, null);
     const [row] = tx
       .insert(switchServers)
       .values({
         id: randomUUID(),
         name: params.name.trim(),
         url,
+        dashboardUrl,
         updatedAt: sql`CURRENT_TIMESTAMP`,
       })
       .returning()
@@ -312,21 +329,23 @@ export async function addServer(params: AddServerParams): Promise<SwitchServer> 
  */
 export async function updateServer(params: UpdateServerParams): Promise<SwitchServer> {
   const url = normaliseUrl(params.url);
-  await assertUrlFree(url, params.id);
-  const previous = await getServer(params.id);
-  const [row] = await db
-    .update(switchServers)
-    .set({
-      name: params.name.trim(),
-      url,
-      ...(previous && previous.url !== url ? { dashboardUrl: null } : {}),
-      updatedAt: sql`CURRENT_TIMESTAMP`,
-    })
-    .where(eq(switchServers.id, params.id))
-    .returning();
-  if (!row) {
-    throw new Error(`No Switch server with id ${params.id}`);
-  }
+  const row = db.transaction((tx) => {
+    const [previous] = tx.select().from(switchServers).where(eq(switchServers.id, params.id)).all();
+    if (!previous) throw new Error(`No Switch server with id ${params.id}`);
+    assertUrlFree(tx, url, params.id);
+    const [updated] = tx
+      .update(switchServers)
+      .set({
+        name: params.name.trim(),
+        url,
+        ...(normaliseUrl(previous.url) !== url ? { dashboardUrl: null } : {}),
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(switchServers.id, params.id))
+      .returning()
+      .all();
+    return updated!;
+  });
   await renameServerWorkspaces(params.id, params.name.trim());
   return mapRow(row);
 }

@@ -420,6 +420,23 @@ async function portsReachableHere(
 }
 
 /**
+ * The first of a managed stack's addresses that never answers, or null once all
+ * have. switch-core is asked on its own port, the one everything but dashboard
+ * pages uses, and the dashboard container on its: the stack still runs one, and
+ * the server is registered to open its pages there.
+ */
+async function unansweredAddress(
+  ports: LocalServerPorts,
+  signal: AbortSignal
+): Promise<string | null> {
+  const { url, dashboardUrl } = managedServerAddresses(ports);
+  for (const address of [url, dashboardUrl]) {
+    if (!(await waitForHealth(address, { signal }))) return address;
+  }
+  return null;
+}
+
+/**
  * Register the stack, activate it if asked, and sign in as its admin with the
  * password Switch Console generated. A failed sign-in is only logged: the
  * server view falls back to its sign-in panel.
@@ -610,8 +627,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   await host.establishNetworking(settings.ports);
 
   onMessage('Waiting for the server to become healthy…');
-  const healthy = await waitForHealth(apiUrlFor(settings.ports), { signal });
-  if (!healthy) {
+  if ((await unansweredAddress(settings.ports, signal)) !== null) {
     return { kind: 'error', message: 'The server did not become healthy in time.' };
   }
 
@@ -700,11 +716,11 @@ export async function connectStack(opts: ConnectStackOptions): Promise<ConnectSt
   await host.establishNetworking(settings.ports);
 
   onMessage('Waiting for the server to answer…');
-  const url = apiUrlFor(settings.ports);
-  if (!(await waitForHealth(url, { signal }))) {
+  const unanswered = await unansweredAddress(settings.ports, signal);
+  if (unanswered !== null) {
     return {
       kind: 'error',
-      message: `The Switch server on ${host.label} is running, but did not answer at ${url}.`,
+      message: `The Switch server on ${host.label} is running, but did not answer at ${unanswered}.`,
     };
   }
 

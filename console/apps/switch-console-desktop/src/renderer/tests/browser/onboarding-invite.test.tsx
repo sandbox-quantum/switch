@@ -14,6 +14,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const serverForInvite = vi.hoisted(() => vi.fn());
+const addServer = vi.hoisted(() => vi.fn());
 const acceptInvitation = vi.hoisted(() => vi.fn());
 const setActiveWorkspace = vi.hoisted(() => vi.fn());
 const resolveWorkspaces = vi.hoisted(() => vi.fn());
@@ -57,6 +58,7 @@ const SERVER = vi.hoisted(() => ({
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: {
     serverForInvite,
+    addServer,
     setActive: vi.fn(),
     errorText: null,
     serverById: (id: string | null) => (id === SERVER.id ? SERVER : null),
@@ -204,6 +206,25 @@ describe('joining from an invite link', () => {
     // One address to fill, the link's: a current server's dashboard is on its own address.
     expect(fields).toEqual(['https://switch.example.com']);
     expect(onboardingStore.invite?.token).toBe('tok-1');
+  });
+
+  it('tells the main process where the invite found the dashboard, when the address changes', async () => {
+    // An older server's invite names its dashboard's host; the person enters the
+    // server's own address, and the link's is passed on to be kept if it is the
+    // dashboard's.
+    serverForInvite.mockResolvedValue({ kind: 'unknown', origin: 'https://switch.example.com' });
+    addServer.mockResolvedValue(null);
+    const el = await renderFlow();
+
+    await pasteLink(el, LINK);
+    await type(el.querySelector<HTMLInputElement>('input')!, 'https://switch-api.example.com');
+    await click(el, 'Sign in to this server');
+
+    expect(addServer).toHaveBeenCalledWith(
+      'switch-api.example.com',
+      'https://switch-api.example.com',
+      'https://switch.example.com'
+    );
   });
 
   it('shows why the server refused, and goes on to the workspaces without it', async () => {

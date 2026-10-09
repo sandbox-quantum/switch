@@ -11,6 +11,8 @@ const addServer = vi.hoisted(() => vi.fn());
 const findServerByUrl = vi.hoisted(() => vi.fn());
 const findServerByWebAddress = vi.hoisted(() => vi.fn());
 const assertServerAddress = vi.hoisted(() => vi.fn());
+const assertServesDashboard = vi.hoisted(() => vi.fn());
+const separateDashboard = vi.hoisted(() => vi.fn());
 const passwordLogin = vi.hoisted(() => vi.fn());
 const signup = vi.hoisted(() => vi.fn());
 const reconcileServerWorkspaces = vi.hoisted(() => vi.fn());
@@ -75,7 +77,11 @@ vi.mock('./gateway-client', () => ({
   registerKnownAgent: vi.fn(),
   GatewayError: class GatewayError extends Error {},
 }));
-vi.mock('./server-address', () => ({ assertServerAddress }));
+vi.mock('./server-address', () => ({
+  assertServerAddress,
+  assertServesDashboard,
+  separateDashboard,
+}));
 vi.mock('./servers-store', () => ({
   getServer,
   addServer,
@@ -618,7 +624,7 @@ describe('editing a server', () => {
 });
 
 describe('adding a server by URL', () => {
-  const params = { name: 'S', url: 'http://switch' };
+  const params = { name: 'S', url: 'http://switch', dashboardUrl: null };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -659,6 +665,48 @@ describe('adding a server by URL', () => {
     });
   });
 
+  it('keeps the dashboard address an invite named, once it is checked to be one', async () => {
+    addServer.mockResolvedValue(server({ id: 'new' }));
+    separateDashboard.mockResolvedValueOnce('https://switch-gateway.example.com');
+
+    await switchServersController.addServer({
+      name: 'S',
+      url: 'https://switch-api.example.com',
+      dashboardUrl: 'https://switch-gateway.example.com',
+    });
+
+    expect(separateDashboard).toHaveBeenCalledExactlyOnceWith(
+      'https://switch-api.example.com',
+      'https://switch-gateway.example.com'
+    );
+    expect(addServer).toHaveBeenCalledWith({
+      name: 'S',
+      url: 'https://switch-api.example.com',
+      dashboardUrl: 'https://switch-gateway.example.com',
+    });
+  });
+
+  it('keeps no dashboard address the check turned down', async () => {
+    addServer.mockResolvedValue(server({ id: 'new' }));
+    separateDashboard.mockResolvedValueOnce(null);
+
+    await switchServersController.addServer({
+      name: 'S',
+      url: 'https://switch.example.com',
+      dashboardUrl: 'https://switch.example.com',
+    });
+
+    expect(addServer).toHaveBeenCalledWith(expect.objectContaining({ dashboardUrl: null }));
+  });
+
+  it('asks nothing about a dashboard when nothing named one', async () => {
+    addServer.mockResolvedValue(server({ id: 'new' }));
+
+    await switchServersController.addServer(params);
+
+    expect(separateDashboard).not.toHaveBeenCalled();
+  });
+
   it('reports the failure when the row itself cannot be written', async () => {
     addServer.mockRejectedValue(new Error('constraint failed'));
 
@@ -696,6 +744,7 @@ describe('connecting to Switch Cloud', () => {
     expect(addServer).toHaveBeenCalledWith({
       name: 'Switch Cloud',
       url: 'https://cloud.example.com',
+      dashboardUrl: null,
     });
     expect(assertServerAddress).not.toHaveBeenCalled();
     expect(trackEvent).toHaveBeenCalledWith('server_added', {
@@ -789,5 +838,36 @@ describe('finding the server an invite link is for', () => {
     await expect(
       switchServersController.serverForInvite('https://cloud.example.com')
     ).resolves.toEqual({ kind: 'unknown', origin: 'https://cloud.example.com' });
+  });
+});
+
+describe('opening a dashboard page', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    managedServerHostBlocked.mockReturnValue(null);
+  });
+
+  it('checks an external server serves its dashboard before opening the page', async () => {
+    const { appService } = await import('@main/core/app/service');
+    getServer.mockResolvedValue(server({ managed: false }));
+
+    await switchServersController.openGatewayPage({
+      serverId: 'srv',
+      url: 'http://localhost:3300/rooms/1',
+    });
+
+    expect(assertServesDashboard).toHaveBeenCalledOnce();
+    expect(appService.openExternal).toHaveBeenCalledWith('http://localhost:3300/rooms/1');
+  });
+
+  it('opens nothing, and says why, where no dashboard is served', async () => {
+    const { appService } = await import('@main/core/app/service');
+    getServer.mockResolvedValue(server({ managed: false }));
+    assertServesDashboard.mockRejectedValueOnce(new Error('S does not serve its dashboard'));
+
+    await expect(
+      switchServersController.openGatewayPage({ serverId: 'srv', url: 'http://localhost:8000/' })
+    ).rejects.toThrow('does not serve its dashboard');
+    expect(appService.openExternal).not.toHaveBeenCalled();
   });
 });

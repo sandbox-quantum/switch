@@ -355,6 +355,7 @@ function currentPage(
   return (
     <ExternalServerStep
       initialUrl={inviteOrigin}
+      dashboardHint={inviteOrigin}
       initialName={null}
       serverId={null}
       isEdit={false}

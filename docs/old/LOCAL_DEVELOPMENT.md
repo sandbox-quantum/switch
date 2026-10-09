@@ -206,7 +206,10 @@ just local-cloud-console # the Console, with Switch Cloud at http://localhost:80
   `http://localhost:8000`, so pasting one into the Console's "Paste your
   invite link" finds the local Cloud. That comes from `FRONTEND_BASE_URL`,
   which `just local-cloud` sets to `:8000`. The dashboard's own links follow
-  it, so in this mode they open switch-core's JSON rather than the dashboard.
+  it, so they open switch-core's JSON rather than the dashboard unless
+  switch-core is serving it: build it (`just gateway-build`) and run
+  `GATEWAY_UI_DIR=gateway/dist just local-cloud`, and they open the dashboard
+  on `:8000`, as they do on a deployed Cloud.
 - **Joining by domain** is offered only for the domain of the admin's own
   address: `switch.local` for the default admin. Give test accounts
   addresses there.

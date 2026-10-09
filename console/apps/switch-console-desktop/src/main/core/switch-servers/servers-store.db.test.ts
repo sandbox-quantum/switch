@@ -350,7 +350,11 @@ describe('servers-store: rename & delete', () => {
     it('leaves an externally-hosted server for its one caller to report', async () => {
       // The controller owns both outcomes of that add, so that one press of Add
       // cannot produce a success here and a failure there.
-      await addServer({ name: 'External server', url: 'https://switch.example.com' });
+      await addServer({
+        name: 'External server',
+        url: 'https://switch.example.com',
+        dashboardUrl: null,
+      });
 
       expect(telemetryMocks.trackEvent).not.toHaveBeenCalled();
     });
@@ -591,7 +595,11 @@ describe('servers-store: one address per server', () => {
 
   describe('addServer', () => {
     it('stores the address without a trailing slash and with no separate dashboard', async () => {
-      const added = await addServer({ name: '  Team  ', url: ' https://switch.example.com/ ' });
+      const added = await addServer({
+        name: '  Team  ',
+        url: ' https://switch.example.com/ ',
+        dashboardUrl: null,
+      });
 
       expect(added).toMatchObject({
         name: 'Team',
@@ -604,13 +612,62 @@ describe('servers-store: one address per server', () => {
     it('refuses an address another server already has, naming it', async () => {
       await insertServer({ id: 'a', name: 'Company server', url: 'https://switch.example.com' });
 
-      const adding = addServer({ name: 'Again', url: 'https://switch.example.com/' });
+      const adding = addServer({
+        name: 'Again',
+        url: 'https://switch.example.com/',
+        dashboardUrl: null,
+      });
 
       await expect(adding).rejects.toBeInstanceOf(DuplicateServerUrlError);
       await expect(adding).rejects.toThrow(
         'https://switch.example.com is already the address of “Company server”.'
       );
       expect(await fixture.db.select().from(switchServers)).toHaveLength(1);
+    });
+  });
+
+  describe('address spelling', () => {
+    it('stores one spelling: lowercased host, no default port, no trailing slash', async () => {
+      const added = await addServer({
+        name: 'Team',
+        url: 'HTTPS://Switch.Example.com:443/',
+        dashboardUrl: 'https://Switch-Gateway.example.com/',
+      });
+
+      expect(added).toMatchObject({
+        url: 'https://switch.example.com',
+        dashboardUrl: 'https://switch-gateway.example.com',
+      });
+    });
+
+    it('refuses another spelling of an address already saved, however it was stored', async () => {
+      // A row carried over by migration keeps whatever spelling it had.
+      await insertServer({ id: 'a', name: 'Company server', url: 'https://Switch.example.com' });
+
+      await expect(
+        addServer({ name: 'Again', url: 'https://switch.example.com:443', dashboardUrl: null })
+      ).rejects.toBeInstanceOf(DuplicateServerUrlError);
+      expect((await findServerByUrl('https://SWITCH.example.com/'))?.id).toBe('a');
+    });
+
+    it('keeps the dashboard address when an edit only respells the server’s address', async () => {
+      await insertServer({
+        id: 'a',
+        name: 'Split',
+        url: 'https://Switch-API.example.com',
+        dashboardUrl: 'https://switch-gateway.example.com',
+      });
+
+      const saved = await updateServer({
+        id: 'a',
+        name: 'Split',
+        url: 'https://switch-api.example.com:443',
+      });
+
+      expect(saved).toMatchObject({
+        url: 'https://switch-api.example.com',
+        dashboardUrl: 'https://switch-gateway.example.com',
+      });
     });
   });
 

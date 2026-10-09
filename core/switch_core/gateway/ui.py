@@ -15,8 +15,8 @@ The API wins any path both could answer. `/agents` is where they meet: the
 dashboard has pages at `/agents` and `/agents/{agent_id}`, while the API
 registers agents with a POST to `/agents` and also answers GET
 `/agents/feature-flags`. So before serving, the middleware asks the app's
-router whether an API route takes the request as a GET, and passes it on if
-one does. That holds for routes added after the middleware is built, such as
+router whether an API route takes the request as a GET or a HEAD, and passes
+it on if one does. That holds for routes added after the middleware is built, such as
 the management and messaging routes `main.run` installs.
 """
 
@@ -136,14 +136,18 @@ class GatewayUi:
 
 
 def _api_answers(router: Router, scope: Scope) -> bool:
-    """Whether a route on `router` would take this request as a GET.
+    """Whether a route on `router` would take this request as a GET or a HEAD.
 
-    Asked as a GET whatever the method, because FastAPI does not give a GET
-    route a HEAD of its own: a HEAD for an API path would otherwise match only
-    partially and be taken for a page.
+    Both, whatever the request's own method: FastAPI gives a GET route no HEAD
+    of its own, so a HEAD for an API path would otherwise match only partially
+    and be taken for a page, and a route declared for HEAD alone would be
+    missed by asking only for GET.
     """
-    probe = {**scope, "method": "GET"}
-    return any(route.matches(probe)[0] is Match.FULL for route in router.routes)
+    return any(
+        route.matches({**scope, "method": method})[0] is Match.FULL
+        for method in ("GET", "HEAD")
+        for route in router.routes
+    )
 
 
 class GatewayUiMiddleware:

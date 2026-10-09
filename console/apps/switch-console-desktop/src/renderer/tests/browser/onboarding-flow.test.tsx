@@ -333,7 +333,11 @@ describe('the first-run flow', () => {
 
     await addFromConnectPage(el);
 
-    expect(addServer).toHaveBeenCalledWith('switch.example.com', 'https://switch.example.com');
+    expect(addServer).toHaveBeenCalledWith(
+      'switch.example.com',
+      'https://switch.example.com',
+      null
+    );
   });
 
   it('keeps the flow on screen after the server is added, for the sign-in still to come', async () => {
@@ -495,6 +499,7 @@ describe('the server address form', () => {
           <DialogContent>
             <ExternalServerStep
               initialUrl="https://switch.example.com"
+              dashboardHint={null}
               initialName="Team"
               serverId="srv-1"
               isEdit

@@ -40,6 +40,21 @@ export function sameApiEndpoint(a: string, b: string): boolean {
   return a.trim().replace(/\/+$/, '') === b.trim().replace(/\/+$/, '');
 }
 
+/**
+ * One spelling per server address, so two that name the same server compare
+ * equal: scheme and host lowercased, a default port dropped, no trailing slash,
+ * a path kept. Input that does not parse is only trimmed.
+ */
+export function normaliseServerUrl(url: string): string {
+  const trimmed = url.trim();
+  try {
+    const parsed = new URL(trimmed);
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return trimmed.replace(/\/+$/, '');
+  }
+}
+
 /** Where a server's dashboard pages open: its own address, unless it still
  * keeps the dashboard elsewhere. */
 export function dashboardOrigin(server: Pick<SwitchServer, 'url' | 'dashboardUrl'>): string {
@@ -83,6 +98,10 @@ export type SwitchServer = {
 export type AddServerParams = {
   name: string;
   url: string;
+  /** Where this server's dashboard was reached, when that is known to be a
+   * different address: an invite link names the dashboard's origin. Kept only
+   * if it serves the dashboard and `url` does not; see {@link SwitchServer}. */
+  dashboardUrl: string | null;
 };
 
 /** What a managed stack registers itself with: its own address, and where its

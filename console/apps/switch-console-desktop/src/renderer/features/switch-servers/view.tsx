@@ -20,7 +20,6 @@ import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar'
 import { workspaceTitle } from '@renderer/features/workspaces/workspace-title';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { toast } from '@renderer/lib/hooks/use-toast';
-import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
@@ -39,6 +38,7 @@ import { localServerStore } from './local-server-store';
 import { LocalServerControls } from './LocalServerControls';
 import { managedTelemetryNotice } from './managed-telemetry-notice';
 import { MessagingAppsCard } from './MessagingAppsCard';
+import { openServerPage } from './open-server-page';
 import { remoteServerStore } from './remote-server-store';
 import { RemoteServerControls } from './RemoteServerControls';
 import { serverIcon } from './server-icon';
@@ -399,12 +399,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
               variant="outline"
               size="sm"
               className="shrink-0"
-              onClick={() =>
-                void rpc.switchServers.openGatewayPage({
-                  serverId: server.id,
-                  url: dashboardOrigin(server),
-                })
-              }
+              onClick={() => void openServerPage(server.id, dashboardOrigin(server))}
             >
               <ExternalLink className="size-4" />
               Open

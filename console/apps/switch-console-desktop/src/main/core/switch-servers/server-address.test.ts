@@ -11,9 +11,12 @@ vi.mock('@main/lib/logger', () => ({ log: { warn: logWarn, info: logInfo, error:
 
 const {
   assertServerAddress,
+  assertServesDashboard,
+  NoDashboardError,
   NotTheServerAddressError,
   retireDashboardFallback,
   retireDashboardFallbacks,
+  separateDashboard,
   servesDashboard,
 } = await import('./server-address');
 
@@ -96,6 +99,12 @@ describe('assertServerAddress', () => {
     fetchMock.mockResolvedValue(answer(404, 'application/json'));
 
     await expect(assertServerAddress('https://other.example.com')).resolves.toBeUndefined();
+  });
+
+  it('does not take a proxy’s own error page for a dashboard', async () => {
+    fetchMock.mockResolvedValue(answer(502, 'text/html'));
+
+    await expect(assertServerAddress('https://behind-proxy.example.com')).resolves.toBeUndefined();
   });
 });
 
@@ -210,5 +219,75 @@ describe('retireDashboardFallbacks', () => {
       'switch-servers: could not check whether a server still needs its old dashboard',
       { server: 'broken', error: 'Error: database is locked' }
     );
+  });
+});
+
+describe('separateDashboard', () => {
+  it('keeps the address a link came from when only it serves the dashboard', async () => {
+    roots({
+      'https://switch-api.example.com': UNAUTHORIZED,
+      'https://switch-gateway.example.com': PAGE,
+    });
+
+    expect(
+      await separateDashboard(
+        'https://switch-api.example.com',
+        'https://switch-gateway.example.com'
+      )
+    ).toBe('https://switch-gateway.example.com');
+  });
+
+  it('keeps nothing once the server serves its own dashboard', async () => {
+    roots({
+      'https://switch-api.example.com': PAGE,
+      'https://switch-gateway.example.com': PAGE,
+    });
+
+    expect(
+      await separateDashboard(
+        'https://switch-api.example.com',
+        'https://switch-gateway.example.com'
+      )
+    ).toBeNull();
+  });
+
+  it('keeps nothing that does not serve the dashboard itself', async () => {
+    roots({ 'https://switch-api.example.com': UNAUTHORIZED });
+
+    expect(
+      await separateDashboard('https://switch-api.example.com', 'https://elsewhere.example.com')
+    ).toBeNull();
+  });
+
+  it('asks nothing when the link was to the server’s own address', async () => {
+    expect(
+      await separateDashboard('https://switch.example.com', 'https://SWITCH.example.com/')
+    ).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('assertServesDashboard', () => {
+  it('refuses, naming the server and the address, where nothing serves the dashboard', async () => {
+    roots({ 'https://switch-api.example.com': UNAUTHORIZED });
+
+    const checking = assertServesDashboard(server({ dashboardUrl: null }));
+
+    await expect(checking).rejects.toBeInstanceOf(NoDashboardError);
+    await expect(checking).rejects.toThrow(
+      /^Split does not serve its dashboard at https:\/\/switch-api\.example\.com\./
+    );
+  });
+
+  it('asks the separate dashboard address a server keeps, not its own', async () => {
+    roots({ 'https://switch-gateway.example.com': PAGE });
+
+    await expect(assertServesDashboard(server({}))).resolves.toBeUndefined();
+  });
+
+  it('leaves an address it cannot reach for the browser to report', async () => {
+    roots({});
+
+    await expect(assertServesDashboard(server({ dashboardUrl: null }))).resolves.toBeUndefined();
   });
 });

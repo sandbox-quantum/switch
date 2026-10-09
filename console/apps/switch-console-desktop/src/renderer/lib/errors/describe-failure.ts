@@ -90,9 +90,12 @@ export function describeFailure(error: unknown, fallback: string): FailureDescri
       case 'ManagedServerStoppedError':
       case 'ServerBusyError':
       case 'MovedAgentsHereError':
+      case 'NotTheServerAddressError':
+      case 'DuplicateServerUrlError':
+      case 'NoDashboardError':
         // Already a modeled, actionable sentence: the server and the page to
-        // fix it on, who is changing the server and when to try again, or
-        // which agents to bring back first.
+        // fix it on, who is changing the server and when to try again, which
+        // agents to bring back first, or which address to enter instead.
         return { headline: error.message, detail: null };
     }
   }

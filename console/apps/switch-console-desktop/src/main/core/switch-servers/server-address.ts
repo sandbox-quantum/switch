@@ -1,5 +1,9 @@
 import { log } from '@main/lib/logger';
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import {
+  dashboardOrigin,
+  type SwitchServer,
+  urlOrigin,
+} from '@shared/core/switch-servers/switch-servers';
 import { clearDashboardUrl, listServers } from './servers-store';
 
 const PROBE_TIMEOUT_MS = 5000;
@@ -27,8 +31,10 @@ function isHtml(response: Response): boolean {
 
 /**
  * Refuse an address that is positively the wrong one: one whose health check
- * comes back as a web page. Every switch-core answers `/health` with JSON, and
- * a dashboard served on its own address answers it with the dashboard.
+ * comes back as a page, successfully. Every switch-core answers `/health` with
+ * JSON, and a dashboard served on an address of its own answers every path
+ * with its page. A proxy's own error page (a 404 or a 502 in HTML) is not that,
+ * and is left alone with everything else.
  *
  * Anything else is let through, unreachable included, because the sign-in that
  * follows adding a server reports those failures in its own words; refusing
@@ -48,7 +54,7 @@ export async function assertServerAddress(url: string): Promise<void> {
     });
     return;
   }
-  if (isHtml(response)) throw new NotTheServerAddressError(url);
+  if (response.ok && isHtml(response)) throw new NotTheServerAddressError(url);
 }
 
 /**
@@ -65,6 +71,43 @@ export async function servesDashboard(origin: string): Promise<boolean | null> {
   } catch {
     return null;
   }
+}
+
+/** A server's dashboard pages cannot be opened, because nothing serves them. */
+export class NoDashboardError extends Error {
+  constructor(serverName: string, origin: string) {
+    super(
+      `${serverName} does not serve its dashboard at ${origin}. The server is older than ` +
+        `switch-core serving the dashboard on its own address; once whoever runs it upgrades ` +
+        `it, its pages open from here.`
+    );
+    this.name = 'NoDashboardError';
+  }
+}
+
+/**
+ * Refuse to open a dashboard page where there is no dashboard, rather than
+ * handing the browser the API's refusal to read. The case is a server added
+ * by its own address while it still kept its dashboard elsewhere: Console has
+ * no other address for it. An address that cannot be asked at all is left to
+ * the browser to report.
+ */
+export async function assertServesDashboard(server: SwitchServer): Promise<void> {
+  const origin = dashboardOrigin(server);
+  if ((await servesDashboard(origin)) === false) throw new NoDashboardError(server.name, origin);
+}
+
+/**
+ * The address to keep as a server's separate dashboard: `candidate`, when it
+ * serves the dashboard and the server's own address does not; otherwise null.
+ *
+ * An invite link to an older server names its dashboard's host, which is the
+ * one place Console learns that address without asking anyone for it.
+ */
+export async function separateDashboard(url: string, candidate: string): Promise<string | null> {
+  if (urlOrigin(candidate) === urlOrigin(url)) return null;
+  const [own, other] = await Promise.all([servesDashboard(url), servesDashboard(candidate)]);
+  return own !== true && other === true ? candidate : null;
 }
 
 /**

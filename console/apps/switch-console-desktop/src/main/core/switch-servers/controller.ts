@@ -18,18 +18,19 @@ import {
   SWITCH_CLOUD_NAME,
   type SwitchCloudEndpoint,
 } from '@shared/core/switch-servers/switch-cloud';
-import type {
-  AddServerParams,
-  BundledChatSignIn,
-  PasswordLoginParams,
-  RenameServerParams,
-  ServerConnectionStatus,
-  SignupParams,
-  SignupResult,
-  SwitchAuthConfig,
-  SwitchServer,
-  UpdateServerParams,
-  UpdateServerResult,
+import {
+  normaliseServerUrl,
+  type AddServerParams,
+  type BundledChatSignIn,
+  type PasswordLoginParams,
+  type RenameServerParams,
+  type ServerConnectionStatus,
+  type SignupParams,
+  type SignupResult,
+  type SwitchAuthConfig,
+  type SwitchServer,
+  type UpdateServerParams,
+  type UpdateServerResult,
 } from '@shared/core/switch-servers/switch-servers';
 import type { JoinableWorkspaces, PendingInvitations } from '@shared/core/workspaces/invitations';
 import { isWithdrawnWorkspace, type Workspace } from '@shared/core/workspaces/workspaces';
@@ -64,7 +65,7 @@ import {
 } from './github-browser-flow';
 import { deleteManagedClaudeCredential } from './managed-claude-credential';
 import { hostUnreachable, requireReachableServer, requireServer } from './require-server';
-import { assertServerAddress } from './server-address';
+import { assertServerAddress, assertServesDashboard, separateDashboard } from './server-address';
 import {
   addServer,
   deleteSessionCookie,
@@ -172,7 +173,7 @@ async function registerSwitchCloud({ url }: SwitchCloudEndpoint): Promise<Switch
   if (existing) return existing;
   let server: SwitchServer;
   try {
-    server = await addServer({ name: SWITCH_CLOUD_NAME, url });
+    server = await addServer({ name: SWITCH_CLOUD_NAME, url, dashboardUrl: null });
   } catch (error) {
     trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
     throw error;
@@ -215,7 +216,11 @@ export const switchServersController = createRPCController({
     let server: SwitchServer;
     try {
       await assertServerAddress(params.url);
-      server = await addServer(params);
+      const dashboardUrl =
+        params.dashboardUrl === null
+          ? null
+          : await separateDashboard(params.url, params.dashboardUrl);
+      server = await addServer({ ...params, dashboardUrl });
     } catch (error) {
       trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
       throw error;
@@ -253,16 +258,15 @@ export const switchServersController = createRPCController({
 
   updateServer: async (params: UpdateServerParams): Promise<UpdateServerResult> => {
     const previous = await requireServer(params.id);
-    if (previous.url !== params.url.trim().replace(/\/+$/, '')) {
-      await assertServerAddress(params.url);
-    }
+    // Compared normalised, so a no-op edit (or one that only respells the
+    // address) neither re-checks it nor rewrites any agent's config.
+    const urlChanged = normaliseServerUrl(previous.url) !== normaliseServerUrl(params.url);
+    if (urlChanged) await assertServerAddress(params.url);
     const server = await updateServer(params);
 
     // The address is what an agent's SWITCH_API_ENDPOINT points at. When it
     // changes, cascade it to every member agent's stored config so they don't
-    // keep authenticating against the stale endpoint (CHOO-1431). Compare the
-    // saved (normalised) values so a no-op edit doesn't rewrite configs.
-    const urlChanged = previous.url !== server.url;
+    // keep authenticating against the stale endpoint (CHOO-1431).
     const propagatedAgents = urlChanged ? await propagateServerApiUrl(server.id, server.url) : [];
     // The managed agents this computer runs reach the server through its
     // controller, which has to reconnect at the new address too.
@@ -488,6 +492,7 @@ export const switchServersController = createRPCController({
     if (server.managed) {
       await openAuthenticatedGatewayPage(server, params.url);
     } else {
+      await assertServesDashboard(server);
       await appService.openExternal(params.url);
     }
   },

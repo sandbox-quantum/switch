@@ -202,6 +202,18 @@ def test_a_route_added_after_the_middleware_still_wins(dist: Path) -> None:
     assert client.get("/rooms/later").status_code == 401
 
 
+def test_a_route_declared_for_head_alone_still_wins(dist: Path) -> None:
+    app = _app(dist)
+
+    @app.api_route("/rooms/probe", methods=["HEAD"])
+    async def probe() -> None:
+        return None
+
+    client = TestClient(app)
+    assert client.head("/rooms/probe").status_code == 401
+    assert client.get("/rooms/probe").status_code == 401
+
+
 def test_the_agent_apis_own_get_under_agents_is_not_a_page(dist: Path) -> None:
     # The one place the API and the dashboard meet today: `/agents/{agent_id}`
     # is a page, and the API answers GET `/agents/feature-flags`.
