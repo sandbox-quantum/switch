@@ -1,6 +1,8 @@
 image:
   repository: ""
   digest: ""
+# Names of docker-registry Secrets for a private image registry.
+imagePullSecrets: []
 serviceAccount:
   name: switch-hosted-controller
   roleArn: ""

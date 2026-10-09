@@ -26,6 +26,7 @@ ARTIFACT_VERSIONS: Final[dict[str, str]] = {
     "sidecar": "1.9.12",
     "gateway": "0.29.0",
     "setup": "0.29.0",
+    "hosted-controller": "0.29.0",
     "helm-chart": "0.29.0",
     "compose": "0.29.0",
 }
