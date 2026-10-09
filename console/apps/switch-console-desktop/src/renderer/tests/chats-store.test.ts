@@ -150,4 +150,15 @@ describe('ChatsStore', () => {
     expect(api.list).toHaveBeenCalledTimes(1);
     expect(store.chat('r1')).toBeUndefined();
   });
+
+  it('reads a chat once the person is let into it after a refused first load', async () => {
+    const { store } = setup(async () => []);
+    await store.connect('s1');
+    const timeline = store.timelines.get('s1', 'r1');
+    timeline.notMember = true;
+
+    store.upsert(summary('r1', 1));
+    expect(timeline.notMember).toBe(false);
+    expect(timeline.loaded).toBe(false);
+  });
 });

@@ -88,8 +88,8 @@ export const ChatPanel = observer(function ChatPanel({
   const lost = timeline.accessLost || chatsStore.removed.has(roomId);
 
   useEffect(() => {
-    if (!timeline.loaded && !lost) void timeline.load();
-  }, [timeline, lost]);
+    if (!timeline.loaded && !lost && !timeline.notMember) void timeline.load();
+  }, [timeline, lost, timeline.notMember]);
 
   // Every new message may be one the agent was addressed with: derive its command id.
   const messageCount = timeline.messages.length;

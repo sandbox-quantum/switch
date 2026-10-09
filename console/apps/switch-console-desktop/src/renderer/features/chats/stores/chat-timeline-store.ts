@@ -227,8 +227,9 @@ export class ChatTimeline {
 
   /** Access came back: read the room again from scratch. */
   restore(): void {
-    if (!this.accessLost) return;
+    if (!this.accessLost && !this.notMember) return;
     this.accessLost = false;
+    this.notMember = false;
     this.loaded = false;
     this.loadError = null;
   }
