@@ -21,17 +21,15 @@ import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { SectionLabel } from '@renderer/lib/ui/label';
 import { RelativeTime } from '@renderer/lib/ui/relative-time';
 import type { ChatSummary } from '@shared/core/chats/chats';
-import { sidebarAgents } from '../sidebar-agents';
+import { chatRowLabel, listingAgents, sidebarAgents } from '../sidebar-agents';
 import { agentActivities } from '../stores/activities';
 import { chatsStore } from '../stores/chats';
-import { chatActions } from './chat-actions';
+import { ChatActionItems, chatActions } from './chat-actions';
 
 /** Whether something is under way in the chat: a send from here, or an agent working. */
 function chatBusy(serverId: string, chat: ChatSummary): boolean {
@@ -58,6 +56,7 @@ const ChatRow = observer(function ChatRow({
   const [menuOpen, setMenuOpen] = useState(false);
   const active = currentView === 'chat' && params.roomId === chat.roomId;
   const busy = chatBusy(serverId, chat);
+  const label = chatRowLabel(chat);
   return (
     <SidebarMenuRow
       className="group/row justify-between"
@@ -69,7 +68,10 @@ const ChatRow = observer(function ChatRow({
           <MessageSquare className="size-4 text-foreground-muted" />
         </span>
         <SidebarMenuAction aria-label={`Open chat ${chat.name}`} className="overflow-hidden">
-          <span className="min-w-0 truncate">{chat.name}</span>
+          <span className="min-w-0 truncate">{label.name}</span>
+          {label.platform && (
+            <span className="shrink-0 text-xs text-foreground-muted">· {label.platform}</span>
+          )}
         </SidebarMenuAction>
       </div>
       <div className="ml-2 flex min-w-6 shrink-0 items-center justify-end gap-1">
@@ -93,18 +95,7 @@ const ChatRow = observer(function ChatRow({
             <MoreHorizontal className="size-3.5" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            {chatActions(serverId, chat).map((action) => (
-              <Fragment key={action.key}>
-                {action.separatorBefore && <DropdownMenuSeparator />}
-                <DropdownMenuItem
-                  variant={action.destructive ? 'destructive' : 'default'}
-                  onClick={action.run}
-                >
-                  {action.icon}
-                  {action.label}
-                </DropdownMenuItem>
-              </Fragment>
-            ))}
+            <ChatActionItems actions={chatActions(serverId, chat)} />
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -131,7 +122,8 @@ function newChat(
 
 /**
  * The sidebar's Chats: each agent, and under it the chats it is in, newest
- * first. A chat in a room with several agents is listed under each of them.
+ * first. A chat in a room with several agents is listed under each of them,
+ * or under the person's own when they own one (`listingAgents`).
  */
 export const SidebarChats = observer(function SidebarChats() {
   const { navigate } = useNavigate();
@@ -143,6 +135,7 @@ export const SidebarChats = observer(function SidebarChats() {
   const chats = [...chatsStore.chats.values()];
   const owned = (workspaceAgents.data ?? []).filter((agent) => meId && agent.ownerId === meId);
   const agents = sidebarAgents(chats, owned);
+  const ownedIds = new Set(owned.map((agent) => agent.id));
   return (
     <SidebarGroup className="mt-4 mb-0 flex min-h-0 flex-1 flex-col">
       <div className="flex items-center justify-between px-4 pb-1">
@@ -183,9 +176,12 @@ export const SidebarChats = observer(function SidebarChats() {
               </div>
               <Plus className="hidden size-3.5 shrink-0 text-foreground-muted group-hover/row:block" />
             </SidebarMenuRow>
-            {chatsStore.chatsOfAgent(agent.id).map((chat) => (
-              <ChatRow key={chat.roomId} serverId={serverId} chat={chat} agentId={agent.id} />
-            ))}
+            {chatsStore
+              .chatsOfAgent(agent.id)
+              .filter((chat) => listingAgents(chat, ownedIds).some((each) => each.id === agent.id))
+              .map((chat) => (
+                <ChatRow key={chat.roomId} serverId={serverId} chat={chat} agentId={agent.id} />
+              ))}
           </Fragment>
         ))}
         {/* Managing agents (state, machine, cloud sessions) stays reachable from here. */}
