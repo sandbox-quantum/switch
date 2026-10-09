@@ -8,8 +8,8 @@ where it deliberately stops short.
 
 ## Shape
 
-- **Management** (Core package `switch_core/management/`, off unless
-  `AGENT_MANAGEMENT_ENABLED=true`): the source of truth for managed agents. It holds agent
+- **Management** (Core package `switch_core/management/`, off unless the
+  `agent_management` feature flag is on): the source of truth for managed agents. It holds agent
   definitions, which controller each one runs on, controller enrollment and credentials,
   controller status, and operations.
 - **Agents controller** (`console/packages/agent-controller`, a Node CLI): one per
@@ -33,7 +33,9 @@ where it deliberately stops short.
 ## Core
 
 ### Config (`config.py`)
-- `agent_management_enabled: bool = False` (`AGENT_MANAGEMENT_ENABLED`).
+- `agent_management_enabled`: whether the `agent_management` feature flag is on
+  (`FEATURE_FLAGS_ENABLED`). `AGENT_MANAGEMENT_ENABLED=true`, the setting it replaced,
+  stops startup.
 - `controller_token_secret: str | None = None` (`CONTROLLER_TOKEN_SECRET`). **Required
   when the flag is on**: a model validator raises if it is missing or shorter than 32 chars. It is
   separate from `jwt_secret_key` on purpose.

@@ -1,6 +1,6 @@
 // Agent management: the machines (agent controllers) that run managed agents,
 // the agents placed on them, and the operations sent to them. Served under
-// /gateway/management only when the server runs with AGENT_MANAGEMENT_ENABLED;
+// /gateway/management only when the server turns on its agent_management flag;
 // every failure comes back as {"error": {"code", "message", "retryable"}}.
 
 const BASE = "/gateway/management";

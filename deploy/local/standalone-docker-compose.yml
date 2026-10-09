@@ -222,6 +222,8 @@ services:
       # The bundled Mattermost is on the compose network, a private address,
       # so it is always allowed; .env adds to it rather than replacing it.
       OUTBOUND_ALLOWED_PRIVATE_HOSTS: mattermost,${OUTBOUND_ALLOWED_PRIVATE_HOSTS:-}
+      # Replaced by the agent_management feature flag. Still passed through so
+      # switch-core refuses a .env that turns it on, rather than ignoring it.
       AGENT_MANAGEMENT_ENABLED: ${AGENT_MANAGEMENT_ENABLED:-false}
       CONTROLLER_TOKEN_SECRET: ${CONTROLLER_TOKEN_SECRET:-}
       FEATURE_FLAGS_ENABLED: ${FEATURE_FLAGS_ENABLED:-}

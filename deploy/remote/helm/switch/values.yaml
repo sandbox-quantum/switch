@@ -174,8 +174,9 @@ switchCore:
   # Existing Secret with github.json (client_id, client_secret, slug, origin).
   githubConnectionsSecret: ""
   hostedControllerSecret: ""
-  # How many cloud machines may run at once. Cloud machines run the agents
-  # controller and their owner's managed agents, so they need agentManagement.
+  # How many cloud machines may run at once: at least 1 with the
+  # "switch_cloud.hosted_agents" feature flag on, which also needs the
+  # "switch_cloud" and "agent_management" flags, and 0 with it off.
   hostedLaunchCapacity: 0
   hostedDiskRetentionDays: 7
   hostedIdleStopMinutes: 30
@@ -315,11 +316,11 @@ switchCore:
   # once every API client authenticating against this deployment handles it.
   tenantChoiceEnabled: false
   # Agent management: managed agents, and the agent controllers (Switch Console,
-  # or switch-agent-controller on a user's own machine) that run them. Needs
+  # or switch-agent-controller on a user's own machine) that run them. Turned on
+  # by the "agent_management" feature flag (featureFlags.enabled below). Needs
   # secrets.controllerTokenSecret, and `/v1` routed to switch-core
   # (ingress.agentApiPaths does by default).
   agentManagement:
-    enabled: false
     # How often a controller must report; one silent for three of these is
     # shown as unknown and gets no new placements.
     statusIntervalSeconds: 60
@@ -333,6 +334,8 @@ switchCore:
   # Feature flags turned on for this deployment (FEATURE_FLAGS_ENABLED), e.g.
   # ["ecosystem.show_owners"]. Every other flag is off, and no one can change
   # them while the server runs. An unknown flag stops switch-core at startup.
+  # Known flags: ecosystem.show_owners, agent_management, switch_cloud,
+  # switch_cloud.hosted_agents.
   featureFlags:
     enabled: []
   # Invitation e-mails. When enabled, an invitation addressed to an e-mail is

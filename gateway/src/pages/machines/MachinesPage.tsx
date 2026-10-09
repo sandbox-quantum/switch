@@ -174,7 +174,7 @@ export default function MachinesPage() {
     } catch (err) {
       setLoadError(
         err instanceof ManagementApiError && err.status === 404 && err.code === "http_error"
-          ? "Agent management is not enabled on this server. An operator turns it on with AGENT_MANAGEMENT_ENABLED."
+          ? "Agent management is not enabled on this server. An operator turns it on by adding agent_management to FEATURE_FLAGS_ENABLED."
           : `Could not load machines and managed agents: ${errorMessage(err)}`,
       );
     }
