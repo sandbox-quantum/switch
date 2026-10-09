@@ -189,10 +189,15 @@ def test_a_blank_volume_is_formatted_and_mounted(monkeypatch, tmp_path):
     )
     boot.prepare_storage(commands, VOLUME_ID, sleep=lambda _: None)
     assert commands.ran("/usr/sbin/mkfs.ext4")[0][-1] == "/dev/nvme1n1"
-    assert commands.ran(boot.SYSTEMD_MOUNT)[0][-2:] == ["/dev/nvme1n1", str(tmp_path / "data")]
+    assert commands.ran(boot.SYSTEMD_MOUNT)[0][-2:] == [
+        "/dev/nvme1n1",
+        str(tmp_path / "data"),
+    ]
 
 
-def test_a_volume_attached_late_is_waited_for_and_a_formatted_one_kept(monkeypatch, tmp_path):
+def test_a_volume_attached_late_is_waited_for_and_a_formatted_one_kept(
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr(boot, "DATA_MOUNT", tmp_path / "data")
     commands = FakeCommands(
         {
@@ -208,7 +213,10 @@ def test_a_volume_attached_late_is_waited_for_and_a_formatted_one_kept(monkeypat
 def test_a_disk_with_unknown_contents_is_never_formatted(monkeypatch, tmp_path):
     monkeypatch.setattr(boot, "DATA_MOUNT", tmp_path / "data")
     commands = FakeCommands(
-        {"lsblk": [(0, LSBLK_BLANK)], "wipefs": [(0, '{"signatures": [{"type": "xfs"}]}')]}
+        {
+            "lsblk": [(0, LSBLK_BLANK)],
+            "wipefs": [(0, '{"signatures": [{"type": "xfs"}]}')],
+        }
     )
     with pytest.raises(boot.BootError, match="not blank"):
         boot.prepare_storage(commands, VOLUME_ID, sleep=lambda _: None)
@@ -225,7 +233,9 @@ def test_the_volume_marker_refuses_another_machines_disk(tmp_path):
         boot.reconcile_marker(tmp_path, boot.parse_bundle(other))
 
 
-def test_a_fresh_machine_enrolls_then_runs_its_agents_as_users_of_their_own(monkeypatch, tmp_path):
+def test_a_fresh_machine_enrolls_then_runs_its_agents_as_users_of_their_own(
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr(boot, "DATA_MOUNT", tmp_path)
     commands = FakeCommands({" status ": [(1, "Not enrolled.")]})
     boot.start_controller(commands, CONFIG, boot.parse_bundle(bundle()))
@@ -239,7 +249,9 @@ def test_a_fresh_machine_enrolls_then_runs_its_agents_as_users_of_their_own(monk
         "/opt/switch/controller/bin/switch-agent-controller",
     ]
     assert enroll[enroll.index("--code") + 1] == CODE
-    assert enroll[enroll.index("--data-dir") + 1] == str(tmp_path / ".switch-controller")
+    assert enroll[enroll.index("--data-dir") + 1] == str(
+        tmp_path / ".switch-controller"
+    )
     [setup] = commands.ran("install-service")
     assert setup[:2] == [
         "/opt/switch/node/bin/node",
@@ -268,10 +280,14 @@ def test_a_new_code_sets_a_revoked_enrollment_aside(monkeypatch, tmp_path):
     monkeypatch.setattr(boot, "DATA_MOUNT", tmp_path)
     (tmp_path / ".switch-controller").mkdir()
     (tmp_path / ".switch-controller" / "controller.db").write_text("old")
-    (tmp_path / ".switch-controller-code").write_text(hashlib.sha256(b"swce_old").hexdigest())
+    (tmp_path / ".switch-controller-code").write_text(
+        hashlib.sha256(b"swce_old").hexdigest()
+    )
     commands = FakeCommands({" status ": [(0, "Controller: old")]})
     boot.start_controller(commands, CONFIG, boot.parse_bundle(bundle()), now=lambda: 7)
-    assert (tmp_path / ".switch-controller.replaced-7" / "controller.db").read_text() == "old"
+    assert (
+        tmp_path / ".switch-controller.replaced-7" / "controller.db"
+    ).read_text() == "old"
     assert not (tmp_path / ".switch-controller" / "controller.db").exists()
     assert len(commands.ran("enroll")) == 1
     assert (tmp_path / ".switch-controller-code").read_text() != hashlib.sha256(
@@ -279,7 +295,9 @@ def test_a_new_code_sets_a_revoked_enrollment_aside(monkeypatch, tmp_path):
     ).hexdigest()
 
 
-def test_an_enrollment_made_with_this_code_is_kept_when_the_boot_runs_again(monkeypatch, tmp_path):
+def test_an_enrollment_made_with_this_code_is_kept_when_the_boot_runs_again(
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr(boot, "DATA_MOUNT", tmp_path)
     first = FakeCommands({" status ": [(1, "Not enrolled.")]})
     boot.start_controller(first, CONFIG, boot.parse_bundle(bundle()))

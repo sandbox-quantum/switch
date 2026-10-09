@@ -149,7 +149,14 @@ def parse_bundle(raw: str) -> Bundle:
         ) from None
     value = _strict(
         value,
-        {"version", "installationId", "machineId", "dataVolumeId", "apiEndpoint", "controller"},
+        {
+            "version",
+            "installationId",
+            "machineId",
+            "dataVolumeId",
+            "apiEndpoint",
+            "controller",
+        },
         "machine bundle",
     )
     if value["version"] != 4:
@@ -176,7 +183,9 @@ def parse_bundle(raw: str) -> Bundle:
         ):
             raise BootError("The machine bundle's controller is invalid.")
     elif not isinstance(code, str) or not ENROLLMENT_CODE_RE.fullmatch(code):
-        raise BootError("The machine bundle holds neither a controller nor an enrollment code.")
+        raise BootError(
+            "The machine bundle holds neither a controller nor an enrollment code."
+        )
     return Bundle(
         installation_id=_identifier(value["installationId"], "installation id"),
         machine_id=machine_id,
@@ -195,7 +204,9 @@ def _user_data(opener: OpenerDirector) -> str:
     )
     with opener.open(token_request, timeout=5) as response:
         token = response.read().decode()
-    request = Request(f"{METADATA_URL}/user-data", headers={"X-aws-ec2-metadata-token": token})
+    request = Request(
+        f"{METADATA_URL}/user-data", headers={"X-aws-ec2-metadata-token": token}
+    )
     try:
         with opener.open(request, timeout=5) as response:
             raw = response.read(MAX_JSON_BYTES + 1)
@@ -229,7 +240,9 @@ def read_bundle(
             raise
         except Exception as error:
             if time.monotonic() > deadline:
-                raise BootError(f"The instance's user data cannot be read: {error}") from None
+                raise BootError(
+                    f"The instance's user data cannot be read: {error}"
+                ) from None
             logger.warning("Waiting for instance metadata: %s", error)
             sleep(5)
     return parse_bundle(raw)
@@ -316,22 +329,35 @@ def prepare_storage(
         if signatures or device.get("uuid"):
             raise BootError("The data volume is not blank, but holds no filesystem.")
         logger.info("Formatting the blank data volume %s", volume_id)
-        commands.run(["/usr/sbin/mkfs.ext4", "-q", "-m", "0", "-L", "switch-data", path])
+        commands.run(
+            ["/usr/sbin/mkfs.ext4", "-q", "-m", "0", "-L", "switch-data", path]
+        )
         commands.run(["/usr/bin/udevadm", "settle", "--timeout=30"])
         device = _data_device(commands, volume_id)
         if device is None:
             raise BootError("The data volume went away while it was formatted.")
     if device.get("fstype") != "ext4":
-        raise BootError("The data volume's filesystem is not ext4; refusing to mount it.")
+        raise BootError(
+            "The data volume's filesystem is not ext4; refusing to mount it."
+        )
     DATA_MOUNT.mkdir(mode=0o755, exist_ok=True)
     mounted = commands.result(
-        ["/usr/bin/findmnt", "--mountpoint", str(DATA_MOUNT), "--noheadings", "--output", "SOURCE"]
+        [
+            "/usr/bin/findmnt",
+            "--mountpoint",
+            str(DATA_MOUNT),
+            "--noheadings",
+            "--output",
+            "SOURCE",
+        ]
     )
     if mounted.returncode == 0:
         if os.path.realpath(mounted.stdout.strip()) != os.path.realpath(path):
             raise BootError("/data is another device's mountpoint.")
         return
-    commands.run([SYSTEMD_MOUNT, "--type=ext4", "--options=nodev,nosuid", path, str(DATA_MOUNT)])
+    commands.run(
+        [SYSTEMD_MOUNT, "--type=ext4", "--options=nodev,nosuid", path, str(DATA_MOUNT)]
+    )
 
 
 def reconcile_marker(data: Path, bundle: Bundle) -> None:
@@ -348,7 +374,9 @@ def reconcile_marker(data: Path, bundle: Bundle) -> None:
         if marker.is_symlink():
             raise BootError("The data volume's marker is a link.")
         if json.loads(marker.read_text()) != wanted:
-            raise BootError("The data volume belongs to another machine; refusing to use it.")
+            raise BootError(
+                "The data volume belongs to another machine; refusing to use it."
+            )
         return
     temporary = data / f"{MARKER_NAME}.new"
     temporary.write_text(json.dumps(wanted))
@@ -408,11 +436,14 @@ def start_controller(
                 # machine: whatever this directory holds was revoked there.
                 aside = DATA_MOUNT / f"{CONTROLLER_DIR_NAME}.replaced-{int(now())}"
                 logger.warning(
-                    "Switch gave a new code; setting the old enrollment aside in %s", aside
+                    "Switch gave a new code; setting the old enrollment aside in %s",
+                    aside,
                 )
                 os.replace(data_dir, aside)
                 data_dir.mkdir(mode=0o700)
-                commands.run(["/usr/bin/chown", f"{config.controller_user}:", str(data_dir)])
+                commands.run(
+                    ["/usr/bin/chown", f"{config.controller_user}:", str(data_dir)]
+                )
     if code is not None:
         # Recorded first: a crash right after enrolling must not leave an
         # enrollment the next attempt would take for a revoked one.
