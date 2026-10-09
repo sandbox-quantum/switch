@@ -104,3 +104,27 @@ async def test_a_room_left_before_its_membership_is_read_is_not_watched(
     assert gone not in transport._watching
     await transport.close()
     task.cancel()
+
+
+async def test_a_failed_batch_read_releases_every_claim(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """If the membership and head read fails, no room is left claimed with
+    nothing subscribed, so a retry starts from a clean slate."""
+    client_id, user_id, _ = await _client_in_rooms(session_factory, 3)
+    transport = _transport(session_factory, client_id=client_id, user_id=user_id)
+
+    async def _fail(*_args: object) -> set[str]:
+        raise OSError("connection lost")
+
+    transport._room_store.member_room_ids = _fail  # type: ignore[method-assign]
+    rooms = await transport.joined_rooms()
+    try:
+        await transport._watch_joined(rooms)
+    except OSError:
+        pass
+    else:
+        raise AssertionError("the read error should propagate to the caller")
+
+    assert transport._watching == {}
+    assert transport._cursors == {}
