@@ -5,6 +5,8 @@ import logging
 import uuid
 from typing import Any
 
+from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.clients.actor import Actor, AgentActor, ClientConfig
@@ -21,6 +23,23 @@ from switch_core.provisioning import Provisioning
 from switch_core.tenant_context import no_tenant, tenant_scope
 
 logger = logging.getLogger(__name__)
+
+# A client that fails on the database or the network is retried rather than
+# dropped. At boot every client starts at once and asks for a connection in the
+# same second; on 9 Oct that drained the pool, 13 clients timed out
+# waiting for one, and each was dropped for good: its agent connected, but
+# nothing on the server could post for it until the next restart. Such a
+# failure says nothing about the client, so it waits and tries again, as long
+# as it takes. Anything else is a bug in the client and still ends it.
+_TRANSIENT_START_ERRORS: tuple[type[BaseException], ...] = (
+    PoolTimeoutError,
+    OperationalError,
+    InterfaceError,
+    OSError,
+    TimeoutError,
+)
+CLIENT_RETRY_BASE_SECONDS = 1.0
+CLIENT_RETRY_CAP_SECONDS = 60.0
 
 
 class TenantIsolationNotInForce(Exception):
@@ -413,10 +432,30 @@ class ClientLifecycleService:
         """
         with no_tenant(), log_context(room_id=None):
             try:
-                if consumer is not None:
-                    await consumer.start()
-                else:
-                    await actor.connect()
+                attempt = 0
+                while True:
+                    try:
+                        if consumer is not None:
+                            await consumer.start()
+                        else:
+                            await actor.connect()
+                        return
+                    except _TRANSIENT_START_ERRORS:
+                        attempt += 1
+                        delay = min(
+                            CLIENT_RETRY_BASE_SECONDS * 2 ** (attempt - 1),
+                            CLIENT_RETRY_CAP_SECONDS,
+                        )
+                        logger.warning(
+                            "Client %s (%s) failed on the database or network "
+                            "(attempt %d); retrying in %.0fs",
+                            actor.display_name,
+                            actor.transport_user_id,
+                            attempt,
+                            delay,
+                            exc_info=True,
+                        )
+                        await asyncio.sleep(delay)
             except Exception:
                 logger.exception(
                     "Client %s (%s) crashed",
