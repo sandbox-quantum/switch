@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from switch_core.connections.adapters.github import GitHubAdapter, load_github_app
-from switch_core.connections.adapters.oauth_mcp import OAuthMcpAdapter
+from switch_core.connections.adapters.oauth import OAuthAdapter
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG, CATALOG_ROOT, load_catalog
 from switch_core.connections.oauth_clients import RegisteredClient
@@ -25,7 +25,11 @@ from switch_core.connections.registry import (
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.adapters.test_github import _app_files, _config
-from tests.switch_core.connections.test_loader import OAUTH_MCP_ENTRY, _write_example
+from tests.switch_core.connections.test_loader import (
+    CLI_ENTRY,
+    OAUTH_ENTRY,
+    _write_example,
+)
 
 HTTP = httpx.AsyncClient()
 REG = ClientRegistration(
@@ -34,13 +38,13 @@ REG = ClientRegistration(
     public_url=None,
     server_name="switch.local",
 )
-STATIC = OAUTH_MCP_ENTRY.replace(
+STATIC = OAUTH_ENTRY.replace(
     "    registration: dynamic\n",
     "    registration: static\n    client_settings: EXAMPLE\n",
 )
 
 
-def _catalog(tmp_path: Path, text: str = OAUTH_MCP_ENTRY) -> dict:
+def _catalog(tmp_path: Path, text: str = OAUTH_ENTRY) -> dict:
     root = tmp_path / "catalog"
     shutil.copytree(CATALOG_ROOT, root)
     _write_example(root, text)
@@ -72,7 +76,7 @@ def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> Non
         CATALOG, github_app=None, environ={}, http=HTTP, registration=REG
     )
     adapter = adapters["atlassian"]
-    assert isinstance(adapter, OAuthMcpAdapter)
+    assert isinstance(adapter, OAuthAdapter)
     client = adapter._client
     assert isinstance(client, RegisteredClient)
     assert client._request["redirect_uris"] == [
@@ -85,7 +89,7 @@ def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> Non
     )
 
 
-def test_a_static_oauth_mcp_client_gets_the_generic_adapter(tmp_path: Path) -> None:
+def test_a_static_oauth_client_gets_the_generic_adapter(tmp_path: Path) -> None:
     path = tmp_path / "client.json"
     path.write_text(json.dumps({"client_id": "c", "client_secret": "SYNTHETIC"}))
     adapters = build_adapters(
@@ -95,10 +99,27 @@ def test_a_static_oauth_mcp_client_gets_the_generic_adapter(tmp_path: Path) -> N
         http=HTTP,
         registration=REG,
     )
-    assert isinstance(adapters["example"], OAuthMcpAdapter)
+    assert isinstance(adapters["example"], OAuthAdapter)
 
 
-def test_a_static_oauth_mcp_client_without_settings_is_not_set_up(
+def test_a_cli_entry_gets_the_generic_adapter_with_its_client(tmp_path: Path) -> None:
+    path = tmp_path / "client.json"
+    path.write_text(json.dumps({"client_id": "c", "client_secret": "SYNTHETIC"}))
+    catalog = _catalog(tmp_path, CLI_ENTRY)
+    adapters = build_adapters(
+        catalog,
+        github_app=None,
+        environ={"EXAMPLE_CLIENT_CONFIG_PATH": str(path)},
+        http=HTTP,
+        registration=REG,
+    )
+    assert isinstance(adapters["example"], OAuthAdapter)
+    assert "example" not in build_adapters(
+        catalog, github_app=None, environ={}, http=HTTP, registration=REG
+    )
+
+
+def test_a_static_oauth_client_without_settings_is_not_set_up(
     tmp_path: Path,
 ) -> None:
     adapters = build_adapters(
@@ -116,16 +137,14 @@ def test_a_dynamic_client_is_registered_by_core(tmp_path: Path) -> None:
         _catalog(tmp_path), github_app=None, environ={}, http=HTTP, registration=REG
     )
     adapter = adapters["example"]
-    assert isinstance(adapter, OAuthMcpAdapter)
+    assert isinstance(adapter, OAuthAdapter)
     assert isinstance(adapter._client, RegisteredClient)
 
 
 def test_a_core_callback_without_a_public_address_stops_the_server(
     tmp_path: Path,
 ) -> None:
-    core_only = OAUTH_MCP_ENTRY.replace(
-        "redirect: [loopback, core]", "redirect: [core]"
-    )
+    core_only = OAUTH_ENTRY.replace("redirect: [loopback, core]", "redirect: [core]")
     with pytest.raises(ServiceSetupError, match="needs GATEWAY_PUBLIC_URL"):
         build_adapters(
             _catalog(tmp_path, core_only),
@@ -143,7 +162,7 @@ def test_an_entry_not_set_up_here_shows_its_catalog_note(
     shutil.copytree(CATALOG_ROOT, root)
     _write_example(
         root,
-        OAUTH_MCP_ENTRY.replace(
+        OAUTH_ENTRY.replace(
             "    registration: dynamic\n",
             "    registration: static\n"
             "    client_settings: EXAMPLE\n"

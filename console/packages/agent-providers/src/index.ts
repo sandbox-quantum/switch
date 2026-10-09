@@ -81,6 +81,7 @@ export {
 export { superviseSharedHost } from './host/supervisor';
 export { controllerConnectionId } from './host/connection-id';
 export { EXECUTION_INHERIT_ENV } from './host/agent-env';
+export { cliToolsBase, readCliToolStatuses } from './host/cli-binaries';
 export {
   SessionHostFailedError,
   SessionLinks,

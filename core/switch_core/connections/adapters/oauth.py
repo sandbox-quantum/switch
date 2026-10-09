@@ -1,11 +1,12 @@
-"""A vendor reached over OAuth whose tools are its own MCP servers.
+"""A vendor reached over OAuth.
 
-Any catalog entry with `adapter: oauth-mcp`: the person signs in to the
+Any catalog entry with `adapter: oauth`: the person signs in to the
 vendor with OAuth (PKCE, the code exchanged by Core), Core keeps the sign-in
 fresh, and an agent granted the service is handed the owner's own access
-token, which its session uses to call the vendor's MCP servers. That token
-can be neither narrowed nor revoked per agent, so the grant is the whole
-connection's consent, and a token handed out is never `revocable`.
+token, which its session uses to call the vendor's MCP servers or to run the
+vendor's command-line tool. That token can be neither narrowed nor revoked per
+agent, so the grant is the whole connection's consent, and a token handed out
+is never `revocable`.
 
 The OAuth endpoints are the catalog's, or discovered from the first MCP
 server as the MCP authorization spec describes: its protected-resource
@@ -119,7 +120,7 @@ def _path_value(document: Any, path: str) -> Any:
     return value
 
 
-class OAuthMcpAdapter:
+class OAuthAdapter:
     can_issue = True
 
     def __init__(
@@ -131,16 +132,18 @@ class OAuthMcpAdapter:
         oauth = definition.auth.oauth
         identity = definition.auth.identity
         if (
-            definition.adapter != "oauth-mcp"
+            definition.adapter != "oauth"
             or oauth is None
             or identity is None
-            or definition.mcp is None
+            or (definition.mcp is None and definition.cli is None)
         ):
-            raise ValueError(f"{definition.slug} is not a complete oauth-mcp entry.")
+            raise ValueError(f"{definition.slug} is not a complete oauth entry.")
         self._definition = definition
         self._oauth = oauth
         self._identity = identity
-        self._mcp_url = definition.mcp.servers[0].url
+        self._mcp_url = (
+            None if definition.mcp is None else definition.mcp.servers[0].url
+        )
         self._client = client
         self._http = http
         self._endpoints: AuthorizationEndpoints | None = None
@@ -205,13 +208,19 @@ class OAuthMcpAdapter:
                 resource=None,
             )
             return self._endpoints
-        server = urlsplit(self._mcp_url)
+        mcp_url = self._mcp_url
+        if mcp_url is None:
+            raise ServiceAdapterError(
+                f"{self._name} names no OAuth endpoints and has no MCP server to "
+                "discover them from."
+            )
+        server = urlsplit(mcp_url)
         origin = f"{server.scheme}://{server.netloc}"
         path = server.path.rstrip("/")
         # The server's own answer names its metadata; the well-known addresses
         # are the fallback, and on a host serving several MCP servers the
         # root one may describe another.
-        named = await self._resource_metadata_url()
+        named = await self._resource_metadata_url(mcp_url)
         resource = await self._metadata(
             [named]
             if named is not None
@@ -269,17 +278,17 @@ class OAuthMcpAdapter:
                 if revocation is None
                 else _https(revocation, "revocation endpoint")
             ),
-            resource=self._mcp_url,
+            resource=mcp_url,
         )
         return self._endpoints
 
-    async def _resource_metadata_url(self) -> str | None:
+    async def _resource_metadata_url(self, mcp_url: str) -> str | None:
         """Where the MCP server says its metadata is: the `resource_metadata`
         of the 401 it answers a request without a token with (RFC 9728 §5)."""
         response = await self._send(
             self._http.build_request(
                 "POST",
-                self._mcp_url,
+                mcp_url,
                 json={
                     "jsonrpc": "2.0",
                     "id": 1,
@@ -379,7 +388,7 @@ class OAuthMcpAdapter:
         """Where the person's browser goes to sign in and consent."""
         endpoints = await self.endpoints()
         client = await self._client.credentials(endpoints)
-        query = {
+        query: dict[str, str] = {
             "response_type": "code",
             "client_id": client.client_id,
             "redirect_uri": redirect_uri,
@@ -388,6 +397,8 @@ class OAuthMcpAdapter:
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
+        for key, value in self._oauth.authorization_params.items():
+            query[key] = value
         if self._oauth.prompt is not None:
             query["prompt"] = self._oauth.prompt
         if endpoints.resource is not None:

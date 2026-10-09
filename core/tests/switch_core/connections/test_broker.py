@@ -51,7 +51,11 @@ from switch_core.db.stores.service_connection_store import ServiceConnectionStor
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
-from tests.switch_core.connections.test_loader import OAUTH_MCP_ENTRY, _write_example
+from tests.switch_core.connections.test_loader import (
+    CLI_ENTRY,
+    OAUTH_ENTRY,
+    _write_example,
+)
 from tests.switch_core.gateway.agent_route_harness import add_agent
 from tests.switch_core.hosted_machine_helpers import seed_launch, seed_machine
 
@@ -1020,12 +1024,14 @@ class TestSwitchedOff:
             _switched_off(session_factory, vendor, {"nowhere": ""})
 
 
-def pass_through_catalog(root: Path, *, max_lifetime: int = 3600) -> dict:
-    """The shipped catalog and `example`, a pass-through OAuth/MCP vendor."""
+def pass_through_catalog(
+    root: Path, *, max_lifetime: int = 3600, entry: str = OAUTH_ENTRY
+) -> dict:
+    """The shipped catalog and `example`, a pass-through OAuth vendor."""
     shutil.copytree(CATALOG_ROOT, root)
     _write_example(
         root,
-        OAUTH_MCP_ENTRY.replace("max_lifetime: 3600", f"max_lifetime: {max_lifetime}"),
+        entry.replace("max_lifetime: 3600", f"max_lifetime: {max_lifetime}"),
     )
     return load_catalog(root)
 
@@ -1043,6 +1049,7 @@ async def _pass_through(
     *,
     expires_in: float,
     max_lifetime: int = 3600,
+    entry: str = OAUTH_ENTRY,
 ) -> PassThrough:
     vendor = FakeVendor()
     vendor.pass_through = True
@@ -1051,7 +1058,7 @@ async def _pass_through(
     broker = ServiceBroker(
         session_factory=session_factory,
         keyring=TEST_KEYRING,
-        catalog=pass_through_catalog(root, max_lifetime=max_lifetime),
+        catalog=pass_through_catalog(root, max_lifetime=max_lifetime, entry=entry),
         adapters={"example": vendor},
         disabled={},
         store=STORE,
@@ -1106,7 +1113,56 @@ class TestPassThrough:
         assert grant["mcp_servers"] == [
             {"name": "example", "url": "https://mcp.example.test/v1/mcp"}
         ]
+        assert grant["cli_tools"] == []
         assert grant["skill"]["name"] == "example"
+
+    async def test_the_grant_names_the_vendors_cli_as_the_catalog_has_it(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=CLI_ENTRY
+        )
+        async with session_factory() as session:
+            agent = await session.get(Agent, pt.world.agent.id)
+            assert agent is not None
+            [grant] = await pt.broker.grants_for(session, agent, Principal.agent_key())
+        assert grant["mcp_servers"] == []
+        assert grant["cli_tools"] == [
+            {
+                "name": "example-cli",
+                "binary": "excli",
+                "token_env": "EXCLI_TOKEN",
+                "config_env": "EXCLI_CONFIG_DIR",
+                "allow": ["items", "boards"],
+                "deny": ["auth", "--profile"],
+                "path_flags": {"--upload": "read", "--output": "write", "-o": "write"},
+                "path_args": [{"after": "+put", "direction": "read"}],
+                "output_cap_bytes": 65536,
+                "timeout_s": 120,
+                "token_refused": {
+                    "exit_code": 1,
+                    "json_path": "error.code",
+                    "value": 401,
+                },
+                "release": {
+                    "version": "1.2.3",
+                    "targets": {
+                        "linux-x64": {
+                            "url": "https://downloads.example.test/excli-1.2.3-linux-x64.tar.gz",
+                            "sha256": "a" * 64,
+                            "path": "excli",
+                        },
+                        "win32-x64": {
+                            "url": "https://downloads.example.test/excli-1.2.3-win32-x64.zip",
+                            "sha256": "b" * 64,
+                            "path": "bin/excli.exe",
+                        },
+                    },
+                },
+            }
+        ]
+        # The answer is JSON, as the route sends it.
+        assert json.loads(json.dumps(grant)) == grant
 
     async def test_hands_out_the_owners_token_unrevocable_with_its_own_expiry(
         self, session_factory, tmp_path

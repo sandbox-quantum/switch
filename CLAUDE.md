@@ -175,6 +175,9 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   for Slack, Mattermost, Discord, Teams, and Telegram
 - `docs/old/GATEWAY_OIDC_SETUP.md` — configuring the gateway's bring-your-own
   OIDC browser sign-in (variables, redirect URI, WorkOS Connect setup)
+- `docs/old/google-workspace-setup.md` — offering Google Workspace on a
+  self-hosted server: registering the internal Google app, its redirect URI,
+  `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`, and switching it off
 - `docs/old/LOCAL_DEVELOPMENT.md` — running Switch locally for development:
   `just` recipes, which port serves what, connecting Switch Console to a
   local server

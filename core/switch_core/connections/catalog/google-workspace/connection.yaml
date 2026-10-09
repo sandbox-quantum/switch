@@ -1,7 +1,104 @@
 slug: google-workspace
 name: Google Workspace
 category: Productivity
-description: Work with Google Drive, Docs and Sheets.
-enabled: false
+description: Work with Google Drive, Docs, Sheets, Slides and Calendar, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # Google's refresh tokens survive their use.
+  refresh: reusable
+  oauth:
+    # Each server's operator registers an internal Google app (a Web client)
+    # and names its settings in GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH.
+    registration: static
+    client_settings: GOOGLE_WORKSPACE
+    redirect: [core]
+    authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+    token_url: https://oauth2.googleapis.com/token
+    revocation_url: https://oauth2.googleapis.com/revoke
+    # Google hands out a refresh token only for offline access, and again on
+    # a later sign-in only when consent is asked for. The account chooser
+    # comes first, so a browser signed in to another Google account (a
+    # personal one, or another organization's) does not pick it unasked.
+    prompt: consent select_account
+    authorization_params: { access_type: offline }
+    # Shown after "Not set up on this server." where the settings are unset.
+    setup_note: Its operator registers an internal Google app; see the docs.
+  identity:
+    url: https://openidconnect.googleapis.com/v1/userinfo
+    account_id: sub
+    label: email
+# Google's access tokens lived 3,599 s when measured; its documentation's
+# sample shows 3,920. Agents still ask again hourly.
+token: { kind: pass_through, max_lifetime: 3920 }
+cli:
+  name: google-workspace
+  binary: gws
+  token_env: GOOGLE_WORKSPACE_CLI_TOKEN
+  config_env: GOOGLE_WORKSPACE_CLI_CONFIG_DIR
+  # The first argument: a service, or `schema`, which reads Google's public
+  # API descriptions. `drive:v2` and the like are refused with the rest.
+  allow: [drive, docs, sheets, slides, calendar, schema]
+  # --api-version picks another API version; --sanitize sends answers to
+  # another Google service.
+  deny: [auth, gmail, admin, chat, --api-version, --sanitize]
+  path_flags: { --upload: read, --output: write, -o: write }
+  # `drive +upload <file>` takes the file it uploads as its next argument.
+  path_args: [{ after: +upload, direction: read }]
+  output_cap_bytes: 65536
+  timeout_s: 120
+  # A refused token ends gws with its API error, 1, and Google's 401.
+  token_refused: { exit_code: 1, json_path: error.code, value: 401 }
+  release:
+    version: 0.22.5
+    targets:
+      darwin-arm64:
+        url: https://github.com/googleworkspace/cli/releases/download/v0.22.5/google-workspace-cli-aarch64-apple-darwin.tar.gz
+        sha256: 1d2a9ffd5bc9b2c2c4b48630daf082fad13d9e57d741988a2c248eed562f7dac
+        path: gws
+      darwin-x64:
+        url: https://github.com/googleworkspace/cli/releases/download/v0.22.5/google-workspace-cli-x86_64-apple-darwin.tar.gz
+        sha256: 51f9bd731404d4bba26c36e2e30dd68c56dccd1f834c01252cb0b14d6a6544b2
+        path: gws
+      # The musl builds, which run on glibc and musl systems alike.
+      linux-arm64:
+        url: https://github.com/googleworkspace/cli/releases/download/v0.22.5/google-workspace-cli-aarch64-unknown-linux-musl.tar.gz
+        sha256: e700fe63524932b10ec2130b47ece90aa850e66005fe52ccfc4cf8767bf9919a
+        path: gws
+      linux-x64:
+        url: https://github.com/googleworkspace/cli/releases/download/v0.22.5/google-workspace-cli-x86_64-unknown-linux-musl.tar.gz
+        sha256: 4db473dde4b1ab872e4ff35d769b0d4af1f1a6441a605e79d5cf8ada9c87e920
+        path: gws
+      win32-x64:
+        url: https://github.com/googleworkspace/cli/releases/download/v0.22.5/google-workspace-cli-x86_64-pc-windows-msvc.zip
+        sha256: 407705d695dc83d48b1c5f50d71b5aa64095bf6f17d5b439b2e9a373bbe67ec2
+        path: gws.exe
+access:
+  # Both levels read the account's id and address. Google reports scopes as
+  # full URLs, so they are named that way here: the sign-in's level is read by
+  # comparing them.
+  read:
+    scopes:
+      - openid
+      - https://www.googleapis.com/auth/userinfo.email
+      - https://www.googleapis.com/auth/drive.readonly
+      - https://www.googleapis.com/auth/documents.readonly
+      - https://www.googleapis.com/auth/spreadsheets.readonly
+      - https://www.googleapis.com/auth/presentations.readonly
+      - https://www.googleapis.com/auth/calendar.readonly
+  write:
+    scopes:
+      - openid
+      - https://www.googleapis.com/auth/userinfo.email
+      - https://www.googleapis.com/auth/drive.readonly
+      - https://www.googleapis.com/auth/documents.readonly
+      - https://www.googleapis.com/auth/spreadsheets.readonly
+      - https://www.googleapis.com/auth/presentations.readonly
+      - https://www.googleapis.com/auth/calendar.readonly
+      - https://www.googleapis.com/auth/drive
+      - https://www.googleapis.com/auth/documents
+      - https://www.googleapis.com/auth/spreadsheets
+      - https://www.googleapis.com/auth/presentations
+      - https://www.googleapis.com/auth/calendar.events
+tools: { mode: pass_through }

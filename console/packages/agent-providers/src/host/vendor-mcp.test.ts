@@ -26,6 +26,7 @@ function grant(service: string, mcp: { name: string; url: string }[]): ServiceGr
     resources: {},
     skill: null,
     mcp_servers: mcp,
+    cli_tools: [],
   };
 }
 

@@ -257,6 +257,7 @@ describe('the skills of the agent’s service grants', () => {
     resources: {},
     skill: GITHUB_SKILL,
     mcp_servers: [],
+    cli_tools: [],
   };
   const runtime = {
     transport: 'http' as const,

@@ -127,6 +127,128 @@ MCP_TOOLS = [
 ]
 
 
+GOOGLE_AUTHORIZE = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN = "https://oauth2.googleapis.com/token"
+GOOGLE_REVOKE = "https://oauth2.googleapis.com/revoke"
+GOOGLE_USERINFO = "https://openidconnect.googleapis.com/v1/userinfo"
+GOOGLE_SCOPE = "https://www.googleapis.com/auth/"
+
+
+class FakeGoogle:
+    """Google's OAuth side, as a Workspace sign-in was seen to behave.
+
+    A refresh token comes only with `access_type=offline`; access tokens live
+    3,599 s; scopes come back as full URLs (`email` as `userinfo.email`); a
+    refresh returns no new refresh token; revoking any token ends every token
+    of the sign-in. `unticked` are the scopes the person unticks at consent.
+    """
+
+    def __init__(self) -> None:
+        self.client_id = STATIC_CLIENT_ID
+        self.client_secret = STATIC_CLIENT_SECRET
+        self.unticked: set[str] = set()
+        self.authorizations: list[dict[str, str]] = []
+        self.token_requests: list[dict[str, str]] = []
+        self.revoked: list[dict[str, str]] = []
+        self.codes: dict[str, _Code] = {}
+        self.offline: dict[str, bool] = {}
+        self.live_access: dict[str, list[str]] = {}
+        self.live_refresh: dict[str, list[str]] = {}
+        self.account = {"sub": "100000000000000000001", "email": "ada@example.test"}
+
+    def client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
+
+    def authorize(self, url: str) -> str:
+        parts = urlsplit(url)
+        assert f"{parts.scheme}://{parts.netloc}{parts.path}" == GOOGLE_AUTHORIZE
+        query = {key: values[0] for key, values in parse_qs(parts.query).items()}
+        assert query["client_id"] == self.client_id
+        assert query["response_type"] == "code"
+        assert query["code_challenge_method"] == "S256"
+        self.authorizations.append(query)
+        granted = [
+            GOOGLE_SCOPE + "userinfo.email" if scope == "email" else scope
+            for scope in query["scope"].split()
+            if scope not in self.unticked
+        ]
+        code = secrets.token_urlsafe(16)
+        self.codes[code] = _Code(
+            client_id=query["client_id"],
+            redirect_uri=query["redirect_uri"],
+            challenge=query["code_challenge"],
+            scopes=granted,
+            resource=None,
+        )
+        self.offline[code] = query.get("access_type") == "offline"
+        return f"{query['redirect_uri']}?state={query['state']}&code={code}&scope=x"
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        url = request.url
+        where = f"{url.scheme}://{url.host}{url.path}"
+        form = (
+            {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+            if request.method == "POST"
+            else {}
+        )
+        if where == GOOGLE_TOKEN and request.method == "POST":
+            return self._token(form)
+        if where == GOOGLE_REVOKE and request.method == "POST":
+            self.revoked.append(form)
+            token = form.get("token", "")
+            if token in self.live_refresh or token in self.live_access:
+                self.live_refresh.clear()
+                self.live_access.clear()
+                return httpx.Response(200)
+            return _json(400, {"error": "invalid_token"})
+        if where == GOOGLE_USERINFO and request.method == "GET":
+            header = request.headers.get("authorization", "")
+            if header.removeprefix("Bearer ") not in self.live_access:
+                return _json(401, {"error": "invalid_token"})
+            return _json(200, {**self.account, "email_verified": True})
+        return _json(404, {"error": "not_found"})
+
+    def _mint(self, scopes: list[str], *, refresh: bool) -> dict[str, Any]:
+        access = f"ya29.synthetic-{secrets.token_hex(8)}"
+        self.live_access[access] = scopes
+        body: dict[str, Any] = {
+            "access_token": access,
+            "expires_in": 3599,
+            "token_type": "Bearer",
+            "scope": " ".join(scopes),
+            "id_token": "synthetic-id-token",
+        }
+        if refresh:
+            token = f"1//synthetic-{secrets.token_hex(8)}"
+            self.live_refresh[token] = scopes
+            body["refresh_token"] = token
+        return body
+
+    def _token(self, form: dict[str, str]) -> httpx.Response:
+        self.token_requests.append(form)
+        if (form.get("client_id"), form.get("client_secret")) != (
+            self.client_id,
+            self.client_secret,
+        ):
+            return _json(401, {"error": "invalid_client"})
+        if form.get("grant_type") == "authorization_code":
+            code = form.get("code", "")
+            pending = self.codes.pop(code, None)
+            if (
+                pending is None
+                or pending.redirect_uri != form.get("redirect_uri")
+                or pending.challenge != s256(form.get("code_verifier", ""))
+            ):
+                return _json(400, {"error": "invalid_grant"})
+            return _json(200, self._mint(pending.scopes, refresh=self.offline[code]))
+        if form.get("grant_type") == "refresh_token":
+            scopes = self.live_refresh.get(form.get("refresh_token", ""))
+            if scopes is None:
+                return _json(400, {"error": "invalid_grant"})
+            return _json(200, self._mint(scopes, refresh=False))
+        return _json(400, {"error": "unsupported_grant_type"})
+
+
 def s256(verifier: str) -> str:
     digest = hashlib.sha256(verifier.encode()).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()

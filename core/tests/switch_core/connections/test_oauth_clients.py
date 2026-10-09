@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import ServiceAdapterError
-from switch_core.connections.adapters.oauth_mcp import OAuthMcpAdapter
+from switch_core.connections.adapters.oauth import OAuthAdapter
 from switch_core.connections.loader import ConnectionDefinition
 from switch_core.connections.oauth_clients import (
     LOOPBACK_REDIRECT_URI,
@@ -32,7 +32,7 @@ from tests.switch_core.connections.fake_vendor import (
     UnregisteredRedirect,
     s256,
 )
-from tests.switch_core.connections.test_loader import OAUTH_MCP_ENTRY
+from tests.switch_core.connections.test_loader import OAUTH_ENTRY
 
 PORTS = [43123, 43124]
 REDIRECT = loopback_redirect(43123)
@@ -56,9 +56,9 @@ def _client(
     )
 
 
-def _adapter(client: RegisteredClient, vendor: FakeOAuthServer) -> OAuthMcpAdapter:
-    definition = ConnectionDefinition.model_validate(yaml.safe_load(OAUTH_MCP_ENTRY))
-    return OAuthMcpAdapter(definition, client, vendor.client())
+def _adapter(client: RegisteredClient, vendor: FakeOAuthServer) -> OAuthAdapter:
+    definition = ConnectionDefinition.model_validate(yaml.safe_load(OAUTH_ENTRY))
+    return OAuthAdapter(definition, client, vendor.client())
 
 
 async def _rows(
@@ -68,7 +68,7 @@ async def _rows(
         return list(await session.scalars(select(ServiceOAuthClient)))
 
 
-async def _sign_in(adapter: OAuthMcpAdapter, vendor: FakeOAuthServer, redirect: str):
+async def _sign_in(adapter: OAuthAdapter, vendor: FakeOAuthServer, redirect: str):
     verifier = secrets.token_urlsafe(48)
     url = await adapter.authorization_url(
         redirect_uri=redirect,

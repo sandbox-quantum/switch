@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -287,13 +287,37 @@ describe('toolStatuses', () => {
     writeFileSync(join(dir, 'git'), '#!/bin/sh\n');
     chmodSync(join(dir, 'git'), 0o755);
     writeFileSync(join(dir, 'gh'), 'not executable');
-    expect(await toolStatuses(`/nonexistent:${dir}`, 'linux')).toEqual([
+    const noVendorTools = join(dir, 'tools');
+    expect(await toolStatuses(`/nonexistent:${dir}`, 'linux', noVendorTools)).toEqual([
       { tool: 'git', state: 'ok' },
       { tool: 'gh', state: 'missing' },
     ]);
-    expect(await toolStatuses(dir, 'win32')).toEqual([
+    expect(await toolStatuses(dir, 'win32', noVendorTools)).toEqual([
       { tool: 'git', state: 'unsupported' },
       { tool: 'gh', state: 'unsupported' },
+    ]);
+  });
+
+  it('reports each vendor tool a session here has set up', async () => {
+    const tools = join(dir, 'tools');
+    mkdirSync(tools);
+    const entry = (state: string) => ({
+      version: '1.2.3',
+      target: 'linux-x64',
+      state,
+      detail: null,
+      checked_at: '2026-10-08T00:00:00Z',
+    });
+    writeFileSync(
+      join(tools, 'status.json'),
+      JSON.stringify({ zcli: entry('failed'), excli: entry('ok'), wincli: entry('unsupported') })
+    );
+    expect(await toolStatuses('/nonexistent', 'linux', tools)).toEqual([
+      { tool: 'git', state: 'missing' },
+      { tool: 'gh', state: 'missing' },
+      { tool: 'excli', state: 'ok' },
+      { tool: 'wincli', state: 'unsupported' },
+      { tool: 'zcli', state: 'missing' },
     ]);
   });
 });

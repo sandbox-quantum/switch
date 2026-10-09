@@ -1,9 +1,10 @@
 # Service connections: v2, services beyond GitHub
 
-Status: built (Phase 1). This note covers what v2 adds to
+Status: built (Phases 1 and 2). This note covers what v2 adds to
 [`service-connections-v1.md`](service-connections-v1.md): any OAuth vendor
-whose tools are its own MCP servers, connected, granted and called from a
-session on generic parts, with Atlassian (Jira) as the first. v1's tables,
+whose tools are its own MCP servers or its command-line tool, connected,
+granted and called from a session on generic parts, with Atlassian (Jira) and
+Google Workspace as the first. v1's tables,
 broker checks, agent routes, token cache and redaction carry over unchanged;
 GitHub works as it did.
 
@@ -11,11 +12,11 @@ GitHub works as it did.
 
 | v1 | v2 |
 |---|---|
-| One adapter, GitHub's, built by hand in `main.py` | Built from the catalog (`connections/registry.py`): each enabled entry names its `adapter`, `github` or the generic `oauth-mcp` |
-| Catalog `connection.yaml` v2 | v3: `adapter`, `token`, `auth.oauth`, `auth.identity`, `mcp` (below) |
+| One adapter, GitHub's, built by hand in `main.py` | Built from the catalog (`connections/registry.py`): each enabled entry names its `adapter`, `github` or the generic `oauth` |
+| Catalog `connection.yaml` v2 | v3: `adapter`, `token`, `auth.oauth`, `auth.identity`, `mcp` or `cli` (below) |
 | Every token minted per issue, at most an hour | `minted` (GitHub) or `pass_through`: the owner's own access token, with the catalog's lifetime cap |
 | Grants with a level, tools and resources | A pass-through grant is **on or off**: it takes the connection's level |
-| Connecting through GitHub's own flow | A generic flow for `oauth-mcp` entries; GitHub keeps its own |
+| Connecting through GitHub's own flow | A generic flow for `oauth` entries; GitHub keeps its own |
 | No vendor tools in a session | One loopback MCP server per granted vendor server, run by the session host |
 | A service is set up or not | `DISABLED_SERVICES` switches one off, with a reason people see |
 
@@ -24,7 +25,7 @@ GitHub works as it did.
 ```yaml
 slug: atlassian
 enabled: true
-adapter: oauth-mcp            # github | oauth-mcp
+adapter: oauth                # github | oauth
 auth:
   type: oauth
   refresh: rotating           # rotating | reusable
@@ -34,6 +35,9 @@ auth:
     redirect: [loopback]      # loopback (Switch Console) and/or core (Core's callback)
     loopback_ports: [39231, 39232, 39233, 39234, 39235]
     prompt: consent           # sent with every authorization
+    # authorization_params: { access_type: offline }   # also sent with every
+    #   authorization; only keys Core does not set itself (access_type,
+    #   include_granted_scopes)
     revocation_discovered: true   # or revocation_url: https://…
   identity:                   # GET with the token; dotted paths in its JSON
     url: https://api.atlassian.com/me
@@ -51,12 +55,40 @@ tools: { mode: pass_through } # the vendor's tool list as it is, until classifie
 
 The loader stays strict and refuses an entry whose fields contradict its
 adapter: a GitHub entry with MCP servers, a pass-through GitHub token, an
-`oauth-mcp` entry without its client, identity or servers, a minted token that
+`oauth` entry without its client, identity or tools, a minted token that
 outlives an hour, and so on. Without `authorization_url` and `token_url`, the
 endpoints are discovered from the first MCP server: the metadata its 401 names
 (RFC 9728), else the well-known addresses, then the authorization server's
 metadata (RFC 8414), which must offer PKCE with S256. A dynamically registered
 client always discovers. Placeholder entries keep their short form.
+
+The adapter is named for how it signs in, `oauth`, not for how its tools are
+reached. Its entry delivers its tools one of two ways, never both: the vendor's
+MCP servers (`mcp`), or the vendor's command-line tool (`cli`), which the
+session host runs as one Switch tool:
+
+```yaml
+cli:
+  name: example            # the tool's name in the session, beside `switch`
+  binary: excli            # run directly, never through a shell
+  token_env: EXCLI_TOKEN   # set only in that run's environment
+  config_env: EXCLI_CONFIG_DIR   # where the tool has one: a folder per session
+  allow: [items, boards]   # a command's first argument must be one of these
+  deny: [auth, --profile]  # first arguments, and flags refused anywhere
+  path_flags: { --upload: read, --output: write, -o: write }
+  path_args: [{ after: +put, direction: read }]   # `excli +put <file>`
+  output_cap_bytes: 65536  # more goes to a file
+  timeout_s: 120
+  token_refused:           # how a run says the vendor refused its token,
+    exit_code: 1           # so the session host asks again and retries once
+    json_path: error.code  # in the JSON the tool writes to standard output
+    value: 401
+```
+
+An entry with a `cli` has no MCP server to discover from, so it names its
+`authorization_url` and `token_url` (and `revocation_url`, where the vendor has
+one), and its client is the operator's (`registration: static`). No two
+entries may give a session a server of the same name.
 
 `<PREFIX>_CLIENT_CONFIG_PATH` names a static client's settings, a JSON file
 holding `client_id` and `client_secret` and nothing else. Unset, the service is
@@ -130,6 +162,52 @@ coding tool's environment, arguments or files.
 Only text reaches the coding tool: anything else a vendor tool answers is
 replaced by a line saying what was left out.
 
+The grants answer also gains `cli_tools`. For each, the session host
+(`host/vendor-cli.ts`) serves one tool on loopback, under the entry's `cli.name`,
+taking `{args}`: the command line after the binary, one argument per item. The
+host runs the vendor's binary itself:
+
+- **Checked first, never a shell.** The first argument must be allowed and not
+  denied; a denied flag is refused in any form (`--f`, `--f=v`, `-fv`); short
+  options may not be combined, so no path flag hides in a cluster; `--` is
+  refused. A positional file (`path_args`) must come right after its word,
+  wherever that word stands, so no option can stand between them. Every path
+  is checked against the session's folder before anything else: nothing runs,
+  and no token is asked for, for a refused command.
+- **A folder of its own.** Each run works in a fresh folder holding only an
+  empty `.env` (a tool that loads `.env` from its folder or a parent's finds
+  that one and stops) and the files staged for it. A path flag's file must be
+  inside the session's folder once symbolic links are resolved: a file read is
+  copied in, a file written is moved out once the run succeeds. Anything else
+  the run leaves, such as a download, moves to `.switch/<tool>/` in the
+  session's folder, which git ignores, and the answer says where.
+- **The token, and nothing else.** The run's environment holds the token in
+  `token_env`, a configuration folder and home kept for the session, and the
+  host's own proxy and certificate-authority settings; nothing of the coding
+  tool's. The token is asked for on every run, added to the session's
+  redactions, and scrubbed from the output.
+- **Refused, timed out, too long.** A run that ends as `token_refused` says is
+  run once more on a token asked for again, naming the refused one. A run past
+  `timeout_s` is stopped. Output past `output_cap_bytes` is saved to
+  `.switch/<tool>/` and its path returned with the start of it; past 64 MiB the
+  run is stopped.
+
+The binary is the entry's pinned build (`cli.release`): a version and, per
+machine (`<platform>-<arch>`, as Node names them), an archive's URL, its
+SHA-256 and the binary's path inside it. On a tool's first use on a machine,
+the session host (`host/cli-binaries.ts`) downloads its archive over HTTPS,
+keeps it only if the SHA-256 matches, unpacks it with the system's `tar` (which
+reads `.zip` too on Windows) and installs it under
+`~/.local/state/switch/tools/<binary>/<sha256>/`, once per machine. Upgrading a
+tool is a catalog change; a machine without a build is told so when the tool
+is called. What each install found (installed, failed, no build here) is kept
+in that folder's `status.json`, and the agents controller reports it with `git`
+and `gh` in its status (`ok`, `missing` or `unsupported`).
+
+Pinning the build in the catalog means Core names a binary that session hosts
+run. The SHA-256 is what holds it: a host runs only an archive that matches the
+hash shipped in the catalog, never a newer one a vendor publishes.
+
 ## Grants
 
 A pass-through service's grant names no level, tools or resources: the broker
@@ -171,6 +249,68 @@ To connect: Settings, Connections in Switch Console, then Atlassian. Nothing
 needs configuring on the server. To roll back, add `atlassian` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
+## Google Workspace
+
+Drive, Docs, Sheets, Slides and Calendar; not Gmail. Google's Workspace MCP
+servers are in developer preview, whose terms forbid offering them to people
+outside the company running them, so a session reaches Google through `gws`
+([googleworkspace/cli](https://github.com/googleworkspace/cli)), Google's
+command-line tool for its generally available APIs, run by the session host as
+the `gws` tool on the `google-workspace` server (`cli`, above). The token
+reaches the `gws` run's environment, for that run only, and never the coding
+tool.
+
+Built from a spike against a test Workspace with an Internal app:
+
+- **Its own client per server.** Each server's operator registers an internal
+  Google app, a Web client whose redirect is Core's callback,
+  `<GATEWAY_PUBLIC_URL>/gateway/service-connections/google-workspace/flows/callback`,
+  and names its settings in `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`
+  ([operator setup](../old/google-workspace-setup.md)). Unset, Google Workspace
+  is listed as not set up on this server.
+- **Offline access.** Google returns a refresh token only for
+  `access_type=offline`, and on a later sign-in only with `prompt=consent`;
+  both go with every authorization. Refresh tokens are reusable.
+- **The account chooser first.** `prompt` also carries `select_account`, so a
+  browser signed in to another Google account (a personal one, or another
+  organization's) does not pick it unasked. `prompt` takes several values,
+  space-separated, as OAuth writes them.
+- **Tokens.** Access tokens lived 3,599 s; `max_lifetime` is 3,920, Google's
+  documented sample. Agents still ask again hourly.
+- **The account** is OpenID's `sub`, labelled by `email`, from userinfo.
+- **Scopes as Google names them.** Google answers with full scope URLs
+  (`email` comes back as `.../auth/userinfo.email`), and the level is read by
+  comparing them, so the entry names them that way. A person who unticks the
+  write scopes connects read-only, and Google refuses every change.
+- **Re-linking cannot narrow.** While the app holds access, Google's consent
+  shows what it already has, with nothing to untick: connecting read-only after
+  read and write takes a disconnect first.
+- **Disconnecting revokes** at `oauth2.googleapis.com/revoke`, which ends every
+  token of the person's sign-in to that app.
+- **`gws` 0.22.5,** pinned per machine; the Linux builds are the musl ones,
+  which run on glibc and musl systems alike, and Windows has an x64 build only.
+  Its first argument is a service (`drive`, `docs`, `sheets`, `slides`,
+  `calendar`) or `schema`; `auth`, `gmail`, `admin`, `chat`, `--api-version`
+  (and `drive:v2` and the like) and `--sanitize` are refused. `--upload`,
+  `--output`/`-o` and `drive +upload <file>` are its local files. A refused
+  token ends a run with exit 1 and Google's 401.
+- **`gws` reads a `.env`** from its working folder or the nearest parent with
+  one, which could point it at a proxy; each run's folder holds an empty
+  `.env` of its own, which stops the search.
+
+Another process running as the same user could read the token from a `gws`
+run's environment while it runs, or replace what that run executes. Keeping
+the token out of `gws` altogether (a credential proxy in the session host) is a
+later spike.
+
+Self-hosted servers come first. Switch's hosted service lists Google Workspace
+as unavailable through its own deployment settings, not this repository:
+`DISABLED_SERVICES` `{"google-workspace": "<the reason people see>"}`.
+
+To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
+`enabled: false`, or unset `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`. Each lists
+it as unavailable, with its reason, and the next token request fails.
+
 ## Not yet
 
 - `grants.changed` on the agent and controller streams: a grant change reaches
@@ -181,5 +321,12 @@ needs configuring on the server. To roll back, add `atlassian` to
   session at the vendor.
 - Connecting Atlassian from the web dashboard, and a server setting that moves
   a vendor to Core's callback (today the catalog's order decides).
-- Google Workspace, which waits on Google's developer preview.
-- A live run against a real Jira site stays manual and outside CI.
+- Connecting any service from the web dashboard: Switch Console starts every
+  sign-in, Google Workspace's included, though Google's comes back through
+  Core.
+- Google Workspace on Switch's hosted service, which waits on Google's review
+  of Switch's own app.
+- Keeping a CLI vendor's token out of the CLI's process (a credential proxy).
+- Live runs against a real Jira site and a real Google Workspace stay manual
+  and outside CI, which tests `gws`'s handling against a stand-in, never the
+  real binary.
