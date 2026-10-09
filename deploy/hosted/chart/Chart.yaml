@@ -1,5 +1,9 @@
 apiVersion: v2
 name: switch-hosted-controller
 description: Single-controller lifecycle service for Switch cloud machines on EC2
-version: 0.1.3
+# Placeholder, like the switch chart's: the switch-release workflow stamps the
+# switch-core release version at package time and publishes this chart beside
+# the switch chart, with the controller image's digest written into its values.
+version: 0.0.0-dev
+appVersion: "0.0.0-dev"
 type: application

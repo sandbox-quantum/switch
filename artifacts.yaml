@@ -119,6 +119,20 @@ artifacts:
     version_from: switch-core
     published_as: charts/switch
 
+  hosted-controller:
+    description: >-
+      The hosted controller image, which provisions Switch cloud machines for
+      switch-core.
+    version_from: switch-core
+    published_as: switch-hosted-controller
+
+  hosted-controller-chart:
+    description: >-
+      The hosted controller's Kubernetes chart, pinned to its image by digest
+      like the switch chart.
+    version_from: switch-core
+    published_as: charts/switch-hosted-controller
+
   compose:
     description: >-
       The standalone compose file, published as an OCI artifact. Unlike the

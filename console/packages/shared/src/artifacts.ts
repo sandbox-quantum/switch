@@ -27,6 +27,8 @@ export const ARTIFACT_VERSIONS = {
   gateway: '0.29.0',
   setup: '0.29.0',
   'helm-chart': '0.29.0',
+  'hosted-controller': '0.29.0',
+  'hosted-controller-chart': '0.29.0',
   compose: '0.29.0',
 } as const satisfies Record<string, string>;
 

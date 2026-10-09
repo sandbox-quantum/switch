@@ -110,6 +110,11 @@ version of their own to them without also giving them a release of their own.
   20. Each publishing run records every digest in its summary and in a
   `release-pins` artifact, and a version already in the registry is never
   published again.
+- **The hosted controller is published with every release and dev build**: its
+  image as `switch-hosted-controller` and its chart as
+  `charts/switch-hosted-controller`, versioned with switch-core and pinned to
+  its image by digest (`image.repository`, `image.digest`). The dev charts also
+  carry a `main` tag that follows the newest build of main.
 
 #### Fixed
 - **The Helm chart's Ingress now routes every agent API path to switch-core.**
