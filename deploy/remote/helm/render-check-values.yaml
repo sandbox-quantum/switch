@@ -1,0 +1,9 @@
+# Placeholder secrets that let `helm template` render the switch chart in CI,
+# where the only question is what the manifests reference (see
+# scripts/pin_chart_images.py). Never deploy with these.
+secrets:
+  postgresPassword: render-check
+  agentRegistrationToken: render-check
+  secretKeys: "render-check:0000000000000000000000000000000000000000"
+  gatewayAdminEmail: render-check@example.com
+  gatewayAdminPassword: render-check

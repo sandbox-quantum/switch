@@ -1,0 +1,12 @@
+# Layered over render-check-values.yaml for a second render with the chart's
+# optional workloads switched on, so an image reference behind a feature flag
+# is checked too (see scripts/pin_chart_images.py). Never deploy with these.
+mattermost:
+  enabled: true
+switchCore:
+  migrations:
+    preUpgradeJob: true
+  teamsBridge:
+    enabled: true
+    ingress:
+      mode: external

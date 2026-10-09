@@ -10,6 +10,13 @@ global:
   # private registry (e.g. a private GHCR namespace). Applied to every pod. Leave
   # empty for public images.
   imagePullSecrets: []
+  # Seconds the gateway pod waits in a preStop hook before SIGTERM on a roll, so
+  # the endpoint and any load balancer stop routing to it while its replacement
+  # is already serving, and the roll answers no requests with 502/503s. Only
+  # rendered on Kubernetes 1.30+ (the native `sleep` lifecycle action); 0 turns
+  # it off. switch-core and Mattermost roll with Recreate, where there is no
+  # replacement to drain to, so they get no hook.
+  preStopSleepSeconds: 5
 
 # ── Ingress ─────────────────────────────────────────────────────────────────
 # Generic Ingress for the web surface. Bring your own ingress controller
@@ -180,7 +187,9 @@ switchCore:
   hostedDiskRetentionDays: 7
   hostedIdleStopMinutes: 30
   image: switch-core:latest
-  imagePullPolicy: Always
+  # Empty: IfNotPresent when the image is pinned by digest (as in a published
+  # chart), Always otherwise. Set it to override.
+  imagePullPolicy: ""
   logLevel: INFO
 
   # Logging. "text" is for reading in a terminal; "json" is what a log pipeline
@@ -573,7 +582,9 @@ switchCore:
 # ── Gateway (React + nginx) ──────────────────────────────────────────────────
 gateway:
   image: gateway:latest
-  imagePullPolicy: Always
+  # Empty: IfNotPresent when the image is pinned by digest (as in a published
+  # chart), Always otherwise. Set it to override.
+  imagePullPolicy: ""
   replicaCount: 1
   service:
     type: ClusterIP
@@ -639,7 +650,9 @@ mattermost:
 # ── Setup Job ─────────────────────────────────────────────────────────────────
 setup:
   image: setup:latest
-  imagePullPolicy: Always
+  # Empty: IfNotPresent when the image is pinned by digest (as in a published
+  # chart), Always otherwise. Set it to override.
+  imagePullPolicy: ""
   backoffLimit: 5
 
 # ── PostgreSQL ────────────────────────────────────────────────────────────────

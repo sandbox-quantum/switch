@@ -24,7 +24,7 @@ spec:
       containers:
         - name: gateway
           image: {{ include "switch.image" (dict "global" .Values.global "image" .Values.gateway.image) }}
-          imagePullPolicy: {{ .Values.gateway.imagePullPolicy }}
+          imagePullPolicy: {{ include "switch.imagePullPolicy" (dict "policy" .Values.gateway.imagePullPolicy "image" .Values.gateway.image) }}
           ports:
             - containerPort: 3000
               protocol: TCP
@@ -32,6 +32,7 @@ spec:
             - name: nginx-config
               mountPath: /etc/nginx/conf.d/default.conf
               subPath: default.conf
+          {{- include "switch.preStopDrain" . | nindent 10 }}
           readinessProbe:
             httpGet:
               path: /

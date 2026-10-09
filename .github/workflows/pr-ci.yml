@@ -73,6 +73,7 @@ jobs:
       gateway: ${{ steps.filter.outputs.gateway }}
       artifacts: ${{ steps.filter.outputs.artifacts }}
       migrations: ${{ steps.filter.outputs.migrations }}
+      chart: ${{ steps.filter.outputs.chart }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -92,6 +93,8 @@ jobs:
               - 'core/**'
               # Tested from core/tests, so a change to it alone still runs them.
               - 'scripts/check_migration_heads_for_open_prs.py'
+              - 'scripts/pin_chart_images.py'
+              - 'scripts/prune_dev_packages.py'
             console:
               - *shared
               - 'console/**'
@@ -107,6 +110,13 @@ jobs:
             # actually find a new head — not on every backend-touching push.
             migrations:
               - 'core/switch_core/migrations/versions/**'
+            # The switch Helm chart and what the release does to it before
+            # publishing (pins the image digests into values.yaml).
+            chart:
+              - *shared
+              - 'deploy/remote/helm/**'
+              - 'scripts/pin_chart_images.py'
+              - '.github/workflows/switch-release.yml'
             # Spans every tree, so it gets its own filter rather than riding
             # any one of them. Includes the files whose versions the registry is
             # checked against, so a release bump cannot land without the check.
@@ -242,6 +252,39 @@ jobs:
 
       - name: Registry, generated modules and declared versions agree
         run: uv run --project core python scripts/gen_artifacts.py --check
+
+  chart:
+    name: Helm chart
+    # The release pins every first-party image in the chart by digest before
+    # publishing. This runs the same pin with placeholder digests and fails if
+    # any first-party image still renders by tag, so an image value the pinner
+    # does not know about fails here rather than shipping unpinned.
+    needs: changes
+    if: ${{ needs.changes.outputs.chart == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      - name: Lint
+        run: helm lint deploy/remote/helm/switch
+
+      - name: Every first-party image is pinned by digest once pinned
+        # Rendered as configured by default and with the optional workloads on,
+        # so an image behind a feature flag is checked too.
+        run: |
+          python3 scripts/pin_chart_images.py pin \
+            --values deploy/remote/helm/switch/values.yaml \
+            --registry ghcr.io/render-check --version 0.0.0-check --placeholder-digests
+          for overlay in "" "-f deploy/remote/helm/render-check-optional-values.yaml"; do
+            # shellcheck disable=SC2086 # $overlay is deliberately split into two words
+            helm template switch deploy/remote/helm/switch \
+              -f deploy/remote/helm/render-check-values.yaml $overlay \
+              | python3 scripts/pin_chart_images.py verify --registry ghcr.io/render-check
+          done
 
   gateway:
     name: Gateway UI
