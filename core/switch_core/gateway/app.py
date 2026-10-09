@@ -60,6 +60,7 @@ from switch_core.gateway.teams_placements import router as teams_placements_rout
 from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
+from switch_core.gateway.trust_settings import router as trust_settings_router
 from switch_core.keys import Purpose
 from switch_core.providers.github import GitHubConnections
 from switch_core.providers.hosted import HostedControllerSettings
@@ -188,6 +189,7 @@ def create_gateway_app(
     app.include_router(templates_router, tags=["templates"])
     app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
+    app.include_router(trust_settings_router, tags=["trust-settings"])
     app.include_router(
         messaging_installs_router,
         prefix="/messaging-apps",

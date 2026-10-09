@@ -17,6 +17,10 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from switch_core.db.stores.trust_settings_store import TrustSettingsStore
+from switch_core.keys import Keyring
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +122,48 @@ class NullTrustClient:
         self, *, role: Role, content: str, room_id: str
     ) -> TrustCheckResult:
         return TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
+
+
+class DynamicTrustClient:
+    """Reads the one server-global ``trust_settings`` row on every call.
+
+    Unlike `HttpTrustClient`, built once at boot from fixed arguments, this
+    resolves its settings fresh each check — so a change made through the
+    gateway's settings endpoint (`gateway/trust_settings.py`) takes effect on
+    the next message, with no restart. Behaves exactly like `NullTrustClient`
+    when no row exists yet, or one is missing `policy_id`/`api_key_encrypted`.
+    """
+
+    def __init__(
+        self,
+        *,
+        session_factory: async_sessionmaker[AsyncSession],
+        store: TrustSettingsStore,
+        keyring: Keyring,
+        client: httpx.AsyncClient,
+        timeout_seconds: float,
+    ) -> None:
+        self._session_factory = session_factory
+        self._store = store
+        self._keyring = keyring
+        self._client = client
+        self._timeout_seconds = timeout_seconds
+
+    async def check(
+        self, *, role: Role, content: str, room_id: str
+    ) -> TrustCheckResult:
+        async with self._session_factory() as session:
+            settings = await self._store.get(session)
+        if settings is None or not settings.policy_id or not settings.api_key_encrypted:
+            return TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
+        http_client = HttpTrustClient(
+            base_url=settings.endpoint,
+            api_key=self._keyring.decrypt(settings.api_key_encrypted),
+            policy_id=settings.policy_id,
+            timeout_seconds=self._timeout_seconds,
+            client=self._client,
+        )
+        return await http_client.check(role=role, content=content, room_id=room_id)
 
 
 class HttpTrustClient:

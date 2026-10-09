@@ -179,6 +179,12 @@ _RAW_SESSION_FACTORY_MODULES = {
     # and no policy (`rls_ddl.GLOBAL_TABLES`): a process serves every tenant,
     # so its lease belongs to none. It touches only that table.
     "switch_core.management.process_lease",
+    # `DynamicTrustClient` reads `trust_settings` on every check, including
+    # from agent- and bridge-originated sends that have no request to inherit
+    # a tenant from. A table with no tenant and no policy
+    # (`rls_ddl.GLOBAL_TABLES`): one guardrails policy covers the whole
+    # deployment, so there is no tenant for a policy to narrow on.
+    "switch_core.trust.client",
 }
 
 # Calls that end in `session_factory` but hand one back rather than open a

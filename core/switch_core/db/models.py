@@ -2136,6 +2136,29 @@ class FeatureFlag(Base):
     )
 
 
+class TrustSettings(Base):
+    """Server-global Switch Trust guardrails configuration — one row.
+
+    No row, or one with ``policy_id``/``api_key_encrypted`` unset, means the
+    check is off (see ``switch_core.trust.client.DynamicTrustClient``). ``id``
+    is a fixed constant (``db/stores/trust_settings_store.py``) rather than a
+    generated key, since there is exactly one row by construction.
+    """
+
+    __tablename__ = "trust_settings"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 # ── Messages ─────────────────────────────────────────────────────────────────
 
 

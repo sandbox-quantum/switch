@@ -48,6 +48,8 @@ import type {
   SwitchUser,
   TeamsTeam,
   TeamsTeamsResult,
+  TrustSettings,
+  UpdateTrustSettingsParams,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
   Invitation,
@@ -359,6 +361,59 @@ export async function fetchAuthConfig(server: SwitchServer): Promise<SwitchAuthC
     oidcProviderLabel: json.oidc_provider_label,
     signupEnabled: json.signup_enabled === true,
   };
+}
+
+type TrustSettingsJson = {
+  endpoint: string;
+  policy_id: string | null;
+  has_api_key: boolean;
+  api_key_last4: string | null;
+  enabled: boolean;
+};
+
+function mapTrustSettings(json: TrustSettingsJson): TrustSettings {
+  return {
+    endpoint: json.endpoint,
+    policyId: json.policy_id,
+    hasApiKey: json.has_api_key,
+    apiKeyLast4: json.api_key_last4,
+    enabled: json.enabled,
+  };
+}
+
+/** Switch Trust's one server-global settings row, admin-only
+ * (`GET /trust-settings`). */
+export async function fetchTrustSettings(server: SwitchServer): Promise<TrustSettings> {
+  const res = await gatewayFetch(server, '/trust-settings', { authenticated: true });
+  return mapTrustSettings((await res.json()) as TrustSettingsJson);
+}
+
+/** Save Switch Trust's settings, admin-only (`PUT /trust-settings`).
+ * `params.apiKey` left unset leaves whatever key is already stored
+ * untouched — see {@link UpdateTrustSettingsParams}. */
+export async function updateTrustSettings(
+  server: SwitchServer,
+  params: Omit<UpdateTrustSettingsParams, 'serverId'>
+): Promise<TrustSettings> {
+  const res = await gatewayFetch(server, '/trust-settings', {
+    authenticated: true,
+    method: 'PUT',
+    body: {
+      endpoint: params.endpoint,
+      policy_id: params.policyId,
+      ...(params.apiKey !== undefined ? { api_key: params.apiKey } : {}),
+    },
+  });
+  return mapTrustSettings((await res.json()) as TrustSettingsJson);
+}
+
+/** Turn Switch Trust off, admin-only (`DELETE /trust-settings`). */
+export async function clearTrustSettings(server: SwitchServer): Promise<TrustSettings> {
+  const res = await gatewayFetch(server, '/trust-settings', {
+    authenticated: true,
+    method: 'DELETE',
+  });
+  return mapTrustSettings((await res.json()) as TrustSettingsJson);
 }
 
 type ServerDeclarationJson = {

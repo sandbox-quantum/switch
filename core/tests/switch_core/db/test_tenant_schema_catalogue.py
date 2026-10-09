@@ -112,6 +112,9 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             # sockets for every tenant at once, and the row says only that it
             # is alive.
             "switch_core_processes",
+            # Switch Trust's one guardrails policy for the whole deployment.
+            # A policy that varied per tenant would be a new scoped table.
+            "trust_settings",
         }
 
     async def test_scoped_is_everything_else(self) -> None:

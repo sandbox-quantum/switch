@@ -586,6 +586,64 @@ export type DeleteBridgeResult =
   | { kind: 'not-found' }
   | { kind: 'error'; message: string };
 
+/**
+ * Switch Trust's one server-global guardrails settings row
+ * (`GET /trust-settings`). One policy covers the whole deployment, not a
+ * workspace, so this has no `workspaceId` the way bridge-shaped types do.
+ *
+ * The API key is never returned by the gateway — `hasApiKey`/`apiKeyLast4`
+ * only confirm one is stored, so a form can show "configured" without ever
+ * holding the real value.
+ */
+export type TrustSettings = {
+  endpoint: string;
+  /** Null until a policy id has been saved — the check is off until then. */
+  policyId: string | null;
+  hasApiKey: boolean;
+  apiKeyLast4: string | null;
+  /** `policyId` and an API key are both set. */
+  enabled: boolean;
+};
+
+/** Outcome of loading Switch Trust's settings (`GET /trust-settings`).
+ * Admin-only (a deployment operator, not a workspace admin), so a signed-in
+ * non-operator gets `forbidden` rather than an empty form. */
+export type FetchTrustSettingsResult =
+  | { kind: 'loaded'; settings: TrustSettings }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
+/**
+ * Parameters for saving Switch Trust's settings (`PUT /trust-settings`).
+ * `apiKey` left unset leaves whatever key is already stored untouched, so
+ * resaving the endpoint or policy id doesn't force re-entering the secret.
+ */
+export type UpdateTrustSettingsParams = {
+  serverId: string;
+  endpoint: string;
+  policyId: string | null;
+  apiKey?: string;
+};
+
+/** Outcome of saving Switch Trust's settings. Mirrors {@link
+ * UpdateBridgeResult}'s recoverable cases. */
+export type UpdateTrustSettingsResult =
+  | { kind: 'saved'; settings: TrustSettings }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'invalid'; message: string }
+  | { kind: 'error'; message: string };
+
+/** Outcome of turning Switch Trust off (`DELETE /trust-settings`). Not
+ * `deleted`, since the row's absence is itself a valid, steady state (a
+ * deployment that has never configured it) rather than something removed. */
+export type ClearTrustSettingsResult =
+  | { kind: 'cleared'; settings: TrustSettings }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
 /** A bridged (external) human identity on a server. The `users` dimension of an
  * addressing policy keys off these ids. */
 export type RemoteExternalUser = {

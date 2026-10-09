@@ -132,6 +132,11 @@ POLICY_NAME = "tenant_isolation"
 # when it started, its last renewal and when it stopped. A process holds
 # controller sockets for every tenant at once, so its lease belongs to none of
 # them, and it holds no customer data, only that the process is alive.
+#
+# `trust_settings` is Switch Trust's one guardrails policy for the whole
+# deployment (`docs/design/switch-trust-guardrails-v1.md`'s Settings UI
+# section) — a policy that varied per tenant would be a new scoped table, not
+# a row here.
 GLOBAL_TABLES = frozenset(
     {
         "users",
@@ -141,6 +146,7 @@ GLOBAL_TABLES = frozenset(
         "telemetry_milestones",
         "telemetry_snapshot_watermark",
         "switch_core_processes",
+        "trust_settings",
     }
 )
 
