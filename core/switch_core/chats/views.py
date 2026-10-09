@@ -25,7 +25,6 @@ from switch_core.db.models import (
     room_agents,
 )
 from switch_core.db.stores.message_store import MessageStore
-from switch_core.management.schemas import PROVIDER_KNOWN_AGENT_TYPES
 
 MESSAGE_EVENT_TYPE = "m.room.message"
 PREVIEW_CHARS = 140
@@ -33,7 +32,11 @@ PREVIEW_CHARS = 140
 _MESSAGE_STORE = MessageStore()
 
 _PROVIDER_OF_KNOWN_AGENT_TYPE = {
-    known: provider for provider, known in PROVIDER_KNOWN_AGENT_TYPES.items()
+    "claude-code": "claude",
+    "codex": "codex",
+    "opencode": "opencode",
+    "antigravity": "antigravity",
+    "cursor": "cursor",
 }
 
 
