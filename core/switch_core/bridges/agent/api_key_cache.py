@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import random
 import time
 from collections import OrderedDict
 
 from switch_core.bridges.agent.protocol.agent_connections import HEARTBEAT_TTL_SECONDS
 from switch_core.db.models import Agent, ApiKey
+
+# Each entry lives a random 80–120% of the TTL. A restart empties the cache
+# for every agent at once, and with a fixed TTL every entry then expires in
+# the same instant too, so the whole fleet hits the database together again on
+# every cycle. Spreading the expiries breaks that herd up after the first one.
+EXPIRY_JITTER = 0.2
 
 
 class ApiKeyCache:
@@ -35,10 +42,11 @@ class ApiKeyCache:
     def __init__(self, *, ttl_seconds: float, max_entries: int) -> None:
         if ttl_seconds < 0:
             raise ValueError(f"ttl_seconds must not be negative, got {ttl_seconds!r}")
-        if ttl_seconds >= HEARTBEAT_TTL_SECONDS:
+        if ttl_seconds * (1 + EXPIRY_JITTER) >= HEARTBEAT_TTL_SECONDS:
             raise ValueError(
-                f"ttl_seconds must stay below the agent heartbeat TTL of "
-                f"{HEARTBEAT_TTL_SECONDS}s, got {ttl_seconds!r}"
+                f"ttl_seconds, with its {EXPIRY_JITTER:.0%} jitter, must stay "
+                f"below the agent heartbeat TTL of {HEARTBEAT_TTL_SECONDS}s, "
+                f"got {ttl_seconds!r}"
             )
         if max_entries < 1:
             raise ValueError(f"max_entries must be at least 1, got {max_entries!r}")
@@ -64,7 +72,8 @@ class ApiKeyCache:
     def put(self, token_hash: str, api_key: ApiKey, agent: Agent) -> None:
         if not self.enabled:
             return
-        self._entries[token_hash] = (time.monotonic() + self._ttl, api_key, agent)
+        lifetime = self._ttl * random.uniform(1 - EXPIRY_JITTER, 1 + EXPIRY_JITTER)
+        self._entries[token_hash] = (time.monotonic() + lifetime, api_key, agent)
         self._entries.move_to_end(token_hash)
         while len(self._entries) > self._max_entries:
             self._entries.popitem(last=False)

@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.api_key_cache import ApiKeyCache
+from switch_core.bridges.agent.api_key_cache import EXPIRY_JITTER, ApiKeyCache
 from switch_core.bridges.agent.auth import BearerAuthMiddleware
 from switch_core.bridges.agent.protocol.agent_connections import HEARTBEAT_TTL_SECONDS
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -185,6 +185,9 @@ class TestCacheUnit:
         monkeypatch.setattr(
             "switch_core.bridges.agent.api_key_cache.time.monotonic", lambda: now[0]
         )
+        monkeypatch.setattr(
+            "switch_core.bridges.agent.api_key_cache.random.uniform", lambda a, b: 1.0
+        )
         cache = ApiKeyCache(ttl_seconds=5, max_entries=8)
         cache.put("h", SimpleNamespace(), SimpleNamespace(id="a"))  # type: ignore[arg-type]
 
@@ -192,6 +195,30 @@ class TestCacheUnit:
         assert cache.get("h") is not None
         now[0] = 1005.0
         assert cache.get("h") is None
+
+    def test_expiries_are_spread_so_a_restart_does_not_repeat_its_herd(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        now = [1000.0]
+        monkeypatch.setattr(
+            "switch_core.bridges.agent.api_key_cache.time.monotonic", lambda: now[0]
+        )
+        cache = ApiKeyCache(ttl_seconds=5, max_entries=500)
+        for index in range(200):
+            cache.put(f"h{index}", SimpleNamespace(), SimpleNamespace(id="a"))  # type: ignore[arg-type]
+
+        expiries = [expires for expires, _, _ in cache._entries.values()]
+        assert min(expiries) >= 1000.0 + 5 * (1 - EXPIRY_JITTER)
+        assert max(expiries) <= 1000.0 + 5 * (1 + EXPIRY_JITTER)
+        # Spread, not stacked: with a fixed lifetime every entry shares one.
+        assert len(set(expiries)) > 100
+
+    def test_the_jitter_counts_against_the_heartbeat_ttl(self) -> None:
+        """The longest an entry can live is what must stay below the TTL."""
+        just_too_long = HEARTBEAT_TTL_SECONDS / (1 + EXPIRY_JITTER)
+        with pytest.raises(ValueError, match="heartbeat TTL"):
+            ApiKeyCache(ttl_seconds=just_too_long, max_entries=8)
+        ApiKeyCache(ttl_seconds=just_too_long * 0.99, max_entries=8)
 
     def test_invalidate_agent_drops_every_token_for_that_agent(self) -> None:
         cache = ApiKeyCache(ttl_seconds=5, max_entries=8)
@@ -460,6 +487,14 @@ class TestAuthCacheConfig:
     def test_a_negative_ttl_fails_at_startup(self) -> None:
         with pytest.raises(ValueError, match="AGENT_AUTH_CACHE_TTL_SECONDS"):
             _config(agent_auth_cache_ttl_seconds=-1)
+
+    def test_a_ttl_whose_jitter_reaches_the_heartbeat_ttl_fails_at_startup(
+        self,
+    ) -> None:
+        longest = HEARTBEAT_TTL_SECONDS / (1 + EXPIRY_JITTER)
+        assert _config(agent_auth_cache_ttl_seconds=longest - 0.1)
+        with pytest.raises(ValueError, match="AGENT_AUTH_CACHE_TTL_SECONDS"):
+            _config(agent_auth_cache_ttl_seconds=longest)
 
     def test_an_unbounded_cache_fails_at_startup(self) -> None:
         with pytest.raises(ValueError, match="AGENT_AUTH_CACHE_MAX_ENTRIES"):
