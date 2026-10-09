@@ -3,12 +3,17 @@ import { toast } from 'sonner';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
+import { switchRoomsStore as switchServersRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { events } from '@renderer/lib/ipc';
-import { scopeToLocationWorkspace } from '@renderer/lib/layout/scope-to-workspace';
+import {
+  scopeToLocationWorkspace,
+  scopeToRoomWorkspace,
+} from '@renderer/lib/layout/scope-to-workspace';
 import { appState } from '@renderer/lib/stores/app-state';
 import { report } from '@renderer/lib/telemetry/report';
 import { sessionDeeplinkChannel } from '@shared/core/switch-rooms/switchRoomEvents';
-import { pickDeeplinkTarget } from './session-deeplink-resolve';
+import { deeplinkDestination, pickDeeplinkTarget } from './session-deeplink-resolve';
 import { switchRoomsStore as roomConnectionsStore } from './switch-rooms-store';
 
 /**
@@ -48,8 +53,8 @@ function findSessionById(sessionId: string): { locationId: string; sessionId: st
 
 /**
  * Listens for `switchdash://session?…` deeplinks (delivered by the main process
- * after a messaging-app click) and focuses the app on the matching agent
- * session: it selects the session's Switch server (so the server-scoped sidebar
+ * after a messaging-app click). A link naming a room opens that room's chat; one
+ * without a room focuses the app on the matching agent session: it selects the session's Switch server (so the server-scoped sidebar
  * shows it) and navigates to the session view. A render-less component so it can subscribe via the typed event
  * bus and use the navigation store. No live session for the room → logged and
  * ignored.
@@ -62,6 +67,20 @@ export function SessionDeeplinkListener(): null {
       sessionDeeplinkChannel,
       ({ agentId, roomId, server, sessionId, coldStart }) => {
         void (async () => {
+          if (deeplinkDestination(roomId) === 'chat') {
+            await scopeToRoomWorkspace(roomId);
+            const serverId =
+              switchServersRoomsStore.roomServerId(roomId) ?? workspacesStore.activeServerId;
+            report('deeplink_opened', { resolved: serverId !== null, cold_start: coldStart });
+            if (!serverId) {
+              toast.error('This chat could not be opened', {
+                description: 'Its Switch server is not one this copy of Switch Console knows.',
+              });
+              return;
+            }
+            appState.navigation.navigate('chat', { serverId, roomId, agentId: agentId || null });
+            return;
+          }
           const match = pickDeeplinkTarget(
             sessionId,
             () => findSessionById(sessionId),

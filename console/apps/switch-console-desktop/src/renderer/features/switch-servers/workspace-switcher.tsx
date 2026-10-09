@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronsUpDown, LogIn, Plus, Search, Server, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
+import { ChatsOfflineNote } from '@renderer/features/chats/components/chats-offline-note';
 import {
   InvitedBadge,
   invitationSummary,
@@ -188,6 +189,7 @@ const ServerMenu = observer(function ServerMenu({ activeServer }: { activeServer
                   <ActiveIcon className="size-3 shrink-0" />
                   <span className="truncate">{serverSubtitleLabel(activeServer)}</span>
                   <ServerStatusDot server={activeServer} />
+                  <ChatsOfflineNote server={activeServer} />
                   {drift && <ServerDriftIndicator drift={drift} />}
                 </span>
               </span>
@@ -353,6 +355,7 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
                     {noWorkspaceYet ? activeServer.name : switcherSubtitle(active, activeServer)}
                   </span>
                   <ServerStatusDot server={activeServer} />
+                  <ChatsOfflineNote server={activeServer} />
                   {drift && <ServerDriftIndicator drift={drift} />}
                 </span>
               </span>

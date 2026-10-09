@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { MessagesSquare } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
@@ -13,6 +14,7 @@ import {
 import { BridgeTile, bridgeUnusableReason } from '@renderer/lib/components/bridge-tile';
 import { PickerCombobox } from '@renderer/lib/components/picker-combobox';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
@@ -27,6 +29,7 @@ import {
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
+import { cn } from '@renderer/utils/utils';
 import type { RemoteAgentSummary } from '@shared/core/switch-servers/switch-servers';
 import { switchServersStore } from './switch-servers-store';
 import { useMyIdentities } from './use-my-identities';
@@ -58,6 +61,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   const [instructions, setInstructions] = useState('');
   const [instructionsOpen, setInstructionsOpen] = useState(false);
   const [bridgeId, setBridgeId] = useState<string | null>(null);
+  const [internalChosen, setInternalChosen] = useState(false);
   const [agents, setAgents] = useState<RemoteAgentSummary[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -109,7 +113,10 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     bridges.find((b) => b.isDefault) ??
     bridges[0] ??
     null;
-  const loaded = !bridgesQuery.isLoading;
+  const loaded = !bridgesQuery.isLoading && !bridgesQuery.isError;
+  // With no app able to make a channel the room is internal: people reach it
+  // from Switch Console's chats, which is a room in its own right.
+  const internal = loaded && (internalChosen || selectedBridge === null);
   const noBridgesAtAll = loaded && allBridges.length === 0;
   const noneRunning = loaded && allBridges.length > 0 && activeBridges.length === 0;
   const noneCanCreateChannels = loaded && activeBridges.length > 0 && bridges.length === 0;
@@ -120,11 +127,11 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     workspaceId !== null &&
     !!trimmedName &&
     !!trimmedDescription &&
-    !!selectedBridge &&
+    (internal || !!selectedBridge) &&
     !isSubmitting;
 
   const handleSubmit = useCallback(async () => {
-    if (!canSubmit || !selectedBridge) return;
+    if (!canSubmit) return;
     setIsSubmitting(true);
     setCloseGuard(true);
     setError(null);
@@ -135,13 +142,28 @@ export const CreateRoomModal = observer(function CreateRoomModal({
         name: trimmedName,
         description: trimmedDescription,
         instructions: instructions.trim() || undefined,
-        bridgeId: selectedBridge.id,
+        bridgeId: internal ? null : (selectedBridge?.id ?? null),
         agentIds: agents.map((a) => a.id),
       });
 
       if (result.kind !== 'created') {
         setError(messageFor(result));
         return;
+      }
+
+      // An internal room is read from Switch Console's chats, which show
+      // only rooms the person is a member of: its creator joins it.
+      if (internal) {
+        try {
+          const { userId } = await rpc.chats.identity(serverId);
+          await rpc.chats.invite(serverId, result.room.id, userId);
+        } catch (cause) {
+          toast({
+            title: 'The room was created, but you were not added to its chat',
+            description: failureText(cause, 'Join it from the room’s Members.'),
+            variant: 'destructive',
+          });
+        }
       }
 
       // Re-read the room state so the sidebar shows the room straight away
@@ -169,7 +191,9 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     }
   }, [
     canSubmit,
+    internal,
     selectedBridge,
+    serverId,
     workspaceId,
     trimmedName,
     trimmedDescription,
@@ -215,29 +239,55 @@ export const CreateRoomModal = observer(function CreateRoomModal({
                   identity={identities?.find((i) => i.bridgeId === bridge.id) ?? null}
                   identitiesKnown={identities !== null}
                   unusable={bridgeUnusableReason(bridge, { needsChannelCreation: true })}
-                  selected={selectedBridge?.id === bridge.id}
-                  onSelect={() => setBridgeId(bridge.id)}
+                  selected={!internal && selectedBridge?.id === bridge.id}
+                  onSelect={() => {
+                    setBridgeId(bridge.id);
+                    setInternalChosen(false);
+                  }}
                 />
               ))}
+              <button
+                type="button"
+                aria-pressed={internal}
+                disabled={!loaded}
+                onClick={() => setInternalChosen(true)}
+                className={cn(
+                  'flex cursor-pointer items-center gap-2.5 rounded-[10px] border p-3 text-left transition-colors',
+                  internal
+                    ? 'border-foreground bg-[var(--sel)]'
+                    : 'border-border hover:bg-[var(--sel-soft)]'
+                )}
+              >
+                <span className="flex size-6 shrink-0 items-center justify-center">
+                  <MessagesSquare className="size-5 text-foreground-muted" />
+                </span>
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate text-sm text-foreground">No messaging app</span>
+                  <span className="truncate text-xs text-foreground-muted">
+                    Chat from Switch Console
+                  </span>
+                </span>
+              </button>
             </div>
             {noBridgesAtAll && (
-              <p className="text-xs text-destructive">
-                This server has no messaging app connected, so a room created here would be
-                unreachable. Connect one first.
+              <p className="text-xs text-foreground-muted">
+                This server has no messaging app connected, so the room is internal: you and the
+                people you invite reach it from Chats in Switch Console.
               </p>
             )}
             {noneRunning && (
-              <p className="text-xs text-destructive">
-                This server&apos;s messaging apps are not running, so a room created here would be
-                unreachable. Start one, or connect another.
+              <p className="text-xs text-foreground-muted">
+                This server&apos;s messaging apps are not running, so the room is internal and
+                reached from Chats in Switch Console. Start one to bridge rooms to it.
               </p>
             )}
             {noneCanCreateChannels && (
-              <p className="text-xs text-destructive">
+              <p className="text-xs text-foreground-muted">
                 None of the running messaging apps can create a channel from Switch — for example, a
-                Telegram bot can&apos;t create chats on its own. Make the chat directly in the
-                messaging app instead (for Telegram, create the group and add the bot to it) and it
-                becomes a room here once it exists.
+                Telegram bot can&apos;t create chats on its own — so the room is internal and
+                reached from Chats in Switch Console. To bridge one, make the chat in the messaging
+                app (for Telegram, create the group and add the bot to it) and it becomes a room
+                here.
               </p>
             )}
             {bridgesQuery.isError && (
@@ -262,7 +312,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               {/* What the name becomes, where it becomes it. A room is a channel
                   in the app it is bridged to, and the two names are the same
                   one — saying so here is what makes that predictable. */}
-              {trimmedName !== '' && selectedBridge && (
+              {trimmedName !== '' && !internal && selectedBridge && (
                 <span className="text-xs text-foreground-muted">
                   Created as #{trimmedName} in {selectedBridge.displayName}.
                 </span>

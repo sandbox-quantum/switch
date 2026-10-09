@@ -630,6 +630,7 @@ class Client(TenantScoped, Base):
             "tenant_id", "matrix_user_id", name="uq_clients_tenant_matrix_user_id"
         ),
         UniqueConstraint("id", "tenant_id", name="uq_clients_id_tenant"),
+        UniqueConstraint("tenant_id", "user_id", name="uq_clients_tenant_user_id"),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -640,6 +641,14 @@ class Client(TenantScoped, Base):
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # The gateway user a `member` client speaks for: a person in a room as
+    # themselves, through Switch Console, rather than through a platform
+    # account. NULL for every other client type.
+    user_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_clients_user"),
+        nullable=True,
+    )
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -2223,6 +2232,14 @@ class Message(TenantScoped, Base):
             postgresql_where=text("thread_root_event_id IS NOT NULL"),
         ),
         UniqueConstraint("id", "tenant_id", name="uq_messages_id_tenant"),
+        # A sender's retry of the same part is the same row, never a second one.
+        Index(
+            "uq_messages_sender_client_txn",
+            "sender_client_id",
+            "client_txn_id",
+            unique=True,
+            postgresql_where=text("client_txn_id IS NOT NULL"),
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "room_id"],
             ["rooms.tenant_id", "rooms.id"],
@@ -2261,6 +2278,9 @@ class Message(TenantScoped, Base):
     sent_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # The sender's own idempotency key for this part, `{requestId}:{index}`,
+    # set by Switch Console sends. NULL for everything else.
+    client_txn_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class MessageAttachment(TenantScoped, Base):
@@ -2379,6 +2399,118 @@ class MediaBlob(TenantScoped, Base):
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# ── Chats ─────────────────────────────────────────────────────────────────────
+
+
+class ChatOperation(TenantScoped, Base):
+    """A Switch Console request a person may retry, keyed by their request id.
+
+    The same key with the same payload answers what the first attempt did; the
+    same key with a different payload is refused. `pending` is only ever seen
+    on a chat creation, which spans several transactions: a send and an upload
+    commit their effect and this row together, so they are `done` or absent.
+    """
+
+    __tablename__ = "chat_operations"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "user_id", "request_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_chat_operations_room",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "kind IN ('create_chat', 'send', 'upload')",
+            name="ck_chat_operations_kind",
+        ),
+        CheckConstraint(
+            "state IN ('pending', 'done')", name="ck_chat_operations_state"
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_chat_operations_user"),
+        nullable=False,
+    )
+    request_id: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class ChatHidden(TenantScoped, Base):
+    """A chat one person took off their own list, until something new is said.
+
+    `hidden_through_seq` is the room's position when it was hidden; a message
+    after it brings the chat back.
+    """
+
+    __tablename__ = "chat_hidden"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "user_id", "room_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_chat_hidden_room",
+            ondelete="CASCADE",
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_chat_hidden_user"),
+        nullable=False,
+    )
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    hidden_through_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ChatOwnerGrant(TenantScoped, Base):
+    """A membership held only because the person owns an agent in the room.
+
+    Present while that is the sole reason: it goes with the membership when
+    they no longer own an agent there, and is dropped (making the membership
+    lasting) when they are invited, create the chat, or join as a manager.
+    """
+
+    __tablename__ = "chat_owner_grants"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "user_id", "room_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_chat_owner_grants_room",
+            ondelete="CASCADE",
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_chat_owner_grants_user"),
+        nullable=False,
+    )
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 

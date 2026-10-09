@@ -161,6 +161,7 @@ it('serves requests on the host side once it has handlers', async () => {
     room: async () => null,
     snapshot: async () => 'snapshot',
     approvals: async () => null,
+    reasoning: async () => null,
   });
   served.ready();
   served.push(event(3) as never);
@@ -365,4 +366,95 @@ it('tells a request waiting on a host that the host stopped, rather than at its 
 
   await expect(waiting).rejects.toThrow('stopped before it was ready');
   expect(Date.now() - started).toBeLessThan(5000);
+});
+
+const REASONING = {
+  epoch: 'epoch',
+  turns: [
+    {
+      turnId: 'turn',
+      text: 'thinking',
+      startedAt: '2026-09-24T12:00:00.000Z',
+      completedAt: '2026-09-24T12:00:03.000Z',
+    },
+  ],
+};
+
+it('asks a ready host for its reasoning, and asks nothing of a host that is not ready', async () => {
+  const links = new SessionLinks();
+  expect(await links.reasoning('nowhere', null)).toBeNull();
+  const child = fakeChild();
+  links.attach('root', child as unknown as ChildProcess);
+  expect(await links.reasoning('root', null)).toBeNull();
+  expect(child.sent).toEqual([]);
+  child.emit('message', { kind: 'ready' });
+  const answer = links.reasoning('root', ['turn']);
+  await vi.waitFor(() => expect(child.sent).toHaveLength(1));
+  const [request] = child.sent as { id: number; request: unknown }[];
+  expect(request!.request).toEqual({ type: 'reasoning', turnIds: ['turn'] });
+  child.emit('message', { kind: 'reply', id: request!.id, ok: true, value: REASONING });
+  expect(await answer).toEqual(REASONING);
+});
+
+it('reads an unreadable or refused reasoning answer as none', async () => {
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const links = new SessionLinks();
+  const child = fakeChild();
+  links.attach('root', child as unknown as ChildProcess);
+  child.emit('message', { kind: 'ready' });
+  const unreadable = links.reasoning('root', null);
+  await vi.waitFor(() => expect(child.sent).toHaveLength(1));
+  child.emit('message', { kind: 'reply', id: (child.sent[0] as { id: number }).id, ok: true });
+  expect(await unreadable).toBeNull();
+  const refused = links.reasoning('root', null);
+  await vi.waitFor(() => expect(child.sent).toHaveLength(2));
+  child.emit('message', {
+    kind: 'reply',
+    id: (child.sent[1] as { id: number }).id,
+    ok: false,
+    error: 'no',
+  });
+  expect(await refused).toBeNull();
+});
+
+it('stops asking a host that predates reasoning, and asks the next host again', async () => {
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.useFakeTimers();
+  try {
+    const links = new SessionLinks();
+    // An older host cannot parse the request, so it only warns and never answers.
+    const child = fakeChild();
+    links.attach('root', child as unknown as ChildProcess);
+    child.emit('message', { kind: 'ready' });
+    const answer = links.reasoning('root', null);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(await answer).toBeNull();
+    expect(child.sent).toHaveLength(1);
+    expect(await links.reasoning('root', null)).toBeNull();
+    expect(child.sent).toHaveLength(1);
+    // The link still works for everything else.
+    const snapshot = links.request('root', { type: 'snapshot' }, 1000);
+    child.emit('message', {
+      kind: 'reply',
+      id: (child.sent[1] as { id: number }).id,
+      ok: true,
+      value: 's',
+    });
+    expect(await snapshot).toBe('s');
+
+    const next = fakeChild();
+    links.attach('root', next as unknown as ChildProcess);
+    next.emit('message', { kind: 'ready' });
+    const again = links.reasoning('root', null);
+    await vi.waitFor(() => expect(next.sent).toHaveLength(1));
+    next.emit('message', {
+      kind: 'reply',
+      id: (next.sent[0] as { id: number }).id,
+      ok: true,
+      value: REASONING,
+    });
+    expect(await again).toEqual(REASONING);
+  } finally {
+    vi.useRealTimers();
+  }
 });

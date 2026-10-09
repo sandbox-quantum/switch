@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { serverEventSchema, type ServerEvent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
+import { hostReasoningListSchema, type HostReasoningList } from './reasoning-buffer';
 
 /**
  * How long a session host that has finished may take to exit once it has
@@ -57,6 +58,12 @@ export const sessionRequestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('snapshot') }),
   /** Switch has an answer to one of this session's approval requests. */
   z.object({ type: z.literal('approvals') }),
+  /**
+   * The reasoning the host still holds for these turns (all of them when
+   * null). Read-only, never journaled, and only ever asked over a local or SSH
+   * link: a host that predates it cannot parse it and does not answer.
+   */
+  z.object({ type: z.literal('reasoning'), turnIds: z.array(z.string().min(1)).nullable() }),
 ]);
 export type SessionRequest = z.infer<typeof sessionRequestSchema>;
 
@@ -174,6 +181,8 @@ function recordedFailure(root: string, code: number): string {
   return `The session host exited with code ${code}.`;
 }
 
+const NO_ANSWER = 'The session host did not answer in time.';
+
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -195,7 +204,16 @@ type Link = {
   barriers: Map<number, Pending>;
   /** How many hosts here have exited, so a waiting request can tell one did. */
   exits: number;
+  /** The running host did not answer a `reasoning` request: it predates them. */
+  noReasoning: boolean;
 };
+
+/**
+ * How long a `reasoning` request waits for its answer. A host that predates
+ * the request cannot parse it and never answers, so this is how such a host
+ * is told apart; the link does not ask it again.
+ */
+const REASONING_TIMEOUT_MS = 5000;
 
 /**
  * The parent's end: one link per session state root, re-attached each time
@@ -224,6 +242,7 @@ export class SessionLinks {
         busy: null,
         barriers: new Map(),
         exits: 0,
+        noReasoning: false,
       };
       this.links.set(root, link);
     }
@@ -238,6 +257,7 @@ export class SessionLinks {
     link.identity = null;
     link.failure = null;
     link.busy = null;
+    link.noReasoning = false;
     child.on('message', (raw) => {
       const parsed = fromChildSchema.safeParse(raw);
       if (!parsed.success) {
@@ -472,7 +492,7 @@ export class SessionLinks {
       const timer = setTimeout(
         () => {
           link.pending.delete(id);
-          reject(new SessionUnavailableError('The session host did not answer in time.'));
+          reject(new SessionUnavailableError(NO_ANSWER));
         },
         Math.max(deadline - Date.now(), 5000)
       );
@@ -484,6 +504,37 @@ export class SessionLinks {
         reject(new SessionUnavailableError(`The session host could not be reached: ${error}`));
       });
     });
+  }
+
+  /**
+   * The reasoning the running host at this root still holds, or null when no
+   * host is ready there or it predates the request. Never waits for a host to
+   * start and never raises: reasoning is a nicety, not something to fail on.
+   */
+  async reasoning(root: string, turnIds: string[] | null): Promise<HostReasoningList | null> {
+    const link = this.links.get(root);
+    if (!link?.ready || !link.child || link.noReasoning) return null;
+    const child = link.child;
+    try {
+      const answer = hostReasoningListSchema.safeParse(
+        await this.request(root, { type: 'reasoning', turnIds }, REASONING_TIMEOUT_MS)
+      );
+      if (answer.success) return answer.data;
+      console.warn(`The session host at ${root} answered a reasoning request unreadably.`);
+      return null;
+    } catch (error) {
+      if (
+        error instanceof SessionUnavailableError &&
+        error.message === NO_ANSWER &&
+        link.child === child
+      ) {
+        link.noReasoning = true;
+        console.warn(
+          `The session host at ${root} did not answer a reasoning request; it predates them, so it is not asked again.`
+        );
+      }
+      return null;
+    }
   }
 
   /** The roots with a host process running, ready or not. */

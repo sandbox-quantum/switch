@@ -1,6 +1,7 @@
 import { ArrowUpRight, BookOpen, FolderInput, Settings } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import React from 'react';
+import { SidebarChats } from '@renderer/features/chats/components/sidebar-chats';
 import { SidebarOnboardingChecklist } from '@renderer/features/onboarding/sidebar-onboarding-checklist';
 import { isCurrentView, useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
@@ -10,16 +11,10 @@ import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { cn } from '@renderer/utils/utils';
 import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
 import { WorkspaceSwitcher } from '../switch-servers/workspace-switcher';
-import { SidebarPinnedSessionList } from './pinned-session-list';
-import { SessionDiscoveryStatus } from './session-discovery-status';
-import { SessionsSectionHeader } from './sessions-section-header';
-import { SidebarGroupedList } from './sidebar-grouped-list';
 import {
   SidebarContainer,
   SidebarContent,
   SidebarFooter,
-  SidebarGroup,
-  SidebarGroupContent,
   SidebarMenu,
   SidebarMenuButton,
 } from './sidebar-primitives';
@@ -55,24 +50,13 @@ export const LeftSidebar: React.FC = observer(function LeftSidebar() {
       <SidebarSpace />
       <SidebarContainer className="min-h-0 w-full flex-1 border-r-0">
         <SidebarContent className="flex flex-col">
-          <SidebarPinnedSessionList />
           {/* The sidebar reads as three blocks — which server, that server's
-              pages, then its sessions. The switcher and the nav under it are
-              one block, 8px apart, which the nav owns as its own top padding;
-              the sessions section sets the larger gap that separates it. */}
+              pages, then the person's chats with its agents. */}
           <div className="flex flex-col">
             <WorkspaceSwitcher />
             <WorkspaceNav />
           </div>
-          <SidebarGroup className="mt-0 mb-0 flex min-h-0 flex-1 flex-col">
-            <SessionsSectionHeader />
-            <SessionDiscoveryStatus />
-            <SidebarGroupContent className="flex min-h-0 flex-1 flex-col">
-              <SidebarMenu className="flex min-h-0 flex-1 flex-col">
-                <SidebarGroupedList />
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
+          <SidebarChats />
         </SidebarContent>
         <SidebarOnboardingChecklist />
         <SidebarFooter>

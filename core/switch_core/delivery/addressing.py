@@ -34,6 +34,7 @@ from switch_core.addressing import (
     can_address,
     parse_policy,
 )
+from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
     PLATFORM_MARKER,
@@ -386,9 +387,13 @@ class AddressingResolver:
         """Map a sender's mxid to the principal a policy is written about.
 
         Every participant is a Switch client, so the mxid resolves to a Client
-        and from there to an Agent, an ExternalUser, or the admin client
-        (the platform). None means none of those, which a restricted agent
-        should not trust.
+        and from there to an Agent, an ExternalUser, a gateway user's member
+        client, or the admin client (the platform). None means none of those,
+        which a restricted agent should not trust.
+
+        A member client is that gateway user speaking in person, so it
+        resolves to them directly: `user_ids` is that one user, with no
+        platform claims involved.
 
         `content` matters only for the admin client: its platform marker may
         name the person the message speaks for. The marker is read for no
@@ -417,6 +422,8 @@ class AddressingResolver:
                 session, external_user.id
             )
             return SenderPrincipal("user", external_user.id, claimants, None)
+        if client.type == MEMBER_CLIENT_TYPE and client.user_id is not None:
+            return SenderPrincipal("user", client.id, [client.user_id], None)
         if client.type == "admin":
             person = platform_on_behalf_of(content or {})
             if person is not None and person.agent_id is not None:

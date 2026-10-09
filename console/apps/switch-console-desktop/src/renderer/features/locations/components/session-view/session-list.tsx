@@ -1,5 +1,5 @@
 import { useHotkey } from '@tanstack/react-hotkeys';
-import { Archive, Plus, RotateCcw, Trash2, X } from 'lucide-react';
+import { Archive, RotateCcw, Trash2, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { SectionLabel } from '@renderer/features/locations/components/main-panel/agent-page-section';
 import {
@@ -71,7 +71,6 @@ export const SessionList = observer(function SessionList() {
   const store = asMounted(getLocationStore(locationId));
   const sessionManager = getSessionManagerStore(locationId);
   const showDeleteSession = useShowModal('deleteSessionModal');
-  const showCreateSessionModal = useShowModal('sessionModal');
 
   const sessionView = store?.view.sessionView ?? null;
 
@@ -147,24 +146,13 @@ export const SessionList = observer(function SessionList() {
   return (
     <section className="relative flex w-full flex-col gap-2">
       <div className="flex items-center justify-between gap-2">
-        <SectionLabel>Sessions</SectionLabel>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label="New session"
-          onClick={() =>
-            showCreateSessionModal({ locationId, agentName, entryPoint: 'session_list' })
-          }
-        >
-          <Plus className="size-4" />
-        </Button>
+        <SectionLabel>Past conversations</SectionLabel>
       </div>
 
       {displaySessions.length === 0 && !showingArchived ? (
-        // No call to action here: New Session sits at the top of the page and
-        // again beside this heading, so a third one would be the loudest thing
-        // on an empty section.
-        <p className="py-2 text-sm text-foreground-muted">No sessions yet.</p>
+        // Conversations now happen in chats; this lists the agent's standalone
+        // sessions, which open as transcripts.
+        <p className="py-2 text-sm text-foreground-muted">No past conversations.</p>
       ) : (
         <div className="-mx-3 flex flex-col">
           {displaySessions.map((session) => (

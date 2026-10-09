@@ -14,7 +14,7 @@ import {
   sessionTranscriptEventChannel,
   sessionTranscriptResetChannel,
 } from '@shared/core/sessions/sessionEvents';
-import { cloudControl, isCloudAgent } from './cloud-control';
+import { isRelayedAgent, relayControl } from './controller-control';
 import { recordRemoteHostFailure } from './host-failures';
 import { hostJournals, JournalTail, JournalUnavailableError } from './host-journal';
 import { localSessionLinks } from './local-host';
@@ -101,7 +101,7 @@ async function recordedSnapshot(agentId: string, sessionId: string, place: Place
     if (!(error instanceof JournalUnavailableError || error instanceof SessionHostFailedError))
       throw error;
   }
-  if (place === 'cloud') return (await cloudControl(agentId)).journal(sessionId);
+  if (place === 'cloud') return (await relayControl(agentId)).journal(sessionId);
   return place === 'local'
     ? localJournalSnapshot(sharedSessionRoot(sessionId))
     : (await hostJournals.tail(agentId, sessionId)).snapshot();
@@ -114,7 +114,7 @@ async function recordedSnapshot(agentId: string, sessionId: string, place: Place
  */
 /** A cloud session's live events, relayed by its Switch server from the worker. */
 async function cloudFeed(agentId: string, sessionId: string): Promise<() => void> {
-  const client = await cloudControl(agentId);
+  const client = await relayControl(agentId);
   const unsubscribe = await client.subscribe(
     sessionId,
     (event) => forward(sessionId, event),
@@ -130,7 +130,7 @@ async function cloudFeed(agentId: string, sessionId: string): Promise<() => void
 }
 
 export async function openTranscript(agentId: string, sessionId: string): Promise<Snapshot> {
-  const place: Place = isCloudAgent(agentId)
+  const place: Place = isRelayedAgent(agentId)
     ? 'cloud'
     : (await isLocal(agentId))
       ? 'local'

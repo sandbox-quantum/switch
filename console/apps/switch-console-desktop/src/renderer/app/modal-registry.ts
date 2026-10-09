@@ -1,10 +1,14 @@
+import {
+  ChatMembersModal,
+  NewChatModal,
+  RenameChatModal,
+} from '@renderer/features/chats/components/chat-modals';
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
 import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
 import { AddHostModal } from '@renderer/features/remote-hosts/add-host-modal';
 import { RemoveAgentConfigModal } from '@renderer/features/remote-hosts/remove-agent-config-modal';
-import { CreateSessionModal } from '@renderer/features/sessions/create-session-modal/create-session-modal';
 import { DeleteSessionModal } from '@renderer/features/sessions/delete-session-modal';
 import { RenameSessionModal } from '@renderer/features/sessions/rename-session-modal';
 import { AddAgentsToRoomModal } from '@renderer/features/switch-rooms/AddAgentsToRoomModal';
@@ -53,7 +57,6 @@ export function createModal<TProps, TResult>(
 
 export const modalRegistry = {
   commandPaletteModal: createModal(CommandPaletteModal, { size: 'md' }),
-  sessionModal: createModal(CreateSessionModal, { dismissOnOutsideClick: false }),
   addAgentModal: createModal(AddAgentModal, { size: 'lg', dismissOnOutsideClick: false }),
   saveTemplateModal: createModal(SaveTemplateModal, { size: 'sm', dismissOnOutsideClick: false }),
   confirmActionModal: createModal(ConfirmActionDialog, { size: 'xs' }),
@@ -111,5 +114,8 @@ export const modalRegistry = {
     dismissOnOutsideClick: false,
   }),
   deleteRoomModal: createModal(DeleteRoomModal, { size: 'sm', dismissOnOutsideClick: false }),
+  newChatModal: createModal(NewChatModal, { size: 'md', dismissOnOutsideClick: false }),
+  renameChatModal: createModal(RenameChatModal, { size: 'xs', dismissOnOutsideClick: false }),
+  chatMembersModal: createModal(ChatMembersModal, { size: 'md' }),
   // oxlint-disable-next-line typescript/no-explicit-any
 } satisfies Record<string, ModalRegistryEntry<any, any>>;

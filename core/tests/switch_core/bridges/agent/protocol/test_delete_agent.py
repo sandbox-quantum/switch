@@ -15,7 +15,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.db.models import Room
+from switch_core.db.models import Room, require_tenant_id
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.room_store import RoomStore
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
@@ -70,8 +70,19 @@ class TestDeleteAgentInARoom:
             await RoomStore().add_client(session, client_id, room_id)
             await session.commit()
 
+        told: list[tuple[str, str, list[str]]] = []
+
+        async def room_agents_changed(tenant_id: str, changed_room_id: str) -> None:
+            async with session_factory() as session:
+                remaining = await RoomStore().get_agent_ids(session, changed_room_id)
+            told.append((tenant_id, changed_room_id, remaining))
+
+        svc.set_room_agents_listener(room_agents_changed)
         await svc.delete_agent(agent_id=agent_id)
 
+        # Told once the agent is gone, so a listener re-reading the room
+        # finds it without the agent.
+        assert told == [(require_tenant_id(), room_id, [])]
         assert lifecycle.stopped == [client_id]
         async with session_factory() as session:
             assert await svc.agent_store.get(session, agent_id) is None

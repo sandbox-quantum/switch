@@ -16,6 +16,7 @@ room Switch has no record of it being in.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
@@ -134,6 +135,9 @@ class RoomCreateConfig(BaseModel):
     created_by_kind: Literal["user", "agent", "system"] = "user"
     # Provisioned from a room template rather than created directly.
     from_template: bool = False
+    # The Switch Console chat creation this room is for, stamped into the
+    # room's metadata in the same insert so a retried creation finds it.
+    chat_operation_id: str | None = None
 
 
 class RoomCreateResult(BaseModel):
@@ -150,11 +154,12 @@ class RoomCreateResult(BaseModel):
 
 
 class RoomService:
-    # Class-level default so a caller that builds this without `__init__` —
+    # Class-level defaults so a caller that builds this without `__init__` —
     # several tests assemble a minimal instance directly — still has the
-    # attribute. Telemetry is genuinely optional here; `emit_safely` treats
+    # attributes. Telemetry is genuinely optional here; `emit_safely` treats
     # None as "report nothing".
     _telemetry: TelemetryService | None = None
+    _room_agents_listeners: tuple[Callable[[str, str], Awaitable[None]], ...] = ()
 
     def __init__(
         self,
@@ -180,6 +185,28 @@ class RoomService:
         # Optional because several tests and tooling build a RoomService
         # without one; `emit_safely` treats None as "report nothing".
         self._telemetry = telemetry
+
+    def on_room_agents_changed(
+        self, listener: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        """Call `listener(tenant_id, room_id)` after a room's agents change."""
+        self._room_agents_listeners = (*self._room_agents_listeners, listener)
+
+    async def room_agents_changed(self, tenant_id: str, room_id: str) -> None:
+        """Tell the listeners a room's agents (or their owners) changed.
+
+        The change itself is already committed, so a listener that fails is
+        reported rather than raised; listeners re-read on their own schedule.
+        """
+        for listener in self._room_agents_listeners:
+            try:
+                await listener(tenant_id, room_id)
+            except Exception:
+                logger.exception(
+                    "Room-agents listener failed for room %s; it will catch up "
+                    "on its next re-read",
+                    room_id,
+                )
 
     async def _resolve_agent_ids(self, config: RoomCreateConfig) -> list[str]:
         if config.agent_ids is not None:
@@ -595,7 +622,14 @@ class RoomService:
                 read_visibility=config.read_visibility,
                 write_visibility=config.write_visibility,
                 # Nothing else on the row can answer this afterwards.
-                metadata_={"created_by_kind": config.created_by_kind},
+                metadata_={
+                    "created_by_kind": config.created_by_kind,
+                    **(
+                        {"chat_operation_id": config.chat_operation_id}
+                        if config.chat_operation_id is not None
+                        else {}
+                    ),
+                },
             )
 
             async with self._session_factory() as session:
@@ -730,6 +764,9 @@ class RoomService:
             len(agent_clients),
             len(system_clients),
         )
+
+        if agent_ids:
+            await self.room_agents_changed(room.tenant_id, room.id)
 
         failed_attachments = unreachable_users + await self._attach_after_creation(
             room.id, config
@@ -916,6 +953,7 @@ class RoomService:
                 )
 
         logger.info("Added %d agents to room %s", len(agent_ids), room_id)
+        await self.room_agents_changed(room.tenant_id, room.id)
 
         emit_safely(
             self._telemetry,
@@ -957,6 +995,7 @@ class RoomService:
                 )
 
         logger.info("Removed %d agents from room %s", len(agent_ids), room_id)
+        await self.room_agents_changed(room.tenant_id, room.id)
 
         emit_safely(
             self._telemetry,
@@ -1468,6 +1507,14 @@ class RoomService:
                 len(rooms),
                 ", ".join(failures),
             )
+
+    async def reconcile_room(self, room: Room) -> None:
+        """Put the room's agent and system clients in it where they are missing.
+
+        For a caller repairing one room whose creation may have stopped after
+        the room row committed and before its clients joined.
+        """
+        await self._reconcile_one_room(room)
 
     async def _reconcile_one_room(self, room: Room) -> None:
         with tenant_scope(room.tenant_id):

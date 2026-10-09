@@ -1,6 +1,7 @@
 import { DoorOpen, ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { ChatPanel } from '@renderer/features/chats/components/chat-panel';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
@@ -15,9 +16,9 @@ import { openRoomChannel } from './room-links';
 import { type RoomTab, roomTabStore } from './room-tab-store';
 
 /**
- * Opens the room's channel in the messaging app it is bridged to. The embedded
- * view is a convenience, not a replacement — threads, search and notifications
- * live in the real client, so there is always a way out to it.
+ * Opens the room's channel in the messaging app it is bridged to. The chat
+ * here is a convenience, not a replacement — search and notifications live in
+ * the real client, so there is always a way out to it.
  *
  * Rendered only when the gateway supplied a deeplink; an unbridged room has no
  * messaging app to open, and a button that quietly does nothing is worse than
@@ -105,20 +106,30 @@ const RoomTitlebar = observer(function RoomTitlebar() {
   );
 });
 
-/** Settings when the room is showing them; otherwise nothing, and the
- * conversation drawn by `RoomEmbedLayer` above shows through. */
+/**
+ * The room's conversation as a chat — readable only by its members — or its
+ * settings.
+ */
 const RoomMainPanel = observer(function RoomMainPanel() {
   const { params } = useParams('room');
-  if (roomTabStore.tabFor(params.roomId) !== 'configuration') return null;
-  return <RoomConfigurationPanel roomId={params.roomId} />;
+  const serverId = switchRoomsStore.roomServerId(params.roomId);
+  if (roomTabStore.tabFor(params.roomId) === 'configuration')
+    return <RoomConfigurationPanel roomId={params.roomId} />;
+  if (!serverId) return <p className="p-5 text-sm text-foreground-muted">Loading the room…</p>;
+  return (
+    <ChatPanel
+      key={`${serverId}:${params.roomId}`}
+      serverId={serverId}
+      roomId={params.roomId}
+      agentId={null}
+      showHeader
+    />
+  );
 });
 
 export const roomView = {
   WrapView: ({ children }: { children: React.ReactNode; roomId: string }) => <>{children}</>,
   TitlebarSlot: RoomTitlebar,
-  // The conversation itself is drawn by RoomEmbedLayer, which is mounted above
-  // the view switch so its <webview> survives navigating away and back. This
-  // panel only ever holds the room's other side.
   MainPanel: RoomMainPanel,
   canActivate: (params: unknown): GuardResult => {
     const roomId =

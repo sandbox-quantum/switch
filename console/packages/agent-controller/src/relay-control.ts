@@ -465,6 +465,9 @@ export class RelayControl {
     const message = sessionOnly(parsed.data);
     if ('request' in message && ['room', 'approvals'].includes(message.request.type))
       throw new ControlError('refused_message', 'Only the agent’s watcher sends that message.');
+    // Reasoning stays on the machine that ran it; it is never relayed through Switch.
+    if ('reasoning' in message || ('request' in message && message.request.type === 'reasoning'))
+      throw new ControlError('refused_message', 'Reasoning is not relayed.');
     if (this.deps.placement(agentId) === null)
       throw new ControlError(
         'not_assigned',

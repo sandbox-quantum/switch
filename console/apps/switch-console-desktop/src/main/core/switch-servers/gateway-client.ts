@@ -197,6 +197,8 @@ type FetchOptions = {
   authenticated: boolean;
   method?: string;
   body?: unknown;
+  /** A multipart body, sent as is; `fetch` sets its boundary. Excludes `body`. */
+  formData?: FormData;
 };
 
 /**
@@ -286,7 +288,9 @@ export async function gatewayRequest(
       return await fetch(gatewayUrl(server, path), {
         method: options.method ?? 'GET',
         headers,
-        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+        body:
+          options.formData ??
+          (options.body !== undefined ? JSON.stringify(options.body) : undefined),
         // We attach the cookie explicitly; don't let the runtime manage a jar.
         redirect: 'manual',
         signal: options.signal,
@@ -2231,7 +2235,8 @@ export async function createRoom(
     name: string;
     description: string;
     instructions?: string;
-    bridgeId: string;
+    /** Null makes an internal room: no channel, not even on the default app. */
+    bridgeId: string | null;
     agentIds: string[];
   }
 ): Promise<RemoteRoomSummary> {
@@ -2243,6 +2248,7 @@ export async function createRoom(
       description: params.description,
       instructions: params.instructions?.trim() ? params.instructions : null,
       bridge_id: params.bridgeId,
+      ...(params.bridgeId === null ? { internal_only: true } : {}),
       channel_type: 'channel_public',
       agent_ids: params.agentIds,
     },

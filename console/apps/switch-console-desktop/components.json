@@ -12,11 +12,11 @@
   },
   "iconLibrary": "lucide",
   "aliases": {
-    "components": "@renderer/components",
-    "utils": "@renderer/lib/utils",
-    "ui": "@renderer/components/ui",
+    "components": "@renderer/lib/components",
+    "utils": "@renderer/utils/utils",
+    "ui": "@renderer/lib/ui",
     "lib": "@renderer/lib",
-    "hooks": "@renderer/hooks"
+    "hooks": "@renderer/lib/hooks"
   },
   "registries": {
     "@ai-elements": "https://registry.ai-sdk.dev/{name}.json"

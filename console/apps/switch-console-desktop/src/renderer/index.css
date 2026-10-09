@@ -2,6 +2,9 @@
 @import 'tw-animate-css';
 @import 'allotment/dist/style.css';
 
+/* Streamdown's built-in renderers carry Tailwind classes from its dist (pnpm hoists it). */
+@source '../../../../node_modules/streamdown/dist/*.js';
+
 @custom-variant dark (&:is(.dark *));
 @custom-variant dark-black (&:is(.dark-black *));
 @custom-variant emlight (&:is(.emlight *));

@@ -83,6 +83,7 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramConnectionConfig,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.chats.service import ChatService
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
 from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
@@ -715,6 +716,23 @@ async def run(config: SwitchConfig) -> None:
             keyring=config.keyring,
         )
 
+    chat_service = ChatService(
+        session_factory=session_factory,
+        room_service=room_service,
+        provisioning=provisioning,
+        listener=message_listener,
+        room_store=room_store,
+        agent_store=agent_store,
+        user_store=user_store,
+        message_store=message_store,
+        media_store=media_store,
+        usage_store=usage_store,
+        id_server_name=config.id_server_name,
+        media_max_bytes=config.agent_media_max_bytes,
+    )
+    room_service.on_room_agents_changed(chat_service.sync_room)
+    protocol.set_room_agents_listener(room_service.room_agents_changed)
+
     # ── Gateway app ───────────────────────────────────────────────────────────
     gateway_app = create_gateway_app(
         agent_store=agent_store,
@@ -744,6 +762,7 @@ async def run(config: SwitchConfig) -> None:
             if config.invite_email_enabled
             else None
         ),
+        chat_service=chat_service,
         config=config,
     )
 
