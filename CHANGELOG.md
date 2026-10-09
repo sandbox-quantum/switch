@@ -83,6 +83,17 @@ version of their own to them without also giving them a release of their own.
   characters. Remove variables set by hand before the first upgrade that renders
   them (see the chart README).
 
+#### Changed
+- **The Helm chart runs switch-core as a ServiceAccount of its own.**
+  It is `<release>-switch-core` (`switchCore.serviceAccount`) where it used to be
+  the namespace's `default`, which every pod that names no account shares, so
+  anything trusting switch-core's identity, such as the distributed Teams app's
+  federated credential, trusts switch-core alone. `create: false` with a `name`
+  runs it as an account made elsewhere. A Teams app whose federated
+  credential trusts `default` stops getting tokens after this upgrade: add a
+  credential for `system:serviceaccount:<namespace>:<release>-switch-core`
+  first, and remove the old one once the new pod is up.
+
 #### Fixed
 - **The Helm chart's Ingress now routes every agent API path to switch-core.**
   `/agent-sessions` (session starts, turn activity, approval requests and their

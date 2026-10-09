@@ -183,6 +183,18 @@ switchCore:
   imagePullPolicy: Always
   logLevel: INFO
 
+  # The ServiceAccount switch-core runs as: one of its own, never the
+  # namespace's `default`, which every pod that names no account shares.
+  # Anything outside the cluster that trusts switch-core's identity — the
+  # distributed Teams app's federated credential (teamsApp.credential:
+  # federated) above all — then trusts switch-core alone. Empty name means
+  # <release>-switch-core. Set create: false to run as an account made
+  # elsewhere (by terraform, say), and name it.
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+
   # Logging. "text" is for reading in a terminal; "json" is what a log pipeline
   # wants, and the only format that carries the context fields as fields — the
   # tenant, and the request, agent and user a line belongs to — rather than
@@ -414,7 +426,9 @@ switchCore:
     # (secrets.teamsAppClientSecret), certificate
     # (secrets.teamsAppCertificate + secrets.teamsAppCertificatePrivateKey), or
     # federated — a projected service-account token the app registration
-    # trusts as a federated credential, so no secret exists at all.
+    # trusts as a federated credential, so no secret exists at all. The
+    # credential's subject is switch-core's own account (serviceAccount
+    # above): system:serviceaccount:<namespace>:<release>-switch-core.
     credential: secret
     # Shown to the admin approving the app, and required in its package.
     privacyUrl: ""

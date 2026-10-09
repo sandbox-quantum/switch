@@ -951,6 +951,22 @@ releases took, so an existing Slack or Discord deployment keeps working.
 {{- end }}
 
 {{/*
+The ServiceAccount switch-core runs as. An account made elsewhere has to be
+named: falling back to `default` would quietly hand switch-core's identity,
+and whatever trusts it, to every pod in the namespace that names no account.
+*/}}
+{{- define "switch.coreServiceAccountName" -}}
+{{- $sa := .Values.switchCore.serviceAccount -}}
+{{- if $sa.name -}}
+{{- $sa.name -}}
+{{- else if $sa.create -}}
+{{- printf "%s-switch-core" (include "switch.fullname" .) -}}
+{{- else -}}
+{{- fail "switchCore.serviceAccount.name is required when switchCore.serviceAccount.create is false: name the existing ServiceAccount switch-core should run as." -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Where the projected service-account token the distributed Teams app presents
 to Microsoft (a federated credential, so no secret) is mounted.
 */}}
