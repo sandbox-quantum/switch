@@ -110,11 +110,14 @@ jobs:
             # actually find a new head — not on every backend-touching push.
             migrations:
               - 'core/switch_core/migrations/versions/**'
-            # The switch Helm chart and what the release does to it before
-            # publishing (pins the image digests into values.yaml).
+            # The published Helm charts (switch, and the hosted controller's)
+            # and what the release does to them before publishing (pins the
+            # image digests into values.yaml).
             chart:
               - *shared
               - 'deploy/remote/helm/**'
+              - 'deploy/hosted/chart/**'
+              - 'deploy/hosted/render-check-values.yaml'
               - 'scripts/pin_chart_images.py'
               - '.github/workflows/switch-release.yml'
             # Spans every tree, so it gets its own filter rather than riding
@@ -269,21 +272,26 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
 
-      - name: Lint
-        run: helm lint deploy/remote/helm/switch
-
       - name: Every first-party image is pinned by digest once pinned
-        # Rendered as configured by default and with the optional workloads on,
-        # so an image behind a feature flag is checked too.
+        # The release's own pin, with placeholder digests, then each of the
+        # chart's check renders (defaults, and the optional workloads on), so an
+        # image behind a feature flag is checked too.
         run: |
-          python3 scripts/pin_chart_images.py pin \
-            --values deploy/remote/helm/switch/values.yaml \
-            --registry ghcr.io/render-check --version 0.0.0-check --placeholder-digests
-          for overlay in "" "-f deploy/remote/helm/render-check-optional-values.yaml"; do
-            # shellcheck disable=SC2086 # $overlay is deliberately split into two words
-            helm template switch deploy/remote/helm/switch \
-              -f deploy/remote/helm/render-check-values.yaml $overlay \
-              | python3 scripts/pin_chart_images.py verify --registry ghcr.io/render-check
+          python3 scripts/pin_chart_images.py charts > "$RUNNER_TEMP/charts.json"
+          for chart in $(jq -r '.[].chart' "$RUNNER_TEMP/charts.json"); do
+            path="$(jq -r --arg c "$chart" '.[] | select(.chart == $c) | .path' "$RUNNER_TEMP/charts.json")"
+            python3 scripts/pin_chart_images.py pin --chart "$chart" \
+              --registry ghcr.io/render-check --version 0.0.0-check --placeholder-digests
+            renders="$(jq -c --arg c "$chart" '.[] | select(.chart == $c) | .renders[]' "$RUNNER_TEMP/charts.json")"
+            while read -r files; do
+              args=()
+              for f in $(jq -r '.[]' <<<"$files"); do args+=(-f "$f"); done
+              # Linted with the check values: a chart with a values schema
+              # does not lint without the values it requires.
+              helm lint "$path" "${args[@]}"
+              helm template switch "$path" "${args[@]}" \
+                | python3 scripts/pin_chart_images.py verify --chart "$chart" --registry ghcr.io/render-check
+            done <<<"$renders"
           done
 
   gateway:

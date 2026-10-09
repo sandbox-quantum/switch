@@ -32,14 +32,14 @@ from pathlib import Path
 from urllib.parse import quote
 
 
-def _first_party_images() -> list[str]:
+def _published() -> tuple[list[str], list[str]]:
     path = Path(__file__).with_name("pin_chart_images.py")
     spec = importlib.util.spec_from_file_location("pin_chart_images", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    return list(module.IMAGES)
+    return list(module.IMAGES), list(module.CHARTS)
 
 
 def _gh(*args: str) -> str:
@@ -88,7 +88,10 @@ def main(argv: list[str]) -> int:
         parser.error("--keep must be at least 1")
 
     now = datetime.now(UTC)
-    packages = [f"dev/{name}" for name in _first_party_images()] + ["dev/charts/switch"]
+    images, charts = _published()
+    packages = [f"dev/{name}" for name in images] + [
+        f"dev/charts/{name}" for name in charts
+    ]
     for package in packages:
         try:
             versions = _versions(args.owner, package)

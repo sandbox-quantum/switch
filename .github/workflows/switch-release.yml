@@ -181,10 +181,7 @@ jobs:
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
 
       - name: Refuse to republish a version
-        # A re-run rebuilds the images (builds are not bit-for-bit reproducible)
-        # and would push the chart again under the same version, pointing at the
-        # new digests, so a version pin would no longer mean what it meant.
-        # Checked before anything is built.
+        # Checked before anything is built; see scripts/refuse_published_chart.sh.
         if: ${{ steps.version.outputs.push == 'true' }}
         env:
           NAMESPACE: ${{ steps.version.outputs.namespace }}
@@ -192,18 +189,9 @@ jobs:
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             helm registry login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
-          chart="oci://$REGISTRY/$NAMESPACE/charts/switch"
-          if out="$(helm show chart "$chart" --version "$VERSION" 2>&1)"; then
-            echo "::error::$chart:$VERSION is already published. A version is published once; cut a new one."
-            exit 1
-          fi
-          # Only a plain "not found" means unpublished; an auth or network
-          # error must not read as permission to push.
-          if ! grep -q ': not found$' <<<"$out"; then
-            echo "::error::Could not tell whether $chart:$VERSION exists: $out"
-            exit 1
-          fi
-          echo "$chart:$VERSION is not published yet: $out"
+          for chart in $(python3 scripts/pin_chart_images.py charts | jq -r '.[].chart'); do
+            scripts/refuse_published_chart.sh "oci://$REGISTRY/$NAMESPACE/charts/$chart" "$VERSION"
+          done
 
       # The published compose artifact declares its stack-compose range twice:
       # in the file (for whoever has already downloaded it) and as an OCI
@@ -272,8 +260,7 @@ jobs:
         id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
-          # All three Dockerfiles build with the repo root as context.
-          context: .
+          context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: ${{ needs.prep.outputs.push == 'true' }}
@@ -311,10 +298,11 @@ jobs:
           retention-days: 7
 
   chart:
-    name: Package & publish Helm chart
-    # After the images: the chart carries their digests, so it cannot be
+    name: Package & publish Helm charts
+    # After the images: each chart carries its images' digests, so it cannot be
     # packaged before they exist, and a chart is never published pointing at an
-    # image that failed to push.
+    # image that failed to push. The charts come from
+    # scripts/pin_chart_images.py (`charts`), like the image matrix.
     needs: [prep, images]
     runs-on: ubuntu-latest
     permissions:
@@ -326,9 +314,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # To ask, before moving the dev `main` tag, whether this is still main's head.
+          fetch-depth: 0
 
       - name: Set up Helm
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      - name: Set up ORAS
+        if: ${{ needs.prep.outputs.channel == 'dev' }}
+        uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1.2.4
 
       - name: Download image digests
         if: ${{ needs.prep.outputs.push == 'true' }}
@@ -353,43 +348,34 @@ jobs:
             docker buildx imagetools inspect "$REGISTRY/$NAMESPACE/$(basename "$file")@$(cat "$file")" >/dev/null
           done
 
-      - name: Pin image digests into the chart
+      - name: Pin, lint, package and check each chart
         # A dry run pushed no images, so it pins placeholder digests: the pin
-        # and the check below still run, and nothing is published.
+        # and the checks still run, and nothing is published. The check renders
+        # the .tgz that is about to be pushed, not the source tree.
         run: |
           if [ "${{ needs.prep.outputs.push }}" = true ]; then
             source=(--digests-dir "$RUNNER_TEMP/digests")
           else
             source=(--placeholder-digests)
           fi
-          python3 scripts/pin_chart_images.py pin \
-            --values deploy/remote/helm/switch/values.yaml \
-            --registry "$REGISTRY/$NAMESPACE" \
-            --version "$VERSION" \
-            "${source[@]}"
-          git diff -- deploy/remote/helm/switch/values.yaml
-
-      - name: Lint chart
-        run: helm lint deploy/remote/helm/switch
-
-      - name: Package chart
-        # Stamp both the chart version and appVersion with the release version so
-        # a single tag pins the whole stack.
-        run: |
-          helm package deploy/remote/helm/switch \
-            --version "$VERSION" \
-            --app-version "$VERSION" \
-            --destination "$RUNNER_TEMP/chart"
-
-      - name: Check the packaged chart is digest-pinned
-        # Renders the .tgz that is about to be pushed, not the source tree:
-        # once as configured by default, once with the optional workloads on.
-        run: |
-          for overlay in "" "-f deploy/remote/helm/render-check-optional-values.yaml"; do
-            # shellcheck disable=SC2086 # $overlay is deliberately split into two words
-            helm template switch "$RUNNER_TEMP/chart/switch-$VERSION.tgz" \
-              -f deploy/remote/helm/render-check-values.yaml $overlay \
-              | python3 scripts/pin_chart_images.py verify --registry "$REGISTRY/$NAMESPACE"
+          python3 scripts/pin_chart_images.py charts > "$RUNNER_TEMP/charts.json"
+          for chart in $(jq -r '.[].chart' "$RUNNER_TEMP/charts.json"); do
+            path="$(jq -r --arg c "$chart" '.[] | select(.chart == $c) | .path' "$RUNNER_TEMP/charts.json")"
+            python3 scripts/pin_chart_images.py pin --chart "$chart" \
+              --registry "$REGISTRY/$NAMESPACE" --version "$VERSION" "${source[@]}"
+            git diff -- "$path/values.yaml"
+            helm package "$path" --version "$VERSION" --app-version "$VERSION" \
+              --destination "$RUNNER_TEMP/chart"
+            renders="$(jq -c --arg c "$chart" '.[] | select(.chart == $c) | .renders[]' "$RUNNER_TEMP/charts.json")"
+            while read -r files; do
+              args=()
+              for f in $(jq -r '.[]' <<<"$files"); do args+=(-f "$f"); done
+              # Linted with the check values: a chart with a values schema
+              # does not lint without the values it requires.
+              helm lint "$path" "${args[@]}"
+              helm template switch "$RUNNER_TEMP/chart/$chart-$VERSION.tgz" "${args[@]}" \
+                | python3 scripts/pin_chart_images.py verify --chart "$chart" --registry "$REGISTRY/$NAMESPACE"
+            done <<<"$renders"
           done
 
       - name: Log in to GHCR (Helm OCI)
@@ -398,29 +384,25 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             helm registry login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
 
-      - name: Push chart
+      - name: Push the charts
         id: push
         if: ${{ needs.prep.outputs.push == 'true' }}
         run: |
-          # prep refused a published version, but a re-run of this job alone
-          # skips prep, so ask again right before pushing.
-          chart="oci://$REGISTRY/$NAMESPACE/charts/switch"
-          if out="$(helm show chart "$chart" --version "$VERSION" 2>&1)"; then
-            echo "::error::$chart:$VERSION is already published; refusing to overwrite it."
-            exit 1
-          fi
-          if ! grep -q ': not found$' <<<"$out"; then
-            echo "::error::Could not tell whether $chart:$VERSION exists: $out"
-            exit 1
-          fi
-          helm push "$RUNNER_TEMP/chart/switch-$VERSION.tgz" "oci://$REGISTRY/$NAMESPACE/charts" 2>&1 \
-            | tee "$RUNNER_TEMP/helm-push.log"
-          digest="$(sed -n 's/^Digest: *//p' "$RUNNER_TEMP/helm-push.log")"
-          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::helm push printed no chart digest; got '$digest'"
-            exit 1
-          fi
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          flags=""
+          for chart in $(jq -r '.[].chart' "$RUNNER_TEMP/charts.json"); do
+            # prep refused a published version, but a re-run of this job alone
+            # skips prep, so ask again right before pushing.
+            scripts/refuse_published_chart.sh "oci://$REGISTRY/$NAMESPACE/charts/$chart" "$VERSION"
+            helm push "$RUNNER_TEMP/chart/$chart-$VERSION.tgz" "oci://$REGISTRY/$NAMESPACE/charts" 2>&1 \
+              | tee "$RUNNER_TEMP/helm-push.log"
+            digest="$(sed -n 's/^Digest: *//p' "$RUNNER_TEMP/helm-push.log")"
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::helm push of $chart printed no chart digest; got '$digest'"
+              exit 1
+            fi
+            flags="$flags --chart-digest $chart=$digest"
+          done
+          echo "chart_digest_flags=$flags" >> "$GITHUB_OUTPUT"
 
       - name: Record the pins
         # The run summary is for a person; release-pins.json is for whatever
@@ -428,13 +410,14 @@ jobs:
         # to be copied out of a log by hand.
         if: ${{ needs.prep.outputs.push == 'true' }}
         run: |
+          # shellcheck disable=SC2086 # the flags are deliberately split into words
           python3 scripts/pin_chart_images.py record \
             --digests-dir "$RUNNER_TEMP/digests" \
             --registry "$REGISTRY/$NAMESPACE" \
             --version "$VERSION" \
             --channel "${{ needs.prep.outputs.channel }}" \
             --commit "$GITHUB_SHA" \
-            --chart-digest "${{ steps.push.outputs.digest }}" \
+            ${{ steps.push.outputs.chart_digest_flags }} \
             --json "$RUNNER_TEMP/release-pins.json" \
             --summary "$GITHUB_STEP_SUMMARY"
 
@@ -445,6 +428,24 @@ jobs:
           name: release-pins
           path: ${{ runner.temp }}/release-pins.json
           if-no-files-found: error
+
+      - name: Move the dev `main` tag
+        # The dev environment follows main: its ArgoCD Application tracks the
+        # `main` tag of the dev charts, so moving it is the deploy. Only the
+        # build of main's current head moves it; an older build finishing late
+        # leaves it alone, and the newer build moves it when it finishes.
+        if: ${{ needs.prep.outputs.channel == 'dev' }}
+        run: |
+          head="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "main is at $head now, not $GITHUB_SHA; leaving the main tag to that build."
+            exit 0
+          fi
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            oras login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+          for chart in $(jq -r '.[].chart' "$RUNNER_TEMP/charts.json"); do
+            oras tag "$REGISTRY/$NAMESPACE/charts/$chart:$VERSION" main
+          done
 
   compose:
     name: Publish standalone compose (OCI artifact)

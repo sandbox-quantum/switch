@@ -1,41 +1,52 @@
 #!/usr/bin/env python3
-"""Pin the Helm chart to the exact images it was built with, and check that it is.
+"""Pin the Helm charts to the exact images they were built with, and check that they are.
 
-The release builds the switch-core, gateway and setup images and then packages
-the chart. Left alone, the chart's values name those images by a mutable tag,
-so every deployment re-states which images go with which chart and gets
-whatever the tag points at on the day. This writes each image's registry digest
-into the chart's `values.yaml` before packaging, so pinning the chart version
-pins the images with it, and what runs is reproducible from that one pin.
+The release builds the images and then packages the charts. Left alone, a
+chart's values name its images by a mutable tag (or not at all), so every
+deployment re-states which images go with which chart and gets whatever the tag
+points at on the day. This writes each image's registry digest into its chart's
+`values.yaml` before packaging, so pinning a chart version pins its images with
+it, and what runs is reproducible from that one pin.
 
-`IMAGES` below is the only list of first-party images. The release workflow
-builds its image matrix from `images`, and every other subcommand refuses a set
-of digests that is not exactly that list, so adding an image here is the whole
-change and forgetting one anywhere fails loudly.
+Two charts are published:
+
+* `switch` (deploy/remote/helm/switch): switch-core, gateway and setup.
+* `switch-hosted-controller` (deploy/hosted/chart): the controller that runs
+  Switch cloud machines, and its one image.
+
+`IMAGES` and `CHARTS` below are the only lists. The release workflow builds its
+image matrix from `images` and packages the charts `charts` names, and every
+other subcommand refuses a set of digests that is not exactly `IMAGES`, so
+adding an image or a chart here is the whole change and forgetting one anywhere
+fails loudly.
 
 Subcommands:
 
-* `images` prints the image matrix as JSON, for the release workflow.
-* `pin` rewrites `values.yaml` in place: `global.imageRegistry`, and for each
-  first-party image `<name>:<version>@sha256:…` (the chart pulls a digest-pinned
-  image `IfNotPresent` on its own). The edit is line-based so the file's
-  comments, which are the chart's documentation under `helm show values`,
-  survive.
-* `verify` reads `helm template` output and fails unless every first-party
-  image — recognised by repository name, whatever registry it names — renders
-  from the pinning registry and by digest, all of them are present, and the
-  pinning registry serves no image this script does not know.
-* `record` writes the pins (images and chart) as JSON for whatever promotes the
+* `images` prints the image build matrix as JSON; `charts` prints the charts.
+* `pin --chart <name>` rewrites that chart's `values.yaml` in place. The switch
+  chart gets `global.imageRegistry` and `<name>:<version>@sha256:…` per image
+  (it pulls a digest-pinned image `IfNotPresent` on its own); the hosted
+  controller chart gets `image.repository` and `image.digest`. The edit is
+  line-based so the file's comments, which are the chart's documentation under
+  `helm show values`, survive.
+* `verify --chart <name>` reads `helm template` output and fails unless every
+  image of that chart — recognised by repository name, whatever registry it
+  names — renders from the pinning registry and by digest, all of them are
+  present, and the pinning registry serves no image the chart should not have.
+* `record` writes the pins (images and charts) as JSON for whatever promotes the
   build next, and as a Markdown table for the run summary.
 
 Usage:
     python scripts/pin_chart_images.py images
-    python scripts/pin_chart_images.py pin --values <values.yaml> \\
-        --registry ghcr.io/<owner> --version <version> --digests-dir <dir>
+    python scripts/pin_chart_images.py charts
+    python scripts/pin_chart_images.py pin --chart switch --registry ghcr.io/<owner> \\
+        --version <version> --digests-dir <dir>
     python scripts/pin_chart_images.py pin ... --placeholder-digests
-    helm template x <chart> | python scripts/pin_chart_images.py verify --registry ghcr.io/<owner>
+    helm template x <chart> | python scripts/pin_chart_images.py verify --chart switch \\
+        --registry ghcr.io/<owner>
     python scripts/pin_chart_images.py record --digests-dir <dir> --registry ghcr.io/<owner> \\
-        --version <version> --channel <channel> --commit <sha> --chart-digest sha256:… \\
+        --version <version> --channel <channel> --commit <sha> \\
+        --chart-digest switch=sha256:… --chart-digest switch-hosted-controller=sha256:… \\
         --json <out.json> --summary <out.md>
 
 `--digests-dir` holds one file per image, named by the image, containing its
@@ -58,18 +69,64 @@ import yaml
 
 @dataclass(frozen=True)
 class Image:
+    chart: str
+    # Top-level values key holding the image: `<key>.image` in the switch
+    # chart, `<key>.repository` / `<key>.digest` in the hosted controller's.
     values_key: str
     dockerfile: str
+    context: str
 
 
-# Image name as published -> where it is built and which values key it fills.
+@dataclass(frozen=True)
+class Chart:
+    path: str
+    # Each inner list is one `helm template` render (its -f files) that
+    # `verify` checks: placeholder secrets, and the optional workloads on.
+    renders: tuple[tuple[str, ...], ...]
+
+
+CHARTS: dict[str, Chart] = {
+    "switch": Chart(
+        "deploy/remote/helm/switch",
+        (
+            ("deploy/remote/helm/render-check-values.yaml",),
+            (
+                "deploy/remote/helm/render-check-values.yaml",
+                "deploy/remote/helm/render-check-optional-values.yaml",
+            ),
+        ),
+    ),
+    "switch-hosted-controller": Chart(
+        "deploy/hosted/chart", (("deploy/hosted/render-check-values.yaml",),)
+    ),
+}
+
+# Image name as published -> its chart, which values key it fills, and how it
+# is built.
 IMAGES: dict[str, Image] = {
     "switch-core": Image(
-        "switchCore", "deploy/shared_resources/images/Dockerfile.switch"
+        "switch", "switchCore", "deploy/shared_resources/images/Dockerfile.switch", "."
     ),
-    "gateway": Image("gateway", "deploy/shared_resources/images/Dockerfile.gateway"),
-    "setup": Image("setup", "deploy/shared_resources/images/Dockerfile.setup"),
+    "gateway": Image(
+        "switch", "gateway", "deploy/shared_resources/images/Dockerfile.gateway", "."
+    ),
+    "setup": Image(
+        "switch", "setup", "deploy/shared_resources/images/Dockerfile.setup", "."
+    ),
+    "switch-hosted-controller": Image(
+        "switch-hosted-controller",
+        "image",
+        "deploy/hosted/controller/Dockerfile",
+        "deploy/hosted/controller",
+    ),
 }
+
+
+def images_of(chart: str) -> dict[str, Image]:
+    if chart not in CHARTS:
+        raise PinError(f"unknown chart {chart!r}; known: {sorted(CHARTS)}")
+    return {name: image for name, image in IMAGES.items() if image.chart == chart}
+
 
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 PLACEHOLDER_DIGEST = "sha256:" + "0" * 64
@@ -143,26 +200,33 @@ def read_digests(directory: Path) -> dict[str, str]:
     return digests
 
 
-def pin(values_text: str, registry: str, version: str, digests: dict[str, str]) -> str:
+def pin(
+    chart: str, values_text: str, registry: str, version: str, digests: dict[str, str]
+) -> str:
     _check_digests(digests)
     _check_registry(registry)
     if not version:
         raise PinError("version must be non-empty")
+    images = images_of(chart)
 
     lines = values_text.splitlines(keepends=True)
-    _set_child(lines, "global", "imageRegistry", f'"{registry}"')
-    for name, image in IMAGES.items():
-        _set_child(
-            lines, image.values_key, "image", f"{name}:{version}@{digests[name]}"
-        )
+    expected: dict[tuple[str, str], str] = {}
+    if chart == "switch":
+        expected[("global", "imageRegistry")] = registry
+        for name, image in images.items():
+            expected[(image.values_key, "image")] = f"{name}:{version}@{digests[name]}"
+    else:
+        for name, image in images.items():
+            expected[(image.values_key, "repository")] = f"{registry}/{name}"
+            expected[(image.values_key, "digest")] = digests[name]
+    for (parent, child), value in expected.items():
+        _set_child(lines, parent, child, f'"{value}"')
     pinned = "".join(lines)
 
     loaded = yaml.safe_load(pinned)
-    if loaded["global"]["imageRegistry"] != registry:
-        raise PinError("pinned values do not read back the registry")
-    for name, image in IMAGES.items():
-        if loaded[image.values_key]["image"] != f"{name}:{version}@{digests[name]}":
-            raise PinError(f"pinned values do not read back {image.values_key}.image")
+    for (parent, child), value in expected.items():
+        if loaded[parent][child] != value:
+            raise PinError(f"pinned values do not read back {parent}.{child}")
     return pinned
 
 
@@ -187,9 +251,10 @@ def _repository(ref: str) -> str:
     return ref[:colon] if colon > slash else ref
 
 
-def verify(rendered: str, registry: str) -> list[str]:
-    """Return every first-party image reference, or raise if any is unpinned."""
+def verify(chart: str, rendered: str, registry: str) -> list[str]:
+    """Return the chart's image references, or raise if any is unpinned."""
     _check_registry(registry)
+    images = images_of(chart)
     refs = sorted(
         {ref for doc in yaml.safe_load_all(rendered) if doc for ref in _images(doc)}
     )
@@ -200,18 +265,18 @@ def verify(rendered: str, registry: str) -> list[str]:
     for ref in refs:
         repository = _repository(ref)
         name = repository.rsplit("/", 1)[-1]
-        if name in IMAGES:
+        if name in images:
             ours.append(ref)
             seen.add(name)
             if repository != f"{registry}/{name}":
                 problems.append(f"{ref}: not from {registry}")
             if not re.search(r"@sha256:[0-9a-f]{64}$", ref):
                 problems.append(f"{ref}: not pinned by digest")
-        elif ref.startswith(prefix):
+        elif ref.startswith(prefix) or name in IMAGES:
             problems.append(
-                f"{ref}: from {registry} but not a known first-party image; add it to IMAGES"
+                f"{ref}: not an image of the {chart} chart; add it to IMAGES if it should be"
             )
-    absent = sorted(set(IMAGES) - seen)
+    absent = sorted(set(images) - seen)
     if absent:
         problems.append(f"missing from the rendered chart: {absent}")
     if problems:
@@ -229,27 +294,38 @@ def record(
     version: str,
     channel: str,
     commit: str,
-    chart_digest: str,
+    chart_digests: dict[str, str],
 ) -> tuple[str, str]:
     _check_digests(digests)
     _check_registry(registry)
-    if not DIGEST.match(chart_digest):
-        raise PinError(f"chart: {chart_digest!r} is not a sha256 digest")
+    if set(chart_digests) != set(CHARTS):
+        raise PinError(
+            f"chart digests must cover exactly {sorted(CHARTS)}; got {sorted(chart_digests)}"
+        )
+    for name, digest in chart_digests.items():
+        if not DIGEST.match(digest):
+            raise PinError(f"chart {name}: {digest!r} is not a sha256 digest")
     pins = {
         "version": version,
         "channel": channel,
         "commit": commit,
-        "chart": {
-            "ref": f"oci://{registry}/charts/switch",
-            "version": version,
-            "digest": chart_digest,
+        "charts": {
+            name: {
+                "ref": f"oci://{registry}/charts/{name}",
+                "version": version,
+                "digest": chart_digests[name],
+            }
+            for name in CHARTS
         },
         "images": {
             name: {"ref": f"{registry}/{name}", "digest": digests[name]}
             for name in IMAGES
         },
     }
-    rows = [f"| chart | `oci://{registry}/charts/switch:{version}@{chart_digest}` |"]
+    rows = [
+        f"| chart {name} | `oci://{registry}/charts/{name}:{version}@{chart_digests[name]}` |"
+        for name in CHARTS
+    ]
     rows += [f"| {name} | `{registry}/{name}@{digests[name]}` |" for name in IMAGES]
     summary = "\n".join(
         [
@@ -264,6 +340,16 @@ def record(
     return json.dumps(pins, indent=2) + "\n", summary
 
 
+def _parse_pairs(pairs: list[str]) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for pair in pairs:
+        name, sep, value = pair.partition("=")
+        if not sep or name in parsed:
+            raise PinError(f"{pair!r}: expected <chart>=sha256:…, each chart once")
+        parsed[name] = value
+    return parsed
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -271,9 +357,10 @@ def main(argv: list[str]) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("images", help="print the image build matrix as JSON")
+    sub.add_parser("charts", help="print the published charts as JSON")
 
-    p_pin = sub.add_parser("pin", help="write image digests into values.yaml")
-    p_pin.add_argument("--values", required=True, type=Path)
+    p_pin = sub.add_parser("pin", help="write image digests into a chart's values.yaml")
+    p_pin.add_argument("--chart", required=True, choices=sorted(CHARTS))
     p_pin.add_argument("--registry", required=True)
     p_pin.add_argument("--version", required=True)
     source = p_pin.add_mutually_exclusive_group(required=True)
@@ -287,6 +374,7 @@ def main(argv: list[str]) -> int:
     p_verify = sub.add_parser(
         "verify", help="check rendered manifests (stdin) are digest-pinned"
     )
+    p_verify.add_argument("--chart", required=True, choices=sorted(CHARTS))
     p_verify.add_argument("--registry", required=True)
 
     p_record = sub.add_parser(
@@ -297,7 +385,9 @@ def main(argv: list[str]) -> int:
     p_record.add_argument("--version", required=True)
     p_record.add_argument("--channel", required=True)
     p_record.add_argument("--commit", required=True)
-    p_record.add_argument("--chart-digest", required=True)
+    p_record.add_argument(
+        "--chart-digest", required=True, action="append", help="<chart>=sha256:…"
+    )
     p_record.add_argument("--json", required=True, type=Path)
     p_record.add_argument("--summary", required=True, type=Path)
 
@@ -307,8 +397,21 @@ def main(argv: list[str]) -> int:
             print(
                 json.dumps(
                     [
-                        {"image": name, "dockerfile": image.dockerfile}
+                        {
+                            "image": name,
+                            "dockerfile": image.dockerfile,
+                            "context": image.context,
+                        }
                         for name, image in IMAGES.items()
+                    ]
+                )
+            )
+        elif args.command == "charts":
+            print(
+                json.dumps(
+                    [
+                        {"chart": name, "path": chart.path, "renders": chart.renders}
+                        for name, chart in CHARTS.items()
                     ]
                 )
             )
@@ -318,12 +421,15 @@ def main(argv: list[str]) -> int:
                 if args.placeholder_digests
                 else read_digests(args.digests_dir)
             )
-            args.values.write_text(
-                pin(args.values.read_text(), args.registry, args.version, digests)
+            values = Path(CHARTS[args.chart].path) / "values.yaml"
+            values.write_text(
+                pin(
+                    args.chart, values.read_text(), args.registry, args.version, digests
+                )
             )
-            print(f"pinned {args.values}")
+            print(f"pinned {values}")
         elif args.command == "verify":
-            for ref in verify(sys.stdin.read(), args.registry):
+            for ref in verify(args.chart, sys.stdin.read(), args.registry):
                 print(ref)
         else:
             pins, summary = record(
@@ -332,7 +438,7 @@ def main(argv: list[str]) -> int:
                 args.version,
                 args.channel,
                 args.commit,
-                args.chart_digest,
+                _parse_pairs(args.chart_digest),
             )
             args.json.write_text(pins)
             with args.summary.open("a") as out:

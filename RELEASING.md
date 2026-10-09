@@ -113,8 +113,14 @@ environment runs main from published, digest-pinned artifacts instead of
 building from source at deploy time.
 
 - **Separate packages.** Dev builds go to `ghcr.io/<owner>/dev/` (`dev/switch-core`,
-  `dev/gateway`, `dev/setup`, `dev/charts/switch`), so the release packages'
-  tag lists hold releases and RCs only. Nothing is ever tagged `latest`.
+  `dev/gateway`, `dev/setup`, `dev/switch-hosted-controller`, `dev/charts/switch`,
+  `dev/charts/switch-hosted-controller`), so the release packages' tag lists
+  hold releases and RCs only. Nothing is ever tagged `latest`.
+- **The dev charts carry a moving `main` tag.** Once both charts are pushed,
+  the run moves their `main` tag to its build, but only while the commit it
+  built is still the tip of main, so a slower run cannot move it backwards. An
+  environment that follows main (development, through ArgoCD) tracks that tag
+  and resolves it to a digest; every other environment pins a version.
 - **Version** `<next patch>-dev.<run number>.g<short sha>`, e.g.
   `0.29.1-dev.512.g7f0c803` after `switch-v0.29.0`: one patch above the newest
   release tag on main, so a dev build sorts after the release it contains and
@@ -142,7 +148,9 @@ switchCore:
   imagePullPolicy: IfNotPresent
 ```
 
-and the same for `gateway` and `setup`. So pinning the chart pins the exact
+and the same for `gateway` and `setup`. The hosted controller chart
+(`charts/switch-hosted-controller`) is pinned the same way, through its
+`image.repository` and `image.digest`. So pinning a chart pins the exact
 images: a deployment sets no image values, and what runs is reproducible from
 the chart pin alone. The tag in front of the digest is for people; the runtime
 pulls by digest, and the chart pulls a digest-pinned image `IfNotPresent` (any
@@ -155,16 +163,18 @@ whether the chart version exists and fails if it does (and asks again right
 before pushing the chart). Builds are not bit-for-bit reproducible, so a re-run
 would point the same version at different digests. Cut a new version instead.
 
-Every publishing run lists all four digests (the chart's own included) in its
+Every publishing run lists every digest (the charts' own included) in its
 run summary, and uploads them as a `release-pins` artifact (`release-pins.json`)
 for whatever promotes the build next. `scripts/pin_chart_images.py` holds the one
-list of first-party images (the build matrix comes from it), does the pinning,
-and checks a rendered chart: every first-party image, recognised by repository
-name whatever registry it names, must render from the pinning registry and by
-digest. PR CI runs the pin with placeholder digests and the check on two
-renders (defaults, and the optional workloads on), so an image the pinner does
-not know about fails a pull request rather than shipping by tag. To add an
-image, add it to `IMAGES` there.
+list of charts and first-party images (the build matrix comes from it), does
+the pinning, and checks each rendered chart: every image of that chart,
+recognised by repository name whatever registry it names, must render from the
+pinning registry and by digest, and no first-party image of another chart may
+appear. PR CI runs the pin with placeholder digests and the check on each
+chart's renders (for the switch chart, defaults and the optional workloads
+on), so an image the pinner does not know about fails a pull request rather
+than shipping by tag. To add an image, add it to `IMAGES` there; to add a
+chart, to `CHARTS`.
 
 ## Switch Console desktop app release (separate)
 
@@ -275,7 +285,8 @@ Consuming the published artifacts:
 # images
 docker pull ghcr.io/<owner>/switch-core:<version>
 
-# chart (its images are pinned inside it by digest)
+# chart (its images are pinned inside it by digest); the hosted controller's
+# chart is charts/switch-hosted-controller
 helm install switch oci://ghcr.io/<owner>/charts/switch --version <version> \
   -f my-values.yaml
 

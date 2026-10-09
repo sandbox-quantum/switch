@@ -20,11 +20,15 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VALUES = REPO_ROOT / "deploy/remote/helm/switch/values.yaml"
 
+HOSTED_VALUES = REPO_ROOT / "deploy/hosted/chart/values.yaml"
+
 DIGESTS = {
     "switch-core": "sha256:" + "a" * 64,
     "gateway": "sha256:" + "b" * 64,
     "setup": "sha256:" + "c" * 64,
+    "switch-hosted-controller": "sha256:" + "f" * 64,
 }
+SWITCH_IMAGES = ("switch-core", "gateway", "setup")
 
 
 def _load(name: str) -> ModuleType:
@@ -42,15 +46,60 @@ prune_dev_packages = _load("prune_dev_packages")
 
 
 def test_the_image_table_matches_the_dockerfiles_and_values() -> None:
-    values = yaml.safe_load(VALUES.read_text())
-    for image in pin_chart_images.IMAGES.values():
-        assert (REPO_ROOT / image.dockerfile).is_file()
-        assert "image" in values[image.values_key]
+    for name, image in pin_chart_images.IMAGES.items():
+        chart = pin_chart_images.CHARTS[image.chart]
+        values = yaml.safe_load((REPO_ROOT / chart.path / "values.yaml").read_text())
+        assert (REPO_ROOT / image.dockerfile).is_file(), name
+        assert (REPO_ROOT / image.context).is_dir(), name
+        assert image.values_key in values, name
+    assert set(pin_chart_images.images_of("switch")) == set(SWITCH_IMAGES)
+
+
+def test_every_chart_has_its_render_check_values() -> None:
+    for chart in pin_chart_images.CHARTS.values():
+        assert (REPO_ROOT / chart.path / "Chart.yaml").is_file()
+        for render in chart.renders:
+            for values in render:
+                assert (REPO_ROOT / values).is_file(), values
+
+
+def test_pins_the_hosted_controller_chart_by_repository_and_digest() -> None:
+    original = HOSTED_VALUES.read_text()
+    pinned = pin_chart_images.pin(
+        "switch-hosted-controller", original, "ghcr.io/acme", "1.2.3", DIGESTS
+    )
+
+    assert yaml.safe_load(pinned)["image"] == {
+        "repository": "ghcr.io/acme/switch-hosted-controller",
+        "digest": DIGESTS["switch-hosted-controller"],
+    }
+    changed = [
+        a
+        for a, b in zip(original.splitlines(), pinned.splitlines(), strict=True)
+        if a != b
+    ]
+    assert len(changed) == 2
+
+
+def test_verify_scopes_each_chart_to_its_own_images() -> None:
+    hosted = _pod(_pinned("switch-hosted-controller"))
+    assert pin_chart_images.verify(
+        "switch-hosted-controller", hosted, "ghcr.io/acme"
+    ) == [_pinned("switch-hosted-controller")]
+
+    with pytest.raises(
+        pin_chart_images.PinError, match="not an image of the switch chart"
+    ):
+        pin_chart_images.verify(
+            "switch", _render(_pinned("switch-hosted-controller")), "ghcr.io/acme"
+        )
 
 
 def test_pins_every_first_party_image_in_the_real_values_file() -> None:
     pinned = yaml.safe_load(
-        pin_chart_images.pin(VALUES.read_text(), "ghcr.io/acme", "1.2.3", DIGESTS)
+        pin_chart_images.pin(
+            "switch", VALUES.read_text(), "ghcr.io/acme", "1.2.3", DIGESTS
+        )
     )
 
     assert pinned["global"]["imageRegistry"] == "ghcr.io/acme"
@@ -63,7 +112,7 @@ def test_pins_every_first_party_image_in_the_real_values_file() -> None:
 
 def test_changes_only_the_pinned_lines() -> None:
     original = VALUES.read_text()
-    pinned = pin_chart_images.pin(original, "ghcr.io/acme", "1.2.3", DIGESTS)
+    pinned = pin_chart_images.pin("switch", original, "ghcr.io/acme", "1.2.3", DIGESTS)
 
     changed = [
         (a, b)
@@ -89,7 +138,9 @@ def test_refuses_digests_that_do_not_cover_exactly_the_images(
     digests: dict[str, str],
 ) -> None:
     with pytest.raises(pin_chart_images.PinError):
-        pin_chart_images.pin(VALUES.read_text(), "ghcr.io/acme", "1.2.3", digests)
+        pin_chart_images.pin(
+            "switch", VALUES.read_text(), "ghcr.io/acme", "1.2.3", digests
+        )
 
 
 def test_reads_digests_from_a_directory_and_refuses_a_stray_file(
@@ -107,13 +158,13 @@ def test_reads_digests_from_a_directory_and_refuses_a_stray_file(
 def test_refuses_a_values_file_whose_shape_moved() -> None:
     values = VALUES.read_text().replace("\n  image: gateway:", "\n  img: gateway:")
     with pytest.raises(pin_chart_images.PinError, match="gateway.image"):
-        pin_chart_images.pin(values, "ghcr.io/acme", "1.2.3", DIGESTS)
+        pin_chart_images.pin("switch", values, "ghcr.io/acme", "1.2.3", DIGESTS)
 
 
 def test_does_not_pin_a_nested_image_key() -> None:
     values = "global:\n  imageRegistry: ''\nswitchCore:\n  sidecar:\n    image: x\n"
     with pytest.raises(pin_chart_images.PinError, match="switchCore.image"):
-        pin_chart_images.pin(values, "r", "1", DIGESTS)
+        pin_chart_images.pin("switch", values, "r", "1", DIGESTS)
 
 
 def _pod(*images: str, init: tuple[str, ...] = ()) -> str:
@@ -152,7 +203,7 @@ def _render(*extra: str) -> str:
 
 
 def test_verify_accepts_a_fully_pinned_render() -> None:
-    assert len(pin_chart_images.verify(_render(), "ghcr.io/acme")) == 3
+    assert len(pin_chart_images.verify("switch", _render(), "ghcr.io/acme")) == 3
 
 
 @pytest.mark.parametrize(
@@ -164,7 +215,7 @@ def test_verify_accepts_a_fully_pinned_render() -> None:
         ("registry.example:5000/setup", "not pinned by digest"),
         (
             "ghcr.io/acme/sidecar:1.2.3@" + "sha256:" + "d" * 64,
-            "not a known first-party image",
+            "not an image of the switch chart",
         ),
     ],
     ids=[
@@ -177,32 +228,54 @@ def test_verify_accepts_a_fully_pinned_render() -> None:
 )
 def test_verify_rejects_a_stray_first_party_reference(extra: str, problem: str) -> None:
     with pytest.raises(pin_chart_images.PinError, match=problem):
-        pin_chart_images.verify(_render(extra), "ghcr.io/acme")
+        pin_chart_images.verify("switch", _render(extra), "ghcr.io/acme")
 
 
 def test_verify_rejects_a_render_missing_an_image() -> None:
     rendered = "---\n".join([_pod(_pinned("switch-core")), _pod(_pinned("gateway"))])
     with pytest.raises(pin_chart_images.PinError, match="setup"):
-        pin_chart_images.verify(rendered, "ghcr.io/acme")
+        pin_chart_images.verify("switch", rendered, "ghcr.io/acme")
 
 
-def test_record_lists_every_image_and_the_chart() -> None:
-    chart = "sha256:" + "e" * 64
+def test_record_lists_every_image_and_chart() -> None:
+    charts = {
+        "switch": "sha256:" + "e" * 64,
+        "switch-hosted-controller": "sha256:" + "d" * 64,
+    }
     pins, summary = pin_chart_images.record(
-        DIGESTS, "ghcr.io/acme/dev", "1.2.4-dev.7.gabc1234", "dev", "abc", chart
+        DIGESTS, "ghcr.io/acme/dev", "1.2.4-dev.7.gabc1234", "dev", "abc", charts
     )
 
     loaded = json.loads(pins)
-    assert loaded["chart"] == {
-        "ref": "oci://ghcr.io/acme/dev/charts/switch",
-        "version": "1.2.4-dev.7.gabc1234",
-        "digest": chart,
+    assert loaded["charts"] == {
+        name: {
+            "ref": f"oci://ghcr.io/acme/dev/charts/{name}",
+            "version": "1.2.4-dev.7.gabc1234",
+            "digest": digest,
+        }
+        for name, digest in charts.items()
     }
     assert {
         name: entry["digest"] for name, entry in loaded["images"].items()
     } == DIGESTS
     for name, digest in DIGESTS.items():
         assert f"ghcr.io/acme/dev/{name}@{digest}" in summary
+
+
+def test_record_refuses_a_missing_chart_digest() -> None:
+    with pytest.raises(pin_chart_images.PinError, match="chart digests"):
+        pin_chart_images.record(
+            DIGESTS, "r", "1", "dev", "abc", {"switch": "sha256:" + "e" * 64}
+        )
+
+
+def test_parses_chart_digest_flags_and_refuses_a_repeat() -> None:
+    digest = "sha256:" + "e" * 64
+    assert pin_chart_images._parse_pairs([f"switch={digest}"]) == {"switch": digest}
+    with pytest.raises(pin_chart_images.PinError):
+        pin_chart_images._parse_pairs([f"switch={digest}", f"switch={digest}"])
+    with pytest.raises(pin_chart_images.PinError):
+        pin_chart_images._parse_pairs([digest])
 
 
 def _version(created: datetime, *tags: str) -> dict:
