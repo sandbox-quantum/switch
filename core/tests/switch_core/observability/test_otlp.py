@@ -216,6 +216,28 @@ def test_log_records_carry_trace_ids_only_when_present():
     assert encoded[0]["timeUnixNano"] == str(END_NANOS)
 
 
+def _resource_keys(resource_entry: dict) -> dict[str, object]:
+    return {
+        attribute["key"]: attribute["value"]
+        for attribute in resource_entry["resource"]["attributes"]
+    }
+
+
+def test_metrics_repeat_the_environment_under_the_key_the_relay_keeps():
+    payload = build_metrics_payload([_sum_metric()], RESOURCE, START_NANOS, END_NANOS)
+    keys = _resource_keys(payload["resourceMetrics"][0])
+
+    assert keys["flint_env"] == {"stringValue": "pilot"}
+    assert keys["deployment.environment"] == {"stringValue": "pilot"}
+
+
+def test_logs_leave_flint_env_to_the_telemetry_sink():
+    # On product telemetry `flint_env` names the Amplitude project; a second
+    # value here would make the relay route the event by the wrong one.
+    payload = build_logs_payload([], RESOURCE)
+    assert "flint_env" not in _resource_keys(payload["resourceLogs"][0])
+
+
 def _client(handler) -> OtlpClient:
     transport = httpx.MockTransport(handler)
     return OtlpClient(
