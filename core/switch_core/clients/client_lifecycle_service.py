@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import uuid
 from typing import Any
 
@@ -31,6 +32,9 @@ logger = logging.getLogger(__name__)
 # nothing on the server could post for it until the next restart. Such a
 # failure says nothing about the client, so it waits and tries again, as long
 # as it takes. Anything else is a bug in the client and still ends it.
+# The wait is jittered: the clients that drained the pool failed together, and
+# a deterministic backoff would keep them retrying together, re-draining it in
+# synchronized waves. Each draws its own delay instead.
 _TRANSIENT_START_ERRORS: tuple[type[BaseException], ...] = (
     PoolTimeoutError,
     OperationalError,
@@ -442,9 +446,12 @@ class ClientLifecycleService:
                         return
                     except _TRANSIENT_START_ERRORS:
                         attempt += 1
-                        delay = min(
-                            CLIENT_RETRY_BASE_SECONDS * 2 ** (attempt - 1),
-                            CLIENT_RETRY_CAP_SECONDS,
+                        delay = random.uniform(
+                            0,
+                            min(
+                                CLIENT_RETRY_BASE_SECONDS * 2 ** (attempt - 1),
+                                CLIENT_RETRY_CAP_SECONDS,
+                            ),
                         )
                         logger.warning(
                             "Client %s (%s) failed on the database or network "
