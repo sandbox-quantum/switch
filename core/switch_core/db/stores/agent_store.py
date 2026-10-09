@@ -73,6 +73,17 @@ class AgentStore:
         )
         return result.scalar_one_or_none()
 
+    async def get_by_client_ids(
+        self, session: AsyncSession, client_ids: list[str]
+    ) -> list[Agent]:
+        """`get_by_client_id` for many clients in one query."""
+        if not client_ids:
+            return []
+        result = await session.execute(
+            select(Agent).where(Agent.client_id.in_(client_ids))
+        )
+        return list(result.scalars().all())
+
     async def get_by_api_key_id(
         self, session: AsyncSession, api_key_id: str
     ) -> Agent | None:
