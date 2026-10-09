@@ -24,6 +24,7 @@ import uuid
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 import markdown
 from sqlalchemy import ColumnElement, delete, exists, false, select, update
@@ -92,6 +93,9 @@ class StagedUpload:
     filename: str
     mimetype: str
     size: int
+
+
+RemovalReason = Literal["access", "unlisted"]
 
 
 def _hash(payload: dict[str, object]) -> str:
@@ -389,7 +393,9 @@ class ChatService:
 
     async def sync_room(self, tenant_id: str, room_id: str) -> None:
         """`sync_owned_rooms` for everyone a change to this room's agents may
-        concern: the owners of its agents and the holders of owner grants."""
+        concern: the owners of its agents and the holders of owner grants.
+        The room's other members are told too, as gaining or losing its
+        agents can move it into or out of their list."""
         async with tenant_session(self.session_factory, tenant_id) as session:
             owners = set(
                 (
@@ -412,10 +418,26 @@ class ChatService:
                     )
                 ).scalars()
             )
+            members = set(
+                (
+                    await session.execute(
+                        select(Client.user_id)
+                        .join(ClientRoom, ClientRoom.client_id == Client.id)
+                        .where(
+                            ClientRoom.room_id == room_id,
+                            Client.type == MEMBER_CLIENT_TYPE,
+                            Client.user_id.is_not(None),
+                        )
+                    )
+                ).scalars()
+            )
         for user_id in sorted(
             user_id for user_id in owners | holders if user_id is not None
         ):
             await self.sync_owned_rooms(tenant_id, user_id)
+        self._memberships_changed(
+            tenant_id, sorted(user_id for user_id in members if user_id is not None)
+        )
 
     async def _make_lasting(self, tenant_id: str, user_id: str, room_id: str) -> None:
         async with tenant_session(self.session_factory, tenant_id) as session:
@@ -444,6 +466,19 @@ class ChatService:
             .order_by(Room.created_at)
         )
         return list(result.scalars().all())
+
+    async def removal_reason(
+        self, session: AsyncSession, user_id: str, room_id: str
+    ) -> RemovalReason:
+        """Why a room left `stream_rooms`: the caller lost it ("access") or is
+        still a member of a live room that no longer qualifies ("unlisted")."""
+        room = await self._room_store.get(session, room_id)
+        if room is None or room.archived_at is not None:
+            return "access"
+        client = await self.member_client(session, user_id)
+        if client is None or not await self._is_in_room(session, client.id, room_id):
+            return "access"
+        return "unlisted"
 
     async def list_chats(self, session: AsyncSession, user_id: str) -> list[Room]:
         """`stream_rooms` less the ones the caller hid with nothing said since."""

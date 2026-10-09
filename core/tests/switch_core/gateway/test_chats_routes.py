@@ -1009,7 +1009,10 @@ async def test_the_stream_announces_new_chats_and_removals(chats: _Harness) -> N
     room_id = await chats.new_chat(chats.alice, agent, "c1")
 
     events = _stream(chats, chats.bob, {"gone-room": 3}, recheck=60.0)
-    assert await events.next() == ("chat.removed", {"roomId": "gone-room"})
+    assert await events.next() == (
+        "chat.removed",
+        {"roomId": "gone-room", "reason": "access"},
+    )
     assert (await events.next())[0] == "ready"
 
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
@@ -1020,7 +1023,10 @@ async def test_the_stream_announces_new_chats_and_removals(chats: _Harness) -> N
         f"/chats/{room_id}/members/{chats.bob.id}", headers=chats.as_user(chats.alice)
     )
     assert removed.status_code == 204
-    assert await events.next() == ("chat.removed", {"roomId": room_id})
+    assert await events.next() == (
+        "chat.removed",
+        {"roomId": room_id, "reason": "access"},
+    )
 
     # Nothing more about the room reaches someone no longer in it.
     assert (await chats.send(chats.alice, room_id, "s1", "secret")).status_code == 200
@@ -1045,9 +1051,127 @@ async def test_the_stream_ends_when_the_tenant_role_is_gone(chats: _Harness) -> 
         )
         await session.commit()
     await chats.listener.ring(room_id)
-    assert await events.next() == ("chat.removed", {"roomId": room_id})
+    assert await events.next() == (
+        "chat.removed",
+        {"roomId": room_id, "reason": "access"},
+    )
     with pytest.raises(StopAsyncIteration):
         await anext(events.stream)
+
+
+async def test_an_invited_member_keeps_a_chat_that_loses_its_last_agent(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.bob)
+    room_id = await _room(chats, [agent], owner=chats.alice)
+    assert room_id in await _listed(chats, chats.bob)
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+
+    events = _stream(chats, chats.bob, {}, recheck=0.2)
+    assert (await events.next())[0] == "chat"
+    assert (await events.next())[0] == "ready"
+
+    await chats.room_service.remove_agents_from_room(room_id, [agent.id])
+    assert await events.next() == (
+        "chat.removed",
+        {"roomId": room_id, "reason": "unlisted"},
+    )
+    assert await _reads(chats, chats.bob, room_id) == 200
+    await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def test_an_unlisted_chat_is_announced_again_when_an_agent_returns(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+
+    events = _stream(chats, chats.bob, {}, recheck=60.0)
+    assert (await events.next())[0] == "chat"
+    assert (await events.next())[0] == "ready"
+
+    await chats.room_service.remove_agents_from_room(room_id, [agent.id])
+    assert await events.next() == (
+        "chat.removed",
+        {"roomId": room_id, "reason": "unlisted"},
+    )
+
+    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
+    name, summary = await events.next()
+    assert name == "chat" and summary["roomId"] == room_id
+    assert room_id in await _listed(chats, chats.bob)
+    await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def test_the_periodic_recheck_announces_a_chat_that_regains_an_agent(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+    async with chats.factory() as session:
+        await session.execute(
+            delete(room_agents).where(room_agents.c.room_id == room_id)
+        )
+        await session.commit()
+
+    events = _stream(chats, chats.bob, {room_id: 0}, recheck=0.2)
+    assert await events.next() == (
+        "chat.removed",
+        {"roomId": room_id, "reason": "unlisted"},
+    )
+    assert (await events.next())[0] == "ready"
+
+    # Written straight to the table, as another process would: no hook runs.
+    async with chats.factory() as session:
+        await session.execute(
+            room_agents.insert().values(room_id=room_id, agent_id=agent.id)
+        )
+        await session.commit()
+    name, summary = await events.next()
+    assert name == "chat" and summary["roomId"] == room_id
+    await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def test_an_owner_only_member_loses_access_with_the_last_agent(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.bob)
+    room_id = await _room(chats, [agent], owner=chats.alice)
+    assert room_id in await _listed(chats, chats.bob)
+
+    events = _stream(chats, chats.bob, {}, recheck=60.0)
+    assert (await events.next())[0] == "chat"
+    assert (await events.next())[0] == "ready"
+
+    await chats.room_service.remove_agents_from_room(room_id, [agent.id])
+    assert await events.next() == (
+        "chat.removed",
+        {"roomId": room_id, "reason": "access"},
+    )
+    assert await _reads(chats, chats.bob, room_id) == 403
+    await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def test_archiving_a_chat_removes_it_for_access(chats: _Harness) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+
+    events = _stream(chats, chats.bob, {}, recheck=0.2)
+    assert (await events.next())[0] == "chat"
+    assert (await events.next())[0] == "ready"
+
+    archived = await chats.client.post(
+        f"/chats/{room_id}/archive", headers=chats.as_user(chats.alice)
+    )
+    assert archived.status_code == 204
+    assert await events.next() == (
+        "chat.removed",
+        {"roomId": room_id, "reason": "access"},
+    )
+    await events.stream.aclose()  # type: ignore[attr-defined]
 
 
 async def test_the_periodic_recheck_recovers_a_missed_notification(
@@ -1227,7 +1351,10 @@ async def test_a_room_that_gains_the_owners_agent_is_announced_at_once(
     assert await _reads(chats, chats.alice, room_id) == 200
 
     await chats.room_service.remove_agents_from_room(room_id, [agent.id])
-    assert await events.next() == ("chat.removed", {"roomId": room_id})
+    assert await events.next() == (
+        "chat.removed",
+        {"roomId": room_id, "reason": "access"},
+    )
     assert await _reads(chats, chats.alice, room_id) == 403
     await events.stream.aclose()  # type: ignore[attr-defined]
 
@@ -1292,7 +1419,10 @@ async def test_losing_the_last_owned_agent_ends_the_owners_access(
     assert await _reads(chats, chats.alice, room_id) == 200
 
     await chats.room_service.remove_agents_from_room(room_id, [other.id])
-    assert await events.next() == ("chat.removed", {"roomId": room_id})
+    assert await events.next() == (
+        "chat.removed",
+        {"roomId": room_id, "reason": "access"},
+    )
     assert await _reads(chats, chats.alice, room_id) == 403
     assert await _listed(chats, chats.alice) == {}
     async with chats.factory() as session:

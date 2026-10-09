@@ -30,7 +30,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.chats.service import ChatError, ChatService
+from switch_core.chats.service import ChatError, ChatService, RemovalReason
 from switch_core.chats.views import (
     CamelModel,
     ChatMember,
@@ -362,6 +362,13 @@ def _frame(event: str, data: object) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
 
 
+def _removed(room_id: str, reason: RemovalReason) -> bytes:
+    """`chat.removed`: "access" when the caller lost the room (membership,
+    tenant role, archive), "unlisted" when they are still a member but it no
+    longer qualifies for the list."""
+    return _frame("chat.removed", {"roomId": room_id, "reason": reason})
+
+
 class _ChatStream:
     """One caller's live view of their chats.
 
@@ -393,10 +400,10 @@ class _ChatStream:
             self.service.listener.unsubscribe(room_id, self.on_room)
         self.cursors.clear()
 
-    def _untrack(self, room_id: str) -> bytes:
+    def _untrack(self, room_id: str, reason: RemovalReason) -> bytes:
         self.service.listener.unsubscribe(room_id, self.on_room)
         self.cursors.pop(room_id, None)
-        return _frame("chat.removed", {"roomId": room_id})
+        return _removed(room_id, reason)
 
     async def refresh(
         self, read: set[str] | None, initial: bool
@@ -412,11 +419,11 @@ class _ChatStream:
             await service.sync_owned_rooms(self.tenant_id, self.user.id)
         async with tenant_session(service.session_factory, self.tenant_id) as session:
             if not await service.has_tenant_role(session, self.tenant_id, self.user.id):
-                frames.extend(self._untrack(room_id) for room_id in list(self.cursors))
                 frames.extend(
-                    _frame("chat.removed", {"roomId": room_id})
-                    for room_id in self.after
-                    if initial
+                    self._untrack(room_id, "access") for room_id in list(self.cursors)
+                )
+                frames.extend(
+                    _removed(room_id, "access") for room_id in self.after if initial
                 )
                 return frames, False
             rooms = {
@@ -424,13 +431,15 @@ class _ChatStream:
                 for room in await service.stream_rooms(session, self.user.id)
             }
             for room_id in [r for r in self.cursors if r not in rooms]:
-                frames.append(self._untrack(room_id))
+                reason = await service.removal_reason(session, self.user.id, room_id)
+                frames.append(self._untrack(room_id, reason))
             if initial:
-                frames.extend(
-                    _frame("chat.removed", {"roomId": room_id})
-                    for room_id in self.after
-                    if room_id not in rooms
-                )
+                for room_id in self.after:
+                    if room_id not in rooms:
+                        reason = await service.removal_reason(
+                            session, self.user.id, room_id
+                        )
+                        frames.append(_removed(room_id, reason))
             for room_id, room in rooms.items():
                 if room_id in self.cursors:
                     continue
@@ -479,7 +488,7 @@ async def chat_events(
 
     Catches every member room up from its cursor in `after`, says `ready`,
     then pushes as rooms move. A room the caller joined since is announced as
-    `chat` and followed from its head; one they lost is `chat.removed`. A
+    `chat` and followed from its head; one that leaves the list is `chat.removed`. A
     re-read every `recheck_seconds` recovers anything a missed notification
     or another process's membership change left behind.
     """
