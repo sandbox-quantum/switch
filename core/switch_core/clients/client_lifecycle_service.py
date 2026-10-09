@@ -202,7 +202,14 @@ class ClientLifecycleService:
                 )
 
         records = [r for r in records if r.type not in self.COLLAB_CLIENT_TYPES]
-        agents = await self._agents_by_client_id(records)
+        try:
+            agents = await self._agents_by_client_id(records)
+        except Exception:
+            # One bulk read must not cost every client. Without it each agent
+            # client reads its own row as it starts, as it always did, with
+            # its own retry.
+            logger.exception("Bulk agent read failed; clients will each read their own")
+            agents = {}
 
         logger.info("Starting %d clients", len(records))
         for record in records:
