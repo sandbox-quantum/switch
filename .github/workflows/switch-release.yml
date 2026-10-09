@@ -1,8 +1,9 @@
 name: switch release
 
-# Builds and publishes the Switch core stack — the switch-core, gateway, and
-# setup container images, the Helm chart, and the standalone Docker Compose file
-# (as an OCI artifact) — so adopters can deploy without building from source.
+# Builds and publishes the Switch core stack — the switch-core, gateway, setup
+# and hosted-controller container images, the Helm chart, and the standalone
+# Docker Compose file (as an OCI artifact) — so adopters can deploy without
+# building from source.
 # See RELEASING.md for the full procedure.
 #
 # Trigger by pushing a tag like `switch-v0.2.0` (the version after `switch-v`
@@ -130,11 +131,18 @@ jobs:
       matrix:
         include:
           - image: switch-core
+            context: .
             dockerfile: deploy/shared_resources/images/Dockerfile.switch
           - image: gateway
+            context: .
             dockerfile: deploy/shared_resources/images/Dockerfile.gateway
           - image: setup
+            context: .
             dockerfile: deploy/shared_resources/images/Dockerfile.setup
+          # The service that launches Switch cloud machines (deploy/hosted).
+          - image: hosted-controller
+            context: deploy/hosted/controller
+            dockerfile: deploy/hosted/controller/Dockerfile
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -175,8 +183,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
-          # All three Dockerfiles build with the repo root as context.
-          context: .
+          context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: ${{ needs.prep.outputs.push == 'true' }}
