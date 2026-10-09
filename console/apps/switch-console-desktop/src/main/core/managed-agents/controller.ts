@@ -8,7 +8,6 @@ import { hostControllerService } from '@main/core/host-controllers/host-controll
 import {
   AgentManagementUnavailableError,
   deleteAgent,
-  deleteManagedAgent,
   fetchAdvancedConfigSchema,
   fetchManagedAgents,
   fetchMachineOperation,
@@ -219,12 +218,13 @@ export const managedAgentsController = createRPCController({
       setManagedAgentDesiredState(server, params.agentId, params.desiredState)
     ),
 
-  /** Deletes the agent: its machine stops it, and it is gone from Switch. */
+  /** Deletes the agent: its machine stops it, and it is gone from Switch.
+   * One call: Switch stops managing an agent it deletes, while stopping
+   * managing it first would leave the agent behind if the delete then failed. */
   remove: (params: { serverId: string; agentId: string }): Promise<void> =>
-    withReachableServerWorkspaceSession(params.serverId, async (server) => {
-      await deleteManagedAgent(server, params.agentId);
-      await deleteAgent(server, params.agentId);
-    }),
+    withReachableServerWorkspaceSession(params.serverId, (server) =>
+      deleteAgent(server, params.agentId)
+    ),
 });
 
 function definitionBody(changes: ManagedAgentChanges['definition']): Record<string, unknown> {
