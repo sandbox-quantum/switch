@@ -19,6 +19,9 @@ function bridge(id: string, displayName: string): RemoteBridge {
     channelCreationSupported: true,
     canCreateChannels: true,
     directorySearchSupported: true,
+    attention: null,
+    teamPlacementSupported: false,
+    channelIdsRefused: null,
   };
 }
 
@@ -175,7 +178,7 @@ describe('what is said instead, where the link step is withheld', () => {
 
     expect(note).toContain('Telegram louis');
     // Be seen first, link second — the part that cannot be guessed.
-    expect(note).toContain('send a message');
+    expect(note).toContain('Send a message in a connected group');
     expect(note).toContain('link your account');
   });
 

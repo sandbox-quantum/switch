@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
+    CollaborationBridge,
     MessagingInstall,
     MessagingInstallState,
+    Room,
     require_tenant_id,
 )
 
@@ -22,7 +25,7 @@ STATE_TTL = timedelta(minutes=10)
 #: covers, so it is also the answer to "who holds this workspace".
 INSTALL_ACTIVE = "active"
 
-#: Ended here, by someone who decided to. The bridge is gone with it.
+#: Ended here, by someone who decided to.
 INSTALL_DISCONNECTED = "disconnected"
 
 #: Ended there: the platform told us the app was removed or its token killed.
@@ -156,6 +159,7 @@ class MessagingInstallStore:
         external_workspace_id: str,
         encrypted_bot_token: str | None,
         scopes: str,
+        platform_data: Mapping[str, object],
         user_id: str,
     ) -> MessagingInstall:
         """Claim a workspace for the bound tenant.
@@ -180,6 +184,7 @@ class MessagingInstallStore:
             external_workspace_id=external_workspace_id,
             encrypted_bot_token=encrypted_bot_token,
             scopes=scopes,
+            platform_data=dict(platform_data),
             status=INSTALL_ACTIVE,
             installed_by_user_id=user_id,
         )
@@ -191,9 +196,9 @@ class MessagingInstallStore:
                 raise
             raise MessagingInstallClaimedError(
                 f"the {platform} workspace {external_workspace_id} is already "
-                "connected to Switch. Disconnect the existing install — from "
-                "the organisation that holds it, which may not be yours — "
-                "before connecting it again."
+                "connected to a Switch workspace, possibly another one, and "
+                "possibly one you do not belong to. Disconnect it from that "
+                "Switch workspace before connecting it again."
             ) from exc
         return install
 
@@ -227,21 +232,159 @@ class MessagingInstallStore:
     ) -> MessagingInstall | None:
         """The live install a bridge was built for, if it was built for one.
 
+        For a bridge with one install, which is every OAuth install's. A
+        claim-based platform's bridge serves many and answers with the first;
+        `list_for_bridge` has all of them.
+        """
+        installs = await self.list_for_bridge(session, bridge_id=bridge_id)
+        return installs[0] if installs else None
+
+    async def names_for_tenant(
+        self, session: AsyncSession
+    ) -> list[tuple[str, str, str | None, str | None]]:
+        """`(install id, platform, room name, bridge name)` for every install.
+
+        The room is the one bridged to the install's own workspace id, which
+        only a chat claimed as a room has; the bridge is the one the install
+        still points at. An ended install has let go of both, so both are
+        `None`. Which of the two a person calls the install is the caller's.
+        """
+        result = await session.execute(
+            select(
+                MessagingInstall.id,
+                MessagingInstall.platform,
+                Room.name,
+                CollaborationBridge.display_name,
+            )
+            .outerjoin(
+                Room,
+                and_(
+                    Room.bridge_id == MessagingInstall.bridge_id,
+                    Room.external_channel_id == MessagingInstall.external_workspace_id,
+                ),
+            )
+            .outerjoin(
+                CollaborationBridge,
+                CollaborationBridge.id == MessagingInstall.bridge_id,
+            )
+        )
+        return [(row[0], row[1], row[2], row[3]) for row in result.all()]
+
+    async def rooms_for_tenant(self, session: AsyncSession) -> dict[str, Room]:
+        """The room bridged to each install's own workspace id, by install id.
+
+        The same pairing `names_for_tenant` names: only a chat claimed as a
+        room has one, and only while the install still points at its bridge.
+        Read for who may see and disconnect a chat, which is whoever may read
+        and write its room.
+        """
+        result = await session.execute(
+            select(MessagingInstall.id, Room).join(
+                Room,
+                and_(
+                    Room.bridge_id == MessagingInstall.bridge_id,
+                    Room.external_channel_id == MessagingInstall.external_workspace_id,
+                ),
+            )
+        )
+        return {row[0]: row[1] for row in result.all()}
+
+    async def list_for_bridge(
+        self, session: AsyncSession, *, bridge_id: str
+    ) -> list[MessagingInstall]:
+        """The live installs a bridge serves, if it was built for any.
+
         Asked from the other direction than the rest of this store, and by
         something that does not otherwise know installs exist: the bridge
         delete endpoint, which has to refuse rather than tear down a bridge
         whose credential is a token nobody here has revoked.
 
+        A list because a bridge may serve many: a Slack install has a bridge
+        of its own, but every Telegram chat a tenant claims is served by the
+        tenant's one Telegram bridge.
+
         Live installs only. An ended one has already released its pointer, so a
         row matching here is always a bridge that is still somebody's install.
         """
         result = await session.execute(
-            select(MessagingInstall).where(
+            select(MessagingInstall)
+            .where(
                 MessagingInstall.bridge_id == bridge_id,
                 MessagingInstall.status == INSTALL_ACTIVE,
             )
+            .order_by(MessagingInstall.installed_at, MessagingInstall.id)
         )
-        return result.scalars().one_or_none()
+        return list(result.scalars())
+
+    async def bridge_for_platform(
+        self, session: AsyncSession, *, platform: str
+    ) -> str | None:
+        """The bridge the bound tenant's claimed chats of `platform` share.
+
+        Only meaningful for a platform whose installs share one bridge per
+        tenant — one claimed by event rather than by OAuth. Read from the
+        bridge rather than from its installs, because it outlives its chats:
+        it is the tenant's connection, and stays until an admin deletes it.
+        `None` means there is none, so the next claim creates it.
+
+        A self-registered bridge of the same platform polls its own bot and
+        says so in its config, so `event_delivery` is what tells the two apart.
+        It is read here rather than in the query because the config is
+        encrypted at rest.
+
+        Two distinct bridges is a broken invariant rather than a choice to make
+        here: routing a new chat to either would split one tenant's identities
+        across two bridges without anyone having decided to.
+        """
+        result = await session.execute(
+            select(CollaborationBridge).where(CollaborationBridge.type == platform)
+        )
+        bridge_ids = [
+            bridge.id
+            for bridge in result.scalars()
+            if (bridge.connection_config or {}).get("event_delivery") == "shared"
+        ]
+        if len(bridge_ids) > 1:
+            raise RuntimeError(
+                f"this organisation has {len(bridge_ids)} shared {platform} "
+                f"bridges ({', '.join(sorted(bridge_ids))}); it must have one"
+            )
+        return bridge_ids[0] if bridge_ids else None
+
+    async def move_workspace(
+        self,
+        session: AsyncSession,
+        *,
+        platform: str,
+        from_workspace_id: str,
+        to_workspace_id: str,
+    ) -> MessagingInstall | None:
+        """Re-key the bound tenant's live install when its workspace changes id.
+
+        `None` when there is nothing at the old id, which is the ordinary
+        second half of a migration the platform announces twice: whichever
+        notice arrives second finds the row already moved.
+
+        The new id is still subject to the workspace uniqueness index, so a
+        new id somebody else holds fails here rather than producing a
+        workspace with two owners.
+        """
+        install = await self.get_for_workspace(
+            session, platform=platform, external_workspace_id=from_workspace_id
+        )
+        if install is None:
+            return None
+        install.external_workspace_id = to_workspace_id
+        try:
+            await session.flush()
+        except IntegrityError as exc:
+            if "uq_messaging_installs_workspace" not in str(exc.orig):
+                raise
+            raise MessagingInstallClaimedError(
+                f"the {platform} workspace {from_workspace_id} became "
+                f"{to_workspace_id}, which another install already holds"
+            ) from exc
+        return install
 
     async def get(self, session: AsyncSession, *, install_id: str) -> MessagingInstall:
         """One of the bound tenant's installs, by id, or raise."""
@@ -265,6 +408,67 @@ class MessagingInstallStore:
             select(MessagingInstall).order_by(
                 MessagingInstall.installed_at.desc(), MessagingInstall.id
             )
+        )
+        return list(result.scalars())
+
+    async def refresh(
+        self,
+        session: AsyncSession,
+        *,
+        install_id: str,
+        scopes: str,
+        platform_data: Mapping[str, object],
+    ) -> MessagingInstall:
+        """Record what a repeated approval of a live install granted.
+
+        For a platform with no per-install token, approving again is how an
+        organisation grants new permissions, takes a newer version of the app,
+        or restores an approval it withdrew — and the install it refreshes is
+        the same one, still serving, so nothing about who holds the workspace
+        changes.
+        """
+        install = await self.get(session, install_id=install_id)
+        if install.status != INSTALL_ACTIVE:
+            raise MessagingInstallStateError(
+                "this install has ended, so it cannot be approved again; install "
+                "it afresh instead"
+            )
+        install.scopes = scopes
+        # Merged over what is kept rather than replacing it: a repeated
+        # approval that could not re-learn something (an id it failed to read
+        # this time) must not erase what an earlier one learned.
+        install.platform_data = {**install.platform_data, **platform_data}
+        await session.flush()
+        return install
+
+    async def remember(
+        self,
+        session: AsyncSession,
+        *,
+        install_id: str,
+        platform_data: Mapping[str, object],
+    ) -> MessagingInstall:
+        """Add to what a live install keeps about its platform.
+
+        For a fact learned after the install, from the platform itself —
+        never from a person's input.
+        """
+        install = await self.get(session, install_id=install_id)
+        install.platform_data = {**install.platform_data, **platform_data}
+        await session.flush()
+        return install
+
+    async def list_active(
+        self, session: AsyncSession, *, platform: str
+    ) -> list[MessagingInstall]:
+        """The bound tenant's live installs of one platform, oldest first."""
+        result = await session.execute(
+            select(MessagingInstall)
+            .where(
+                MessagingInstall.platform == platform,
+                MessagingInstall.status == INSTALL_ACTIVE,
+            )
+            .order_by(MessagingInstall.installed_at, MessagingInstall.id)
         )
         return list(result.scalars())
 
@@ -303,9 +507,9 @@ class MessagingInstallStore:
         # the dump. Keeping the row is the record; keeping the secret is not
         # part of it.
         install.encrypted_bot_token = None
-        # And the pointer goes with it, because the bridge is about to. The
-        # foreign key has no `ON DELETE`, so a row still naming the bridge is
-        # what would refuse its deletion.
+        # And the pointer goes with it: an ended install no longer uses the
+        # bridge, and the foreign key has no `ON DELETE`, so a row still naming
+        # it is what would refuse the bridge's deletion.
         install.bridge_id = None
         await session.flush()
         return install

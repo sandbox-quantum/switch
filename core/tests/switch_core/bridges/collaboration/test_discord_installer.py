@@ -129,6 +129,7 @@ class TestConnectionConfig:
                 workspace_name="Acme",
                 bot_token=None,
                 scopes="bot applications.commands",
+                platform_data={},
             )
         )
         assert config == {"guild_id": "42", "event_delivery": "shared"}
@@ -170,15 +171,22 @@ class TestTheWebhookHalfIsStubbed:
         with pytest.raises(NotImplementedError):
             await installer.revoke(bot_token="whatever")
 
-    def test_verify_webhook_raises_not_found(
+    def test_the_app_posts_to_no_webhook(self, installer: DiscordAppInstaller) -> None:
+        """So every `/messaging/discord/*` request is answered as if nothing
+        were there, before anything reads it."""
+        assert installer.webhook_endpoints == frozenset()
+
+    async def test_verify_webhook_raises_not_found(
         self, installer: DiscordAppInstaller
     ) -> None:
         with pytest.raises(MessagingInstallError):
-            installer.verify_webhook(headers={}, body=b"")
+            await installer.verify_webhook(
+                endpoint="events", headers={}, query={}, body=b""
+            )
 
     def test_parse_webhook_raises(self, installer: DiscordAppInstaller) -> None:
         with pytest.raises(NotImplementedError):
-            installer.parse_webhook(endpoint="events", headers={}, body=b"")
+            installer.parse_webhook(endpoint="events", headers={}, query={}, body=b"")
 
     def test_workspace_of_event_raises(self, installer: DiscordAppInstaller) -> None:
         with pytest.raises(NotImplementedError):

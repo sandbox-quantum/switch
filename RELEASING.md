@@ -1,8 +1,8 @@
 # Releasing Switch
 
 This describes how to cut a release of the **Switch core stack** — the
-`switch-core`, `gateway`, and `setup` container images, the Helm chart, and the
-standalone Docker Compose file. The Switch Console desktop app releases separately
+`switch-core`, `gateway`, `setup` and `hosted-controller` container images, the
+Helm chart, and the standalone Docker Compose file. The Switch Console desktop app releases separately
 (see `.github/workflows/switch-console-release.yml` and `console/docs/INSTALL.md`).
 
 ## Versioning
@@ -10,7 +10,7 @@ standalone Docker Compose file. The Switch Console desktop app releases separate
 - Switch follows [Semantic Versioning](https://semver.org): `MAJOR.MINOR.PATCH`.
   Every artifact carries three parts and a changelog, without exception.
 - The canonical `switch-core` version is `version` in `core/pyproject.toml`.
-- The Helm chart, the three images, and the standalone compose artifact are
+- The Helm chart, the four images, and the standalone compose artifact are
   published under the **same** version as the git tag, so a single tag pins the
   whole stack.
 
@@ -22,8 +22,9 @@ Never derive one from the other.
 
 ### What is, and is not, separately versioned
 
-The **operator dashboard** (`gateway/`), the **setup image**, the **Helm chart**,
-and the **standalone compose artifact** have no version of their own. They ship
+The **operator dashboard** (`gateway/`), the **setup image**, the
+**hosted-controller image**, the **Helm chart**, and the **standalone compose
+artifact** have no version of their own. They ship
 inside the switch-core release and are stamped with its version at package time,
 which is what lets a single tag pin the whole stack. They appear in
 `artifacts.yaml` with `version_from: switch-core` — listed, because a registry

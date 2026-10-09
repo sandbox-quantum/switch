@@ -2,7 +2,6 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
 import { CHILD_STOP_GRACE_MS, superviseSharedHost } from './supervisor';
 
 const roots: string[] = [];
@@ -36,7 +35,6 @@ it('restarts a crashed isolated worker and exits after a clean stop', async () =
     signal: new AbortController().signal,
     build: 'test-bundle.mjs',
     links: null,
-    logRedactions: [],
   });
   expect(await readFile(join(root, 'attempts'), 'utf8')).toBe('2');
   await expect(readFile(join(root, 'supervisor', 'owner.json'))).rejects.toMatchObject({
@@ -55,7 +53,6 @@ it('reports a fatal worker failure instead of restarting it repeatedly', async (
       signal: new AbortController().signal,
       build: 'test-bundle.mjs',
       links: null,
-      logRedactions: [],
     })
   ).rejects.toThrow('exit code 1');
   expect(
@@ -80,7 +77,6 @@ it('reaps provider descendants even after a clean worker exit', async () => {
     signal: new AbortController().signal,
     build: 'test-bundle.mjs',
     links: null,
-    logRedactions: [],
   });
   const pid = Number(await readFile(join(root, 'provider.pid'), 'utf8'));
   expect(() => process.kill(pid, 0)).toThrow();
@@ -102,7 +98,6 @@ it('preserves the worker failure reason for Console startup', async () => {
       signal: new AbortController().signal,
       build: 'test-bundle.mjs',
       links: null,
-      logRedactions: [],
     })
   ).rejects.toThrow('exit code 1');
   expect(JSON.parse(await readFile(join(root, 'supervisor', 'failure.json'), 'utf8')).message).toBe(
@@ -136,27 +131,6 @@ async function leaseWorker(root: string, firstExit: number): Promise<string[]> {
   return [path, root];
 }
 
-it('stops without relaunching or recording a failure when the worker is obsolete', async () => {
-  const root = await fixture();
-  await expect(
-    superviseSharedHost({
-      root,
-      executable: process.execPath,
-      args: await leaseWorker(root, OBSOLETE_BUNDLE_EXIT_CODE),
-      env: process.env,
-      signal: new AbortController().signal,
-      build: 'test-bundle.mjs',
-      links: null,
-      logRedactions: [],
-    })
-  ).rejects.toBeInstanceOf(WorkerObsoleteError);
-  expect(await readFile(join(root, 'attempts'), 'utf8')).toBe('1');
-  await expect(readFile(join(root, 'supervisor', 'failure.json'))).rejects.toMatchObject({
-    code: 'ENOENT',
-  });
-  await expect(readFile(join(root, 'shared-owner.lock'))).rejects.toMatchObject({ code: 'ENOENT' });
-});
-
 it('does not relaunch a worker that exits with a fatal code', async () => {
   const root = await fixture();
   await expect(
@@ -168,39 +142,12 @@ it('does not relaunch a worker that exits with a fatal code', async () => {
       signal: new AbortController().signal,
       build: 'test-bundle.mjs',
       links: null,
-      logRedactions: [],
     })
   ).rejects.toThrow('exit code 1');
   expect(await readFile(join(root, 'attempts'), 'utf8')).toBe('1');
   expect(
     JSON.parse(await readFile(join(root, 'supervisor', 'failure.json'), 'utf8')).message
   ).toContain('worker.log');
-});
-
-it('scrubs known secrets from the worker output before it reaches worker.log', async () => {
-  const root = await fixture();
-  const script = `
-    process.stdout.write('token=synthetic-');
-    setTimeout(() => {
-      process.stdout.write('secret-value done\\n');
-      process.stderr.write('failed with synthetic-secret-value\\n');
-    }, 20);
-  `;
-  await superviseSharedHost({
-    root,
-    executable: process.execPath,
-    args: ['-e', script],
-    env: process.env,
-    signal: new AbortController().signal,
-    build: 'test-bundle.mjs',
-    links: null,
-    logRedactions: ['synthetic-secret-value'],
-  });
-  const log = await readFile(join(root, 'supervisor', 'worker.log'), 'utf8');
-  expect(log).not.toContain('synthetic-secret-value');
-  expect(log.match(/\[REDACTED\]/g)).toHaveLength(2);
-  expect(log).toContain('token=[REDACTED]');
-  expect(log).toContain('failed with [REDACTED]');
 });
 
 it('kills a worker that will not stop when asked, and everything it started', async () => {
@@ -228,7 +175,6 @@ it('kills a worker that will not stop when asked, and everything it started', as
     signal: abort.signal,
     build: 'test-bundle.mjs',
     links: null,
-    logRedactions: [],
   });
   let pid = 0;
   for (let attempt = 0; attempt < 100 && !pid; attempt++) {

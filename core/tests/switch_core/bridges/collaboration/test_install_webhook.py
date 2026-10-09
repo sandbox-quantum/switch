@@ -62,6 +62,7 @@ from switch_core.db.stores.messaging_event_store import (
     MessagingEventReceiptStore,
 )
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.keys import Keyring
 from switch_core.tenant_context import current_tenant_id
 from tests.conftest import RLSHarness
@@ -157,6 +158,15 @@ class _GatedAdapter(_SocketOnlyAdapter):
         await self.release.wait()
 
 
+class _NoRooms:
+    """A Slack bridge has one install, so an ending never detaches one room."""
+
+    async def unlink_bridge_channel(
+        self, bridge_id: str, external_channel_id: str
+    ) -> None:
+        raise AssertionError("a one-install bridge is removed, not detached")
+
+
 class _FakeLifecycle:
     def __init__(self, factory: async_sessionmaker) -> None:
         self._factory = factory
@@ -165,6 +175,9 @@ class _FakeLifecycle:
 
     def get_adapter(self, bridge_id: str) -> PlatformAdapter | None:
         return self.adapters.get(bridge_id)
+
+    def is_connected(self, bridge_id: str) -> bool:
+        return bridge_id in self.adapters
 
     async def remove(self, bridge_id: str) -> None:
         """Delete the row, on an unscoped session like the real one.
@@ -282,6 +295,8 @@ async def _fixture(harness: RLSHarness) -> _Fixture:
         receipts=MessagingEventReceiptStore(),
         installers=installers,
         lifecycle=fixture.lifecycle,  # type: ignore[arg-type]
+        users=UserStore(),
+        rooms=_NoRooms(),
         public_origin=_ORIGIN,
         keyring=_KEYRING,
     )
@@ -613,10 +628,11 @@ class TestABridgeThatCannotTakeEvents:
         adapter = _SocketOnlyAdapter()
         fixture.lifecycle.adapters[fixture.a.bridge_id] = adapter
 
-        event = fixture.service.authenticate(
+        [event] = await fixture.service.authenticate(
             platform="slack",
             endpoint="events",
             headers=_signed(_event(fixture.a.workspace_id, "x")),
+            query={},
             body=_event(fixture.a.workspace_id, "x"),
         )
         target = await fixture.service.resolve(platform="slack", event=event)
@@ -661,8 +677,12 @@ class TestAnEventIsHandledOnce:
         gated = _GatedAdapter()
         fixture.lifecycle.adapters[fixture.a.bridge_id] = gated
         body = _numbered_event(fixture.a.workspace_id, "hello", "Ev1")
-        event = fixture.service.authenticate(
-            platform="slack", endpoint="events", headers=_signed(body), body=body
+        [event] = await fixture.service.authenticate(
+            platform="slack",
+            endpoint="events",
+            headers=_signed(body),
+            query={},
+            body=body,
         )
         target = await fixture.service.resolve(platform="slack", event=event)
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from botocore.stub import Stubber
-from test_controller import config, ec2_client, store_and_machine, volume
+from test_controller import config, ec2_client, store_and_machine, volume, with_bundle
 
 from switch_hosted_controller import reconciler as reconciler_module
 from switch_hosted_controller.cloud import CloudResourceError, Ec2Cloud
@@ -28,7 +28,7 @@ def terminal_instance(cloud: Ec2Cloud, machine) -> dict:
 
 def record_compute(store: MachineStore, machine, availability_zone: str):
     machine = store.record_volume(machine.machine_id, "vol-0123456789abcdef0", availability_zone)
-    return store.record_instance(machine.machine_id, "i-0123456789abcdef0")
+    return store.record_instance(machine.machine_id, "i-0123456789abcdef0", None)
 
 
 def accept_delete(store: MachineStore, machine, retain_until: datetime | None):
@@ -40,7 +40,7 @@ def accept_delete(store: MachineStore, machine, retain_until: datetime | None):
 def test_recorded_terminated_instance_accepts_sparse_aws_response(tmp_path: Path):
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)
-    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0", None)
     client = ec2_client()
     cloud = Ec2Cloud(client, cfg)
     terminated = terminal_instance(cloud, machine)
@@ -66,7 +66,7 @@ def test_recorded_terminated_instance_accepts_sparse_aws_response(tmp_path: Path
 def test_recorded_terminated_instance_still_validates_identity(tmp_path: Path, corruption: str):
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)
-    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0", None)
     client = ec2_client()
     cloud = Ec2Cloud(client, cfg)
     terminated = terminal_instance(cloud, machine)
@@ -74,8 +74,8 @@ def test_recorded_terminated_instance_still_validates_identity(tmp_path: Path, c
         terminated["InstanceId"] = "i-fffffffffffffffff"
     else:
         terminated["Tags"] = copy.deepcopy(terminated["Tags"])
-        next(tag for tag in terminated["Tags"] if tag["Key"] == "switch:slot-id")["Value"] = (
-            "slot-foreign"
+        next(tag for tag in terminated["Tags"] if tag["Key"] == "switch:machine-id")["Value"] = (
+            "00000000-0000-4000-8000-00000000beef"
         )
 
     with Stubber(client) as stubber:
@@ -94,7 +94,7 @@ def test_terminated_then_not_found_remains_safely_stopped_and_deletable(
 ):
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)
-    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0", None)
     claim = store.set_desired(machine.machine_id, DesiredState.STOPPED, None)
     client = ec2_client()
     cloud = Ec2Cloud(client, cfg)
@@ -169,9 +169,9 @@ class StartRaceCloud:
 def test_start_callback_cannot_publish_stale_success_or_error(tmp_path: Path, start_fails: bool):
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)
-    machine = record_compute(store, machine, cfg.availability_zone)
-    store.require_bundle(machine.machine_id, 1, "bundle-1")
-    store.record_bundle(machine.machine_id, "bundle-1")
+    store.record_volume(machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone)
+    bundled = with_bundle(store, machine.machine_id, 1)
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0", bundled.bundle)
     store.set_observed(machine, ObservedState.STOPPED)
     cloud = StartRaceCloud(cfg.state_db_path, cfg.fingerprint(), fail=start_fails)
 
@@ -276,7 +276,8 @@ def test_retained_with_a_missing_volume_needs_attention(tmp_path: Path):
 
 
 class LaunchCloud:
-    def __init__(self):
+    def __init__(self, image_id: str = "ami-0123456789abcdef0"):
+        self.image_id = image_id
         self.launched = []
 
     def get_volume(self, machine):
@@ -302,8 +303,7 @@ def test_running_after_retained_launches_the_next_instance_on_the_kept_volume(tm
     first = record_compute(store, machine, cfg.availability_zone)
     store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
     Reconciler(store, DeletionCloud(["terminated"])).reconcile(machine.machine_id)
-    store.require_bundle(machine.machine_id, 2, "bundle-2")
-    store.record_bundle(machine.machine_id, "bundle-2")
+    bundled = with_bundle(store, machine.machine_id, 2)
     store.set_desired(machine.machine_id, DesiredState.RUNNING, None)
     cloud = LaunchCloud()
 
@@ -312,13 +312,44 @@ def test_running_after_retained_launches_the_next_instance_on_the_kept_volume(tm
     assert relaunched.instance_id == "i-0000000000000000b"
     assert relaunched.data_volume_id == first.data_volume_id
     assert relaunched.previous_instance_id == first.instance_id
+    assert relaunched.instance_bundle == bundled.bundle
     [launched] = cloud.launched
     assert launched.instance_seq == 1
+    assert launched.bundle == store.get(machine.machine_id).bundle
     tokens = Ec2Cloud(ec2_client(), cfg)
     assert tokens._token(launched, f"instance-{launched.instance_seq}") != tokens._token(
         first, f"instance-{first.instance_seq}"
     )
     assert tokens._token(launched, "data-volume") == tokens._token(first, "data-volume")
+    store.close()
+
+
+def test_a_new_instance_moves_onto_the_configured_image(tmp_path: Path):
+    cfg = config(tmp_path)
+    store, machine = store_and_machine(cfg)
+    first = record_compute(store, machine, cfg.availability_zone)
+    store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
+    Reconciler(store, DeletionCloud(["terminated"])).reconcile(machine.machine_id)
+    with_bundle(store, machine.machine_id, 2)
+    store.set_desired(machine.machine_id, DesiredState.RUNNING, None)
+    cloud = LaunchCloud(image_id="ami-22222222222222222")
+
+    relaunched = Reconciler(store, cloud).reconcile(machine.machine_id)
+
+    [launched] = cloud.launched
+    assert first.image_id == cfg.image_id
+    assert launched.image_id == relaunched.image_id == "ami-22222222222222222"
+    assert relaunched.data_volume_id == first.data_volume_id
+    store.close()
+
+
+def test_the_image_of_an_issued_launch_is_not_changed(tmp_path: Path):
+    cfg = config(tmp_path)
+    store, machine = store_and_machine(cfg)
+    machine = store.record_volume(machine.machine_id, "vol-0123456789abcdef0", "us-east-1a")
+    machine = store.mark_instance_launch_intent(machine)
+    machine = store.mark_instance_launch_issued(machine, datetime.now(UTC))
+    assert store.use_image(machine, "ami-22222222222222222").image_id == cfg.image_id
     store.close()
 
 
@@ -372,7 +403,7 @@ def test_accepted_delete_waits_for_pending_and_deletes_volume_only_after_termina
 def test_purged_recorded_instance_reads_as_not_found(tmp_path: Path):
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)
-    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0", None)
     client = ec2_client()
     cloud = Ec2Cloud(client, cfg)
     terminated = terminal_instance(cloud, machine)

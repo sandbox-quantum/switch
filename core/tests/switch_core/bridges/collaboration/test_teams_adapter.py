@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import httpx
+import pytest
+
 from switch_core.agent_icon import generated_icon_url
 from switch_core.bridges.collaboration.adapter import AgentPresentation, AgentRendering
 from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
@@ -10,6 +13,7 @@ from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
 )
+from switch_core.bridges.collaboration.teams.auth import SigningKeysUnavailable
 from switch_core.bridges.collaboration.teams.cards import (
     ADAPTIVE_CARD_CONTENT_TYPE,
     agent_message_card,
@@ -50,7 +54,12 @@ class _FakeConnector:
         self._raise_on_send = raise_on_send
 
     async def create_channel_thread(
-        self, *, service_url: str, channel_id: str, activity: dict[str, Any]
+        self,
+        *,
+        service_url: str,
+        channel_id: str,
+        tenant_id: str,
+        activity: dict[str, Any],
     ) -> tuple[str, str]:
         self.threads.append(
             {"service_url": service_url, "channel_id": channel_id, "activity": activity}
@@ -255,19 +264,30 @@ class _FakeHttpRequest:
         return self._body
 
 
-class _RaisingValidator:
-    def validate(self, auth_header: str | None) -> None:
+class _RaisingAuthenticator:
+    async def verify(
+        self, authorization: str | None, *, service_url: str, channel_id: str
+    ) -> None:
         raise PermissionError("forged")
 
 
-class _PassValidator:
-    def validate(self, auth_header: str | None) -> None:
+class _KeysOutOfReachAuthenticator:
+    async def verify(
+        self, authorization: str | None, *, service_url: str, channel_id: str
+    ) -> None:
+        raise SigningKeysUnavailable("could not fetch signing keys")
+
+
+class _PassAuthenticator:
+    async def verify(
+        self, authorization: str | None, *, service_url: str, channel_id: str
+    ) -> None:
         return None
 
 
 def test_http_messages_rejects_unauthenticated_activity() -> None:
     adapter = _adapter()
-    adapter._validator = _RaisingValidator()  # type: ignore[assignment]
+    adapter._authenticator = _RaisingAuthenticator()  # type: ignore[assignment]
 
     resp = _run(
         adapter._handle_http_messages(
@@ -281,9 +301,28 @@ def test_http_messages_rejects_unauthenticated_activity() -> None:
     assert resp.status == 401
 
 
+def test_http_messages_asks_again_when_microsofts_keys_are_out_of_reach() -> None:
+    """Not refused as forged: Teams resends what it is told to retry."""
+    adapter = _adapter()
+    adapter._authenticator = _KeysOutOfReachAuthenticator()  # type: ignore[assignment]
+    captured = _capture_messages(adapter)
+
+    resp = _run(
+        adapter._handle_http_messages(
+            _FakeHttpRequest(  # type: ignore[arg-type]
+                headers={"Authorization": "Bearer t"},
+                body={"type": "message"},
+            )
+        )
+    )
+
+    assert resp.status == 503
+    assert captured == []
+
+
 def test_http_messages_rejects_invalid_json() -> None:
     adapter = _adapter()
-    adapter._validator = _PassValidator()  # type: ignore[assignment]
+    adapter._authenticator = _PassAuthenticator()  # type: ignore[assignment]
 
     resp = _run(
         adapter._handle_http_messages(
@@ -296,9 +335,24 @@ def test_http_messages_rejects_invalid_json() -> None:
     assert resp.status == 400
 
 
+def test_http_messages_rejects_a_json_body_that_is_not_an_activity() -> None:
+    """A Bot Framework activity is always a JSON object; a list or a bare
+    scalar parses as valid JSON but is not one."""
+    adapter = _adapter()
+    adapter._authenticator = _PassAuthenticator()  # type: ignore[assignment]
+
+    resp = _run(
+        adapter._handle_http_messages(
+            _FakeHttpRequest(headers={}, body=["not", "an", "activity"])  # type: ignore[arg-type]
+        )
+    )
+
+    assert resp.status == 400
+
+
 def test_http_messages_dispatches_authenticated_activity() -> None:
     adapter = _adapter()
-    adapter._validator = _PassValidator()  # type: ignore[assignment]
+    adapter._authenticator = _PassAuthenticator()  # type: ignore[assignment]
     captured = _capture_messages(adapter)
 
     activity = {
@@ -900,3 +954,61 @@ def _card_text(activity: dict[str, Any]) -> str:
     """The body an agent card carries, whatever its shape."""
     card = activity["attachments"][0]["content"]
     return "\n".join(str(block.get("text", "")) for block in card["body"])
+
+
+def test_a_bring_your_own_bridge_starts_its_own_listener_and_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bring-your-own path of `start`, unchanged by the distributed app:
+    its own HTTP client and credential, its own listener, and on `stop` both
+    are closed, since nothing else shares them. The listener opens last: an
+    activity it took before the clients existed would be acknowledged and
+    lost."""
+    real_client = httpx.AsyncClient
+    made: list[httpx.AsyncClient] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oauth2/v2.0/token" in str(request.url):
+            return httpx.Response(200, json={"access_token": "t", "expires_in": 3600})
+        if request.url.path == "/v1.0/subscriptions":
+            return httpx.Response(200, json={"value": []})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    def client(**kwargs: Any) -> httpx.AsyncClient:
+        made.append(real_client(transport=httpx.MockTransport(handler), **kwargs))
+        return made[-1]
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    adapter = TeamsAdapter(
+        config=_config().model_copy(
+            update={"listen_host": "127.0.0.1", "listen_port": 0}
+        )
+    )
+
+    open_listener = adapter._open_listener
+    ready_when_listening: list[bool] = []
+
+    async def open_listener_once_ready() -> None:
+        ready_when_listening.append(
+            adapter._connector is not None and adapter._graph is not None
+        )
+        await open_listener()
+
+    adapter._open_listener = open_listener_once_ready  # type: ignore[method-assign]
+
+    async def scenario() -> None:
+        async def _noop(*args: Any) -> None:
+            return None
+
+        await adapter.start(_noop, _noop, _noop, _noop, _noop)
+        assert ready_when_listening == [True]
+        assert adapter._runner is not None
+        assert adapter._owns_http is True
+        assert adapter._authenticator is not None
+        assert adapter._adopted is True
+        await adapter.stop()
+
+    _run(scenario())
+
+    assert adapter._runner is None
+    assert [c.is_closed for c in made] == [True]

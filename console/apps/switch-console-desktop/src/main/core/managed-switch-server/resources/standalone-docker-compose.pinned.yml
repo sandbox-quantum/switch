@@ -192,6 +192,12 @@ services:
       MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: switch
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
       MM_TEAMSETTINGS_TEAMMATENAMEDISPLAY: "full_name"
+      MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
+      MM_LOGSETTINGS_ENABLESENTRY: "false"
+      MM_SERVICESETTINGS_ENABLESECURITYFIXALERT: "false"
+      MM_ANNOUNCEMENTSETTINGS_ADMINNOTICESENABLED: "false"
+      MM_ANNOUNCEMENTSETTINGS_USERNOTICESENABLED: "false"
+      MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE: "false"
       # Neither plugin is usable in a bundled Switch deployment: Copilot has no
       # configured provider and throws a 404 looking up its bot on every page
       # load, and Calls ships a WebRTC service nothing here can reach.
@@ -243,10 +249,24 @@ services:
       DISCORD_APP_CLIENT_SECRET: ${DISCORD_APP_CLIENT_SECRET:-}
       DISCORD_APP_BOT_TOKEN: ${DISCORD_APP_BOT_TOKEN:-}
       DISCORD_APP_APPLICATION_ID: ${DISCORD_APP_APPLICATION_ID:-}
+      TEAMS_APP_CLIENT_ID: ${TEAMS_APP_CLIENT_ID:-}
+      TEAMS_APP_TENANT_ID: ${TEAMS_APP_TENANT_ID:-}
+      TEAMS_APP_CLIENT_SECRET: ${TEAMS_APP_CLIENT_SECRET:-}
+      TEAMS_APP_CERTIFICATE: ${TEAMS_APP_CERTIFICATE:-}
+      TEAMS_APP_CERTIFICATE_PRIVATE_KEY: ${TEAMS_APP_CERTIFICATE_PRIVATE_KEY:-}
+      TEAMS_APP_FEDERATED_TOKEN_FILE: ${TEAMS_APP_FEDERATED_TOKEN_FILE:-}
+      TEAMS_APP_NOTIFICATION_CERTIFICATE: ${TEAMS_APP_NOTIFICATION_CERTIFICATE:-}
+      TEAMS_APP_NOTIFICATION_PRIVATE_KEY: ${TEAMS_APP_NOTIFICATION_PRIVATE_KEY:-}
+      TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY: ${TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY:-}
+      TEAMS_APP_PRIVACY_URL: ${TEAMS_APP_PRIVACY_URL:-}
+      TEAMS_APP_TERMS_URL: ${TEAMS_APP_TERMS_URL:-}
+      TEAMS_APP_NAME: ${TEAMS_APP_NAME:-Agent Switch}
       # True/false flags, so bare keys for the reason given under LOG_FORMAT
       # below: `${VAR:-}` would hand them an empty string, which fails boot.
       DISCORD_APP_MESSAGE_CONTENT:
       DISCORD_APP_MEMBERS:
+      TELEGRAM_APP_BOT_TOKEN: ${TELEGRAM_APP_BOT_TOKEN:-}
+      TELEGRAM_APP_WEBHOOK_SECRET: ${TELEGRAM_APP_WEBHOOK_SECRET:-}
       # Observability and log format. Forwarded because this service names
       # every variable it passes, so without them here, setting any of these
       # in `.env` does nothing and the Helm chart is the only way to turn

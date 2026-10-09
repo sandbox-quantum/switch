@@ -58,8 +58,22 @@ interception point further down the stack.
    Role mapping: `agent` → `assistant`, `human`/`bridge` → `user`.
 2. `POST {switch_trust_endpoint}/guardrails/check` — the check-only endpoint
    added in [hoot#2397](https://github.com/sandbox-quantum/hoot/pull/2397) —
-   with headers `x-guardrails-policy-id` and `x-flintai-api-key`, short
-   timeout (2s default).
+   with headers `x-guardrails-policy-id`, `x-flintai-api-key`, and three
+   always-set identity headers Switch Trust uses to group checks:
+   - `x-agent-name`: a constant, `Switch Rooms` — Switch has no single agent
+     to attribute a check to (a room can hold several, and a human-authored
+     message has none at all), so every check is reported under one identity
+     rather than inventing a per-sender one Switch Trust has no use for.
+   - `x-agent-session-id`: the Switch room id — a room is the closest thing
+     Switch has to an agentic session.
+   - `x-agent-turn-id`: a fresh UUID per check. Switch has no stable
+     "invocation" or "turn" id to hand it at either call site (the closest
+     existing concept, session-activity's host-supplied `turn_id`, belongs to
+     a different subsystem, is opaque to Switch, and doesn't exist for
+     human-authored messages at all), so this is generated per call instead
+     of reused.
+
+   Short timeout (2s default).
 3. The outcome (mapped from the wire's `GUARDRAIL_RESULT_OUTCOME_*` values —
    `ok` / `blocked` / `redacted` / `alerted` / `errored`) decides what happens
    next — see §Outcome handling.
@@ -84,9 +98,11 @@ on `TrustCheckResult.outcome`:
     (`core/switch_core/clients/admin_messages.py`). Every collaboration adapter
     (Slack, Mattermost, Discord, Teams, Telegram) already renders
     `admin_message()` as a platform-native system notice, distinct from an
-    ordinary chat bubble — this is "visually stands out" for free. The
-    agent's tool/API call gets back an error (HTTP 422 / an MCP tool error) so
-    it knows its response was blocked.
+    ordinary chat bubble — this is "visually stands out" for free. The notice
+    names the agent (`@<agent-name> was blocked...`) so a room with several
+    agents can tell whose response was withheld. The agent's tool/API call
+    gets back an error (HTTP 422 / an MCP tool error) so it knows its response
+    was blocked.
   - **Human-authored**: catch it in `CollaborationCore._handle_inbound_message`
     and call the adapter's `admin_message(...)` back to the **originating
     platform channel** directly (`msg.channel_id`, `msg.root_id or
@@ -103,7 +119,11 @@ on `TrustCheckResult.outcome`:
   it's set. (The endpoint's own response doesn't carry a pre-sanitized
   message — hoot's "SanitizedMessages" is dashboard-ingestion-only state, not
   part of the `/guardrails/check` JSON body — so this redaction is Switch's
-  own, built from the findings' detected text.)
+  own, built from the findings' detected text.) **Human-authored**: the
+  redacted content is what reaches the room, but the sender would otherwise
+  never know their own words were altered — `CollaborationCore` also calls
+  the adapter's `admin_message(...)` back to the originating channel (a new
+  `AdminMessageType.TRUST_REDACTED`) naming the finding categories redacted.
 - **`alerted`** / **`errored`** (including a failed check, per above) — not
   blocking. The caller appends a short line to the message body itself via
   `trust_annotation()`, e.g. `⚠️ _Switch Trust: pii/email (not blocked)_` for
@@ -136,7 +156,7 @@ existing all-or-nothing settings groups (`_validate_slack_app`,
 `core/switch_core/config.py:986`):
 
 ```python
-switch_trust_endpoint: str = "https://api.flintai.dev"
+switch_trust_endpoint: str = "https://api.switchagents.ai"
 switch_trust_api_key: str = ""
 switch_trust_policy_id: str = ""
 switch_trust_timeout_seconds: float = 2.0
@@ -145,8 +165,7 @@ switch_trust_timeout_seconds: float = 2.0
 `switch_trust_endpoint` is a base URL; the client appends
 `/guardrails/check` — the check-only route added in
 [hoot#2397](https://github.com/sandbox-quantum/hoot/pull/2397) — rather than
-treating the configured value as the full check URL. This default will change
-once Switch Trust has its own deployment — see Follow-ups.
+treating the configured value as the full check URL.
 
 A `trust_enabled` property returns `bool(switch_trust_api_key and
 switch_trust_policy_id)`. A `_validate_switch_trust` model validator checks
@@ -190,18 +209,20 @@ call site has to branch on whether the feature is on.
    results in a `TRUST_BLOCKED` admin row instead of the real content; an
    allowed message is unaffected; a Switch Trust timeout/error still delivers
    the message (fail-open, annotated).
-8. **`docs/old/`**: note the new config block in whichever doc lists
-   deployment env vars (none currently fully enumerates `SwitchConfig`, so
-   likely just a short mention near the other optional-integration blocks, if
-   one exists).
 
 ## Resolved decisions
 
-- Prod default for `switch_trust_endpoint`: `https://api.flintai.dev` (base
-  URL; the client appends `/guardrails/check`). Expected to change once Switch
-  Trust has its own deployment — tracked in Follow-ups.
+- Prod default for `switch_trust_endpoint`: `https://api.switchagents.ai`
+  (base URL; the client appends `/guardrails/check`).
 - 2s timeout default, and `x-guardrails-policy-id` / `x-flintai-api-key`
   headers, confirmed as-is.
+- `x-agent-name` / `x-agent-session-id` / `x-agent-turn-id` are always set,
+  never omitted: a deployment-side bug report showed a check going out with no
+  agent attribution at all. `x-agent-name` is a fixed constant rather than
+  per-caller, since nothing in Switch maps cleanly to the "one agent" these
+  headers assume — see the header list above. `TrustClient.check` takes
+  `room_id` as a required parameter (no default) precisely so a call site
+  cannot forget it; the other two headers need no caller input at all.
 - The hook point moved from the originally-sketched `Actor.send_message` to
   three `AgentCore` methods plus `CollaborationCore`'s inbound handler, to
   avoid checking Switch's own canned/system text — see §Where it hooks in.
@@ -213,9 +234,6 @@ call site has to branch on whether the feature is on.
 
 ## Follow-ups (explicitly out of v1 scope)
 
-- **`switch_trust_endpoint` default will change**: `https://api.flintai.dev`
-  is a placeholder base URL for now; Switch Trust is expected to get its own
-  dedicated endpoint later, at which point the default should move.
 - **Conversation history**: send the last N room messages as context so the
   policy can catch things that only make sense across turns (e.g. a PII leak
   split across messages). Needs a role-mapping strategy for Switch's
@@ -224,11 +242,6 @@ call site has to branch on whether the feature is on.
 - **Tool calls / tool results**: the hoot endpoint supports `tool_calls` and
   `tool_result` message fields; Switch doesn't yet have an obvious mapping
   from its agent-protocol tool use onto that shape.
-- **A real cross-platform status indicator**: the inline-annotation approach
-  for `ALERTED`/`ERRORED` (§Outcome handling) is a pragmatic v1 choice. A
-  dedicated, Switch-level (not per-agent) reaction or status primitive across
-  adapters would be a nicer fast-follow, if the inline text proves too noisy
-  in practice.
 - **Per-tenant / per-workspace policy**: today it's one global policy for the
   whole deployment. Multiple tenants wanting different policies needs a DB
   table, migration, and an admin API — a materially bigger lift than the env

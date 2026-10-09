@@ -1,4 +1,4 @@
-"""The whole exemption from row-level security, written out as eleven functions.
+"""The whole exemption from row-level security, written out as twelve functions.
 
 Row-level security is enforced by `require_tenant_id()` (`db/rls_ddl.py`),
 which raises when no tenant is bound. That is the property everything else
@@ -151,6 +151,14 @@ tenant before any is bound. It discloses which workspaces are open to a
 domain; the endpoint that calls it only ever passes the domain of the
 signed-in caller's own address.
 
+**`tenants_of_cloud_machine` is the twelfth.** A user's cloud machine is
+global (`cloud_machines`, one VM per person), and the cloud controller that
+drives it acts for no tenant; what the machine runs in each workspace is that
+workspace's scoped `machine_workspaces` row. The lookup says which workspaces
+those are, so each row is read with its own tenant bound. It discloses which
+workspaces a machine, and so its owner, belongs to: what `tenants_of_user`
+already discloses about the same person.
+
 Why not the obvious alternatives is argued in
 `docs/old/multi-tenancy-phase1-db.md`, "The bootstrap problem"; the short
 version is that returning rows instead of tenant ids would put a second copy
@@ -243,7 +251,7 @@ class TenantLookup:
         return f"{self.name}({', '.join('text' for _ in self.arguments)})"
 
 
-# The eleven of them. Ordered as the three shapes above: enumeration, then
+# The twelve of them. Ordered as the three shapes above: enumeration, then
 # credential resolution, then deriving a tenant from an identifier in hand.
 TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     TenantLookup(
@@ -359,6 +367,20 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         ),
     ),
     TenantLookup(
+        name="tenants_of_cloud_machine",
+        arguments=("machine_id",),
+        query=(
+            "SELECT tenant_id FROM machine_workspaces "
+            "WHERE machine_id = p_machine_id ORDER BY created_at, tenant_id"
+        ),
+        purpose=(
+            "Which workspaces a user's cloud machine serves, oldest first. The "
+            "machine is global and acts for none of them; the cloud controller "
+            "reads each workspace's row on it, the controller it runs there "
+            "and its enrollment code, one bound tenant at a time."
+        ),
+    ),
+    TenantLookup(
         name="tenant_of_messaging_install",
         arguments=("platform", "external_workspace_id"),
         query=(
@@ -431,12 +453,12 @@ def attach_tenant_lookups(metadata: MetaData) -> None:
 # ── Calling them ──────────────────────────────────────────────────────────────
 
 # One `text()` per lookup, written out rather than assembled from `lookup.name`
-# at call time: the eleven names are fixed and known here, so there is nothing
+# at call time: the twelve names are fixed and known here, so there is nothing
 # for a call site to build. Each bind is named after the lookup's own argument,
 # which is what lets `_call` zip them positionally against the dataclass and
 # fail loudly on a mismatch rather than binding the workspace to the platform.
 # The assertion below is what keeps this dict from quietly falling behind
-# `TENANT_LOOKUPS` — a twelfth lookup with no entry here fails at import, not
+# `TENANT_LOOKUPS` — a thirteenth lookup with no entry here fails at import, not
 # with a `KeyError` on whatever request reaches it first.
 _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     "all_tenant_ids": text("SELECT tenant_id FROM all_tenant_ids() AS tenant_id"),
@@ -467,6 +489,9 @@ _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     ),
     "tenants_open_to_domain": text(
         "SELECT tenant_id FROM tenants_open_to_domain(:domain) AS tenant_id"
+    ),
+    "tenants_of_cloud_machine": text(
+        "SELECT tenant_id FROM tenants_of_cloud_machine(:machine_id) AS tenant_id"
     ),
     "tenant_of_messaging_install": text(
         "SELECT tenant_id FROM "
@@ -597,4 +622,12 @@ async def tenant_of_messaging_install(
     lookup = TENANT_LOOKUPS_BY_NAME["tenant_of_messaging_install"]
     return _at_most_one(
         lookup, await _call(session_factory, lookup, platform, external_workspace_id)
+    )
+
+
+async def tenants_of_cloud_machine(
+    session_factory: async_sessionmaker[AsyncSession], machine_id: str
+) -> list[str]:
+    return await _call(
+        session_factory, TENANT_LOOKUPS_BY_NAME["tenants_of_cloud_machine"], machine_id
     )

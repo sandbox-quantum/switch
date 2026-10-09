@@ -136,7 +136,7 @@ afterEach(async () => {
 
 function Fields() {
   domForm = useConfigureAgentForm();
-  return <AgentIdentityFields form={domForm} serverId={null} />;
+  return <AgentIdentityFields form={domForm} serverId={null} nameTaken={false} />;
 }
 
 async function renderFields(): Promise<HTMLDivElement> {

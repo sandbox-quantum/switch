@@ -18,6 +18,7 @@ from switch_core.messages.notify import MessageListener
 from switch_core.transport import MessageTransport
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
+from switch_core.transport.observer import ParticipantMessageObserver
 from switch_core.transport.postgres import PostgresTransport
 from switch_core.transport.room_cache import RoomDeliveryCache
 
@@ -39,6 +40,7 @@ class ClientFactory:
         invites: InviteBus,
         ephemeral: EphemeralBus,
         room_cache: RoomDeliveryCache,
+        message_observer: ParticipantMessageObserver,
     ) -> None:
         self._client_store = client_store
         self._session_factory = session_factory
@@ -52,6 +54,7 @@ class ClientFactory:
         self._ephemeral = ephemeral
         # One for the process, so every member of a room shares it.
         self._room_cache = room_cache
+        self._message_observer = message_observer
         self._registry: dict[
             str,
             tuple[
@@ -127,4 +130,5 @@ class ClientFactory:
             invites=self._invites,
             ephemeral=self._ephemeral,
             room_cache=self._room_cache,
+            message_observer=self._message_observer,
         )

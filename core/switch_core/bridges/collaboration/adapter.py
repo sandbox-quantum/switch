@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, ClassVar, Literal, Protocol, final, runtime_checkable
@@ -207,6 +207,14 @@ class ChannelNotBindable(ValueError):
     """
 
 
+class ConfigEditRefused(ValueError):
+    """An edit of a connection's settings that the platform says is wrong.
+
+    A `ValueError` for the same reason as `ChannelNotBindable`: it is the
+    caller's input, answered as a bad request.
+    """
+
+
 class DirectorySearchBusy(RuntimeError):
     """The platform's directory is being searched too often to take one more.
 
@@ -324,7 +332,9 @@ class SupportsSharedConnection(Protocol):
     Structural on purpose: the lifecycle, the gateway and boot narrow to this
     with `isinstance` and stay ignorant of the concrete adapter, and an adapter
     with no shared connection (Slack, Mattermost, Teams, Telegram) never matches
-    and is left alone.
+    and is left alone. A bridge on the distributed Teams app shares the
+    deployment's app too, but has nothing to wait for: it is handed the app
+    before it starts, by its own bridge-starting listener, and never matches.
     """
 
     def attach_shared_connection(self, connection: Any) -> None: ...
@@ -598,6 +608,20 @@ class PlatformAdapter(ABC):
         return None
 
     @classmethod
+    def editable_config_keys(
+        cls, connection_config: Mapping[str, object]
+    ) -> frozenset[str] | None:
+        """Which connection settings a workspace admin may change, or None for all.
+
+        None — the default — leaves every setting editable, which is right for a
+        bridge on the organisation's own app: its settings are theirs. A bridge
+        on an app the deployment owns may hold settings that decide where the
+        deployment's credential is pointed, and an adapter names here the few
+        that are safe to change; an edit to any other is refused.
+        """
+        return None
+
+    @classmethod
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
         """Prove the credentials work, before the bridge is persisted.
 
@@ -624,10 +648,32 @@ class PlatformAdapter(ABC):
     @abstractmethod
     async def stop(self) -> None: ...
 
+    async def withdraw(self) -> None:
+        """Let go of what this bridge holds on the platform, because it is being
+        removed for good.
+
+        Called once, while the bridge is still running, just before it is
+        stopped for the last time — never on a restart, which is what `stop`
+        alone is for. Most adapters hold nothing on the platform that outlives
+        them and have nothing to do; one that registered something there (a
+        subscription that keeps delivering, an app installed into a team) undoes
+        it here, so the platform stops sending traffic nobody will read.
+
+        Best effort: a removal is what someone asked for, and it goes ahead
+        whatever this manages. Raise to say what was left behind; the caller
+        logs it.
+        """
+        return None
+
     async def dispatch_event(
         self, *, envelope_type: str, payload: dict[str, Any]
-    ) -> None:
+    ) -> dict[str, Any] | None:
         """Handle one event that arrived over the public webhook.
+
+        Returns the body to answer with for an event the platform waits on in
+        the response itself (`InboundWebhook.answers_inline`), and None for
+        every other — which is every event on a platform that acknowledges
+        first and handles after.
 
         Concrete on the base and raising, rather than abstract, because
         receiving events over HTTP is a property of a platform and of which app
@@ -1177,8 +1223,10 @@ class PlatformAdapter(ABC):
         than showing an empty picker that looks broken.
         """
         raise NotImplementedError(
-            f"{self.platform_name} has no searchable user directory — on this "
-            "platform someone must send a message before Switch knows them"
+            f"{self.platform_name} has no searchable user directory, so this "
+            "lists only people who have written in a chat connected to Switch. "
+            "If you are not listed, send a message in a connected group, then "
+            "search again"
         )
 
     async def channel_deeplink(self, external_channel_id: str) -> str | None:
@@ -1213,6 +1261,37 @@ class PlatformAdapter(ABC):
         of that platform."""
         return []
 
+    @property
+    def places_app_in_teams(self) -> bool:
+        """Whether Switch chooses which of the platform's teams its app is in.
+
+        True only for a bridge on an app the deployment owns and can add to,
+        and remove from, the organisation's teams itself (the distributed
+        Teams app). Everywhere else the app is added on the platform by
+        whoever owns it, and the dashboard offers nothing to choose.
+        """
+        return False
+
+    async def check_config_edit(self, connection_config: Mapping[str, object]) -> None:
+        """Raise `ConfigEditRefused` for an edit only the platform can tell is wrong.
+
+        Asked of the running bridge before an edit of its settings is stored,
+        with the settings as they would be after it. For what validating the
+        config cannot know by itself — whether a team it names is one the app
+        is in, say. Nothing, by default.
+        """
+        return None
+
+    async def attention(self) -> str | None:
+        """What a workspace admin has to do for this bridge to keep working.
+
+        Something only the platform's side can fix — an approval withdrawn, an
+        app blocked by the organisation's admin — found while the bridge runs,
+        in plain words fit to show on the connection. None while nothing is
+        known to be wrong, which is the default.
+        """
+        return None
+
     async def install_note(self) -> str | None:
         """What the links do not cover, in the platform's own terms.
 
@@ -1236,6 +1315,16 @@ class PlatformAdapter(ABC):
         shared between organisations can reach every organisation's channels,
         so being able to see one says nothing about whose it is, and it has to
         say here which are its own. Raises `ChannelNotBindable`.
+        """
+        return None
+
+    def channel_ids_refused(self) -> str | None:
+        """Why this bridge binds no existing channel by id at all, or None.
+
+        For a bridge whose chats reach it only one way, so the dashboard can
+        say so where a room is created rather than offer a choice that fails.
+        Plain text, and the one wording: a bridge that answers here refuses
+        with it too.
         """
         return None
 

@@ -93,10 +93,13 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
         `users` is a person rather than a tenant member, `oidc_identities`
         records how that person proves who they are, and `feature_flags` is a
         deployment switch — a flag that has to vary per customer is a new
-        scoped table, not a nullable column there. `alembic_version` is
+        scoped table, not a nullable column there. `cloud_machines` is a
+        person's VM, one per person whatever workspaces it serves; what it
+        runs in each is the scoped `machine_workspaces`. `alembic_version` is
         global too but is not in this metadata: Alembic owns it.
         """
         assert set(GLOBAL_TABLES) == {
+            "cloud_machines",
             "users",
             "oidc_identities",
             "feature_flags",

@@ -64,6 +64,18 @@ spec:
               value: "switchdash"
             - name: MM_TEAMSETTINGS_MAXUSERSPERTEAM
               value: {{ .Values.mattermost.maxUsersPerTeam | default 1000 | quote }}
+            - name: MM_LOGSETTINGS_ENABLEDIAGNOSTICS
+              value: "false"
+            - name: MM_LOGSETTINGS_ENABLESENTRY
+              value: "false"
+            - name: MM_SERVICESETTINGS_ENABLESECURITYFIXALERT
+              value: "false"
+            - name: MM_ANNOUNCEMENTSETTINGS_ADMINNOTICESENABLED
+              value: "false"
+            - name: MM_ANNOUNCEMENTSETTINGS_USERNOTICESENABLED
+              value: "false"
+            - name: MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE
+              value: "false"
             {{- if .Values.switchCore.collaborationCallback.enabled }}
             {{- $core := include "switch.switchCoreHost" . }}
             # Mattermost will not call a private address unless it is named

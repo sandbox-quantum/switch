@@ -18,6 +18,7 @@ from switch_core.bridges.collaboration.ingress import CallbackEndpoint, Callback
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeNotRunning,
     BridgeOperationError,
     BridgeStartRefused,
 )
@@ -387,6 +388,9 @@ class CollaborationBridgeLifecycleService:
         # registration refuses a second claim, but rows predating that check
         # still start.
         self._running_workspaces: dict[str, str] = {}
+        # Resources the deployment itself holds and no bridge may, with who
+        # holds them — the distributed Telegram app's bot, for one.
+        self._reserved_resources: dict[str, str] = {}
         # Started and not deliberately stopped. A crash removes a bridge from
         # `_bridges` and leaves it here, which is what makes "configured but no
         # longer running" answerable.
@@ -433,6 +437,17 @@ class CollaborationBridgeLifecycleService:
 
     def get_registered_types(self) -> list[str]:
         return list(self._adapter_registry.keys())
+
+    def is_connected(self, bridge_id: str) -> bool:
+        """Whether a bridge's adapter has finished starting and is serving.
+
+        A bridge is registered as running the moment it is started, well
+        before its adapter has loaded what it needs to handle traffic; an event
+        handed to it in that window is acknowledged and lost. Whoever delivers
+        platform traffic asks this, and tells the platform to try again until
+        it is true.
+        """
+        return bridge_id in self._connected
 
     def get_adapter(self, bridge_id: str) -> PlatformAdapter | None:
         """The live adapter for a running bridge, or None if it isn't running.
@@ -508,6 +523,32 @@ class CollaborationBridgeLifecycleService:
                 connection_config=connection_config,
             )
 
+    async def check_config_edit(
+        self,
+        *,
+        bridge_id: str,
+        bridge_type: str,
+        current: Mapping[str, object],
+        connection_config: Mapping[str, object],
+    ) -> None:
+        """Ask the running bridge whether an edit of its settings is sound.
+
+        See `PlatformAdapter.check_config_edit`. A bridge on an app the
+        deployment owns (one whose adapter limits what is editable) checks
+        with the platform, and cannot until it has finished starting, so the
+        edit is refused with `BridgeNotRunning` rather than stored unchecked. Any other
+        bridge's edit goes through on its validation alone.
+        """
+        adapter = self.get_adapter(bridge_id)
+        if adapter is None or not self.is_connected(bridge_id):
+            if self.editable_config_keys(bridge_type, current) is not None:
+                raise BridgeNotRunning(
+                    "The connection is not running, so Switch cannot check this "
+                    "change with the platform; try again in a moment."
+                )
+            return
+        await adapter.check_config_edit(connection_config)
+
     def iter_adapters(self) -> Iterator[PlatformAdapter]:
         """The live adapter of every running bridge, as a snapshot.
 
@@ -534,6 +575,20 @@ class CollaborationBridgeLifecycleService:
         if adapter_cls is None:
             return True
         return adapter_cls.supports_channel_creation
+
+    def editable_config_keys(
+        self, bridge_type: str, connection_config: Mapping[str, object]
+    ) -> frozenset[str] | None:
+        """Which of a bridge's connection settings may be edited, or None for all.
+
+        The adapter class decides — see `PlatformAdapter.editable_config_keys`.
+        An unknown type has no adapter to ask and leaves everything to the
+        validation that rejects it by name.
+        """
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return None
+        return adapter_cls.editable_config_keys(connection_config)
 
     def supports_directory_search(self, bridge_type: str) -> bool:
         """Whether this platform has a user directory Switch can search.
@@ -649,6 +704,15 @@ class CollaborationBridgeLifecycleService:
             except Exception:
                 logger.exception("Failed to start bridge %s", bridge.id)
 
+    def reserve_resource(self, resource: str, holder: str) -> None:
+        """Keep a resource the deployment itself uses away from every bridge.
+
+        The distributed Telegram app's bot is the case: its updates go to the
+        webhook, and a self-registered bridge polling the same bot would fail
+        against it — or, if it got there first, take every tenant's updates.
+        """
+        self._reserved_resources[resource] = holder
+
     async def reject_claim_conflict(
         self,
         bridge_type: str,
@@ -674,6 +738,16 @@ class CollaborationBridgeLifecycleService:
         wanted_workspace = adapter_cls.claimed_workspace(connection_config)
         if wanted_resource is None and wanted_workspace is None:
             return
+        holder = (
+            None
+            if wanted_resource is None
+            else self._reserved_resources.get(wanted_resource)
+        )
+        if holder is not None:
+            raise BridgeClaimConflict(
+                f"{wanted_resource} is this deployment's own {holder} and cannot "
+                "also be connected as a bridge. Use a bot of your own."
+            )
 
         # Captured before the loop below rebinds per tenant. This method is
         # only ever reached from an authenticated request or an install the
@@ -873,7 +947,31 @@ class CollaborationBridgeLifecycleService:
             },
         )
 
-        await self.start(bridge.id)
+        try:
+            await self.start(bridge.id)
+        except Exception:
+            # Stored and not startable is a half state: a row that fails every
+            # boot, and for an install a second bridge on the next attempt. So
+            # a bridge whose start is refused outright is not kept. Once its
+            # adapter is connecting, in the background, a failure is the
+            # bridge's own — logged and reported like any other start's — and
+            # credentials were already checked before anything was stored.
+            logger.exception(
+                "Collaboration bridge %s (%s) could not start; removing it",
+                bridge.id,
+                bridge_type,
+            )
+            try:
+                await self.remove(bridge.id)
+            except Exception:
+                # The start failure is what the caller needs to see; this one
+                # is logged rather than raised in its place.
+                logger.exception(
+                    "Collaboration bridge %s could not be removed after failing "
+                    "to start; its record remains",
+                    bridge.id,
+                )
+            raise
 
         logger.info(
             "Registered collaboration bridge %s (%s): %s",
@@ -942,6 +1040,13 @@ class CollaborationBridgeLifecycleService:
             # the bind error one of them causes. Say which bridge holds it
             # instead.
             wanted = adapter_cls.exclusive_resource(bridge.connection_config or {})
+            if wanted is not None and wanted in self._reserved_resources:
+                raise ValueError(
+                    f"Cannot start bridge {bridge_id} ({bridge.type}): {wanted} "
+                    f"is this deployment's own "
+                    f"{self._reserved_resources[wanted]}. Give the bridge a bot "
+                    "of its own."
+                )
             if wanted is not None:
                 for other_id, held in self._held_resources.items():
                     if held == wanted and other_id != bridge_id:
@@ -1425,6 +1530,23 @@ class CollaborationBridgeLifecycleService:
         was_connected = await milestone_claimed(
             self._session_factory, f"connector_added:{bridge_id}"
         )
+        running = self._bridges.get(bridge_id)
+        if running is not None:
+            try:
+                await running.adapter.withdraw()
+            except Exception:
+                logger.error(
+                    "Collaboration bridge %s could not let go of everything it "
+                    "held on its platform; removing it anyway",
+                    bridge_id,
+                    exc_info=True,
+                )
+        else:
+            logger.warning(
+                "Collaboration bridge %s is not running, so it cannot let go of "
+                "what it holds on its platform itself; removing it anyway",
+                bridge_id,
+            )
         await self.stop(bridge_id)
         async with self._session_factory() as session:
             bridge = await self._bridge_store.get(session, bridge_id)

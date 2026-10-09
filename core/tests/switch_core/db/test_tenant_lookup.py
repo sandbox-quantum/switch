@@ -103,6 +103,7 @@ _DROPPED_SINCE = {"tenant_of_client": "b1d7c4f0a92e"}
 _ADDED_SINCE = {
     "tenant_of_invitation": "5daaea6b674d",
     "tenant_of_messaging_install": "c8a4e21f6d30",
+    "tenants_of_cloud_machine": "b6e1c9d4a7f2",
     "tenants_inviting_email": "4b8e2d61c9f7",
     "tenants_open_to_domain": "7d3f5a19e2c8",
 }

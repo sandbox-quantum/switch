@@ -93,9 +93,9 @@ export function parkAfterMs(): number | null {
 }
 
 /**
- * How long a session waiting on a fresh-conversation decision keeps its worker
- * awake. Past it the decision and the room messages it holds stay recorded,
- * but no longer count as busy, so the worker may sleep.
+ * How long a session waiting on a fresh-conversation decision keeps its host
+ * busy. Past it the decision and the room messages it holds stay recorded,
+ * but no longer count as busy, so the host may park.
  */
 export const RESET_HOLD_MS = 15 * 60_000;
 
@@ -103,9 +103,8 @@ export const RESET_HOLD_MS = 15 * 60_000;
 export type ResetHold = 'none' | 'holding' | 'ended';
 
 /**
- * Why a session is busy, if it is: what keeps a hosted worker awake and what
- * keeps a host from parking. A session that is stopped or failed with nothing
- * left to decide is not busy. Work the provider is still doing after its turn
+ * Why a session is busy, if it is: what keeps a host from parking. A session
+ * that is stopped or failed with nothing left to decide is not busy. Work the provider is still doing after its turn
  * ended, such as background subagents, counts as a running turn.
  */
 export function sessionBusy(
@@ -546,7 +545,7 @@ export async function runSharedHost(
       if (key === announcedBusy) return;
       if (resetHold() === 'ended')
         console.warn(
-          `Session ${options.session.sessionId} has waited ${RESET_HOLD_MS / 60_000} min for a fresh-conversation decision; it no longer keeps its worker awake. The decision and its ${rooms?.pending().length ?? 0} held room message(s) are kept for when it next runs.`
+          `Session ${options.session.sessionId} has waited ${RESET_HOLD_MS / 60_000} min for a fresh-conversation decision; it no longer keeps its host busy. The decision and its ${rooms?.pending().length ?? 0} held room message(s) are kept for when it next runs.`
         );
       announcedBusy = key;
       options.parent?.busy(state, null);

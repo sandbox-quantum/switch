@@ -3,13 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { prepareCodexSessionHome } from '../codex/home';
-import {
-  fetchHostedProvider,
-  hostedRequest,
-  materializeHostedProvider,
-  type HostedCredential,
-} from './hosted-provider';
-import type { SharedHostConfig } from './shared-config';
+import { materializeHostedProvider, type HostedCredential } from './hosted-provider';
 
 let root: string;
 beforeEach(async () => {
@@ -20,72 +14,6 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-async function hostedConfig(
-  endpoint = 'https://switch.invalid/api/agent'
-): Promise<SharedHostConfig> {
-  const credentialsPath = join(root, 'switch.json');
-  await writeFile(
-    credentialsPath,
-    JSON.stringify({
-      env: {
-        SWITCH_API_ENDPOINT: endpoint,
-        SWITCH_API_TOKEN: 'switch-token-fixture',
-        SWITCH_AGENT_ID: 'agent-id',
-      },
-    })
-  );
-  return {
-    session: { agentId: 'agent-id' },
-    start: { provider: 'claude' },
-    execution: { credentialsPath },
-  } as unknown as SharedHostConfig;
-}
-
-it('reads a connected credential and refuses one for another provider', async () => {
-  const body = {
-    status: 'connected',
-    revision: 'revision-one',
-    provider: 'claude',
-    kind: 'api-key',
-    credential: 'fixture-key',
-  };
-  const request = vi.fn(async () => new Response(JSON.stringify(body)));
-  vi.stubGlobal('fetch', request);
-  const config = await hostedConfig();
-  expect(await fetchHostedProvider(config)).toEqual(body);
-  expect(request).toHaveBeenCalledWith(
-    'https://switch.invalid/api/agent/hosted/provider-credential',
-    expect.objectContaining({
-      method: 'POST',
-      headers: { Authorization: 'Bearer switch-token-fixture' },
-    })
-  );
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () => new Response(JSON.stringify({ ...body, provider: 'codex' })))
-  );
-  await expect(fetchHostedProvider(config)).rejects.toThrow('do not match this session');
-});
-
-it('reports a forbidden credential read as revoked and other failures loudly', async () => {
-  const config = await hostedConfig();
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () => new Response('', { status: 403 }))
-  );
-  expect(await fetchHostedProvider(config)).toEqual({ status: 'revoked' });
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () => new Response('', { status: 500 }))
-  );
-  await expect(fetchHostedProvider(config)).rejects.toThrow('HTTP 500');
-  await expect(hostedRequest(config, '/provider-status', {})).rejects.toThrow('HTTP 500');
-});
-
-it('refuses a non-HTTPS Switch origin', async () => {
-  const config = await hostedConfig('http://switch.invalid/api/agent');
-  await expect(fetchHostedProvider(config)).rejects.toThrow('HTTPS');
-});
 const credential = (value: string): Extract<HostedCredential, { status: 'connected' }> => ({
   status: 'connected',
   revision: 'revision-one',
@@ -163,7 +91,6 @@ it('keeps the prepared Codex home and refreshes its auth before provider startup
     sessionId: 'session',
     sourceHome,
     config: 'model = "fixture-model"',
-    auth: 'refresh',
   });
   env.CODEX_HOME = home;
   await writeFile(join(home, 'auth.json'), '{"fixture":"native-refresh"}');

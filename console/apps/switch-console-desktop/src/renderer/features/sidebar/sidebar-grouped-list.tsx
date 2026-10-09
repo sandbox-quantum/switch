@@ -2,8 +2,6 @@ import { AlertTriangle } from 'lucide-react';
 import { reaction } from 'mobx';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef } from 'react';
-import { CloudAgentList } from '@renderer/features/cloud-agents/cloud-agent-list';
-import { useCloudAgents } from '@renderer/features/cloud-agents/use-cloud-agents';
 import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
@@ -89,7 +87,6 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
     };
   }, []);
 
-  const cloudAgents = useCloudAgents(switchServersStore.activeServerId);
   const managedAgents = useManagedAgents(switchServersStore.activeServerId);
   const activeServerId = switchServersStore.activeServerId;
   const managedAgentCount = activeServerId && managedAgents.data ? managedAgents.data.length : 0;
@@ -100,7 +97,7 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
     activeServerId: switchServersStore.activeServerId,
     locationCount: sidebarStore.orderedLocations.length,
     roomCount: switchRoomsStore.listedRoomsInActiveScope.length,
-    serverListedAgentCount: (cloudAgents.data?.length ?? 0) + managedAgentCount,
+    serverListedAgentCount: managedAgentCount,
   });
 
   return (
@@ -121,7 +118,6 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
         <AgentTree />
       )}
       {sidebarStore.grouping !== 'room' && <ManagedAgentList />}
-      {sidebarStore.grouping !== 'room' && <CloudAgentList />}
     </div>
   );
 });

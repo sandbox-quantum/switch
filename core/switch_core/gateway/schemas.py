@@ -517,6 +517,15 @@ class BridgeDetail(BaseModel):
     # What those links do not cover, in the platform's own terms — the kinds of
     # chat that have to be joined by hand. None when there is nothing to add.
     install_note: str | None = None
+    # Something only the platform's side can fix, found while the bridge runs
+    # — an approval withdrawn, the app blocked by the organisation's admin — in
+    # plain words for a banner on the connection. None while nothing is known
+    # to be wrong, or the bridge is not running.
+    attention: str | None = None
+    # Whether the workspace chooses, here, which of the platform's teams the
+    # connection's app is in (the distributed Teams app); see
+    # `/collaborations/{id}/teams`. False while the bridge is not running.
+    team_placement_supported: bool = False
     # Whether the platform can create a channel from Switch at all, and whether
     # an operator permits this connection to. The two are separate so a UI can
     # tell "your organisation turned this off" (changeable here) from "Telegram
@@ -524,6 +533,10 @@ class BridgeDetail(BaseModel):
     # switch you can flip, the second a disabled switch with a reason.
     channel_creation_supported: bool = True
     channel_creation_enabled: bool = True
+    # Why no existing channel can be bound to a room by id on this connection,
+    # or None when one can. Set for a connection whose chats arrive only one
+    # way, so the room form can say so instead of offering the choice.
+    channel_ids_refused: str | None = None
     # Whether the platform has a user directory Switch can search. False where
     # the only people Switch can name are those who have spoken to it, which
     # makes "pick yourself from the directory" an empty list on a connection

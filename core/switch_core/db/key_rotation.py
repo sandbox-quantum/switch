@@ -22,12 +22,9 @@ from switch_core.db.encrypted_json import reencrypt_stale_values
 from switch_core.db.models import (
     ApiKey,
     CollaborationBridge,
-    GitHubIssuedToken,
-    HostedLaunch,
-    HostedMachine,
+    MachineWorkspace,
     MessagingInstall,
     ProviderConnection,
-    ProviderVerification,
     ServerConnector,
 )
 from switch_core.db.session_scope import tenant_session
@@ -43,11 +40,7 @@ _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (ApiKey, "encrypted_key"),
     (MessagingInstall, "encrypted_bot_token"),
     (ProviderConnection, "encrypted_credential"),
-    (ProviderVerification, "encrypted_credential"),
-    (ProviderVerification, "encrypted_token"),
-    (GitHubIssuedToken, "encrypted_token"),
-    (HostedMachine, "machine_capability_encrypted"),
-    (HostedLaunch, "worker_capability_encrypted"),
+    (MachineWorkspace, "enrollment_code_encrypted"),
 )
 
 

@@ -49,6 +49,7 @@ from switch_core.db.models import (
     AgentController,
     AgentControllerOperation,
     ApiKey,
+    MachineWorkspace,
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.db.stores.agent_controller_operation_store import (
@@ -58,7 +59,12 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.hosted_machine_store import CloudMachineStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
+from switch_core.gateway.cloud_controllers import (
+    record_controller_status,
+    wake_controller_machine,
+)
 from switch_core.gateway.known_agents import KNOWN_AGENTS, KnownAgent
 from switch_core.management import reason_codes, tokens
 from switch_core.management.errors import ManagementError, not_found
@@ -75,15 +81,16 @@ from switch_core.management.schemas import (
     ControllerDescription,
     CreateManagedAgentRequest,
     DefinitionV1,
-    PublicKey,
     StatusReport,
     assignment_entry,
     controller_view,
     managed_agent_view,
     operation_view,
     operation_wire,
+    sealed_login_view,
     workspaces_dir_of,
 )
+from switch_core.management.sealed_logins import PublicKey, SealedLogin, key_id
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +101,9 @@ OPERATION_TTL = timedelta(hours=1)
 OPERATION_LIST_LIMIT = 200
 
 V1_OPERATION_KINDS = frozenset({"agent.restart", "provider.recheck"})
+
+# What a Switch cloud machine's controller is called, whatever enrolled it.
+CLOUD_MACHINE_NAME = "Switch cloud"
 
 
 @dataclass(frozen=True)
@@ -217,10 +227,36 @@ class ManagementService:
         )
         expires_at = self.now() + tokens.ENROLLMENT_CODE_LIFETIME
         await self.controllers.create_enrollment_code(
-            session, owner_id=owner_id, api_key_id=key.id, expires_at=expires_at
+            session,
+            owner_id=owner_id,
+            api_key_id=key.id,
+            expires_at=expires_at,
+            machine_workspace_id=None,
         )
         await session.commit()
         return code, expires_at
+
+    async def machine_enrollment_code(
+        self, session: AsyncSession, workspace: MachineWorkspace, now: datetime
+    ) -> str:
+        """A code for a Switch cloud machine's controller in the bound workspace
+        to enroll with: the owner's, valid long enough for the machine to boot,
+        and binding what enrolls with it to the workspace's row on the machine.
+        The caller commits."""
+        key, code = await self._new_hash_only_key(
+            session,
+            owner_id=workspace.owner_id,
+            key_type=CONTROLLER_ENROLLMENT_KEY_TYPE,
+            label="cloud machine enrollment code",
+        )
+        await self.controllers.create_enrollment_code(
+            session,
+            owner_id=workspace.owner_id,
+            api_key_id=key.id,
+            expires_at=now + tokens.MACHINE_ENROLLMENT_CODE_LIFETIME,
+            machine_workspace_id=workspace.id,
+        )
+        return code
 
     async def enroll(
         self,
@@ -246,6 +282,22 @@ class ManagementService:
         )
         if consumed is None:
             raise invalid
+        workspace = (
+            None
+            if consumed.machine_workspace_id is None
+            else await session.get(
+                MachineWorkspace, (tenant_id, consumed.machine_workspace_id)
+            )
+        )
+        machine = (
+            None
+            if workspace is None
+            else await CloudMachineStore().locked(session, workspace.machine_id)
+        )
+        if consumed.machine_workspace_id is not None and (
+            workspace is None or machine is None or machine.state == "deleted"
+        ):
+            raise invalid
         controller_key, credential = await self._new_hash_only_key(
             session,
             owner_id=consumed.owner_id,
@@ -255,9 +307,11 @@ class ManagementService:
         controller = await self.controllers.create(
             session,
             owner_id=consumed.owner_id,
-            name=description.name,
+            name=CLOUD_MACHINE_NAME if machine is not None else description.name,
             description=description.description,
-            kind=description.kind,
+            # A Switch cloud machine's controller is the cloud's, whatever the
+            # program that enrolled says it is.
+            kind="ec2" if machine is not None else description.kind,
             platform=description.platform.model_dump(),
             version=description.version,
             public_key=public_key.model_dump() if public_key is not None else None,
@@ -267,7 +321,34 @@ class ManagementService:
             session, tenant_id, consumed.id, controller.id
         )
         await self.api_keys.delete(session, key.id)
+        replaced: str | None = None
+        moved: list[AgentDefinitionRow] = []
+        revisions: dict[str, int] = {}
+        if workspace is not None:
+            replaced = workspace.controller_id
+            workspace.controller_id = controller.id
+            if replaced is not None and replaced != controller.id:
+                await self._revoke(session, tenant_id, replaced)
+                moved = await self._move_placed(
+                    session, tenant_id, replaced, controller.id
+                )
+                revisions = await self._bump_and_collect(
+                    session, tenant_id, {replaced, controller.id}
+                )
         await session.commit()
+        if replaced is not None and replaced != controller.id:
+            self._announce_revoked(replaced)
+            for row in moved:
+                await self._bind(session, tenant_id, row)
+            self._nudge(revisions)
+            logger.info(
+                "Cloud machine %s enrolled again; revoked its previous controller %s "
+                "and moved its %d agent(s) to %s",
+                workspace.machine_id if workspace is not None else None,
+                replaced,
+                len(moved),
+                controller.id,
+            )
         logger.info(
             "Enrolled agent controller %s (%s) by code for user %s",
             controller.id,
@@ -381,6 +462,10 @@ class ManagementService:
             )
         controller = await self._principal_controller(session, principal)
         revision = controller.assignment_revision
+        if stored and controller.kind == "ec2":
+            await record_controller_status(
+                session, controller.id, report.machine.model_dump(mode="json")
+            )
         await session.commit()
         return {
             "assignment_revision": revision,
@@ -568,13 +653,42 @@ class ManagementService:
         self,
         session: AsyncSession,
         principal: ControllerPrincipal,
-        changes: dict[str, str | None],
+        changes: dict[str, Any],
     ) -> dict[str, Any]:
         """The controller renames itself or changes its description, with the
-        same limits and effects as its owner's change."""
-        await self._principal_controller(session, principal)
+        same limits and effects as its owner's change, and registers the key its
+        provider logins are sealed to.
+
+        A key is registered once: replacing it would let whoever holds the
+        controller's credential have the next login sealed to a key of their
+        choosing, so a different one is refused and the machine is enrolled
+        again instead. The same key again is not a change."""
+        controller = await self._principal_controller(session, principal)
+        details = dict(changes)
+        key = details.pop("public_key", None)
+        if isinstance(key, PublicKey):
+            wanted = key.model_dump()
+            if controller.public_key is None:
+                await self.controllers.set_public_key(
+                    session, principal.tenant_id, controller.id, wanted
+                )
+                logger.info("Agent controller %s registered its key", controller.id)
+            elif controller.public_key != wanted:
+                raise ManagementError(
+                    409,
+                    reason_codes.VALIDATION_ERROR,
+                    "This controller already has a different public key. Enroll "
+                    "the machine again to give it a new one.",
+                )
+        if not details:
+            leases = await self.leases(session)
+            view = controller_view(
+                controller, self.state_of(controller, leases), leases
+            )
+            await session.commit()
+            return view
         return await self._update_details(
-            session, principal.tenant_id, principal.controller_id, changes
+            session, principal.tenant_id, principal.controller_id, details
         )
 
     async def _update_details(
@@ -612,6 +726,19 @@ class ManagementService:
         )
         if controller.revoked_at is not None:
             return
+        await self._revoke(session, tenant_id, controller_id)
+        await session.commit()
+        logger.info("Revoked agent controller %s", controller_id)
+        self._announce_revoked(controller_id)
+
+    async def _revoke(
+        self, session: AsyncSession, tenant_id: str, controller_id: str
+    ) -> None:
+        """Mark revoked, delete the credential, cancel open operations and
+        drop sealed logins. The caller commits, then announces it."""
+        controller = await self.controllers.get(session, tenant_id, controller_id)
+        if controller is None or controller.revoked_at is not None:
+            return
         key_id = controller.api_key_id
         await self.controllers.mark_revoked(
             session, tenant_id, controller_id, self.now()
@@ -621,10 +748,186 @@ class ManagementService:
         await self.operations.cancel_open(
             session, tenant_id, controller_id=controller_id, agent_id=None
         )
-        await session.commit()
-        logger.info("Revoked agent controller %s", controller_id)
+        await self.controllers.delete_sealed_logins(
+            session, tenant_id, controller_id, None
+        )
+
+    async def _move_placed(
+        self, session: AsyncSession, tenant_id: str, source: str, target: str
+    ) -> list[AgentDefinitionRow]:
+        """Place every agent of `source` on `target`, as they were. The caller
+        commits, then binds them."""
+        moved = []
+        for row, _agent in await self.definitions.list_for_controller(
+            session, tenant_id, source
+        ):
+            moved.append(
+                await self.definitions.update(
+                    session,
+                    tenant_id,
+                    row.agent_id,
+                    controller_id=target,
+                    desired_state=row.desired_state,
+                    definition=row.definition,
+                )
+            )
+        return moved
+
+    def _announce_revoked(self, controller_id: str) -> None:
         self.notifier.credential_revoked(controller_id)
         self.presence.revoke_controller(controller_id)
+
+    # ── Provider logins sealed to a controller ────────────────────────────────
+
+    async def list_sealed_logins(
+        self, session: AsyncSession, tenant_id: str, owner_id: str, controller_id: str
+    ) -> list[dict[str, Any]]:
+        await self.owned_controller(session, tenant_id, owner_id, controller_id)
+        rows = await self.controllers.sealed_logins(session, tenant_id, controller_id)
+        return [sealed_login_view(row) for row in rows]
+
+    async def give_sealed_login(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        controller_id: str,
+        provider: str,
+        sealed: SealedLogin,
+    ) -> dict[str, Any]:
+        """Give the owner's machine a provider login the owner's client sealed
+        to it, and have the controller take it up now: a `provider.login`
+        operation, whose result says whether the provider signs in with it."""
+        controller = await self._sealing_target(
+            session, tenant_id, owner_id, controller_id, provider
+        )
+        public_key = controller.public_key
+        if public_key is None:
+            raise ManagementError(
+                409,
+                reason_codes.VALIDATION_ERROR,
+                "This machine has no key to seal a login to yet. Update its "
+                "controller, which registers one when it next runs.",
+            )
+        if sealed.key_id != key_id(public_key["key"]):
+            raise ManagementError(
+                409,
+                reason_codes.VALIDATION_ERROR,
+                "The login was sealed to a key this machine no longer has. Seal "
+                "it again to the key the machine shows now.",
+            )
+        row = await self.controllers.put_sealed_login(
+            session,
+            tenant_id,
+            controller_id,
+            provider,
+            sealed.model_dump(),
+            owner_id,
+        )
+        login = sealed_login_view(row)
+        operation = await self.operations.create(
+            session,
+            controller_id=controller_id,
+            agent_id=None,
+            kind="provider.login",
+            params={"provider": provider, "method": "sealed", "revision": row.revision},
+            created_by=owner_id,
+        )
+        view = operation_view(operation)
+        await session.commit()
+        logger.info(
+            "Gave agent controller %s a sealed %s login (revision %s)",
+            controller_id,
+            provider,
+            row.revision,
+        )
+        self.notifier.operation_pending(
+            controller_id,
+            operation_id=operation.id,
+            kind="provider.login",
+            agent_id=None,
+        )
+        return {"login": login, "operation": view}
+
+    async def withdraw_sealed_login(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        controller_id: str,
+        provider: str,
+    ) -> None:
+        """Take the provider login back, and have the controller check the
+        provider again, which stops using it."""
+        await self._sealing_target(
+            session, tenant_id, owner_id, controller_id, provider
+        )
+        removed = await self.controllers.delete_sealed_logins(
+            session, tenant_id, controller_id, provider
+        )
+        if not removed:
+            raise not_found("Sealed login")
+        operation = await self.operations.create(
+            session,
+            controller_id=controller_id,
+            agent_id=None,
+            kind="provider.recheck",
+            params={"provider": provider},
+            created_by=owner_id,
+        )
+        await session.commit()
+        logger.info(
+            "Withdrew agent controller %s's sealed %s login", controller_id, provider
+        )
+        self.notifier.operation_pending(
+            controller_id,
+            operation_id=operation.id,
+            kind="provider.recheck",
+            agent_id=None,
+        )
+
+    async def _sealing_target(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        controller_id: str,
+        provider: str,
+    ) -> AgentController:
+        if provider not in PROVIDER_KNOWN_AGENT_TYPES:
+            raise ManagementError(
+                422,
+                reason_codes.VALIDATION_ERROR,
+                f"Unknown provider {provider!r}; one of "
+                f"{', '.join(sorted(PROVIDER_KNOWN_AGENT_TYPES))}.",
+            )
+        controller = await self.owned_controller(
+            session, tenant_id, owner_id, controller_id
+        )
+        if is_revoked(controller):
+            raise ManagementError(
+                409, reason_codes.CONTROLLER_REVOKED, "The controller has been revoked."
+            )
+        return controller
+
+    async def own_sealed_login(
+        self, session: AsyncSession, principal: ControllerPrincipal, provider: str
+    ) -> dict[str, Any]:
+        """The controller's sealed login for `provider`, as it opens it."""
+        row = await self.controllers.sealed_login(
+            session, principal.tenant_id, principal.controller_id, provider
+        )
+        if row is None:
+            raise ManagementError(
+                404,
+                reason_codes.PROVIDER_LOGIN_MISSING,
+                f"No {provider} login has been given to this machine.",
+            )
+        return {
+            "provider": row.provider,
+            "revision": row.revision,
+            "sealed": row.sealed,
+        }
 
     # ── Managed agents, owner side ────────────────────────────────────────────
 
@@ -713,12 +1016,21 @@ class ManagementService:
             session, tenant_id, owner_id, controller_id
         )
         if check_placement:
+            # Placing an agent on a sleeping Switch cloud machine wakes it.
+            machine = (
+                await wake_controller_machine(session, controller.id, self.now())
+                if controller.kind == "ec2"
+                else None
+            )
             require_placement(
                 controller,
                 provider,
                 leases=await self.leases(session),
                 now=self.now(),
                 interval_seconds=self.settings.status_interval_seconds,
+                waking=machine is not None
+                and machine.desired_state == "running"
+                and machine.state != "ready",
             )
         return controller
 

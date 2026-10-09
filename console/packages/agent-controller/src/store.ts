@@ -63,6 +63,13 @@ const MIGRATIONS: readonly string[] = [
      cursor INTEGER NOT NULL,
      updated_at TEXT NOT NULL
    );`,
+  // Which of the Linux users set up for agents each agent runs as, when the
+  // controller runs every agent as a user of its own.
+  `CREATE TABLE agent_users (
+     slot INTEGER PRIMARY KEY,
+     agent_id TEXT NOT NULL UNIQUE,
+     claimed_at TEXT NOT NULL
+   );`,
 ];
 
 export const STORE_SCHEMA_VERSION = MIGRATIONS.length;
@@ -274,6 +281,42 @@ export class ControllerStore {
            updated_at = excluded.updated_at`
       )
       .run(agentId, cursor, at);
+  }
+
+  /** The agent user (`1`…) the agent runs as, or null when it holds none. */
+  agentUser(agentId: string): number | null {
+    const row = this.db.prepare('SELECT slot FROM agent_users WHERE agent_id = ?').get(agentId) as
+      | Row
+      | undefined;
+    return row ? Number(row.slot) : null;
+  }
+
+  /**
+   * The agent user the agent runs as, claiming the lowest free one of
+   * `1`…`count` when it holds none; null when every one is taken.
+   */
+  claimAgentUser(agentId: string, count: number, at: string): number | null {
+    return this.transaction(() => {
+      const held = this.agentUser(agentId);
+      if (held !== null) return held;
+      const taken = new Set(
+        (this.db.prepare('SELECT slot FROM agent_users').all() as Row[]).map((row) =>
+          Number(row.slot)
+        )
+      );
+      for (let slot = 1; slot <= count; slot++)
+        if (!taken.has(slot)) {
+          this.db
+            .prepare('INSERT INTO agent_users (slot, agent_id, claimed_at) VALUES (?, ?, ?)')
+            .run(slot, agentId, at);
+          return slot;
+        }
+      return null;
+    });
+  }
+
+  releaseAgentUser(agentId: string): void {
+    this.db.prepare('DELETE FROM agent_users WHERE agent_id = ?').run(agentId);
   }
 
   /** The loopback port the relay last listened on, which running watchers were given. */

@@ -25,6 +25,7 @@ from switch_core.bridges.collaboration.models import BridgeStartRefused
 from switch_core.db.models import CollaborationBridge
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.user_store import UserStore
 from tests.conftest import RLSHarness
 
 from .test_install_service import (
@@ -34,6 +35,7 @@ from .test_install_service import (
     _FakeInstaller,
     _FakeLifecycle,
     _fixture,
+    _NoRooms,
 )
 
 pytestmark = pytest.mark.no_ambient_tenant
@@ -92,6 +94,8 @@ async def _shared_app(harness: RLSHarness) -> tuple[MessagingInstallService, _Id
         receipts=MessagingEventReceiptStore(),
         installers=installers,
         lifecycle=lifecycle,  # type: ignore[arg-type]
+        users=UserStore(),
+        rooms=_NoRooms(),
         public_origin=_ORIGIN,
         keyring=_KEYRING,
     )

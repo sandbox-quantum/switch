@@ -231,6 +231,17 @@ DELIVERY_FAILURES = _spec(
     "loop it was.",
     "actor",
 )
+OBSERVER_FAILURES = _spec(
+    "switch.messages.observer_failures",
+    "sum",
+    "{failure}",
+    "Reports about a message that raised: the transport telling its observer "
+    "after the commit, or an agent's consumer reporting a message addressed to "
+    "it. The message is unaffected and only the report is lost, so these are "
+    "caught by design and invisible without a counter. `actor` is who was "
+    "writing or reading.",
+    "actor",
+)
 DELIVERY_LAG = _spec(
     "switch.messages.delivery_lag",
     "histogram",
@@ -352,6 +363,32 @@ BRIDGE_CALL_DURATION = _spec(
     "bridge",
     "platform",
     "kind",
+)
+BRIDGE_THROTTLE_HELD = _spec(
+    "switch.bridge.throttle.held",
+    "histogram",
+    "s",
+    "How long a publication was held back by a platform rate limit, recorded "
+    "each time one is refused for it. `delivery` separates a bot one tenant "
+    "owns from a shared app bot, where one tenant's burst holds back every "
+    "other tenant's — a rising `shared` reading is what says per-tenant "
+    "fairness has started to matter.",
+    "platform",
+    "delivery",
+    bounds=(1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0),
+)
+
+# ── Messaging app installs ───────────────────────────────────────────────────
+MESSAGING_EVENTS_IGNORED = _spec(
+    "switch.messaging.events_ignored",
+    "sum",
+    "{event}",
+    "Authentic webhook events from a workspace nobody installed the app into, "
+    "on a platform where that is routine — a shared bot sitting in chats "
+    "nobody claimed. Counted rather than logged so that the drops which are "
+    "real losses, each reported where its cause is known, are not buried.",
+    "platform",
+    "reason",
 )
 
 # ── Agent protocol ───────────────────────────────────────────────────────────
@@ -550,6 +587,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         MESSAGES_DELIVERED,
         SEND_FAILURES,
         DELIVERY_FAILURES,
+        OBSERVER_FAILURES,
         DELIVERY_LAG,
         DELIVERY_CACHE_READS,
         DELIVERY_CACHE_FILLS,
@@ -562,6 +600,8 @@ CATALOGUE: dict[str, MetricSpec] = {
         BRIDGE_ERRORS,
         BRIDGES_RUNNING,
         BRIDGE_CALL_DURATION,
+        BRIDGE_THROTTLE_HELD,
+        MESSAGING_EVENTS_IGNORED,
         AGENT_EVENTS_DROPPED,
         AGENT_BUFFER_SCANNED,
         AGENT_BUFFER_SCAN_DURATION,

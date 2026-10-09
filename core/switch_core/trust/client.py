@@ -12,6 +12,7 @@ ask whether the feature is on — the same shape as `telemetry/sink.py`'s
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -20,6 +21,14 @@ import httpx
 logger = logging.getLogger(__name__)
 
 Role = Literal["user", "assistant"]
+
+# Every check is reported under one constant agent identity: Switch has no
+# single "agent" to attribute a check to (a room can hold several, and a
+# human-authored message has none at all), so this collapses all of Switch's
+# traffic onto one Switch Trust agent rather than inventing a per-sender
+# identity Switch Trust has no use for. `x-agent-session-id` (the room) and
+# `x-agent-turn-id` (one per check) carry the per-call distinction instead.
+_AGENT_NAME = "Switch Rooms"
 
 # The outcome a check settles on. "errored" covers both what the wire protocol
 # calls GUARDRAIL_RESULT_OUTCOME_ERRORED (a detector itself failed, but the
@@ -97,13 +106,17 @@ class TrustCheckResult:
 
 
 class TrustClient(Protocol):
-    async def check(self, *, role: Role, content: str) -> TrustCheckResult: ...
+    async def check(
+        self, *, role: Role, content: str, room_id: str
+    ) -> TrustCheckResult: ...
 
 
 class NullTrustClient:
     """Off: every message is allowed, and no request is made."""
 
-    async def check(self, *, role: Role, content: str) -> TrustCheckResult:
+    async def check(
+        self, *, role: Role, content: str, room_id: str
+    ) -> TrustCheckResult:
         return TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
 
 
@@ -130,17 +143,29 @@ class HttpTrustClient:
             "Content-Type": "application/json",
             "x-guardrails-policy-id": policy_id,
             "x-flintai-api-key": api_key,
+            "x-agent-name": _AGENT_NAME,
         }
         self._timeout_seconds = timeout_seconds
         self._client = client
 
-    async def check(self, *, role: Role, content: str) -> TrustCheckResult:
+    async def check(
+        self, *, role: Role, content: str, room_id: str
+    ) -> TrustCheckResult:
         payload = {"messages": [{"role": role, "content": content}]}
+        headers = {
+            **self._headers,
+            "x-agent-session-id": room_id,
+            # One per check, not per logical "turn" a host might recognise —
+            # Switch has no such id to hand it (see `TrustClient.check`'s
+            # callers). Lets Switch Trust tell two checks apart; nothing here
+            # relies on it being stable across retries.
+            "x-agent-turn-id": str(uuid.uuid4()),
+        }
         try:
             response = await self._client.post(
                 self._url,
                 json=payload,
-                headers=self._headers,
+                headers=headers,
                 timeout=self._timeout_seconds,
             )
         except httpx.HTTPError as error:
@@ -215,8 +240,22 @@ def trust_annotation(result: TrustCheckResult) -> str | None:
     return None
 
 
+def trust_redaction_notice(result: TrustCheckResult) -> str | None:
+    """A notice for whoever sent a message Switch Trust redacted — without
+    it, they have no way to know their own words were altered before anyone
+    else saw them. `None` for every other outcome."""
+    if result.outcome != "redacted":
+        return None
+    categories = ", ".join(sorted({f.category for f in result.findings}))
+    detail = categories or "policy violation"
+    return (
+        f"⚠️ Part of your message ({detail}) was redacted by Switch Trust "
+        "before it was delivered."
+    )
+
+
 async def check_message(
-    client: TrustClient, *, role: Role, content: str
+    client: TrustClient, *, role: Role, content: str, room_id: str
 ) -> TrustCheckResult:
     """`client.check`, failing open: a Switch Trust outage degrades to
     unchecked messages rather than to no messaging at all. Logged loudly
@@ -224,7 +263,7 @@ async def check_message(
     `outcome="errored"` rather than `"ok"`, so callers give it the same
     quiet in-chat annotation as an engine-side error."""
     try:
-        return await client.check(role=role, content=content)
+        return await client.check(role=role, content=content, room_id=room_id)
     except GuardrailsCheckError:
         logger.warning(
             "Switch Trust check failed; message allowed through unchecked",

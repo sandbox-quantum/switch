@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import uuid
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
+from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.clients.actor import Actor, AgentActor, ClientConfig
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.consumer import Consumer
 from switch_core.config import SwitchConfig
-from switch_core.db.models import Client, Tenant
+from switch_core.db.models import Agent, Client, Tenant
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.tenant_lookup import all_tenant_ids
@@ -21,6 +25,33 @@ from switch_core.provisioning import Provisioning
 from switch_core.tenant_context import no_tenant, tenant_scope
 
 logger = logging.getLogger(__name__)
+
+# A client that fails on the database or the network is retried rather than
+# dropped. At boot every client starts at once and asks for a connection in the
+# same second; on 9 Oct that drained the pool, 13 clients timed out
+# waiting for one, and each was dropped for good: its agent connected, but
+# nothing on the server could post for it until the next restart. Such a
+# failure says nothing about the client, so it waits and tries again, as long
+# as it takes. Anything else is a bug in the client and still ends it.
+# The wait is jittered: the clients that drained the pool failed together, and
+# a deterministic backoff would keep them retrying together, re-draining it in
+# synchronized waves. Each draws its own delay instead.
+_TRANSIENT_START_ERRORS: tuple[type[BaseException], ...] = (
+    PoolTimeoutError,
+    OperationalError,
+    InterfaceError,
+    OSError,
+    TimeoutError,
+)
+CLIENT_RETRY_BASE_SECONDS = 1.0
+CLIENT_RETRY_CAP_SECONDS = 60.0
+
+
+@runtime_checkable
+class _PreloadsAgent(Protocol):
+    """A consumer that can start from an agent row read for it in bulk."""
+
+    def preload_agent(self, agent: Agent) -> None: ...
 
 
 class TenantIsolationNotInForce(Exception):
@@ -194,10 +225,41 @@ class ClientLifecycleService:
                 )
 
         records = [r for r in records if r.type not in self.COLLAB_CLIENT_TYPES]
+        try:
+            agents = await self._agents_by_client_id(records)
+        except Exception:
+            # One bulk read must not cost every client. Without it each agent
+            # client reads its own row as it starts, as it always did, with
+            # its own retry.
+            logger.exception("Bulk agent read failed; clients will each read their own")
+            agents = {}
 
         logger.info("Starting %d clients", len(records))
         for record in records:
             self._register(record)
+            # Before the task first runs: `_register` only schedules it, and
+            # nothing here yields until the loop is done.
+            consumer = self._consumers.get(record.id)
+            agent = agents.get(record.id)
+            if agent is not None and isinstance(consumer, _PreloadsAgent):
+                consumer.preload_agent(agent)
+
+    async def _agents_by_client_id(self, records: list[Client]) -> dict[str, Agent]:
+        """The agent row behind each client, one query per tenant.
+
+        Each agent client would otherwise read its own at start, and at boot
+        they all start at once: a few hundred reads in the same second.
+        """
+        by_tenant: dict[str, list[str]] = {}
+        for record in records:
+            by_tenant.setdefault(record.tenant_id, []).append(record.id)
+        agents: dict[str, Agent] = {}
+        for tenant_id, client_ids in by_tenant.items():
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                for agent in await AgentStore().get_by_client_ids(session, client_ids):
+                    if agent.client_id is not None:
+                        agents[agent.client_id] = agent
+        return agents
 
     async def create_client(
         self,
@@ -413,10 +475,33 @@ class ClientLifecycleService:
         """
         with no_tenant(), log_context(room_id=None):
             try:
-                if consumer is not None:
-                    await consumer.start()
-                else:
-                    await actor.connect()
+                attempt = 0
+                while True:
+                    try:
+                        if consumer is not None:
+                            await consumer.start()
+                        else:
+                            await actor.connect()
+                        return
+                    except _TRANSIENT_START_ERRORS:
+                        attempt += 1
+                        delay = random.uniform(
+                            0,
+                            min(
+                                CLIENT_RETRY_BASE_SECONDS * 2 ** (attempt - 1),
+                                CLIENT_RETRY_CAP_SECONDS,
+                            ),
+                        )
+                        logger.warning(
+                            "Client %s (%s) failed on the database or network "
+                            "(attempt %d); retrying in %.0fs",
+                            actor.display_name,
+                            actor.transport_user_id,
+                            attempt,
+                            delay,
+                            exc_info=True,
+                        )
+                        await asyncio.sleep(delay)
             except Exception:
                 logger.exception(
                     "Client %s (%s) crashed",

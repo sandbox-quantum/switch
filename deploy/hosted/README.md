@@ -1,463 +1,213 @@
-# Hosted EC2 workers
+# Switch cloud machines on EC2
 
-This directory implements the bounded cloud-worker pilot: a controller service,
-a trusted VM launcher, a Kubernetes chart and generic Terraform. Core keeps one
-machine record per user. The controller syncs these machines from the
-authenticated gateway and keeps its own durable AWS database. Operator commands
-remain available for lifecycle management.
+A Switch cloud machine is an EC2 VM, one per user whatever workspaces they
+use it in, that runs the standard `switch-agent-controller`, the program a
+laptop or an SSH host runs agents with, once per workspace. The user's managed
+agents placed on it run there, each as a Linux user of its own. Each machine
+has a retained, encrypted EBS data disk.
 
-Start from [the architecture proposal](../../docs/planning/hosted-execution-backend-proposal.md).
-One ordinary EC2 VM (a machine) runs all cloud agents of one user, with a
-retained encrypted EBS data disk. Each machine uses one machine slot from the
-operator-configured pool. The watcher starts a separate session for each addressed
-room on that VM.
-Creating an agent does not create a room. The controller runs on existing EKS;
-workers never join that cluster.
+This directory holds what runs the machines:
 
-## Components
+- `controller/`: the hosted controller, a Python service on the existing EKS
+  cluster that creates, starts, stops and deletes the VMs and their disks. It
+  keeps desired and observed state in SQLite, behind an exclusive
+  reconciliation lock. Operator commands queue desired state for it; it exposes
+  no web API.
+- `machine/`: the machine image and its boot. See [its README](machine/README.md)
+  for how a machine enrolls its controller and starts.
+- `terraform/`: a separate VPC, a private subnet with NAT egress and no inbound
+  access, the machines' one instance role, which holds no permissions, and an
+  IRSA role for the hosted controller.
+- `chart/`: the hosted controller's chart: a digest-pinned image, one replica
+  with a Recreate rollout, a private retained volume for its database, and no
+  exposed port.
 
-- `controller/`: Python CLI/service using boto3, SQLite durable desired/observed
-  state and an exclusive reconciliation lock. Create/start/stop/delete requests
-  are local operator actions, not an unauthenticated web API.
-- `worker/`: root-owned AMI launcher. It validates the exact attached EBS volume,
-  retrieves one scoped Secrets Manager document, prepares tmpfs credential files
-  and starts the runtime as an unprivileged account. Retained boot identity prevents
-  old process IDs from being treated as ownership evidence after a reboot.
-- `terraform/`: a separate worker VPC, private worker subnet, NAT egress, no inbound
-  worker access, restricted worker roles, and an IRSA role for the controller.
-- `chart/`: a digest-pinned controller image, one replica with Recreate rollout,
-  private durable database volume and no exposed application port.
+Machines never join the cluster. They reach Switch over its public,
+authenticated HTTPS API, as any agents controller does.
 
-Stop/start preserves the disk and saved sessions. Automatic replacement requires
-confirmed termination of the old VM, a detached disk, and matching assignment
-identity. The new worker accepts only that exact predecessor. Recovery attempts
-are bounded. Cross-AZ migration and arbitrary disk adoption remain disabled.
-See [worker image upgrades](worker/README.md) for the explicit operator workflow.
+## How a user gets a machine
 
-## GitHub App credential preparation
+Picking "Switch cloud" in Switch Console claims the user's machine
+(`POST /gateway/hosted-machines/ensure`), or joins it from this workspace when
+the user already has one, and creates a managed agent on the machine's
+controller for this workspace once it has reported. A machine serves up to 8
+workspaces. Self sign-up claims one too, so it warms
+while the user signs in. The hosted controller polls Core for the machines that
+should exist, creates the data volume, and launches the VM with a bundle as its
+user data. The machine runs one agents controller per workspace seated on it,
+and the bundle (version 5) lists them in Core's order, each under its seat key
+with either the controller it enrolled as or a one-time enrollment code. The
+machine enrolls each controller with its code, and their status reports are
+its heartbeat from then on. The machine sleeps only once every controller on it reports no session,
+and its disk is retained only once no workspace has an agent on it. An
+instance's user data is set when it launches:
+when a controller must enroll again or a workspace joins the machine, the hosted controller stops the instance if it is running, terminates
+it and launches a new one with the new bundle, on the same data volume. A
+bundle that only names the controllers enrolled with the codes the instance
+already holds does not replace the instance.
 
-The backend helper `switch_core.providers.github_installation` can issue a
-repository-scoped installation token after checking that the initiating user's
-GitHub account still has access to that repository in the selected installation.
-It signs with an operator-supplied RSA key and requests only contents and pull
-request write access. Credentials must stay on the backend and in the worker's
-private credential transport, never in Console responses or persisted launch specs.
+Provider logins are given to the machine on demand from Switch Console, sealed
+to its controller's own key: Core relays only ciphertext.
 
-Console uses the shared New Agent form, a saved provider connection and a selected
-GitHub repository. A user's first cloud agent reserves a machine slot from the
-operator-configured pool. The controller creates the data volume, writes the
-assignment secret with that volume ID, and then starts the VM. Later agents of the
-same user run on that machine. An agent is ready only after its watcher connects. Agents can start sessions automatically when addressed or use
-manual sessions. Both paths use the existing session form and conversation view.
+## Enable cloud machines
 
-Cloud sessions appear in the agent sidebar and under their connected rooms.
-The conversation supports messages, permission requests, interruption, stop,
-resume and restart. The machine card provides start, stop and retry for the machine. Each
-agent provides its own start, stop, restart, retry and removal actions.
-See [machine lifecycle](#machine-lifecycle) for what removal does to the machine
-and its disk. Uncertain operations are reported explicitly and are not
-automatically repeated.
+Core needs agent management (`AGENT_MANAGEMENT_ENABLED`, with
+`CONTROLLER_TOKEN_SECRET`): it refuses to start with `HOSTED_LAUNCH_CAPACITY`
+above 0 without it.
 
-Each user has their own VM, encrypted disk and scoped machine credentials. All
-agents of that user share them. The server launch capacity and the controller's
-machine slot pool impose separate global limits. See
-[machine lifecycle](#machine-lifecycle) for the settings.
-
-Managed workers request a fresh installation token before checkout and each Git
-or GitHub CLI command. The agent-authenticated renewal route checks the saved
-assignment, workspace membership and current GitHub repository access. It never
-accepts a caller-selected repository. Personal tokens remain an operator option.
-
-### Enable Console launches
-
-Mount a private backend JSON file through `HOSTED_CONTROLLER_CONFIG_PATH` with
-`tenant_id`, a dedicated `token` of at least 32 characters, `machine_slots`,
-`github_private_key_path` and the HTTPS `agent_api_endpoint`. `machine_slots` is
-a list of 1–100 unique slot IDs. The IDs must match the keys of the Terraform
-`machine_slots` variable. Core rejects a file with the old `agent_ids` key at
-startup. Set `HOSTED_LAUNCH_CAPACITY` no higher than the number of machine slots.
-Zero disables creation. The backend chart exposes
-`switchCore.hostedControllerSecret` (files `controller.json` and the referenced
-key), `switchCore.hostedLaunchCapacity`, `switchCore.hostedIdleStopMinutes` and
+Mount a private JSON file through `HOSTED_CONTROLLER_CONFIG_PATH` with
+`allowed_tenant_ids`, a dedicated `token` of at least 32 characters and the
+HTTPS `agent_api_endpoint` the machines enroll against. `allowed_tenant_ids`
+lists the workspaces whose members may use cloud machines, or is `null` for
+every workspace. Core refuses unknown keys, the old `tenant_id` among them.
+`HOSTED_LAUNCH_CAPACITY` is how many machines may exist at once across the
+server, one per user, 0–100; 0
+disables cloud machines. Keep it no higher than the hosted controller's
+`max_machines`. The backend chart exposes
+`switchCore.hostedControllerSecret` (file `controller.json`),
+`switchCore.hostedLaunchCapacity`, `switchCore.hostedIdleStopMinutes` and
 `switchCore.hostedDiskRetentionDays`.
 
-Mount a controller secret with `gateway.json` containing `origin`, the matching
-`token` and `instance_type`. The controller uses `instance_type` for every new
-machine. It must be one of `allowed_instance_types` in both the Terraform and the
-controller configuration. The recommended value, and the Terraform default, is
-`c7i.2xlarge`. Set the controller chart's `gatewaySecretName` to that secret. The
-token authorizes only the hosted controller routes for its configured tenant. It
-is not a user or agent API key. The machine slot IDs must match in the Terraform,
-controller and Core configurations. Keep all values and private keys outside this
-public repository.
+Mount a secret with `gateway.json` for the hosted controller, holding `origin`,
+the matching `token` and `instance_type`, and set the chart's
+`gatewaySecretName` to it. `instance_type` is used for every new machine and
+must be one of `allowed_instance_types` in both Terraform and the controller
+configuration; `c7i.2xlarge` is recommended. The token authorizes only the
+hosted controller routes, for every machine on the server: their lifecycle
+and the controllers they run, never a workspace's agents, rooms or logins. It
+is not a user or agent API key.
 
-## Prepare a deployable environment
+Keep every value and key out of this public repository.
 
-1. Select a dedicated test account/environment and read-only inventory its EKS
-   version, OIDC issuer, StorageClass, IAM boundaries, quotas and regional capacity.
-   Do not copy internal resource identifiers or secret values into this public tree.
-2. Build a pinned Linux x86 AMI using the worker installer and its documented
-   prerequisites. The runtime artifact must include this branch's reviewed
-   bootstrap and ownership identity support; an older released runtime is insufficient.
-   After installing the console workspace dependencies, build self-contained files:
-   `node deploy/hosted/build-runtime.mjs /path/to/runtime-output`. Copy the three
-   `.mjs` files and SHA256 manifest to the worker installer's documented location;
-   pin and verify those hashes as part of the AMI build.
-   Validate the AMI has the configured root-device name, exactly one EBS root mapping,
-   and an approved source-snapshot encryption key. This slice creates disks with
-   `alias/aws/ebs`; customer-managed EBS keys need additional reviewed permissions.
-   No provider credential is baked in.
-3. Create one assignment secret per machine slot outside Terraform. Keep the
-   secret ARN stable. Do not put a value in it. The controller writes the bundle
-   itself:
-   `{"version":2,"machineId","assignment":{…},"machineCapability","apiEndpoint"}`.
-   The bundle holds the machine and slot identity, the data volume ID, an opaque
-   machine credential and the Switch API endpoint, and nothing else. The worker
-   refuses to start until the bundle matches its attached data volume.
-4. Configure Terraform in the **private deployment overlay**, selecting the worker
-   AMI/AZ, CIDRs, allowed instance types, controller namespace/service account and
-   the per-slot secret/KMS references in `machine_slots`. Review its plan before
-   applying. The module does not create secret values, and each machine can read
-   only its own slot's secret.
-5. Build the controller image and record its immutable digest. Put Terraform's
-   worker subnet/security-group/AZ/role outputs into the controller configuration;
-   root/data disk sizes must match the Terraform policy bounds. Deploy its chart
-   with the controller IRSA role and a CSI-backed persistent StorageClass.
-6. Test authorization with EC2 DryRun where available and exercise the bounded
-   lifecycle experiment before onboarding real users. Terraform validation and
-   boto3 stub tests are not evidence of successful AWS authorization.
+## Prepare an environment
 
-The module deliberately provisions a new NAT gateway and public IPv4 allocation.
-Their charges continue when agents are stopped; they must be included in the
-reviewed plan and removed with the test network when no longer needed. This is
-not a reuse of a developer VM's network or IAM role.
+1. Select a dedicated account and inventory its EKS version, OIDC issuer,
+   StorageClass, IAM boundaries, quotas and regional capacity.
+2. Bake the machine image as [machine/README.md](machine/README.md) describes.
+   It must have the configured root device name and exactly one EBS root
+   mapping. Disks are created with `alias/aws/ebs`.
+3. Configure Terraform in the private deployment overlay: the image, AZ,
+   CIDRs, allowed instance types, and the controller's namespace and service
+   account. Review the plan before applying.
+4. Build the hosted controller image and record its digest. Put Terraform's
+   subnet, security group, AZ and `machine_instance_profile_arn` outputs into
+   the controller configuration, and deploy the chart with its IRSA role and a
+   CSI-backed StorageClass.
 
-Workers require a publicly reachable, authenticated HTTPS Switch API, GitHub HTTPS,
-model-provider APIs and package registries. They cannot reach a Kubernetes-only
-Service or private control-plane database. There is no peering, SSH ingress,
-Git-over-SSH egress, host Docker socket or blanket sudo for repository scripts.
-The dedicated network blocks RFC1918 outbound traffic, but VPC NACLs do not block
-IMDS or the AWS DNS resolver. Treat access to the machine's instance role as
-possible for code of every agent on that machine, and grant it no infrastructure
-authority.
-DNS/private-address access and any organization-specific address ranges still
-require live isolation tests. Workloads requiring other ports need a reviewed
-supported-environment change.
+The network has its own NAT gateway and public IPv4 address, which cost money
+while machines are stopped too. Machines need the Switch API, the model
+providers' APIs and the package registries. There is no peering, no SSH
+ingress and no Docker socket. VPC NACLs block RFC1918 egress but not IMDS or the
+AWS resolver: agents cannot reach instance metadata (their units deny it), but
+grant the instance role no authority anyway. The boot reads the machine's
+bundle from instance metadata as root. Anyone in the AWS account who can read
+an instance's user data can read its enrollment codes, each spent at the boot
+that enrolls its controller and expiring after 30 minutes.
 
 ## Controller configuration
 
-The chart accepts a non-secret `controllerConfig` map with:
+The chart takes a non-secret `controllerConfig` map:
 
 - `installation_id`, `region`, `availability_zone`, `subnet_id`, `security_group_ids`
 - `image_id`, `root_device_name`, `allowed_instance_types`
-- `max_machines`: 1–100, and no more than the number of machine slots. It caps
-  both the machines that are not deleted and the active EC2 instances.
+- `max_machines`: 1–100. It caps both the machines not deleted and the
+  running instances.
 - `root_volume_gib`, `data_volume_gib`, `poll_interval_seconds`
-- `machine_slots`: slot ID to `{instance_profile_arn, assignment_secret_arn}`.
-  Copy it from the Terraform output `machine_slots`.
+- `instance_profile_arn`: the machines' instance profile, the Terraform
+  `machine_instance_profile_arn` output. An instance that runs with another
+  profile needs attention, so do not change it while machines exist.
 
-The instance type of a new machine comes from `instance_type` in the controller's
-`gateway.json` (see [Enable Console launches](#enable-console-launches)). It must
-be one of `allowed_instance_types`. The recommended value is `c7i.2xlarge`.
+The chart fixes `state_db_path` and `lock_path` on its retained volume; a
+standalone installation must give absolute paths for both. Back up the database.
+Never run two installations with the same installation ID, scale the
+Deployment, or bypass the lock. The probes check a local progress timestamp, not
+cloud or provider readiness.
 
-The chart fixes `state_db_path` and `lock_path` on the same retained PVC. A standalone
-operator installation must supply absolute paths for both. Keep the database and
-assignment configuration private and backed up. Do not run two installations
-against separate databases with the same cloud installation ID. Do not manually
-scale the Deployment or bypass its reconciliation lock. Startup/readiness/liveness
-probes check a local progress timestamp, not cloud or provider readiness; handled
-AWS failures remain visible in machine status without causing restart loops.
-
-Before a standalone controller upgrade, stop the old reconciler and back up its
-SQLite database. The Helm chart uses Recreate so the old pod stops before the new
-one starts. The observation-schema upgrade preserves assignment and cloud resource
-identities, but old observations must be refreshed before they can authorize deletion.
-Do not run an older controller binary against the upgraded database. To upgrade
-from a per-agent controller, follow
-[Moving to one machine per user](#moving-to-one-machine-per-user).
-
-The controller is trusted to provision all configured machine slots. Its IAM role
-can pass the configured worker roles; IAM is not a substitute for the controller's
-slot-to-role binding checks. Audit secret resource policies and KMS key policies
-as well as the supplied identity policies; an external broad resource policy can
-invalidate the intended cross-machine denial.
+The hosted controller may change only the data retention of the instances it
+tagged as its own, never their user data or security groups.
 
 ## Operator commands
 
-Install the controller with its locked dependencies, then supply an absolute path
-to the private controller JSON. In Kubernetes, run state commands inside the
-controller pod using the same config and database; they queue desired state for
-the resident reconciler. Each command takes a machine slot ID.
+Run them in the controller pod, with the same configuration and database. They
+queue desired state for the running reconciler.
 
 ```sh
-switch-hosted-controller --config /etc/switch-hosted/controller.json create example-slot --instance-type c7i.2xlarge
-switch-hosted-controller --config /etc/switch-hosted/controller.json status example-slot
-switch-hosted-controller --config /etc/switch-hosted/controller.json stop example-slot
-switch-hosted-controller --config /etc/switch-hosted/controller.json start example-slot
-switch-hosted-controller --config /etc/switch-hosted/controller.json delete example-slot --confirm-slot-id example-slot --retain-volume
 switch-hosted-controller --config /etc/switch-hosted/controller.json list
+switch-hosted-controller --config /etc/switch-hosted/controller.json status <machine-id>
+switch-hosted-controller --config /etc/switch-hosted/controller.json stop <machine-id>
+switch-hosted-controller --config /etc/switch-hosted/controller.json start <machine-id>
+switch-hosted-controller --config /etc/switch-hosted/controller.json delete <machine-id> --confirm-machine-id <machine-id> --retain-volume
+switch-hosted-controller --config /etc/switch-hosted/controller.json upgrade <machine-id> --confirm-instance-id i-0123456789abcdef0
 ```
 
-For standalone reconciliation:
+Every new instance of a machine launches from the configured image: a
+relaunch for new user data, a recovery, or a retained machine starting again
+moves it onto a new `image_id`, keeping its disk. `upgrade` does it for a
+stopped machine whose instance is terminated. A queued command is not confirmation that
+AWS has done it. Deletion needs `--confirm-machine-id` and exactly one of
+`--retain-volume` or `--delete-volume`. Deleting a machine does not remove
+snapshots, roles, the NAT gateway or the controller's database.
 
-```sh
-switch-hosted-controller --config /etc/switch-hosted/controller.json reconcile-once
-switch-hosted-controller --config /etc/switch-hosted/controller.json serve
-```
+## Machine lifecycle
 
-A queued command is not confirmation that AWS has completed it. Desired-state
-changes invalidate prior observations; stopped evidence must belong to the current
-operation before deletion is accepted. A delayed response from an older operation
-cannot certify a newer one. After deletion is accepted, a late-started instance is
-stopped and terminated before disk cleanup proceeds. `Running` describes
-the infrastructure, not provider authentication/readiness. Inspect worker service
-status and Switch session state before calling the coding agent ready. Stop/start
-retains disk contents and native state; it does not promise to resume an interrupted
-provider action or automatically replay a room message.
+When the last managed agent leaves a user's machine, its instance is
+terminated and its disk kept for `HOSTED_DISK_RETENTION_DAYS`. A new agent in
+that time starts the machine again on the kept disk; after it, the disk is
+deleted and the machine with it.
 
-Deletion requires `--confirm-slot-id` with the same slot ID and exactly one of
-`--retain-volume` or `--delete-volume`; consult `delete --help` and the
-controller's documented stop precondition.
-Retaining a disk retains its charges and sensitive state. Deleting compute/disk
-through this controller does not remove Secrets Manager documents, snapshots, IAM
-roles, NAT gateways or the controller's own database. Their lifecycle remains the
-private deployment workflow's responsibility.
-
-See [the implementation verification record](VERIFICATION.md) for local results and
-remaining acceptance gates.
-
-## Moving to one machine per user
-
-Earlier versions ran one EC2 VM per cloud agent. This version runs one VM per
-user. There is no in-place migration: you remove the old cloud agents, upgrade,
-and create the agents again. Do these steps in order.
-
-1. Before you upgrade, record the settings of each cloud agent: name, provider,
-   instructions, repository, and the auto-session and approval settings. You need
-   them to create the agent again in step 9.
-2. In Switch Console on the old version, stop each cloud agent, then remove it.
-   Run `list` on the old controller. Wait until every row shows desired state
-   `deleted` and observed state `deleted`.
-3. Removal kept each old data disk. These disks use the one-agent layout, and the
-   new worker refuses them. Snapshot each disk that holds data you need, then
-   delete the disks. You do not have to wait before you create a new cloud
-   agent: machine EC2 idempotency tokens use a different prefix, so they cannot
-   match the tokens of the old resources.
-4. Stop the controller. Back up its SQLite database.
-5. In the Terraform overlay, rename the variable `assignments` to `machine_slots`.
-   Keep the keys, so no role, instance profile or secret is replaced. The output
-   `worker_assignments` is now `machine_slots`. Run a plan and review it: only
-   policy conditions, IAM tags and defaults change. The `data_volume_gib` default
-   is now 200. It must equal the controller's `data_volume_gib`. If the overlay
-   does not set it, set it to the controller's current value. Apply.
-   The controller binds its database to `data_volume_gib`,
-   `allowed_instance_types` and the other disk and network settings, and refuses
-   to start when one of them changes. To change them, for example to use 200 GiB
-   disks or to allow `c7i.2xlarge`, start the new controller on a new, empty
-   database. This is safe here because every old row is deleted.
-6. Update the configuration files:
-   - `controller.json`: replace `worker_assignments` with `machine_slots` (copy
-     it from the Terraform output `machine_slots`), and `max_agents` with
-     `max_machines`.
-   - Core controller settings file: replace `agent_ids` with `machine_slots`,
-     the list of slot IDs.
-   - `gateway.json`: set `instance_type`, for example `c7i.2xlarge`.
-   - Set `HOSTED_DISK_RETENTION_DAYS` and `HOSTED_IDLE_STOP_MINUTES` if you do
-     not want the defaults.
-7. Build and roll out the new worker AMI. Set `image_id` in `controller.json` and
-   `worker_image_id` in the Terraform overlay to the new AMI, and apply Terraform.
-8. Upgrade Core. Its database migration refuses to run while any cloud agent is
-   not removed, and names this section. Then upgrade the controller. It refuses
-   to start while its database holds per-agent rows that are not deleted, and
-   also names this section. The controller keeps the old `agents` table; it does
-   not drop it. The controller creates its `machines` table on first start. A
-   database from a pre-release build of this controller is not supported; in
-   that case, start the controller on a new database.
-9. Create each agent again in Switch Console with the settings from step 1. The
-   first agent of a user creates that user's machine. Later agents of the same
-   user share it.
-
-## Verification and rollout boundary
-
-Local checks cover state transitions/retries, cloud request shapes, ownership,
-credential transport, retained boot state and infrastructure rendering. All live
-AWS/AMI, block-device, IAM/KMS, network, provider-authentication and end-to-end
-GitHub gates remain mandatory before deployment acceptance. A generated chart or
-an EC2 instance in `running` state alone proves none of those gates.
-
-The controller PVC is annotated `keep` so Helm uninstall retains it. That is not a
-backup and does not override the underlying StorageClass/PV reclaim policy. Back
-up the assignment database and retain resource identities before uninstalling; a
-fresh empty database must not be used to guess ownership of existing workers.
-
-### GitHub authentication slice
-
-The optional worker secret fields described in [the worker contract](worker/README.md#optional-github-credential-delivery)
-provide a personal GitHub.com token to Git HTTPS and GitHub CLI without storing
-it in a workspace/config or passing it as a command argument. Bootstrap checks
-the token before starting the provider. Repository permission checks and actual
-clone/build/push/PR operations remain the coding task's responsibility; managed onboarding uses the renewable installation-token flow described above.
-
-## User-owned Claude connections
-
-The gateway exposes authenticated `GET`, `PUT`, and `DELETE` routes at
-`/gateway/provider-connections/claude`. The PUT body has `kind` (`api-key` or
-`setup-token`) and `credential`. GET returns connection status, kind and the last
-successful verification time, never the credential. Operations are scoped to the
-signed-in user's tenant and user ID; administrator status does not grant access
-to another user's connection. Concurrent changes to the same connection return
-409 so deletion and verification cannot race.
-
-The verifier is opt-in. Build the ordinary switch-core image from this checkout,
-then build the Linux amd64 hosted variant:
-
-```sh
-docker build --platform linux/amd64 -f deploy/hosted/Dockerfile.connections \
-  --build-arg SWITCH_CORE_IMAGE=your-built-core-image \
-  -t switch-core-with-claude .
-```
-
-Pin the base image by digest for deployment. The variant includes a checksum-pinned
-Claude Code executable and sets `HOSTED_CLAUDE_VERIFIER_PATH`. A non-container
-installation can set that variable to an absolute executable path. An invalid
-configured path fails startup; an unset path leaves connections unavailable.
-Run the normal database migration before rolling out the backend.
-
-Each check uses a temporary private home and a minimal environment with only the
-chosen credential. It runs one fixed Haiku request with tools, MCP servers, skills
-and session persistence disabled. It accepts only a successful Claude result.
-Checks time out after 25 seconds, process groups are killed on exit/cancellation,
-and temporary files are removed. There are at most two checks per gateway process.
-The verification process runs as the service user and accepts no user prompts,
-commands, repository paths or tool configuration; it is not a worker sandbox.
-
-Only verified credentials are written, using the existing server encryption key
-and the tenant-scoped `provider_connections` table. Failed replacement leaves the
-previous connection intact. Back up and rotate the server encryption key with the
-same care as other encrypted credentials. Removal deletes the database record;
-revocation at Anthropic and database-backup retention are separate concerns.
-
-Worker assignment bundles contain no provider credential. Managed runtimes fetch
-current credentials from the authenticated worker
-API. Revocation denies further credential and control requests and stops the
-affected workers. Reconnect the provider, then use Retry to start them again.
-
-Codex, Cursor, OpenCode and Antigravity use the same owner-scoped connection API
-under their provider IDs. Enable `HOSTED_PROVIDER_VERIFICATION_ENABLED` (Helm:
-`switchCore.hostedProviderVerificationEnabled`) after deploying the verification
-API, controller IAM policy, and a worker image with `--verify-credential` support.
-This requires a hosted controller. With the setting off, credentials keep the
-existing configured-until-worker-check behavior.
-
-With verification enabled, saving a credential queues a durable connection check.
-Console polls its status and shows **Checking connection**. A temporary worker
-uses the native provider adapter to send one fixed model request in an empty
-workspace. It has no repository, agent assignment, instance profile, or retained
-data volume. Its encrypted root volume is deleted on termination. The controller
-allows at most two checks at a time. Each worker schedules its own shutdown after
-eight minutes; the controller also terminates checks past their ten-minute deadline.
-Checks and cleanup continue when Console closes.
-
-The connection becomes verified only after the model replies and the controller
-observes instance termination. Refreshed subscription credentials are saved with
-the result. Failed checks preserve an existing verified credential and show a retry
-action. Job credentials and bootstrap tokens are cleared when the job finishes.
-Test each provider with its intended account before deployment acceptance.
-
-### GitHub App connections
-
-To enable browser authorization, set `HOSTED_GITHUB_CONFIG_PATH` to a private JSON
-file containing `client_id`, `client_secret`, `slug`, and the public HTTPS Switch
-`origin`. In the backend Helm chart, `switchCore.githubConnectionsSecret` mounts
-an existing Secret's `github.json` key. Never put the client secret in image layers
-or Console build configuration.
-
-Register `<origin>/gateway/provider-connections/github/callback` as the GitHub App
-callback. Enable expiring user tokens. Contents and pull requests need read/write
-permissions for the planned coding workflow; metadata read access is mandatory.
-The Console requests user authorization, confirms the account, and offers GitHub
-App installation to select repositories. Organization approval may be required.
-
-Stored credentials are encrypted and scoped to the current user and tenant.
-The backend refreshes expiring user tokens and asks GitHub for current repository
-access. Disconnect deletes local connection storage, not the installation on
-GitHub. Authorization attempts expire after ten minutes and on backend restart.
-Workers receive repository-scoped installation tokens. GitHub uninstall and suspend
-webhooks are not implemented; access is checked again when tokens are issued.
-
-### Machine lifecycle
-
-Removing a cloud agent removes it at once, in any state. Removal revokes its
-Switch API key, removes its agent and room memberships, and frees the agent name.
-Server-side sessions are removed with the agent.
-
-When the last agent on a user's machine is removed, the instance is terminated.
-The data disk is kept for `HOSTED_DISK_RETENTION_DAYS` days. If the same user
-creates a new agent within that time, the machine starts again on the kept disk.
-After that time, the disk is deleted and the slot returns to the pool. A reused
-slot gets a new generation. Do not attach a kept disk to another user's machine.
-A kept disk keeps its charges and sensitive state.
-
-A machine stops when its agents are idle for `HOSTED_IDLE_STOP_MINUTES`. It starts
-again when an agent is started or addressed, or when the user creates an agent.
+An idle machine is put to sleep after `HOSTED_IDLE_STOP_MINUTES`: its
+controller reports no running session and nothing kept it active. A message
+addressed to one of its agents wakes it, and the room is told so. A machine its
+owner stopped stays stopped.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `HOSTED_AGENTS_PER_OWNER` | 3 | Cloud agents per user. They share the user's machine. |
-| `HOSTED_SESSIONS_PER_AGENT` | 8 | Sessions per agent. |
-| `HOSTED_IDLE_STOP_MINUTES` | 30 | Idle minutes before a machine stops. 0 disables. Maximum 1440. |
-| `HOSTED_DISK_RETENTION_DAYS` | 7 | Days a data disk is kept after its last agent is removed. 1–90. |
-| `HOSTED_LAUNCH_CAPACITY` | 0 | Maximum live machines. No more than the number of machine slots. 0 disables creation. |
+| `HOSTED_LAUNCH_CAPACITY` | 0 | Machines at once, at most 100. 0 disables. |
+| `HOSTED_IDLE_STOP_MINUTES` | 30 | Idle minutes before a machine sleeps. 0 disables. At most 1440. |
+| `HOSTED_DISK_RETENTION_DAYS` | 7 | Days a disk is kept after its last agent leaves. 1–90. |
 
-In the backend Helm chart, `switchCore.hostedIdleStopMinutes`,
-`switchCore.hostedDiskRetentionDays` and `switchCore.hostedLaunchCapacity` set
-these values when `switchCore.hostedControllerSecret` is set.
+A machine that does not start, or whose controller does not report, within 10
+minutes goes to error. Use Retry in Switch Console.
 
-A machine that does not start, or does not connect to Switch, within 10 minutes
-goes to error. An agent goes to error when its watcher does not connect within 10
-minutes after it starts, or when it does not stop within 10 minutes. Use Retry in
-Switch Console.
+## Moving to one machine per user
 
-### GitHub sign-in availability
+A machine used to belong to one workspace. It now belongs to its owner and
+runs a controller per workspace. To upgrade:
 
-Run the Switch API (`switchCore`) with one replica. The shipped Helm chart pins
-`switchCore.replicaCount` to `1` and rejects other values. GitHub sign-in flows
-live in that process alongside the live agent state. A restart interrupts an
-unconfirmed sign-in; start it again from Switch Console. Multiple API replicas
-require shared flow storage before they can be supported.
+1. Bake an image from this `machine/`, which reads bundle version 5, set it as
+   `image_id`, and deploy it before or with the new hosted controller: a
+   running machine on an older image is relaunched from the new one at its
+   next revision.
+2. Replace `tenant_id` in `controller.json` with `allowed_tenant_ids`: the
+   old workspace's id in a list to keep cloud machines to it, or `null`.
+3. Upgrade Core. Each machine keeps its id, its controller and its agents.
+   The migration refuses to run while one user has machines that are not
+   deleted in two workspaces.
 
-### GitHub credential revocation
+## Moving off machine slots
 
-Repository tokens are encrypted and bound to the workspace, owner, worker, and
-worker revision. Stop, removal, disconnect, relink, and owner removal queue their
-revocation after the access change commits. A bounded batch retries failed
-revocations on each controller poll; expired records are deleted. Disconnect and
-relink revoke only the old OAuth token, not the user's entire GitHub App grant.
-A failed revoke shows a warning and does not undo the access change.
+Machines used to borrow one of a fixed pool of slots, each an IAM role and an
+assignment secret the machine read its bundle from at boot. A machine placed on
+a slot cannot move off it: its image reads the slot's secret, which is gone.
+Before upgrading an installation that has cloud machines:
 
-Tokens minted before token tracking was deployed, or minted just before a lost
-response or request cancellation, can remain valid until expiry (up to one hour for repository
-tokens). Stored tokens use the same encryption key as other provider credentials;
-separate encryption keys and key rotation remain a follow-up.
+1. Remove every cloud agent in Switch Console and wait until Core shows no
+   cloud machine, or remove the machines in Core directly.
+2. Terminate their instances and delete their data disks.
+3. Delete the hosted controller's state database, or let it start: it forgets
+   a slot-era database whose machines are all deleted, and refuses one that
+   still has a live machine.
+4. Apply Terraform, which removes the slots' roles, and delete the slots'
+   assignment secrets and their KMS key yourself.
+5. Bake an image from this `machine/` and set it as `image_id`.
 
-Keep query strings out of access logs on every proxy in front of the GitHub
-callback. Its URL carries a single-use OAuth code in the query on
-`/gateway/provider-connections/github/callback`. Exclude this path if you later
-enable ALB access logs or WAF request logging.
-The API strips query strings from access logs, and the shipped nginx gateway
-disables access logging for that path. An external ingress, load balancer, WAF,
-or CDN needs the same protection before GitHub sign-in is enabled.
+## GitHub connections
 
-Worker cards show general provider and GitHub recovery guidance for setup failures.
-They do not yet distinguish each GitHub access failure, such as missing write
-permission or a missing App installation.
-
-The controller uses an attached managed policy for assignment secret access.
-The deploy identity needs IAM policy create, version, attach, detach, and delete
-permissions for that policy. The pool is limited by AWS policy size: 6,144
-characters for assignment access and 10,240 for inline controller permissions.
-Terraform checks these limits during planning. The supported number of machine
-slots depends on ARN lengths; use a smaller pool if a size check fails.
-
-The loopback callback URL can remain in browser history. Its authorization code
-is single-use, consumed during sign-in, and bound to the flow's PKCE verifier.
+GitHub connections are not part of cloud machines. To let users link their
+GitHub account, set `HOSTED_GITHUB_CONFIG_PATH` to a private JSON file with
+`client_id`, `client_secret`, `slug` and the public HTTPS Switch `origin`
+(chart: `switchCore.githubConnectionsSecret`, key `github.json`), and register
+`<origin>/gateway/provider-connections/github/callback` as the GitHub App
+callback with expiring user tokens. Sign-in flows live in the Switch API
+process, so run it with one replica. Keep query strings out of every access
+log in front of the callback: its URL carries a single-use OAuth code.

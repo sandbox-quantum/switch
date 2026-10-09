@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import stop_control_frame
-from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
     PlatformAdapter,
@@ -88,6 +87,7 @@ from switch_core.trust.client import (
     TrustClient,
     check_message,
     trust_annotation,
+    trust_redaction_notice,
 )
 
 if TYPE_CHECKING:
@@ -954,26 +954,40 @@ class CollaborationCore:
 
         if not msg.attachments:
             check = await check_message(
-                self._trust_client, role="user", content=content
+                self._trust_client,
+                role="user",
+                content=content,
+                room_id=room_id,
             )
-            if check.blocked:
+            # A REDACTED verdict with nothing to redact with is not safe to
+            # treat as a pass: sending the original content then would be
+            # indistinguishable from not checking at all, so it is handled
+            # like a block.
+            if check.blocked or (
+                check.outcome == "redacted" and check.redacted_content is None
+            ):
                 logger.warning(
-                    "[BRIDGE-IN] message from %s blocked by Switch Trust "
-                    "(policy=%s) — not relayed into room %s",
+                    "[BRIDGE-IN] message from %s not relayed — Switch Trust "
+                    "outcome=%s (policy=%s) — room %s",
                     msg.sender_name,
+                    check.outcome,
                     check.policy_id,
                     transport_room_id,
                 )
-                await self._adapter.admin_message(
-                    msg.channel_id,
+                await self._post_trust_notice(
+                    msg,
                     "🚫 Your message was blocked by Switch Trust and was not "
                     "delivered.",
-                    msg.root_id or msg.message_ref,
-                    message_type=AdminMessageType.TRUST_BLOCKED.value,
+                    AdminMessageType.TRUST_BLOCKED,
                 )
                 return
             if check.redacted_content is not None:
                 content = check.redacted_content
+                redaction_notice = trust_redaction_notice(check)
+                if redaction_notice is not None:
+                    await self._post_trust_notice(
+                        msg, redaction_notice, AdminMessageType.TRUST_REDACTED
+                    )
             annotation = trust_annotation(check)
             if annotation is not None:
                 content = f"{content}\n\n{annotation}"
@@ -1049,6 +1063,26 @@ class CollaborationCore:
                 external_channel_id=msg.channel_id,
                 transport_event_id=first_event_id,
                 external_post_id=msg.message_ref,
+            )
+
+    async def _post_trust_notice(
+        self, msg: InboundMessage, body: str, message_type: AdminMessageType
+    ) -> None:
+        """Tell the sender's platform a message was blocked or redacted.
+        Never lets a failed notice take the inbound message down with it —
+        mirrors `AgentCore._post_trust_blocked_notice`."""
+        try:
+            await self._adapter.admin_message(
+                msg.channel_id,
+                body,
+                msg.root_id or msg.message_ref,
+                message_type=message_type.value,
+            )
+        except Exception:
+            logger.warning(
+                "Could not post a Switch Trust notice to channel %s",
+                msg.channel_id,
+                exc_info=True,
             )
 
     async def _handle_inbound_command(self, cmd: InboundCommand) -> None:
@@ -1636,14 +1670,7 @@ class CollaborationCore:
             thread_id=target.thread_id,
             surface=self._bridge_type,
         )
-        async with tenant_session(
-            self._session_factory, self._bridge_tenant_id
-        ) as session:
-            agent = await self._agent_store.get(session, target.agent_id)
-        hosted = agent is not None and hosted_launch_of(agent.metadata_) is not None
-        if not self._connections.relay_session_command(
-            target.agent_id, frame, worker_only=hosted
-        ):
+        if not self._connections.relay_session_command(target.agent_id, frame):
             await tell(
                 "The agent was not stopped: its controller is not connected to Switch."
             )

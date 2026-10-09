@@ -116,12 +116,6 @@ class HubEventStream implements AgentEventStream {
     if (error !== undefined) throw new Error(error);
   }
 
-  workerCall(): Promise<unknown> {
-    return Promise.reject(
-      new Error('An agent run by an agents controller is not a hosted worker.')
-    );
-  }
-
   private async run(): Promise<void> {
     const { signal, log } = this.deps;
     let backoff = INITIAL_BACKOFF_MS;

@@ -57,7 +57,7 @@ from switch_core.gateway.auth import (
 )
 from switch_core.gateway.auth_routes import router as auth_router
 from switch_core.gateway.collaborations import router as bridges_router
-from switch_core.gateway.hosted_launches import hosted_settings
+from switch_core.gateway.hosted_machines import hosted_settings
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.keys import Keyring
 from switch_core.room_service import RoomService
@@ -138,8 +138,16 @@ class _Adapter:
     async def install_note(self) -> str | None:
         return None
 
+    places_app_in_teams = False
+
+    async def attention(self) -> str | None:
+        return None
+
     async def channel_deeplink(self, external_channel_id: str) -> str | None:
         self._calls.record("platform channel deeplink")
+        return None
+
+    def channel_ids_refused(self) -> str | None:
         return None
 
 
@@ -170,6 +178,14 @@ class _CollabLifecycle:
 
     async def check_start_guards(self, **_: Any) -> None:
         self._calls.record("start guards")
+
+    def editable_config_keys(
+        self, bridge_type: str, connection_config: dict[str, object]
+    ) -> frozenset[str] | None:
+        return None
+
+    async def check_config_edit(self, **_: Any) -> None:
+        self._calls.record("platform edit check")
 
     async def restart(self, bridge_id: str) -> None:
         self._calls.record("bridge restart")
@@ -553,6 +569,7 @@ class TestBridgeRoutes:
         assert [what for what, _ in calls.held] == [
             "platform credential check",
             "start guards",
+            "platform edit check",
             "bridge restart",
             "platform directory search",
             "platform directory search",

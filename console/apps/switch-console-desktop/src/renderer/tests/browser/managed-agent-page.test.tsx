@@ -75,6 +75,8 @@ const LAPTOP: OwnedMachine = {
   ...AGENT.machine!,
   local: { kind: 'this-computer' },
   providers: [{ provider: 'claude', ready: true, problem: null }],
+  acceptsLogins: false,
+  cloud: false,
   workspacesDir: '/home/me/workspaces',
 };
 

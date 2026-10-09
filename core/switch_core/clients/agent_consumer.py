@@ -6,6 +6,7 @@ import random
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from switch_core.attachments import parse_attachment_group
@@ -17,12 +18,6 @@ from switch_core.bridges.agent.commands import (
 )
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.hosted_workers import (
-    NOTICE_MESSAGES,
-    attached_worker_for,
-    hosted_launch_of,
-    offer_key,
-)
 from switch_core.bridges.agent.protocol.presence import (
     agents_present_in,
     rooms_occupied,
@@ -58,7 +53,7 @@ from switch_core.clients.mentions import (
     strip_emphasis as _strip_emphasis,
 )
 from switch_core.clients.room_meta import RoomMeta
-from switch_core.db.models import Agent, HostedLaunch, HostedMachine
+from switch_core.db.models import Agent, CloudMachine
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
@@ -66,18 +61,7 @@ from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
-from switch_core.db.stores.hosted_launch_store import (
-    HostedLaunchStore,
-    ProviderDisconnected,
-    is_waking,
-)
 from switch_core.db.stores.hosted_machine_store import owner_stopped
-from switch_core.db.stores.hosted_mailbox_store import (
-    MAILBOX_LIMIT,
-    HostedMailboxStore,
-    MailboxEntry,
-    MailboxFull,
-)
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -96,7 +80,11 @@ from switch_core.events import (
     TaskFinalise,
     TaskUpdate,
 )
+from switch_core.gateway.cloud_controllers import wake_controller_machine
 from switch_core.gateway.known_agents import known_agent_for
+from switch_core.observability.catalogue import OBSERVER_FAILURES
+from switch_core.observability.metrics import metrics
+from switch_core.observability.throttle import WarningThrottle
 from switch_core.transport import (
     InboundMedia,
     InboundMembership,
@@ -107,7 +95,13 @@ from switch_core.transport import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from switch_core.telemetry.messages import MessageTelemetry
+
 logger = logging.getLogger(__name__)
+
+# One for the process rather than one per consumer: every agent has a
+# consumer, and a telemetry bug breaks the report for all of them.
+_report_failures = WarningThrottle(60.0)
 
 # How long to hold an incomplete multi-attachment group before delivering the
 # parts that did arrive, flagged as incomplete. Groups normally complete in
@@ -162,86 +156,6 @@ _UNAVAILABLE_MESSAGES = {
 # room where it has no live session but its connector is actively watching:
 # the connector will spin a session up on demand to handle the message.
 _STARTING_SESSION_MESSAGE = "Starting a session to handle this — one moment."
-
-_WAKING_MESSAGE = "Waking up my cloud worker — I'll answer in a minute or two."
-
-_MAILBOX_FULL_MESSAGE = (
-    f"My cloud worker already has {MAILBOX_LIMIT} messages waiting, so I did not "
-    "queue this one. Please send it again once I have caught up."
-)
-
-
-@dataclass(frozen=True)
-class HostedNote:
-    """What addressing a hosted agent did.
-
-    `refusal` is set when the event was not taken into the wake mailbox and
-    the room must be told why; the event is then not delivered either.
-    `deliver` is False for an event the mailbox already holds.
-    """
-
-    launch: HostedLaunch | None
-    machine: HostedMachine | None
-    refusal: str | None
-    deliver: bool
-
-
-_HOSTED_STOPPED_MESSAGE = (
-    "My cloud worker is stopped, so I did not process this message. "
-    "Start me again in Switch Console, then send it again."
-)
-_HOSTED_REMOVED_MESSAGE = (
-    "My cloud worker has been removed, so I cannot process messages."
-)
-_HOSTED_ERROR_MESSAGE = (
-    "My cloud worker has a problem, so I did not process this message. "
-    "My owner can check it in Switch Console."
-)
-_HOSTED_MACHINE_STOPPED_MESSAGE = (
-    "My owner stopped my cloud machine, so I did not process this message. "
-    "Ask my owner to start it in Switch Console, then send it again."
-)
-_HOSTED_MACHINE_ERROR_MESSAGE = (
-    "My cloud machine has a problem, so I did not process this message. "
-    "My owner can check it in Switch Console."
-)
-
-
-def _hosted_unavailable(
-    launch: HostedLaunch, machine: HostedMachine | None
-) -> str | None:
-    """Why a hosted agent that takes no mail cannot answer, for the room.
-
-    The generic unavailable reply offers a terminal command, which means
-    nothing for an agent that runs on a cloud worker.
-    """
-    if launch.desired_state == "deleted":
-        return _HOSTED_REMOVED_MESSAGE
-    if launch.state == "error":
-        return _HOSTED_ERROR_MESSAGE
-    if machine is not None and machine.state == "error":
-        return _HOSTED_MACHINE_ERROR_MESSAGE
-    if machine is not None and owner_stopped(machine):
-        return _HOSTED_MACHINE_STOPPED_MESSAGE
-    if launch.desired_state == "stopped":
-        return _HOSTED_STOPPED_MESSAGE
-    return None
-
-
-def _takes_mail(launch: HostedLaunch, machine: HostedMachine | None) -> bool:
-    """Whether an addressed event goes into the launch's wake mailbox.
-
-    Not after an explicit Stop of the agent or its machine, a delete, or an
-    error of the launch or its machine: the unavailable reply tells the room
-    instead. An idle-sleeping machine takes mail; addressing it wakes it.
-    """
-    return (
-        launch.desired_state == "running"
-        and launch.state != "error"
-        and not (machine is not None and machine.state == "error")
-        and not (machine is not None and owner_stopped(machine))
-    )
-
 
 # Fallback (no known-agent connect command) for a session_addressable agent
 # that has a session bound to this room but is not reporting as live — the
@@ -322,6 +236,41 @@ def _machine_offline_message(machine: str, owner_handle: str | None) -> str:
     )
 
 
+@dataclass(frozen=True)
+class CloudMachineState:
+    """How a Switch cloud machine stood once a message for its agents tried to wake it."""
+
+    state: str
+    revision: int
+    owner_stopped: bool
+
+    @classmethod
+    def of(cls, machine: CloudMachine) -> CloudMachineState:
+        return cls(
+            state=machine.state,
+            revision=machine.revision,
+            owner_stopped=owner_stopped(machine),
+        )
+
+
+def _cloud_machine_waking_message(machine: str) -> str:
+    """A managed agent whose Switch cloud machine was asleep, and is starting
+    for this message: Switch keeps the message until the machine is back."""
+    return (
+        f"My machine, **{machine}**, was asleep and is starting now. I'll pick "
+        "this up as soon as it's back, usually within a few minutes."
+    )
+
+
+def _cloud_machine_stopped_message(machine: str, owner_handle: str | None) -> str:
+    """A managed agent whose Switch cloud machine its owner stopped: a message
+    does not start it again."""
+    return (
+        f"My machine, **{machine}**, is stopped, so I can't answer. "
+        f"{_owner_ref(owner_handle).capitalize()} can start it again in Switch Console."
+    )
+
+
 def _machine_removed_message(machine: str, owner_handle: str | None) -> str:
     removed = (
         f"my machine, **{machine}**, has been removed from Switch, so nothing "
@@ -387,13 +336,14 @@ class AgentConsumer(Consumer[AgentActor]):
         agent_session_store: AgentSessionStore,
         room_role_store: RoomRoleStore,
         external_user_store: ExternalUserStore,
-        hosted_launch_store: HostedLaunchStore,
         connections: AgentConnectionRegistry,
         frontend_base_url: str | None,
+        message_telemetry: MessageTelemetry,
     ) -> None:
         super().__init__(actor=actor)
         self._event_buffer = event_buffer
         self._agent_store = agent_store
+        self._preloaded_agent: Agent | None = None
         self._room_store = room_store
         self._bridge_store = bridge_store
         self._document_store = document_store
@@ -401,10 +351,9 @@ class AgentConsumer(Consumer[AgentActor]):
         self._agent_session_store = agent_session_store
         self._room_role_store = room_role_store
         self._external_user_store = external_user_store
-        self._hosted_launch_store = hosted_launch_store
-        self._waking_notice_revisions: dict[str, int] = {}
-        self._unreachable_notice_revisions: dict[str, int] = {}
+        self._cloud_waking_notices: set[tuple[str, int]] = set()
         self._connections = connections
+        self._message_telemetry = message_telemetry
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
         )
@@ -458,12 +407,22 @@ class AgentConsumer(Consumer[AgentActor]):
         fail the client at boot over a row that exists, which is why nothing
         here falls back to whatever is ambient.
         """
-        async with tenant_session(self.session_factory, self.tenant_id) as session:
-            agent = await self._agent_store.get_by_client_id(session, self.client_id)
-            if agent is None:
-                raise RuntimeError(f"No agent found for client: {self.client_id}")
-            self.actor.set_agent(agent)
+        agent = self._preloaded_agent
+        self._preloaded_agent = None
+        if agent is None:
+            async with tenant_session(self.session_factory, self.tenant_id) as session:
+                agent = await self._agent_store.get_by_client_id(
+                    session, self.client_id
+                )
+        if agent is None:
+            raise RuntimeError(f"No agent found for client: {self.client_id}")
+        self.actor.set_agent(agent)
         await super().start()
+
+    def preload_agent(self, agent: Agent) -> None:
+        """Hand `start` the agent row read in bulk at boot, so it needs no
+        query of its own. Used once: a restart reads it fresh."""
+        self._preloaded_agent = agent
 
     # ── Event hooks ───────────────────────────────────────────────────────────
 
@@ -589,6 +548,7 @@ class AgentConsumer(Consumer[AgentActor]):
         # that took a slot per question would multiply a single message into
         # dozens of concurrent checkouts.
         is_addressed = False
+        agent_live = False
         refusal: str | None = None
         unavailable: str | None = None
         if self._addressed_without_lookup(event, meta) is not False:
@@ -599,14 +559,14 @@ class AgentConsumer(Consumer[AgentActor]):
                     gate = await self._gate_addressed(session, agent, event, meta)
                     is_addressed = gate.addressed
                     refusal = gate.refusal
-                    if (
-                        is_addressed
-                        and not self._triggered_by_auto_reply(event)
-                        and not await self._is_available(session, agent, meta.room_id)
-                    ):
-                        unavailable = await self._reply_when_unavailable_here(
-                            session, agent, meta, self._sender_handle(event)
+                    if is_addressed and not self._triggered_by_auto_reply(event):
+                        agent_live = await self._is_available(
+                            session, agent, meta.room_id
                         )
+                        if not agent_live:
+                            unavailable = await self._reply_when_unavailable_here(
+                                session, agent, meta, self._sender_handle(event)
+                            )
 
         text = event.body
 
@@ -647,39 +607,10 @@ class AgentConsumer(Consumer[AgentActor]):
             ),
         )
 
-        hosted: HostedNote | None = None
         if is_addressed:
-            hosted = await self._note_hosted_addressed(agent, agent_event)
-            launch = None if hosted is None else hosted.launch
-            machine = None if hosted is None else hosted.machine
-            if hosted is not None and hosted.refusal is not None:
-                unavailable = (
-                    None if self._triggered_by_auto_reply(event) else hosted.refusal
-                )
-            elif (
-                unavailable is not None
-                and launch is not None
-                and machine is not None
-                and is_waking(launch, machine)
-            ):
-                unavailable = None
-                if self._waking_notice_revisions.get(meta.room_id) != machine.revision:
-                    self._waking_notice_revisions[meta.room_id] = machine.revision
-                    unavailable = _WAKING_MESSAGE
-            elif (
-                unavailable is not None
-                and launch is not None
-                and attached_worker_for(self._connections, launch) is None
-            ):
-                # Once per room per revision, like the waking notice: the
-                # mailbox holds every message until the worker attaches.
-                unavailable = None
-                if (
-                    self._unreachable_notice_revisions.get(meta.room_id)
-                    != launch.revision
-                ):
-                    self._unreachable_notice_revisions[meta.room_id] = launch.revision
-                    unavailable = NOTICE_MESSAGES["unreachable"]
+            self._report_addressed(
+                meta, event, agent_live=agent_live, has_attachment=False
+            )
 
         if refusal is not None:
             await self._post_auto_reply(room.room_id, event, refusal, reply_thread_root)
@@ -704,9 +635,6 @@ class AgentConsumer(Consumer[AgentActor]):
                 if unavailable == _STARTING_SESSION_MESSAGE
                 else reply_thread_root,
             )
-
-        if hosted is not None and not hosted.deliver:
-            return
 
         # Serialising runs once per agent per message, so only when it will be seen.
         if logger.isEnabledFor(logging.DEBUG):
@@ -882,19 +810,24 @@ class AgentConsumer(Consumer[AgentActor]):
         body: str,
     ) -> None:
         reply_thread_root = thread_id if thread_id is not None else event.event_id
-        gated: Agent | None = None
+        agent_live = False
         if is_addressed:
             async with self.session_factory() as session:
                 agent = await self._fresh_agent(session)
                 gate = await self._gate_addressed(session, agent, event, meta)
-            if gate.addressed:
-                gated = agent
+                # Only telemetry reads this here — the media path posts no
+                # unavailable notice — so it is not worth a query while off.
+                if (
+                    gate.addressed
+                    and self._message_telemetry.enabled
+                    and not self._triggered_by_auto_reply(event)
+                ):
+                    agent_live = await self._is_available(session, agent, meta.room_id)
             is_addressed = gate.addressed
             if gate.refusal is not None:
                 await self._post_auto_reply(
                     room.room_id, event, gate.refusal, reply_thread_root
                 )
-
         sender_kind: str | None = None
         on_behalf_of: str | None = None
         if PLATFORM_MARKER in event.content:
@@ -925,14 +858,10 @@ class AgentConsumer(Consumer[AgentActor]):
             ),
         )
 
-        if gated is not None:
-            hosted = await self._note_hosted_addressed(gated, agent_event)
-            if hosted is not None and hosted.refusal is not None:
-                await self._post_auto_reply(
-                    room.room_id, event, hosted.refusal, reply_thread_root
-                )
-            if hosted is not None and not hosted.deliver:
-                return
+        if is_addressed:
+            self._report_addressed(
+                meta, event, agent_live=agent_live, has_attachment=True
+            )
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -968,10 +897,6 @@ class AgentConsumer(Consumer[AgentActor]):
         handled = await self._handle_command(room, event)
         if handled:
             return
-
-        async with tenant_session(self.session_factory, self.tenant_id) as session:
-            agent = await self._fresh_agent(session)
-        await self._note_hosted_addressed(agent, None)
 
         self._event_buffer.enqueue(
             self.agent.id,
@@ -1100,94 +1025,6 @@ class AgentConsumer(Consumer[AgentActor]):
         )
         self._room_meta[transport_room_id] = meta
         return meta
-
-    async def _note_hosted_addressed(
-        self, agent: Agent, event: AgentEvent | None
-    ) -> HostedNote | None:
-        """Keep a hosted agent's cloud worker awake, waking it if it idled out.
-
-        `event`, when the watcher acts on it, is written to the wake mailbox
-        in the same transaction, already offered when the agent's worker is
-        attached at the launch's revision. None for a command, which is never
-        queued. A wake starts the launch's idle-stopped machine; an
-        owner-stopped machine is left stopped. None when the agent is not
-        hosted or its launch could not be updated.
-        """
-        launch_id = hosted_launch_of(agent.metadata_)
-        if launch_id is None:
-            return None
-        entry = None if event is None else MailboxEntry.of(event)
-        refusal: str | None = None
-        written = True
-        try:
-            async with (
-                asyncio.timeout(5),
-                tenant_session(self.session_factory, self.tenant_id) as session,
-            ):
-                launch, machine = await self._hosted_launch_store.note_addressed(
-                    session, launch_id
-                )
-                if (
-                    launch is not None
-                    and entry is not None
-                    and not _takes_mail(launch, machine)
-                ):
-                    refusal = _hosted_unavailable(launch, machine)
-                    written = False
-                elif launch is not None and entry is not None:
-                    worker = attached_worker_for(self._connections, launch)
-                    try:
-                        written = await HostedMailboxStore().write(
-                            session,
-                            agent_id=agent.id,
-                            launch_id=launch.id,
-                            entry=entry,
-                            offered_to=None
-                            if worker is None
-                            else offer_key(self._event_buffer.boot, worker),
-                        )
-                    except MailboxFull:
-                        logger.warning(
-                            "Wake mailbox of agent %s is full; refused message %s in room %s",
-                            agent.id,
-                            entry.message_id,
-                            entry.room_id,
-                        )
-                        refusal = _MAILBOX_FULL_MESSAGE
-                await session.commit()
-        except ProviderDisconnected:
-            logger.warning(
-                "Not waking the cloud worker of agent %s: its owner's provider connection is gone",
-                agent.id,
-            )
-            return HostedNote(
-                launch=None,
-                machine=None,
-                refusal=NOTICE_MESSAGES["revoked"],
-                deliver=False,
-            )
-        except Exception:
-            logger.error(
-                "Could not wake cloud worker for agent %s or write its wake mailbox; "
-                "the event is only in the live buffer",
-                agent.id,
-                exc_info=True,
-            )
-            return None
-        if launch is None:
-            logger.error(
-                "Agent %s names cloud launch %s, which does not exist",
-                agent.id,
-                launch_id,
-            )
-            return None
-        self._connections.supersede(agent.id, launch.revision)
-        return HostedNote(
-            launch=launch,
-            machine=machine,
-            refusal=refusal,
-            deliver=refusal is None and written,
-        )
 
     async def _reply_when_unavailable_here(
         self, session: AsyncSession, agent: Agent, meta: RoomMeta, asker_handle: str
@@ -1324,8 +1161,41 @@ class AgentConsumer(Consumer[AgentActor]):
         if controllers.is_revoked(binding.controller_id):
             return _machine_removed_message(binding.controller_name, owner)
         if not controllers.is_live(self.agent.id):
-            return _machine_offline_message(binding.controller_name, owner)
+            machine = await self._wake_cloud_machine(binding.controller_id)
+            if machine is None or machine.state == "error":
+                return _machine_offline_message(binding.controller_name, owner)
+            if machine.owner_stopped:
+                return _cloud_machine_stopped_message(binding.controller_name, owner)
+            # Once per room for each start: the next messages just wait with it.
+            notice = (meta.room_id, machine.revision)
+            if notice in self._cloud_waking_notices:
+                return None
+            self._cloud_waking_notices.add(notice)
+            return _cloud_machine_waking_message(binding.controller_name)
         return None
+
+    async def _wake_cloud_machine(self, controller_id: str) -> CloudMachineState | None:
+        """Starts the Switch cloud machine running `controller_id` if it is
+        asleep, and says how it stands; None for a controller on no cloud
+        machine, or when the machine could not be read."""
+        try:
+            async with (
+                asyncio.timeout(5),
+                tenant_session(self.session_factory, self.tenant_id) as session,
+            ):
+                machine = await wake_controller_machine(
+                    session, controller_id, datetime.now(UTC)
+                )
+                state = None if machine is None else CloudMachineState.of(machine)
+                await session.commit()
+                return state
+        except Exception:
+            logger.warning(
+                "Could not wake the cloud machine of controller %s",
+                controller_id,
+                exc_info=True,
+            )
+            return None
 
     async def owner_handle_in(
         self, session: AsyncSession, agent: Agent, bridge_id: str | None
@@ -1465,8 +1335,6 @@ class AgentConsumer(Consumer[AgentActor]):
     async def on_task_delegate(self, room: RoomRef, event: TaskDelegate) -> None:
         if event.performer_agent_id != self.agent.id:
             return
-        async with tenant_session(self.session_factory, self.tenant_id) as session:
-            agent = await self._fresh_agent(session)
         meta = await self._resolve_room_meta(room.room_id)
         agent_event = (
             None
@@ -1485,21 +1353,10 @@ class AgentConsumer(Consumer[AgentActor]):
                 ),
             )
         )
-        hosted = await self._note_hosted_addressed(agent, agent_event)
-        launch = None if hosted is None else hosted.launch
-        machine = None if hosted is None else hosted.machine
-        if hosted is not None and hosted.refusal is not None:
-            reply = hosted.refusal
-        elif launch is not None and is_waking(launch, machine):
-            reply = _WAKING_MESSAGE
-        else:
-            reply = "Working on it."
         await self.actor.send_message(
-            room.room_id, reply, format="markdown", metered=False
+            room.room_id, "Working on it.", format="markdown", metered=False
         )
         if meta is None or agent_event is None:
-            return
-        if hosted is not None and not hosted.deliver:
             return
         self._event_buffer.enqueue(self.agent.id, meta.room_id, agent_event)
 
@@ -1704,6 +1561,55 @@ class AgentConsumer(Consumer[AgentActor]):
     @staticmethod
     def _triggered_by_auto_reply(event: InboundMessage) -> bool:
         return bool(event.content.get(AUTO_REPLY_FLAG))
+
+    def _report_addressed(
+        self,
+        meta: RoomMeta,
+        event: InboundMessage,
+        *,
+        agent_live: bool,
+        has_attachment: bool,
+    ) -> None:
+        """Count a message this agent was asked to act on.
+
+        Every message let through the addressing policy and budget, whether or
+        not the agent could take it, so an offline or stopped agent is still
+        asked. `agent_live` is the agent having a live session for the room.
+        Not an auto-reply: Switch's notice that another agent is offline or
+        refused is not someone asking this one for something. Not the files of a multi-file post delivered without
+        its first part, which happens when a group times out incomplete and
+        the rest arrives later: the post is counted with its first part, as
+        the transport counts it, so it is one request however it is split.
+
+        Guarded like the transport's observer call, and counted the same way:
+        this runs on the delivery path, ahead of the enqueue, and a telemetry
+        bug must not cost the agent the message.
+        """
+        if self._triggered_by_auto_reply(event):
+            return
+        group = parse_attachment_group(event.content)
+        if group is not None and group[1] != 0:
+            return
+        try:
+            self._message_telemetry.agent_addressed(
+                tenant_id=self.tenant_id,
+                room_id=meta.room_id,
+                sender_transport_user_id=event.sender,
+                from_platform=PLATFORM_MARKER in event.content,
+                agent_metadata=self.agent.metadata_,
+                agent_live=agent_live,
+                has_attachment=has_attachment,
+            )
+        except Exception:
+            metrics().increment(OBSERVER_FAILURES, {"actor": "agent"})
+            if (failures := _report_failures.note()) is not None:
+                logger.error(
+                    "Could not report a message addressed to agent %s; it is "
+                    "still delivered. %d failure(s) since the last error.",
+                    self.agent.name,
+                    failures,
+                    exc_info=True,
+                )
 
     async def _post_auto_reply(
         self,

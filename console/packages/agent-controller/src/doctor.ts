@@ -31,6 +31,8 @@ export type DoctorInputs = {
   probe: (bundle: string, provider: Provider, binary: string) => Promise<ProviderReadiness>;
   service: () => Promise<ServiceState>;
   latest: () => Promise<ControllerRelease | null>;
+  /** The setup that runs every agent as a user of its own, or null when agents run as this user. */
+  separateUsers: { agentsDir: string; agentUsers: number; controllerUnit: string } | null;
 };
 
 function nodeCheck(nodeVersion: string): Check {
@@ -164,13 +166,26 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
   } catch (error) {
     checks.push({ name: 'Shared host', status: 'fail', detail: errorMessage(error) });
   }
+  if (inputs.separateUsers)
+    checks.push({
+      name: 'Agent users',
+      status: 'ok',
+      detail: `Each agent runs as one of ${inputs.separateUsers.agentUsers} users of its own, in ${inputs.separateUsers.agentsDir}; a provider is ready only through what the --env-file gives agents.`,
+    });
   checks.push(...(await providerChecks(inputs, bundle)));
   const service = await inputs.service().catch((error: unknown) => errorMessage(error));
+  const unit = inputs.separateUsers?.controllerUnit;
   checks.push(
     service === 'running'
       ? { name: 'Service', status: 'ok', detail: 'Installed and running' }
       : service === 'stopped'
-        ? { name: 'Service', status: 'warn', detail: 'Installed, but not running' }
+        ? {
+            name: 'Service',
+            status: 'warn',
+            detail: unit
+              ? `${unit} is not running: sudo systemctl start ${unit}`
+              : 'Installed, but not running',
+          }
         : service === 'not-installed'
           ? {
               name: 'Service',

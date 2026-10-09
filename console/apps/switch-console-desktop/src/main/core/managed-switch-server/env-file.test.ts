@@ -122,6 +122,11 @@ describe('buildEnvFile', () => {
       'DISCORD_APP_CLIENT_SECRET',
       'DISCORD_APP_BOT_TOKEN',
       'DISCORD_APP_APPLICATION_ID',
+      // Telegram's distributed bot is deployment config too, and Telegram
+      // delivers its updates to a webhook on MESSAGING_PUBLIC_URL, which a
+      // loopback stack cannot offer (see above).
+      'TELEGRAM_APP_BOT_TOKEN',
+      'TELEGRAM_APP_WEBHOOK_SECRET',
       // Agent management is off unless a server opts in, and the compose file
       // defaults it off. A managed stack does not opt in yet: the pinned
       // switch-core release predates it, and turning it on also needs a
@@ -132,6 +137,21 @@ describe('buildEnvFile', () => {
       // compose file always allows the bundled Mattermost; a managed stack
       // allows nothing more until its operator says so.
       'OUTBOUND_ALLOWED_PRIVATE_HOSTS',
+      // The distributed Teams app's credential, notification keypair and
+      // package pages are deployment config too, and a loopback stack can
+      // hold none of them for the same reason.
+      'TEAMS_APP_CLIENT_ID',
+      'TEAMS_APP_TENANT_ID',
+      'TEAMS_APP_CLIENT_SECRET',
+      'TEAMS_APP_CERTIFICATE',
+      'TEAMS_APP_CERTIFICATE_PRIVATE_KEY',
+      'TEAMS_APP_FEDERATED_TOKEN_FILE',
+      'TEAMS_APP_NOTIFICATION_CERTIFICATE',
+      'TEAMS_APP_NOTIFICATION_PRIVATE_KEY',
+      'TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY',
+      'TEAMS_APP_PRIVACY_URL',
+      'TEAMS_APP_TERMS_URL',
+      'TEAMS_APP_NAME',
     ]);
 
     const missing = [...interpolated]

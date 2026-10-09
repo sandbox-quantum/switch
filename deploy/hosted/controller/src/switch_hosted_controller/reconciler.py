@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import UTC, datetime, timedelta
@@ -78,7 +79,7 @@ class Reconciler:
         instance = self._cloud.get_instance(machine)
         if machine.instance_id is None:
             if instance is not None:
-                return self._store.record_instance(machine.machine_id, instance["InstanceId"])
+                return self._store.record_instance(machine.machine_id, instance["InstanceId"], None)
             if volume["State"] != "available" or (
                 not machine.instance_launch_issued and not _bundle_ready(machine)
             ):
@@ -90,6 +91,12 @@ class Reconciler:
             if not machine.instance_launch_issued:
                 if not self._unchanged(claim, DesiredState.RUNNING):
                     return self._store.cancel_queued_instance_launch(claim)
+                if machine.image_id != self._cloud.image_id:
+                    # No instance is left, and the data volume is kept: the
+                    # one moment the machine can move onto the configured image.
+                    machine = self._store.use_image(claim, self._cloud.image_id)
+                    if not self._same_claim(claim, machine):
+                        return machine
                 self._cloud.validate_image(machine)
                 self._cloud.validate_capacity()
                 if not self._unchanged(claim, DesiredState.RUNNING):
@@ -103,7 +110,7 @@ class Reconciler:
                 if rejected(exc):
                     self._store.clear_unlaunched_instance(machine)
                 raise
-            return self._store.record_instance(machine.machine_id, instance_id)
+            return self._store.record_instance(machine.machine_id, instance_id, machine.bundle)
         if instance is None:
             return self._attention(
                 claim,
@@ -127,12 +134,32 @@ class Reconciler:
             return self._store.replace_terminated(terminated, unexpected=unexpected)
         if state == "stopped":
             if _bundle_ready(machine) and self._unchanged(claim, DesiredState.RUNNING):
-                self._cloud.start_instance(machine)
+                if machine.bundle is not None and needs_new_user_data(
+                    machine.instance_bundle, machine.bundle
+                ):
+                    # An instance's user data is set when it launches, so it
+                    # makes way for one launched with the new bundle; the data
+                    # volume is kept. A running instance is stopped first.
+                    machine = self._store.mark_instance_terminate_issued(claim)
+                    if not self._same_claim(claim, machine):
+                        return machine
+                    self._cloud.terminate_instance(machine)
+                else:
+                    self._cloud.start_instance(machine)
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
         if state in {"pending", "stopping", "shutting-down"}:
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
         if state != "running":
             return self._attention(claim, f"instance is {state}; automatic replacement is disabled")
+        if (
+            machine.bundle is not None
+            and machine.instance_bundle is not None
+            and _bundle_ready(machine)
+            and needs_new_user_data(machine.instance_bundle, machine.bundle)
+            and self._unchanged(claim, DesiredState.RUNNING)
+        ):
+            self._cloud.stop_instance(machine)
+            return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
 
         attachments = volume.get("Attachments", [])
         if volume["State"] == "available" and not attachments:
@@ -164,7 +191,7 @@ class Reconciler:
         instance = self._cloud.get_instance(machine)
         if machine.instance_id is None:
             if instance is not None:
-                return self._store.record_instance(machine.machine_id, instance["InstanceId"])
+                return self._store.record_instance(machine.machine_id, instance["InstanceId"], None)
             if machine.instance_launch_intent and not machine.instance_launch_issued:
                 self._store.cancel_queued_instance_launch(claim)
                 return self._store.set_observed(claim, ObservedState.STOPPED, None)
@@ -271,7 +298,7 @@ class Reconciler:
                     return self._store.set_observed(claim, busy, None)
                 self._store.clear_unlaunched_instance(machine)
                 return None
-            return self._store.record_instance(machine.machine_id, instance["InstanceId"])
+            return self._store.record_instance(machine.machine_id, instance["InstanceId"], None)
         if machine.instance_id is None:
             return None
         instance = self._cloud.get_instance(machine)
@@ -340,6 +367,42 @@ def _bundle_ready(machine: Machine) -> bool:
         machine.required_bundle_token is not None
         and machine.bundle_token == machine.required_bundle_token
     )
+
+
+def needs_new_user_data(current: str | None, wanted: str) -> bool:
+    """Whether an instance booting from the bundle `current` must make way for
+    one launched with `wanted`.
+
+    Not when `wanted` only names, for a seat, the controller the machine
+    enrolled as with the code `current` holds for that seat: the boot keeps an
+    enrollment made with that code.
+    """
+    if current is None:
+        return True
+    if current == wanted:
+        return False
+    have, want = json.loads(current), json.loads(wanted)
+    have_seats, want_seats = _seats(have), _seats(want)
+    if have_seats is None or want_seats is None or have != want:
+        return True
+    if have_seats.keys() != want_seats.keys():
+        return True
+    return any(_seat_needs_new_user_data(have_seats[key], want_seats[key]) for key in want_seats)
+
+
+def _seats(bundle: dict) -> dict[str | None, dict] | None:
+    """Pop the bundle's controllers off it, by seat key."""
+    if bundle.get("version") == 5:
+        return {entry["key"]: entry for entry in bundle.pop("controllers")}
+    if bundle.get("version") == 4:
+        return {None: bundle.pop("controller")}
+    return None
+
+
+def _seat_needs_new_user_data(have: dict, want: dict) -> bool:
+    if want["enrollmentCode"] is not None:
+        return want["enrollmentCode"] != have["enrollmentCode"]
+    return have["enrollmentCode"] is None and have["id"] != want["id"]
 
 
 def _volume_mapping(instance: dict[str, Any], volume_id: str) -> dict[str, Any] | None:

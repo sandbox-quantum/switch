@@ -35,7 +35,6 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     list_agent_summaries,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.presence import rooms_occupied
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
@@ -60,7 +59,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.budgets import BudgetGuard
-from switch_core.clients.actor import SystemActor
+from switch_core.clients.actor import AgentActor, SystemActor
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
 from switch_core.clients.admin_messages import (
     AdminMessageType,
@@ -71,7 +70,6 @@ from switch_core.db.models import (
     Agent,
     AgentRuntimeState,
     ApiKey,
-    HostedLaunch,
     Message,
     MessageAttachment,
     Model,
@@ -93,7 +91,6 @@ from switch_core.db.stores.agent_runtime_state_store import (
     AgentRuntimeStateStore,
 )
 from switch_core.db.stores.budget_store import BudgetStore
-from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -366,7 +363,6 @@ class AgentCore:
         addressable_by_agent_ids: list[str] | None = None,
         owner_only: bool = True,
         registration_path: str = "other",
-        reserved_agent_id: str | None = None,
     ) -> RegistrationResult:
         """Register or re-register an agent.
 
@@ -444,21 +440,7 @@ class AgentCore:
 
         async with self.session_factory() as session:
             await self.agent_store.lock_name(session, name)
-            reservation = await session.scalar(
-                select(HostedLaunch).where(
-                    HostedLaunch.tenant_id == tenant_id,
-                    HostedLaunch.name == name,
-                )
-            )
-            if reservation is not None and reservation.agent_id != reserved_agent_id:
-                raise AgentExistsError(
-                    "A cloud launch already reserves this agent name."
-                )
             existing = await self.agent_store.get_by_name(session, name)
-            if reserved_agent_id is not None and existing is not None:
-                raise AgentExistsError(
-                    "The reserved cloud identity cannot overwrite an agent."
-                )
             if existing and not overwrite:
                 raise AgentExistsError(
                     f"Agent already exists: {name!r}. "
@@ -505,7 +487,6 @@ class AgentCore:
                 reject_reserved_mention_name(name, kind="Agent name")
                 agent_id = await self._create_agent(
                     session=session,
-                    reserved_agent_id=reserved_agent_id,
                     name=name,
                     description=description,
                     icon_url=validated_icon_url,
@@ -646,7 +627,6 @@ class AgentCore:
         self,
         *,
         session: AsyncSession,
-        reserved_agent_id: str | None,
         name: str,
         description: str,
         icon_url: str | None,
@@ -684,7 +664,6 @@ class AgentCore:
         )
 
         agent = Agent(
-            **({"id": reserved_agent_id} if reserved_agent_id is not None else {}),
             name=name,
             description=description,
             icon_url=icon_url,
@@ -1227,18 +1206,30 @@ class AgentCore:
             )
 
     async def _enforce_trust(
-        self, room: RoomDescriptor, content: str, thread_root_id: str | None
+        self,
+        room: RoomDescriptor,
+        content: str,
+        thread_root_id: str | None,
+        client: AgentActor,
     ) -> str:
         """Check agent-authored content against Switch Trust before it is
         sent. Returns the content to actually send — unchanged, redacted, or
         carrying a short non-blocking annotation. Raises
-        `GuardrailBlockedError` on a BLOCKED verdict, having already posted a
-        notice in the room in place of the real content."""
+        `GuardrailBlockedError` on a BLOCKED verdict, or on a REDACTED verdict
+        Switch Trust gave us nothing to redact with — sending the original
+        content then would be indistinguishable from not checking at all —
+        having already posted a notice in the room in place of the real
+        content."""
         check = await check_message(
-            self.trust_client, role="assistant", content=content
+            self.trust_client,
+            role="assistant",
+            content=content,
+            room_id=room.id,
         )
-        if check.blocked:
-            await self._post_trust_blocked_notice(room, thread_root_id)
+        if check.blocked or (
+            check.outcome == "redacted" and check.redacted_content is None
+        ):
+            await self._post_trust_blocked_notice(room, thread_root_id, client)
             raise GuardrailBlockedError(check)
         if check.redacted_content is not None:
             content = check.redacted_content
@@ -1248,7 +1239,7 @@ class AgentCore:
         return content
 
     async def _post_trust_blocked_notice(
-        self, room: RoomDescriptor, thread_root_id: str | None
+        self, room: RoomDescriptor, thread_root_id: str | None, client: AgentActor
     ) -> None:
         """Tell the room a response was blocked, in place of sending it."""
         admin = next(
@@ -1264,7 +1255,8 @@ class AgentCore:
         try:
             await admin.send_admin(
                 room.transport_room_id,
-                "🚫 A response was blocked by Switch Trust and was not sent.",
+                f"🚫 A response from @{client.agent.name} was blocked by Switch "
+                "Trust and was not sent.",
                 message_type=AdminMessageType.TRUST_BLOCKED,
                 thread_root_id=thread_root_id,
             )
@@ -1336,7 +1328,7 @@ class AgentCore:
             thread_root_id = await self._resolve_thread_root(
                 client, room.transport_room_id, thread_id
             )
-        content = await self._enforce_trust(room, content, thread_root_id)
+        content = await self._enforce_trust(room, content, thread_root_id, client)
         event_id = await client.send_message(
             room.transport_room_id,
             content,
@@ -1805,7 +1797,7 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        detail = await self._enforce_trust(room, detail, None)
+        detail = await self._enforce_trust(room, detail, None, client)
         await client.send_message(
             room.transport_room_id, f"*{detail}*", format="markdown", metered=True
         )
@@ -2534,7 +2526,7 @@ class AgentCore:
 
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
-            outcome = await self._enforce_trust(room, outcome, None)
+            outcome = await self._enforce_trust(room, outcome, None, client)
             await client.send_event(
                 room.transport_room_id,
                 "com.switch.task.finalise",
@@ -3700,9 +3692,7 @@ class AgentCore:
         """Write a validated profile update to an agent and return its fresh
         detail.
 
-        Owner-only, as `require_same_owner`. A cloud agent's launch spec, which
-        registers it again, is kept on the same values, as the gateway routes
-        for each field do.
+        Owner-only, as `require_same_owner`.
         """
         await self.require_same_owner(agent_id, target_agent_id)
         async with self.session_factory() as session:
@@ -3713,11 +3703,6 @@ class AgentCore:
                 await self.agent_store.update(
                     session, target_agent_id, **update.columns
                 )
-                launch_id = hosted_launch_of(target.metadata_)
-                if launch_id is not None:
-                    await HostedLaunchStore().merge_spec(
-                        session, launch_id, update.columns
-                    )
                 await session.commit()
 
             refreshed = await self.agent_store.get(session, target_agent_id)

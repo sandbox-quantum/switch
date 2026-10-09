@@ -1,3 +1,4 @@
+import type { SealedLogin } from '@switch-console/agent-providers';
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 import { z } from 'zod';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
@@ -7,35 +8,30 @@ import {
   noteManagedServerUnanswered,
 } from '@main/core/managed-switch-server/managed-server-status';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
-import { cloudLaunchSchema, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
+import { type CloudMachine, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
 import type {
   AdvancedConfigField,
   ManagedMachine,
 } from '@shared/core/managed-agents/managed-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
-import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
-import type {
-  ClaudeCredentialKind,
-  ClaudeConnection,
-} from '@shared/core/switch-servers/claude-credential';
-import type {
-  CloudLaunchConfiguration,
-  CloudLaunchInput,
-} from '@shared/core/switch-servers/cloud-launch';
 import { connectionCatalogSchema } from '@shared/core/switch-servers/connection-catalog';
 import {
   gitHubConnectionSchema,
   gitHubFlowSchema,
 } from '@shared/core/switch-servers/github-connection';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
-import { cloudProviderConnectionSchema } from '@shared/core/switch-servers/provider-credential';
 import type {
   AddressingPolicy,
+  AddTeamsTeamResult,
   BridgeConfigField,
   BridgeDirectoryUser,
+  ChatClaim,
+  ConnectedChat,
   DeleteBridgeResult,
   LinkedIdentity,
+  MessagingAppInstall,
+  MessagingApps,
   RemoteAgentRoom,
   RemoteAgentSummary,
   RemoteBridge,
@@ -45,10 +41,13 @@ import type {
   RemoteRoomGroup,
   RemoteRoomRole,
   RemoteRoomSummary,
+  RemoveTeamsTeamResult,
   SwitchAuthConfig,
   SwitchServer,
   SwitchServerDeclaration,
   SwitchUser,
+  TeamsTeam,
+  TeamsTeamsResult,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
   Invitation,
@@ -155,7 +154,7 @@ export class GatewayError extends Error {
      * the raw status line, which reads as noise in a form. */
     readonly detail?: string,
     /** The refusal's machine-readable name, from a body such as
-     * `{"detail": …, "code": "worker_waking"}`. Present only when the body
+     * `{"detail": …, "code": "machine_stopped"}`. Present only when the body
      * carried one. */
     readonly code?: string,
     /** The response body as it came, for a caller that reads an envelope other
@@ -1153,6 +1152,12 @@ type BridgeJson = {
   channel_creation_enabled?: boolean;
   // Absent on a server predating Telegram, where every bridge had a directory.
   directory_search_supported?: boolean;
+  // Both absent on a server predating this pair of fields — read as "nothing
+  // to warn about" and "not the distributed Teams app", which is how every
+  // bridge behaved before either existed.
+  attention?: string | null;
+  team_placement_supported?: boolean;
+  channel_ids_refused?: string | null;
 };
 
 function mapBridge(b: BridgeJson): RemoteBridge {
@@ -1168,6 +1173,9 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     channelCreationSupported,
     canCreateChannels: channelCreationSupported && channelCreationEnabled,
     directorySearchSupported: b.directory_search_supported ?? true,
+    attention: b.attention ?? null,
+    teamPlacementSupported: b.team_placement_supported ?? false,
+    channelIdsRefused: b.channel_ids_refused ?? null,
   };
 }
 
@@ -1184,24 +1192,94 @@ export async function fetchBridges(server: SwitchServer): Promise<RemoteBridge[]
 }
 
 /**
- * The messaging platforms this deployment has its own app for, which a
- * workspace can install with the platform's OAuth consent screen instead of
- * registering an app and pasting its tokens. Empty on a deployment that
- * registered none.
+ * What this deployment's own messaging apps offer the signed-in user: the
+ * platforms a workspace admin can install with the platform's OAuth consent
+ * screen instead of registering an app and pasting its tokens, and the ones
+ * whose chats are connected one at a time with a link or code. Both empty on
+ * a deployment that registered no app.
  *
- * A 404 is a server from before the route existed; it has no app to install
- * either, so it answers empty rather than failing the connect dialog.
+ * A 404 is a server from before the route existed, and a missing `claimable`
+ * one from before claim-based apps; either has nothing of that kind to offer,
+ * so it answers empty rather than failing the connect dialog.
  */
-export async function fetchInstallablePlatforms(server: SwitchServer): Promise<string[]> {
+export async function fetchMessagingApps(server: SwitchServer): Promise<MessagingApps> {
   let res: Response;
   try {
     res = await gatewayFetch(server, '/messaging-apps', { authenticated: true });
   } catch (cause) {
-    if (cause instanceof GatewayError && cause.status === 404) return [];
+    if (cause instanceof GatewayError && cause.status === 404) {
+      return { installable: [], claimable: [] };
+    }
     throw cause;
   }
-  const json = (await res.json()) as { platforms: string[] };
-  return json.platforms;
+  const json = (await res.json()) as {
+    platforms: string[];
+    claimable?: { platform: string; connected: boolean; can_add_chat: boolean }[];
+  };
+  return {
+    installable: json.platforms,
+    claimable: (json.claimable ?? []).map((c) => ({
+      platform: c.platform,
+      connected: c.connected,
+      canAddChat: c.can_add_chat,
+    })),
+  };
+}
+
+/**
+ * Start connecting a chat to the deployment's claim-based app for `platform`,
+ * in the workspace the session is bound to. Nothing comes back when the chat
+ * connects: the claim lands in the chat, and the server creates its room.
+ */
+export async function beginChatClaim(server: SwitchServer, platform: string): Promise<ChatClaim> {
+  const res = await gatewayFetch(server, `/messaging-apps/${encodeURIComponent(platform)}/claim`, {
+    authenticated: true,
+    method: 'POST',
+  });
+  const json = (await res.json()) as { url: string; code: string; bot_handle: string };
+  return { url: json.url, code: json.code, botHandle: json.bot_handle };
+}
+
+/**
+ * The chats connected to a claim-based connection, from the server's list of
+ * this workspace's installs. Ended ones are left out: they are history, and
+ * nothing here can be done to them.
+ */
+export async function fetchConnectedChats(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<ConnectedChat[]> {
+  const res = await gatewayFetch(server, '/messaging-apps/installs', { authenticated: true });
+  const json = (await res.json()) as {
+    installs: {
+      id: string;
+      bridge_id: string | null;
+      external_workspace_id: string;
+      name: string | null;
+      status: string;
+      installed_at: string;
+    }[];
+  };
+  return json.installs
+    .filter((i) => i.bridge_id === bridgeId && i.status === 'active')
+    .map((i) => ({
+      id: i.id,
+      name: i.name,
+      externalId: i.external_workspace_id,
+      connectedAt: i.installed_at,
+    }));
+}
+
+/**
+ * Disconnect one chat: the bot leaves it and its room stays, bridged to
+ * nothing. Raises with the server's reason when it refuses, including when
+ * the platform would not let the bot leave, which changes nothing.
+ */
+export async function disconnectChat(server: SwitchServer, installId: string): Promise<void> {
+  await gatewayFetch(server, `/messaging-apps/installs/${encodeURIComponent(installId)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
 }
 
 /**
@@ -1357,16 +1435,26 @@ export async function createBridge(
  * create channels at all returns 400 with a message naming the platform;
  * callers map that like any other rejected edit rather than a bridge-specific
  * case.
+ *
+ * `connectionConfig`, when given, merges into the bridge's stored config —
+ * today only the distributed Teams app's `{ team_id }` default-team choice.
+ * Left unset, the field is omitted from the request and the gateway leaves the
+ * stored config untouched, same as any other field here.
  */
 export async function updateBridge(
   server: SwitchServer,
   bridgeId: string,
-  params: { channelCreationEnabled?: boolean }
+  params: { channelCreationEnabled?: boolean; connectionConfig?: Record<string, string> }
 ): Promise<RemoteBridge> {
   const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}`, {
     authenticated: true,
     method: 'PATCH',
-    body: { channel_creation_enabled: params.channelCreationEnabled },
+    body: {
+      channel_creation_enabled: params.channelCreationEnabled,
+      ...(params.connectionConfig !== undefined
+        ? { connection_config: params.connectionConfig }
+        : {}),
+    },
   });
   return mapBridge((await res.json()) as BridgeJson);
 }
@@ -1405,6 +1493,228 @@ export async function deleteBridge(
     }
     throw cause;
   }
+}
+
+// ── Microsoft Teams team placement ──────────────────────────────────────────
+
+/** The gateway `TeamsTeamSummary` wire shape. */
+type TeamsTeamJson = {
+  team_id: string;
+  name: string;
+  has_switch: boolean | null;
+  is_default: boolean;
+};
+
+function mapTeamsTeam(t: TeamsTeamJson): TeamsTeam {
+  return { teamId: t.team_id, name: t.name, hasSwitch: t.has_switch, isDefault: t.is_default };
+}
+
+/**
+ * Read a distributed Teams bridge's team placement
+ * (`GET /collaborations/{id}/teams`, admin-only).
+ *
+ * Every failure this call can report is recoverable and bridge-specific, so
+ * each becomes a typed result instead of a raw throw: 404 means this bridge is
+ * not (or is no longer) a running distributed Teams connection, 503 means it
+ * exists but is not running right now, and 502 is Microsoft Graph itself
+ * refusing the request — its `detail` is already written for a human.
+ */
+export async function fetchBridgeTeams(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<TeamsTeamsResult> {
+  try {
+    const res = await gatewayFetch(
+      server,
+      `/collaborations/${encodeURIComponent(bridgeId)}/teams`,
+      { authenticated: true }
+    );
+    const json = (await res.json()) as {
+      teams: TeamsTeamJson[];
+      default_team_id: string | null;
+      in_catalog: boolean;
+      catalog_problem: string | null;
+    };
+    return {
+      kind: 'listed',
+      teams: json.teams.map(mapTeamsTeam),
+      defaultTeamId: json.default_team_id,
+      inCatalog: json.in_catalog,
+      catalogProblem: json.catalog_problem,
+    };
+  } catch (cause) {
+    if (cause instanceof GatewayError) {
+      if (cause.kind === 'unauthorized') return { kind: 'unauthenticated' };
+      if (cause.kind === 'http' && cause.status === 403) return { kind: 'forbidden' };
+      if (cause.kind === 'http' && cause.status === 404) return { kind: 'not-distributed-teams' };
+      if (cause.kind === 'http' && cause.status === 503) {
+        return { kind: 'not-running', message: cause.detail ?? cause.message };
+      }
+      if (cause.kind === 'http' && cause.status === 502) {
+        return { kind: 'microsoft-refused', message: cause.detail ?? cause.message };
+      }
+      if (cause.kind === 'network') return { kind: 'error', message: cause.message };
+    }
+    throw cause;
+  }
+}
+
+/** The connection restarting (503), Microsoft refusing (502), or the
+ * connection gone (404): each written for a person in the gateway's `detail`. */
+function isTeamsConnectionFailure(status: number | undefined): boolean {
+  return status === 404 || status === 502 || status === 503;
+}
+
+/**
+ * Add Switch's distributed app to a team (`POST /collaborations/{id}/teams/{teamId}`,
+ * admin-only). A 409 means the app is not in the organisation's catalogue yet —
+ * the one failure here with a next step, so it carries the gateway's own
+ * explanation rather than being folded into a generic error. The connection
+ * restarting (503), Microsoft refusing (502) and a connection that is gone
+ * (404) are errors in the gateway's own words.
+ */
+export async function addBridgeTeam(
+  server: SwitchServer,
+  bridgeId: string,
+  teamId: string
+): Promise<AddTeamsTeamResult> {
+  try {
+    await gatewayFetch(
+      server,
+      `/collaborations/${encodeURIComponent(bridgeId)}/teams/${encodeURIComponent(teamId)}`,
+      { authenticated: true, method: 'POST' }
+    );
+    return { kind: 'added' };
+  } catch (cause) {
+    if (cause instanceof GatewayError) {
+      if (cause.kind === 'unauthorized') return { kind: 'unauthenticated' };
+      if (cause.kind === 'http' && cause.status === 403) return { kind: 'forbidden' };
+      if (cause.kind === 'http' && cause.status === 409) {
+        return { kind: 'not-in-catalog', message: cause.detail ?? cause.message };
+      }
+      if (cause.kind === 'http' && isTeamsConnectionFailure(cause.status)) {
+        return { kind: 'error', message: cause.detail ?? cause.message };
+      }
+      if (cause.kind === 'network') return { kind: 'error', message: cause.message };
+    }
+    throw cause;
+  }
+}
+
+/** Remove Switch's distributed app from a team
+ * (`DELETE /collaborations/{id}/teams/{teamId}`, admin-only). The connection
+ * restarting (503), Microsoft refusing (502) and a connection that is gone
+ * (404) are errors in the gateway's own words. */
+export async function removeBridgeTeam(
+  server: SwitchServer,
+  bridgeId: string,
+  teamId: string
+): Promise<RemoveTeamsTeamResult> {
+  try {
+    await gatewayFetch(
+      server,
+      `/collaborations/${encodeURIComponent(bridgeId)}/teams/${encodeURIComponent(teamId)}`,
+      { authenticated: true, method: 'DELETE' }
+    );
+    return { kind: 'removed' };
+  } catch (cause) {
+    if (cause instanceof GatewayError) {
+      if (cause.kind === 'unauthorized') return { kind: 'unauthenticated' };
+      if (cause.kind === 'http' && cause.status === 403) return { kind: 'forbidden' };
+      if (cause.kind === 'http' && isTeamsConnectionFailure(cause.status)) {
+        return { kind: 'error', message: cause.detail ?? cause.message };
+      }
+      if (cause.kind === 'network') return { kind: 'error', message: cause.message };
+    }
+    throw cause;
+  }
+}
+
+/**
+ * The distributed Teams app's install package, as raw bytes
+ * (`GET /collaborations/{id}/teams-package`, admin-only) — for a Teams admin to
+ * upload by hand, in the Teams admin center, when the app is not yet in the
+ * organisation's catalogue. Unmapped: a bridge this does not apply to still
+ * raises, since there is no form here for a recoverable failure to improve.
+ */
+export async function fetchTeamsPackage(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<ArrayBuffer> {
+  const res = await gatewayFetch(
+    server,
+    `/collaborations/${encodeURIComponent(bridgeId)}/teams-package`,
+    { authenticated: true }
+  );
+  return res.arrayBuffer();
+}
+
+// ── Messaging-app installs ──────────────────────────────────────────────────
+
+/** The gateway `MessagingAppInstallSummary` wire shape. */
+type MessagingAppInstallJson = {
+  id: string;
+  platform: string;
+  external_workspace_id: string;
+  status: string;
+  scopes: string;
+  bridge_id: string | null;
+  installed_at: string;
+  ended_at: string | null;
+};
+
+function mapMessagingAppInstall(i: MessagingAppInstallJson): MessagingAppInstall {
+  return {
+    id: i.id,
+    platform: i.platform,
+    externalWorkspaceId: i.external_workspace_id,
+    status: i.status,
+    scopes: i.scopes,
+    bridgeId: i.bridge_id,
+    installedAt: i.installed_at,
+    endedAt: i.ended_at,
+  };
+}
+
+/**
+ * Every messaging-app install recorded for this workspace
+ * (`GET /messaging-apps/installs`), active and ended alike.
+ *
+ * A 404 is a server from before installs were tracked this way; it answers
+ * empty rather than failing, since the one caller today
+ * ({@link disconnectBridgeOnServer} in `disconnect-bridge.ts`) falls back to
+ * deleting the bridge directly when it finds no matching install.
+ */
+export async function fetchMessagingAppInstalls(
+  server: SwitchServer
+): Promise<MessagingAppInstall[]> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/messaging-apps/installs', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return [];
+    throw cause;
+  }
+  const json = (await res.json()) as { installs: MessagingAppInstallJson[] };
+  return json.installs.map(mapMessagingAppInstall);
+}
+
+/**
+ * End a messaging-app install (`DELETE /messaging-apps/installs/{id}`).
+ *
+ * This is what actually removes Switch's standing registration from the
+ * platform organisation it was approved into — plain `DELETE
+ * /collaborations/{id}` on an install-backed bridge is refused (409) because
+ * the server has no way to tell, from a bridge id alone, which install to end.
+ */
+export async function deleteMessagingAppInstall(
+  server: SwitchServer,
+  installId: string
+): Promise<void> {
+  await gatewayFetch(server, `/messaging-apps/installs/${encodeURIComponent(installId)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
 }
 
 /** The gateway `IdentityClaimant` wire shape. */
@@ -2253,101 +2563,19 @@ export async function createRoom(
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
 }
 
-async function readClaudeConnection(response: Response): Promise<ClaudeConnection> {
-  const value: unknown = await response.json();
-  if (typeof value === 'object' && value !== null && 'status' in value) {
-    if (value.status === 'not_connected') return { status: 'not_connected' };
-    if (
-      value.status === 'connected' &&
-      'kind' in value &&
-      (value.kind === 'api-key' || value.kind === 'setup-token') &&
-      'verified_at' in value &&
-      typeof value.verified_at === 'string' &&
-      Number.isFinite(Date.parse(value.verified_at))
-    ) {
-      return { status: 'connected', kind: value.kind, verified_at: value.verified_at };
-    }
+/**
+ * The caller's cloud machines, or null when the server offers none: a server
+ * without cloud machines answers the route with 404.
+ */
+export async function listCloudMachines(server: SwitchServer): Promise<CloudMachine[] | null> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, '/hosted-machines', { authenticated: true });
+  } catch (error) {
+    if (error instanceof GatewayError && error.kind === 'http' && error.status === 404) return null;
+    throw error;
   }
-  throw new GatewayError('http', 'The server returned an invalid Claude connection status.');
-}
-
-export async function getClaudeConnection(server: SwitchServer): Promise<ClaudeConnection> {
-  const response = await gatewayFetch(server, '/provider-connections/claude', {
-    authenticated: true,
-  });
-  return readClaudeConnection(response);
-}
-
-export async function createCloudLaunch(
-  server: SwitchServer,
-  input: CloudLaunchInput & { definition: string }
-) {
-  if (new URL(server.gatewayUrl).protocol !== 'https:')
-    throw new Error('Cloud agents require an HTTPS Switch server.');
-  return cloudLaunchSchema.parse(
-    await (
-      await gatewayFetch(server, '/hosted-launches', {
-        authenticated: true,
-        method: 'POST',
-        body: input,
-      })
-    ).json()
-  );
-}
-
-const cloudConfigurationSchema = z.object({
-  description: z.string(),
-  instructions: z.string(),
-  definition_attributes: z.record(z.string(), z.unknown()),
-});
-
-export async function getCloudLaunchConfiguration(
-  server: SwitchServer,
-  requestId: string
-): Promise<CloudLaunchConfiguration> {
-  return cloudConfigurationSchema.parse(
-    await (
-      await gatewayFetch(
-        server,
-        `/hosted-launches/${encodeURIComponent(requestId)}/configuration`,
-        { authenticated: true }
-      )
-    ).json()
-  ) as CloudLaunchConfiguration;
-}
-
-/** Replace a launch's instructions and definition; Core applies them at the agent's next start. */
-export async function updateCloudLaunchConfiguration(
-  server: SwitchServer,
-  requestId: string,
-  body: Omit<CloudLaunchConfiguration, 'description'> & { definition: string }
-): Promise<CloudLaunchConfiguration> {
-  return cloudConfigurationSchema.parse(
-    await (
-      await gatewayFetch(
-        server,
-        `/hosted-launches/${encodeURIComponent(requestId)}/configuration`,
-        { authenticated: true, method: 'PUT', body }
-      )
-    ).json()
-  ) as CloudLaunchConfiguration;
-}
-
-export async function cloudLifecycle(
-  server: SwitchServer,
-  requestId: string,
-  action: 'stop' | 'start' | 'restart' | 'remove' | 'retry',
-  revision: number
-) {
-  return cloudLaunchSchema.extend({ access_warning: z.string().nullable().optional() }).parse(
-    await (
-      await gatewayFetch(server, `/hosted-launches/${encodeURIComponent(requestId)}/lifecycle`, {
-        authenticated: true,
-        method: 'POST',
-        body: { action, revision },
-      })
-    ).json()
-  );
+  return z.object({ machines: z.array(cloudMachineSchema) }).parse(await response.json()).machines;
 }
 
 export async function cloudMachineLifecycle(
@@ -2384,29 +2612,6 @@ export async function ensureCloudMachine(server: SwitchServer) {
     throw error;
   }
   return cloudMachineSchema.parse(await response.json());
-}
-
-export async function connectClaude(
-  server: SwitchServer,
-  kind: ClaudeCredentialKind,
-  credential: string
-): Promise<ClaudeConnection> {
-  if (new URL(server.gatewayUrl).protocol !== 'https:') {
-    throw new GatewayError('http', 'Claude credentials require an HTTPS Switch server.');
-  }
-  const response = await gatewayFetch(server, '/provider-connections/claude', {
-    authenticated: true,
-    method: 'PUT',
-    body: { kind, credential },
-  });
-  return readClaudeConnection(response);
-}
-
-export async function disconnectClaude(server: SwitchServer): Promise<void> {
-  await gatewayFetch(server, '/provider-connections/claude', {
-    authenticated: true,
-    method: 'DELETE',
-  });
 }
 
 export async function getConnectionCatalog(server: SwitchServer) {
@@ -2506,43 +2711,6 @@ export async function disconnectGitHub(server: SwitchServer) {
   return z.object({ warning: z.string().nullable() }).parse(await response.json());
 }
 
-export async function getCloudProviderConnection(server: SwitchServer, provider: AgentProviderId) {
-  return cloudProviderConnectionSchema.parse(
-    await (
-      await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
-        authenticated: true,
-      })
-    ).json()
-  );
-}
-export async function connectCloudProvider(
-  server: SwitchServer,
-  provider: Exclude<AgentProviderId, 'claude'>,
-  kind: 'api-key' | 'auth-json',
-  credential: string
-) {
-  if (new URL(server.gatewayUrl).protocol !== 'https:')
-    throw new Error('Provider credentials require HTTPS.');
-  return cloudProviderConnectionSchema.parse(
-    await (
-      await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
-        authenticated: true,
-        method: 'PUT',
-        body: { kind, credential },
-      })
-    ).json()
-  );
-}
-export async function disconnectCloudProvider(
-  server: SwitchServer,
-  provider: Exclude<AgentProviderId, 'claude'>
-) {
-  await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
-    authenticated: true,
-    method: 'DELETE',
-  });
-}
-
 // ── Agent management: controllers and the agents placed on them ─────────────
 
 /**
@@ -2623,6 +2791,11 @@ export type ManagementController = {
    * last reported; null before it has, or when it or the server predates it.
    */
   workspacesDir: string | null;
+  /**
+   * The key provider logins given to this machine are sealed to; null when
+   * its controller has none (it keeps no key, or predates sealed logins).
+   */
+  sealingKey: { key: string; keyId: string } | null;
 };
 
 /** A provider as a controller reports it: installed, and whether its login works. */
@@ -2681,6 +2854,7 @@ type ManagementControllerJson = {
   revoked_at: string | null;
   status?: unknown;
   workspaces_dir?: string | null;
+  public_key?: { alg: string; key: string; key_id: string } | null;
 };
 
 type ManagedAgentJson = {
@@ -2760,7 +2934,78 @@ export async function fetchManagementControllers(
     revokedAt: json.revoked_at,
     providers: providerReports(json.status),
     workspacesDir: json.workspaces_dir ?? null,
+    sealingKey:
+      json.public_key?.alg === 'X25519'
+        ? { key: json.public_key.key, keyId: json.public_key.key_id }
+        : null,
   }));
+}
+
+/**
+ * Gives a machine a provider login sealed to its key
+ * (`PUT /controllers/{id}/provider-logins/{provider}`): the server keeps only
+ * the ciphertext. Answers the `provider.login` operation whose result says
+ * whether the provider signs in with it on the machine.
+ */
+export async function giveMachineLogin(
+  server: SwitchServer,
+  controllerId: string,
+  provider: string,
+  sealed: SealedLogin
+): Promise<{ operationId: string; revision: number }> {
+  // The login is sealed, but the key it was sealed to came from this server:
+  // over plain HTTP anyone in between could have handed over their own.
+  const gateway = new URL(server.gatewayUrl);
+  if (
+    gateway.protocol !== 'https:' &&
+    !['localhost', '127.0.0.1', '[::1]'].includes(gateway.hostname)
+  )
+    throw new Error('Giving a machine a provider login requires HTTPS.');
+  const res = await managementFetch(
+    server,
+    `/controllers/${encodeURIComponent(controllerId)}/provider-logins/${encodeURIComponent(provider)}`,
+    { method: 'PUT', authenticated: true, body: { sealed } }
+  );
+  const body = (await res.json()) as { login: { revision: number }; operation: { id: string } };
+  return { operationId: body.operation.id, revision: body.login.revision };
+}
+
+/** Takes back the provider login given to a machine. */
+export async function withdrawMachineLogin(
+  server: SwitchServer,
+  controllerId: string,
+  provider: string
+): Promise<void> {
+  await managementFetch(
+    server,
+    `/controllers/${encodeURIComponent(controllerId)}/provider-logins/${encodeURIComponent(provider)}`,
+    { method: 'DELETE', authenticated: true }
+  );
+}
+
+/** One of a machine's operations as its owner sees it, by id; null when the server lists none by it. */
+export async function fetchMachineOperation(
+  server: SwitchServer,
+  controllerId: string,
+  operationId: string
+): Promise<{ state: string; error: { code: string; message: string } | null } | null> {
+  const res = await managementFetch(
+    server,
+    `/operations?controller_id=${encodeURIComponent(controllerId)}`,
+    { authenticated: true }
+  );
+  const listed = (await res.json()) as unknown;
+  if (!Array.isArray(listed))
+    throw new Error("The server's list of the machine's operations is not a list.");
+  const found = (
+    listed as {
+      id: string;
+      state: string;
+      result?: { outcome?: string; error?: { code: string; message: string } } | null;
+    }[]
+  ).find((operation) => operation.id === operationId);
+  if (!found) return null;
+  return { state: found.state, error: found.result?.error ?? null };
 }
 
 const PROVIDER_AUTH_STATES: readonly ControllerProviderReport['auth'][] = [
@@ -3002,7 +3247,7 @@ export async function createManagedAgent(
     icon_url: string | null;
     controller_id: string;
     desired_state: 'running' | 'stopped';
-    definition: ManagedAgentDefinitionBody;
+    definition: ManagedAgentDefinitionBody & { isolation: 'shared' | 'isolated' };
   }
 ): Promise<string> {
   const res = await managementFetch(server, '/agents', {

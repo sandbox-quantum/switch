@@ -3,10 +3,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import AgentController, AgentControllerEnrollmentCode
+from switch_core.db.models import (
+    AgentController,
+    AgentControllerEnrollmentCode,
+    SealedProviderLogin,
+)
 
 
 class AgentControllerStore:
@@ -99,6 +104,105 @@ class AgentControllerStore:
         await session.flush()
         await session.refresh(controller)
         return controller
+
+    async def set_public_key(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        public_key: dict[str, Any],
+    ) -> AgentController:
+        """Record the key provider logins are sealed to, and return the row."""
+        controller = await self.get(session, tenant_id, controller_id)
+        if controller is None:
+            raise LookupError(f"No such controller: {controller_id}")
+        controller.public_key = public_key
+        await session.flush()
+        await session.refresh(controller)
+        return controller
+
+    async def sealed_login(
+        self, session: AsyncSession, tenant_id: str, controller_id: str, provider: str
+    ) -> SealedProviderLogin | None:
+        result = await session.execute(
+            select(SealedProviderLogin).where(
+                SealedProviderLogin.tenant_id == tenant_id,
+                SealedProviderLogin.controller_id == controller_id,
+                SealedProviderLogin.provider == provider,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def sealed_logins(
+        self, session: AsyncSession, tenant_id: str, controller_id: str
+    ) -> list[SealedProviderLogin]:
+        rows = await session.scalars(
+            select(SealedProviderLogin)
+            .where(
+                SealedProviderLogin.tenant_id == tenant_id,
+                SealedProviderLogin.controller_id == controller_id,
+            )
+            .order_by(SealedProviderLogin.provider)
+        )
+        return list(rows)
+
+    async def put_sealed_login(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        provider: str,
+        sealed: dict[str, Any],
+        sealed_by: str,
+    ) -> SealedProviderLogin:
+        """Store the controller's login for `provider`, replacing any before it
+        under the next revision, and return the row."""
+        statement = (
+            insert(SealedProviderLogin)
+            .values(
+                tenant_id=tenant_id,
+                controller_id=controller_id,
+                provider=provider,
+                revision=1,
+                sealed=sealed,
+                sealed_by=sealed_by,
+            )
+            .on_conflict_do_update(
+                index_elements=["controller_id", "provider"],
+                set_={
+                    "revision": SealedProviderLogin.revision + 1,
+                    "sealed": sealed,
+                    "sealed_by": sealed_by,
+                    "updated_at": func.now(),
+                },
+            )
+        )
+        await session.execute(statement)
+        row = await self.sealed_login(session, tenant_id, controller_id, provider)
+        if row is None:
+            raise LookupError(
+                f"The {provider} login for {controller_id} was not stored"
+            )
+        await session.refresh(row)
+        return row
+
+    async def delete_sealed_logins(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        provider: str | None,
+    ) -> int:
+        """Delete the controller's login for `provider`, or every one of its
+        logins when `provider` is None. Returns how many went."""
+        statement = delete(SealedProviderLogin).where(
+            SealedProviderLogin.tenant_id == tenant_id,
+            SealedProviderLogin.controller_id == controller_id,
+        )
+        if provider is not None:
+            statement = statement.where(SealedProviderLogin.provider == provider)
+        result = await session.execute(statement)
+        return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     async def bump_assignment_revision(
         self, session: AsyncSession, tenant_id: str, controller_id: str
@@ -273,9 +377,13 @@ class AgentControllerStore:
         owner_id: str,
         api_key_id: str,
         expires_at: datetime,
+        machine_workspace_id: str | None,
     ) -> AgentControllerEnrollmentCode:
         code = AgentControllerEnrollmentCode(
-            owner_id=owner_id, api_key_id=api_key_id, expires_at=expires_at
+            owner_id=owner_id,
+            api_key_id=api_key_id,
+            expires_at=expires_at,
+            machine_workspace_id=machine_workspace_id,
         )
         session.add(code)
         await session.flush()

@@ -54,7 +54,6 @@ ingress:
   # gateway: the Bearer-auth agent bridge + MCP, and public OAuth/MCP discovery.
   agentApiPaths:
     - /agents
-    - /hosted
     # Session hosts report session starts, turn activity and approval requests
     # here, and poll for approval answers.
     - /agent-sessions
@@ -151,16 +150,35 @@ secrets:
   # it lives here and is never stored against an install or revoked on disconnect.
   discordAppClientSecret: ""
   discordAppBotToken: ""
+  # Distributed Teams app (when switchCore.teamsApp.enabled). One credential,
+  # matching switchCore.teamsApp.credential: a client secret, or a certificate
+  # and its private key; a federated credential needs neither. The
+  # notification keypair (PEM) is what Graph encrypts captured messages to; the
+  # previous private key is set only while rotating it.
+  teamsAppClientSecret: ""
+  teamsAppCertificate: ""
+  teamsAppCertificatePrivateKey: ""
+  teamsAppNotificationCertificate: ""
+  teamsAppNotificationPrivateKey: ""
+  teamsAppNotificationPreviousPrivateKey: ""
+
+  # Distributed Telegram app (required when switchCore.telegramApp.enabled). The
+  # bot token is deployment config shared by every tenant, like Discord's. The
+  # webhook secret (32-256 characters of A-Z a-z 0-9 _ -) is the whole of what
+  # proves an update came from Telegram.
+  telegramAppBotToken: ""
+  telegramAppWebhookSecret: ""
 
 # ── Switch Core (FastAPI) ─────────────────────────────────────────────────────
 switchCore:
   # Existing Secret with github.json (client_id, client_secret, slug, origin).
   githubConnectionsSecret: ""
   hostedControllerSecret: ""
+  # How many cloud machines may run at once. Cloud machines run the agents
+  # controller and their owner's managed agents, so they need agentManagement.
   hostedLaunchCapacity: 0
   hostedDiskRetentionDays: 7
   hostedIdleStopMinutes: 30
-  hostedProviderVerificationEnabled: false
   image: switch-core:latest
   imagePullPolicy: Always
   logLevel: INFO
@@ -332,6 +350,12 @@ switchCore:
     # open anyone can own a workspace, so this keeps the relay from being used
     # to mail arbitrary addresses. Operators are exempt.
     emailsPerDayPerWorkspace: 50
+  # Public origin every distributed messaging app (Slack, Discord, Teams,
+  # Telegram) is reached on — scheme + host, https, no path. Required when any
+  # of them is enabled, and add /messaging to ingress.agentApiPaths as well. Earlier
+  # releases took it per app (slackApp.messagingPublicUrl,
+  # discordApp.messagingPublicUrl); those are still read when this is empty.
+  messagingPublicUrl: ""
   # The distributed Slack app: the one a customer installs into their workspace
   # by clicking a button, as opposed to an app an operator registers themselves
   # and pastes a bot token for. Off unless you have registered such an app and
@@ -374,6 +398,48 @@ switchCore:
     # mention-only operation; leave both false unless the app is verified.
     messageContent: false
     members: false
+  # The distributed Teams app (TEAMS_DISTRIBUTED_APP.md): one multi-tenant Entra
+  # app backing a SingleTenant Azure Bot in your own directory, which a
+  # customer's Microsoft admin approves for their organisation from Switch. Off
+  # unless you have registered such an app for this environment — one app and
+  # bot per environment, never shared. The bot's messaging endpoint and Graph's
+  # notifications both arrive under /messaging at messagingPublicUrl.
+  teamsApp:
+    enabled: false
+    # The app registration's Application (client) ID, and the id of the
+    # directory it and the bot live in (never `common` or `organizations`).
+    clientId: ""
+    tenantId: ""
+    # How the app proves who it is to Microsoft: secret
+    # (secrets.teamsAppClientSecret), certificate
+    # (secrets.teamsAppCertificate + secrets.teamsAppCertificatePrivateKey), or
+    # federated — a projected service-account token the app registration
+    # trusts as a federated credential, so no secret exists at all.
+    credential: secret
+    # Shown to the admin approving the app, and required in its package.
+    privacyUrl: ""
+    termsUrl: ""
+    # The app's name in Teams, up to 30 characters; empty means "Agent
+    # Switch". Name each non-production environment's app (for example
+    # "Agent Switch (dev)"), so an organisation that approves more than one
+    # can tell them apart. Set it before the first approval: Teams takes a
+    # new name only with a newer app package.
+    name: ""
+
+  # The distributed Telegram app: one bot we register whose groups a customer
+  # claims with a link from Switch, never seeing a token — as opposed to a
+  # self-registered bot an operator pastes a token for. Off unless you have
+  # registered such a bot, with Group Privacy turned off in BotFather before it
+  # joined any chat.
+  #
+  # Telegram delivers every update as a webhook to
+  # <switchCore.messagingPublicUrl>/messaging/telegram/events, so enabling it commits the
+  # deployment to being reachable there on port 443, 80, 88 or 8443 — add
+  # /messaging to ingress.agentApiPaths as well. The token and webhook secret
+  # are supplied through secrets.telegramAppBotToken /
+  # secrets.telegramAppWebhookSecret.
+  telegramApp:
+    enabled: false
   # Bearer-token resolution runs before every authenticated request and agents
   # beat continuously, so a successful resolution is memoised in process for
   # this many seconds. Only successes are cached — an unknown or revoked token

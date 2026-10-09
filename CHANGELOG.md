@@ -45,6 +45,34 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Switch cloud machines that run the agents controller sleep when idle,
+  and wake on a message.** Such a machine is stopped once its status reports
+  say no session has run for `HOSTED_IDLE_STOP_MINUTES` (released, as before,
+  when no agent is placed on it). A message addressed to one of its agents
+  starts it again; the room is told once that the machine is starting, and
+  Switch keeps the message for the agent until it is back. Placing an agent on
+  a sleeping machine starts it too, and is judged by its last report. A
+  machine its owner stopped stays stopped, and says so.
+- **Switch cloud machines can run the agents controller.** With
+  `HOSTED_MACHINE_RUNTIME=controller` (Helm `switchCore.hostedMachineRuntime`)
+  and agent management on, a cloud machine claimed from then on enrolls the
+  standard `switch-agent-controller` with a one-time code Core hands the hosted
+  controller at prepare (the same code on every retry of a revision, valid 30
+  minutes), instead of running the hosted worker. The controller it enrolls as
+  becomes the machine's (`hosted_machines.controller_id`, kind `ec2`, "Switch
+  cloud"); its status reports make the machine ready; the managed agents placed
+  on it are the machine's agents, and keep it from being retained. Launches are
+  refused in that mode, and such machines are not stopped when idle yet.
+  Machines claimed before keep the worker runtime. Migration `e7a2c4b9d013`.
+- **Provider logins sealed to a machine.** A controller registers an X25519
+  public key (at enrollment, or once afterwards); its owner gives the machine a
+  provider login sealed to that key, which Switch stores and relays as
+  ciphertext it cannot open (`PUT/GET/DELETE
+  /gateway/management/controllers/{id}/provider-logins/{provider}`, and
+  `GET /v1/management/controllers/{id}/provider-credentials/{provider}` for the
+  controller). Giving one queues a `provider.login` operation the machine takes
+  it up with; revoking the machine deletes its logins. Migration
+  `d41c7a9e2b58` adds `sealed_provider_logins`.
 - **The Helm chart turns agent management on from its values.**
   `switchCore.agentManagement.enabled` and `secrets.controllerTokenSecret` (or
   `CONTROLLER_TOKEN_SECRET` in `secrets.existingSecret`) set
@@ -1380,6 +1408,20 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+#### Added
+- **Switch cloud on the agents controller.** On a server whose cloud machines
+  run the agents controller, choosing Switch cloud in the New agent form starts
+  your cloud machine and waits for it to come online (its first start takes a
+  few minutes), then creates the agent as a managed agent on it, like on any
+  machine. Once online, the machine is listed as "Switch cloud" among your
+  machines. A server whose machines run the hosted worker works as before.
+- **Give a machine a provider login.** In the New agent form, a machine with
+  a provider installed but not signed in offers to give it a login: a Claude
+  setup token or API key, a Codex or Cursor API key, or this computer's own
+  Codex, OpenCode or Antigravity sign-in. Console seals it to the machine's own
+  key before it leaves, so the server only relays it, and shows whether the
+  provider signs in with it on the machine.
 
 #### Fixed
 - **A machine whose controller Switch refuses for good says so instead of
@@ -3052,6 +3094,27 @@ The headless agents controller, `switch-agent-controller`
 tags; see RELEASING.md.
 
 ### [Unreleased]
+
+#### Added
+- **Provider logins given to the machine, on demand.** The controller makes an
+  X25519 keypair at enrollment (or on its next run, for one enrolled before)
+  and registers the public half. When its owner gives the machine a login
+  sealed to it, a `provider.login` operation has the controller open it, check
+  the provider signs in with it, and report whether it does. The machine's own
+  login still comes first; agents of a provider it has none for get the given
+  one, run in a process of their own, and restart when it changes or is
+  withdrawn. Status reports `auth_source: "sealed"` for it.
+
+- **Each agent as a Linux user of its own.** On Linux with systemd and polkit,
+  `sudo switch-agent-controller install-service --separate-users` sets up, once,
+  a pool of agent users, a unit template that runs an agent as one of them, a
+  polkit rule that lets the controller start only those units, and the
+  controller as a system service. Each agent then runs as its own user and sees
+  only its own directory. It cannot see the home directories, the controller's
+  data, the other agents or the cloud instance metadata, and the rest of the
+  system is read-only to it. Agents get provider keys from the controller's
+  `--env-file`, not its user's own logins. `--agent-users` sets how many agents
+  can run (16 by default).
 
 #### Fixed
 - **A refusal that cannot pass stops the controller instead of retrying it

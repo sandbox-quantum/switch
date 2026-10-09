@@ -2,26 +2,15 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
-from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
-from switch_core.bridges.agent.protocol.hosted_workers import NOTICE_MESSAGES
 from switch_core.clients.admin_messages import PLATFORM_MARKER
 from switch_core.clients.agent_consumer import (
-    _HOSTED_ERROR_MESSAGE,
-    _HOSTED_MACHINE_STOPPED_MESSAGE,
-    _HOSTED_REMOVED_MESSAGE,
-    _HOSTED_STOPPED_MESSAGE,
     _STARTING_SESSION_MESSAGE,
-    _WAKING_MESSAGE,
     AUTO_REPLY_FLAG,
     AgentConsumer,
-    HostedNote,
     _GateOutcome,
-    _hosted_unavailable,
-    _takes_mail,
 )
 from switch_core.transport import InboundMessage, RoomRef
 
@@ -95,10 +84,10 @@ def _fake_self(
         _gate_addressed=_gate_addressed,
         _is_available=_is_available,
         _reply_when_unavailable_here=_reply_when_unavailable_here,
-        _note_hosted_addressed=AsyncMock(return_value=None),
         _triggered_by_auto_reply=AgentConsumer._triggered_by_auto_reply,
         actor=SimpleNamespace(send_message=send_message),
         _event_buffer=SimpleNamespace(enqueue=lambda *a, **k: None),
+        _report_addressed=lambda *a, **k: None,
     )
     # Exercise the real sender-tagging and auto-reply helpers.
     ns._sender_handle = AgentConsumer._sender_handle.__get__(ns)
@@ -310,130 +299,3 @@ async def test_a_kickoff_that_wants_the_channel_gets_its_reply_at_top_level() ->
     assert len(send_message.calls) == 1
     assert send_message.calls[0]["thread_root_id"] is None
     assert send_message.calls[0]["body"].startswith("@dantas.abel ")
-
-
-RUNNING_MACHINE = {"desired_state": "running", "state": "ready", "stop_reason": None}
-
-
-def _hosted(
-    send_message: _Recorder, machine: dict[str, object], **launch: object
-) -> SimpleNamespace:
-    fake = _fake_self(
-        send_message, unavailable_reply="cd /data/workspace && claude ..."
-    )
-    hosted_launch = SimpleNamespace(
-        id="launch-1", agent_id="agent-1", revision=8, **launch
-    )
-    hosted_machine = SimpleNamespace(revision=3, **machine)
-    refusal = (
-        None
-        if _takes_mail(hosted_launch, hosted_machine)  # type: ignore[arg-type]
-        else _hosted_unavailable(hosted_launch, hosted_machine)  # type: ignore[arg-type]
-    )
-    fake._note_hosted_addressed = AsyncMock(
-        return_value=HostedNote(
-            launch=hosted_launch,  # type: ignore[arg-type]
-            machine=hosted_machine,  # type: ignore[arg-type]
-            refusal=refusal,
-            deliver=refusal is None,
-        )
-    )
-    fake._waking_notice_revisions = {}
-    fake._unreachable_notice_revisions = {}
-    fake._connections = AgentConnectionRegistry()
-    return fake
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("launch", "machine", "notice"),
-    [
-        (
-            {"desired_state": "stopped", "state": "stopped"},
-            RUNNING_MACHINE,
-            _HOSTED_STOPPED_MESSAGE,
-        ),
-        (
-            {"desired_state": "deleted", "state": "deleting"},
-            RUNNING_MACHINE,
-            _HOSTED_REMOVED_MESSAGE,
-        ),
-        (
-            {"desired_state": "running", "state": "error"},
-            RUNNING_MACHINE,
-            _HOSTED_ERROR_MESSAGE,
-        ),
-        (
-            {"desired_state": "running", "state": "ready"},
-            {"desired_state": "stopped", "state": "stopped", "stop_reason": "owner"},
-            _HOSTED_MACHINE_STOPPED_MESSAGE,
-        ),
-        (
-            {"desired_state": "running", "state": "stopped"},
-            {"desired_state": "running", "state": "stopped", "stop_reason": None},
-            _WAKING_MESSAGE,
-        ),
-        (
-            {"desired_state": "running", "state": "provisioning"},
-            RUNNING_MACHINE,
-            _WAKING_MESSAGE,
-        ),
-        (
-            {"desired_state": "running", "state": "ready"},
-            RUNNING_MACHINE,
-            NOTICE_MESSAGES["unreachable"],
-        ),
-    ],
-)
-async def test_an_unavailable_hosted_agent_says_what_its_worker_is_doing(
-    launch: dict[str, object], machine: dict[str, object], notice: str
-) -> None:
-    # Not the local terminal command: the agent runs on a cloud worker.
-    send_message = _Recorder()
-    await AgentConsumer.on_message(
-        _hosted(send_message, machine, **launch),
-        RoomRef(room_id="!matrix:server"),
-        _event(None),
-    )
-
-    assert [call["body"] for call in send_message.calls] == [f"@louisa {notice}"]
-
-
-@pytest.mark.asyncio
-async def test_an_unconnected_hosted_worker_is_announced_once_per_room_and_revision() -> (
-    None
-):
-    send_message = _Recorder()
-    fake = _hosted(
-        send_message, RUNNING_MACHINE, desired_state="running", state="ready"
-    )
-    room = RoomRef(room_id="!matrix:server")
-
-    await AgentConsumer.on_message(fake, room, _event(None))
-    await AgentConsumer.on_message(fake, room, _event(None))
-
-    assert [call["body"] for call in send_message.calls] == [
-        f"@louisa {NOTICE_MESSAGES['unreachable']}"
-    ]
-
-
-@pytest.mark.asyncio
-async def test_a_connected_hosted_worker_is_not_called_unreachable() -> None:
-    send_message = _Recorder()
-    fake = _hosted(
-        send_message, RUNNING_MACHINE, desired_state="running", state="ready"
-    )
-    fake._connections = SimpleNamespace(
-        attached_worker=lambda _agent_id: SimpleNamespace(
-            worker=SimpleNamespace(launch_id="launch-1", launch_revision=8)
-        ),
-        supersede=lambda *_: None,
-    )
-
-    await AgentConsumer.on_message(
-        fake, RoomRef(room_id="!matrix:server"), _event(None)
-    )
-
-    assert [call["body"] for call in send_message.calls] == [
-        "@louisa cd /data/workspace && claude ..."
-    ]

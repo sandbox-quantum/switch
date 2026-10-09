@@ -19,10 +19,16 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from switch_core.db.models import Agent, AgentController, AgentControllerOperation
+from switch_core.db.models import (
+    Agent,
+    AgentController,
+    AgentControllerOperation,
+    SealedProviderLogin,
+)
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.management.advanced_config import validate_advanced_config
 from switch_core.management.process_lease import ProcessLeases
+from switch_core.management.sealed_logins import PublicKey, key_id
 
 Provider = Literal["claude", "codex", "opencode", "antigravity", "cursor"]
 ControllerKind = Literal["console", "daemon", "ec2"]
@@ -75,11 +81,6 @@ class Platform(_StatusBody):
     os: str
     arch: str
     os_version: str
-
-
-class PublicKey(_StatusBody):
-    alg: str
-    key: str
 
 
 class DefinitionV1(_GatewayBody):
@@ -383,9 +384,20 @@ class UpdateControllerRequest(_ControllerDetailsChange):
 
 
 class ControllerInfoRequest(_ControllerDetailsChange):
-    """The controller's own change (`switch-agent-controller set-info`)."""
+    """The controller's own change (`switch-agent-controller set-info`), and
+    the key its provider logins are sealed to, which a controller enrolled
+    before it made one registers once."""
 
     model_config = ConfigDict(extra="ignore")
+
+    public_key: PublicKey | None = None
+
+    @field_validator("public_key")
+    @classmethod
+    def _key_is_not_cleared(cls, value: PublicKey | None) -> PublicKey:
+        if value is None:
+            raise ValueError("a controller's public key cannot be cleared")
+        return value
 
 
 class CreateManagedAgentRequest(_GatewayBody):
@@ -533,8 +545,27 @@ def controller_view(
         "status": controller.status,
         "assignment_revision": controller.assignment_revision,
         "workspaces_dir": workspaces_dir_of(controller),
+        "public_key": public_key_view(controller),
         "created_at": wire_time(controller.created_at),
         "revoked_at": wire_time_or_none(controller.revoked_at),
+    }
+
+
+def public_key_view(controller: AgentController) -> dict[str, str] | None:
+    """The key the owner's client seals this machine's provider logins to,
+    with the id a sealed login names it by; null for one that has none."""
+    if controller.public_key is None:
+        return None
+    return {**controller.public_key, "key_id": key_id(controller.public_key["key"])}
+
+
+def sealed_login_view(row: SealedProviderLogin) -> dict[str, Any]:
+    """What the owner sees of a sealed login: never the ciphertext."""
+    return {
+        "provider": row.provider,
+        "revision": row.revision,
+        "key_id": row.sealed["key_id"],
+        "updated_at": wire_time(row.updated_at),
     }
 
 

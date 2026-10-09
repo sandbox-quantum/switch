@@ -2,7 +2,6 @@ import asyncio
 from logging.config import fileConfig
 
 from alembic import context
-from alembic.runtime.migration import MigrationContext, RevisionStep
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -12,7 +11,6 @@ from switch_core.db import (
 )
 from switch_core.db.base import Base
 from switch_core.db.engine import migration_connect_args
-from switch_core.db.hosted_cutover_gate import DROP_REVISION, refuse_incomplete_cutover
 from switch_core.logging_config import logging_is_configured
 
 config = context.config
@@ -50,31 +48,8 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def _gate_session_table_drop(migration_context: MigrationContext) -> None:
-    """Refuse, before any revision runs, a plan that drops the old session tables
-    while the hosted cutover is incomplete. Only here can the gate still read
-    those tables: alembic orders `b9e4d2a71c05` freely against the hosted branch,
-    and no revision of ours is guaranteed to run before it."""
-    plan = migration_context._migrations_fn
-    assert plan is not None
-
-    def gated(heads, context):  # type: ignore[no-untyped-def]
-        steps = list(plan(heads, context))
-        if any(
-            isinstance(step, RevisionStep)
-            and step.is_upgrade
-            and step.revision.revision == DROP_REVISION
-            for step in steps
-        ):
-            refuse_incomplete_cutover(context.connection)
-        return steps
-
-    migration_context._migrations_fn = gated
-
-
 def do_run_migrations(connection):  # type: ignore[no-untyped-def]
     context.configure(connection=connection, target_metadata=target_metadata)
-    _gate_session_table_drop(context.get_context())
     with context.begin_transaction():
         context.run_migrations()
 

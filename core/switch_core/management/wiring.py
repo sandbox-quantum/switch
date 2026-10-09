@@ -43,6 +43,7 @@ from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
+from switch_core.gateway.cloud_controllers import set_cloud_enrollment
 from switch_core.management.agent_operations import ManagementAgentOperations
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.bindings import load_bindings
@@ -159,6 +160,8 @@ def build_management(
         presence=presence,
         clock=clock,
     )
+    # Switch cloud machines that run the controller enroll with codes it mints.
+    set_cloud_enrollment(service)
     authenticator = ManagementAuthenticator(
         session_factory=session_factory,
         controllers=controllers,

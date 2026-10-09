@@ -20,6 +20,9 @@ function bridge(overrides: Partial<RemoteBridge>): RemoteBridge {
     channelCreationSupported: true,
     canCreateChannels: true,
     directorySearchSupported: true,
+    attention: null,
+    teamPlacementSupported: false,
+    channelIdsRefused: null,
     ...overrides,
   };
 }

@@ -34,7 +34,7 @@ dependencies = [
     "cryptography>=50.0.0,<51",
     "fastmcp>=3.2.0,<4",
     "bcrypt>=4.0,<5",
-    "PyJWT>=2.9,<3",
+    "PyJWT>=2.14,<3",
     "authlib>=1.3,<2",
     "itsdangerous>=2.1,<3",
     "PyYAML>=6,<7",
@@ -52,7 +52,6 @@ Issues = "https://github.com/sandbox-quantum/switch/issues"
 [project.scripts]
 switch-core = "switch_core.main:main"
 switch-migrate = "switch_core.main:migrate"
-switch-hosted-cutover-upgrade = "switch_core.hosted_cutover_upgrade:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -92,6 +91,7 @@ markers = [
     "integration: boots real Postgres + Tuwunel via testcontainers (slow; excluded from the default run — use `just test-integration`)",
     "benchmark: boots real Postgres and serves the agent bridge on a socket to measure it (slow, and reports numbers rather than asserting them; excluded from the default run — use `just bench`)",
     "no_ambient_tenant: opt out of session_factory's default tenant-zero binding, for tests asserting what is or is not bound",
+    "collaboration_bridges: build the integration harness with the real collaboration bridge lifecycle rather than the no-bridges stand-in",
 ]
 
 [tool.mypy]

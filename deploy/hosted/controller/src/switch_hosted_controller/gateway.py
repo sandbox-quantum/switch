@@ -13,15 +13,15 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from botocore.exceptions import ClientError
-
-from .config import ConfigError, ControllerConfig, validate_slot_id
+from .config import ConfigError, ControllerConfig
 from .model import DesiredState, Machine, ObservedState
-from .store import MachineStore, SlotInUseError
+from .store import MachineStore
 
 logger = logging.getLogger(__name__)
 
-CAPABILITY_RE = re.compile(r"^[\x21-\x7e]{16,4096}$")
+ENROLLMENT_CODE_RE = re.compile(r"^swce_[A-Za-z0-9_-]{16,128}$")
+BUNDLE_VERSION = 5
+MAX_CONTROLLERS = 8
 CORE_DESIRED_STATES = {"running", "stopped", "retained", "deleted"}
 SETUP_FAILED_MESSAGE = (
     "Cloud machine setup failed. Retry; if it still fails, contact your administrator."
@@ -62,8 +62,6 @@ class GatewayError(RuntimeError):
 @dataclass(frozen=True)
 class CoreMachine:
     machine_id: str
-    slot_id: str
-    generation: int
     state: str
     desired_state: str
     revision: int
@@ -74,10 +72,7 @@ class CoreMachine:
     def parse(cls, raw: Any) -> CoreMachine:
         if not isinstance(raw, dict):
             raise ConfigError("Cloud gateway returned an invalid machine.")
-        generation = raw.get("generation")
         revision = raw.get("revision")
-        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
-            raise ConfigError("Cloud gateway returned an invalid machine generation.")
         if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
             raise ConfigError("Cloud gateway returned an invalid machine revision.")
         if raw.get("desired_state") not in CORE_DESIRED_STATES:
@@ -91,8 +86,6 @@ class CoreMachine:
             raise ConfigError("Cloud gateway returned an invalid data volume id.")
         return cls(
             machine_id=str(UUID(raw["machine_id"])),
-            slot_id=validate_slot_id(raw["slot_id"]),
-            generation=generation,
             state=raw["state"],
             desired_state=raw["desired_state"],
             revision=revision,
@@ -140,24 +133,13 @@ class Gateway:
         settings: GatewayConfig,
         config: ControllerConfig,
         store: MachineStore,
-        secrets_client: Any,
     ):
         if settings.instance_type not in config.allowed_instance_types:
             raise ConfigError("Cloud gateway instance type is not allowed.")
         self.settings = settings
         self.config = config
         self.store = store
-        self.secrets = secrets_client
         self.prepare_failures: dict[str, float] = {}
-        for machine in store.list():
-            if machine.observed_state is ObservedState.DELETED:
-                continue
-            slot = config.slot(machine.slot_id)
-            if (
-                slot.assignment_secret_arn != machine.assignment_secret_arn
-                or slot.instance_profile_arn != machine.instance_profile_arn
-            ):
-                raise ConfigError("A machine slot in use cannot change its secret or IAM identity.")
 
     def request(
         self, path: str, body: dict | None = None, *, prefix: str = "/gateway/hosted-controller"
@@ -252,36 +234,20 @@ class Gateway:
             )
 
     def _row(self, core: CoreMachine) -> Machine | None:
-        machine = self.store.find(core.slot_id, core.generation)
-        if machine is None or machine.machine_id != core.machine_id:
-            return None
-        return machine
+        return self.store.find(core.machine_id)
 
     def sync_machine(self, core: CoreMachine) -> None:
-        slot = self.config.slot(core.slot_id)
-        machine = self.store.find(core.slot_id, core.generation)
-        if machine is not None and machine.machine_id != core.machine_id:
-            raise ConfigError(
-                "Cloud gateway returned a different machine for a stored slot generation."
-            )
+        machine = self.store.find(core.machine_id)
         if machine is None:
             if core.state == "error" and core.desired_state in {"running", "stopped"}:
                 return
-            try:
-                machine = self.store.insert(
-                    machine_id=core.machine_id,
-                    slot_id=core.slot_id,
-                    generation=core.generation,
-                    core_revision=core.revision,
-                    instance_type=self.settings.instance_type,
-                    image_id=self.config.image_id,
-                    assignment_secret_arn=slot.assignment_secret_arn,
-                    instance_profile_arn=slot.instance_profile_arn,
-                    max_machines=self.config.max_machines,
-                )
-            except SlotInUseError as error:
-                logger.warning("Waiting for machine %s: %s", core.machine_id, error)
-                return
+            machine = self.store.insert(
+                machine_id=core.machine_id,
+                core_revision=core.revision,
+                instance_type=self.settings.instance_type,
+                image_id=self.config.image_id,
+                max_machines=self.config.max_machines,
+            )
         machine = self.store.record_core_revision(machine.machine_id, core.revision)
         if machine.core_revision > core.revision:
             logger.warning(
@@ -338,17 +304,8 @@ class Gateway:
         )
         if machine.data_volume_id is None or machine.bundle_token == token:
             return
-        secret_id = machine.assignment_secret_arn
-        if self.promote_bundle(secret_id, token):
-            self.store.record_bundle(machine.machine_id, token)
-            return
         prepared = self.request(f"/machines/{core.machine_id}/prepare", {})
-        if (
-            not isinstance(prepared, dict)
-            or str(UUID(prepared["machine_id"])) != core.machine_id
-            or prepared["slot_id"] != core.slot_id
-            or prepared["generation"] != core.generation
-        ):
+        if not isinstance(prepared, dict) or str(UUID(prepared["machine_id"])) != core.machine_id:
             raise ConfigError("Cloud gateway prepared a different machine.")
         if prepared["revision"] != machine.core_revision:
             logger.warning(
@@ -361,38 +318,9 @@ class Gateway:
         if prepared["bundle_revision"] != machine.core_revision:
             raise ConfigError("Cloud gateway prepared a bundle for a different revision.")
         bundle = self.bundle(prepared, machine)
-        try:
-            self.secrets.put_secret_value(
-                SecretId=secret_id,
-                ClientRequestToken=token,
-                SecretString=json.dumps(bundle, separators=(",", ":")),
-            )
-        except ClientError as error:
-            if error.response.get("Error", {}).get("Code") != "ResourceExistsException":
-                raise
-            # Secrets Manager answers a repeated ClientRequestToken with this error
-            # only when the stored version's content differs from the request.
-            raise ConfigError(
-                "The assignment secret already holds a different bundle for this revision."
-            ) from error
-        self.store.record_bundle(machine.machine_id, token)
-
-    def promote_bundle(self, secret_id: str, token: str) -> bool:
-        """Make the bundle version `token` AWSCURRENT if it exists; False if it does not."""
-        versions = self.secrets.describe_secret(SecretId=secret_id).get("VersionIdsToStages", {})
-        if token not in versions:
-            return False
-        if "AWSCURRENT" in versions[token]:
-            return True
-        holder = {
-            "RemoveFromVersionId": version
-            for version, stages in versions.items()
-            if "AWSCURRENT" in stages
-        }
-        self.secrets.update_secret_version_stage(
-            SecretId=secret_id, VersionStage="AWSCURRENT", MoveToVersionId=token, **holder
+        self.store.record_bundle(
+            machine.machine_id, token, json.dumps(bundle, separators=(",", ":"))
         )
-        return True
 
     def report_observations(self, listed: list[dict]) -> None:
         for item in listed:
@@ -457,25 +385,53 @@ class Gateway:
         }
 
     def bundle(self, prepared: dict, machine: Machine) -> dict:
-        capability = prepared.get("machine_capability")
-        if not isinstance(capability, str) or not CAPABILITY_RE.fullmatch(capability):
-            raise ConfigError("Cloud gateway returned no valid machine capability.")
+        """The bundle a machine boots its agents controllers from, its
+        instance's user data: one controller per workspace seated on the
+        machine, each the controller it enrolled as or the one-time code it
+        enrolls with until it has one. Never a long-lived credential: the
+        machine keeps the ones it enrolls with on its own data volume."""
         endpoint = prepared.get("api_endpoint")
         url = urlsplit(endpoint) if isinstance(endpoint, str) else None
         if url is None or url.scheme != "https" or not url.hostname:
             raise ConfigError("Cloud gateway returned no valid API endpoint.")
+        controllers = prepared.get("controllers")
+        if not isinstance(controllers, list) or not 1 <= len(controllers) <= MAX_CONTROLLERS:
+            raise ConfigError("Cloud gateway returned no valid controllers for the machine.")
+        entries = [_controller_entry(controller) for controller in controllers]
+        if len({entry["key"] for entry in entries}) != len(entries):
+            raise ConfigError("Cloud gateway returned duplicate controller keys.")
         return {
-            "version": 2,
+            "version": BUNDLE_VERSION,
+            "installationId": self.config.installation_id,
             "machineId": machine.machine_id,
-            "assignment": {
-                "installationId": self.config.installation_id,
-                "slotId": machine.slot_id,
-                "generation": machine.generation,
-                "dataVolumeId": machine.data_volume_id,
-            },
-            "machineCapability": capability,
+            "dataVolumeId": machine.data_volume_id,
             "apiEndpoint": endpoint,
+            "controllers": entries,
         }
+
+
+def _controller_entry(controller: Any) -> dict:
+    if not isinstance(controller, dict):
+        raise ConfigError("Cloud gateway returned an invalid controller.")
+    key = _uuid(controller.get("key"), "Cloud gateway returned an invalid controller key.")
+    controller_id = controller.get("id")
+    code = controller.get("enrollment_code")
+    if controller_id is not None:
+        if code is not None:
+            raise ConfigError("Cloud gateway returned an invalid controller.")
+        controller_id = _uuid(controller_id, "Cloud gateway returned an invalid controller.")
+    elif not isinstance(code, str) or not ENROLLMENT_CODE_RE.fullmatch(code):
+        raise ConfigError("Cloud gateway returned no valid enrollment code.")
+    return {"key": key, "id": controller_id, "enrollmentCode": code}
+
+
+def _uuid(value: Any, message: str) -> str:
+    if not isinstance(value, str):
+        raise ConfigError(message)
+    try:
+        return str(UUID(value))
+    except ValueError:
+        raise ConfigError(message) from None
 
 
 def _at_rest(machine: Machine) -> bool:
