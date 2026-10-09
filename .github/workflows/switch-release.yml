@@ -1,7 +1,8 @@
 name: switch release
 
-# Builds and publishes the Switch core stack — the switch-core, gateway, and
-# setup container images, the Helm chart, and the standalone Docker Compose file
+# Builds and publishes the Switch core stack — the switch-core, gateway, setup
+# and switch-hosted-controller container images, the switch and
+# switch-hosted-controller Helm charts, and the standalone Docker Compose file
 # (as an OCI artifact) — so adopters can deploy without building from source.
 # See RELEASING.md for the full procedure.
 #
@@ -28,14 +29,17 @@ name: switch release
 # prunes old ones. No compose artifact: Switch Console bundles that from
 # releases only.
 #
-# Build once, pin by digest: the chart is packaged only after the images are
-# pushed, with each image's registry digest written into its values.yaml
-# (scripts/pin_chart_images.py). Pinning the chart therefore pins the exact
-# images, and what runs is reproducible from that one pin. The run summary and
-# the `release-pins` artifact carry every digest, chart included. A version is
-# published once: a run (or re-run) whose chart version already exists in the
-# registry fails before building, since a rebuilt chart would point the same
-# version at different digests.
+# Build once, pin by digest: the charts are packaged only after the images are
+# pushed, with each image's registry digest written into its chart's values.yaml
+# (scripts/pin_chart_images.py, scripts/release_charts.sh). Pinning a chart
+# therefore pins its exact images, and what runs is reproducible from that one
+# pin. The run summary and the `release-pins` artifact carry every digest,
+# charts included. A version is published once: a run whose chart version
+# already exists in the registry fails before building, since a rebuilt chart
+# would point the same version at different digests. Re-running only a failed
+# chart job reuses the same image digests, so it may finish publishing a version
+# whose charts were partly pushed. Dev chart builds also move a `main` tag
+# that development follows.
 #
 # Artifacts go to GHCR by default, and the packages are public alongside the
 # repo. REGISTRY / IMAGE_NAMESPACE are the only things to change to retarget
@@ -181,7 +185,7 @@ jobs:
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
 
       - name: Refuse to republish a version
-        # Checked before anything is built; see scripts/refuse_published_chart.sh.
+        # Checked before anything is built; see scripts/release_charts.sh.
         if: ${{ steps.version.outputs.push == 'true' }}
         env:
           NAMESPACE: ${{ steps.version.outputs.namespace }}
@@ -189,9 +193,7 @@ jobs:
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             helm registry login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
-          for chart in $(python3 scripts/pin_chart_images.py charts | jq -r '.[].chart'); do
-            scripts/refuse_published_chart.sh "oci://$REGISTRY/$NAMESPACE/charts/$chart" "$VERSION"
-          done
+          scripts/release_charts.sh refuse-published "oci://$REGISTRY/$NAMESPACE" "$VERSION"
 
       # The published compose artifact declares its stack-compose range twice:
       # in the file (for whoever has already downloaded it) and as an OCI
@@ -314,9 +316,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          # To ask, before moving the dev `main` tag, whether this is still main's head.
-          fetch-depth: 0
 
       - name: Set up Helm
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
@@ -350,8 +349,8 @@ jobs:
 
       - name: Pin, lint, package and check each chart
         # A dry run pushed no images, so it pins placeholder digests: the pin
-        # and the checks still run, and nothing is published. The check renders
-        # the .tgz that is about to be pushed, not the source tree.
+        # and the checks still run, and nothing is published. The checks lint
+        # and render the .tgz that is about to be pushed.
         run: |
           if [ "${{ needs.prep.outputs.push }}" = true ]; then
             source=(--digests-dir "$RUNNER_TEMP/digests")
@@ -359,24 +358,7 @@ jobs:
             source=(--placeholder-digests)
           fi
           python3 scripts/pin_chart_images.py charts > "$RUNNER_TEMP/charts.json"
-          for chart in $(jq -r '.[].chart' "$RUNNER_TEMP/charts.json"); do
-            path="$(jq -r --arg c "$chart" '.[] | select(.chart == $c) | .path' "$RUNNER_TEMP/charts.json")"
-            python3 scripts/pin_chart_images.py pin --chart "$chart" \
-              --registry "$REGISTRY/$NAMESPACE" --version "$VERSION" "${source[@]}"
-            git diff -- "$path/values.yaml"
-            helm package "$path" --version "$VERSION" --app-version "$VERSION" \
-              --destination "$RUNNER_TEMP/chart"
-            renders="$(jq -c --arg c "$chart" '.[] | select(.chart == $c) | .renders[]' "$RUNNER_TEMP/charts.json")"
-            while read -r files; do
-              args=()
-              for f in $(jq -r '.[]' <<<"$files"); do args+=(-f "$f"); done
-              # Linted with the check values: a chart with a values schema
-              # does not lint without the values it requires.
-              helm lint "$path" "${args[@]}"
-              helm template switch "$RUNNER_TEMP/chart/$chart-$VERSION.tgz" "${args[@]}" \
-                | python3 scripts/pin_chart_images.py verify --chart "$chart" --registry "$REGISTRY/$NAMESPACE"
-            done <<<"$renders"
-          done
+          scripts/release_charts.sh build "$REGISTRY/$NAMESPACE" "$VERSION" "$RUNNER_TEMP/chart" "${source[@]}"
 
       - name: Log in to GHCR (Helm OCI)
         if: ${{ needs.prep.outputs.push == 'true' }}
@@ -387,21 +369,12 @@ jobs:
       - name: Push the charts
         id: push
         if: ${{ needs.prep.outputs.push == 'true' }}
+        # prep refused a published version, but a re-run of this job alone
+        # skips prep. The script checks every chart before pushing any, and
+        # keeps a chart a failed earlier attempt already pushed with these
+        # same images, so re-running the job finishes a half-published version.
         run: |
-          flags=""
-          for chart in $(jq -r '.[].chart' "$RUNNER_TEMP/charts.json"); do
-            # prep refused a published version, but a re-run of this job alone
-            # skips prep, so ask again right before pushing.
-            scripts/refuse_published_chart.sh "oci://$REGISTRY/$NAMESPACE/charts/$chart" "$VERSION"
-            helm push "$RUNNER_TEMP/chart/$chart-$VERSION.tgz" "oci://$REGISTRY/$NAMESPACE/charts" 2>&1 \
-              | tee "$RUNNER_TEMP/helm-push.log"
-            digest="$(sed -n 's/^Digest: *//p' "$RUNNER_TEMP/helm-push.log")"
-            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-              echo "::error::helm push of $chart printed no chart digest; got '$digest'"
-              exit 1
-            fi
-            flags="$flags --chart-digest $chart=$digest"
-          done
+          flags="$(scripts/release_charts.sh publish "oci://$REGISTRY/$NAMESPACE" "$VERSION" "$RUNNER_TEMP/chart")"
           echo "chart_digest_flags=$flags" >> "$GITHUB_OUTPUT"
 
       - name: Record the pins

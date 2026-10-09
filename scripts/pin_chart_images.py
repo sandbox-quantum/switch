@@ -14,6 +14,8 @@ Two charts are published:
 * `switch-hosted-controller` (deploy/hosted/chart): the controller that runs
   Switch cloud machines, and its one image.
 
+Packaging and publishing them is scripts/release_charts.sh, which reads `charts`.
+
 `IMAGES` and `CHARTS` below are the only lists. The release workflow builds its
 image matrix from `images` and packages the charts `charts` names, and every
 other subcommand refuses a set of digests that is not exactly `IMAGES`, so
@@ -23,16 +25,18 @@ fails loudly.
 Subcommands:
 
 * `images` prints the image build matrix as JSON; `charts` prints the charts.
-* `pin --chart <name>` rewrites that chart's `values.yaml` in place. The switch
-  chart gets `global.imageRegistry` and `<name>:<version>@sha256:…` per image
-  (it pulls a digest-pinned image `IfNotPresent` on its own); the hosted
-  controller chart gets `image.repository` and `image.digest`. The edit is
+* `pin --chart <name>` rewrites that chart's `values.yaml` in place, in the
+  chart's `pin_style`. The switch chart gets `global.imageRegistry` and
+  `<name>:<version>@sha256:…` per image (it pulls a digest-pinned image
+  `IfNotPresent` on its own); the hosted controller chart gets
+  `image.repository` and `image.digest`, so its image renders as
+  `<registry>/<name>@sha256:…`, with no tag. The edit is
   line-based so the file's comments, which are the chart's documentation under
   `helm show values`, survive.
 * `verify --chart <name>` reads `helm template` output and fails unless every
   image of that chart — recognised by repository name, whatever registry it
   names — renders from the pinning registry and by digest, all of them are
-  present, and the pinning registry serves no image the chart should not have.
+  present, and the chart renders nothing else from the pinning registry.
 * `record` writes the pins (images and charts) as JSON for whatever promotes the
   build next, and as a Markdown table for the run summary.
 
@@ -62,7 +66,7 @@ import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -70,8 +74,8 @@ import yaml
 @dataclass(frozen=True)
 class Image:
     chart: str
-    # Top-level values key holding the image: `<key>.image` in the switch
-    # chart, `<key>.repository` / `<key>.digest` in the hosted controller's.
+    # Top-level values key holding the image; what goes under it is the
+    # chart's `pin_style`.
     values_key: str
     dockerfile: str
     context: str
@@ -80,6 +84,12 @@ class Image:
 @dataclass(frozen=True)
 class Chart:
     path: str
+    # "tagged": `global.imageRegistry`, and `<key>.image: <name>:<version>@<digest>`.
+    # "repository-digest": `<key>.repository: <registry>/<name>`, `<key>.digest`.
+    pin_style: Literal["tagged", "repository-digest"]
+    # Whether `helm lint` passes on the defaults alone; a chart whose values
+    # schema requires values is linted only with its renders' values.
+    lint_defaults: bool
     # Each inner list is one `helm template` render (its -f files) that
     # `verify` checks: placeholder secrets, and the optional workloads on.
     renders: tuple[tuple[str, ...], ...]
@@ -88,6 +98,8 @@ class Chart:
 CHARTS: dict[str, Chart] = {
     "switch": Chart(
         "deploy/remote/helm/switch",
+        "tagged",
+        True,
         (
             ("deploy/remote/helm/render-check-values.yaml",),
             (
@@ -97,7 +109,10 @@ CHARTS: dict[str, Chart] = {
         ),
     ),
     "switch-hosted-controller": Chart(
-        "deploy/hosted/chart", (("deploy/hosted/render-check-values.yaml",),)
+        "deploy/hosted/chart",
+        "repository-digest",
+        False,
+        (("deploy/hosted/render-check-values.yaml",),),
     ),
 }
 
@@ -211,7 +226,7 @@ def pin(
 
     lines = values_text.splitlines(keepends=True)
     expected: dict[tuple[str, str], str] = {}
-    if chart == "switch":
+    if CHARTS[chart].pin_style == "tagged":
         expected[("global", "imageRegistry")] = registry
         for name, image in images.items():
             expected[(image.values_key, "image")] = f"{name}:{version}@{digests[name]}"
@@ -272,7 +287,7 @@ def verify(chart: str, rendered: str, registry: str) -> list[str]:
                 problems.append(f"{ref}: not from {registry}")
             if not re.search(r"@sha256:[0-9a-f]{64}$", ref):
                 problems.append(f"{ref}: not pinned by digest")
-        elif ref.startswith(prefix) or name in IMAGES:
+        elif ref.startswith(prefix):
             problems.append(
                 f"{ref}: not an image of the {chart} chart; add it to IMAGES if it should be"
             )
@@ -410,7 +425,12 @@ def main(argv: list[str]) -> int:
             print(
                 json.dumps(
                     [
-                        {"chart": name, "path": chart.path, "renders": chart.renders}
+                        {
+                            "chart": name,
+                            "path": chart.path,
+                            "lint_defaults": chart.lint_defaults,
+                            "renders": chart.renders,
+                        }
                         for name, chart in CHARTS.items()
                     ]
                 )

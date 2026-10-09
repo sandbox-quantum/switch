@@ -314,3 +314,35 @@ def test_prune_deletes_old_builds_beyond_the_kept_ones_with_their_platform_manif
         "b1",
     }
     assert len(kept) == 4  # two indexes and both of their platform manifests
+
+
+def test_prune_never_deletes_the_build_main_points_at() -> None:
+    builds = [_version(NOW - timedelta(days=40 + n), f"b{n}") for n in range(4)]
+    builds.append(_version(NOW - timedelta(days=90), "b-stale", "main"))
+
+    doomed = prune_dev_packages.doomed(builds, NOW, timedelta(days=30), keep=2)
+
+    assert {tag for v in doomed for tag in v["metadata"]["container"]["tags"]} == {
+        "b2",
+        "b3",
+    }
+
+
+def test_the_pin_style_comes_from_the_chart() -> None:
+    styles = {name: chart.pin_style for name, chart in pin_chart_images.CHARTS.items()}
+    assert styles == {
+        "switch": "tagged",
+        "switch-hosted-controller": "repository-digest",
+    }
+
+
+def test_verify_ignores_a_third_party_image_sharing_a_first_party_name() -> None:
+    rendered = "---\n".join(
+        [
+            _pod(_pinned("switch-hosted-controller")),
+            _pod("docker.io/envoyproxy/gateway:v1"),
+        ]
+    )
+    assert pin_chart_images.verify(
+        "switch-hosted-controller", rendered, "ghcr.io/acme"
+    ) == [_pinned("switch-hosted-controller")]

@@ -120,7 +120,8 @@ building from source at deploy time.
   the run moves their `main` tag to its build, but only while the commit it
   built is still the tip of main, so a slower run cannot move it backwards. An
   environment that follows main (development, through ArgoCD) tracks that tag
-  and resolves it to a digest; every other environment pins a version.
+  and resolves it to a digest; every other environment pins a version. The
+  cleanup never deletes the build `main` points at.
 - **Version** `<next patch>-dev.<run number>.g<short sha>`, e.g.
   `0.29.1-dev.512.g7f0c803` after `switch-v0.29.0`: one patch above the newest
   release tag on main, so a dev build sorts after the release it contains and
@@ -149,8 +150,10 @@ switchCore:
 ```
 
 and the same for `gateway` and `setup`. The hosted controller chart
-(`charts/switch-hosted-controller`) is pinned the same way, through its
-`image.repository` and `image.digest`. So pinning a chart pins the exact
+(`charts/switch-hosted-controller`) is pinned through `image.repository` and
+`image.digest` instead, so its image renders as
+`ghcr.io/<owner>/switch-hosted-controller@sha256:…`, by digest with no tag.
+So pinning a chart pins the exact
 images: a deployment sets no image values, and what runs is reproducible from
 the chart pin alone. The tag in front of the digest is for people; the runtime
 pulls by digest, and the chart pulls a digest-pinned image `IfNotPresent` (any
@@ -159,9 +162,14 @@ pin. A mirror set with `global.imageRegistry` keeps the pin as long as it copies
 images byte for byte, which registry-to-registry copies do.
 
 **A version is published once.** Before building, the release asks the registry
-whether the chart version exists and fails if it does (and asks again right
-before pushing the chart). Builds are not bit-for-bit reproducible, so a re-run
-would point the same version at different digests. Cut a new version instead.
+whether any chart already has the version and fails if one does. Builds are not
+bit-for-bit reproducible, so a re-run of the whole release would point the same
+version at different digests. Cut a new version instead. If only a chart push
+failed, re-run just the failed chart job: it reuses the run's image digests,
+checks every chart before pushing any, keeps a chart already pushed with those
+same images, and pushes the rest. A chart already published with any other
+images fails it. `scripts/release_charts.sh` does the packaging, checks and
+push, and PR CI runs its build step with placeholder digests.
 
 Every publishing run lists every digest (the charts' own included) in its
 run summary, and uploads them as a `release-pins` artifact (`release-pins.json`)

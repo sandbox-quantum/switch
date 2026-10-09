@@ -273,26 +273,12 @@ jobs:
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
 
       - name: Every first-party image is pinned by digest once pinned
-        # The release's own pin, with placeholder digests, then each of the
-        # chart's check renders (defaults, and the optional workloads on), so an
-        # image behind a feature flag is checked too.
+        # The release's own build step, with placeholder digests: pin, package,
+        # lint, and verify each of the chart's check renders (for the switch
+        # chart, defaults and the optional workloads on), so an image behind a
+        # feature flag is checked too.
         run: |
-          python3 scripts/pin_chart_images.py charts > "$RUNNER_TEMP/charts.json"
-          for chart in $(jq -r '.[].chart' "$RUNNER_TEMP/charts.json"); do
-            path="$(jq -r --arg c "$chart" '.[] | select(.chart == $c) | .path' "$RUNNER_TEMP/charts.json")"
-            python3 scripts/pin_chart_images.py pin --chart "$chart" \
-              --registry ghcr.io/render-check --version 0.0.0-check --placeholder-digests
-            renders="$(jq -c --arg c "$chart" '.[] | select(.chart == $c) | .renders[]' "$RUNNER_TEMP/charts.json")"
-            while read -r files; do
-              args=()
-              for f in $(jq -r '.[]' <<<"$files"); do args+=(-f "$f"); done
-              # Linted with the check values: a chart with a values schema
-              # does not lint without the values it requires.
-              helm lint "$path" "${args[@]}"
-              helm template switch "$path" "${args[@]}" \
-                | python3 scripts/pin_chart_images.py verify --chart "$chart" --registry ghcr.io/render-check
-            done <<<"$renders"
-          done
+          scripts/release_charts.sh build ghcr.io/render-check 0.0.0-check "$RUNNER_TEMP/chart" --placeholder-digests
 
   gateway:
     name: Gateway UI
