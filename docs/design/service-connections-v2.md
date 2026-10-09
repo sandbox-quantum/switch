@@ -1,9 +1,10 @@
 # Service connections: v2, services beyond GitHub
 
-Status: built (Phase 1). This note covers what v2 adds to
+Status: built (Phases 1 and 2). This note covers what v2 adds to
 [`service-connections-v1.md`](service-connections-v1.md): any OAuth vendor
-whose tools are its own MCP servers, connected, granted and called from a
-session on generic parts, with Atlassian (Jira) as the first. v1's tables,
+whose tools are its own MCP servers or its command-line tool, connected,
+granted and called from a session on generic parts, with Atlassian (Jira) and
+Google Workspace as the first. v1's tables,
 broker checks, agent routes, token cache and redaction carry over unchanged;
 GitHub works as it did.
 
@@ -248,6 +249,64 @@ To connect: Settings, Connections in Switch Console, then Atlassian. Nothing
 needs configuring on the server. To roll back, add `atlassian` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
+## Google Workspace
+
+Drive, Docs, Sheets, Slides and Calendar; not Gmail. Google's Workspace MCP
+servers are in developer preview, whose terms forbid offering them to people
+outside the company running them, so a session reaches Google through `gws`
+([googleworkspace/cli](https://github.com/googleworkspace/cli)), Google's
+command-line tool for its generally available APIs, run by the session host as
+the `gws` tool on the `google-workspace` server (`cli`, above). The token
+reaches the `gws` run's environment, for that run only, and never the coding
+tool.
+
+Built from a spike against a test Workspace with an Internal app:
+
+- **Its own client per server.** Each server's operator registers an internal
+  Google app, a Web client whose redirect is Core's callback,
+  `<GATEWAY_PUBLIC_URL>/gateway/service-connections/google-workspace/flows/callback`,
+  and names its settings in `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`
+  ([operator setup](../old/google-workspace-setup.md)). Unset, Google Workspace
+  is listed as not set up on this server.
+- **Offline access.** Google returns a refresh token only for
+  `access_type=offline`, and on a later sign-in only with `prompt=consent`;
+  both go with every authorization. Refresh tokens are reusable.
+- **Tokens.** Access tokens lived 3,599 s; `max_lifetime` is 3,920, Google's
+  documented sample. Agents still ask again hourly.
+- **The account** is OpenID's `sub`, labelled by `email`, from userinfo.
+- **Scopes as Google names them.** Google answers with full scope URLs
+  (`email` comes back as `.../auth/userinfo.email`), and the level is read by
+  comparing them, so the entry names them that way. A person who unticks the
+  write scopes connects read-only, and Google refuses every change.
+- **Re-linking cannot narrow.** While the app holds access, Google's consent
+  shows what it already has, with nothing to untick: connecting read-only after
+  read and write takes a disconnect first.
+- **Disconnecting revokes** at `oauth2.googleapis.com/revoke`, which ends every
+  token of the person's sign-in to that app.
+- **`gws` 0.22.5,** pinned per machine; the Linux builds are the musl ones,
+  which run on glibc and musl systems alike, and Windows has an x64 build only.
+  Its first argument is a service (`drive`, `docs`, `sheets`, `slides`,
+  `calendar`) or `schema`; `auth`, `gmail`, `admin`, `chat`, `--api-version`
+  (and `drive:v2` and the like) and `--sanitize` are refused. `--upload`,
+  `--output`/`-o` and `drive +upload <file>` are its local files. A refused
+  token ends a run with exit 1 and Google's 401.
+- **`gws` reads a `.env`** from its working folder or the nearest parent with
+  one, which could point it at a proxy; each run's folder holds an empty
+  `.env` of its own, which stops the search.
+
+Another process running as the same user could read the token from a `gws`
+run's environment while it runs, or replace what that run executes. Keeping
+the token out of `gws` altogether (a credential proxy in the session host) is a
+later spike.
+
+Self-hosted servers come first. Switch's hosted service lists Google Workspace
+as unavailable through its own deployment settings, not this repository:
+`DISABLED_SERVICES` `{"google-workspace": "<the reason people see>"}`.
+
+To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
+`enabled: false`, or unset `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`. Each lists
+it as unavailable, with its reason, and the next token request fails.
+
 ## Not yet
 
 - `grants.changed` on the agent and controller streams: a grant change reaches
@@ -258,5 +317,12 @@ needs configuring on the server. To roll back, add `atlassian` to
   session at the vendor.
 - Connecting Atlassian from the web dashboard, and a server setting that moves
   a vendor to Core's callback (today the catalog's order decides).
-- Google Workspace, which waits on Google's developer preview.
-- A live run against a real Jira site stays manual and outside CI.
+- Connecting any service from the web dashboard: Switch Console starts every
+  sign-in, Google Workspace's included, though Google's comes back through
+  Core.
+- Google Workspace on Switch's hosted service, which waits on Google's review
+  of Switch's own app.
+- Keeping a CLI vendor's token out of the CLI's process (a credential proxy).
+- Live runs against a real Jira site and a real Google Workspace stay manual
+  and outside CI, which tests `gws`'s handling against a stand-in, never the
+  real binary.

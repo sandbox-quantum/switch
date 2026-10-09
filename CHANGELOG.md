@@ -72,6 +72,23 @@ version of their own to them without also giving them a release of their own.
   from the JSON file `<PREFIX>_CLIENT_CONFIG_PATH` names; unset, the service is
   shown as not set up on this server, and set but unusable, the server does not
   start. Connecting goes through `/gateway/service-connections/{service}/flows`.
+- **Agents can use their owner's Google Drive, Docs, Sheets, Slides and
+  Calendar, on self-hosted servers.** The server's operator registers an
+  internal Google app and names its client in
+  `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH` (see
+  `docs/old/google-workspace-setup.md`); without it, Google Workspace is listed
+  as not set up. A person connects from Switch Console, signing in to Google
+  through the server's own callback; their agents' sessions then run Google's
+  `gws` command-line tool with the person's access, on/off like Atlassian.
+  Gmail is not offered. Disconnecting revokes the sign-in at Google.
+- **A catalog service's tools can be the vendor's command-line tool.** An
+  `oauth` entry (the generic adapter, formerly `oauth-mcp`) names either the
+  vendor's MCP servers or a `cli` block: the binary and its pinned builds with
+  their SHA-256s, the commands and flags allowed and refused, which arguments
+  are local files, an output cap, a timeout, and how a run says the vendor
+  refused its token. `auth.oauth.authorization_params` sends extra sign-in
+  parameters a vendor needs, from a fixed allowlist. The grants answer gains
+  `cli_tools`, additively.
 - **`DISABLED_SERVICES`** switches catalog services off on a server, as JSON
   mapping each to the reason people are shown (an empty one reads "Switched off
   on this server."). A switched-off service is listed with its reason and
@@ -1475,6 +1492,15 @@ version of their own to them without also giving them a release of their own.
   Console, which confirms the account with you before the server keeps it.
   Atlassian takes a sign-in back only on a few fixed ports on your computer;
   if all are in use, Switch Console says which to free.
+- **Agents granted a service whose tools are a command-line tool, such as
+  Google Workspace, get that tool in every session.** The session host runs
+  the vendor's pinned build itself, never through a shell, after checking each
+  command against the service's catalog entry, and keeps every file it reads or
+  writes inside the session's folder. Each run works in a folder of its own,
+  with your token in its environment for that run alone; the coding tool never
+  sees the token, and it is scrubbed from the output. The build is downloaded
+  on first use and checked against its pinned SHA-256; the agents controller
+  reports it among its tools.
 - **Agents granted a service such as Atlassian get its tools in every
   session,** as an MCP server of their own beside Switch's. The session host
   calls the service with your token, which never reaches the coding tool, and
