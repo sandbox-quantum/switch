@@ -578,6 +578,7 @@ async def _serve(
         approval_outcomes=ApprovalOutcomes(activity_listener, activity),
         controller_auth=None,
         trust_client=NullTrustClient(),
+        gateway_ui=None,
         connections=connections,
     )
 

@@ -129,8 +129,8 @@ import '@renderer/index.css';
 const REMOTE = {
   id: 'srv-1',
   name: 'Team Server',
-  gatewayUrl: 'http://localhost:41000',
-  apiUrl: 'http://localhost:41001',
+  url: 'http://localhost:41001',
+  dashboardUrl: 'http://localhost:41000',
   managed: true,
   managementKind: 'remote' as const,
   sshHost: 'vm-1',

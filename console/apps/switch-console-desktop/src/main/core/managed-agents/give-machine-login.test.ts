@@ -19,7 +19,7 @@ vi.mock('@main/core/host-controllers/host-controllers', () => ({ hostControllerS
 vi.mock('@main/core/workspaces/workspaces-store', () => ({ requireWorkspaceForServer: vi.fn() }));
 vi.mock('@main/core/workspaces/workspace-session', () => ({
   withReachableServerWorkspaceSession: (_serverId: string, run: (server: unknown) => unknown) =>
-    run({ id: 'server-1', gatewayUrl: 'https://switch.example.com' }),
+    run({ id: 'server-1', url: 'https://switch.example.com' }),
 }));
 vi.mock('@main/core/switch-servers/local-provider-sign-in', () => ({
   localProviderAuthPath: () => '/home/me/.codex/auth.json',

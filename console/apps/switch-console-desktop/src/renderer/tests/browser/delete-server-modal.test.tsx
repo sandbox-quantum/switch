@@ -81,8 +81,8 @@ afterEach(async () => {
 const REMOTE_SERVER = {
   id: 'srv-1',
   name: 'Team Server',
-  gatewayUrl: 'https://gateway.example',
-  apiUrl: 'https://api.example',
+  url: 'https://api.example',
+  dashboardUrl: 'https://gateway.example',
   managed: true,
   managementKind: 'remote' as const,
   sshHost: 'vm-1',
@@ -93,8 +93,8 @@ const REMOTE_SERVER = {
 const EXTERNAL_SERVER = {
   id: 'srv-2',
   name: 'External Server',
-  gatewayUrl: 'https://gateway.example',
-  apiUrl: 'https://api.example',
+  url: 'https://api.example',
+  dashboardUrl: 'https://gateway.example',
   managed: false,
   managementKind: null,
   sshHost: null,

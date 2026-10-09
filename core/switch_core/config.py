@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from switch_core.keys import Keyring
@@ -430,6 +430,24 @@ class SwitchConfig(BaseSettings):
     # `--server` an agents controller enrolls against, which the gateway's Add
     # machine dialog shows; unset, it shows no enrollment command.
     gateway_public_url: str | None = None
+
+    # The operator dashboard's build output (the `dist/` that `npm run build`
+    # writes in gateway/). Set, and switch-core serves the dashboard on its own
+    # port beside the API, so the server has one address; the image sets it.
+    # Unset or empty, it serves no dashboard: a development run uses the Vite
+    # dev server instead. Set to a directory with no build in it is a startup
+    # error. With it set, FRONTEND_BASE_URL defaults to GATEWAY_PUBLIC_URL:
+    # the dashboard is then on the server's own origin.
+    gateway_ui_dir: Path | None = None
+
+    @field_validator("gateway_ui_dir", mode="before")
+    @classmethod
+    def _blank_gateway_ui_dir_is_unset(cls, value: object) -> object:
+        # `GATEWAY_UI_DIR=` is how an env file or a chart turns it off, and
+        # `Path("")` would otherwise be the working directory.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     # Credentials of the distributed Slack app *we* registered — the one a
     # customer installs by clicking a button, as opposed to the app an operator
@@ -927,6 +945,21 @@ class SwitchConfig(BaseSettings):
     @property
     def invite_email_enabled(self) -> bool:
         return bool(self.gateway_smtp_host)
+
+    @model_validator(mode="after")
+    def _default_frontend_base_url(self) -> "SwitchConfig":
+        """The dashboard's origin is the server's own when switch-core serves it.
+
+        Before the SMTP check, which requires one. Only ever fills a gap: a
+        deployment that names its dashboard's origin keeps it.
+        """
+        if (
+            not self.frontend_base_url
+            and self.gateway_ui_dir is not None
+            and self.gateway_public_url
+        ):
+            self.frontend_base_url = self.gateway_public_url.rstrip("/")
+        return self
 
     @model_validator(mode="after")
     def _validate_smtp(self) -> "SwitchConfig":

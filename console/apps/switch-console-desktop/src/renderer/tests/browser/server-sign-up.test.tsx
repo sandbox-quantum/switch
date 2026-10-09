@@ -41,8 +41,8 @@ const CLOUD_ORIGIN = 'https://cloud.example.com';
 const SERVER: SwitchServer = {
   id: 'server',
   name: 'Switch',
-  gatewayUrl: CLOUD_ORIGIN,
-  apiUrl: CLOUD_ORIGIN,
+  url: CLOUD_ORIGIN,
+  dashboardUrl: null,
 } as SwitchServer;
 
 let container: HTMLDivElement | null = null;

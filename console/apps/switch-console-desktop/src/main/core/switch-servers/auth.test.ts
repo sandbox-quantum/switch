@@ -20,13 +20,14 @@ const consoleIdentityHeaders = vi.hoisted(() =>
 vi.mock('./console-identity', () => ({ consoleIdentityHeaders }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: logWarn, error: vi.fn(), info: vi.fn() } }));
 
-const { reauthenticateManagedServer, refreshSession, signup } = await import('./auth');
+const { oidcLogin, reauthenticateManagedServer, refreshSession, signup } = await import('./auth');
+const electron = await import('electron');
 
 const REMOTE = {
   id: 'srv-remote',
   name: 'Team server',
-  gatewayUrl: 'http://localhost:41000',
-  apiUrl: 'http://localhost:41001',
+  url: 'http://localhost:41001',
+  dashboardUrl: 'http://localhost:41000',
   managed: true,
   managementKind: 'remote',
   sshHost: 'vm-1',
@@ -34,8 +35,8 @@ const REMOTE = {
 const EXTERNAL = {
   id: 'srv-external',
   name: 'Company server',
-  gatewayUrl: 'https://switch.example.com',
-  apiUrl: 'https://switch-api.example.com',
+  url: 'https://switch-api.example.com',
+  dashboardUrl: 'https://switch.example.com',
   managed: false,
   managementKind: null,
   sshHost: null,
@@ -67,7 +68,7 @@ describe('reauthenticateManagedServer', () => {
 
     expect(readSecrets).toHaveBeenCalledWith({ secretsKey: 'remote-switch-server:vm-1:secrets' });
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('http://localhost:41000/gateway/auth/login');
+    expect(url).toBe('http://localhost:41001/gateway/auth/login');
     expect(JSON.parse(init.body as string)).toEqual({
       email: 'admin@switch.local',
       password: 'stored-pw',
@@ -122,7 +123,7 @@ describe('refreshSession', () => {
     expect(await refreshSession(REMOTE, 'old-jwt')).toBe('fresh-jwt');
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('http://localhost:41000/gateway/auth/refresh');
+    expect(url).toBe('http://localhost:41001/gateway/auth/refresh');
     expect(init.headers).toMatchObject({
       Cookie: 'switch_auth=old-jwt',
       'X-Switch-Console-Id': 'console-1',
@@ -142,7 +143,7 @@ describe('refreshSession', () => {
 const SIGNUP_SERVER = {
   id: 'srv-1',
   name: 'S',
-  gatewayUrl: 'https://switch.example.com',
+  url: 'https://switch.example.com',
   managed: false,
 } as never;
 
@@ -287,5 +288,50 @@ describe('signup', () => {
 
     expect(result).toMatchObject({ success: false, error: { kind: 'failed' } });
     expect(setSessionCookie).not.toHaveBeenCalled();
+  });
+});
+
+describe('oidcLogin', () => {
+  /** Opens the sign-in window, reports the page it loaded, and closes it. */
+  async function loadedPage(server: unknown): Promise<string> {
+    const loadURL = vi.fn(async () => {});
+    let closed: (() => void) | undefined;
+    vi.mocked(electron.session.fromPartition).mockReturnValue({
+      cookies: { get: vi.fn(async () => []) },
+    } as never);
+    vi.mocked(electron.BrowserWindow).mockImplementation(function () {
+      return {
+        loadURL,
+        webContents: { on: vi.fn() },
+        on: (event: string, listener: () => void) => {
+          if (event === 'closed') closed = listener;
+        },
+        isDestroyed: () => false,
+        destroy: vi.fn(),
+      } as never;
+    });
+    const result = oidcLogin(server as never);
+    closed?.();
+    expect(await result).toMatchObject({ success: false, error: { kind: 'cancelled' } });
+    return (loadURL.mock.calls[0] as unknown as [string])[0];
+  }
+
+  it('starts on the dashboard’s host for a server that keeps one apart', async () => {
+    // The identity provider of an older split server returns to the dashboard's
+    // host, and the server keeps the sign-in state in a cookie on the host the
+    // flow started on.
+    expect(await loadedPage(EXTERNAL)).toBe('https://switch.example.com/gateway/auth/oidc/login');
+  });
+
+  it('starts on the server’s own address otherwise', async () => {
+    expect(
+      await loadedPage({
+        id: 'srv-one',
+        name: 'One address',
+        url: 'https://switch.example.org',
+        dashboardUrl: null,
+        managed: false,
+      })
+    ).toBe('https://switch.example.org/gateway/auth/oidc/login');
   });
 });

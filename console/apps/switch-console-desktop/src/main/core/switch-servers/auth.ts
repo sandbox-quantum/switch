@@ -6,10 +6,11 @@ import { LOCAL_SERVER_ADMIN_EMAIL } from '@main/core/managed-switch-server/const
 import { managedServerSecretsKey } from '@main/core/managed-switch-server/host/host-for-server';
 import { readSecrets } from '@main/core/managed-switch-server/secrets';
 import { log } from '@main/lib/logger';
-import type {
-  SignupResult,
-  SwitchServer,
-  SwitchUser,
+import {
+  dashboardOrigin,
+  type SignupResult,
+  type SwitchServer,
+  type SwitchUser,
 } from '@shared/core/switch-servers/switch-servers';
 import { consoleIdentityHeaders } from './console-identity';
 import { getSessionCookie, setSessionCookie } from './servers-store';
@@ -23,7 +24,17 @@ export type LoginError =
   | { kind: 'failed'; message: string };
 
 function gatewayUrl(server: SwitchServer, path: string): string {
-  return `${server.gatewayUrl}/gateway${path}`;
+  return `${server.url}/gateway${path}`;
+}
+
+/**
+ * The same path on the origin the server's web pages are served from. Browser
+ * sign-in starts there: the server keeps the OIDC state in a cookie on the host
+ * the flow starts on, and an older server's identity provider returns to its
+ * dashboard's host, so starting anywhere else loses the state.
+ */
+function webGatewayUrl(server: SwitchServer, path: string): string {
+  return `${dashboardOrigin(server)}/gateway${path}`;
 }
 
 /** Pull the `switch_auth` value out of the response's Set-Cookie headers. */
@@ -67,7 +78,7 @@ async function postCredentials(
   } catch (cause) {
     return err({
       kind: 'failed',
-      message: `Could not reach ${server.gatewayUrl}. Check that the address is right and that the server is running. (${cause instanceof Error ? cause.message : String(cause)})`,
+      message: `Could not reach ${server.url}. Check that the address is right and that the server is running. (${cause instanceof Error ? cause.message : String(cause)})`,
     });
   }
 }
@@ -117,7 +128,7 @@ export async function passwordLogin(
     const detail = await response.text().catch(() => '');
     return err({
       kind: 'failed',
-      message: `${server.gatewayUrl} rejected the sign-in with HTTP ${response.status}. That is a problem on the server, not with your credentials.${
+      message: `${server.url} rejected the sign-in with HTTP ${response.status}. That is a problem on the server, not with your credentials.${
         detail ? ` (${boundedBody(detail)})` : ''
       }`,
     });
@@ -197,7 +208,7 @@ export async function signup(
     if (kind && refusal) return err({ kind, message: refusal });
     return err({
       kind: 'failed',
-      message: `${server.gatewayUrl} rejected the sign-up with HTTP ${response.status}.${
+      message: `${server.url} rejected the sign-up with HTTP ${response.status}.${
         body ? ` (${refusal ?? boundedBody(body)})` : ''
       }`,
     });
@@ -373,7 +384,7 @@ export async function oidcLogin(server: SwitchServer): Promise<Result<true, Logi
       }
     });
 
-    void win.loadURL(gatewayUrl(server, '/auth/oidc/login')).catch((cause) => {
+    void win.loadURL(webGatewayUrl(server, '/auth/oidc/login')).catch((cause) => {
       finish(err({ kind: 'failed', message: `Could not open sign-in page: ${cause.message}` }));
     });
   });

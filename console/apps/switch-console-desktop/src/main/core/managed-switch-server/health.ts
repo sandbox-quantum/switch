@@ -27,12 +27,12 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
  * timeout. Honours `signal` so a stop/cancel aborts the wait.
  */
 export async function waitForHealth(
-  apiUrl: string,
+  serverUrl: string,
   opts: { signal?: AbortSignal; timeoutMs?: number } = {}
 ): Promise<boolean> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
-  const url = `${apiUrl}/gateway/auth/config`;
+  const url = `${serverUrl}/gateway/auth/config`;
 
   while (Date.now() < deadline) {
     try {

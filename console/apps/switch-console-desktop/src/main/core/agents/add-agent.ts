@@ -229,7 +229,7 @@ export async function checkNewAgent(params: AddAgentParams): Promise<NewAgentChe
     params.sshHost,
     params.dir,
     params.name,
-    server.apiUrl
+    server.url
   );
   if (foreignEndpoint !== null) {
     return {
@@ -247,7 +247,7 @@ export async function checkNewAgent(params: AddAgentParams): Promise<NewAgentChe
     params.sshHost,
     params.dir,
     params.name,
-    server.apiUrl
+    server.url
   );
   if (slotAgentId !== null) {
     const [knownLocally] = await db
@@ -330,7 +330,7 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
     // (CHOO-1440).
     await writeNeutralAgentSettingsFs(workdir.fs, {
       slug: params.name,
-      apiEndpoint: server.apiUrl,
+      apiEndpoint: server.url,
       apiToken: registered.apiKey,
       agentId: registered.id,
       expectedAgentId: slotAgentId ?? undefined,
@@ -352,7 +352,7 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
     name: params.name,
     providerId: params.providerId,
     switchAgentId: registered.id,
-    apiEndpoint: server.apiUrl,
+    apiEndpoint: server.url,
     workspaceId: targetWorkspace.id,
     autoApprove: params.autoApprove,
     providerConfig: params.providerConfig ?? null,

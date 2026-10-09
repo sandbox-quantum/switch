@@ -16,8 +16,8 @@ export async function mattermostOriginFor(serverId: string): Promise<string | nu
   if (!ports) return null;
 
   // Remote-managed stacks publish onto the SSH host's loopback and are reached
-  // through the same forwarded ports the gateway URL already uses, so the
-  // gateway's hostname is the right one to pair with the Mattermost port.
-  const gatewayHost = new URL(server.gatewayUrl).hostname;
-  return `http://${gatewayHost}:${ports.mattermost}`;
+  // through the same forwarded ports the server's address already uses, so its
+  // hostname is the right one to pair with the Mattermost port.
+  const host = new URL(server.url).hostname;
+  return `http://${host}:${ports.mattermost}`;
 }

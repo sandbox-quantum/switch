@@ -65,6 +65,7 @@ def _build(telemetry: TelemetryService) -> Any:
         approval_outcomes=object(),  # type: ignore[arg-type]
         controller_auth=None,
         trust_client=NullTrustClient(),
+        gateway_ui=None,
         telemetry=telemetry,
     )
     return protocol

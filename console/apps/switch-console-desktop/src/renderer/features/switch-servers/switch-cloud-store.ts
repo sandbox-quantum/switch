@@ -44,7 +44,7 @@ export function isSwitchCloudServer(server: SwitchServer): boolean {
   const origin = switchCloudStore.origin;
   if (origin === null) return false;
   try {
-    return new URL(server.gatewayUrl).origin === origin;
+    return new URL(server.url).origin === origin;
   } catch {
     return false;
   }

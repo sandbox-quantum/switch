@@ -136,8 +136,8 @@ function server(id: string, name: string): SwitchServer {
   return {
     id,
     name,
-    gatewayUrl: `https://${id}.example.invalid`,
-    apiUrl: `https://${id}.example.invalid/api`,
+    url: `https://${id}.example.invalid/api`,
+    dashboardUrl: `https://${id}.example.invalid`,
     managed: false,
     managementKind: null,
     sshHost: null,

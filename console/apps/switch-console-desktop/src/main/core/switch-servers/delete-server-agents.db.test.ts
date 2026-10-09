@@ -41,8 +41,8 @@ describe('deleteAgentsForServer', () => {
       await fixture.db.insert(switchServers).values({
         id,
         name: id,
-        gatewayUrl: `https://${id}.example.com`,
-        apiUrl: `https://api-${id}.example.com`,
+        url: `https://api-${id}.example.com`,
+        dashboardUrl: `https://${id}.example.com`,
       });
       // Deliberately not the server's id: the query has to reach the server
       // through the workspace, and identical ids would hide it not doing so.

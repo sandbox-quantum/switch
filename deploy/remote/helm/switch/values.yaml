@@ -571,7 +571,13 @@ switchCore:
       cpu: "1000m"
 
 # ── Gateway (React + nginx) ──────────────────────────────────────────────────
+# A separate container serving the operator dashboard and forwarding /gateway
+# to switch-core. switch-core now serves the same dashboard itself, on its own
+# port, so the server has one address; set enabled: false to drop this
+# Deployment, and with ingress.mode=managed the Ingress then sends every path
+# to switch-core. Left on by default so an upgrade changes nothing.
 gateway:
+  enabled: true
   image: gateway:latest
   imagePullPolicy: Always
   replicaCount: 1

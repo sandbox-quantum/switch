@@ -125,6 +125,17 @@ describe('describeFailure', () => {
     });
   });
 
+  it.each(['NotTheServerAddressError', 'DuplicateServerUrlError', 'NoDashboardError'])(
+    'passes a refusal about a server’s address straight through (%s)',
+    (code) => {
+      const message = 'https://switch.example.com answered with a web page, not the Switch server.';
+      expect(describeFailure(rpcError(code, message), 'Could not add the server.')).toEqual({
+        headline: message,
+        detail: null,
+      });
+    }
+  );
+
   it('passes a refusal to remove a machine running moved agents straight through', () => {
     const message =
       'build-box runs builder as managed agents for this Console, so it cannot be removed yet. Delete those agents first.';

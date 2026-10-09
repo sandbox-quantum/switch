@@ -215,7 +215,7 @@ function FieldError({ id, message }: { id: string; message: string | undefined }
 export const ServerSignInFields = observer(function ServerSignInFields({
   signIn,
   idPrefix,
-  gatewayUrl,
+  serverUrl,
   passwordSubmit,
   onSignedIn,
 }: {
@@ -224,7 +224,7 @@ export const ServerSignInFields = observer(function ServerSignInFields({
   idPrefix: string;
   /** Shown under the password as the address being signed in to. Omit where
    * the surrounding page already says which server this is. */
-  gatewayUrl?: string;
+  serverUrl?: string;
   passwordSubmit?: React.ReactNode;
   onSignedIn: (signedIn: SignedIn) => void;
 }) {
@@ -301,8 +301,8 @@ export const ServerSignInFields = observer(function ServerSignInFields({
             {signingUp && (
               <FieldError id={`${idPrefix}-password-error`} message={fieldErrors.password} />
             )}
-            {gatewayUrl && !signingUp && (
-              <p className="truncate text-xs text-foreground-muted">Signing in to {gatewayUrl}</p>
+            {serverUrl && !signingUp && (
+              <p className="truncate text-xs text-foreground-muted">Signing in to {serverUrl}</p>
             )}
           </div>
           {signingUp && (
@@ -326,9 +326,9 @@ export const ServerSignInFields = observer(function ServerSignInFields({
                 id={`${idPrefix}-confirm-password-error`}
                 message={fieldErrors.confirmPassword}
               />
-              {gatewayUrl && (
+              {serverUrl && (
                 <p className="truncate text-xs text-foreground-muted">
-                  Creating an account on {gatewayUrl}
+                  Creating an account on {serverUrl}
                 </p>
               )}
             </div>

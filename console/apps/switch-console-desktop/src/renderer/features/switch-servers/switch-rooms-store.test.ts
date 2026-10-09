@@ -4,7 +4,13 @@ import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-serve
 const listRooms = vi.hoisted(() => vi.fn());
 const listAgentRooms = vi.hoisted(() => vi.fn());
 const serversStore = vi.hoisted(() => ({
-  servers: [] as { id: string; name?: string; managed?: boolean }[],
+  servers: [] as {
+    id: string;
+    name?: string;
+    managed?: boolean;
+    url?: string;
+    dashboardUrl?: string | null;
+  }[],
   isConnected: (_serverId: string): boolean => true,
   // These servers answer; they are simply not signed in to.
   isUnreachable: (_serverId: string): boolean => false,
@@ -556,4 +562,53 @@ it('does not clear a newer loading state or error from an older request', async 
   await current;
   expect(store.isLoading('server', 'agent')).toBe(false);
   expect(store.errorFor('server', 'agent')).toContain('Current failure');
+});
+
+describe('dashboard links', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    twoWorkspaces();
+    workspaces.activeId = null;
+    serversStore.servers = [
+      { id: 'srv-a', url: 'https://alpha.example.com/', dashboardUrl: null },
+      {
+        id: 'srv-b',
+        url: 'https://beta-api.example.com',
+        dashboardUrl: 'https://beta-gateway.example.com/',
+      },
+    ];
+    listRooms.mockImplementation(async (workspaceId: string) =>
+      workspaceId === 'ws-a' ? [room('room-a', null)] : [room('room-b', null)]
+    );
+  });
+
+  it('opens a room on its server’s own address', async () => {
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+
+    expect(store.gatewayRoomUrl('room-a')).toBe('https://alpha.example.com/rooms/room-a');
+  });
+
+  it('opens a room on the dashboard address an older server keeps apart', async () => {
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+
+    expect(store.gatewayRoomUrl('room-b')).toBe('https://beta-gateway.example.com/rooms/room-b');
+  });
+
+  it('has no link for a room whose server it does not know yet', () => {
+    expect(new SwitchRoomsStore().gatewayRoomUrl('room-a')).toBeNull();
+  });
+
+  it('opens an agent on the same address its server’s rooms open on', () => {
+    const store = new SwitchRoomsStore();
+
+    expect(store.gatewayAgentUrl('srv-a', 'agent-1')).toBe(
+      'https://alpha.example.com/agents/agent-1'
+    );
+    expect(store.gatewayAgentUrl('srv-b', 'agent-1')).toBe(
+      'https://beta-gateway.example.com/agents/agent-1'
+    );
+    expect(store.gatewayAgentUrl('srv-unknown', 'agent-1')).toBeNull();
+  });
 });

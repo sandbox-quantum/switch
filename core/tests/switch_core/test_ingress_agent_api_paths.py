@@ -63,6 +63,7 @@ def _served_prefixes() -> set[str]:
         approval_outcomes=object(),  # type: ignore[arg-type]
         controller_auth=None,
         trust_client=NullTrustClient(),
+        gateway_ui=None,
     )
     prefixes = set(_ADDED_IN_MAIN)
     # The agents controller's routes join the agent bridge app only when agent

@@ -23,7 +23,9 @@ const stampPublishedEnvMock = vi.hoisted(() =>
 );
 const composeUpMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const composeDownMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
-const waitForHealthMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)));
+const waitForHealthMock = vi.hoisted(() =>
+  vi.fn((_url: string, _opts?: unknown) => Promise.resolve(true))
+);
 const readDeployedVersionMock = vi.hoisted(() =>
   vi.fn(
     (): Promise<{ kind: string; version?: string; source?: string }> =>
@@ -290,8 +292,8 @@ describe('starting a shared stack', () => {
     expect(ensureManagedServerMock).toHaveBeenCalledWith(
       {
         name: 'Team server',
-        gatewayUrl: 'http://localhost:41000',
-        apiUrl: 'http://localhost:41001',
+        url: 'http://localhost:41001',
+        dashboardUrl: 'http://localhost:41000',
       },
       { kind: 'remote', sshHost: 'vm-1' }
     );
@@ -300,6 +302,30 @@ describe('starting a shared stack', () => {
       'admin@switch.local',
       'host-admin-pw'
     );
+  });
+
+  it('waits for switch-core on its own address, then for the dashboard container', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    const { host } = sharedHost();
+
+    await startStack(startOptions(host));
+
+    expect(waitForHealthMock.mock.calls.map(([url]) => url)).toEqual([
+      'http://localhost:41001',
+      'http://localhost:41000',
+    ]);
+  });
+
+  it('fails the start when the dashboard container never answers, registering nothing', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    const { host } = sharedHost();
+    waitForHealthMock.mockImplementation(async (url: string) => url !== 'http://localhost:41000');
+
+    expect(await startStack(startOptions(host))).toEqual({
+      kind: 'error',
+      message: 'The server did not become healthy in time.',
+    });
+    expect(ensureManagedServerMock).not.toHaveBeenCalled();
   });
 
   it('brings this account’s working dir in step with the stack before checking its version', async () => {
@@ -668,6 +694,19 @@ describe('connecting to a shared stack', () => {
     expect(await connectStack(connectOptions(host))).toEqual({
       kind: 'error',
       message:
+        'The Switch server on vm-1 is running, but did not answer at http://localhost:41001.',
+    });
+    expect(ensureManagedServerMock).not.toHaveBeenCalled();
+  });
+
+  it('names the dashboard container’s address when that is the part not answering', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    waitForHealthMock.mockImplementation(async (url: string) => url !== 'http://localhost:41000');
+    const { host } = sharedHost();
+
+    expect(await connectStack(connectOptions(host))).toEqual({
+      kind: 'error',
+      message:
         'The Switch server on vm-1 is running, but did not answer at http://localhost:41000.',
     });
     expect(ensureManagedServerMock).not.toHaveBeenCalled();
@@ -953,7 +992,8 @@ describe('the server lock through a start, a join, a stop and a reset', () => {
     expect(await connectStack(connectOptions(sharedHost().host))).toMatchObject({
       kind: 'connected',
     });
-    expect(order).toEqual(['release', 'health']);
+    // Once for switch-core and once for the dashboard container, both after.
+    expect(order).toEqual(['release', 'health', 'health']);
   });
 
   it('stops nothing when the lock was taken over before the stop', async () => {
@@ -1006,7 +1046,7 @@ describe('what a start makes sure of before it changes anything', () => {
     await startStack(startOptions(host));
 
     expect(checkNetworking).toHaveBeenCalledWith(hostPorts);
-    expect(assertManagedServerUrlFreeMock).toHaveBeenCalledWith('http://localhost:41000', {
+    expect(assertManagedServerUrlFreeMock).toHaveBeenCalledWith('http://localhost:41001', {
       kind: 'remote',
       sshHost: 'vm-1',
     });

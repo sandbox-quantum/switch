@@ -14,6 +14,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const serverForInvite = vi.hoisted(() => vi.fn());
+const addServer = vi.hoisted(() => vi.fn());
 const acceptInvitation = vi.hoisted(() => vi.fn());
 const setActiveWorkspace = vi.hoisted(() => vi.fn());
 const resolveWorkspaces = vi.hoisted(() => vi.fn());
@@ -50,13 +51,14 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
 const SERVER = vi.hoisted(() => ({
   id: 'srv-1',
   name: 'switch.example.com',
-  gatewayUrl: 'https://switch.example.com',
-  apiUrl: 'https://switch.example.com',
+  url: 'https://switch.example.com',
+  dashboardUrl: null,
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: {
     serverForInvite,
+    addServer,
     setActive: vi.fn(),
     errorText: null,
     serverById: (id: string | null) => (id === SERVER.id ? SERVER : null),
@@ -201,8 +203,28 @@ describe('joining from an invite link', () => {
     await pasteLink(el, LINK);
 
     const fields = [...el.querySelectorAll<HTMLInputElement>('input')].map((i) => i.value);
-    expect(fields).toEqual(['https://switch.example.com', 'https://switch.example.com']);
+    // One address to fill, the link's: a current server's dashboard is on its own address.
+    expect(fields).toEqual(['https://switch.example.com']);
     expect(onboardingStore.invite?.token).toBe('tok-1');
+  });
+
+  it('tells the main process where the invite found the dashboard, when the address changes', async () => {
+    // An older server's invite names its dashboard's host; the person enters the
+    // server's own address, and the link's is passed on to be kept if it is the
+    // dashboard's.
+    serverForInvite.mockResolvedValue({ kind: 'unknown', origin: 'https://switch.example.com' });
+    addServer.mockResolvedValue(null);
+    const el = await renderFlow();
+
+    await pasteLink(el, LINK);
+    await type(el.querySelector<HTMLInputElement>('input')!, 'https://switch-api.example.com');
+    await click(el, 'Sign in to this server');
+
+    expect(addServer).toHaveBeenCalledWith(
+      'switch-api.example.com',
+      'https://switch-api.example.com',
+      'https://switch.example.com'
+    );
   });
 
   it('shows why the server refused, and goes on to the workspaces without it', async () => {

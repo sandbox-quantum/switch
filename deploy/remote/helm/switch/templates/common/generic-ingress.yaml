@@ -4,9 +4,10 @@
 # Generic Ingress for the Switch web surface (ingress.mode=managed).
 #
 # One host, path-routed. The agent/MCP surface goes straight to switch-core;
-# everything else (the gateway SPA, which itself proxies /gateway to
-# switch-core) goes to the gateway. Bring your own ingress
-# controller: set ingress.className, ingress.host and, for HTTPS, ingress.tls.
+# everything else goes to the gateway (the dashboard SPA, which itself proxies
+# /gateway to switch-core), or with gateway.enabled=false to switch-core, which
+# serves the dashboard too. Bring your own ingress controller: set
+# ingress.className, ingress.host and, for HTTPS, ingress.tls.
 #
 # ingress.mode=existing renders nothing — see samples/ingress.example.yaml for
 # a copy-pasteable manifest to hand to your own controller instead.
@@ -69,7 +70,13 @@ spec:
             pathType: Prefix
             backend:
               service:
+                {{- if .Values.gateway.enabled }}
                 name: {{ $svcGateway }}
                 port:
                   number: {{ .Values.gateway.service.port }}
+                {{- else }}
+                name: {{ $svcCore }}
+                port:
+                  number: {{ .Values.switchCore.service.port }}
+                {{- end }}
 {{- end }}

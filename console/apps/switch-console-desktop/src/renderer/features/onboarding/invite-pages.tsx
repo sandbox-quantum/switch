@@ -18,9 +18,9 @@ import { parseInviteLink, type InviteLink } from '@shared/core/workspaces/invite
  *
  * The link names its server, so the page looks that up rather than asking: a
  * server this install already has, or Switch Cloud, goes straight to signing
- * in. Any other server still has to be connected to, because an invite link
- * carries the dashboard's address and the Console also needs the API's — that
- * form opens with the link's address filled in.
+ * in. Any other server still has to be connected to, and that form opens with
+ * the link's address filled in: the dashboard's, which on a current server is
+ * the server's own.
  */
 export function InvitePage({
   onBack,

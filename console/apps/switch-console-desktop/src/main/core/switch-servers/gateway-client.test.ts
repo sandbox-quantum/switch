@@ -106,13 +106,13 @@ const {
 const SERVER = {
   id: 'srv-1',
   name: 'S',
-  gatewayUrl: 'https://switch.example.com',
+  url: 'https://switch.example.com',
   managed: false,
 } as never;
 const MANAGED = {
   id: 'srv-local',
   name: 'Local',
-  gatewayUrl: 'https://switch.example.com',
+  url: 'https://switch.example.com',
   managed: true,
 } as never;
 
@@ -2163,7 +2163,7 @@ describe('agent management calls', () => {
     expect(JSON.parse(String(init.body))).toEqual({ sealed });
     await expect(
       giveMachineLogin(
-        { ...(SERVER as object), gatewayUrl: 'http://switch.example.com' } as never,
+        { ...(SERVER as object), url: 'http://switch.example.com' } as never,
         'c',
         'claude',
         sealed

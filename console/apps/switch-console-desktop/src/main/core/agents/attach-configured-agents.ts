@@ -152,11 +152,11 @@ export async function attachConfiguredAgents(
     // are read from the same on-disk file. A difference is legitimate (one Switch
     // server reachable at two URLs) so it is surfaced, not corrected — correcting
     // it would mean writing to another install's credentials.
-    if (!sameApiEndpoint(found.apiEndpoint, server.apiUrl)) {
+    if (!sameApiEndpoint(found.apiEndpoint, server.url)) {
       log.warn('attachConfiguredAgents: directory endpoint differs from the chosen server', {
         name,
         dirEndpoint: found.apiEndpoint,
-        serverEndpoint: server.apiUrl,
+        serverEndpoint: server.url,
         serverId: server.id,
       });
     }

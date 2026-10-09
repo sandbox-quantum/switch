@@ -111,7 +111,7 @@ vi.mock('@main/core/workspaces/workspaces-store', () => ({
   requireWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
 }));
 
-const mockServer = vi.hoisted(() => ({ id: 'srv-1', apiUrl: 'https://switch.example.com' }));
+const mockServer = vi.hoisted(() => ({ id: 'srv-1', url: 'https://switch.example.com' }));
 
 const { addAgent } = await import('./add-agent');
 const { trackEvent } = await import('@main/core/telemetry/telemetry-service');

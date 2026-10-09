@@ -7,6 +7,7 @@ import {
   getLocationStore,
   locationViewKind,
 } from '@renderer/features/locations/stores/location-selectors';
+import { openServerPage } from '@renderer/features/switch-servers/open-server-page';
 import { ServerStatusPill } from '@renderer/features/switch-servers/server-presentation';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -120,11 +121,7 @@ const AgentActionsMenu = observer(function AgentActionsMenu({
       />
       <DropdownMenuContent align="end">
         {gatewayUrl && agent?.serverId && (
-          <DropdownMenuItem
-            onClick={() =>
-              void rpc.switchServers.openGatewayPage({ serverId: agent.serverId!, url: gatewayUrl })
-            }
-          >
+          <DropdownMenuItem onClick={() => void openServerPage(agent.serverId!, gatewayUrl)}>
             <ExternalLink className="size-4" />
             Open in gateway
           </DropdownMenuItem>

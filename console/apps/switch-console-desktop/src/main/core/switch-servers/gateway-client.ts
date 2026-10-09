@@ -21,33 +21,34 @@ import {
   gitHubFlowSchema,
 } from '@shared/core/switch-servers/github-connection';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
-import type {
-  AddressingPolicy,
-  AddTeamsTeamResult,
-  BridgeConfigField,
-  BridgeDirectoryUser,
-  ChatClaim,
-  ConnectedChat,
-  DeleteBridgeResult,
-  LinkedIdentity,
-  MessagingAppInstall,
-  MessagingApps,
-  RemoteAgentRoom,
-  RemoteAgentSummary,
-  RemoteBridge,
-  RemoteBridgeType,
-  RemoteExternalUser,
-  RemoteRoomDetail,
-  RemoteRoomGroup,
-  RemoteRoomRole,
-  RemoteRoomSummary,
-  RemoveTeamsTeamResult,
-  SwitchAuthConfig,
-  SwitchServer,
-  SwitchServerDeclaration,
-  SwitchUser,
-  TeamsTeam,
-  TeamsTeamsResult,
+import {
+  dashboardOrigin,
+  type AddressingPolicy,
+  type AddTeamsTeamResult,
+  type BridgeConfigField,
+  type BridgeDirectoryUser,
+  type ChatClaim,
+  type ConnectedChat,
+  type DeleteBridgeResult,
+  type LinkedIdentity,
+  type MessagingAppInstall,
+  type MessagingApps,
+  type RemoteAgentRoom,
+  type RemoteAgentSummary,
+  type RemoteBridge,
+  type RemoteBridgeType,
+  type RemoteExternalUser,
+  type RemoteRoomDetail,
+  type RemoteRoomGroup,
+  type RemoteRoomRole,
+  type RemoteRoomSummary,
+  type RemoveTeamsTeamResult,
+  type SwitchAuthConfig,
+  type SwitchServer,
+  type SwitchServerDeclaration,
+  type SwitchUser,
+  type TeamsTeam,
+  type TeamsTeamsResult,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
   Invitation,
@@ -63,7 +64,7 @@ import { getSessionCookie, setSessionCookie } from './servers-store';
 
 /** The gateway management API is mounted under `/gateway` on the server. */
 function gatewayUrl(server: SwitchServer, path: string): string {
-  return `${server.gatewayUrl}/gateway${path}`;
+  return `${server.url}/gateway${path}`;
 }
 
 /** Renew the session once the stored JWT is within this window of its `exp`, so
@@ -297,7 +298,7 @@ export async function gatewayRequest(
       noteManagedServerUnanswered(server);
       throw new GatewayError(
         'network',
-        `Could not reach ${server.gatewayUrl}: ${cause instanceof Error ? cause.message : String(cause)}`
+        `Could not reach ${server.url}: ${cause instanceof Error ? cause.message : String(cause)}`
       );
     }
   };
@@ -2632,8 +2633,9 @@ export async function startGitHubConnection(
   server: SwitchServer,
   input: { port: number; state: string; completion_secret: string }
 ) {
-  if (new URL(server.gatewayUrl).protocol !== 'https:')
-    throw new Error('GitHub connections require HTTPS.');
+  // A browser flow, so it runs where the server's web pages are.
+  const web = new URL(dashboardOrigin(server));
+  if (web.protocol !== 'https:') throw new Error('GitHub connections require HTTPS.');
   const value = z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{43}$/), url: z.string() }).parse(
     await (
       await gatewayFetch(server, '/provider-connections/github/flows', {
@@ -2645,7 +2647,7 @@ export async function startGitHubConnection(
   );
   const url = new URL(value.url);
   if (
-    url.origin !== new URL(server.gatewayUrl).origin ||
+    url.origin !== web.origin ||
     url.pathname !== '/gateway/provider-connections/github/authorize' ||
     url.searchParams.get('state') !== value.id ||
     url.username ||
@@ -2955,10 +2957,10 @@ export async function giveMachineLogin(
 ): Promise<{ operationId: string; revision: number }> {
   // The login is sealed, but the key it was sealed to came from this server:
   // over plain HTTP anyone in between could have handed over their own.
-  const gateway = new URL(server.gatewayUrl);
+  const address = new URL(server.url);
   if (
-    gateway.protocol !== 'https:' &&
-    !['localhost', '127.0.0.1', '[::1]'].includes(gateway.hostname)
+    address.protocol !== 'https:' &&
+    !['localhost', '127.0.0.1', '[::1]'].includes(address.hostname)
   )
     throw new Error('Giving a machine a provider login requires HTTPS.');
   const res = await managementFetch(

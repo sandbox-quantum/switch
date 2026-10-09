@@ -35,6 +35,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
+from switch_core.gateway.ui import GatewayUi, GatewayUiMiddleware
 from switch_core.logging_context import log_context
 from switch_core.observability.http import MetricsMiddleware
 from switch_core.request_context import RequestContextMiddleware
@@ -67,6 +68,7 @@ def create_agent_bridge_app(
     approval_outcomes: ApprovalOutcomes,
     controller_auth: ControllerAuthenticator | None,
     trust_client: TrustClient,
+    gateway_ui: GatewayUi | None,
     connections: AgentConnectionRegistry | None = None,
     telemetry: TelemetryService | None = None,
 ) -> tuple[FastAPI, AgentCore]:
@@ -170,6 +172,10 @@ def create_agent_bridge_app(
         session_factory=session_factory,  # type: ignore[arg-type]
         controller_auth=controller_auth,
     )
+    # Outside the bearer middleware, because a page load carries a cookie and
+    # no agent key; inside the metrics, so page loads are counted.
+    if gateway_ui is not None:
+        app.add_middleware(GatewayUiMiddleware, ui=gateway_ui, router=app.router)
     # Outside the bearer middleware, so a request rejected for bad credentials
     # is still counted and timed — an authentication failure is traffic, and a
     # spike of it is the thing you most want a dashboard to show.

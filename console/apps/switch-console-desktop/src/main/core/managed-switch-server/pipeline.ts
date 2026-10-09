@@ -30,7 +30,7 @@ import {
 } from './constants';
 import { classifyVersionDrift, readDeployedVersion } from './deployed-version';
 import { buildEnvFile, keysDisagreeing, telemetryRequested } from './env-file';
-import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
+import { apiUrlFor, managedServerAddresses, type LocalServerPorts } from './free-port';
 import { waitForHealth } from './health';
 import type { ServerHost } from './host/types';
 import { finishUpgrade, type OwedUpgrade, prepareUpgrade } from './managed-upgrade';
@@ -420,6 +420,23 @@ async function portsReachableHere(
 }
 
 /**
+ * The first of a managed stack's addresses that never answers, or null once all
+ * have. switch-core is asked on its own port, the one everything but dashboard
+ * pages uses, and the dashboard container on its: the stack still runs one, and
+ * the server is registered to open its pages there.
+ */
+async function unansweredAddress(
+  ports: LocalServerPorts,
+  signal: AbortSignal
+): Promise<string | null> {
+  const { url, dashboardUrl } = managedServerAddresses(ports);
+  for (const address of [url, dashboardUrl]) {
+    if (!(await waitForHealth(address, { signal }))) return address;
+  }
+  return null;
+}
+
+/**
  * Register the stack, activate it if asked, and sign in as its admin with the
  * password Switch Console generated. A failed sign-in is only logged: the
  * server view falls back to its sign-in panel.
@@ -432,11 +449,7 @@ async function registerAndSignIn(
   onMessage: (message: string) => void
 ): Promise<string> {
   const server = await ensureManagedServer(
-    {
-      name: serverName,
-      gatewayUrl: gatewayUrlFor(settings.ports),
-      apiUrl: apiUrlFor(settings.ports),
-    },
+    { name: serverName, ...managedServerAddresses(settings.ports) },
     ref
   );
   if (activate) await setActiveServerId(server.id);
@@ -532,7 +545,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // this Console without it.
   const settings = await portsReachableHere(host, plan, await settingsFor(host, plan));
   await host.checkNetworking(settings.ports);
-  await assertManagedServerUrlFree(gatewayUrlFor(settings.ports), ref);
+  await assertManagedServerUrlFree(apiUrlFor(settings.ports), ref);
 
   onMessage('Checking the deployed version…');
   const downgrade = await refuseDowngrade(host, checkoutRoot);
@@ -614,8 +627,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   await host.establishNetworking(settings.ports);
 
   onMessage('Waiting for the server to become healthy…');
-  const healthy = await waitForHealth(gatewayUrlFor(settings.ports), { signal });
-  if (!healthy) {
+  if ((await unansweredAddress(settings.ports, signal)) !== null) {
     return { kind: 'error', message: 'The server did not become healthy in time.' };
   }
 
@@ -704,11 +716,11 @@ export async function connectStack(opts: ConnectStackOptions): Promise<ConnectSt
   await host.establishNetworking(settings.ports);
 
   onMessage('Waiting for the server to answer…');
-  const gatewayUrl = gatewayUrlFor(settings.ports);
-  if (!(await waitForHealth(gatewayUrl, { signal }))) {
+  const unanswered = await unansweredAddress(settings.ports, signal);
+  if (unanswered !== null) {
     return {
       kind: 'error',
-      message: `The Switch server on ${host.label} is running, but did not answer at ${gatewayUrl}.`,
+      message: `The Switch server on ${host.label} is running, but did not answer at ${unanswered}.`,
     };
   }
 

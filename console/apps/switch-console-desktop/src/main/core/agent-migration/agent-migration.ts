@@ -622,7 +622,7 @@ async function controllerRefusal(serverId: string): Promise<string | null> {
   const server = await getServer(serverId);
   if (!server) throw new Error('Console no longer knows this Switch server.');
   const protocol = await controllerProtocol();
-  const response = await fetch(`${server.apiUrl}/v1/management/controllers/enroll`, {
+  const response = await fetch(`${server.url}/v1/management/controllers/enroll`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'Switch-Controller-Protocol': protocol },
     body: '{}',

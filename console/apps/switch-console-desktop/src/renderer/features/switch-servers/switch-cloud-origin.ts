@@ -29,14 +29,10 @@ export function loadSwitchCloudOrigin(): Promise<void> {
  * False until the Cloud's address has been read; observers render again once
  * it has.
  */
-export function isSwitchCloudServer(server: Pick<SwitchServer, 'gatewayUrl' | 'apiUrl'>): boolean {
+export function isSwitchCloudServer(server: Pick<SwitchServer, 'url'>): boolean {
   void loadSwitchCloudOrigin();
   const origin = switchCloudOrigin.get();
-  return (
-    origin !== null &&
-    urlOrigin(server.gatewayUrl) === urlOrigin(origin) &&
-    urlOrigin(server.apiUrl) === urlOrigin(origin)
-  );
+  return origin !== null && urlOrigin(server.url) === urlOrigin(origin);
 }
 
 /** The Switch Cloud server registered here, or null when there is none or no Cloud is named. */
