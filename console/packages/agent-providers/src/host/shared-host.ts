@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { commandSchema } from '@switch-console/shared/session-v1';
 import type { Command, CommandStatus, Session, Snapshot } from '@switch-console/shared/session-v1';
@@ -43,6 +43,7 @@ import {
   readToldInstructions,
   recordToldInstructions,
 } from './told-instructions';
+import { binaryOnPath, startVendorClis } from './vendor-cli';
 import {
   CALL_TIMEOUT_MS,
   LIST_TIMEOUT_MS,
@@ -927,6 +928,7 @@ export async function hostSessionProcess(input: {
   const fallback = process.env.SWITCH_HOSTED_BOOTSTRAP !== '1';
   let endpoint: ServiceEndpointServer | null = null;
   let vendors: VendorServers | null = null;
+  let clis: VendorServers | null = null;
   try {
     const { grants, unavailable } = input.services;
     vendors = await startVendorServers({
@@ -937,6 +939,18 @@ export async function hostSessionProcess(input: {
       callTimeoutMs: CALL_TIMEOUT_MS,
       fetch,
     });
+    clis = await startVendorClis({
+      grants,
+      ask: parent.ask,
+      redactions,
+      cwd: config.start.input.cwd,
+      stateDir: join(input.root, 'service-cli'),
+      binary: binaryOnPath(process.env, process.platform),
+      hostEnv: process.env,
+      platform: process.platform,
+    });
+    for (const name of Object.keys(clis.specs))
+      if (name in vendors.specs) throw new Error(`Two granted services' tools are named ${name}.`);
     if (unavailable !== null)
       serviceNotices.raise(
         serviceFallbackNotice('github', `its grants could not be read: ${unavailable}`, fallback)
@@ -963,7 +977,7 @@ export async function hostSessionProcess(input: {
       mcp.spec,
       input.services,
       endpoint && { endpoint, execPath: process.execPath, entrypoint: input.entrypoint },
-      vendors.specs
+      { ...vendors.specs, ...clis.specs }
     );
     for (const notice of prepared.notices) serviceNotices.raise(notice);
     const authenticate = input.authenticate;
@@ -988,6 +1002,7 @@ export async function hostSessionProcess(input: {
       input.signal
     );
   } finally {
+    await clis?.close();
     await vendors?.close();
     await endpoint?.close();
     await mcp.close();

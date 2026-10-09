@@ -160,6 +160,35 @@ coding tool's environment, arguments or files.
 Only text reaches the coding tool: anything else a vendor tool answers is
 replaced by a line saying what was left out.
 
+The grants answer also gains `cli_tools`. For each, the session host
+(`host/vendor-cli.ts`) serves one tool on loopback, under the entry's `cli.name`,
+taking `{args}`: the command line after the binary, one argument per item. The
+host runs the vendor's binary itself:
+
+- **Checked first, never a shell.** The first argument must be allowed and not
+  denied; a denied flag is refused in any form (`--f`, `--f=v`, `-fv`); short
+  options may not be combined, so no path flag hides in a cluster; `--` is
+  refused. Nothing runs, and no token is asked for, for a refused command.
+- **A folder of its own.** Each run works in a fresh folder holding only an
+  empty `.env` (a tool that loads `.env` from its folder or a parent's finds
+  that one and stops) and the files staged for it. A path flag's file must be
+  inside the session's folder once symbolic links are resolved: a file read is
+  copied in, a file written is moved out once the run succeeds. Anything else
+  the run leaves, such as a download, moves to `.switch/<tool>/` in the
+  session's folder, which git ignores, and the answer says where.
+- **The token, and nothing else.** The run's environment holds the token in
+  `token_env`, a configuration folder and home kept for the session, and the
+  host's own proxy and certificate-authority settings; nothing of the coding
+  tool's. The token is asked for on every run, added to the session's
+  redactions, and scrubbed from the output.
+- **Refused, timed out, too long.** A run that ends as `token_refused` says is
+  run once more on a token asked for again, naming the refused one. A run past
+  `timeout_s` is stopped. Output past `output_cap_bytes` is saved to
+  `.switch/<tool>/` and its path returned with the start of it; past 64 MiB the
+  run is stopped.
+
+The binary is found on the host's `PATH` until a pinned build is shipped.
+
 ## Grants
 
 A pass-through service's grant names no level, tools or resources: the broker
