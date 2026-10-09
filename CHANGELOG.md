@@ -167,6 +167,15 @@ version of their own to them without also giving them a release of their own.
   `status` and `list` report `instance_type_allowed` for each machine. A
   database bound before this release is accepted and rebound on first start,
   as long as `allowed_instance_types` has not changed in the same deploy.
+- **The Helm chart runs switch-core as a ServiceAccount of its own.**
+  It is `<release>-switch-core` (`switchCore.serviceAccount`) where it used to be
+  the namespace's `default`, which every pod that names no account shares, so
+  anything trusting switch-core's identity, such as the distributed Teams app's
+  federated credential, trusts switch-core alone. `create: false` with a `name`
+  runs it as an account made elsewhere. A Teams app whose federated
+  credential trusts `default` stops getting tokens after this upgrade: add a
+  credential for `system:serviceaccount:<namespace>:<release>-switch-core`
+  first, and remove the old one once the new pod is up.
 - **Agents and controllers are pinged every 10 seconds instead of every 2.**
   A connection is now declared dead after 30 seconds without a beat, up from
   6, so a client that goes away holds its room slot and shows online for up to
