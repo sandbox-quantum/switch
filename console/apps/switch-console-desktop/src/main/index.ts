@@ -19,6 +19,7 @@ import { appService } from './core/app/service';
 import { controlService } from './core/control-api/control-service';
 import { localDependencyManager } from './core/dependencies/dependency-managers';
 import { embeddedControllerService } from './core/embedded-controller/embedded-controllers';
+import { featureFlagsService } from './core/feature-flags/feature-flags';
 import { locationManager } from './core/locations/location-manager';
 import { locationSettingsService } from './core/locations/settings/location-settings-service';
 import { localServerService } from './core/managed-switch-server/local-server-service';
@@ -200,6 +201,13 @@ void app.whenReady().then(async () => {
       log.error('Workspace reconcile could not run; every server was left as it was:', error);
     });
 
+  // Each server's feature flags, read on a schedule so a redeploy that changes
+  // them reaches the window without a restart. Started once the managed stacks
+  // report themselves, for the same reason as the reconcile above.
+  void Promise.allSettled([localServerReady, remoteServerReady]).then(() =>
+    featureFlagsService.start()
+  );
+
   const dependenciesReady = localDependencyManager.probeAll().catch((e: unknown) => {
     log.error('Failed to probe dependencies:', e);
   });
@@ -290,6 +298,7 @@ app.on('before-quit', (event) => {
   controlService.dispose();
   stopAutoMigration();
   stopResourceSampler();
+  featureFlagsService.stop();
   localServerService.dispose();
   remoteServerService.dispose();
   updateService.dispose();

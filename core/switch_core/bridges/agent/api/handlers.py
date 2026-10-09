@@ -70,7 +70,6 @@ from switch_core.bridges.agent.api.schemas import (
     RoomListResponse,
     RuntimeStateRequest,
     SendMessageRequest,
-    SetFeatureFlagRequest,
     StatusRequest,
     TaskAgentsResponse,
     TaskInfo,
@@ -130,8 +129,6 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import Agent, HostedLaunch, Task, require_tenant_id
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.api_key_store import ApiKeyStore
-from switch_core.db.stores.feature_flag_store import FeatureFlagStore
-from switch_core.feature_flags import is_known_flag
 from switch_core.gateway.known_agents import KNOWN_AGENTS
 from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
 from switch_core.observability.metrics import metrics
@@ -2148,34 +2145,15 @@ async def list_bridges(
 @router.get("/feature-flags")
 async def list_feature_flags(
     _agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> FeatureFlagListResponse:
-    """List every server-global feature flag and its current state.
+    """List every feature flag and whether this deployment turned it on.
 
-    Any authenticated agent may read the flags.
+    Any authenticated agent may read them. Flags are set at deploy time
+    (`FEATURE_FLAGS_ENABLED`); nothing can change them through the API.
     """
-    flags = await FeatureFlagStore().get_all(session)
     return FeatureFlagListResponse(
-        flags=[FeatureFlagInfo(key=k, enabled=v) for k, v in sorted(flags.items())]
+        flags=[
+            FeatureFlagInfo(key=k, enabled=v) for k, v in config.feature_flags.items()
+        ]
     )
-
-
-@router.put("/feature-flags/{key}")
-async def set_feature_flag(
-    key: str,
-    req: SetFeatureFlagRequest,
-    _agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-) -> FeatureFlagInfo:
-    """Flip a server-global feature flag on or off.
-
-    Gated by any valid agent API token. Only keys in the known-flag registry
-    are accepted so the endpoint cannot write arbitrary rows.
-    """
-    if not is_known_flag(key):
-        raise HTTPException(status_code=400, detail=f"Unknown feature flag: {key}")
-
-    store = FeatureFlagStore()
-    await store.set(session, key, req.enabled)
-    await session.commit()
-    return FeatureFlagInfo(key=key, enabled=req.enabled)

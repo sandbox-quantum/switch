@@ -119,6 +119,9 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # `list_joinable_tenants` and `join_tenant_by_domain`.
     ("GET", "/joinable-tenants"),
     ("POST", "/joinable-tenants/{tenant_id}/join"),
+    # Feature flags belong to the deployment and come from its config, so
+    # there is no workspace to scope them to and no session is opened.
+    ("GET", "/feature-flags"),
 }
 
 

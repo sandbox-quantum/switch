@@ -91,15 +91,12 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
         """Hardcoded on purpose, and hardcoded twice on purpose.
 
         `users` is a person rather than a tenant member, `oidc_identities`
-        records how that person proves who they are, and `feature_flags` is a
-        deployment switch — a flag that has to vary per customer is a new
-        scoped table, not a nullable column there. `alembic_version` is
+        records how that person proves who they are. `alembic_version` is
         global too but is not in this metadata: Alembic owns it.
         """
         assert set(GLOBAL_TABLES) == {
             "users",
             "oidc_identities",
-            "feature_flags",
             # Facts about the installation, not about anything in it: which
             # deployment this is to the analytics relay and when it was
             # installed, which once-ever milestones it has reported, and when

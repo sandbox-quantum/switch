@@ -1476,3 +1476,12 @@ class BudgetResponse(BaseModel):
     spent: int
     resets_at: datetime
     exhausted: bool
+
+
+class FeatureFlagState(BaseModel):
+    key: str
+    enabled: bool
+
+
+class FeatureFlagsResponse(BaseModel):
+    flags: list[FeatureFlagState]

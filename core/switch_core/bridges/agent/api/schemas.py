@@ -465,10 +465,6 @@ class AgentListResponse(BaseModel):
     agents: list[AgentInfo]
 
 
-class SetFeatureFlagRequest(BaseModel):
-    enabled: bool
-
-
 class FeatureFlagInfo(BaseModel):
     key: str
     enabled: bool
