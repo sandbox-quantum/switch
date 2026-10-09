@@ -2485,6 +2485,36 @@ class ChatHidden(TenantScoped, Base):
     )
 
 
+class ChatOwnerGrant(TenantScoped, Base):
+    """A membership held only because the person owns an agent in the room.
+
+    Present while that is the sole reason: it goes with the membership when
+    they no longer own an agent there, and is dropped (making the membership
+    lasting) when they are invited, create the chat, or join as a manager.
+    """
+
+    __tablename__ = "chat_owner_grants"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "user_id", "room_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_chat_owner_grants_room",
+            ondelete="CASCADE",
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_chat_owner_grants_user"),
+        nullable=False,
+    )
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # `create_all` builds the schema for tests; the trigger has to come with it or
 # the delivery tests would exercise a table that announces nothing. Real
 # databases get the same DDL from a migration.
