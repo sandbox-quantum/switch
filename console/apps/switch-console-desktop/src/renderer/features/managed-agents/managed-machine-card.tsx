@@ -1,8 +1,12 @@
-import { ChevronDown, CircleAlert, Laptop, Server } from 'lucide-react';
+import { ChevronDown, CircleAlert, Cloud, Laptop, Server } from 'lucide-react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { cn } from '@renderer/utils/utils';
-import type { ManagedAgentView, OwnedMachine } from '@shared/core/managed-agents/managed-agents';
+import {
+  isCloudMachine,
+  type ManagedAgentView,
+  type OwnedMachine,
+} from '@shared/core/managed-agents/managed-agents';
 import { machineProblem, machineTone, managedAgentState } from './managed-agent-state';
 
 const DOT: Record<ReturnType<typeof machineTone>, string> = {
@@ -64,7 +68,12 @@ function MachineCard({
 }) {
   const problem = machineProblem(agent, machine);
   const state = managedAgentState(agent);
-  const Icon = machine?.local?.kind === 'this-computer' ? Laptop : Server;
+  const Icon =
+    machine?.local?.kind === 'this-computer'
+      ? Laptop
+      : agent.machine && isCloudMachine(agent.machine)
+        ? Cloud
+        : Server;
   const subtitle =
     machine?.local?.kind === 'this-computer'
       ? 'This computer'

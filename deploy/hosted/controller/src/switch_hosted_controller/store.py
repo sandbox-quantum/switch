@@ -10,6 +10,10 @@ from .model import DesiredState, Machine, ObservedState
 LEGACY_ROWS_MESSAGE = (
     "legacy per-agent rows present; see 'Moving to one machine per user' in deploy/hosted/README.md"
 )
+SLOT_ROWS_MESSAGE = (
+    "the state database holds machines placed on slots that are not deleted; "
+    "see 'Moving off machine slots' in deploy/hosted/README.md"
+)
 
 
 RECOVERY_LIMIT = 3
@@ -20,10 +24,6 @@ class StoreError(RuntimeError):
 
 
 class CapacityError(StoreError):
-    pass
-
-
-class SlotInUseError(StoreError):
     pass
 
 
@@ -40,12 +40,11 @@ class MachineStore:
         self._connection.execute("PRAGMA synchronous=FULL")
         self._connection.execute("PRAGMA foreign_keys=ON")
         self._refuse_legacy_rows()
+        self._drop_slot_rows()
         self._connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS machines (
-                machine_id TEXT NOT NULL UNIQUE,
-                slot_id TEXT NOT NULL,
-                generation INTEGER NOT NULL CHECK (generation >= 1),
+                machine_id TEXT PRIMARY KEY,
                 desired_state TEXT NOT NULL
                     CHECK (desired_state IN ('running', 'stopped', 'retained', 'deleted')),
                 observed_state TEXT NOT NULL,
@@ -54,15 +53,12 @@ class MachineStore:
                 operation_id TEXT NOT NULL,
                 instance_type TEXT NOT NULL,
                 image_id TEXT NOT NULL,
-                assignment_secret_arn TEXT NOT NULL,
-                instance_profile_arn TEXT NOT NULL,
                 instance_seq INTEGER NOT NULL DEFAULT 0,
                 recovery_count INTEGER NOT NULL DEFAULT 0,
                 data_volume_id TEXT,
                 volume_az TEXT,
                 instance_id TEXT,
                 previous_instance_id TEXT,
-                previous_runtime_fingerprint TEXT,
                 retain_until TEXT,
                 observed_revision INTEGER NOT NULL DEFAULT 0,
                 observed_operation_id TEXT,
@@ -77,19 +73,19 @@ class MachineStore:
                 required_bundle_revision INTEGER,
                 required_bundle_token TEXT,
                 bundle_token TEXT,
+                bundle TEXT,
+                instance_bundle TEXT,
                 error TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (slot_id, generation)
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE UNIQUE INDEX IF NOT EXISTS machines_one_live_row_per_slot
-                ON machines (slot_id) WHERE observed_state <> 'deleted';
             CREATE TABLE IF NOT EXISTS controller_metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
             """
         )
+        self._keep_instance_bundles()
         self._bind_fingerprint(controller_fingerprint)
 
     def close(self) -> None:
@@ -107,6 +103,47 @@ class MachineStore:
         if live:
             self._connection.close()
             raise StoreError(LEGACY_ROWS_MESSAGE)
+
+    def _drop_slot_rows(self) -> None:
+        """Forget the machines of a database from before machine slots were removed.
+
+        Only ones observed deleted are forgotten: a machine still on a slot
+        boots from that slot's secret, which no longer exists.
+        """
+        columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(machines)")}
+        if "slot_id" not in columns:
+            return
+        live = self._connection.execute(
+            "SELECT COUNT(*) FROM machines WHERE observed_state <> 'deleted'"
+        ).fetchone()[0]
+        if live:
+            self._connection.close()
+            raise StoreError(SLOT_ROWS_MESSAGE)
+        self._connection.executescript(
+            """
+            BEGIN IMMEDIATE;
+            DROP INDEX IF EXISTS machines_one_live_row_per_slot;
+            DROP TABLE machines;
+            COMMIT;
+            """
+        )
+
+    def _keep_instance_bundles(self) -> None:
+        """Move a database that kept only the token of an instance's bundle to
+        keeping the bundle itself; one no longer current is not known."""
+        columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(machines)")}
+        if "instance_bundle_token" not in columns:
+            return
+        self._connection.executescript(
+            """
+            BEGIN IMMEDIATE;
+            ALTER TABLE machines ADD COLUMN instance_bundle TEXT;
+            UPDATE machines SET instance_bundle = bundle
+                WHERE instance_bundle_token IS NOT NULL AND instance_bundle_token = bundle_token;
+            ALTER TABLE machines DROP COLUMN instance_bundle_token;
+            COMMIT;
+            """
+        )
 
     def _bind_fingerprint(self, fingerprint: str) -> None:
         self._connection.execute("BEGIN IMMEDIATE")
@@ -134,37 +171,18 @@ class MachineStore:
         self,
         *,
         machine_id: str,
-        slot_id: str,
-        generation: int,
         core_revision: int,
         instance_type: str,
         image_id: str,
-        assignment_secret_arn: str,
-        instance_profile_arn: str,
         max_machines: int,
     ) -> Machine:
-        """Insert a machine for a slot whose earlier generations are all observed deleted."""
+        """Insert a machine, within the configured capacity."""
         self._connection.execute("BEGIN IMMEDIATE")
         try:
             if self._connection.execute(
                 "SELECT 1 FROM machines WHERE machine_id = ?", (machine_id,)
             ).fetchone():
                 raise StoreError(f"machine {machine_id!r} already exists")
-            latest = self._connection.execute(
-                "SELECT MAX(generation) FROM machines WHERE slot_id = ?", (slot_id,)
-            ).fetchone()[0]
-            if latest is not None and generation <= latest:
-                raise StoreError(
-                    f"slot {slot_id!r} generation {generation} is not newer than stored generation {latest}"
-                )
-            live = self._connection.execute(
-                "SELECT generation FROM machines WHERE slot_id = ? AND observed_state <> ?",
-                (slot_id, ObservedState.DELETED.value),
-            ).fetchone()
-            if live is not None:
-                raise SlotInUseError(
-                    f"slot {slot_id!r} still has generation {live['generation']} that is not deleted"
-                )
             count = self._connection.execute(
                 "SELECT COUNT(*) FROM machines WHERE desired_state != ?",
                 (DesiredState.DELETED.value,),
@@ -175,24 +193,19 @@ class MachineStore:
             self._connection.execute(
                 """
                 INSERT INTO machines (
-                    machine_id, slot_id, generation, desired_state, observed_state,
-                    core_revision, desired_revision, operation_id, instance_type, image_id,
-                    assignment_secret_arn, instance_profile_arn, observed_revision,
-                    observed_operation_id
-                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 1, ?)
+                    machine_id, desired_state, observed_state, core_revision,
+                    desired_revision, operation_id, instance_type, image_id,
+                    observed_revision, observed_operation_id
+                ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, 1, ?)
                 """,
                 (
                     machine_id,
-                    slot_id,
-                    generation,
                     DesiredState.RUNNING.value,
                     ObservedState.PENDING.value,
                     core_revision,
                     operation_id,
                     instance_type,
                     image_id,
-                    assignment_secret_arn,
-                    instance_profile_arn,
                     operation_id,
                 ),
             )
@@ -202,12 +215,6 @@ class MachineStore:
             if self._connection.in_transaction:
                 self._connection.execute("ROLLBACK")
             raise
-
-    def next_generation(self, slot_id: str) -> int:
-        latest = self._connection.execute(
-            "SELECT MAX(generation) FROM machines WHERE slot_id = ?", (slot_id,)
-        ).fetchone()[0]
-        return 1 if latest is None else latest + 1
 
     def record_core_revision(self, machine_id: str, revision: int) -> Machine:
         """Record Core's revision; an older one than already recorded leaves the machine unchanged."""
@@ -289,9 +296,7 @@ class MachineStore:
     def mark_volume_create_intent(self, claim: Machine) -> Machine:
         return self._mark_intent(claim, "volume_create_intent")
 
-    def upgrade_terminated(
-        self, claim: Machine, image_id: str, previous_runtime_fingerprint: str
-    ) -> Machine:
+    def upgrade_terminated(self, claim: Machine, image_id: str) -> Machine:
         if (
             claim.desired_state is not DesiredState.STOPPED
             or not claim.instance_id
@@ -304,7 +309,8 @@ class MachineStore:
             raise StoreError("the machine already uses this image")
         cursor = self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
-            image_id = ?, previous_runtime_fingerprint = ?, instance_seq = instance_seq + 1,
+            instance_bundle = NULL,
+            image_id = ?, instance_seq = instance_seq + 1,
             desired_revision = desired_revision + 1, operation_id = ?,
             instance_launch_intent = 0, instance_launch_issued = 0, instance_launch_issued_at = NULL,
             instance_terminate_issued = 0,
@@ -313,7 +319,6 @@ class MachineStore:
             AND desired_state = 'stopped' AND instance_id = ? AND instance_terminal_observed = 1""",
             (
                 image_id,
-                previous_runtime_fingerprint,
                 str(uuid.uuid4()),
                 claim.machine_id,
                 claim.desired_revision,
@@ -337,7 +342,8 @@ class MachineStore:
             require_recovery_allowed(claim)
         self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
-            previous_runtime_fingerprint = NULL, instance_seq = instance_seq + 1,
+            instance_bundle = NULL,
+            instance_seq = instance_seq + 1,
             recovery_count = recovery_count + ?, instance_launch_intent = 0,
             instance_launch_issued = 0, instance_launch_issued_at = NULL,
             instance_terminate_issued = 0,
@@ -361,7 +367,8 @@ class MachineStore:
             raise StoreError("release requires a confirmed terminated instance")
         self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
-            previous_runtime_fingerprint = NULL, instance_seq = instance_seq + 1,
+            instance_bundle = NULL,
+            instance_seq = instance_seq + 1,
             instance_launch_intent = 0, instance_launch_issued = 0, instance_launch_issued_at = NULL,
             instance_terminate_issued = 0,
             instance_terminal_observed = 0, updated_at = CURRENT_TIMESTAMP
@@ -434,8 +441,10 @@ class MachineStore:
         )
         return self.get(machine_id)
 
-    def record_instance(self, machine_id: str, instance_id: str) -> Machine:
-        self._set_once(machine_id, "instance_id", instance_id)
+    def record_instance(self, machine_id: str, instance_id: str, bundle: str | None) -> Machine:
+        """Record the machine's instance, launched with `bundle` as its user data,
+        or None when that is not known."""
+        self._set_once(machine_id, "instance_id", instance_id, extra=("instance_bundle", bundle))
         return self.get(machine_id)
 
     def mark_instance_terminal_observed(self, machine_id: str, instance_id: str) -> Machine:
@@ -489,39 +498,32 @@ class MachineStore:
         )
         return self.get(machine_id)
 
-    def record_bundle(self, machine_id: str, token: str) -> Machine:
+    def record_bundle(self, machine_id: str, token: str, bundle: str) -> Machine:
+        """Keep the bundle of the required revision, which the machine's next
+        instance launch or start boots from."""
         self._connection.execute(
             """
-            UPDATE machines SET bundle_token = ?, updated_at = CURRENT_TIMESTAMP
+            UPDATE machines SET bundle_token = ?, bundle = ?, updated_at = CURRENT_TIMESTAMP
             WHERE machine_id = ? AND required_bundle_token = ?
             """,
-            (token, machine_id, token),
+            (token, bundle, machine_id, token),
         )
         return self.get(machine_id)
 
     def get(self, machine_id: str) -> Machine:
         return self._get_row(machine_id)
 
-    def find(self, slot_id: str, generation: int) -> Machine | None:
+    def find(self, machine_id: str) -> Machine | None:
         row = self._connection.execute(
-            "SELECT * FROM machines WHERE slot_id = ? AND generation = ?", (slot_id, generation)
+            "SELECT * FROM machines WHERE machine_id = ?", (machine_id,)
         ).fetchone()
         return None if row is None else _machine(row)
-
-    def latest(self, slot_id: str) -> Machine:
-        row = self._connection.execute(
-            "SELECT * FROM machines WHERE slot_id = ? ORDER BY generation DESC LIMIT 1",
-            (slot_id,),
-        ).fetchone()
-        if row is None:
-            raise MachineNotFoundError(f"no machine for slot {slot_id!r}")
-        return _machine(row)
 
     def list(self) -> list[Machine]:
         return [
             _machine(row)
             for row in self._connection.execute(
-                "SELECT * FROM machines ORDER BY slot_id, generation"
+                "SELECT * FROM machines ORDER BY created_at, machine_id"
             )
         ]
 
@@ -555,7 +557,11 @@ class MachineStore:
         return self.get(claim.machine_id)
 
     def _set_once(
-        self, machine_id: str, column: str, value: str, extra: tuple[str, str] | None = None
+        self,
+        machine_id: str,
+        column: str,
+        value: str,
+        extra: tuple[str, str | None] | None = None,
     ) -> None:
         if column not in {"instance_id", "data_volume_id"}:
             raise ValueError("invalid set-once column")
@@ -566,10 +572,10 @@ class MachineStore:
             if existing is not None and existing != value:
                 raise StoreError(f"refusing to replace recorded {column}")
             assignments = [f"{column} = ?", "updated_at = CURRENT_TIMESTAMP"]
-            values: list[str] = [value]
+            values: list[str | None] = [value]
             if extra is not None:
                 extra_column, extra_value = extra
-                if extra_column != "volume_az":
+                if extra_column not in {"volume_az", "instance_bundle"}:
                     raise ValueError("invalid extra column")
                 assignments.insert(1, f"{extra_column} = ?")
                 values.append(extra_value)
@@ -608,8 +614,6 @@ def _timestamp(value: datetime | None) -> str | None:
 def _machine(row: sqlite3.Row) -> Machine:
     return Machine(
         machine_id=row["machine_id"],
-        slot_id=row["slot_id"],
-        generation=row["generation"],
         desired_state=DesiredState(row["desired_state"]),
         desired_revision=row["desired_revision"],
         operation_id=row["operation_id"],
@@ -617,11 +621,8 @@ def _machine(row: sqlite3.Row) -> Machine:
         retain_until=(datetime.fromisoformat(row["retain_until"]) if row["retain_until"] else None),
         instance_type=row["instance_type"],
         image_id=row["image_id"],
-        assignment_secret_arn=row["assignment_secret_arn"],
-        instance_profile_arn=row["instance_profile_arn"],
         instance_id=row["instance_id"],
         previous_instance_id=row["previous_instance_id"],
-        previous_runtime_fingerprint=row["previous_runtime_fingerprint"],
         instance_seq=row["instance_seq"],
         recovery_count=row["recovery_count"],
         data_volume_id=row["data_volume_id"],
@@ -645,4 +646,6 @@ def _machine(row: sqlite3.Row) -> Machine:
         required_bundle_revision=row["required_bundle_revision"],
         required_bundle_token=row["required_bundle_token"],
         bundle_token=row["bundle_token"],
+        bundle=row["bundle"],
+        instance_bundle=row["instance_bundle"],
     )

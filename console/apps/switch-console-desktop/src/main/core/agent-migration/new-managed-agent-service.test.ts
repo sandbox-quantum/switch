@@ -20,6 +20,7 @@ const PARAMS: AddManagedAgentParams = {
   instructions: 'Be brief.',
   model: 'opus',
   advancedConfig: { effort: 'high', tools: ['Read'] },
+  isolation: 'isolated',
   entryPoint: 'sidebar',
 };
 
@@ -101,6 +102,7 @@ describe('NewManagedAgentService.add', () => {
           instructions: 'Be brief.',
           auto_approve: true,
           directory: '/work/pm',
+          isolation: 'isolated',
         },
       },
     ]);

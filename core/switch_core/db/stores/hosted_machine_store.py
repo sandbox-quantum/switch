@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import secrets
 from datetime import datetime, timedelta
 from typing import Literal, cast
 from uuid import uuid4
@@ -9,8 +7,11 @@ from uuid import uuid4
 from sqlalchemy import exists, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import HostedLaunch, HostedMachine, require_tenant_id
-from switch_core.keys import Keyring
+from switch_core.db.models import (
+    AgentDefinition,
+    HostedMachine,
+    require_tenant_id,
+)
 
 MACHINE_CONNECT_TIMEOUT = timedelta(minutes=10)
 MACHINE_NEEDS_ATTENTION = (
@@ -19,6 +20,7 @@ MACHINE_NEEDS_ATTENTION = (
 MACHINE_NEEDS_ADMIN = (
     "Your cloud machine needs attention. Contact your server administrator."
 )
+MACHINES_FULL = "Every Switch cloud machine on this server is in use. Try again later."
 MACHINE_BEING_REMOVED = (
     "Your previous cloud machine is being removed. Try again in a minute."
 )
@@ -28,10 +30,6 @@ class HostedMachineConflict(Exception):
     """A machine cannot take the requested change; the message is the 409 detail."""
 
 
-def capability_hash(capability: str) -> str:
-    return hashlib.sha256(capability.encode()).hexdigest()
-
-
 async def _advisory_lock(session: AsyncSession, key: str) -> None:
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
@@ -39,19 +37,14 @@ async def _advisory_lock(session: AsyncSession, key: str) -> None:
     )
 
 
-async def lock_launches(session: AsyncSession) -> None:
-    """The tenant-wide lock taken before creating a launch or claiming a machine."""
+async def lock_claims(session: AsyncSession) -> None:
+    """The tenant-wide lock taken before claiming a machine."""
     await _advisory_lock(session, f"hosted-launches:{require_tenant_id()}")
 
 
 async def lock_machine(session: AsyncSession, machine_id: str) -> None:
-    """The per-machine lock, taken after the tenant lock and before any launch lock."""
+    """The per-machine lock, taken after the tenant lock."""
     await _advisory_lock(session, f"hosted-machine:{require_tenant_id()}:{machine_id}")
-
-
-async def lock_launch(session: AsyncSession, launch_id: str) -> None:
-    """The per-launch advisory lock every lifecycle, relay and attach step takes."""
-    await _advisory_lock(session, f"hosted-launch:{require_tenant_id()}:{launch_id}")
 
 
 def idle_sleeping(machine: HostedMachine) -> bool:
@@ -151,37 +144,18 @@ class HostedMachineStore:
             ),
         )
 
-    async def locked_launch(
-        self, session: AsyncSession, launch_id: str
-    ) -> tuple[HostedLaunch | None, HostedMachine | None]:
-        """A launch and its machine, locked machine first, then launch."""
-        tenant_id = require_tenant_id()
-        launch = await session.get(HostedLaunch, (tenant_id, launch_id))
-        if launch is None:
-            return None, None
-        machine_id = launch.machine_id
-        if machine_id is not None:
-            await lock_machine(session, machine_id)
-        await lock_launch(session, launch_id)
-        launch = await session.get(
-            HostedLaunch, (tenant_id, launch_id), populate_existing=True
-        )
-        machine = None if machine_id is None else await self.get(session, machine_id)
-        return launch, machine
-
     async def claim(
         self,
         session: AsyncSession,
         *,
         owner_id: str,
-        slots: list[str],
         capacity: int,
         now: datetime,
     ) -> HostedMachine:
-        """The owner's machine, reused or newly placed on a free slot.
+        """The owner's machine, reused or newly claimed within `capacity`.
 
-        The caller holds `lock_launches`, so no other claim in the tenant can
-        take the same slot or count towards capacity meanwhile.
+        The caller holds `lock_claims`, so no other claim in the tenant can
+        count towards capacity meanwhile.
         """
         tenant_id = require_tenant_id()
         machine = await self.live_for_owner(session, owner_id)
@@ -204,30 +178,21 @@ class HostedMachineStore:
             await session.flush()
             return machine
 
-        used = set(
-            await session.scalars(
-                select(HostedMachine.slot_id).where(
-                    HostedMachine.tenant_id == tenant_id,
-                    HostedMachine.state != "deleted",
-                )
-            )
-        )
-        slot_id = next((slot for slot in slots if slot not in used), None)
-        if len(used) >= capacity or slot_id is None:
-            raise HostedMachineConflict("no machine slot available")
-        generation = await session.scalar(
-            select(func.max(HostedMachine.generation)).where(
+        live = await session.scalar(
+            select(func.count())
+            .select_from(HostedMachine)
+            .where(
                 HostedMachine.tenant_id == tenant_id,
-                HostedMachine.slot_id == slot_id,
+                HostedMachine.state != "deleted",
             )
         )
+        if (live or 0) >= capacity:
+            raise HostedMachineConflict(MACHINES_FULL)
         machine_id = str(uuid4())
         await lock_machine(session, machine_id)
         machine = HostedMachine(
             id=machine_id,
             owner_id=owner_id,
-            slot_id=slot_id,
-            generation=(generation or 0) + 1,
             state="queued",
             desired_state="running",
             active_at=now,
@@ -262,24 +227,6 @@ class HostedMachineStore:
         machine.error_code = None
         bump_revision(machine, now)
 
-    def bump_agents(self, machine: HostedMachine) -> None:
-        machine.agents_version += 1
-
-    async def launches(
-        self, session: AsyncSession, machine_id: str
-    ) -> list[HostedLaunch]:
-        return list(
-            await session.scalars(
-                select(HostedLaunch)
-                .where(
-                    HostedLaunch.tenant_id == require_tenant_id(),
-                    HostedLaunch.machine_id == machine_id,
-                    HostedLaunch.state != "deleted",
-                )
-                .order_by(HostedLaunch.created_at)
-            )
-        )
-
     async def retain_if_empty(
         self,
         session: AsyncSession,
@@ -288,21 +235,13 @@ class HostedMachineStore:
         retention_days: int,
         now: datetime,
     ) -> bool:
-        """Retain the machine's disk once no agent is left on it.
+        """Retain the machine's disk once no managed agent is placed on its
+        controller.
 
         Returns whether it did. The caller holds the machine lock and commits.
         """
         await session.flush()
-        if await session.scalar(
-            select(
-                exists().where(
-                    HostedLaunch.tenant_id == require_tenant_id(),
-                    HostedLaunch.machine_id == machine.id,
-                    HostedLaunch.state != "deleted",
-                    HostedLaunch.desired_state != "deleted",
-                )
-            )
-        ):
+        if await self.has_agents(session, machine):
             return False
         machine.desired_state = "retained"
         machine.stop_reason = None
@@ -318,57 +257,49 @@ class HostedMachineStore:
         retention_days: int,
         now: datetime,
     ) -> bool:
-        """Retain an agentless machine, expiring at once if it never had an agent.
-
-        Launch rows are never hard-deleted, so a machine no row references has
-        no disk worth keeping. The caller holds the machine lock and commits.
+        """Retain an agentless machine, expiring at once if its controller
+        never enrolled: then its disk holds nothing worth keeping. The caller
+        holds the machine lock and commits.
         """
         if not await self.retain_if_empty(
             session, machine, retention_days=retention_days, now=now
         ):
             return False
-        if not await self.ever_hosted(session, machine.id):
+        if not await self.ever_hosted(session, machine):
             machine.retain_until = now
         return True
 
-    async def ever_hosted(self, session: AsyncSession, machine_id: str) -> bool:
-        """Whether any launch row ever referenced the machine, deleted or not."""
-        return bool(
+    async def has_agents(self, session: AsyncSession, machine: HostedMachine) -> bool:
+        """Whether a managed agent is still placed on the machine's controller."""
+        return machine.controller_id is not None and bool(
             await session.scalar(
                 select(
                     exists().where(
-                        HostedLaunch.tenant_id == require_tenant_id(),
-                        HostedLaunch.machine_id == machine_id,
+                        AgentDefinition.tenant_id == require_tenant_id(),
+                        AgentDefinition.controller_id == machine.controller_id,
                     )
                 )
             )
         )
 
-    def issue_capability(self, machine: HostedMachine, keyring: Keyring) -> str:
-        """The machine capability for the machine's current revision.
-
-        The same bytes for every call at one revision; a new revision mints new
-        ones and overwrites the old, so at most one is ever valid. The caller
-        commits.
-        """
-        if (
-            machine.machine_capability_revision == machine.revision
-            and machine.machine_capability_encrypted is not None
-        ):
-            return keyring.decrypt(machine.machine_capability_encrypted)
-        capability = secrets.token_urlsafe(32)
-        machine.machine_capability_encrypted = keyring.encrypt(capability)
-        machine.machine_capability_hash = capability_hash(capability)
-        machine.machine_capability_revision = machine.revision
-        return capability
-
-    @staticmethod
-    def capability_matches(machine: HostedMachine, capability: str) -> bool:
-        """Whether `capability` is the one last issued for the machine.
-
-        Not tied to the current revision: issuing rotates it, so the stored hash
-        is the only valid one. Machine state is the caller's to check alongside.
-        """
-        return machine.machine_capability_hash is not None and secrets.compare_digest(
-            machine.machine_capability_hash, capability_hash(capability)
+    async def managed_agent_ids(
+        self, session: AsyncSession, machine: HostedMachine
+    ) -> list[str]:
+        """The managed agents placed on the machine's controller."""
+        if machine.controller_id is None:
+            return []
+        return list(
+            await session.scalars(
+                select(AgentDefinition.agent_id)
+                .where(
+                    AgentDefinition.tenant_id == require_tenant_id(),
+                    AgentDefinition.controller_id == machine.controller_id,
+                )
+                .order_by(AgentDefinition.agent_id)
+            )
         )
+
+    async def ever_hosted(self, session: AsyncSession, machine: HostedMachine) -> bool:
+        """Whether the machine's disk may hold anything worth keeping: its
+        controller ever enrolled."""
+        return machine.controller_id is not None

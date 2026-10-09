@@ -18,13 +18,18 @@ export type RunLocationOption = {
   label: string;
   /** The right-hand tag: what sort of machine it is. */
   tag: string;
-  icon: 'monitor' | 'server';
+  icon: 'monitor' | 'server' | 'cloud';
   disabled: boolean;
 };
 
-/** The server's machines as Run location entries. Offline machines are listed, but cannot be picked. */
+/**
+ * The server's machines as Run location entries. Offline machines are listed,
+ * but cannot be picked; but the owner's Switch cloud machine, which the Switch
+ * cloud entry starts, is listed only while it is online.
+ */
 export function machineRunLocations(machines: OwnedMachine[]): RunLocationOption[] {
-  return [...machines]
+  return machines
+    .filter((machine) => !machine.cloud || machine.state === 'online')
     .sort(
       (a, b) =>
         Number(b.local?.kind === 'this-computer') - Number(a.local?.kind === 'this-computer')
@@ -40,8 +45,11 @@ export function machineRunLocations(machines: OwnedMachine[]): RunLocationOption
             ? 'this Console'
             : machine.local?.kind === 'ssh-host'
               ? 'ssh'
-              : machine.kind,
-        icon: machine.local?.kind === 'this-computer' ? 'monitor' : 'server',
+              : machine.cloud
+                ? 'cloud'
+                : machine.kind,
+        icon:
+          machine.local?.kind === 'this-computer' ? 'monitor' : machine.cloud ? 'cloud' : 'server',
         disabled: offline,
       };
     });

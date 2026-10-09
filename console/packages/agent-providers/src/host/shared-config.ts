@@ -8,6 +8,7 @@ import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { HttpMcpServerSpec } from '../adapter';
 import { prepareCodexSessionHome } from '../codex/home';
+import { type HostedCredential, hostedCredentialSchema } from './provider-login';
 import { roomConnectionSchema } from './room-inbox';
 import { startSchema } from './server';
 
@@ -99,7 +100,6 @@ export async function prepareSharedConfig(
         sessionId: config.session.sessionId,
         sourceHome: input.env.CODEX_HOME || join(homedir(), '.codex'),
         config: execution.codexConfig,
-        auth: process.env.SWITCH_HOSTED_BOOTSTRAP === '1' ? 'refresh' : 'copy-once',
       });
     input.systemContext = execution.context;
   }
@@ -107,6 +107,24 @@ export async function prepareSharedConfig(
   if (!agentApiUrl || !token)
     throw new Error('Shared SDK host requires execution-host Switch credentials.');
   return { agentApiUrl, token, input };
+}
+
+/**
+ * The provider login an agents controller hands this agent host with its
+ * credentials, when the machine has none of its own for the provider and
+ * Switch gave it one; null when it hands none.
+ */
+export async function readProviderLogin(
+  config: SharedHostConfig
+): Promise<HostedCredential | null> {
+  if (!config.execution) return null;
+  const { providerLogin } = z
+    .object({ providerLogin: hostedCredentialSchema.nullable().optional() })
+    .parse(JSON.parse(await readFile(config.execution.credentialsPath, 'utf8')));
+  if (!providerLogin) return null;
+  if (providerLogin.status === 'connected' && providerLogin.provider !== config.start.provider)
+    throw new Error('The provider login handed over is for another provider than this agent’s.');
+  return providerLogin;
 }
 
 export async function readSharedCredentials(config: SharedHostConfig) {

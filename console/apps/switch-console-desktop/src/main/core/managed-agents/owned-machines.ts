@@ -2,7 +2,11 @@ import type {
   ControllerProviderReport,
   ManagementController,
 } from '@main/core/switch-servers/gateway-client';
-import type { MachineProvider, OwnedMachine } from '@shared/core/managed-agents/managed-agents';
+import {
+  isCloudMachine,
+  type MachineProvider,
+  type OwnedMachine,
+} from '@shared/core/managed-agents/managed-agents';
 
 /** This Console's own controllers on a server: this computer's, and its SSH hosts'. */
 export type LocalControllers = {
@@ -39,6 +43,8 @@ export function ownedMachines(
         kind: controller.kind,
         state: controller.state,
         providers: controller.providers.map(machineProvider),
+        acceptsLogins: controller.sealingKey !== null,
+        cloud: isCloudMachine(controller),
         workspacesDir: controller.workspacesDir,
         local:
           controller.id === local.thisComputer

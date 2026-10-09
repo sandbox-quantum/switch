@@ -21,7 +21,6 @@ from switch_core.clients.client_lifecycle_service import (
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, list_audit_events, record_audit_event
 from switch_core.db.models import (
-    GitHubIssuedToken,
     Invitation,
     ProviderConnection,
     Tenant,
@@ -115,12 +114,7 @@ from switch_core.gateway.schemas import (
     TenantMembershipResponse,
     UsageTotalResponse,
 )
-from switch_core.providers.github_revocations import (
-    ACCESS_WARNING,
-    queue_revocation,
-    revoke_oauth,
-    revoke_pending,
-)
+from switch_core.providers.github_revocations import revoke_oauth
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
 from switch_core.tenant_context import current_tenant_id
@@ -1456,7 +1450,6 @@ async def remove_member(
         if github_row
         else None
     )
-    await queue_revocation(session, (GitHubIssuedToken.owner_id == user_id,))
     await session.execute(
         delete(ProviderConnection).where(
             ProviderConnection.tenant_id == tenant_id,
@@ -1501,12 +1494,4 @@ async def remove_member(
             warning = "GitHub could not revoke the old sign-in. Revoke it in your GitHub settings."
         else:
             warning = await revoke_oauth(github, github_token)
-    remaining = await revoke_pending(
-        session, config, (GitHubIssuedToken.owner_id == user_id,)
-    )
-    messages = [
-        message
-        for message in (warning, ACCESS_WARNING if remaining else None)
-        if message
-    ]
-    return {"ok": True, "warning": " ".join(messages) or None}
+    return {"ok": True, "warning": warning}

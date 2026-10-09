@@ -1,5 +1,5 @@
 import { CircleAlert } from 'lucide-react';
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { cn } from '@renderer/utils/utils';
@@ -9,6 +9,7 @@ import {
   type AgentProviderId,
 } from '@shared/core/providers/agent-provider-registry';
 import { autoSelectedAgentType } from './agent-type-auto-selection';
+import { GiveMachineLogin } from './give-machine-login';
 
 /** Each provider, and whether the machine last reported it installed and logged in. */
 export function machineProviderOptions(
@@ -30,11 +31,13 @@ export function machineProviderOptions(
  * server: only the providers installed and logged in there can be picked.
  */
 export function MachineProviderPicker({
+  serverId,
   machine,
   value,
   onChange,
   defaultAgent,
 }: {
+  serverId: string;
   machine: OwnedMachine;
   value: AgentProviderId | null;
   onChange: (providerId: AgentProviderId) => void;
@@ -46,6 +49,11 @@ export function MachineProviderPicker({
     () => options.filter((option) => option.ready).map((option) => option.id),
     [options]
   );
+  // Installed there but not signed in: a login can be given to the machine.
+  const givable = machine.acceptsLogins
+    ? options.filter((option) => !option.ready && option.problem !== 'not installed')
+    : [];
+  const [giving, setGiving] = useState<AgentProviderId | null>(null);
 
   useEffect(() => {
     if (value) return;
@@ -94,6 +102,30 @@ export function MachineProviderPicker({
       <p className="text-xs text-foreground-muted">
         As {machine.name} last reported to the server.
       </p>
+      {giving ? (
+        <GiveMachineLogin
+          serverId={serverId}
+          machine={machine}
+          provider={giving}
+          onClose={() => setGiving(null)}
+        />
+      ) : (
+        givable.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-foreground-muted">
+            <span>Give {machine.name} a login for</span>
+            {givable.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className="cursor-pointer rounded-md border border-border px-2 py-0.5 text-foreground hover:bg-[var(--sel-soft)]"
+                onClick={() => setGiving(option.id)}
+              >
+                {option.name}
+              </button>
+            ))}
+          </div>
+        )
+      )}
     </Field>
   );
 }

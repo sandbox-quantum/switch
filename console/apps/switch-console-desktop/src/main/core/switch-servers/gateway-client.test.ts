@@ -47,16 +47,13 @@ vi.mock('./console-identity', () => ({
 }));
 
 const {
-  cloudLifecycle,
-  getCloudLaunchConfiguration,
+  cloudMachineLifecycle,
+  listCloudMachines,
   getConnectionCatalog,
   getGitHubConnection,
   startGitHubConnection,
   completeGitHubConnection,
   confirmGitHubConnection,
-  getClaudeConnection,
-  connectClaude,
-  disconnectClaude,
   acceptInvitation,
   acceptPendingInvitation,
   addBridgeTeam,
@@ -89,7 +86,6 @@ const {
   registerKnownAgent,
   updateAgentDisplayName,
   updateBridge,
-  updateCloudLaunchConfiguration,
   AgentManagementUnavailableError,
   enrollConsoleController,
   fetchAdvancedConfigSchema,
@@ -100,6 +96,8 @@ const {
   revokeManagementController,
   updateManagementController,
   fetchManagementControllers,
+  giveMachineLogin,
+  fetchMachineOperation,
   fetchAgentManagementAccess,
   updateCanManageAgents,
   updateManagedAgent,
@@ -640,7 +638,7 @@ describe('room creation', () => {
       ) as never
     );
 
-    await expect(cloudLifecycle(SERVER, 'launch', 'retry', 3)).rejects.toMatchObject({
+    await expect(cloudMachineLifecycle(SERVER, 'machine', 'start', 3)).rejects.toMatchObject({
       status: 409,
       detail: 'The owner stopped the cloud machine. Start it in Switch Console.',
       code: 'machine_stopped',
@@ -832,7 +830,7 @@ describe('ownsOwnerAddressedAgent', () => {
   });
 });
 
-describe('cloud agent edits', () => {
+describe('agent display name', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal('fetch', fetchMock);
@@ -841,56 +839,6 @@ describe('cloud agent edits', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-  });
-
-  const configuration = {
-    description: 'Reviews pull requests',
-    instructions: 'Be brief.',
-    definition_attributes: { model: 'opus' },
-  };
-
-  it('reads the configuration a launch carries', async () => {
-    fetchMock.mockResolvedValue(jsonResponse(configuration) as never);
-
-    await expect(getCloudLaunchConfiguration(SERVER, 'launch-1')).resolves.toEqual(configuration);
-    const [url] = fetchMock.mock.calls[0] as unknown as [string];
-    expect(url).toBe('https://switch.example.com/gateway/hosted-launches/launch-1/configuration');
-  });
-
-  it('PUTs the new instructions with the rendered definition', async () => {
-    fetchMock.mockResolvedValue(jsonResponse(configuration) as never);
-
-    await updateCloudLaunchConfiguration(SERVER, 'launch-1', {
-      instructions: 'Be brief.',
-      definition_attributes: { model: 'opus' },
-      definition: '---\nname: helper\n---\nBe brief.',
-    });
-
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [
-      string,
-      { method: string; body: string },
-    ];
-    expect(url).toBe('https://switch.example.com/gateway/hosted-launches/launch-1/configuration');
-    expect(init.method).toBe('PUT');
-    expect(JSON.parse(init.body)).toEqual({
-      instructions: 'Be brief.',
-      definition_attributes: { model: 'opus' },
-      definition: '---\nname: helper\n---\nBe brief.',
-    });
-  });
-
-  it('surfaces a refused configuration rather than reporting it saved', async () => {
-    fetchMock.mockResolvedValue(
-      errorResponse(409, '{"detail":"This worker has been removed."}') as never
-    );
-
-    await expect(
-      updateCloudLaunchConfiguration(SERVER, 'launch-1', {
-        instructions: '',
-        definition_attributes: {},
-        definition: 'x',
-      })
-    ).rejects.toMatchObject({ status: 409, detail: 'This worker has been removed.' });
   });
 
   it('PUTs a display name, or null to clear it', async () => {
@@ -1054,73 +1002,6 @@ describe('deleteBridge', () => {
   });
 });
 
-describe('Claude cloud connection transport', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.stubGlobal('fetch', fetchMock);
-    getSessionCookie.mockResolvedValue(makeJwt(7200));
-  });
-  afterEach(() => vi.unstubAllGlobals());
-  it('refuses to send provider credentials over HTTP', async () => {
-    await expect(
-      connectClaude(
-        {
-          id: 'insecure',
-          name: 'Insecure',
-          gatewayUrl: 'http://switch.example.com',
-          managed: false,
-        } as never,
-        'api-key',
-        'SYNTHETIC'
-      )
-    ).rejects.toThrow('HTTPS');
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-  it('sends the credential only in an authenticated PUT body', async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          status: 'connected',
-          kind: 'api-key',
-          verified_at: '2026-01-01T00:00:00Z',
-        })
-      )
-    );
-    await connectClaude(SERVER, 'api-key', 'SYNTHETIC-CREDENTIAL');
-    const [url, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe('https://switch.example.com/gateway/provider-connections/claude');
-    expect(options.method).toBe('PUT');
-    expect(JSON.parse(options.body as string)).toEqual({
-      kind: 'api-key',
-      credential: 'SYNTHETIC-CREDENTIAL',
-    });
-    expect(cookieHeaderOf(fetchMock.mock.calls[0])).toContain('switch_auth=');
-  });
-  it('reads metadata and deletes without a credential body', async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: 'not_connected' })));
-    expect(await getClaudeConnection(SERVER)).toEqual({ status: 'not_connected' });
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await disconnectClaude(SERVER);
-    const [, options] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
-    expect(options.method).toBe('DELETE');
-    expect(options.body).toBeUndefined();
-  });
-  it('rejects malformed connection status', async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ status: 'connected', kind: 'unknown' }))
-    );
-    await expect(getClaudeConnection(SERVER)).rejects.toThrow('invalid Claude connection status');
-  });
-  it('surfaces a failed verification instead of reporting a connection', async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ detail: 'Claude could not complete the check.' }), {
-        status: 422,
-      })
-    );
-    await expect(connectClaude(SERVER, 'api-key', 'SYNTHETIC-CREDENTIAL')).rejects.toThrow();
-  });
-});
-
 describe('GitHub connection transport', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1269,6 +1150,7 @@ describe('sign-up support', () => {
       disk: null,
       memory: null,
       agents: [],
+      controller_id: null,
     };
     fetchMock.mockResolvedValueOnce(jsonResponse(machine));
     await expect(ensureCloudMachine(SERVER)).resolves.toEqual(machine);
@@ -1276,6 +1158,57 @@ describe('sign-up support', () => {
     expect(url).toBe('https://switch.example.com/gateway/hosted-machines/ensure');
     expect(options.method).toBe('POST');
     expect(cookieHeaderOf(fetchMock.mock.calls[0])).toContain('switch_auth=');
+  });
+
+  it('reads the controller a machine enrolled as', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        machine_id: 'm-1',
+        state: 'ready',
+        desired_state: 'running',
+        stop_reason: null,
+        sleeping: false,
+        revision: 2,
+        instance_type: 'c7i.large',
+        error: null,
+        error_code: null,
+        retain_until: null,
+        heartbeat_at: null,
+        disk: null,
+        memory: null,
+        agents: ['agent-1'],
+        controller_id: 'controller-7',
+      })
+    );
+    await expect(ensureCloudMachine(SERVER)).resolves.toMatchObject({
+      controller_id: 'controller-7',
+    });
+  });
+
+  it('lists the caller’s cloud machines, and none on a server without them', async () => {
+    const machine = {
+      machine_id: 'm-1',
+      state: 'ready',
+      desired_state: 'running',
+      stop_reason: null,
+      sleeping: false,
+      revision: 2,
+      instance_type: null,
+      error: null,
+      error_code: null,
+      retain_until: null,
+      heartbeat_at: null,
+      disk: null,
+      memory: null,
+      agents: [],
+      controller_id: null,
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse({ machines: [machine] }));
+    await expect(listCloudMachines(SERVER)).resolves.toEqual([machine]);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/hosted-machines');
+    fetchMock.mockResolvedValueOnce(errorResponse(404, '{"detail":"Not Found"}'));
+    await expect(listCloudMachines(SERVER)).resolves.toBeNull();
   });
 
   it('raises the server’s explanation when no machine can be had', async () => {
@@ -2178,6 +2111,91 @@ describe('agent management calls', () => {
     expect(url).toBe('https://switch.example.com/gateway/management/controllers/controller-1');
     expect(init.method).toBe('PATCH');
     expect(JSON.parse(String(init.body))).toEqual({ name: 'laptop', description: null });
+  });
+
+  it('reads the key a machine takes logins sealed to, and gives it one', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(200, [
+        {
+          id: 'controller-1',
+          name: 'box',
+          description: null,
+          kind: 'daemon',
+          state: 'online',
+          last_seen_at: null,
+          revoked_at: null,
+          public_key: { alg: 'X25519', key: 'a2V5', key_id: '0123456789abcdef' },
+        },
+        {
+          id: 'controller-2',
+          name: 'old',
+          description: null,
+          kind: 'daemon',
+          state: 'online',
+          last_seen_at: null,
+          revoked_at: null,
+        },
+      ])
+    );
+    const [keyed, keyless] = await fetchManagementControllers(SERVER);
+    expect(keyed?.sealingKey).toEqual({ key: 'a2V5', keyId: '0123456789abcdef' });
+    expect(keyless?.sealingKey).toBeNull();
+
+    const sealed = {
+      alg: 'X25519-HKDF-SHA256-A256GCM' as const,
+      key_id: '0123456789abcdef',
+      ephemeral_key: 'ZQ==',
+      nonce: 'bg==',
+      ciphertext: 'Yw==',
+    };
+    fetchMock.mockImplementation(async () =>
+      respond(200, { login: { provider: 'claude', revision: 2 }, operation: { id: 'op-1' } })
+    );
+    expect(await giveMachineLogin(SERVER, 'controller-1', 'claude', sealed)).toEqual({
+      operationId: 'op-1',
+      revision: 2,
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe(
+      'https://switch.example.com/gateway/management/controllers/controller-1/provider-logins/claude'
+    );
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ sealed });
+    await expect(
+      giveMachineLogin(
+        { ...(SERVER as object), gatewayUrl: 'http://switch.example.com' } as never,
+        'c',
+        'claude',
+        sealed
+      )
+    ).rejects.toThrow(/HTTPS/);
+
+    fetchMock.mockImplementation(async () =>
+      respond(200, [
+        {
+          id: 'op-1',
+          state: 'failed',
+          result: {
+            outcome: 'failed',
+            error: { code: 'provider_login_expired', message: 'No.' },
+          },
+        },
+        { id: 'op-2', state: 'succeeded', result: { outcome: 'succeeded' } },
+      ])
+    );
+    expect(await fetchMachineOperation(SERVER, 'controller-1', 'op-1')).toEqual({
+      state: 'failed',
+      error: { code: 'provider_login_expired', message: 'No.' },
+    });
+    expect(await fetchMachineOperation(SERVER, 'controller-1', 'op-2')).toEqual({
+      state: 'succeeded',
+      error: null,
+    });
+    expect(await fetchMachineOperation(SERVER, 'controller-1', 'op-9')).toBeNull();
+    fetchMock.mockImplementation(async () => respond(200, { operations: [] }));
+    await expect(fetchMachineOperation(SERVER, 'controller-1', 'op-1')).rejects.toThrow(
+      /not a list/
+    );
   });
 
   it("reads each machine's providers from its last status report, and invents none", async () => {

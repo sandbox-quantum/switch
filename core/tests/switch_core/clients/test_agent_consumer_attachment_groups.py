@@ -4,7 +4,6 @@ import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -115,7 +114,6 @@ def _fake_client() -> SimpleNamespace:
         _is_available=_is_available,
         availability_checks=0,
         queue=queue,
-        _note_hosted_addressed=AsyncMock(return_value=None),
     )
     ns._emit_media = AgentConsumer._emit_media.__get__(ns)
     ns._report_addressed = AgentConsumer._report_addressed.__get__(ns)

@@ -1,3 +1,4 @@
+import type { SealedLogin } from '@switch-console/agent-providers';
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 import { z } from 'zod';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
@@ -7,29 +8,19 @@ import {
   noteManagedServerUnanswered,
 } from '@main/core/managed-switch-server/managed-server-status';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
-import { cloudLaunchSchema, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
+import { type CloudMachine, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
 import type {
   AdvancedConfigField,
   ManagedMachine,
 } from '@shared/core/managed-agents/managed-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
-import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
-import type {
-  ClaudeCredentialKind,
-  ClaudeConnection,
-} from '@shared/core/switch-servers/claude-credential';
-import type {
-  CloudLaunchConfiguration,
-  CloudLaunchInput,
-} from '@shared/core/switch-servers/cloud-launch';
 import { connectionCatalogSchema } from '@shared/core/switch-servers/connection-catalog';
 import {
   gitHubConnectionSchema,
   gitHubFlowSchema,
 } from '@shared/core/switch-servers/github-connection';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
-import { cloudProviderConnectionSchema } from '@shared/core/switch-servers/provider-credential';
 import type {
   AddressingPolicy,
   AddTeamsTeamResult,
@@ -163,7 +154,7 @@ export class GatewayError extends Error {
      * the raw status line, which reads as noise in a form. */
     readonly detail?: string,
     /** The refusal's machine-readable name, from a body such as
-     * `{"detail": …, "code": "worker_waking"}`. Present only when the body
+     * `{"detail": …, "code": "machine_stopped"}`. Present only when the body
      * carried one. */
     readonly code?: string,
     /** The response body as it came, for a caller that reads an envelope other
@@ -2572,101 +2563,19 @@ export async function createRoom(
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
 }
 
-async function readClaudeConnection(response: Response): Promise<ClaudeConnection> {
-  const value: unknown = await response.json();
-  if (typeof value === 'object' && value !== null && 'status' in value) {
-    if (value.status === 'not_connected') return { status: 'not_connected' };
-    if (
-      value.status === 'connected' &&
-      'kind' in value &&
-      (value.kind === 'api-key' || value.kind === 'setup-token') &&
-      'verified_at' in value &&
-      typeof value.verified_at === 'string' &&
-      Number.isFinite(Date.parse(value.verified_at))
-    ) {
-      return { status: 'connected', kind: value.kind, verified_at: value.verified_at };
-    }
+/**
+ * The caller's cloud machines, or null when the server offers none: a server
+ * without cloud machines answers the route with 404.
+ */
+export async function listCloudMachines(server: SwitchServer): Promise<CloudMachine[] | null> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, '/hosted-machines', { authenticated: true });
+  } catch (error) {
+    if (error instanceof GatewayError && error.kind === 'http' && error.status === 404) return null;
+    throw error;
   }
-  throw new GatewayError('http', 'The server returned an invalid Claude connection status.');
-}
-
-export async function getClaudeConnection(server: SwitchServer): Promise<ClaudeConnection> {
-  const response = await gatewayFetch(server, '/provider-connections/claude', {
-    authenticated: true,
-  });
-  return readClaudeConnection(response);
-}
-
-export async function createCloudLaunch(
-  server: SwitchServer,
-  input: CloudLaunchInput & { definition: string }
-) {
-  if (new URL(server.gatewayUrl).protocol !== 'https:')
-    throw new Error('Cloud agents require an HTTPS Switch server.');
-  return cloudLaunchSchema.parse(
-    await (
-      await gatewayFetch(server, '/hosted-launches', {
-        authenticated: true,
-        method: 'POST',
-        body: input,
-      })
-    ).json()
-  );
-}
-
-const cloudConfigurationSchema = z.object({
-  description: z.string(),
-  instructions: z.string(),
-  definition_attributes: z.record(z.string(), z.unknown()),
-});
-
-export async function getCloudLaunchConfiguration(
-  server: SwitchServer,
-  requestId: string
-): Promise<CloudLaunchConfiguration> {
-  return cloudConfigurationSchema.parse(
-    await (
-      await gatewayFetch(
-        server,
-        `/hosted-launches/${encodeURIComponent(requestId)}/configuration`,
-        { authenticated: true }
-      )
-    ).json()
-  ) as CloudLaunchConfiguration;
-}
-
-/** Replace a launch's instructions and definition; Core applies them at the agent's next start. */
-export async function updateCloudLaunchConfiguration(
-  server: SwitchServer,
-  requestId: string,
-  body: Omit<CloudLaunchConfiguration, 'description'> & { definition: string }
-): Promise<CloudLaunchConfiguration> {
-  return cloudConfigurationSchema.parse(
-    await (
-      await gatewayFetch(
-        server,
-        `/hosted-launches/${encodeURIComponent(requestId)}/configuration`,
-        { authenticated: true, method: 'PUT', body }
-      )
-    ).json()
-  ) as CloudLaunchConfiguration;
-}
-
-export async function cloudLifecycle(
-  server: SwitchServer,
-  requestId: string,
-  action: 'stop' | 'start' | 'restart' | 'remove' | 'retry',
-  revision: number
-) {
-  return cloudLaunchSchema.extend({ access_warning: z.string().nullable().optional() }).parse(
-    await (
-      await gatewayFetch(server, `/hosted-launches/${encodeURIComponent(requestId)}/lifecycle`, {
-        authenticated: true,
-        method: 'POST',
-        body: { action, revision },
-      })
-    ).json()
-  );
+  return z.object({ machines: z.array(cloudMachineSchema) }).parse(await response.json()).machines;
 }
 
 export async function cloudMachineLifecycle(
@@ -2703,29 +2612,6 @@ export async function ensureCloudMachine(server: SwitchServer) {
     throw error;
   }
   return cloudMachineSchema.parse(await response.json());
-}
-
-export async function connectClaude(
-  server: SwitchServer,
-  kind: ClaudeCredentialKind,
-  credential: string
-): Promise<ClaudeConnection> {
-  if (new URL(server.gatewayUrl).protocol !== 'https:') {
-    throw new GatewayError('http', 'Claude credentials require an HTTPS Switch server.');
-  }
-  const response = await gatewayFetch(server, '/provider-connections/claude', {
-    authenticated: true,
-    method: 'PUT',
-    body: { kind, credential },
-  });
-  return readClaudeConnection(response);
-}
-
-export async function disconnectClaude(server: SwitchServer): Promise<void> {
-  await gatewayFetch(server, '/provider-connections/claude', {
-    authenticated: true,
-    method: 'DELETE',
-  });
 }
 
 export async function getConnectionCatalog(server: SwitchServer) {
@@ -2825,43 +2711,6 @@ export async function disconnectGitHub(server: SwitchServer) {
   return z.object({ warning: z.string().nullable() }).parse(await response.json());
 }
 
-export async function getCloudProviderConnection(server: SwitchServer, provider: AgentProviderId) {
-  return cloudProviderConnectionSchema.parse(
-    await (
-      await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
-        authenticated: true,
-      })
-    ).json()
-  );
-}
-export async function connectCloudProvider(
-  server: SwitchServer,
-  provider: Exclude<AgentProviderId, 'claude'>,
-  kind: 'api-key' | 'auth-json',
-  credential: string
-) {
-  if (new URL(server.gatewayUrl).protocol !== 'https:')
-    throw new Error('Provider credentials require HTTPS.');
-  return cloudProviderConnectionSchema.parse(
-    await (
-      await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
-        authenticated: true,
-        method: 'PUT',
-        body: { kind, credential },
-      })
-    ).json()
-  );
-}
-export async function disconnectCloudProvider(
-  server: SwitchServer,
-  provider: Exclude<AgentProviderId, 'claude'>
-) {
-  await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
-    authenticated: true,
-    method: 'DELETE',
-  });
-}
-
 // ── Agent management: controllers and the agents placed on them ─────────────
 
 /**
@@ -2942,6 +2791,11 @@ export type ManagementController = {
    * last reported; null before it has, or when it or the server predates it.
    */
   workspacesDir: string | null;
+  /**
+   * The key provider logins given to this machine are sealed to; null when
+   * its controller has none (it keeps no key, or predates sealed logins).
+   */
+  sealingKey: { key: string; keyId: string } | null;
 };
 
 /** A provider as a controller reports it: installed, and whether its login works. */
@@ -3000,6 +2854,7 @@ type ManagementControllerJson = {
   revoked_at: string | null;
   status?: unknown;
   workspaces_dir?: string | null;
+  public_key?: { alg: string; key: string; key_id: string } | null;
 };
 
 type ManagedAgentJson = {
@@ -3079,7 +2934,78 @@ export async function fetchManagementControllers(
     revokedAt: json.revoked_at,
     providers: providerReports(json.status),
     workspacesDir: json.workspaces_dir ?? null,
+    sealingKey:
+      json.public_key?.alg === 'X25519'
+        ? { key: json.public_key.key, keyId: json.public_key.key_id }
+        : null,
   }));
+}
+
+/**
+ * Gives a machine a provider login sealed to its key
+ * (`PUT /controllers/{id}/provider-logins/{provider}`): the server keeps only
+ * the ciphertext. Answers the `provider.login` operation whose result says
+ * whether the provider signs in with it on the machine.
+ */
+export async function giveMachineLogin(
+  server: SwitchServer,
+  controllerId: string,
+  provider: string,
+  sealed: SealedLogin
+): Promise<{ operationId: string; revision: number }> {
+  // The login is sealed, but the key it was sealed to came from this server:
+  // over plain HTTP anyone in between could have handed over their own.
+  const gateway = new URL(server.gatewayUrl);
+  if (
+    gateway.protocol !== 'https:' &&
+    !['localhost', '127.0.0.1', '[::1]'].includes(gateway.hostname)
+  )
+    throw new Error('Giving a machine a provider login requires HTTPS.');
+  const res = await managementFetch(
+    server,
+    `/controllers/${encodeURIComponent(controllerId)}/provider-logins/${encodeURIComponent(provider)}`,
+    { method: 'PUT', authenticated: true, body: { sealed } }
+  );
+  const body = (await res.json()) as { login: { revision: number }; operation: { id: string } };
+  return { operationId: body.operation.id, revision: body.login.revision };
+}
+
+/** Takes back the provider login given to a machine. */
+export async function withdrawMachineLogin(
+  server: SwitchServer,
+  controllerId: string,
+  provider: string
+): Promise<void> {
+  await managementFetch(
+    server,
+    `/controllers/${encodeURIComponent(controllerId)}/provider-logins/${encodeURIComponent(provider)}`,
+    { method: 'DELETE', authenticated: true }
+  );
+}
+
+/** One of a machine's operations as its owner sees it, by id; null when the server lists none by it. */
+export async function fetchMachineOperation(
+  server: SwitchServer,
+  controllerId: string,
+  operationId: string
+): Promise<{ state: string; error: { code: string; message: string } | null } | null> {
+  const res = await managementFetch(
+    server,
+    `/operations?controller_id=${encodeURIComponent(controllerId)}`,
+    { authenticated: true }
+  );
+  const listed = (await res.json()) as unknown;
+  if (!Array.isArray(listed))
+    throw new Error("The server's list of the machine's operations is not a list.");
+  const found = (
+    listed as {
+      id: string;
+      state: string;
+      result?: { outcome?: string; error?: { code: string; message: string } } | null;
+    }[]
+  ).find((operation) => operation.id === operationId);
+  if (!found) return null;
+  return { state: found.state, error: found.result?.error ?? null };
 }
 
 const PROVIDER_AUTH_STATES: readonly ControllerProviderReport['auth'][] = [
@@ -3321,7 +3247,7 @@ export async function createManagedAgent(
     icon_url: string | null;
     controller_id: string;
     desired_state: 'running' | 'stopped';
-    definition: ManagedAgentDefinitionBody;
+    definition: ManagedAgentDefinitionBody & { isolation: 'shared' | 'isolated' };
   }
 ): Promise<string> {
   const res = await managementFetch(server, '/agents', {

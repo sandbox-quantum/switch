@@ -300,12 +300,14 @@ exactly the answer a missing one does.
 - CLI `switch-agent-controller`, released as its own npm package on
   `switch-agent-controller-v*` GitHub releases, with an `install.sh` (see RELEASING.md):
   - `enroll --server <agent-bridge-url> --code <code> [--name] [--description] [--data-dir] [--secret-store]`
-  - `run [--data-dir] [--env-file]`
+  - `run [--data-dir] [--env-file] [--agent-runtime default|separate-user]`
   - `set-info [--name] [--description] [--data-dir]`: renames the machine and/or changes its
     description on the server, with the controller's own credential, and records the new name
     locally.
   - `status [--data-dir]`
   - `install-service` / `uninstall-service`: a systemd user unit or a launchd agent
+  - `install-service --separate-users` / `uninstall-service --separate-users`: as root,
+    once, on Linux with systemd and polkit; see "Each agent as a Linux user of its own" below
   - `doctor`: what the machine lacks to run agents
   - `update [--check]`: the newest release, from GitHub
 - **Data dir:** `SWITCH_CONTROLLER_DATA_DIR`, otherwise the OS default.
@@ -338,6 +340,34 @@ exactly the answer a missing one does.
   - Providers: installed via a PATH lookup, auth via the bundle's `--probe`, cached for 10 min. `provider.recheck` forces a probe.
   - Agents: read from each running agent host's state and `supervisor/failure.json`, mapped to the contract's process states and reason codes, with `directory`, the working directory its agent host was configured with.
 - **Operations:** `agent.restart` restarts the agent host. `provider.recheck` forces a probe and reports.
+- **Provider logins given to the machine** (`sealed-logins.ts`, contract §5): `enroll` makes an
+  X25519 keypair and sends the public half; a controller enrolled before registers it once
+  (`PATCH .../controllers/{id} {public_key}`). The owner's Console seals a login to it; Core
+  stores the ciphertext (`sealed_provider_logins`) and queues `provider.login {provider, method:
+  "sealed"}`, which the controller answers after opening the login and probing the provider with
+  it. `ProviderStatuses` prefers the machine's own login and falls back to a given one
+  (`auth_source: "sealed"`); `ensureRelayCredentials` writes it into the agent's credentials
+  (`providerLogin`), `startAgent` puts its environment in the template and runs the agent isolated,
+  and the agent host writes its login file (`readProviderLogin`, `materializeHostedProvider`).
+- **Each agent as a Linux user of its own** (`--agent-runtime separate-user`, `separate-users.ts`,
+  `systemd-runtime.ts`): root sets up once a pool of system users `sa<uid>-NN` in a group
+  `switch-agents-<uid>` that only the controller also joins, a template unit
+  `switch-agent-<uid>@.service`, a polkit rule letting the controller's user start, stop,
+  restart and reset only those units, and the controller as a system service of its user. The
+  controller then needs no root. Each agent claims a free pool user (kept in the store's
+  `agent_users`; none free is `capacity_exceeded`) and runs as that user's unit, with systemd
+  restarting it, seeing only its own directory, always at `<agents dir>/agent`, so the paths it
+  records stay valid when it later runs as another user. The controller writes its
+  `config.json` and `watch.json` there (sticky directory, group-readable files) and the relay
+  credentials and provider environment the unit loads (`LoadCredential=`, `EnvironmentFile=`);
+  the agent host writes its health and records group-readable (`SWITCH_HOST_SHARED_GROUP=1`).
+  The unit hides the home directories, the controller's data and the other agents (their
+  processes too, `ProtectProc=invisible`), blocks the instance metadata address, and makes the
+  rest of the system read-only. A removed agent frees its user, and its directory moves to
+  `released/<agent id>` until it comes back; before an agent starts, root hands it the files in
+  its directory that another pool user owns. Provider logins are the provider settings in the
+  controller's environment only: the controller user's own logins are in a home the agents
+  cannot see.
 
 ---
 

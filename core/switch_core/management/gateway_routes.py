@@ -32,6 +32,7 @@ from switch_core.management.schemas import (
     UpdateControllerRequest,
     wire_time,
 )
+from switch_core.management.sealed_logins import PutSealedLoginRequest
 from switch_core.management.service import ManagementService, placement_from
 
 router = APIRouter(route_class=ManagementRoute, tags=["agent management"])
@@ -111,6 +112,48 @@ async def revoke_controller(
 ) -> dict[str, bool]:
     await management.revoke_controller(
         session, require_tenant_id(), user.id, controller_id
+    )
+    return {"ok": True}
+
+
+@router.get("/controllers/{controller_id}/provider-logins")
+async def list_sealed_logins(
+    controller_id: str, session: Session, user: CurrentUser, management: Management
+) -> list[dict[str, Any]]:
+    """The provider logins given to this machine: which, and which revision;
+    never what they hold."""
+    return await management.list_sealed_logins(
+        session, require_tenant_id(), user.id, controller_id
+    )
+
+
+@router.put("/controllers/{controller_id}/provider-logins/{provider}")
+async def give_sealed_login(
+    controller_id: str,
+    provider: str,
+    body: PutSealedLoginRequest,
+    session: Session,
+    user: CurrentUser,
+    management: Management,
+) -> dict[str, Any]:
+    """Give this machine a provider login, sealed to its `public_key` by the
+    caller's client. Returns the login and the `provider.login` operation
+    whose result says whether the provider signs in with it."""
+    return await management.give_sealed_login(
+        session, require_tenant_id(), user.id, controller_id, provider, body.sealed
+    )
+
+
+@router.delete("/controllers/{controller_id}/provider-logins/{provider}")
+async def withdraw_sealed_login(
+    controller_id: str,
+    provider: str,
+    session: Session,
+    user: CurrentUser,
+    management: Management,
+) -> dict[str, bool]:
+    await management.withdraw_sealed_login(
+        session, require_tenant_id(), user.id, controller_id, provider
     )
     return {"ok": True}
 

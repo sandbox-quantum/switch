@@ -35,7 +35,6 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     list_agent_summaries,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.presence import rooms_occupied
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
@@ -71,7 +70,6 @@ from switch_core.db.models import (
     Agent,
     AgentRuntimeState,
     ApiKey,
-    HostedLaunch,
     Message,
     MessageAttachment,
     Model,
@@ -93,7 +91,6 @@ from switch_core.db.stores.agent_runtime_state_store import (
     AgentRuntimeStateStore,
 )
 from switch_core.db.stores.budget_store import BudgetStore
-from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -366,7 +363,6 @@ class AgentCore:
         addressable_by_agent_ids: list[str] | None = None,
         owner_only: bool = True,
         registration_path: str = "other",
-        reserved_agent_id: str | None = None,
     ) -> RegistrationResult:
         """Register or re-register an agent.
 
@@ -444,21 +440,7 @@ class AgentCore:
 
         async with self.session_factory() as session:
             await self.agent_store.lock_name(session, name)
-            reservation = await session.scalar(
-                select(HostedLaunch).where(
-                    HostedLaunch.tenant_id == tenant_id,
-                    HostedLaunch.name == name,
-                )
-            )
-            if reservation is not None and reservation.agent_id != reserved_agent_id:
-                raise AgentExistsError(
-                    "A cloud launch already reserves this agent name."
-                )
             existing = await self.agent_store.get_by_name(session, name)
-            if reserved_agent_id is not None and existing is not None:
-                raise AgentExistsError(
-                    "The reserved cloud identity cannot overwrite an agent."
-                )
             if existing and not overwrite:
                 raise AgentExistsError(
                     f"Agent already exists: {name!r}. "
@@ -505,7 +487,6 @@ class AgentCore:
                 reject_reserved_mention_name(name, kind="Agent name")
                 agent_id = await self._create_agent(
                     session=session,
-                    reserved_agent_id=reserved_agent_id,
                     name=name,
                     description=description,
                     icon_url=validated_icon_url,
@@ -646,7 +627,6 @@ class AgentCore:
         self,
         *,
         session: AsyncSession,
-        reserved_agent_id: str | None,
         name: str,
         description: str,
         icon_url: str | None,
@@ -684,7 +664,6 @@ class AgentCore:
         )
 
         agent = Agent(
-            **({"id": reserved_agent_id} if reserved_agent_id is not None else {}),
             name=name,
             description=description,
             icon_url=icon_url,
@@ -3713,9 +3692,7 @@ class AgentCore:
         """Write a validated profile update to an agent and return its fresh
         detail.
 
-        Owner-only, as `require_same_owner`. A cloud agent's launch spec, which
-        registers it again, is kept on the same values, as the gateway routes
-        for each field do.
+        Owner-only, as `require_same_owner`.
         """
         await self.require_same_owner(agent_id, target_agent_id)
         async with self.session_factory() as session:
@@ -3726,11 +3703,6 @@ class AgentCore:
                 await self.agent_store.update(
                     session, target_agent_id, **update.columns
                 )
-                launch_id = hosted_launch_of(target.metadata_)
-                if launch_id is not None:
-                    await HostedLaunchStore().merge_spec(
-                        session, launch_id, update.columns
-                    )
                 await session.commit()
 
             refreshed = await self.agent_store.get(session, target_agent_id)

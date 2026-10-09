@@ -1,4 +1,3 @@
-import base64
 import hashlib
 import json
 import re
@@ -9,32 +8,23 @@ import pytest
 from botocore.stub import ANY, Stubber
 from test_controller import (
     MACHINE_ID,
-    WORKER_TESTDATA,
     config,
     ec2_client,
-    fixture_machine,
     store_and_machine,
+    with_bundle,
 )
 
-from switch_hosted_controller.cloud import Ec2Cloud
+from switch_hosted_controller.cloud import CloudResourceError, Ec2Cloud
 from switch_hosted_controller.config import ConfigError, ControllerConfig
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def assignment(user_data: str) -> str:
-    encoded = next(
-        line.split("content: ", 1)[1] for line in user_data.splitlines() if "content: " in line
-    )
-    return base64.b64decode(encoded).decode()
-
-
-def test_run_request_is_valid_and_user_data_contains_only_assignment_refs(tmp_path: Path):
+def test_run_request_boots_from_the_stored_bundle_with_the_shared_profile(tmp_path: Path):
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)
-    machine = store.record_volume(
-        machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone
-    )
+    store.record_volume(machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone)
+    machine = with_bundle(store, machine.machine_id, 1)
     client = ec2_client()
     cloud = Ec2Cloud(client, cfg)
     with Stubber(client) as stubber:
@@ -47,76 +37,59 @@ def test_run_request_is_valid_and_user_data_contains_only_assignment_refs(tmp_pa
                 "MinCount": 1,
                 "MaxCount": 1,
                 "ClientToken": cloud._token(machine, "instance-0"),
-                "IamInstanceProfile": {"Arn": machine.instance_profile_arn},
+                "IamInstanceProfile": {"Arn": cfg.instance_profile_arn},
                 "Placement": ANY,
                 "NetworkInterfaces": ANY,
                 "MetadataOptions": ANY,
                 "BlockDeviceMappings": ANY,
                 "TagSpecifications": ANY,
-                "UserData": cloud._user_data(machine),
+                "UserData": machine.bundle,
             },
         )
         assert cloud.run_instance(machine) == "i-0123456789abcdef0"
 
-    assert json.loads(assignment(cloud._user_data(machine))) == {
-        "version": 2,
-        "installationId": cfg.installation_id,
-        "slotId": "slot-1",
-        "generation": 1,
-        "assignmentSecretId": machine.assignment_secret_arn,
-        "dataVolumeId": machine.data_volume_id,
-        "dataDevice": "/dev/sdf",
-        "mountPath": "/data",
-    }
+    bundle = json.loads(machine.bundle)
+    assert bundle["version"] == 4
+    assert bundle["machineId"] == MACHINE_ID
+    assert not {"slotId", "generation", "assignment", "assignmentSecretId"} & set(bundle)
     store.close()
 
 
-def test_user_data_matches_the_worker_assignment_fixture(tmp_path: Path):
-    cfg, store, machine = fixture_machine(tmp_path, "m6i.large")
-    fixture = json.loads((WORKER_TESTDATA / "assignment.json").read_text())
-    assert json.loads(assignment(Ec2Cloud(ec2_client(), cfg)._user_data(machine))) == fixture
-    store.close()
-
-
-def test_user_data_carries_the_predecessor_only_when_set(tmp_path: Path):
+def test_run_request_refuses_a_machine_without_a_bundle(tmp_path: Path):
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)
-    cloud = Ec2Cloud(ec2_client(), cfg)
-    successor = replace(
-        machine,
-        previous_instance_id="i-0123456789abcdef0",
-        previous_runtime_fingerprint="sha256:" + "a" * 64,
+    machine = store.record_volume(
+        machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone
     )
-    metadata = json.loads(assignment(cloud._user_data(successor)))
-    assert metadata["previousInstanceId"] == "i-0123456789abcdef0"
-    assert metadata["previousRuntimeFingerprint"] == "sha256:" + "a" * 64
-    assert "previousInstanceId" not in json.loads(assignment(cloud._user_data(machine)))
+    client = ec2_client()
+    with Stubber(client) as stubber:
+        with pytest.raises(CloudResourceError, match="prepared bundle"):
+            Ec2Cloud(client, cfg).run_instance(machine)
+        stubber.assert_no_pending_responses()
     store.close()
 
 
-def test_tags_filters_and_tokens_use_the_real_generation(tmp_path: Path):
+def test_tags_filters_and_tokens_are_keyed_by_machine(tmp_path: Path):
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)
-    machine = replace(machine, generation=3, instance_seq=2)
+    machine = replace(machine, instance_seq=2)
     cloud = Ec2Cloud(ec2_client(), cfg)
     assert cloud._tags(machine, "data") == [
         {"Key": "switch:installation-id", "Value": cfg.installation_id},
-        {"Key": "switch:slot-id", "Value": "slot-1"},
-        {"Key": "switch:generation", "Value": "3"},
         {"Key": "switch:machine-id", "Value": MACHINE_ID},
         {"Key": "switch:purpose", "Value": "data"},
         {"Key": "switch:managed-by", "Value": "switch-hosted-controller"},
     ]
     assert cloud._resource_filters(machine, "worker") == [
         {"Name": "tag:switch:installation-id", "Values": [cfg.installation_id]},
-        {"Name": "tag:switch:slot-id", "Values": ["slot-1"]},
-        {"Name": "tag:switch:generation", "Values": ["3"]},
+        {"Name": "tag:switch:machine-id", "Values": [MACHINE_ID]},
         {"Name": "tag:switch:purpose", "Values": ["worker"]},
         {"Name": "tag:switch:managed-by", "Values": ["switch-hosted-controller"]},
     ]
-    material = f"{cfg.installation_id}:slot-1:3:instance-2"
+    material = f"{cfg.installation_id}:{MACHINE_ID}:instance-2"
     expected = "switch-m-" + hashlib.sha256(material.encode()).hexdigest()[:48]
     assert cloud._token(machine, "instance-2") == expected
+    assert cloud._launch_token(machine) == expected
     store.close()
 
 
@@ -125,7 +98,7 @@ def test_machine_tokens_never_equal_per_agent_controller_tokens(tmp_path: Path, 
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)
     token = Ec2Cloud(ec2_client(), cfg)._token(machine, resource)
-    material = f"{cfg.installation_id}:{machine.slot_id}:{machine.generation}:{resource}"
+    material = f"{cfg.installation_id}:{machine.machine_id}:{resource}"
     per_agent = "switch-" + hashlib.sha256(material.encode()).hexdigest()[:48]
     assert re.fullmatch(r"switch-m-[0-9a-f]{48}", token)
     assert len(token) <= 64
@@ -134,10 +107,24 @@ def test_machine_tokens_never_equal_per_agent_controller_tokens(tmp_path: Path, 
     store.close()
 
 
-def test_packaged_controller_config_uses_machine_slots():
+def test_packaged_controller_config_uses_one_instance_profile():
     cfg = ControllerConfig.load(FIXTURES / "controller.json")
     assert cfg.max_machines == 1
-    assert list(cfg.machine_slots) == ["slot-a"]
+    assert cfg.instance_profile_arn == "arn:aws:iam::123456789012:instance-profile/test-worker"
     raw = json.loads((FIXTURES / "controller.json").read_text())
+    assert ControllerConfig.from_dict({**raw, "max_machines": 2}).max_machines == 2
     with pytest.raises(ConfigError, match="max_machines"):
-        ControllerConfig.from_dict({**raw, "max_machines": 2})
+        ControllerConfig.from_dict({**raw, "max_machines": 101})
+
+
+def test_a_new_database_reusing_the_installation_gets_tokens_and_lookups_of_its_own(
+    tmp_path: Path,
+):
+    cfg = config(tmp_path)
+    store, machine = store_and_machine(cfg)
+    earlier = replace(machine, machine_id="00000000-0000-4000-8000-00000000beef")
+    cloud = Ec2Cloud(ec2_client(), cfg)
+    assert cloud._token(machine, "data-volume") != cloud._token(earlier, "data-volume")
+    assert cloud._launch_token(machine) != cloud._launch_token(earlier)
+    assert cloud._resource_filters(machine, "data") != cloud._resource_filters(earlier, "data")
+    store.close()
