@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import { requireSwitchCloudEndpoint, switchCloudEndpoint } from './switch-cloud';
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  BUILD_FEATURE_FLAGS.switch_cloud = true;
 });
 
 function runWith(value: string | undefined) {
@@ -11,6 +13,13 @@ function runWith(value: string | undefined) {
 }
 
 describe('switchCloudEndpoint', () => {
+  it('is null when the build turns Switch Cloud off, even with a URL', () => {
+    runWith('https://cloud.example.com');
+    BUILD_FEATURE_FLAGS.switch_cloud = false;
+    expect(switchCloudEndpoint()).toBeNull();
+    expect(() => requireSwitchCloudEndpoint()).toThrow('switch_cloud flag is off');
+  });
+
   it('is null when nothing names a Cloud', () => {
     runWith(undefined);
     expect(switchCloudEndpoint()).toBeNull();

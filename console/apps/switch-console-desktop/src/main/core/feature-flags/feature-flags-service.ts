@@ -57,6 +57,16 @@ export class FeatureFlagsService {
     );
   }
 
+  /**
+   * The server's flags, read now if they never have been: a server just added
+   * or just signed in to has not been read yet, and the next poll may be a
+   * minute away.
+   */
+  async current(server: SwitchServer): Promise<ServerFeatureFlags> {
+    if (this.states.get(server.id)?.fetchedAt == null) await this.readOne(server);
+    return this.get(server.id);
+  }
+
   /** Read every server's flags now. Concurrent calls share one pass. */
   refreshAll(): Promise<void> {
     this.inflight ??= this.readAll().finally(() => {

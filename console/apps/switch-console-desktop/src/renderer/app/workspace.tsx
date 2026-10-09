@@ -15,6 +15,7 @@ import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Toaster } from '@renderer/lib/ui/toaster';
+import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import { shellShape } from './shell-shape';
 import { viewWorksWithoutServer } from './view-registry';
 
@@ -65,6 +66,7 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
     installIsEmpty: switchServersStore.installIsEmpty,
     viewWorksWithoutServer: viewWorksWithoutServer(currentViewId),
     onboardingInProgress: onboardingStore.inProgress,
+    onboardingEnabled: BUILD_FEATURE_FLAGS.onboarding,
   });
 
   switch (shape) {

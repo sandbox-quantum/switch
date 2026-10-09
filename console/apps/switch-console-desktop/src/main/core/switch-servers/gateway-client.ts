@@ -2726,7 +2726,7 @@ export async function disconnectGitHub(server: SwitchServer) {
 
 /**
  * The server does not run agent management: its `/gateway/management` routes
- * are not mounted (`AGENT_MANAGEMENT_ENABLED` is off), so they answer a bare
+ * are not mounted (its `agent_management` flag is off), so they answer a bare
  * 404 rather than one in the management error envelope.
  */
 export class AgentManagementUnavailableError extends Error {

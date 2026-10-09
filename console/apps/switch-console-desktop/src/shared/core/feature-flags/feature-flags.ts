@@ -1,3 +1,5 @@
+import { IS_CANARY, IS_DEV } from '@shared/app-identity';
+
 /**
  * Feature flags Console knows about. Each Switch server sets its own at deploy
  * time and serves them at `GET /gateway/feature-flags`; Console reads every
@@ -7,7 +9,12 @@
  * A key the server sends that is not listed here is ignored, and a key listed
  * here that the server does not send (an older server) is off.
  */
-export const CONSOLE_FEATURE_FLAGS = ['ecosystem.show_owners'] as const;
+export const CONSOLE_FEATURE_FLAGS = [
+  'ecosystem.show_owners',
+  'switch_cloud',
+  'switch_cloud.hosted_agents',
+  'agent_management',
+] as const;
 
 export type FeatureFlagKey = (typeof CONSOLE_FEATURE_FLAGS)[number];
 
@@ -44,3 +51,23 @@ export function resolveFeatureFlags(remote: readonly RemoteFeatureFlag[]): Featu
 export function sameFeatureFlags(a: FeatureFlags, b: FeatureFlags): boolean {
   return CONSOLE_FEATURE_FLAGS.every((key) => a[key] === b[key]);
 }
+
+/**
+ * What this build turns on before it has a server to ask.
+ *
+ * The first-run pages and the Switch Cloud choice are drawn before Console is
+ * connected to anything, so no server's flags can decide them. A run from a
+ * checkout and a canary have them on; a stable release has them off. Once
+ * Console is connected, the server's own flags decide everything else.
+ */
+export type BuildFeatureFlags = {
+  /** The first-run pages. Without them a fresh install opens the app itself. */
+  onboarding: boolean;
+  /** Switch Cloud as a place to connect to. It also needs the build's Cloud URL. */
+  switch_cloud: boolean;
+};
+
+export const BUILD_FEATURE_FLAGS: BuildFeatureFlags = {
+  onboarding: IS_DEV || IS_CANARY,
+  switch_cloud: IS_DEV || IS_CANARY,
+};

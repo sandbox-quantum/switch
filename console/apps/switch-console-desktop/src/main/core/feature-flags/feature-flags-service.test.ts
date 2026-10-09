@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import type {
-  RemoteFeatureFlag,
-  ServerFeatureFlags,
+import {
+  allFeatureFlagsOff,
+  type RemoteFeatureFlag,
+  type ServerFeatureFlags,
 } from '@shared/core/feature-flags/feature-flags';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { FeatureFlagsService } from './feature-flags-service';
@@ -40,7 +41,8 @@ describe('FeatureFlagsService', () => {
     const h = harness([server('a')]);
     h.responses.set('a', [{ key: 'not.a.console.flag', enabled: true }]);
     await h.service.refreshAll();
-    expect(h.service.get('a').flags).toEqual({ 'ecosystem.show_owners': false });
+    expect(h.service.get('a').flags).toEqual(allFeatureFlagsOff());
+    expect(h.service.get('a').flags).not.toHaveProperty('not.a.console.flag');
   });
 
   it('reports a change seen on a later poll, and nothing when nothing changed', async () => {
@@ -77,6 +79,14 @@ describe('FeatureFlagsService', () => {
       fetchedAt: null,
       error: 'signed out',
     });
+  });
+
+  it('reads a server never read before answering for it, and only then', async () => {
+    const h = harness([server('a')]);
+    h.responses.set('a', [{ key: 'agent_management', enabled: true }]);
+    expect((await h.service.current(server('a'))).flags.agent_management).toBe(true);
+    h.responses.set('a', [{ key: 'agent_management', enabled: false }]);
+    expect((await h.service.current(server('a'))).flags.agent_management).toBe(true);
   });
 
   it('forgets a server that was removed', async () => {

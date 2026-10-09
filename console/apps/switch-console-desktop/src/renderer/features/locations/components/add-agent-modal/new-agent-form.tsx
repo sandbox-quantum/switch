@@ -20,6 +20,7 @@ import { workspacesStore } from '@renderer/features/workspaces/workspaces-store'
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useModalContext, useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -133,8 +134,13 @@ export const NewAgentForm = observer(function NewAgentForm({
   const selectedServer = switchServersStore.servers.find(
     (server) => server.id === selectedServerId
   );
-  // Switch Cloud offers everything any server does, and running in the cloud besides.
-  const cloudAvailable = !!selectedServer && isSwitchCloudServer(selectedServer);
+  // Switch Cloud offers everything any server does, and running in the cloud
+  // besides, once the server turns cloud machines on.
+  const serverFlags = useFeatureFlags(selectedServerId);
+  const cloudAvailable =
+    !!selectedServer &&
+    isSwitchCloudServer(selectedServer) &&
+    serverFlags['switch_cloud.hosted_agents'];
   const isCloudRun = runHost === 'cloud';
 
   // On a server with agent management the server lists where agents can run:

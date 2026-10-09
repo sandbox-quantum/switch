@@ -44,6 +44,7 @@ export const USER_DATA_DIR_NAME = isDev ? 'switchdash-dev' : 'switchdash';
 export const UPDATE_CHANNEL = isCanary ? 'v1-canary' : 'v1-stable';
 export const ARTIFACT_PREFIX = isCanary ? 'switch-console-canary' : 'switch-console';
 export const IS_CANARY = isCanary;
+export const IS_DEV = isDev;
 export const IS_RELEASE_BUILD = isRelease;
 
 // GitHub repo the desktop app publishes releases to / reads auto-updates from.

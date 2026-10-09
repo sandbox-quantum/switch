@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
 import { appService } from '@main/core/app/service';
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
+import { featureFlagsService } from '@main/core/feature-flags/feature-flags';
 import { isManagedServerRunning } from '@main/core/managed-switch-server/managed-server-status';
 import type { TelemetryAuthMethod, TelemetrySignInFailure } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
@@ -179,6 +180,11 @@ async function registerSwitchCloud({ url }: SwitchCloudEndpoint): Promise<Switch
   return server;
 }
 
+/** Whether the server turns cloud machines on (its `switch_cloud.hosted_agents` flag). */
+async function hostedAgentsOn(server: SwitchServer): Promise<boolean> {
+  return (await featureFlagsService.current(server)).flags['switch_cloud.hosted_agents'];
+}
+
 export const switchServersController = createRPCController({
   /** The icons the server generates for an agent called `name`, one page at a time. */
   agentIconChoices: (params: { serverId: string; name: string; page: number }) =>
@@ -187,7 +193,9 @@ export const switchServersController = createRPCController({
     ),
   /** The caller's cloud machines, or null when the server offers none. */
   cloudMachines: (serverId: string) =>
-    withServerWorkspaceSession(serverId, (server) => listCloudMachines(server)),
+    withServerWorkspaceSession(serverId, async (server) =>
+      (await hostedAgentsOn(server)) ? listCloudMachines(server) : null
+    ),
   cloudMachineLifecycle: (
     serverId: string,
     machineId: string,
@@ -458,7 +466,12 @@ export const switchServersController = createRPCController({
   },
 
   ensureCloudMachine: (serverId: string) =>
-    withReachableServerWorkspaceSession(serverId, (server) => ensureCloudMachine(server)),
+    withReachableServerWorkspaceSession(serverId, async (server) => {
+      if (!(await hostedAgentsOn(server))) {
+        throw new Error(`${server.name} does not have cloud machines turned on.`);
+      }
+      return ensureCloudMachine(server);
+    }),
 
   logout: async (serverId: string): Promise<void> => {
     // Read before the cookie goes, so the kind of server is still knowable — and
