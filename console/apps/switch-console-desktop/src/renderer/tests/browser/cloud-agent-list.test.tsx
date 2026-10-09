@@ -321,6 +321,8 @@ function onMachine(machine: Partial<CloudMachine>, launch: Partial<CloudLaunch> 
       disk: null,
       memory: null,
       agents: [],
+      runtime: 'worker',
+      controller_id: null,
       ...machine,
     },
   };

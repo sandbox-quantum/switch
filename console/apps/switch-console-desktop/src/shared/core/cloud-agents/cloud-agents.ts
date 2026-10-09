@@ -88,6 +88,13 @@ export const cloudMachineSchema = z.object({
   disk: machineCapacitySchema,
   memory: machineCapacitySchema,
   agents: z.array(z.string()),
+  /**
+   * `controller`: the machine runs the agents controller, and its agents are
+   * managed agents placed on `controller_id` (null until it has enrolled).
+   * A server from before machines could run it sends neither: `worker`.
+   */
+  runtime: z.enum(['worker', 'controller']).default('worker'),
+  controller_id: z.string().nullable().default(null),
 });
 export type CloudMachine = z.infer<typeof cloudMachineSchema>;
 

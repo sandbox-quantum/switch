@@ -1410,6 +1410,12 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Switch cloud on the agents controller.** On a server whose cloud machines
+  run the agents controller, choosing Switch cloud in the New agent form starts
+  your cloud machine and waits for it to come online (its first start takes a
+  few minutes), then creates the agent as a managed agent on it, like on any
+  machine. Once online, the machine is listed as "Switch cloud" among your
+  machines. A server whose machines run the hosted worker works as before.
 - **Give a machine a provider login.** In the New agent form, a machine with
   a provider installed but not signed in offers to give it a login: a Claude
   setup token or API key, a Codex or Cursor API key, or this computer's own

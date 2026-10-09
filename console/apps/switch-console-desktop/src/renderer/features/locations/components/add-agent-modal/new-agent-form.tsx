@@ -47,6 +47,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
+import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 import {
   describeRemoteDirRefusal,
   isAbsoluteRemoteDir,
@@ -156,6 +157,27 @@ export const NewAgentForm = observer(function NewAgentForm({
   });
   const serverMachines = askForMachines ? (machinesQuery.data ?? null) : null;
   const management = serverMachines !== null;
+  // Choosing Switch cloud claims the owner's cloud machine and starts it. One
+  // that runs the agents controller takes managed agents: once its controller
+  // has enrolled and is online, the agent is placed on it like on any machine.
+  const cloudMachineQuery = useQuery({
+    queryKey: ['cloud-machine-ensure', selectedServerId],
+    queryFn: () => rpc.switchServers.ensureCloudMachine(selectedServerId!),
+    enabled: isCloudRun && !!selectedServerId,
+    retry: false,
+    refetchInterval: (query) => (query.state.data?.runtime === 'controller' ? 5000 : false),
+  });
+  const cloudOnController = isCloudRun && cloudMachineQuery.data?.runtime === 'controller';
+  const cloudController = cloudOnController
+    ? (serverMachines?.find(
+        (candidate) => candidate.id === cloudMachineQuery.data?.controller_id
+      ) ?? null)
+    : null;
+  // An online cloud machine is listed as a machine of its own; the Switch cloud
+  // entry is what claims or starts one.
+  const cloudMachineListed = !!serverMachines?.some(
+    (candidate) => candidate.cloud && candidate.state === 'online'
+  );
   const machineId = isCloudRun ? null : machineIdOf(runHost);
   const isMachineRun = machineId !== null;
   const serverMachine = machineId
@@ -232,6 +254,11 @@ export const NewAgentForm = observer(function NewAgentForm({
       setRunHost(LOCAL_RUN_LOCATION);
     }
   }, [allowedHosts, runHost]);
+
+  // The cloud machine's controller is online: the agent goes on it, as on any machine.
+  useEffect(() => {
+    if (cloudController?.state === 'online') setRunHost(machineRunLocation(cloudController.id));
+  }, [cloudController]);
 
   // This computer or an SSH host that is a machine on the server is picked as
   // that machine; a machine the server no longer lists falls back to this computer.
@@ -313,7 +340,11 @@ export const NewAgentForm = observer(function NewAgentForm({
   const machine = isCloudRun || isMachineRun ? undefined : machineQuery.data;
   const managedRun = isMachineRun || machine?.management === true;
   const machineReason = isCloudRun
-    ? null
+    ? cloudMachineQuery.error
+      ? failureText(cloudMachineQuery.error, 'Your cloud machine could not be started.')
+      : cloudOnController
+        ? cloudStartingText(cloudMachineQuery.data!)
+        : null
     : askForMachines && machinesQuery.isPending
       ? 'Checking whether this server runs managed agents…'
       : askForMachines && machinesQuery.error
@@ -401,39 +432,41 @@ export const NewAgentForm = observer(function NewAgentForm({
   const disabledReason: string | null =
     submitState !== 'idle'
       ? null
-      : isCloudRun && !cloudRepository
-        ? 'Connect the provider and choose a GitHub repository.'
-        : !pickState.serverId
-          ? 'Add a Switch server to register this agent on.'
-          : form.agentName.trim().length === 0
-            ? 'Enter a name for the agent.'
-            : !form.nameIsValid
-              ? 'Fix the agent name: lowercase letters, digits, . - _, starting with a letter or digit.'
-              : nameTaken
-                ? `An agent called ${form.agentName} already exists on this server. Pick another name.`
-                : form.description.trim().length === 0
-                  ? 'Add a description so people and agents know what this agent is for.'
-                  : !runHostReachable
-                    ? `${runLocationLabel} can’t be reached right now — pick a run location that can.`
-                    : hostReadiness.checking
-                      ? `Checking what ${runLocationLabel} has installed…`
-                      : hostReadiness.blocked
-                        ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
-                        : machineReason !== null
-                          ? machineReason
-                          : !pickState.providerId
-                            ? 'Choose an agent type.'
-                            : !machineProviderReady
-                              ? `That provider is not installed and logged in on ${runLocationLabel}.`
-                              : !isCloudRun && !isMachineRun && dir.trim().length === 0
-                                ? isRemoteRun
-                                  ? 'Enter the agent’s working directory on the host.'
-                                  : 'Choose the agent’s working directory.'
-                                : !remoteDirIsAbsolute
-                                  ? `Give the full path on ${runLocationLabel}, starting with “/”.`
-                                  : policyHasDeadRule(form.addressingPolicy)
-                                    ? 'One addressing rule can never match — fix it under Settings.'
-                                    : null;
+      : isCloudRun && cloudMachineQuery.isPending
+        ? 'Starting your cloud machine…'
+        : isCloudRun && !cloudOnController && !cloudRepository
+          ? 'Connect the provider and choose a GitHub repository.'
+          : !pickState.serverId
+            ? 'Add a Switch server to register this agent on.'
+            : form.agentName.trim().length === 0
+              ? 'Enter a name for the agent.'
+              : !form.nameIsValid
+                ? 'Fix the agent name: lowercase letters, digits, . - _, starting with a letter or digit.'
+                : nameTaken
+                  ? `An agent called ${form.agentName} already exists on this server. Pick another name.`
+                  : form.description.trim().length === 0
+                    ? 'Add a description so people and agents know what this agent is for.'
+                    : !runHostReachable
+                      ? `${runLocationLabel} can’t be reached right now — pick a run location that can.`
+                      : hostReadiness.checking
+                        ? `Checking what ${runLocationLabel} has installed…`
+                        : hostReadiness.blocked
+                          ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
+                          : machineReason !== null
+                            ? machineReason
+                            : !pickState.providerId
+                              ? 'Choose an agent type.'
+                              : !machineProviderReady
+                                ? `That provider is not installed and logged in on ${runLocationLabel}.`
+                                : !isCloudRun && !isMachineRun && dir.trim().length === 0
+                                  ? isRemoteRun
+                                    ? 'Enter the agent’s working directory on the host.'
+                                    : 'Choose the agent’s working directory.'
+                                  : !remoteDirIsAbsolute
+                                    ? `Give the full path on ${runLocationLabel}, starting with “/”.`
+                                    : policyHasDeadRule(form.addressingPolicy)
+                                      ? 'One addressing rule can never match — fix it under Settings.'
+                                      : null;
 
   /** `agentName` is what picks the agent out of the location — a location can
    * hold several, so navigating on `locationId` alone opens the directory
@@ -565,6 +598,8 @@ export const NewAgentForm = observer(function NewAgentForm({
           dir: trimmedRemoteDir || null,
           model: managedSettingsRef.current.model,
           advancedConfig: managedSettingsRef.current.advancedConfig,
+          // A Switch cloud machine runs every agent as a user of its own.
+          isolation: serverMachine.cloud ? 'isolated' : 'shared',
         });
         if (created.kind !== 'created') {
           reportProvisionError(created);
@@ -818,7 +853,7 @@ export const NewAgentForm = observer(function NewAgentForm({
                       <span className="text-xs text-foreground-muted">local</span>
                     </SelectItem>
                   )}
-                  {cloudAvailable && (
+                  {cloudAvailable && !cloudMachineListed && (
                     <SelectItem value="cloud">
                       <Cloud className="size-4 text-foreground-muted" />
                       <span className="flex-1">Switch cloud</span>
@@ -942,16 +977,26 @@ export const NewAgentForm = observer(function NewAgentForm({
               />
             )}
 
-            {isCloudRun && pickState.serverId && (
-              <CloudAgentRepository
-                serverId={pickState.serverId}
-                providerId={pickState.providerId ?? 'claude'}
-                onProviderChange={setProviderId}
-                onSelection={setCloudRepository}
-                onConnectProvider={() => setConnectingProvider(true)}
-                onConnectGitHub={() => setConnectingGitHub(true)}
-              />
+            {isCloudRun && cloudOnController && machineReason && (
+              <p className="flex items-start gap-1.5 text-xs text-foreground-muted" role="status">
+                <Cloud className="mt-0.5 size-3.5 shrink-0" />
+                <span>{machineReason}</span>
+              </p>
             )}
+
+            {isCloudRun &&
+              !cloudOnController &&
+              !cloudMachineQuery.isPending &&
+              pickState.serverId && (
+                <CloudAgentRepository
+                  serverId={pickState.serverId}
+                  providerId={pickState.providerId ?? 'claude'}
+                  onProviderChange={setProviderId}
+                  onSelection={setCloudRepository}
+                  onConnectProvider={() => setConnectingProvider(true)}
+                  onConnectGitHub={() => setConnectingGitHub(true)}
+                />
+              )}
 
             {canConfigureAgent && !!pickState.providerId && managedRun && pickState.serverId && (
               <ManagedAdvancedConfig
@@ -1039,3 +1084,14 @@ export const NewAgentForm = observer(function NewAgentForm({
     </>
   );
 });
+
+/** What the form says while the owner's cloud machine is not ready to take an agent yet. */
+function cloudStartingText(machine: CloudMachine): string {
+  if (machine.state === 'error')
+    return machine.error ?? 'Your cloud machine needs attention. Retry it from Your Agents.';
+  if (machine.desired_state === 'stopped')
+    return 'Your cloud machine is stopped. Start it from Your Agents, then add the agent.';
+  return machine.controller_id === null
+    ? 'Starting your cloud machine. Its first start takes a few minutes…'
+    : 'Waiting for your cloud machine to come online…';
+}

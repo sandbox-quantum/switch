@@ -297,6 +297,7 @@ describe('the directory a new managed agent runs in', () => {
 
 const BOX: OwnedMachine = {
   acceptsLogins: false,
+  cloud: false,
   id: 'controller-7',
   name: 'build-box',
   kind: 'daemon',

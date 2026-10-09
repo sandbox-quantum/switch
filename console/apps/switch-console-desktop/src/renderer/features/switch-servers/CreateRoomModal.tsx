@@ -2,9 +2,11 @@ import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { openRoomView } from '@renderer/features/sidebar/sidebar-room-grouping';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { agentProviderLabel } from '@renderer/lib/components/agent-mark';
 import {
   AgentPickerRow,
   ChosenAgentTile,
@@ -77,9 +79,11 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   // from a stranger as far as the agents are concerned — so it is said here,
   // while the app is being chosen, rather than discovered later.
   const { identities } = useMyIdentities(workspaceId);
+  const managedQuery = useManagedAgents(serverId || null);
 
   /**
-   * Only agents this install registered on the server.
+   * Only agents this install registered on the server, and the user's managed
+   * agents, which Console drives through the server wherever they run.
    *
    * The server answers with everyone registered on it, including agents
    * belonging to somebody else's Switch Console. Those cannot be shown under a
@@ -87,10 +91,18 @@ export const CreateRoomModal = observer(function CreateRoomModal({
    * something this app cannot deliver — the same rule the room views already
    * follow.
    */
+  const managedProviders = new Map(
+    (managedQuery.data ?? []).map((managed) => [managed.agentId, managed.definition.provider])
+  );
+  const providerLabel = (agentId: string) =>
+    managedProviders.has(agentId)
+      ? agentProviderLabel(managedProviders.get(agentId))
+      : agentProviderLabelFor(agentId, workspaceId);
   const invitableAgents = (agentsQuery.data ?? []).filter((remote) =>
     workspaceId === null
       ? false
-      : agentsStore
+      : managedProviders.has(remote.id) ||
+        agentsStore
           .agentsInWorkspace(workspaceId)
           .some((local) => local.switchAgentId === remote.id)
   );
@@ -296,7 +308,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
                   <ChosenAgentTile
                     key={agent.id}
                     agent={agent}
-                    subtitle={agentProviderLabelFor(agent.id, workspaceId)}
+                    subtitle={providerLabel(agent.id)}
                     onRemove={() =>
                       setAgents((current) => current.filter((a) => a.id !== agent.id))
                     }
@@ -310,10 +322,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               onPick={(next) => setAgents((current) => [...current, next])}
               searchText={(item) => item.name}
               renderItem={(item) => (
-                <AgentPickerRow
-                  agent={item}
-                  subtitle={agentProviderLabelFor(item.id, workspaceId)}
-                />
+                <AgentPickerRow agent={item} subtitle={providerLabel(item.id)} />
               )}
               disabled={agentsQuery.isLoading}
               placeholder={agentsQuery.isLoading ? 'Loading agents…' : 'Search agents to add...'}

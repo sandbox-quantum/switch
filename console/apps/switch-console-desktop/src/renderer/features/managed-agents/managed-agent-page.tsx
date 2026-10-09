@@ -300,22 +300,31 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
                   />
                 )}
               </SettingRow>
-              <SettingRow
-                title="Run in its own process"
-                info={{
-                  label: 'More info about running in its own process',
-                  content:
-                    'Isolated from the other agents on its machine, instead of inside the machine’s controller.',
-                }}
-                description="Keep it apart from the other agents on its machine."
-                control={
-                  <Switch
-                    aria-label="Run in its own process"
-                    checked={draft.ownProcess}
-                    onCheckedChange={(checked) => setValue('ownProcess', checked)}
-                  />
-                }
-              />
+              {machine?.cloud ? (
+                <SettingRow
+                  title="Runs in its own process"
+                  info={null}
+                  description="Switch cloud runs every agent as a user of its own, apart from the other agents and the machine's controller."
+                  control={null}
+                />
+              ) : (
+                <SettingRow
+                  title="Run in its own process"
+                  info={{
+                    label: 'More info about running in its own process',
+                    content:
+                      'Isolated from the other agents on its machine, instead of inside the machine’s controller.',
+                  }}
+                  description="Keep it apart from the other agents on its machine."
+                  control={
+                    <Switch
+                      aria-label="Run in its own process"
+                      checked={draft.ownProcess}
+                      onCheckedChange={(checked) => setValue('ownProcess', checked)}
+                    />
+                  }
+                />
+              )}
             </section>
             <div className="flex flex-col gap-2">
               <AdvancedConfigDisclosure

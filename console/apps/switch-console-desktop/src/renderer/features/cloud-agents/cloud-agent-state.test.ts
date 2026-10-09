@@ -18,6 +18,8 @@ function machine(overrides: Partial<CloudMachine>): CloudMachine {
     disk: null,
     memory: null,
     agents: [],
+    runtime: 'worker',
+    controller_id: null,
     ...overrides,
   };
 }
