@@ -3,8 +3,10 @@ import { useEffect, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
+import { Checkbox } from '@renderer/lib/ui/checkbox';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
+import { cn } from '@renderer/utils/utils';
 import type {
   ClearTrustSettingsResult,
   FetchTrustSettingsResult,
@@ -66,6 +68,7 @@ export const GuardrailsSection = observer(function GuardrailsSection({
   const [saving, setSaving] = useState(false);
   const [confirmingOff, setConfirmingOff] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     if (!isOperator) return;
@@ -80,6 +83,7 @@ export const GuardrailsSection = observer(function GuardrailsSection({
         if (result.kind === 'loaded') {
           setSettings(result.settings);
           setForm(formFor(result.settings));
+          setOpen(result.settings.enabled);
         } else {
           setLoadError(recoverableResultText(result));
         }
@@ -108,6 +112,7 @@ export const GuardrailsSection = observer(function GuardrailsSection({
   const save = async () => {
     if (!form) return;
     setSaving(true);
+    setActionError(null);
     try {
       applyResult(
         await rpc.switchServers.updateTrustSettings({
@@ -117,6 +122,8 @@ export const GuardrailsSection = observer(function GuardrailsSection({
           ...(form.apiKey.trim() === '' ? {} : { apiKey: form.apiKey.trim() }),
         })
       );
+    } catch (cause) {
+      setActionError(failureText(cause, 'Could not save Switch Trust settings.'));
     } finally {
       setSaving(false);
     }
@@ -124,9 +131,13 @@ export const GuardrailsSection = observer(function GuardrailsSection({
 
   const turnOff = async () => {
     setClearing(true);
+    setActionError(null);
     try {
       applyResult(await rpc.switchServers.clearTrustSettings(serverId));
       setConfirmingOff(false);
+      setOpen(false);
+    } catch (cause) {
+      setActionError(failureText(cause, 'Could not turn off Switch Trust.'));
     } finally {
       setClearing(false);
     }
@@ -136,69 +147,86 @@ export const GuardrailsSection = observer(function GuardrailsSection({
 
   return (
     <div className={className}>
-      <h3 className="text-sm font-medium text-foreground">Guardrails</h3>
-
-      {loadError && <p className="mt-2 text-xs text-destructive">{loadError}</p>}
+      {loadError && <p className="text-xs text-destructive">{loadError}</p>}
 
       {form && settings && (
         <>
-          <p className="mt-1 text-xs text-foreground-muted">
-            {settings.enabled
-              ? 'Switch Trust is on: every message this server sends is checked before it goes out.'
-              : 'Switch Trust is off. Set a policy ID and an API key to turn it on.'}
-          </p>
-          <FieldGroup className="mt-3">
-            <Field>
-              <FieldLabel>Switch Trust Endpoint</FieldLabel>
-              <Input
-                value={form.endpoint}
-                onChange={(e) => setForm({ ...form, endpoint: e.target.value })}
-                spellCheck={false}
-                autoComplete="off"
-              />
-            </Field>
-            <Field>
-              <FieldLabel>
-                Guardrails Policy ID
-                <span className="ml-1 font-normal text-foreground-muted">(optional)</span>
-              </FieldLabel>
-              <Input
-                value={form.policyId}
-                onChange={(e) => setForm({ ...form, policyId: e.target.value })}
-                spellCheck={false}
-                autoComplete="off"
-              />
-            </Field>
-            <Field>
-              <FieldLabel>
-                Switch Trust API key
-                {settings.hasApiKey && (
-                  <span className="ml-1 font-normal text-foreground-muted">
-                    (configured, ending •••{settings.apiKeyLast4})
-                  </span>
-                )}
-              </FieldLabel>
-              <Input
-                type="password"
-                autoComplete="new-password"
-                spellCheck={false}
-                placeholder={settings.hasApiKey ? 'Leave blank to keep the current key' : ''}
-                value={form.apiKey}
-                onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
-              />
-            </Field>
-          </FieldGroup>
-          {actionError && <p className="mt-2 text-xs text-destructive">{actionError}</p>}
-          <div className="mt-3 flex items-center gap-2">
-            <Button
-              size="sm"
-              onClick={() => void save()}
-              disabled={!formValid || saving || clearing}
-            >
-              {saving ? 'Saving…' : 'Save'}
-            </Button>
-            {settings.enabled &&
-              (confirmingOff ? (
+          <label className="group/field flex cursor-pointer items-start gap-2.5">
+            <Checkbox
+              checked={settings.enabled}
+              onCheckedChange={() => {
+                if (settings.enabled) {
+                  setConfirmingOff(true);
+                } else {
+                  setOpen((v) => !v);
+                }
+              }}
+              className="mt-0.5"
+            />
+            <span className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium text-foreground">
+                Switch Trust Integration enabled
+              </span>
+              <span className="text-xs text-foreground-muted">
+                {settings.enabled
+                  ? 'Every message this server sends is checked before it goes out.'
+                  : 'Set a Switch Trust endpoint and an API key to turn it on.'}
+              </span>
+            </span>
+          </label>
+
+          <div className={cn('flex flex-col gap-3 pt-3', !open && 'hidden')}>
+            <FieldGroup>
+              <Field>
+                <FieldLabel>Switch Trust Endpoint</FieldLabel>
+                <Input
+                  value={form.endpoint}
+                  onChange={(e) => setForm({ ...form, endpoint: e.target.value })}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </Field>
+              <Field>
+                <FieldLabel>
+                  Guardrails Policy ID
+                  <span className="ml-1 font-normal text-foreground-muted">(optional)</span>
+                </FieldLabel>
+                <Input
+                  value={form.policyId}
+                  onChange={(e) => setForm({ ...form, policyId: e.target.value })}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </Field>
+              <Field>
+                <FieldLabel>
+                  Switch Trust API key
+                  {settings.hasApiKey && (
+                    <span className="ml-1 font-normal text-foreground-muted">
+                      (configured, ending •••{settings.apiKeyLast4})
+                    </span>
+                  )}
+                </FieldLabel>
+                <Input
+                  type="password"
+                  autoComplete="new-password"
+                  spellCheck={false}
+                  placeholder={settings.hasApiKey ? 'Leave blank to keep the current key' : ''}
+                  value={form.apiKey}
+                  onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
+                />
+              </Field>
+            </FieldGroup>
+            {actionError && <p className="text-xs text-destructive">{actionError}</p>}
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                onClick={() => void save()}
+                disabled={!formValid || saving || clearing}
+              >
+                {saving ? 'Saving…' : 'Save'}
+              </Button>
+              {confirmingOff && (
                 <>
                   <span className="text-xs text-foreground-muted">Turn off Switch Trust?</span>
                   <Button
@@ -218,16 +246,8 @@ export const GuardrailsSection = observer(function GuardrailsSection({
                     Cancel
                   </Button>
                 </>
-              ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setConfirmingOff(true)}
-                  disabled={saving}
-                >
-                  Turn off
-                </Button>
-              ))}
+              )}
+            </div>
           </div>
         </>
       )}
