@@ -7,13 +7,14 @@ ship none. The catalog is validated once, at import, so a malformed
 entry stops the server rather than surfacing on the first launch.
 
 An enabled entry also names the adapter that reaches the vendor (``adapter``:
-``github``, or the generic ``oauth-mcp``), says what each access level reaches
+``github``, or the generic ``oauth``), says what each access level reaches
 (``access``: OAuth scopes, or GitHub App permissions), which of the service's
 tools each level offers (``tools``), how its sign-in is refreshed
-(``auth.refresh``) and what a token it hands out is (``token``). An
-``oauth-mcp`` entry also says how its OAuth client is had and where a sign-in
-may return (``auth.oauth``), how the account's stable id is read
-(``auth.identity``), and the vendor's MCP servers (``mcp``). Placeholder
+(``auth.refresh``) and what a token it hands out is (``token``). An ``oauth``
+entry also says how its OAuth client is had and where a sign-in may return
+(``auth.oauth``), how the account's stable id is read (``auth.identity``), and
+how its tools reach a session: the vendor's MCP servers (``mcp``), or the
+vendor's command-line tool, run by the session host (``cli``). Placeholder
 entries may leave all of those out.
 """
 
@@ -50,7 +51,7 @@ class CatalogError(RuntimeError):
 AccessLevel = Literal["read", "write"]
 
 
-AdapterName = Literal["github", "oauth-mcp"]
+AdapterName = Literal["github", "oauth"]
 RedirectMode = Literal["loopback", "core"]
 
 
@@ -192,6 +193,68 @@ class ConnectionMcp(BaseModel):
         return self
 
 
+ENV_NAME_PATTERN = r"^[A-Z][A-Z0-9_]{0,62}$"
+COMMAND_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,62}$"
+FLAG_PATTERN = r"^(-[A-Za-z]|--[a-z0-9][a-z0-9-]{0,62})$"
+
+
+class TokenRefused(BaseModel):
+    """How a run of the tool says the vendor refused its token: its exit code,
+    and a value at a dotted path in the JSON it writes to standard output."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    exit_code: int = Field(ge=1, le=255)
+    json_path: str = Field(pattern=JSON_PATH_PATTERN)
+    value: int | str
+
+
+class ConnectionCli(BaseModel):
+    """The vendor's command-line tool, which a session reaches as one Switch
+    tool: the session host checks each command and runs `binary` itself, never
+    through a shell.
+
+    `name` is the tool's name in the session. The token goes only into
+    `token_env` in the run's own environment; `config_env`, where the tool has
+    one, names a configuration folder made for the session. A command's first
+    argument must be in `allow` and not in `deny`, which also names flags
+    refused anywhere in a command. `path_flags` are the flags whose value is a
+    local file, read or written; the session host keeps them inside the
+    session's folder. Output past `output_cap_bytes` goes to a file, and a run
+    is stopped after `timeout_s`. A run that ends as `token_refused` says is
+    run once more with a token asked for again.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    name: str = Field(pattern=SLUG_PATTERN)
+    binary: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
+    token_env: str = Field(pattern=ENV_NAME_PATTERN)
+    config_env: str | None = Field(default=None, pattern=ENV_NAME_PATTERN)
+    allow: list[Annotated[str, Field(pattern=COMMAND_PATTERN)]] = Field(min_length=1)
+    deny: list[Annotated[str, Field(pattern=f"{COMMAND_PATTERN}|{FLAG_PATTERN}")]]
+    path_flags: dict[
+        Annotated[str, Field(pattern=FLAG_PATTERN)], Literal["read", "write"]
+    ]
+    output_cap_bytes: int = Field(ge=1024, le=10 * 1024 * 1024)
+    timeout_s: int = Field(ge=5, le=600)
+    token_refused: TokenRefused
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "ConnectionCli":
+        if self.name == "switch":
+            raise ValueError("a command-line tool may not be named switch")
+        if len(set(self.allow)) != len(self.allow):
+            raise ValueError("a command is allowed twice")
+        both = sorted(set(self.allow) & set(self.deny))
+        if both:
+            raise ValueError(f"commands both allowed and denied: {both}")
+        denied_paths = sorted(set(self.path_flags) & set(self.deny))
+        if denied_paths:
+            raise ValueError(f"path flags that are also denied: {denied_paths}")
+        if self.token_env == self.config_env:
+            raise ValueError("token_env and config_env name the same variable")
+        return self
+
+
 class LevelAccess(BaseModel):
     """What one access level reaches: OAuth scopes, or GitHub App permissions."""
 
@@ -252,6 +315,7 @@ class ConnectionDefinition(BaseModel):
     auth: ConnectionAuth
     token: TokenPolicy | None = None
     mcp: ConnectionMcp | None = None
+    cli: ConnectionCli | None = None
     access: ConnectionAccess | None = None
     tools: ConnectionTools | None = None
 
@@ -273,8 +337,8 @@ class ConnectionDefinition(BaseModel):
                 raise ValueError(f"an enabled entry needs {', '.join(missing)}")
         if self.adapter == "github":
             self._check_github()
-        elif self.adapter == "oauth-mcp":
-            self._check_oauth_mcp()
+        elif self.adapter == "oauth":
+            self._check_oauth()
         return self
 
     def _check_github(self) -> None:
@@ -282,37 +346,58 @@ class ConnectionDefinition(BaseModel):
             raise ValueError(
                 "the github adapter takes its client from the GitHub App settings"
             )
-        if self.mcp is not None:
-            raise ValueError("the github adapter has no MCP servers")
+        if self.mcp is not None or self.cli is not None:
+            raise ValueError(
+                "the github adapter has no MCP servers or command-line tool of its own"
+            )
         if self.token is not None and self.token.kind != "minted":
             raise ValueError("the github adapter mints its tokens")
 
-    def _check_oauth_mcp(self) -> None:
+    def _check_oauth(self) -> None:
         if self.auth.type != "oauth":
-            raise ValueError("the oauth-mcp adapter signs in with OAuth")
+            raise ValueError("the oauth adapter signs in with OAuth")
+        if self.mcp is not None and self.cli is not None:
+            raise ValueError(
+                "an oauth entry's tools are its MCP servers or its command-line "
+                "tool, not both"
+            )
         if self.enabled:
             missing = [
                 name
                 for name, value in (
                     ("auth.oauth", self.auth.oauth),
                     ("auth.identity", self.auth.identity),
-                    ("mcp", self.mcp),
+                    ("mcp or cli", self.mcp or self.cli),
                 )
                 if value is None
             ]
             if missing:
-                raise ValueError(f"an oauth-mcp entry needs {', '.join(missing)}")
+                raise ValueError(f"an oauth entry needs {', '.join(missing)}")
+        oauth = self.auth.oauth
+        # Discovery starts from an MCP server, so without one the catalog names
+        # the endpoints, and the client is the operator's.
+        if self.mcp is None and oauth is not None:
+            if oauth.registration == "dynamic":
+                raise ValueError(
+                    "a dynamically registered client is found through an MCP "
+                    "server, and this entry has none"
+                )
+            if oauth.authorization_url is None or oauth.revocation_discovered:
+                raise ValueError(
+                    "an entry without MCP servers names its authorization_url and "
+                    "token_url, and its revocation_url where it has one"
+                )
         if self.auth.refresh not in (None, "rotating", "reusable"):
-            raise ValueError("an oauth-mcp sign-in is refreshed: rotating or reusable")
+            raise ValueError("an oauth sign-in is refreshed: rotating or reusable")
         if self.token is not None and self.token.kind != "pass_through":
-            raise ValueError("the oauth-mcp adapter passes the owner's token through")
+            raise ValueError("the oauth adapter passes the owner's token through")
         if self.tools is not None and self.tools.mode != "pass_through":
-            raise ValueError("an oauth-mcp entry's tools pass through until classified")
+            raise ValueError("an oauth entry's tools pass through until classified")
         if self.access is not None and any(
             level is not None and level.scopes is None
             for level in (self.access.read, self.access.write)
         ):
-            raise ValueError("an oauth-mcp entry's levels name OAuth scopes")
+            raise ValueError("an oauth entry's levels name OAuth scopes")
 
     def level_tools(self, access: AccessLevel) -> list[str]:
         """Every tool a grant at `access` may be given. None are named while
@@ -422,7 +507,31 @@ def load_catalog(root: Path) -> dict[str, Connection]:
         catalog[definition.slug] = Connection(definition, files)
     if not catalog:
         raise CatalogError("The connection catalog is empty.")
+    _check_server_names(catalog)
     return catalog
+
+
+def session_server_names(definition: ConnectionDefinition) -> list[str]:
+    """The names an entry's tools go by in a session, beside `switch`."""
+    if definition.mcp is not None:
+        return [server.name for server in definition.mcp.servers]
+    if definition.cli is not None:
+        return [definition.cli.name]
+    return []
+
+
+def _check_server_names(catalog: dict[str, Connection]) -> None:
+    """A session is given every granted entry's servers at once, so no two
+    entries may name one alike."""
+    owners: dict[str, str] = {}
+    for slug, entry in catalog.items():
+        for name in session_server_names(entry.definition):
+            if name in owners:
+                raise CatalogError(
+                    f"Connections {owners[name]} and {slug} both name a session "
+                    f"server {name}."
+                )
+            owners[name] = slug
 
 
 CATALOG = load_catalog(CATALOG_ROOT)

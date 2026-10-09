@@ -3,7 +3,7 @@ name: Atlassian
 category: Project management
 description: Read and update Jira issues and projects, as you.
 enabled: true
-adapter: oauth-mcp
+adapter: oauth
 auth:
   type: oauth
   refresh: rotating

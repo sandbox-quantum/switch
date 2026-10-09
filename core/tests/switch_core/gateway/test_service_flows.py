@@ -19,7 +19,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.connections.adapters.oauth_mcp import OAuthMcpAdapter
+from switch_core.connections.adapters.oauth import OAuthAdapter
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.flows import MAX_FLOWS, ServiceFlows
 from switch_core.connections.loader import CATALOG_ROOT, load_catalog
@@ -36,7 +36,7 @@ from switch_core.gateway.service_connections import (
 from switch_core.gateway.service_flows import router as service_flows_router
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeOAuthServer
-from tests.switch_core.connections.test_loader import OAUTH_MCP_ENTRY, _write_example
+from tests.switch_core.connections.test_loader import OAUTH_ENTRY, _write_example
 from tests.switch_core.management.harness import (
     Harness,
     add_member,
@@ -77,7 +77,7 @@ def _world(
     ports = "\n    loopback_ports: [43123, 43124]" if "loopback" in redirect else ""
     _write_example(
         root,
-        OAUTH_MCP_ENTRY.replace(
+        OAUTH_ENTRY.replace(
             "redirect: [loopback, core]", f"redirect: {redirect}{ports}"
         ),
     )
@@ -102,7 +102,7 @@ def _world(
         keyring=TEST_KEYRING,
         catalog=catalog,
         adapters={
-            "example": OAuthMcpAdapter(
+            "example": OAuthAdapter(
                 catalog["example"].definition, client, vendor.client()
             )
         },

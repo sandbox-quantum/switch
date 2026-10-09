@@ -51,7 +51,7 @@ from switch_core.db.stores.service_connection_store import ServiceConnectionStor
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
-from tests.switch_core.connections.test_loader import OAUTH_MCP_ENTRY, _write_example
+from tests.switch_core.connections.test_loader import OAUTH_ENTRY, _write_example
 from tests.switch_core.gateway.agent_route_harness import add_agent
 from tests.switch_core.hosted_machine_helpers import seed_launch, seed_machine
 
@@ -1025,7 +1025,7 @@ def pass_through_catalog(root: Path, *, max_lifetime: int = 3600) -> dict:
     shutil.copytree(CATALOG_ROOT, root)
     _write_example(
         root,
-        OAUTH_MCP_ENTRY.replace("max_lifetime: 3600", f"max_lifetime: {max_lifetime}"),
+        OAUTH_ENTRY.replace("max_lifetime: 3600", f"max_lifetime: {max_lifetime}"),
     )
     return load_catalog(root)
 

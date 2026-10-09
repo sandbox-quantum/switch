@@ -27,7 +27,7 @@ from switch_core.connections.adapters import (
     ServiceAdapterError,
     ServiceUnavailableError,
 )
-from switch_core.connections.adapters.oauth_mcp import (
+from switch_core.connections.adapters.oauth import (
     AuthorizationEndpoints,
     OAuthClientCredentials,
 )

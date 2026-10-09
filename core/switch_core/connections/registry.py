@@ -23,9 +23,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import ServiceAdapter
 from switch_core.connections.adapters.github import GitHubAdapter, GitHubApp
-from switch_core.connections.adapters.oauth_mcp import (
+from switch_core.connections.adapters.oauth import (
+    OAuthAdapter,
     OAuthClientCredentials,
-    OAuthMcpAdapter,
     StaticClient,
 )
 from switch_core.connections.loader import Connection, ConnectionDefinition
@@ -122,7 +122,7 @@ def build_adapters(
                 adapters[slug] = GitHubAdapter(
                     github_app.connections, github_app.signer
                 )
-        elif definition.adapter == "oauth-mcp":
+        elif definition.adapter == "oauth":
             oauth = definition.auth.oauth
             assert oauth is not None
             if oauth.registration == "dynamic":
@@ -134,7 +134,7 @@ def build_adapters(
                         f"Connection {slug} signs in only through Core's callback, "
                         "which needs GATEWAY_PUBLIC_URL."
                     )
-                adapters[slug] = OAuthMcpAdapter(
+                adapters[slug] = OAuthAdapter(
                     definition,
                     RegisteredClient(
                         service=slug,
@@ -154,7 +154,7 @@ def build_adapters(
             assert oauth.client_settings is not None
             settings = load_client_settings(oauth.client_settings, environ)
             if settings is not None:
-                adapters[slug] = OAuthMcpAdapter(
+                adapters[slug] = OAuthAdapter(
                     definition,
                     StaticClient(
                         OAuthClientCredentials(

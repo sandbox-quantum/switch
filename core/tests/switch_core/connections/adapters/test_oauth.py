@@ -30,9 +30,9 @@ from switch_core.connections.adapters import (
     ServiceAdapterError,
     ServiceUnavailableError,
 )
-from switch_core.connections.adapters.oauth_mcp import (
+from switch_core.connections.adapters.oauth import (
+    OAuthAdapter,
     OAuthClientCredentials,
-    OAuthMcpAdapter,
     StaticClient,
 )
 from switch_core.connections.broker import Principal, ServiceBroker
@@ -49,10 +49,10 @@ from tests.switch_core.connections.fake_vendor import (
     s256,
 )
 from tests.switch_core.connections.test_broker import _user, pass_through_catalog
-from tests.switch_core.connections.test_loader import OAUTH_MCP_ENTRY
+from tests.switch_core.connections.test_loader import CLI_ENTRY, OAUTH_ENTRY
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
-STATIC = OAUTH_MCP_ENTRY.replace(
+STATIC = OAUTH_ENTRY.replace(
     "    registration: dynamic\n",
     "    registration: static\n    client_settings: EXAMPLE\n",
 )
@@ -66,12 +66,12 @@ def _definition(text: str = STATIC) -> ConnectionDefinition:
 
 def _adapter(
     vendor: FakeOAuthServer, text: str = STATIC
-) -> tuple[OAuthMcpAdapter, httpx.AsyncClient]:
+) -> tuple[OAuthAdapter, httpx.AsyncClient]:
     http = vendor.client()
     client = StaticClient(
         OAuthClientCredentials(STATIC_CLIENT_ID, STATIC_CLIENT_SECRET)
     )
-    return OAuthMcpAdapter(_definition(text), client, http), http
+    return OAuthAdapter(_definition(text), client, http), http
 
 
 def _request(resources: dict | None = None) -> IssueRequest:
@@ -83,9 +83,7 @@ def _request(resources: dict | None = None) -> IssueRequest:
     )
 
 
-async def _sign_in(
-    adapter: OAuthMcpAdapter, vendor: FakeOAuthServer
-) -> ConnectionSecret:
+async def _sign_in(adapter: OAuthAdapter, vendor: FakeOAuthServer) -> ConnectionSecret:
     verifier = secrets.token_urlsafe(48)
     url = await adapter.authorization_url(
         redirect_uri=REDIRECT,
@@ -310,6 +308,33 @@ class TestIssue:
             "Planner reads and writes Example as you."
         )
         assert adapter.summary("Planner", "read", {}) == "Planner reads Example as you."
+
+
+class TestCommandLineTool:
+    """An entry whose tool is the vendor's CLI has no MCP server to discover
+    from: it signs in and revokes where the catalog says."""
+
+    async def test_signs_in_and_revokes_at_the_catalogs_endpoints(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, CLI_ENTRY)
+        secret = await _sign_in(adapter, vendor)
+        [authorization] = vendor.authorizations
+        assert "resource" not in authorization
+        assert "resource" not in vendor.token_requests[0]
+        await adapter.revoke_connection(secret)
+        assert [r["token"] for r in vendor.revoked] == [secret.values["refresh_token"]]
+        assert not any("mcp.example.test" in path for path in vendor.paths)
+
+    async def test_hands_out_the_owners_token(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, CLI_ENTRY)
+        secret = await _sign_in(adapter, vendor)
+        issued = await adapter.issue(
+            AccessToken(
+                secret.access_token or "", datetime.now(UTC) + timedelta(minutes=50)
+            ),
+            _request(),
+        )
+        assert issued.token == secret.access_token
+        assert issued.revocable is False
 
 
 class TestDisconnect:

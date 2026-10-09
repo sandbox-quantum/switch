@@ -1,7 +1,7 @@
 """Connecting a service through Switch's generic OAuth sign-in.
 
 The routes of `connections/flows.py`, for any catalog entry with the
-`oauth-mcp` adapter; GitHub keeps its own (`gateway/github_connections.py`).
+`oauth` adapter; GitHub keeps its own (`gateway/github_connections.py`).
 Switch Console starts, completes, follows and confirms a flow as the signed-in
 person; `authorize` and `callback` are the browser's, in core mode, and are
 tied to the flow by its state and a cookie rather than by a session.

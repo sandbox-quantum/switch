@@ -43,7 +43,7 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     oauth = definition.auth.oauth
     assert oauth is not None
     assert (definition.adapter, oauth.registration, oauth.redirect) == (
-        "oauth-mcp",
+        "oauth",
         "dynamic",
         ["loopback"],
     )
@@ -295,13 +295,13 @@ def test_rejects_a_github_entry_that_is_not_githubs(catalog_copy, old, new, mess
         load_catalog(catalog_copy)
 
 
-OAUTH_MCP_ENTRY = """\
+OAUTH_ENTRY = """\
 slug: example
 name: Example
 category: Project management
 description: Read and update Example work items.
 enabled: true
-adapter: oauth-mcp
+adapter: oauth
 auth:
   type: oauth
   refresh: rotating
@@ -323,7 +323,7 @@ tools: { mode: pass_through }
 """
 
 
-def _write_example(root, text: str = OAUTH_MCP_ENTRY) -> None:
+def _write_example(root, text: str = OAUTH_ENTRY) -> None:
     directory = root / "example"
     directory.mkdir(exist_ok=True)
     (directory / "connection.yaml").write_text(text)
@@ -335,10 +335,10 @@ def _write_example(root, text: str = OAUTH_MCP_ENTRY) -> None:
     )
 
 
-def test_loads_an_oauth_mcp_entry(catalog_copy):
+def test_loads_an_oauth_entry(catalog_copy):
     _write_example(catalog_copy)
     definition = load_catalog(catalog_copy)["example"].definition
-    assert definition.adapter == "oauth-mcp"
+    assert definition.adapter == "oauth"
     assert definition.auth.oauth is not None
     assert definition.auth.oauth.registration == "dynamic"
     assert definition.auth.oauth.redirect == ["loopback", "core"]
@@ -354,7 +354,7 @@ def test_loads_an_oauth_mcp_entry(catalog_copy):
 def test_loads_a_static_client_with_its_endpoints(catalog_copy):
     _write_example(
         catalog_copy,
-        OAUTH_MCP_ENTRY.replace(
+        OAUTH_ENTRY.replace(
             "    registration: dynamic\n",
             "    registration: static\n"
             "    client_settings: EXAMPLE\n"
@@ -375,7 +375,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
         (
             "  oauth:\n    registration: dynamic\n    redirect: [loopback, core]\n",
             "",
-            "an oauth-mcp entry needs auth.oauth",
+            "an oauth entry needs auth.oauth",
         ),
         (
             "  identity:\n    url: https://api.example.test/me\n"
@@ -387,7 +387,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "mcp:\n  servers:\n"
             '    - { name: example, url: "https://mcp.example.test/v1/mcp" }\n',
             "",
-            "needs mcp",
+            "needs mcp or cli",
         ),
         ("registration: dynamic", "registration: static", "client_settings"),
         (
@@ -466,11 +466,11 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
         ),
     ],
 )
-def test_rejects_an_incomplete_or_inconsistent_oauth_mcp_entry(
+def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
     catalog_copy, old, new, message
 ):
-    assert old in OAUTH_MCP_ENTRY
-    _write_example(catalog_copy, OAUTH_MCP_ENTRY.replace(old, new))
+    assert old in OAUTH_ENTRY
+    _write_example(catalog_copy, OAUTH_ENTRY.replace(old, new))
     with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
         load_catalog(catalog_copy)
 
@@ -481,3 +481,138 @@ def test_placeholders_keep_their_short_form():
         assert definition.adapter is None
         assert definition.token is None
         assert definition.mcp is None
+        assert definition.cli is None
+
+
+CLI_ENTRY = (
+    OAUTH_ENTRY.replace(
+        "    registration: dynamic\n",
+        "    registration: static\n"
+        "    client_settings: EXAMPLE\n"
+        "    authorization_url: https://auth.example.test/authorize\n"
+        "    token_url: https://auth.example.test/token\n"
+        "    revocation_url: https://auth.example.test/revoke\n",
+    )
+    .replace("refresh: rotating", "refresh: reusable")
+    .replace(
+        "mcp:\n  servers:\n"
+        '    - { name: example, url: "https://mcp.example.test/v1/mcp" }\n',
+        "cli:\n"
+        "  name: example-cli\n"
+        "  binary: excli\n"
+        "  token_env: EXCLI_TOKEN\n"
+        "  config_env: EXCLI_CONFIG_DIR\n"
+        "  allow: [items, boards]\n"
+        "  deny: [auth, --profile]\n"
+        "  path_flags: { --upload: read, --output: write, -o: write }\n"
+        "  output_cap_bytes: 65536\n"
+        "  timeout_s: 120\n"
+        "  token_refused: { exit_code: 1, json_path: error.code, value: 401 }\n",
+    )
+)
+
+
+def test_loads_an_oauth_entry_whose_tool_is_a_cli(catalog_copy):
+    _write_example(catalog_copy, CLI_ENTRY)
+    definition = load_catalog(catalog_copy)["example"].definition
+    assert definition.mcp is None
+    cli = definition.cli
+    assert cli is not None
+    assert (cli.name, cli.binary, cli.token_env, cli.config_env) == (
+        "example-cli",
+        "excli",
+        "EXCLI_TOKEN",
+        "EXCLI_CONFIG_DIR",
+    )
+    assert cli.allow == ["items", "boards"]
+    assert cli.deny == ["auth", "--profile"]
+    assert cli.path_flags == {"--upload": "read", "--output": "write", "-o": "write"}
+    assert (cli.output_cap_bytes, cli.timeout_s) == (65536, 120)
+    assert (
+        cli.token_refused.exit_code,
+        cli.token_refused.json_path,
+        cli.token_refused.value,
+    ) == (1, "error.code", 401)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            "cli:\n",
+            "mcp:\n  servers:\n"
+            '    - { name: example, url: "https://mcp.example.test/v1/mcp" }\n'
+            "cli:\n",
+            "not both",
+        ),
+        (
+            "    registration: static\n    client_settings: EXAMPLE\n"
+            "    authorization_url: https://auth.example.test/authorize\n"
+            "    token_url: https://auth.example.test/token\n",
+            "    registration: dynamic\n",
+            "has none",
+        ),
+        (
+            "    authorization_url: https://auth.example.test/authorize\n"
+            "    token_url: https://auth.example.test/token\n",
+            "",
+            "names its authorization_url",
+        ),
+        (
+            "    revocation_url: https://auth.example.test/revoke\n",
+            "    revocation_discovered: true\n",
+            "revocation_discovered",
+        ),
+        ("name: example-cli", "name: switch", "may not be named switch"),
+        ("name: example-cli", "name: Example CLI", "name"),
+        ("binary: excli", "binary: ../excli", "binary"),
+        ("binary: excli", "binary: sh -c", "binary"),
+        ("token_env: EXCLI_TOKEN", "token_env: excli-token", "token_env"),
+        ("config_env: EXCLI_CONFIG_DIR", "config_env: EXCLI_TOKEN", "same variable"),
+        ("allow: [items, boards]", "allow: []", "allow"),
+        ("allow: [items, boards]", "allow: [items, items]", "allowed twice"),
+        ("allow: [items, boards]", "allow: [items, auth]", "both allowed and denied"),
+        ("allow: [items, boards]", "allow: [items, --all]", "allow"),
+        ("deny: [auth, --profile]", "deny: [auth, '--profile;x']", "deny"),
+        ("--upload: read", "--upload: delete", "path_flags"),
+        ("--upload: read", "-ox: read", "path_flags"),
+        ("deny: [auth, --profile]", "deny: [auth, --upload]", "also denied"),
+        ("output_cap_bytes: 65536", "output_cap_bytes: 10", "output_cap_bytes"),
+        ("timeout_s: 120", "timeout_s: 3600", "timeout_s"),
+        ("  timeout_s: 120\n", "", "timeout_s"),
+        ("  deny: [auth, --profile]\n", "", "deny"),
+        ("exit_code: 1,", "exit_code: 0,", "exit_code"),
+        ("json_path: error.code", "json_path: error/code", "json_path"),
+        (
+            "  token_refused: { exit_code: 1, json_path: error.code, value: 401 }\n",
+            "",
+            "token_refused",
+        ),
+    ],
+)
+def test_rejects_an_inconsistent_cli_entry(catalog_copy, old, new, message):
+    assert old in CLI_ENTRY
+    _write_example(catalog_copy, CLI_ENTRY.replace(old, new))
+    with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_a_github_entry_with_a_cli(catalog_copy):
+    _rewrite_github(
+        catalog_copy,
+        "tools:\n",
+        "cli:\n  name: gh\n  binary: gh\n  token_env: GH_TOKEN\n  allow: [repo]\n"
+        "  deny: []\n  path_flags: {}\n  output_cap_bytes: 65536\n  timeout_s: 60\n"
+        "  token_refused: { exit_code: 1, json_path: status, value: 401 }\n"
+        "tools:\n",
+    )
+    with pytest.raises(CatalogError, match="(?s)github is invalid.*command-line tool"):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_two_entries_that_name_a_session_server_alike(catalog_copy):
+    _write_example(
+        catalog_copy, CLI_ENTRY.replace("name: example-cli", "name: atlassian")
+    )
+    with pytest.raises(CatalogError, match="atlassian and example both name"):
+        load_catalog(catalog_copy)

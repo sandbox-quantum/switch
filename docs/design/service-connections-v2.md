@@ -11,11 +11,11 @@ GitHub works as it did.
 
 | v1 | v2 |
 |---|---|
-| One adapter, GitHub's, built by hand in `main.py` | Built from the catalog (`connections/registry.py`): each enabled entry names its `adapter`, `github` or the generic `oauth-mcp` |
-| Catalog `connection.yaml` v2 | v3: `adapter`, `token`, `auth.oauth`, `auth.identity`, `mcp` (below) |
+| One adapter, GitHub's, built by hand in `main.py` | Built from the catalog (`connections/registry.py`): each enabled entry names its `adapter`, `github` or the generic `oauth` |
+| Catalog `connection.yaml` v2 | v3: `adapter`, `token`, `auth.oauth`, `auth.identity`, `mcp` or `cli` (below) |
 | Every token minted per issue, at most an hour | `minted` (GitHub) or `pass_through`: the owner's own access token, with the catalog's lifetime cap |
 | Grants with a level, tools and resources | A pass-through grant is **on or off**: it takes the connection's level |
-| Connecting through GitHub's own flow | A generic flow for `oauth-mcp` entries; GitHub keeps its own |
+| Connecting through GitHub's own flow | A generic flow for `oauth` entries; GitHub keeps its own |
 | No vendor tools in a session | One loopback MCP server per granted vendor server, run by the session host |
 | A service is set up or not | `DISABLED_SERVICES` switches one off, with a reason people see |
 
@@ -24,7 +24,7 @@ GitHub works as it did.
 ```yaml
 slug: atlassian
 enabled: true
-adapter: oauth-mcp            # github | oauth-mcp
+adapter: oauth                # github | oauth
 auth:
   type: oauth
   refresh: rotating           # rotating | reusable
@@ -51,12 +51,39 @@ tools: { mode: pass_through } # the vendor's tool list as it is, until classifie
 
 The loader stays strict and refuses an entry whose fields contradict its
 adapter: a GitHub entry with MCP servers, a pass-through GitHub token, an
-`oauth-mcp` entry without its client, identity or servers, a minted token that
+`oauth` entry without its client, identity or tools, a minted token that
 outlives an hour, and so on. Without `authorization_url` and `token_url`, the
 endpoints are discovered from the first MCP server: the metadata its 401 names
 (RFC 9728), else the well-known addresses, then the authorization server's
 metadata (RFC 8414), which must offer PKCE with S256. A dynamically registered
 client always discovers. Placeholder entries keep their short form.
+
+The adapter is named for how it signs in, `oauth`, not for how its tools are
+reached. Its entry delivers its tools one of two ways, never both: the vendor's
+MCP servers (`mcp`), or the vendor's command-line tool (`cli`), which the
+session host runs as one Switch tool:
+
+```yaml
+cli:
+  name: example            # the tool's name in the session, beside `switch`
+  binary: excli            # run directly, never through a shell
+  token_env: EXCLI_TOKEN   # set only in that run's environment
+  config_env: EXCLI_CONFIG_DIR   # where the tool has one: a folder per session
+  allow: [items, boards]   # a command's first argument must be one of these
+  deny: [auth, --profile]  # first arguments, and flags refused anywhere
+  path_flags: { --upload: read, --output: write, -o: write }
+  output_cap_bytes: 65536  # more goes to a file
+  timeout_s: 120
+  token_refused:           # how a run says the vendor refused its token,
+    exit_code: 1           # so the session host asks again and retries once
+    json_path: error.code  # in the JSON the tool writes to standard output
+    value: 401
+```
+
+An entry with a `cli` has no MCP server to discover from, so it names its
+`authorization_url` and `token_url` (and `revocation_url`, where the vendor has
+one), and its client is the operator's (`registration: static`). No two
+entries may give a session a server of the same name.
 
 `<PREFIX>_CLIENT_CONFIG_PATH` names a static client's settings, a JSON file
 holding `client_id` and `client_secret` and nothing else. Unset, the service is

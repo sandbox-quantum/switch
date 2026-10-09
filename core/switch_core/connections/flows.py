@@ -31,9 +31,9 @@ from switch_core.connections.adapters import (
     ReauthorizationRequiredError,
     ServiceAdapterError,
 )
-from switch_core.connections.adapters.oauth_mcp import (
+from switch_core.connections.adapters.oauth import (
     Identity,
-    OAuthMcpAdapter,
+    OAuthAdapter,
     SignIn,
     s256,
 )
@@ -187,7 +187,7 @@ class ServiceFlows:
             raise FlowError(INTERRUPTED)
         return flow
 
-    async def vendor_url(self, state: str, adapter: OAuthMcpAdapter) -> str:
+    async def vendor_url(self, state: str, adapter: OAuthAdapter) -> str:
         """Where the browser signs in at the vendor; once per flow."""
         flow = self.flow(state)
         if flow.status != "pending":
@@ -243,7 +243,7 @@ class ServiceFlows:
         *,
         completion_secret: str,
         code: str,
-        adapter: OAuthMcpAdapter,
+        adapter: OAuthAdapter,
     ) -> ServiceFlow:
         """Console hands back the code; Core exchanges it and reads the account."""
         flow = self.flow(state)

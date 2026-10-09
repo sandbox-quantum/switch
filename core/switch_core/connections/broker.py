@@ -48,7 +48,7 @@ from switch_core.connections.adapters import (
     ServiceAdapterError,
     ServiceUnavailableError,
 )
-from switch_core.connections.adapters.oauth_mcp import OAuthMcpAdapter
+from switch_core.connections.adapters.oauth import OAuthAdapter
 from switch_core.connections.loader import (
     AccessLevel,
     Connection,
@@ -305,12 +305,12 @@ class ServiceBroker:
             )
         return entry
 
-    def sign_in(self, service: str) -> tuple[ConnectionDefinition, OAuthMcpAdapter]:
+    def sign_in(self, service: str) -> tuple[ConnectionDefinition, OAuthAdapter]:
         """The catalog entry and adapter a person signs in to `service`
         through, with Switch's generic OAuth flow (`connections/flows.py`)."""
         definition = self._entry(service).definition
         self._require_switched_on(service)
-        if definition.adapter != "oauth-mcp":
+        if definition.adapter != "oauth":
             raise ServiceError(
                 404,
                 NOT_FOUND,
@@ -318,7 +318,7 @@ class ServiceBroker:
                 retryable=False,
             )
         adapter = self._adapters.get(service)
-        if not isinstance(adapter, OAuthMcpAdapter):
+        if not isinstance(adapter, OAuthAdapter):
             raise ServiceError(
                 503,
                 INTERNAL,
