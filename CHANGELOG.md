@@ -45,6 +45,15 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **An agent or controller that keeps repeating a refused request is answered
+  429 from memory.** After 8 identical refusals (401, 403, 404 or 426 for the
+  same bearer token, or the same controller credential, on the same method and
+  path of an agent or controller route) within two minutes, Switch answers that request 429 with
+  `Retry-After` for a minute without looking up its credential or touching
+  the database. One request goes through when the wait is over; refused
+  again, the wait doubles, up to 15 minutes, and any other answer clears it.
+  It protects the server from old clients that retry a refusal forever. New
+  metric `switch.http.refusals_throttled`, with a panel on the dashboard.
 - **Switch cloud machines that run the agents controller sleep when idle,
   and wake on a message.** Such a machine is stopped once its status reports
   say no session has run for `HOSTED_IDLE_STOP_MINUTES` (released, as before,

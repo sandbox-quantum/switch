@@ -86,6 +86,16 @@ HTTP_REQUEST_DURATION = _spec(
     "route",
     "method",
 )
+# A caller that kept repeating a refused request, answered 429 from memory
+# (`refusal_breaker.py`). `route` is the template of the route that refused it.
+HTTP_REFUSALS_THROTTLED = _spec(
+    "switch.http.refusals_throttled",
+    "sum",
+    "{request}",
+    "Requests answered 429 without being served, because the same caller had "
+    "the same request refused repeatedly. By the route that refused it.",
+    "route",
+)
 
 # ── Database ─────────────────────────────────────────────────────────────────
 DB_POOL_IN_USE = _spec(
@@ -574,6 +584,7 @@ CATALOGUE: dict[str, MetricSpec] = {
     for spec in (
         HTTP_REQUESTS,
         HTTP_REQUEST_DURATION,
+        HTTP_REFUSALS_THROTTLED,
         DB_POOL_IN_USE,
         DB_POOL_SIZE,
         DB_POOL_OVERFLOW,
