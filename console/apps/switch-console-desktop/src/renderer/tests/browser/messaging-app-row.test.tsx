@@ -71,6 +71,7 @@ function bridge(patch: Partial<RemoteBridge> = {}): RemoteBridge {
     directorySearchSupported: true,
     attention: null,
     teamPlacementSupported: false,
+    channelIdsRefused: null,
     ...patch,
   };
 }
@@ -90,6 +91,7 @@ function row(
     bridge?: RemoteBridge;
     identities?: LinkedIdentity[] | null;
     isAdmin?: boolean;
+    onConnectChat?: (() => void) | null;
     onDisconnect?: () => void;
   } = {}
 ) {
@@ -105,6 +107,7 @@ function row(
       isAdmin={overrides.isAdmin ?? false}
       savingChannelCreation={false}
       onToggleChannelCreation={() => {}}
+      onConnectChat={overrides.onConnectChat ?? null}
       onDisconnect={overrides.onDisconnect ?? (() => {})}
     />
   );
@@ -241,6 +244,26 @@ describe('the row menu', () => {
     await act(async () => item!.click());
 
     expect(onDisconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers connecting a chat, to a member too, where the card allows it', async () => {
+    const onConnectChat = vi.fn();
+    const telegram = bridge({ id: 'b-tg', type: 'telegram', displayName: 'Telegram' });
+    const el = await render(row({ bridge: telegram, isAdmin: false, onConnectChat }));
+    expect(await openMenu(el)).toContain('Add to Telegram…');
+
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (i) => i.textContent?.trim() === 'Add to Telegram…'
+    );
+    await act(async () => item!.click());
+
+    expect(onConnectChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers no chat to connect otherwise', async () => {
+    const el = await render(row({ isAdmin: true }));
+
+    expect(await openMenu(el)).not.toContain('Add to Slack…');
   });
 });
 

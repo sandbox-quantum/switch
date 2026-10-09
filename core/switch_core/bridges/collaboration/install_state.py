@@ -32,6 +32,16 @@ derived rather than reused: a token minted here must never be mistakable for a
 session JWT, or for whatever the next thing to want a signature turns out to
 be. Verification accepts any key in the keyring, and while `JWT_SECRET_KEY` is
 still set, a state minted with it before `SECRET_KEYS` existed.
+
+**A second, compact form exists for platforms with no redirect.** Telegram has
+no consent screen to carry a state through; the only thing that rides along
+with adding its bot to a group is a deep-link start parameter of at most 64
+characters from `[A-Za-z0-9_-]`, and the form above is about 150. The compact
+form carries the same two ids as raw UUID bytes and a truncated MAC, and says
+nothing about the platform: that is implied by the key, which is derived per
+platform, so a token minted for one platform is simply unsigned to another.
+Ninety-six bits of MAC is ample for a token that is also single use and dead
+in ten minutes.
 """
 
 from __future__ import annotations
@@ -40,6 +50,7 @@ import base64
 import hashlib
 import hmac
 import json
+import uuid
 from dataclasses import dataclass
 
 from switch_core.keys import Keyring, Purpose
@@ -49,6 +60,13 @@ from switch_core.keys import Keyring, Purpose
 _LEGACY_KEY_INFO = b"switch/messaging-install-state/v1"
 
 _PREFIX = "v1."
+
+#: The compact form's counterparts. Its key info is completed by the platform
+#: name — see `_compact_signing_key`.
+_COMPACT_KEY_INFO = b"switch/messaging-install-claim/c1/"
+_COMPACT_PREFIX = "c1"
+_COMPACT_MAC_BYTES = 12
+_COMPACT_BODY_BYTES = 32
 
 
 class InstallStateError(RuntimeError):
@@ -145,3 +163,60 @@ def verify(token: str, *, keyring: Keyring) -> InstallState:
         )
     except (ValueError, KeyError, TypeError):
         raise InstallStateError("install state is malformed") from None
+
+
+def _compact_signing_key(key: bytes, platform: str) -> bytes:
+    return hmac.new(key, _COMPACT_KEY_INFO + platform.encode(), hashlib.sha256).digest()
+
+
+def _compact_mac(key: bytes, platform: str, body: bytes) -> bytes:
+    return hmac.new(_compact_signing_key(key, platform), body, hashlib.sha256).digest()[
+        :_COMPACT_MAC_BYTES
+    ]
+
+
+def mint_compact(state: InstallState, *, keyring: Keyring) -> str:
+    """Sign a state short enough to ride in a 64-character deep link.
+
+    Both ids must be UUIDs, which every tenant and state row is in production.
+    Anything else is a programming error rather than a state to mint, and
+    raises `ValueError` instead of producing a token that could not round-trip.
+    """
+    body = uuid.UUID(state.tenant_id).bytes + uuid.UUID(state.state_id).bytes
+    mac = _compact_mac(keyring.derive(Purpose.INSTALL_STATE), state.platform, body)
+    return f"{_COMPACT_PREFIX}{_b64(body + mac)}"
+
+
+def verify_compact(token: str, *, platform: str, keyring: Keyring) -> InstallState:
+    """Recover a compact state minted for `platform`, or raise.
+
+    The platform is an argument rather than a field because the token does not
+    carry one: the caller says which platform it is listening as, and a token
+    minted for any other fails the MAC like a forgery would.
+
+    Any key in the keyring verifies, as for the full form. `JWT_SECRET_KEY`
+    does not: no compact state was ever minted with it.
+    """
+    if not token.startswith(_COMPACT_PREFIX):
+        raise InstallStateError("install state is not a state this deployment minted")
+
+    try:
+        raw = _unb64(token[len(_COMPACT_PREFIX) :])
+    except ValueError:
+        raise InstallStateError("install state is malformed") from None
+    if len(raw) != _COMPACT_BODY_BYTES + _COMPACT_MAC_BYTES:
+        raise InstallStateError("install state is malformed")
+
+    body, mac = raw[:_COMPACT_BODY_BYTES], raw[_COMPACT_BODY_BYTES:]
+    matches = False
+    for key in keyring.verification_keys(Purpose.INSTALL_STATE):
+        expected = _compact_mac(key, platform, body)
+        matches = hmac.compare_digest(mac, expected) or matches
+    if not matches:
+        raise InstallStateError("install state was not signed by this deployment")
+
+    return InstallState(
+        tenant_id=str(uuid.UUID(bytes=body[:16])),
+        state_id=str(uuid.UUID(bytes=body[16:])),
+        platform=platform,
+    )

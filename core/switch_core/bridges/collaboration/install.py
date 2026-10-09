@@ -33,7 +33,7 @@ not registered an app cannot half-offer installs.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
@@ -95,6 +95,15 @@ class MessagingInstallError(RuntimeError):
     Raised rather than returned for the usual reason: every caller of these
     methods is a request handler that must not continue on a failure, and a
     falsy return is the kind of thing a caller forgets to check.
+    """
+
+
+class ClaimantMayNotConnect(RuntimeError):
+    """The person who posted a claim may not connect the chat it was posted in.
+
+    Holding a valid code says who in Switch asked; it says nothing about who
+    may decide for the chat. A claim connects everything said there to a
+    tenant, so the platform's own say over the chat has to agree as well.
     """
 
 
@@ -229,6 +238,82 @@ class InstallGrant:
     platform_data: Mapping[str, object]
 
 
+@dataclass(frozen=True)
+class InstallClaim:
+    """A platform event that asks for its workspace to be installed.
+
+    The counterpart of a completed OAuth callback for a platform that has none.
+    Telegram cannot redirect a browser anywhere; what it can do is post the
+    state it was handed into the chat the bot was just added to, so the
+    install arrives as an ordinary webhook event instead of a callback.
+
+    `grant` is what that event amounts to, in the shape the rest of the install
+    already takes. `workspace_name` names the bridge when this claim is the one
+    that creates it, so for a platform whose bridge serves many workspaces it
+    should name the connection rather than the one chat that happened to come
+    first.
+
+    `claimant` is the platform's id for whoever posted the claim, which is what
+    `require_claimant_may_connect` asks the platform about. A message posted as
+    the chat itself (a channel's post, an anonymous group admin's) names the
+    chat.
+    """
+
+    token: str
+    grant: InstallGrant
+    claimant: str
+
+
+#: Why a claim was refused, as a person trying to connect a chat needs to hear
+#: it. `expired` covers a link already used too: the store cannot tell the two
+#: apart, and neither is fixed differently — both want a fresh link.
+ClaimRefusal = Literal[
+    "expired", "unrecognised", "already_connected", "not_permitted", "not_chat_admin"
+]
+
+
+@dataclass(frozen=True)
+class ClaimProposal:
+    """What a claim would connect its chat to, for the chat's admins to check.
+
+    The claim-based counterpart of OAuth's confirmation page. A link can be
+    forwarded to anyone, so whoever used it may not be whoever asked for it,
+    and nothing is connected until an admin of the chat has seen which Switch
+    organisation it is for and chosen Connect. `requested_by` is a name, not
+    the email the page shows: everyone in the chat sees this.
+    """
+
+    organisation: str
+    requested_by: str
+
+
+ClaimDecision = Literal["connect", "cancel"]
+
+
+@dataclass(frozen=True)
+class ClaimAnswer:
+    """An answer to a proposal, from the chat it was posted in.
+
+    `claim.claimant` is whoever answered, which is who must be an admin of the
+    chat. `press` is the platform's own record of the answer, handed back to
+    the installer to close it.
+    """
+
+    claim: InstallClaim
+    decision: ClaimDecision
+    press: Mapping[str, object]
+
+
+#: How an answer ended: connected, cancelled, or refused for a claim's reason.
+ClaimOutcome = Literal["connected", "cancelled"] | ClaimRefusal
+
+
+#: Which state token an installer's platform can carry. `v1` for a platform
+#: that hands the state back through a redirect; `compact` for one whose only
+#: carrier is short (see `install_state`).
+StateFormat = Literal["v1", "compact"]
+
+
 class MessagingAppInstaller(ABC):
     """The install half of one platform, holding that platform's app credentials.
 
@@ -248,6 +333,24 @@ class MessagingAppInstaller(ABC):
     #: it — so a platform that delivers over a socket of its own declares none
     #: and its webhook URLs simply do not exist.
     webhook_endpoints: ClassVar[frozenset[WebhookEndpoint]]
+
+    state_format: ClassVar[StateFormat] = "v1"
+
+    #: Whether a workspace is installed by a claim posted in it rather than by
+    #: an OAuth round trip. A claim-based platform shares one bridge per tenant
+    #: across every chat claimed, so one chat is a room rather than a
+    #: connection: after an admin connects the first, members may connect and
+    #: disconnect chats. The bridge outlives its chats, and only an admin
+    #: removes it, by deleting it.
+    installs_by_claim: ClassVar[bool] = False
+
+    #: Whether events from workspaces nobody has installed are routine here.
+    #: Off for a platform whose app is only ever in workspaces that installed
+    #: it, so such an event is worth a warning each time. On for one whose app
+    #: can sit in chats nobody claimed and hear everything said there, where a
+    #: warning per event would bury the drops that are real losses; those are
+    #: counted instead.
+    expects_unowned_events: ClassVar[bool] = False
 
     @abstractmethod
     def authorize_url(self, *, state: str, redirect_uri: str) -> str:
@@ -418,7 +521,9 @@ class MessagingAppInstaller(ABC):
 
         The counterpart of `revoke` for a platform with no per-install token,
         called only when the install's bridge is not running to do it itself
-        (`PlatformAdapter.withdraw`). A no-op where there is nothing on
+        (`PlatformAdapter.withdraw`) — or, for a platform that `installs_by_claim`,
+        always, since its bridge serves the tenant's other workspaces and is not
+        removed with this one. A no-op where there is nothing on
         the platform to undo. Best effort: raise `MessagingInstallError` to
         say what was left behind, and the disconnect is refused so it can be
         tried again.
@@ -434,6 +539,130 @@ class MessagingAppInstaller(ABC):
         act on — "you need to be an administrator" — says that instead.
         """
         return f"{self.platform} reported: {error}."
+
+    def claim_of_event(self, payload: Mapping[str, object]) -> InstallClaim | None:
+        """The install this event asks for, or `None` if it asks for none.
+
+        Only a platform with no OAuth leg overrides this; for the rest an
+        install arrives at the callback and never as an event. A claim
+        installs nothing by itself: it is proposed to the chat, and an admin's
+        answer (:meth:`answer_of_event`) is what connects it.
+
+        Asked before the event is resolved, because the workspace it names is
+        by definition not installed yet and resolving it would drop the one
+        event that could change that. Pure, like :meth:`workspace_of_event`:
+        the token is verified and redeemed by the install service, not here.
+        """
+        return None
+
+    def answer_of_event(self, payload: Mapping[str, object]) -> ClaimAnswer | None:
+        """The answer this event gives to a proposal, or `None` if it is none.
+
+        Pure, like :meth:`claim_of_event`, and asked before the event is
+        resolved for the same reason.
+        """
+        return None
+
+    async def require_claimant_may_connect(self, claim: InstallClaim) -> None:
+        """Refuse a claim posted by someone who may not decide for its chat.
+
+        Asked before the claim's code is spent, so a refused attempt leaves it
+        for someone who may. Raise :class:`ClaimantMayNotConnect` to refuse,
+        and :class:`MessagingInstallError` when the platform could not be
+        asked, which the platform retries. A no-op for a platform that installs
+        by OAuth, whose own consent screen already asked.
+        """
+        return None
+
+    def migration_of_event(
+        self, payload: Mapping[str, object]
+    ) -> tuple[str, str] | None:
+        """`(old id, new id)` if this event says its workspace changed id.
+
+        Telegram reissues a chat's id when a group becomes a supergroup. The
+        install row is keyed by that id and has to follow it, or the chat's
+        events stop resolving to anyone. Pure, like `workspace_of_event`,
+        which for such an event answers the *old* id so it still resolves.
+        """
+        return None
+
+    async def on_claim_proposed(
+        self, *, claim: InstallClaim, proposal: ClaimProposal
+    ) -> None:
+        """Ask the chat a claim came from whether to connect it.
+
+        Runs after the platform has been answered. A claim-based platform must
+        override this, since without it nobody is asked and nothing connects.
+        """
+        raise MessagingInstallError(
+            f"{self.platform} is not installed by claiming a chat, so there is "
+            "no chat to ask"
+        )
+
+    async def on_claim_answered(
+        self, *, answer: ClaimAnswer, outcome: ClaimOutcome
+    ) -> None:
+        """Close an answer: say how it ended, where it was given.
+
+        Runs after the platform has been answered. Must say nothing about
+        which tenant holds a chat that is already connected.
+        """
+        return None
+
+    async def on_claim_refused(
+        self, *, claim: InstallClaim, reason: ClaimRefusal
+    ) -> None:
+        """Tell the chat a claim came from why it was not connected.
+
+        Runs after the platform has been answered. Without it the person who
+        tapped the link sees nothing happen, which reads as Switch being broken
+        rather than as a link that ran out. Must say nothing about which tenant
+        holds a chat that is already connected.
+        """
+        return None
+
+    async def on_unowned_event(
+        self,
+        *,
+        workspace_id: str,
+        payload: Mapping[str, object],
+        still_unowned: Callable[[], Awaitable[bool]],
+    ) -> None:
+        """React to an authentic event from a workspace nobody holds.
+
+        Runs after the platform has been answered. Nothing about the event may
+        be stored; what a platform may do is say something back in the chat —
+        how to connect it, or that a direct message reaches no one.
+        `still_unowned` re-asks, for a reply worth delaying until a claim that
+        may be in flight has had its chance.
+        """
+        return None
+
+    def bot_handle(self) -> str:
+        """The name a person searches for to add the bot to a chat by hand.
+
+        Shown beside the claim link, for a chat the link cannot reach. Only a
+        claim-based platform is asked; any other has no bot to add by hand.
+        """
+        raise MessagingInstallError(
+            f"{self.platform} is not installed by claiming a chat, so it has no "
+            "bot to add by hand"
+        )
+
+    def shared_connection(self) -> object | None:
+        """The deployment-level connection this platform's bridges run on, if any.
+
+        `None` for a platform whose bridges each hold their own credential.
+        A platform with one app-wide bot returns what its bridges attach to,
+        and the install service hands it to a bridge the first time it
+        delivers that bridge an event — which is how a bridge registered after
+        boot gets one.
+
+        Raise :class:`MessagingInstallError` if it exists but cannot be used
+        yet; the event is then refused as retryable rather than delivered to a
+        bridge that could not act on it.
+        """
+        return None
 
     @abstractmethod
     def connection_config(self, grant: InstallGrant) -> dict[str, object]:

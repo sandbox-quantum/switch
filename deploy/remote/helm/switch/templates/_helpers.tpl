@@ -103,6 +103,9 @@ TEAMS_APP_NOTIFICATION_PRIVATE_KEY: {{ required "secrets.teamsAppNotificationPri
 TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY: {{ .Values.secrets.teamsAppNotificationPreviousPrivateKey | b64enc | quote }}
 {{- end }}
 {{- end }}
+{{- if .Values.switchCore.telegramApp.enabled }}
+TELEGRAM_APP_BOT_TOKEN: {{ required "secrets.telegramAppBotToken is required when switchCore.telegramApp.enabled" .Values.secrets.telegramAppBotToken | b64enc | quote }}
+TELEGRAM_APP_WEBHOOK_SECRET: {{ required "secrets.telegramAppWebhookSecret is required when switchCore.telegramApp.enabled" .Values.secrets.telegramAppWebhookSecret | b64enc | quote }}
 {{- end }}
 
 {{/*
@@ -827,7 +830,7 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: GATEWAY_PUBLIC_URL
   value: {{ .Values.switchCore.gatewayPublicUrl | quote }}
 {{- end }}
-{{- if or .Values.switchCore.slackApp.enabled .Values.switchCore.discordApp.enabled .Values.switchCore.teamsApp.enabled }}
+{{- if or .Values.switchCore.slackApp.enabled .Values.switchCore.discordApp.enabled .Values.switchCore.teamsApp.enabled .Values.switchCore.telegramApp.enabled }}
 - name: MESSAGING_PUBLIC_URL
   value: {{ required "switchCore.messagingPublicUrl is required when a distributed messaging app is enabled" (include "switch.messagingPublicUrl" .) | quote }}
 {{- end }}
@@ -922,6 +925,18 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
       name: {{ include "switch.secretName" . }}
       key: TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY
 {{- end }}
+{{- end }}
+{{- if .Values.switchCore.telegramApp.enabled }}
+- name: TELEGRAM_APP_BOT_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TELEGRAM_APP_BOT_TOKEN
+- name: TELEGRAM_APP_WEBHOOK_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TELEGRAM_APP_WEBHOOK_SECRET
 {{- end }}
 {{- end }}
 

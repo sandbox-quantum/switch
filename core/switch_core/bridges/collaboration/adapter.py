@@ -1223,8 +1223,10 @@ class PlatformAdapter(ABC):
         than showing an empty picker that looks broken.
         """
         raise NotImplementedError(
-            f"{self.platform_name} has no searchable user directory — on this "
-            "platform someone must send a message before Switch knows them"
+            f"{self.platform_name} has no searchable user directory, so this "
+            "lists only people who have written in a chat connected to Switch. "
+            "If you are not listed, send a message in a connected group, then "
+            "search again"
         )
 
     async def channel_deeplink(self, external_channel_id: str) -> str | None:
@@ -1313,6 +1315,16 @@ class PlatformAdapter(ABC):
         shared between organisations can reach every organisation's channels,
         so being able to see one says nothing about whose it is, and it has to
         say here which are its own. Raises `ChannelNotBindable`.
+        """
+        return None
+
+    def channel_ids_refused(self) -> str | None:
+        """Why this bridge binds no existing channel by id at all, or None.
+
+        For a bridge whose chats reach it only one way, so the dashboard can
+        say so where a room is created rather than offer a choice that fails.
+        Plain text, and the one wording: a bridge that answers here refuses
+        with it too.
         """
         return None
 

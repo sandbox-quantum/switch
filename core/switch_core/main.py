@@ -12,6 +12,7 @@ from functools import partial
 from pathlib import Path
 
 import httpx
+import telegram
 import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
@@ -50,7 +51,7 @@ from switch_core.bridges.agent.server_connectors.opencode.connector import (
     OpenCodeConnectionConfig,
     OpenCodeConnector,
 )
-from switch_core.bridges.collaboration.adapter import SupportsSharedConnection
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
@@ -58,7 +59,11 @@ from switch_core.bridges.collaboration.discord.adapter import (
 from switch_core.bridges.collaboration.discord.connection import DiscordConnection
 from switch_core.bridges.collaboration.discord.gateway import DiscordGatewayClient
 from switch_core.bridges.collaboration.discord.install import DiscordAppInstaller
-from switch_core.bridges.collaboration.install import MessagingInstallerRegistry
+from switch_core.bridges.collaboration.install import (
+    MessagingInstallerRegistry,
+    events_path,
+    public_url,
+)
 from switch_core.bridges.collaboration.install_routes import (
     create_messaging_install_router,
 )
@@ -88,6 +93,11 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
 )
+from switch_core.bridges.collaboration.telegram.app_client import (
+    TelegramAppClient,
+    bot_resource,
+)
+from switch_core.bridges.collaboration.telegram.install import TelegramAppInstaller
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
 from switch_core.clients.agent_consumer import AgentConsumer
@@ -792,6 +802,45 @@ async def run(config: SwitchConfig) -> None:
 
     teams_app = _distributed_teams_app(config, installers, collab_lifecycle)
 
+    async def _attach_shared_telegram_bridges(client: TelegramAppClient) -> None:
+        # The bridges that started before the bot was up; each one starting
+        # after is attached as it starts, by `_attach_to_telegram_if_live`.
+        for adapter in collab_lifecycle.iter_adapters():
+            if isinstance(adapter, TelegramAdapter):
+                adapter.attach_shared_connection(client)
+
+    telegram_app: TelegramAppClient | None = None
+    if config.telegram_app_bot_token:
+        assert config.telegram_app_webhook_secret is not None
+        assert config.messaging_public_url is not None
+        telegram_app = TelegramAppClient(
+            bot=telegram.Bot(config.telegram_app_bot_token),
+            webhook_url=public_url(
+                config.messaging_public_url, events_path("telegram")
+            ),
+            webhook_secret=config.telegram_app_webhook_secret,
+            on_connected=_attach_shared_telegram_bridges,
+        )
+        collab_lifecycle.reserve_resource(
+            bot_resource(telegram_app.bot_id), "Telegram app bot"
+        )
+        shared_bot = telegram_app
+
+        def _attach_to_telegram_if_live(adapter: PlatformAdapter) -> None:
+            # Not before the bot is up, for the reason the Discord client
+            # gives: the bridge would start against a bot it cannot use, and
+            # the attach on connect would then be a no-op.
+            if shared_bot.is_live and isinstance(adapter, TelegramAdapter):
+                adapter.attach_shared_connection(shared_bot)
+
+        collab_lifecycle.add_bridge_starting_listener(_attach_to_telegram_if_live)
+        installers.register(
+            TelegramAppInstaller(
+                client=telegram_app,
+                webhook_secret=config.telegram_app_webhook_secret,
+            )
+        )
+
     install_service: MessagingInstallService | None = None
     if installers.platforms():
         assert config.messaging_public_url is not None
@@ -801,6 +850,8 @@ async def run(config: SwitchConfig) -> None:
             receipts=MessagingEventReceiptStore(),
             installers=installers,
             lifecycle=collab_lifecycle,
+            users=user_store,
+            rooms=room_service,
             public_origin=config.messaging_public_url,
             keyring=config.keyring,
         )
@@ -1013,11 +1064,12 @@ async def run(config: SwitchConfig) -> None:
         async def _attach_shared_discord_bridges(
             connection: DiscordConnection,
         ) -> None:
-            # Runs once the socket is up: hand it to every already-running bridge
-            # that rides a shared connection. Platform-agnostic — narrowed by
-            # capability, not by knowing which platform that is.
+            # Runs once the socket is up: hand it to every already-running
+            # Discord bridge. Narrowed to Discord's adapter and not only to the
+            # capability, because Telegram's shared bridges have it too and
+            # must be handed Telegram's bot, not this socket.
             for adapter in collab_lifecycle.iter_adapters():
-                if isinstance(adapter, SupportsSharedConnection):
+                if isinstance(adapter, DiscordAdapter):
                     adapter.attach_shared_connection(connection)
 
         discord_gateway = DiscordGatewayClient(
@@ -1030,6 +1082,20 @@ async def run(config: SwitchConfig) -> None:
         collab_lifecycle.add_bridge_starting_listener(discord_gateway.attach_if_live)
         discord_gateway_task = asyncio.create_task(
             discord_gateway.start_with_retry(), name="discord-gateway-start"
+        )
+
+    # The shared Telegram bot: `getMe`, then `setWebhook`. In the background
+    # for the reason the Discord connection is — an unreachable Telegram must
+    # not hold up a boot serving everything else.
+    telegram_app_task: asyncio.Task[None] | None = None
+    if telegram_app is not None:
+
+        async def _run_telegram_app(client: TelegramAppClient) -> None:
+            await client.start_with_retry()
+            await client.watch_delivery()
+
+        telegram_app_task = asyncio.create_task(
+            _run_telegram_app(telegram_app), name="telegram-app"
         )
 
     # Backfill room membership: system clients (e.g. the admin client) added
@@ -1069,6 +1135,8 @@ async def run(config: SwitchConfig) -> None:
                     discord_gateway,
                     discord_gateway_task,
                     teams_app,
+                    telegram_app,
+                    telegram_app_task,
                 )
             ),
         )
@@ -1552,6 +1620,10 @@ async def _shutdown(
     discord_gateway: DiscordGatewayClient | None,
     discord_gateway_task: asyncio.Task[None] | None,
     teams_app: TeamsSharedApp | None,
+    # Defaulted so a caller with no Telegram app, as the shutdown-order tests
+    # are, need not name it; `run` always passes both.
+    telegram_app: TelegramAppClient | None = None,
+    telegram_app_task: asyncio.Task[None] | None = None,
 ) -> None:
     logger.info("Shutting down...")
     # Before uvicorn closes the sockets, so the controllers' are recorded as
@@ -1573,6 +1645,15 @@ async def _shutdown(
     # After the bridges, which borrow its HTTP client until they stop.
     if teams_app is not None:
         await teams_app.aclose()
+
+    if telegram_app_task is not None:
+        telegram_app_task.cancel()
+        try:
+            await telegram_app_task
+        except asyncio.CancelledError:
+            pass
+    if telegram_app is not None:
+        await telegram_app.stop()
     await client_lifecycle.stop_all()
     await provisioning.close()
 

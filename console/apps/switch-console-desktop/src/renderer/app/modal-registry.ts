@@ -15,6 +15,7 @@ import { AddServerModal } from '@renderer/features/switch-servers/AddServerModal
 import { AssignServerModal } from '@renderer/features/switch-servers/assign-server-modal';
 import { BundledChatSignInModal } from '@renderer/features/switch-servers/BundledChatSignIn';
 import { ClaimIdentityModal } from '@renderer/features/switch-servers/ClaimIdentityModal';
+import { ConnectChatModal } from '@renderer/features/switch-servers/ConnectChatModal';
 import { ConnectionsModal } from '@renderer/features/switch-servers/ConnectionsModal';
 import { ConnectMessagingAppModal } from '@renderer/features/switch-servers/ConnectMessagingAppModal';
 import { CreateRoomModal } from '@renderer/features/switch-servers/CreateRoomModal';
@@ -94,6 +95,7 @@ export const modalRegistry = {
     size: 'md',
     dismissOnOutsideClick: false,
   }),
+  connectChatModal: createModal(ConnectChatModal, { size: 'md' }),
   connectionsModal: createModal(ConnectionsModal, { size: 'md' }),
   claimIdentityModal: createModal(ClaimIdentityModal, {
     size: 'md',
