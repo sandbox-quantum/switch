@@ -100,6 +100,7 @@ const GITHUB: ServiceGrant = {
       '---\nname: github\ndescription: Work in granted repositories.\n---\n\n# GitHub\n\nUse gh.\n',
   },
   mcp_servers: [],
+  cli_tools: [],
 };
 
 const answering = (status: number, body: unknown) =>
@@ -124,6 +125,30 @@ describe('readServiceGrants', () => {
       throw new TypeError('fetch failed');
     });
     await expect(readServiceGrants(SWITCH, unreachable)).rejects.toThrow('could not be reached');
+  });
+
+  it('reads a vendor’s command-line tool as the catalog describes it', async () => {
+    const cli = {
+      name: 'example-cli',
+      binary: 'excli',
+      token_env: 'EXCLI_TOKEN',
+      config_env: null,
+      allow: ['items'],
+      deny: ['auth', '--profile'],
+      path_flags: { '--output': 'write', '-o': 'write' },
+      output_cap_bytes: 65536,
+      timeout_s: 120,
+      token_refused: { exit_code: 1, json_path: 'error.code', value: 401 },
+    };
+    const grant = { ...GITHUB, service: 'example', resources: {}, cli_tools: [cli] };
+    expect(await readServiceGrants(SWITCH, answering(200, { grants: [grant] }))).toEqual([grant]);
+    const shell = { ...grant, cli_tools: [{ ...cli, binary: 'sh -c' }] };
+    await expect(readServiceGrants(SWITCH, answering(200, { grants: [shell] }))).rejects.toThrow();
+  });
+
+  it('reads a grant from a Switch before command-line tools as having none', async () => {
+    const { cli_tools: _, ...older } = GITHUB;
+    expect(await readServiceGrants(SWITCH, answering(200, { grants: [older] }))).toEqual([GITHUB]);
   });
 
   it('refuses an answer that is not a list of grants', async () => {

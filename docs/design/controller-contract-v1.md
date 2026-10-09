@@ -227,6 +227,21 @@ type ServiceGrant = {
   resources: ServiceResources
   skill: { name: string; content: string } | null   // the service's SKILL.md
   mcp_servers: { name: string; url: string }[]       // the vendor's MCP servers a session calls; [] for GitHub. Additive
+  cli_tools: ServiceCliTool[]                         // the vendor's command-line tool a session's host runs; [] for most. Additive
+}
+
+type ServiceCliTool = {               // as the catalog entry's `cli` block has it
+  name: string                        // the tool's name in the session, beside `switch` and any MCP server's
+  binary: string                      // the executable, run without a shell
+  token_env: string                   // the only place the token goes: this variable, in the run's own environment
+  config_env: string | null           // where the tool has one: a configuration folder made for the session
+  allow: string[]                     // a command's first argument is one of these
+  deny: string[]                      // first arguments, and flags refused anywhere in a command
+  path_flags: Record<string, "read" | "write">   // flags whose value is a local file, kept inside the session's folder
+  output_cap_bytes: number            // more output goes to a file, whose path is returned
+  timeout_s: number
+  token_refused: { exit_code: number; json_path: string; value: number | string }
+                                      // a run that ends so asks for the token again, once
 }
 
 type ServiceResources =
@@ -237,7 +252,7 @@ type ServiceResources =
 - **Who gets a token.** Core issues only for an agent that holds a grant to its owner's own connection. A controller must belong to that owner and be bound to the agent (§7); an agent's own key works only while it has no binding.
 - **When grants are read.** The agent's host reads its grants when a session starts, and a change applies from the next session. No stream frame announces a change: a removed grant fails the next fetch, and a GitHub token already issued is revoked at once. A pass-through service's token is its owner's own and cannot be revoked alone, so a removed grant stops a running session by `use_until`, within the hour, and a token already handed out stays valid at the vendor until it expires.
 - **`credential.revoked` is not used for grants.** It revokes the controller itself.
-- **Where tokens go.** The controller keeps tokens in memory and serves them to a session's tools and helpers. It never writes one to disk, a CLI's arguments or its environment, except GitHub's, which `git` receives from its credential helper and `gh` from its wrapper. A service with `mcp_servers` never reaches the CLI at all: the session's host serves each of them to the CLI on loopback, behind a key made for the run, asks for the token on each call and calls the vendor itself.
+- **Where tokens go.** The controller keeps tokens in memory and serves them to a session's tools and helpers. It never writes one to disk, a CLI's arguments or its environment, except GitHub's, which `git` receives from its credential helper and `gh` from its wrapper. A service with `mcp_servers` never reaches the CLI at all: the session's host serves each of them to the CLI on loopback, behind a key made for the run, asks for the token on each call and calls the vendor itself. A service with `cli_tools` is the same: the host serves each tool on loopback, checks every command against `allow`, `deny` and `path_flags`, asks for the token on each run, and runs `binary` itself with the token only in `token_env` of that run's environment.
 
 ### Provider logins (Management)
 

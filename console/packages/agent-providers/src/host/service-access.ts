@@ -13,6 +13,28 @@ import { validServiceToken } from './service-github';
  */
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const ENV_NAME = /^[A-Z][A-Z0-9_]{0,62}$/;
+const COMMAND = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,62}$/;
+const FLAG = /^(-[A-Za-z]|--[a-z0-9][a-z0-9-]{0,62})$/;
+
+/** A vendor's command-line tool, as the catalog entry's `cli` block has it (contract §5). */
+export const cliToolSchema = z.object({
+  name: z.string().regex(SLUG),
+  binary: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/),
+  token_env: z.string().regex(ENV_NAME),
+  config_env: z.string().regex(ENV_NAME).nullable(),
+  allow: z.array(z.string().regex(COMMAND)).min(1),
+  deny: z.array(z.string().refine((value) => COMMAND.test(value) || FLAG.test(value))),
+  path_flags: z.record(z.string().regex(FLAG), z.enum(['read', 'write'])),
+  output_cap_bytes: z.number().int().min(1024),
+  timeout_s: z.number().int().min(1),
+  token_refused: z.object({
+    exit_code: z.number().int().min(1).max(255),
+    json_path: z.string().regex(/^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$/),
+    value: z.union([z.number(), z.string()]),
+  }),
+});
+export type CliTool = z.infer<typeof cliToolSchema>;
 
 export const serviceGrantSchema = z.object({
   service: z.string().regex(SLUG),
@@ -29,6 +51,12 @@ export const serviceGrantSchema = z.object({
   mcp_servers: z
     .array(z.object({ name: z.string().regex(SLUG), url: z.string().url() }))
     .default([]),
+  /**
+   * The vendor's command-line tool, which this host runs for the session
+   * (`vendor-cli.ts`), as Switch's catalog describes it. Empty for most
+   * services, and from a Switch that predates it.
+   */
+  cli_tools: z.array(cliToolSchema).default([]),
 });
 export type ServiceGrant = z.infer<typeof serviceGrantSchema>;
 

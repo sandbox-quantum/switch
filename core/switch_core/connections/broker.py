@@ -946,6 +946,7 @@ class ServiceBroker:
             entry = self._catalog.get(grant.service)
             skill = None if entry is None else entry.skill_files.get("SKILL.md")
             mcp = None if entry is None else entry.definition.mcp
+            cli = None if entry is None else entry.definition.cli
             grants.append(
                 {
                     "service": grant.service,
@@ -968,6 +969,9 @@ class ServiceBroker:
                             for server in mcp.servers
                         ]
                     ),
+                    # The vendor's command-line tool, which the session's host
+                    # runs itself, as the catalog describes it.
+                    "cli_tools": [] if cli is None else [cli.model_dump(mode="json")],
                 }
             )
         return grants
