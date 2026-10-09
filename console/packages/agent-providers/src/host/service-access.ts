@@ -33,6 +33,23 @@ export const cliToolSchema = z.object({
     json_path: z.string().regex(/^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$/),
     value: z.union([z.number(), z.string()]),
   }),
+  /** The pinned build, per `<platform>-<arch>` as Node names them. */
+  release: z.object({
+    version: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z.+-]{0,31}$/),
+    targets: z.record(
+      z.string().regex(/^[a-z0-9]+-[a-z0-9]+$/),
+      z.object({
+        url: z
+          .string()
+          .url()
+          .refine((url) => url.startsWith('https://')),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        path: z
+          .string()
+          .regex(/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}(\/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}){0,3}$/),
+      })
+    ),
+  }),
 });
 export type CliTool = z.infer<typeof cliToolSchema>;
 

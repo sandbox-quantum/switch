@@ -93,8 +93,9 @@ const TOOL: CliTool = {
   deny: ['auth', '--profile'],
   path_flags: { '--upload': 'read', '--output': 'write', '-o': 'write', '--file': 'read' },
   output_cap_bytes: 2048,
-  timeout_s: 2,
+  timeout_s: 30,
   token_refused: { exit_code: 1, json_path: 'error.code', value: 401 },
+  release: { version: '1.2.3', targets: {} },
 };
 
 function grant(tool: CliTool = TOOL): ServiceGrant {

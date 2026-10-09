@@ -484,6 +484,20 @@ def test_placeholders_keep_their_short_form():
         assert definition.cli is None
 
 
+CLI_RELEASE = (
+    "  release:\n"
+    "    version: 1.2.3\n"
+    "    targets:\n"
+    "      linux-x64:\n"
+    "        url: https://downloads.example.test/excli-1.2.3-linux-x64.tar.gz\n"
+    f"        sha256: {'a' * 64}\n"
+    "        path: excli\n"
+    "      win32-x64:\n"
+    "        url: https://downloads.example.test/excli-1.2.3-win32-x64.zip\n"
+    f"        sha256: {'b' * 64}\n"
+    "        path: bin/excli.exe\n"
+)
+
 CLI_ENTRY = (
     OAUTH_ENTRY.replace(
         "    registration: dynamic\n",
@@ -507,7 +521,8 @@ CLI_ENTRY = (
         "  path_flags: { --upload: read, --output: write, -o: write }\n"
         "  output_cap_bytes: 65536\n"
         "  timeout_s: 120\n"
-        "  token_refused: { exit_code: 1, json_path: error.code, value: 401 }\n",
+        "  token_refused: { exit_code: 1, json_path: error.code, value: 401 }\n"
+        + CLI_RELEASE,
     )
 )
 
@@ -535,6 +550,9 @@ def test_loads_an_oauth_entry_whose_tool_is_a_cli(catalog_copy):
         cli.token_refused.json_path,
         cli.token_refused.value,
     ) == (1, "error.code", 401)
+    assert cli.release.version == "1.2.3"
+    assert sorted(cli.release.targets) == ["linux-x64", "win32-x64"]
+    assert cli.release.targets["win32-x64"].path == "bin/excli.exe"
 
 
 @pytest.mark.parametrize(
@@ -607,6 +625,31 @@ def test_loads_an_oauth_entry_whose_tool_is_a_cli(catalog_copy):
             "",
             "token_refused",
         ),
+        (CLI_RELEASE, "", "release"),
+        ("version: 1.2.3", "version: latest version", "version"),
+        ("      linux-x64:\n", "      freebsd-x64:\n", "targets"),
+        (
+            "url: https://downloads.example.test/excli-1.2.3-linux-x64.tar.gz",
+            "url: http://downloads.example.test/excli-1.2.3-linux-x64.tar.gz",
+            "url",
+        ),
+        (f"sha256: {'a' * 64}", f"sha256: {'A' * 64}", "sha256"),
+        (f"sha256: {'a' * 64}", "sha256: abc", "sha256"),
+        ("path: excli", "path: ../excli", "path"),
+        ("path: excli", "path: /usr/bin/excli", "path"),
+        (
+            "    targets:\n"
+            "      linux-x64:\n"
+            "        url: https://downloads.example.test/excli-1.2.3-linux-x64.tar.gz\n"
+            f"        sha256: {'a' * 64}\n"
+            "        path: excli\n"
+            "      win32-x64:\n"
+            "        url: https://downloads.example.test/excli-1.2.3-win32-x64.zip\n"
+            f"        sha256: {'b' * 64}\n"
+            "        path: bin/excli.exe\n",
+            "    targets: {}\n",
+            "targets",
+        ),
     ],
 )
 def test_rejects_an_inconsistent_cli_entry(catalog_copy, old, new, message):
@@ -623,7 +666,8 @@ def test_rejects_a_github_entry_with_a_cli(catalog_copy):
         "cli:\n  name: gh\n  binary: gh\n  token_env: GH_TOKEN\n  allow: [repo]\n"
         "  deny: []\n  path_flags: {}\n  output_cap_bytes: 65536\n  timeout_s: 60\n"
         "  token_refused: { exit_code: 1, json_path: status, value: 401 }\n"
-        "tools:\n",
+        + CLI_RELEASE
+        + "tools:\n",
     )
     with pytest.raises(CatalogError, match="(?s)github is invalid.*command-line tool"):
         load_catalog(catalog_copy)

@@ -1143,6 +1143,21 @@ class TestPassThrough:
                     "json_path": "error.code",
                     "value": 401,
                 },
+                "release": {
+                    "version": "1.2.3",
+                    "targets": {
+                        "linux-x64": {
+                            "url": "https://downloads.example.test/excli-1.2.3-linux-x64.tar.gz",
+                            "sha256": "a" * 64,
+                            "path": "excli",
+                        },
+                        "win32-x64": {
+                            "url": "https://downloads.example.test/excli-1.2.3-win32-x64.zip",
+                            "sha256": "b" * 64,
+                            "path": "bin/excli.exe",
+                        },
+                    },
+                },
             }
         ]
         # The answer is JSON, as the route sends it.

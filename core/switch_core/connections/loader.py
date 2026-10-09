@@ -217,6 +217,34 @@ class TokenRefused(BaseModel):
     value: int | str
 
 
+ReleaseTarget = Literal[
+    "darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"
+]
+
+
+class ReleaseBuild(BaseModel):
+    """One machine's build: the archive, its SHA-256, and where the binary is
+    inside it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    url: str = Field(pattern=HTTPS_URL_PATTERN)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    path: str = Field(
+        pattern=r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}(/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}){0,3}$"
+    )
+
+
+class CliRelease(BaseModel):
+    """The tool's pinned release. A session host downloads the archive for its
+    own machine (`<platform>-<arch>`, as Node names them), refuses it unless
+    its SHA-256 matches, and runs the binary from it. A machine without a
+    build cannot run the tool."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    version: str = Field(pattern=r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,31}$")
+    targets: dict[ReleaseTarget, ReleaseBuild] = Field(min_length=1)
+
+
 class ConnectionCli(BaseModel):
     """The vendor's command-line tool, which a session reaches as one Switch
     tool: the session host checks each command and runs `binary` itself, never
@@ -230,7 +258,8 @@ class ConnectionCli(BaseModel):
     local file, read or written; the session host keeps them inside the
     session's folder. Output past `output_cap_bytes` goes to a file, and a run
     is stopped after `timeout_s`. A run that ends as `token_refused` says is
-    run once more with a token asked for again.
+    run once more with a token asked for again. `release` pins the build every
+    session runs.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -246,6 +275,7 @@ class ConnectionCli(BaseModel):
     output_cap_bytes: int = Field(ge=1024, le=10 * 1024 * 1024)
     timeout_s: int = Field(ge=5, le=600)
     token_refused: TokenRefused
+    release: CliRelease
 
     @model_validator(mode="after")
     def _consistent(self) -> "ConnectionCli":

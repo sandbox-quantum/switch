@@ -1,8 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { constants, createWriteStream } from 'node:fs';
+import { createWriteStream } from 'node:fs';
 import {
-  access,
   copyFile,
   cp,
   lstat,
@@ -16,7 +15,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import {
   serveMcpOverHttp,
   type ToolDefinition,
@@ -332,27 +331,6 @@ export function refusedToken(tool: CliTool, code: number | null, stdout: string)
   } catch {
     return false;
   }
-}
-
-/**
- * Finds `binary` on the host's own `PATH`: where the vendor's tool is
- * installed on this machine.
- */
-export function binaryOnPath(hostEnv: NodeJS.ProcessEnv, platform: NodeJS.Platform) {
-  return async (tool: CliTool): Promise<string> => {
-    const names = platform === 'win32' ? [`${tool.binary}.exe`] : [tool.binary];
-    for (const directory of (hostEnv.PATH ?? '').split(delimiter).filter(Boolean))
-      for (const name of names) {
-        const candidate = join(directory, name);
-        try {
-          await access(candidate, constants.X_OK);
-          return candidate;
-        } catch {
-          // Not here.
-        }
-      }
-    throw new Error(`\`${tool.binary}\` is not installed on this machine.`);
-  };
 }
 
 /**

@@ -139,6 +139,16 @@ describe('readServiceGrants', () => {
       output_cap_bytes: 65536,
       timeout_s: 120,
       token_refused: { exit_code: 1, json_path: 'error.code', value: 401 },
+      release: {
+        version: '1.2.3',
+        targets: {
+          'linux-x64': {
+            url: 'https://downloads.example.test/excli.tar.gz',
+            sha256: 'a'.repeat(64),
+            path: 'excli',
+          },
+        },
+      },
     };
     const grant = { ...GITHUB, service: 'example', resources: {}, cli_tools: [cli] };
     expect(await readServiceGrants(SWITCH, answering(200, { grants: [grant] }))).toEqual([grant]);

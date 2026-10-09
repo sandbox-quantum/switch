@@ -187,7 +187,21 @@ host runs the vendor's binary itself:
   `.switch/<tool>/` and its path returned with the start of it; past 64 MiB the
   run is stopped.
 
-The binary is found on the host's `PATH` until a pinned build is shipped.
+The binary is the entry's pinned build (`cli.release`): a version and, per
+machine (`<platform>-<arch>`, as Node names them), an archive's URL, its
+SHA-256 and the binary's path inside it. On a tool's first use on a machine,
+the session host (`host/cli-binaries.ts`) downloads its archive over HTTPS,
+keeps it only if the SHA-256 matches, unpacks it with the system's `tar` (which
+reads `.zip` too on Windows) and installs it under
+`~/.local/state/switch/tools/<binary>/<sha256>/`, once per machine. Upgrading a
+tool is a catalog change; a machine without a build is told so when the tool
+is called. What each install found (installed, failed, no build here) is kept
+in that folder's `status.json`, and the agents controller reports it with `git`
+and `gh` in its status (`ok`, `missing` or `unsupported`).
+
+Pinning the build in the catalog means Core names a binary that session hosts
+run. The SHA-256 is what holds it: a host runs only an archive that matches the
+hash shipped in the catalog, never a newer one a vendor publishes.
 
 ## Grants
 

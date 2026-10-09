@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { ActivityReporter, type Report } from './activity-reporter';
 import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
+import { cliToolsBase, pinnedBinary } from './cli-binaries';
 import { HostWaker } from './handoff';
 import { Redactions } from './redaction';
 import { followupCommandId, roomControlFollowup } from './room-control-followup';
@@ -43,7 +44,7 @@ import {
   readToldInstructions,
   recordToldInstructions,
 } from './told-instructions';
-import { binaryOnPath, startVendorClis } from './vendor-cli';
+import { startVendorClis } from './vendor-cli';
 import {
   CALL_TIMEOUT_MS,
   LIST_TIMEOUT_MS,
@@ -945,7 +946,13 @@ export async function hostSessionProcess(input: {
       redactions,
       cwd: config.start.input.cwd,
       stateDir: join(input.root, 'service-cli'),
-      binary: binaryOnPath(process.env, process.platform),
+      binary: pinnedBinary({
+        base: cliToolsBase(),
+        platform: process.platform,
+        arch: process.arch,
+        fetch,
+        tar: 'tar',
+      }),
       hostEnv: process.env,
       platform: process.platform,
     });

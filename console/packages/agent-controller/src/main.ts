@@ -1,5 +1,6 @@
 import { hostname } from 'node:os';
 import { parseArgs } from 'node:util';
+import { cliToolsBase } from '@switch-console/agent-providers';
 import packageJson from '../package.json' with { type: 'json' };
 import { ControllerApiError, enroll, normalizeServerUrl } from './api';
 import { DEFAULT_TIMING, runController } from './controller';
@@ -222,7 +223,7 @@ async function runCommand(args: string[]): Promise<number> {
             new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
           ),
         locator: new PathProviderLocator(process.env.PATH),
-        tools: () => toolStatuses(process.env.PATH, process.platform),
+        tools: () => toolStatuses(process.env.PATH, process.platform, cliToolsBase()),
         fetch,
         log,
         dataDir,

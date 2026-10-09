@@ -138,6 +138,9 @@ type ProviderStatus = {
 }
 
 type ToolStatus = { tool: string; state: "ok" | "missing" | "unauthenticated" | "unsupported" | "unknown"; reason?: ReasonCode }
+                                       // `git` and `gh`, then each vendor command-line tool (`cli_tools`) a session
+                                       // on the machine has set up: `missing` when its install failed,
+                                       // `unsupported` where its release has no build for the machine
                                             // e.g. "gh", "git", "mcp:jira". unsupported: this machine cannot run
                                             // Switch's helper for the tool (GitHub's on Windows)
 
@@ -242,6 +245,12 @@ type ServiceCliTool = {               // as the catalog entry's `cli` block has 
   timeout_s: number
   token_refused: { exit_code: number; json_path: string; value: number | string }
                                       // a run that ends so asks for the token again, once
+  release: {                          // the pinned build every session runs
+    version: string
+    targets: Record<string, { url: string; sha256: string; path: string }>
+                                      // by "<platform>-<arch>" as Node names them: the archive (HTTPS),
+                                      // its SHA-256, which must match, and the binary's path inside it
+  }
 }
 
 type ServiceResources =
