@@ -16,6 +16,7 @@ room Switch has no record of it being in.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
@@ -153,11 +154,12 @@ class RoomCreateResult(BaseModel):
 
 
 class RoomService:
-    # Class-level default so a caller that builds this without `__init__` —
+    # Class-level defaults so a caller that builds this without `__init__` —
     # several tests assemble a minimal instance directly — still has the
-    # attribute. Telemetry is genuinely optional here; `emit_safely` treats
+    # attributes. Telemetry is genuinely optional here; `emit_safely` treats
     # None as "report nothing".
     _telemetry: TelemetryService | None = None
+    _room_agents_listeners: tuple[Callable[[str, str], Awaitable[None]], ...] = ()
 
     def __init__(
         self,
@@ -183,6 +185,28 @@ class RoomService:
         # Optional because several tests and tooling build a RoomService
         # without one; `emit_safely` treats None as "report nothing".
         self._telemetry = telemetry
+
+    def on_room_agents_changed(
+        self, listener: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        """Call `listener(tenant_id, room_id)` after a room's agents change."""
+        self._room_agents_listeners = (*self._room_agents_listeners, listener)
+
+    async def room_agents_changed(self, tenant_id: str, room_id: str) -> None:
+        """Tell the listeners a room's agents (or their owners) changed.
+
+        The change itself is already committed, so a listener that fails is
+        reported rather than raised; listeners re-read on their own schedule.
+        """
+        for listener in self._room_agents_listeners:
+            try:
+                await listener(tenant_id, room_id)
+            except Exception:
+                logger.exception(
+                    "Room-agents listener failed for room %s; it will catch up "
+                    "on its next re-read",
+                    room_id,
+                )
 
     async def _resolve_agent_ids(self, config: RoomCreateConfig) -> list[str]:
         if config.agent_ids is not None:
@@ -741,6 +765,9 @@ class RoomService:
             len(system_clients),
         )
 
+        if agent_ids:
+            await self.room_agents_changed(room.tenant_id, room.id)
+
         failed_attachments = unreachable_users + await self._attach_after_creation(
             room.id, config
         )
@@ -926,6 +953,7 @@ class RoomService:
                 )
 
         logger.info("Added %d agents to room %s", len(agent_ids), room_id)
+        await self.room_agents_changed(room.tenant_id, room.id)
 
         emit_safely(
             self._telemetry,
@@ -967,6 +995,7 @@ class RoomService:
                 )
 
         logger.info("Removed %d agents from room %s", len(agent_ids), room_id)
+        await self.room_agents_changed(room.tenant_id, room.id)
 
         emit_safely(
             self._telemetry,
