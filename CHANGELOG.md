@@ -95,6 +95,15 @@ version of their own to them without also giving them a release of their own.
   `ingress.agentApiPaths`, or routes with its own Ingress, must add these paths
   itself. A test now fails when the agent bridge serves a path the chart does
   not route.
+- **Usage telemetry no longer carries the `ENVIRONMENT` or `SERVICE_NAME`
+  settings.** With `TELEMETRY_ENABLED=true`, every event sent to the Flint relay
+  carried both, as `deployment.environment`, `service.name` and the OTLP scope
+  name. They are free text an operator sets for their own logs (Helm
+  `switchCore.logging.environment` and `serviceName`), so a value such as a
+  company name left the deployment despite the promise of no free text. Usage
+  events now always say `switch-core` and omit the environment; `flint_env`
+  still says which Amplitude project they belong in. The operational OTLP
+  export to your own collector is unchanged.
 
 ### [0.29.0] - 2026-09-29
 

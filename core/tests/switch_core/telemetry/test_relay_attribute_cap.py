@@ -72,9 +72,7 @@ async def _attributes_on_the_wire(
         sink=capture,  # type: ignore[arg-type]
         enabled=True,
         client_id="11111111-1111-1111-1111-111111111111",
-        service_name="switch-core",
         version="1.0.0",
-        environment=None,
         telemetry_environment="prod",
         telemetry_internal=False,
     )

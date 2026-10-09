@@ -364,9 +364,10 @@ class SwitchConfig(BaseSettings):
     # is false nothing is collected and no request is made.
     #
     # What is reported is fixed in `telemetry/catalogue.py` and explained in
-    # `docs/old/telemetry-events.md`: counts and durations only, never an
-    # identifier for a room, tenant, agent, user or message, and never free
-    # text. The catalogue is enforced at the boundary rather than trusted.
+    # `docs/old/telemetry-events.md`: counts, durations and values from closed
+    # sets, never an identifier for a room, tenant, agent, user or message, and
+    # never free text. The catalogue is enforced at the boundary rather than
+    # trusted.
     telemetry_enabled: bool = False
 
     # Base URL of the relay, no path — `/v1/logs` is appended, the same

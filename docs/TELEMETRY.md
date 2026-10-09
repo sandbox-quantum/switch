@@ -3,8 +3,8 @@
 **Audience:** InfoSec.
 **Scope:** the Switch Console desktop app, and the consent decision it carries
 to a Switch server it runs for the user (§4.1). What that server itself
-collects is documented separately; Switch server-side logging is out of scope
-here and needs its own pass.
+collects is documented in [`old/telemetry-events.md`](old/telemetry-events.md);
+Switch server-side logging is out of scope here and needs its own pass.
 **Claim:** the data we transmit is anonymous. No field identifies a person, and
 no combination of the fields we transmit can be resolved back to one.
 
@@ -253,6 +253,13 @@ Two limits are stated in the app rather than left to be discovered.
   never as agreeing.
 - **A server reached by URL is not covered.** It is somebody else's deployment
   with its own answer, and the toggle neither reaches it nor claims to.
+
+A third limit is not yet stated in the app. **On a host other people's Consoles
+also use, a "yes" does not override them.** A "no" always applies. A "yes"
+applies only if the server is already sharing, or nobody else has used it
+recently; if the Console cannot read who else uses it, it assumes someone does.
+The server's page does not report this case as out of step, because a restart
+would not change it.
 
 ---
 

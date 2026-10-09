@@ -49,9 +49,7 @@ def _service(sink: object, *, enabled: bool = True) -> TelemetryService:
         sink=sink,  # type: ignore[arg-type]
         enabled=enabled,
         client_id="deployment-uuid",
-        service_name="switch-core",
         version="1.2.3",
-        environment="pilot",
         telemetry_environment="prod",
         telemetry_internal=False,
     )
@@ -101,7 +99,6 @@ class TestTagging:
             "flint_env": "prod",
             "flint_internal": "false",
             "service.version": "1.2.3",
-            "deployment.environment": "pilot",
         }
 
     @pytest.mark.parametrize("environment", ["prod", "staging", "dev", "local"])
@@ -115,9 +112,7 @@ class TestTagging:
             sink=sink,  # type: ignore[arg-type]
             enabled=True,
             client_id="deployment-uuid",
-            service_name="switch-core",
             version="1.2.3",
-            environment=None,
             telemetry_environment=environment,
             telemetry_internal=False,
         )
@@ -137,9 +132,7 @@ class TestTagging:
             sink=sink,  # type: ignore[arg-type]
             enabled=True,
             client_id="deployment-uuid",
-            service_name="switch-core",
             version="1.2.3",
-            environment=None,
             telemetry_environment="prod",
             telemetry_internal=internal,
         )
@@ -149,17 +142,15 @@ class TestTagging:
 
         assert sink.sent[0].resource["flint_internal"] == sent
 
-    async def test_an_unset_environment_is_omitted_rather_than_empty(self) -> None:
-        """An absent attribute reads as "not configured"; an empty string reads
-        as a real environment named nothing."""
+    async def test_an_unknown_version_is_omitted_rather_than_empty(self) -> None:
+        """An absent attribute reads as "not known"; an empty string reads as a
+        real version named nothing."""
         sink = _RecordingSink()
         service = TelemetryService(
             sink=sink,  # type: ignore[arg-type]
             enabled=True,
             client_id="deployment-uuid",
-            service_name="switch-core",
             version=None,
-            environment=None,
             telemetry_environment="prod",
             telemetry_internal=False,
         )
@@ -167,7 +158,6 @@ class TestTagging:
         service.emit("deployment_started", tenant_count=1)
         await service.aclose()
 
-        assert "deployment.environment" not in sink.sent[0].resource
         assert "service.version" not in sink.sent[0].resource
 
 

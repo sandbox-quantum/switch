@@ -1,8 +1,9 @@
 """Product telemetry: what Switch reports about how it is used.
 
-Counts and durations, never an identifier for a room, tenant, agent, user or
-message, and never free text. Off unless an operator switches it on. The events
-are declared in :mod:`switch_core.telemetry.catalogue` and explained in
+Counts, durations and values from closed sets, never an identifier for a room,
+tenant, agent, user or message, and never free text. Off unless an operator
+switches it on. The events are declared in
+:mod:`switch_core.telemetry.catalogue` and explained in
 ``docs/old/telemetry-events.md``.
 
 Call sites want two things from this package and nothing else: `emit_safely`,

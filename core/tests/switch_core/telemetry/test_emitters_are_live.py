@@ -37,9 +37,7 @@ def _telemetry() -> TelemetryService:
         sink=NullSink(),
         enabled=True,
         client_id="deployment-uuid",
-        service_name="switch-core",
         version="1.0.0",
-        environment=None,
         telemetry_environment="prod",
         telemetry_internal=False,
     )

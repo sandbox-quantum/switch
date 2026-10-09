@@ -266,9 +266,7 @@ class TestRegisteringRecordsTheFlag:
             sink=sink,  # type: ignore[arg-type]
             enabled=True,
             client_id="deployment-uuid",
-            service_name="switch-core",
             version=None,
-            environment=None,
             telemetry_environment="prod",
             telemetry_internal=False,
         )

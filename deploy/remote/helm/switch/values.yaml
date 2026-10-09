@@ -241,9 +241,10 @@ switchCore:
   # Nothing that identifies anything inside the deployment is ever sent: no
   # room, tenant, agent, user or message id, no names, no message content, and
   # no free text of any kind. What is sent is counts (how many rooms, how many
-  # active users, how much traffic) and durations (how long from install to a
-  # working connector). The full list is in docs/old/telemetry-events.md and
-  # is enforced in code, not just documented.
+  # active users, how much traffic), durations (how long from install to a
+  # working connector) and values from closed sets (which platform, which agent
+  # runtime, success or failure). The full list is in
+  # docs/old/telemetry-events.md and is enforced in code, not just documented.
   telemetry:
     enabled: false
     # Base URL, no path — `/v1/logs` is appended, the same

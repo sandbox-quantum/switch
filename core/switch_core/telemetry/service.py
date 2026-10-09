@@ -25,6 +25,12 @@ from switch_core.telemetry.sink import TelemetryRecord, TelemetrySink
 
 logger = logging.getLogger(__name__)
 
+# A constant rather than the `SERVICE_NAME` setting, and no
+# `deployment.environment` from `ENVIRONMENT` either: both are free text an
+# operator chose for their own log pipeline, and might name their company. What
+# goes to the relay is a closed value or nothing.
+SERVICE_NAME = "switch-core"
+
 
 class TelemetryService:
     """Validates, tags and dispatches events.
@@ -40,9 +46,7 @@ class TelemetryService:
         sink: TelemetrySink,
         enabled: bool,
         client_id: str,
-        service_name: str,
         version: str | None,
-        environment: str | None,
         telemetry_environment: str,
         telemetry_internal: bool,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
@@ -55,7 +59,7 @@ class TelemetryService:
         self._session_factory = session_factory
         self._installed_at = installed_at
         self._resource = {
-            "service.name": service_name,
+            "service.name": SERVICE_NAME,
             "flint.client_id": client_id,
             # The relay picks the Amplitude project from this. Sent even as
             # `prod`, so an event says where it belongs rather than relying on
@@ -66,11 +70,9 @@ class TelemetryService:
             "flint_internal": "true" if telemetry_internal else "false",
         }
         # Omitted rather than sent empty: an absent attribute reads as "not
-        # configured", where `""` reads as a real environment named nothing.
+        # known", where `""` reads as a real version named nothing.
         if version:
             self._resource["service.version"] = version
-        if environment:
-            self._resource["deployment.environment"] = environment
 
     @property
     def enabled(self) -> bool:
