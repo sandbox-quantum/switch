@@ -45,6 +45,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Switch cloud machines that run the agents controller sleep when idle,
+  and wake on a message.** Such a machine is stopped once its status reports
+  say no session has run for `HOSTED_IDLE_STOP_MINUTES` (released, as before,
+  when no agent is placed on it). A message addressed to one of its agents
+  starts it again; the room is told once that the machine is starting, and
+  Switch keeps the message for the agent until it is back. Placing an agent on
+  a sleeping machine starts it too, and is judged by its last report. A
+  machine its owner stopped stays stopped, and says so.
 - **Switch cloud machines can run the agents controller.** With
   `HOSTED_MACHINE_RUNTIME=controller` (Helm `switchCore.hostedMachineRuntime`)
   and agent management on, a cloud machine claimed from then on enrolls the

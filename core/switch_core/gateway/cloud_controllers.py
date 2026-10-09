@@ -14,7 +14,7 @@ not import (`management/wiring.py` installs it here with
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from sqlalchemy import select
@@ -25,8 +25,12 @@ from switch_core.db.models import (
     HostedMachine,
     require_tenant_id,
 )
-from switch_core.db.stores.hosted_machine_store import HostedMachineStore
+from switch_core.db.stores.hosted_machine_store import HostedMachineStore, idle_sleeping
 from switch_core.keys import Keyring
+
+# How recent the machine's last status report must be for its silence to count
+# as idle rather than as a machine that stopped reporting.
+FRESH_HEARTBEAT = timedelta(minutes=5)
 
 
 class CloudEnrollment(Protocol):
@@ -139,8 +143,10 @@ async def record_controller_status(
     }
     machine.heartbeat_at = now
     sessions = machine_reading.get("sessions_running")
-    if isinstance(sessions, int) and sessions > 0:
-        machine.active_at = now
+    if isinstance(sessions, int):
+        machine.heartbeat["sessions_running"] = sessions
+        if sessions > 0:
+            machine.active_at = now
     if (
         machine.state == "provisioning"
         and machine.desired_state == "running"
@@ -150,3 +156,36 @@ async def record_controller_status(
         machine.error = None
         machine.error_code = None
         machine.updated_at = now
+
+
+async def wake_controller_machine(
+    session: AsyncSession, controller_id: str, now: datetime
+) -> HostedMachine | None:
+    """The cloud machine running `controller_id`, started again if it was put
+    to sleep when idle, and kept awake otherwise. A machine its owner stopped
+    is left stopped. None for a controller that runs on no cloud machine. The
+    caller holds no other machine lock, and commits."""
+    machine = await machine_of_controller(session, controller_id)
+    if machine is None or machine.runtime != "controller":
+        return None
+    store = HostedMachineStore()
+    if idle_sleeping(machine):
+        store.start(machine, now)
+    elif machine.desired_state == "running":
+        machine.active_at = now
+    return machine
+
+
+def controller_machine_idle(
+    machine: HostedMachine, idle_after: timedelta, now: datetime
+) -> bool:
+    """Whether a controller machine has been idle for `idle_after`: its last
+    status report is recent and says no session runs, and neither a session
+    nor a message addressed to its agents has kept it active since."""
+    heartbeat = machine.heartbeat or {}
+    return (
+        machine.heartbeat_at is not None
+        and now - machine.heartbeat_at <= FRESH_HEARTBEAT
+        and heartbeat.get("sessions_running") == 0
+        and now - machine.active_at >= idle_after
+    )

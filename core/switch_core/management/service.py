@@ -61,7 +61,10 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.hosted_machine_store import HostedMachineStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
-from switch_core.gateway.cloud_controllers import record_controller_status
+from switch_core.gateway.cloud_controllers import (
+    record_controller_status,
+    wake_controller_machine,
+)
 from switch_core.gateway.known_agents import KNOWN_AGENTS, KnownAgent
 from switch_core.management import reason_codes, tokens
 from switch_core.management.errors import ManagementError, not_found
@@ -970,12 +973,21 @@ class ManagementService:
             session, tenant_id, owner_id, controller_id
         )
         if check_placement:
+            # Placing an agent on a sleeping Switch cloud machine wakes it.
+            machine = (
+                await wake_controller_machine(session, controller.id, self.now())
+                if controller.kind == "ec2"
+                else None
+            )
             require_placement(
                 controller,
                 provider,
                 leases=await self.leases(session),
                 now=self.now(),
                 interval_seconds=self.settings.status_interval_seconds,
+                waking=machine is not None
+                and machine.desired_state == "running"
+                and machine.state != "ready",
             )
         return controller
 

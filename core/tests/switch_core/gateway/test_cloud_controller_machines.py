@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,7 +32,10 @@ from switch_core.db.stores.hosted_machine_store import (
     lock_launches,
 )
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.cloud_controllers import set_cloud_enrollment
+from switch_core.gateway.cloud_controllers import (
+    set_cloud_enrollment,
+    wake_controller_machine,
+)
 from switch_core.gateway.dependencies import (
     get_config,
     get_protocol,
@@ -41,6 +44,8 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.hosted_controller import router as controller_router
 from switch_core.gateway.hosted_machines import router as machines_router
+from switch_core.management.placement import placement_refusal
+from switch_core.management.process_lease import ProcessLeases
 from switch_core.providers.hosted import HostedControllerSettings
 from tests.switch_core.management.harness import (
     TEST_KEYRING,
@@ -386,23 +391,113 @@ class TestControllerMachines:
             # A reused machine keeps the runtime it was claimed with.
             assert claimed.runtime == "controller"
 
-    async def test_an_idle_controller_machine_is_not_put_to_sleep(
-        self, harness: Harness
+    @pytest.mark.parametrize(
+        ("heartbeat_age", "sessions", "sleeps"),
+        [
+            (timedelta(minutes=1), 0, True),
+            (timedelta(minutes=1), 2, False),
+            # A machine that stopped reporting is not known to be idle.
+            (timedelta(hours=1), 0, False),
+        ],
+    )
+    async def test_a_controller_machine_sleeps_once_its_reports_say_it_is_idle(
+        self, harness: Harness, heartbeat_age, sessions, sleeps
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
+        now = datetime.now(UTC)
         await _update(
             harness.session_factory,
             machine.id,
             state="ready",
-            active_at=datetime(2020, 1, 1, tzinfo=UTC),
+            active_at=now - timedelta(hours=2),
+            heartbeat={"disk": None, "memory": None, "sessions_running": sessions},
+            heartbeat_at=now - heartbeat_age,
         )
         async with _hosted_app(harness.session_factory, owner) as hosted:
             listed = await hosted.get("/hosted-controller/machines", headers=HEADERS)
         assert listed.status_code == 200, listed.text
         assert listed.json()["machines"][0]["runtime"] == "controller"
         after = await _machine(harness.session_factory, machine.id)
-        assert (after.state, after.desired_state) == ("ready", "running")
+        if sleeps:
+            # With no agent on it, an idle machine is released rather than stopped.
+            assert after.desired_state == "retained"
+        else:
+            assert after.desired_state == "running"
+
+    async def test_an_idle_machine_with_agents_is_put_to_sleep(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        machine = await _claim(harness.session_factory, owner)
+        async with _hosted_app(harness.session_factory, owner) as hosted:
+            code = (await _prepare(hosted, machine.id))["controller"]["enrollment_code"]
+            async with harness.client() as client:
+                enrolled = await _enroll(client, code)
+                await _connected(client, harness, owner, enrolled)
+                created = await create_managed_agent(
+                    client,
+                    owner,
+                    name="reviewer",
+                    controller_id=enrolled["controller_id"],
+                )
+                assert created.status_code == 201, created.text
+            now = datetime.now(UTC)
+            await _update(
+                harness.session_factory,
+                machine.id,
+                state="ready",
+                active_at=now - timedelta(hours=2),
+                heartbeat={"disk": None, "memory": None, "sessions_running": 0},
+                heartbeat_at=now,
+            )
+            listed = await hosted.get("/hosted-controller/machines", headers=HEADERS)
+        assert listed.status_code == 200, listed.text
+        after = await _machine(harness.session_factory, machine.id)
+        assert (after.desired_state, after.stop_reason) == ("stopped", "idle")
+
+    async def test_a_message_or_a_placement_wakes_a_sleeping_machine(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        machine = await _claim(harness.session_factory, owner)
+        async with _hosted_app(harness.session_factory, owner) as hosted:
+            code = (await _prepare(hosted, machine.id))["controller"]["enrollment_code"]
+            async with harness.client() as client:
+                enrolled = await _enroll(client, code)
+        await _update(
+            harness.session_factory,
+            machine.id,
+            state="stopped",
+            desired_state="stopped",
+            stop_reason="idle",
+        )
+        before = await _machine(harness.session_factory, machine.id)
+        async with harness.session_factory() as session:
+            woken = await wake_controller_machine(
+                session, enrolled["controller_id"], datetime.now(UTC)
+            )
+            await session.commit()
+        assert woken is not None
+        after = await _machine(harness.session_factory, machine.id)
+        assert (after.desired_state, after.stop_reason) == ("running", None)
+        assert after.revision == before.revision + 1
+
+        await _update(
+            harness.session_factory,
+            machine.id,
+            desired_state="stopped",
+            stop_reason="owner",
+        )
+        async with harness.session_factory() as session:
+            await wake_controller_machine(
+                session, enrolled["controller_id"], datetime.now(UTC)
+            )
+            await session.commit()
+        # A machine its owner stopped stays stopped.
+        assert (await _machine(harness.session_factory, machine.id)).desired_state == (
+            "stopped"
+        )
 
 
 async def test_a_controller_machine_needs_agent_management(
@@ -416,3 +511,30 @@ async def test_a_controller_machine_needs_agent_management(
         )
     assert response.status_code == 409, response.text
     assert "AGENT_MANAGEMENT_ENABLED" in response.json()["detail"]
+
+
+def test_a_waking_machine_is_judged_by_its_last_report() -> None:
+    now = datetime.now(UTC)
+    controller = AgentController(
+        owner_id="owner",
+        name="Switch cloud",
+        kind="ec2",
+        api_key_id="key",
+        connected_at=now - timedelta(hours=3),
+        disconnected_at=now - timedelta(hours=2),
+        last_seen_at=now - timedelta(hours=2),
+        status={"providers": [{"provider": "claude", "installed": True, "auth": "ok"}]},
+    )
+    leases = ProcessLeases(read_at=now, leases={})
+    asleep = placement_refusal(
+        controller, "claude", leases=leases, now=now, interval_seconds=60, waking=False
+    )
+    waking = placement_refusal(
+        controller, "claude", leases=leases, now=now, interval_seconds=60, waking=True
+    )
+    not_installed = placement_refusal(
+        controller, "codex", leases=leases, now=now, interval_seconds=60, waking=True
+    )
+    assert asleep is not None and asleep[0] == "controller_offline"
+    assert waking is None
+    assert not_installed is not None and not_installed[0] == "provider_not_installed"
