@@ -12,12 +12,13 @@ from fastapi import FastAPI
 from sqlalchemy import func, select, text
 
 from switch_core.config import SwitchConfig
-from switch_core.db.models import TENANT_ZERO_ID, HostedMachine, TenantMember, User
+from switch_core.db.models import TENANT_ZERO_ID, CloudMachine, TenantMember, User
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_BEING_REMOVED,
     MACHINE_NEEDS_ADMIN,
     MACHINE_NEEDS_ATTENTION,
     MACHINES_FULL,
+    workspace_on,
 )
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import decode_jwt, get_current_user, verify_password
@@ -47,7 +48,9 @@ async def signup_app(session_factory):
     app = FastAPI()
     app.include_router(auth_router)
     app.include_router(machine_router)
-    app.state.hosted_controller_settings = SimpleNamespace(tenant_id=TENANT_ZERO_ID)
+    app.state.hosted_controller_settings = SimpleNamespace(
+        allowed_tenant_ids=[TENANT_ZERO_ID]
+    )
     config = SimpleNamespace(
         gateway_signup_open=True,
         gateway_signup_mode="default_tenant",
@@ -101,10 +104,10 @@ async def _user(app, email: str) -> User:
         return user
 
 
-async def _machines(app) -> list[HostedMachine]:
+async def _machines(app) -> list[CloudMachine]:
     with tenant_scope(TENANT_ZERO_ID):
         async with app.factory() as session:
-            return list(await session.scalars(select(HostedMachine)))
+            return list(await session.scalars(select(CloudMachine)))
 
 
 async def _ensure(app, email: str):
@@ -208,6 +211,11 @@ async def test_signup_signs_in_a_tenant_zero_member_with_a_warming_machine(
         "queued",
         "running",
     )
+    with tenant_scope(TENANT_ZERO_ID):
+        async with app.factory() as session:
+            workspace = await workspace_on(session, machine.id)
+    assert workspace is not None
+    assert (workspace.owner_id, workspace.controller_id) == (user.id, None)
 
     login = await app.client.post(
         "/auth/login", json={"email": "new.person@example.com", "password": PASSWORD}
@@ -260,6 +268,20 @@ async def test_signup_succeeds_without_cloud_capacity(signup_app, caplog):
     await _user(app, "new.person@example.com")
 
 
+async def test_signup_warms_no_machine_outside_the_allowed_workspaces(signup_app):
+    app = signup_app
+    app.app.state.hosted_controller_settings = SimpleNamespace(
+        allowed_tenant_ids=["another-tenant"]
+    )
+    response = await _signup(app)
+    assert response.status_code == 201, response.text
+    assert response.json()["machine"] == {
+        "status": "unavailable",
+        "reason": MACHINES_DISABLED,
+    }
+    assert await _machines(app) == []
+
+
 async def test_signup_succeeds_when_every_machine_is_in_use(signup_app):
     app = signup_app
     app.config.hosted_launch_capacity = 1
@@ -293,7 +315,7 @@ async def test_ensure_leaves_an_owner_stopped_machine_stopped(signup_app):
     (machine,) = await _machines(app)
     with tenant_scope(TENANT_ZERO_ID):
         async with app.factory() as session:
-            row = await session.get(HostedMachine, (TENANT_ZERO_ID, machine.id))
+            row = await session.get(CloudMachine, machine.id)
             assert row is not None
             row.state = "stopped"
             row.desired_state = "stopped"
@@ -314,7 +336,7 @@ async def test_ensure_leaves_an_owner_stopped_machine_stopped(signup_app):
 async def _set_machine(app, machine_id: str, **values) -> None:
     with tenant_scope(TENANT_ZERO_ID):
         async with app.factory() as session:
-            row = await session.get(HostedMachine, (TENANT_ZERO_ID, machine_id))
+            row = await session.get(CloudMachine, machine_id)
             assert row is not None
             for key, value in values.items():
                 setattr(row, key, value)
@@ -401,7 +423,11 @@ async def test_ensure_returns_an_unclaimable_machine_as_it_is(
     with tenant_scope(TENANT_ZERO_ID):
         async with app.factory() as session:
             prewarmed = await _prewarm(
-                session, user.id, app.config, app.app.state.hosted_controller_settings
+                session,
+                app.factory,
+                user.id,
+                app.config,
+                app.app.state.hosted_controller_settings,
             )
     assert (prewarmed.status, prewarmed.reason) == ("unavailable", reason)
 
@@ -412,7 +438,7 @@ async def test_ensure_wakes_an_idle_sleeping_machine(signup_app):
     (machine,) = await _machines(app)
     with tenant_scope(TENANT_ZERO_ID):
         async with app.factory() as session:
-            row = await session.get(HostedMachine, (TENANT_ZERO_ID, machine.id))
+            row = await session.get(CloudMachine, machine.id)
             assert row is not None
             row.state = "stopped"
             row.desired_state = "stopped"
