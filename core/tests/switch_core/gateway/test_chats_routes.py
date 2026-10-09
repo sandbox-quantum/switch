@@ -1080,6 +1080,65 @@ async def test_an_invited_member_keeps_a_chat_that_loses_its_last_agent(
     await events.stream.aclose()  # type: ignore[attr-defined]
 
 
+async def test_unlisted_room_still_delivers_messages_to_invited_member(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+
+    events = _stream(chats, chats.bob, {}, recheck=60.0)
+    assert (await events.next())[0] == "chat"
+    assert (await events.next())[0] == "ready"
+
+    await chats.room_service.remove_agents_from_room(room_id, [agent.id])
+    assert await events.next() == (
+        "chat.removed",
+        {"roomId": room_id, "reason": "unlisted"},
+    )
+
+    assert (
+        await chats.send(chats.alice, room_id, "s1", "hello after unlisted")
+    ).status_code == 200
+    await chats.listener.ring(room_id)
+    name, data = await events.next()
+    assert name == "message" and data["body"] == "hello after unlisted"
+    await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def test_unlisted_then_revoked_room_emits_access_removal(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+
+    events = _stream(chats, chats.bob, {}, recheck=60.0)
+    assert (await events.next())[0] == "chat"
+    assert (await events.next())[0] == "ready"
+
+    await chats.room_service.remove_agents_from_room(room_id, [agent.id])
+    assert await events.next() == (
+        "chat.removed",
+        {"roomId": room_id, "reason": "unlisted"},
+    )
+
+    removed = await chats.client.delete(
+        f"/chats/{room_id}/members/{chats.bob.id}", headers=chats.as_user(chats.alice)
+    )
+    assert removed.status_code == 204
+    assert await events.next() == (
+        "chat.removed",
+        {"roomId": room_id, "reason": "access"},
+    )
+
+    assert (await chats.send(chats.alice, room_id, "s1", "secret")).status_code == 200
+    await chats.listener.ring(room_id)
+    with pytest.raises(TimeoutError):
+        await events.next(timeout=0.3)
+    await events.stream.aclose()  # type: ignore[attr-defined]
+
+
 async def test_an_unlisted_chat_is_announced_again_when_an_agent_returns(
     chats: _Harness,
 ) -> None:

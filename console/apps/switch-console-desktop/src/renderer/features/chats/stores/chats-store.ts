@@ -152,7 +152,8 @@ export class ChatsStore {
     this.timelines.peek(serverId, message.roomId)?.apply(message);
     const chat = this.chats.get(message.roomId);
     // The feed follows hidden chats too; a message in one is what brings it back.
-    if (!chat && !this.removed.has(message.roomId)) void this.relist(serverId);
+    if (!chat && !this.removed.has(message.roomId) && !this.unlisted.has(message.roomId))
+      void this.relist(serverId);
     if (chat && (chat.lastMessage === null || chat.lastMessage.seq < message.seq))
       this.chats.set(message.roomId, {
         ...chat,
@@ -194,7 +195,10 @@ export class ChatsStore {
     }
     this.unlisted.delete(roomId);
     this.removed.add(roomId);
-    if (this.serverId) this.timelines.peek(this.serverId, roomId)?.revoke();
+    if (this.serverId) {
+      const timeline = this.timelines.peek(this.serverId, roomId);
+      if (timeline) timeline.revoke();
+    }
   }
 
   reset(serverId: string): void {

@@ -140,4 +140,14 @@ describe('ChatsStore', () => {
     expect(store.removed.has('r1')).toBe(true);
     expect(store.unlisted.has('r1')).toBe(false);
   });
+
+  it('does not relist for unlisted rooms', async () => {
+    const { store, api, emit } = setup(async () => [summary('r1', 1)]);
+    await store.connect('s1');
+    store.remove('r1', 'unlisted');
+    emit(message('r1', 2));
+    await Promise.resolve();
+    expect(api.list).toHaveBeenCalledTimes(1);
+    expect(store.chat('r1')).toBeUndefined();
+  });
 });

@@ -385,6 +385,7 @@ class _ChatStream:
         self.user = user
         self.after = after
         self.cursors: dict[str, int] = {}
+        self.announced: set[str] = set()
         self.dirty: set[str] = set()
         self.wake = asyncio.Event()
 
@@ -426,36 +427,55 @@ class _ChatStream:
                     _removed(room_id, "access") for room_id in self.after if initial
                 )
                 return frames, False
-            rooms = {
+            readable = {
+                room.id: room
+                for room in await service.readable_rooms(session, self.user.id)
+            }
+            listed = {
                 room.id: room
                 for room in await service.stream_rooms(session, self.user.id)
             }
-            for room_id in [r for r in self.cursors if r not in rooms]:
-                reason = await service.removal_reason(session, self.user.id, room_id)
-                frames.append(self._untrack(room_id, reason))
+            for room_id in [r for r in self.cursors if r not in readable]:
+                frames.append(self._untrack(room_id, "access"))
             if initial:
                 for room_id in self.after:
-                    if room_id not in rooms:
-                        reason = await service.removal_reason(
-                            session, self.user.id, room_id
-                        )
-                        frames.append(_removed(room_id, reason))
-            for room_id, room in rooms.items():
+                    if room_id not in readable:
+                        frames.append(_removed(room_id, "access"))
+                    elif room_id not in listed:
+                        frames.append(_removed(room_id, "unlisted"))
+            for room_id in [
+                r for r in self.announced if r in readable and r not in listed
+            ]:
+                frames.append(_removed(room_id, "unlisted"))
+                self.announced.discard(room_id)
+            for room_id, room in readable.items():
                 if room_id in self.cursors:
                     continue
                 if initial and room_id in self.after:
                     self.cursors[room_id] = self.after[room_id]
-                else:
+                    if room_id in listed:
+                        self.announced.add(room_id)
+                elif room_id in listed:
                     summary = await _summary(
                         service, session, self.tenant_id, self.user, room
                     )
                     frames.append(_frame("chat", summary.model_dump(by_alias=True)))
                     self.cursors[room_id] = await service.head_seq(session, room_id)
+                    self.announced.add(room_id)
+                else:
+                    self.cursors[room_id] = await service.head_seq(session, room_id)
                 service.listener.subscribe(room_id, self.on_room)
+            for room_id, room in listed.items():
+                if room_id in self.announced:
+                    continue
+                summary = await _summary(
+                    service, session, self.tenant_id, self.user, room
+                )
+                frames.append(_frame("chat", summary.model_dump(by_alias=True)))
+                self.announced.add(room_id)
             for room_id in list(self.cursors) if read is None else read:
-                followed = rooms.get(room_id)
-                if followed is not None:
-                    frames.extend(await self._read(session, followed))
+                if room_id in readable:
+                    frames.extend(await self._read(session, readable[room_id]))
         return frames, True
 
     async def _read(self, session: AsyncSession, room: Room) -> list[bytes]:

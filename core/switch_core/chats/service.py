@@ -450,6 +450,22 @@ class ChatService:
 
     # ── Listing ──────────────────────────────────────────────────────────────
 
+    async def readable_rooms(self, session: AsyncSession, user_id: str) -> list[Room]:
+        """All rooms the caller can read: member of, unarchived, tenant role."""
+        client = await self.member_client(session, user_id)
+        if client is None:
+            return []
+        result = await session.execute(
+            select(Room)
+            .join(ClientRoom, ClientRoom.room_id == Room.id)
+            .where(
+                ClientRoom.client_id == client.id,
+                Room.archived_at.is_(None),
+            )
+            .order_by(Room.created_at)
+        )
+        return list(result.scalars().all())
+
     async def stream_rooms(self, session: AsyncSession, user_id: str) -> list[Room]:
         """The caller's member rooms that are chats: unarchived, with an agent."""
         client = await self.member_client(session, user_id)
