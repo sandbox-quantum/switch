@@ -28,6 +28,7 @@ spec:
         {{- include "switch.labels" . | nindent 8 }}
         {{- include "switch.selectorLabels" (dict "Release" .Release "component" "switch-core") | nindent 8 }}
     spec:
+      serviceAccountName: {{ include "switch.coreServiceAccountName" . }}
       {{- if .Values.global.imagePullSecrets }}
       {{- include "switch.imagePullSecrets" . | nindent 6 }}
       {{- end }}
