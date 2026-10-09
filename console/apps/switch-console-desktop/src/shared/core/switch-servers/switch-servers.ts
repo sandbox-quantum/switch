@@ -766,8 +766,8 @@ export type AgentProviderKind = 'anthropic' | 'third-party';
  */
 export type ProvisionAgentParams = {
   workspaceId: string;
-  /** The agent's working directory; the settings file is written here and used
-   * as `repo_dir` so an offline-session command can `cd` into it. */
+  /** The agent's working directory; the settings file is written here, and it
+   * is recorded as `repo_dir` so Console can find the agent on a remote host. */
   dir: string;
   name: string;
   description: string;

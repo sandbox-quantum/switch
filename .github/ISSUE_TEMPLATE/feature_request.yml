@@ -32,7 +32,7 @@ body:
         - switch-core (control plane)
         - gateway (operator dashboard)
         - Switch Console (desktop app)
-        - Connector plugin (Claude Code / Codex)
-        - Collaboration bridge (Slack / Mattermost)
+        - Agent sessions (Claude Code / Codex / OpenCode / Cursor / Antigravity)
+        - Collaboration bridge (Slack / Mattermost / Discord / Teams / Telegram)
         - Deployment (Docker Compose / Helm)
         - Not sure

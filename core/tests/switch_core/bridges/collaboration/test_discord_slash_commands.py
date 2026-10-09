@@ -278,8 +278,14 @@ def test_at_prefix_is_optional_and_never_doubled() -> None:
     assert reassemble_args(spec, {"agent": " @worker ", "alias": "w "}) == expected
 
 
+_TWO_OPTIONAL = (
+    CommandArg("agent", "An agent", required=False),
+    CommandArg("role", "A role for that agent", required=False),
+)
+
+
 def test_omitted_trailing_optional_is_dropped() -> None:
-    spec = COMMANDS_BY_NAME["run-cmd"].args_spec
+    spec = _TWO_OPTIONAL
     assert reassemble_args(spec, {"agent": "worker", "role": None}) == "@worker"
     assert reassemble_args(spec, {"agent": None, "role": None}) == ""
 
@@ -287,8 +293,8 @@ def test_omitted_trailing_optional_is_dropped() -> None:
 def test_value_after_omitted_optional_is_rejected() -> None:
     # Discord submits options by name and allows role-without-agent, but the
     # positional form cannot express it: `@manager` would land in the agent
-    # slot and run-cmd would answer for the wrong target.
-    spec = COMMANDS_BY_NAME["run-cmd"].args_spec
+    # slot and the command would act on the wrong target.
+    spec = _TWO_OPTIONAL
     with pytest.raises(SlashArgError) as excinfo:
         reassemble_args(spec, {"agent": None, "role": "manager"})
     assert "agent" in str(excinfo.value)
@@ -415,7 +421,7 @@ def test_bad_arguments_rejected_ephemerally_without_dispatch() -> None:
     commands = _capture_commands(adapter)
     interaction = _FakeInteraction(_FakeChannel())
 
-    _invoke(adapter, interaction, "run-cmd", agent=None, role="manager")
+    _invoke(adapter, interaction, "set-alias", agent="worker", alias=None)
 
     # Refused before anything is dispatched, and privately: it is the
     # invoker's typo, not something the whole channel needs to watch fail.
