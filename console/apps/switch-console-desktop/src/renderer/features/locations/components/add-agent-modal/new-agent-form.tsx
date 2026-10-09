@@ -567,13 +567,13 @@ export const NewAgentForm = observer(function NewAgentForm({
           return;
         }
         registered = true;
-        if (form.addressingPolicy !== null) {
-          await rpc.workspaces.updateAddressingPolicy({
-            workspaceId: created.workspaceId,
-            agentId: created.switchAgentId,
-            policy: form.addressingPolicy,
-          });
-        }
+        // Always set: "Anyone" is no policy, and Switch creates an agent
+        // owner-only.
+        await rpc.workspaces.updateAddressingPolicy({
+          workspaceId: created.workspaceId,
+          agentId: created.switchAgentId,
+          policy: form.addressingPolicy,
+        });
         if (canManageAgents) {
           await rpc.workspaces.updateCanManageAgents({
             workspaceId: created.workspaceId,
@@ -606,11 +606,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         return;
       }
       registered = true;
-      if (
-        form.addressingPolicy !== null &&
-        result.agent.switchAgentId &&
-        result.agent.workspaceId
-      ) {
+      if (result.agent.switchAgentId && result.agent.workspaceId) {
         await rpc.workspaces.updateAddressingPolicy({
           workspaceId: result.agent.workspaceId,
           agentId: result.agent.switchAgentId,
@@ -713,7 +709,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         tabIndex={-1}
         className="max-h-[calc(100dvh-2rem-var(--modal-chrome,8.5rem))] gap-4"
       >
-        <AgentIdentityFields form={form} serverId={pickState.serverId} />
+        <AgentIdentityFields form={form} serverId={pickState.serverId} nameTaken={nameTaken} />
 
         <Field>
           <FieldLabel>Run location</FieldLabel>
