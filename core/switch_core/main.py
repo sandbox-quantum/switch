@@ -171,7 +171,6 @@ from switch_core.observability.pool import (
     pool_stats,
 )
 from switch_core.observability.query import instrument_queries
-from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
@@ -224,7 +223,7 @@ async def _runtime_state_sweep_loop(protocol: AgentCore) -> None:
                 logger.exception("Runtime-state sweep failed")
 
 
-async def _connection_sweep_loop(protocol: AgentCore, lag: EventLoopLag) -> None:
+async def _connection_sweep_loop(protocol: AgentCore) -> None:
     """Expire connections whose client has stopped beating.
 
     Skips a round after the event loop has been blocked. A stall stops us
@@ -233,16 +232,11 @@ async def _connection_sweep_loop(protocol: AgentCore, lag: EventLoopLag) -> None
     leases, then every client reconnects together, which is a worse stall. The
     clients were never given the chance to beat, so the honest reading is "we
     were not listening", not "they went away".
-
-    Its short fixed interval also makes it the most sensitive witness to the
-    loop being blocked, so every round's oversleep is reported — not only the
-    ones large enough to skip a sweep.
     """
     while True:
         started = time.monotonic()
         await asyncio.sleep(_CONNECTION_SWEEP_INTERVAL)
         overslept = (time.monotonic() - started) - _CONNECTION_SWEEP_INTERVAL
-        lag.record(overslept)
         if overslept > HEARTBEAT_TTL_SECONDS / 2:
             logger.warning(
                 "AgentConnection sweep skipped: the event loop was blocked for %.1fs, "
@@ -986,7 +980,7 @@ async def run(config: SwitchConfig) -> None:
                 session_activity_maintenance_loop(session_factory)
             )
             connection_sweep_task = asyncio.create_task(
-                _connection_sweep_loop(protocol, observability.lag)
+                _connection_sweep_loop(protocol)
             )
             management_task = (
                 asyncio.create_task(management.run())
