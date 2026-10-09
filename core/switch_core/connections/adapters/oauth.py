@@ -388,7 +388,7 @@ class OAuthAdapter:
         """Where the person's browser goes to sign in and consent."""
         endpoints = await self.endpoints()
         client = await self._client.credentials(endpoints)
-        query = {
+        query: dict[str, str] = {
             "response_type": "code",
             "client_id": client.client_id,
             "redirect_uri": redirect_uri,
@@ -397,6 +397,8 @@ class OAuthAdapter:
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
+        for key, value in self._oauth.authorization_params.items():
+            query[key] = value
         if self._oauth.prompt is not None:
             query["prompt"] = self._oauth.prompt
         if endpoints.resource is not None:

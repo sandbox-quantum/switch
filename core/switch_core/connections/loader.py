@@ -53,6 +53,9 @@ AccessLevel = Literal["read", "write"]
 
 AdapterName = Literal["github", "oauth"]
 RedirectMode = Literal["loopback", "core"]
+# Sign-in parameters a vendor may need beyond OAuth's own. The rest of an
+# authorization request is Core's to set.
+AuthorizationParam = Literal["access_type", "include_granted_scopes"]
 
 
 class OAuthClient(BaseModel):
@@ -74,6 +77,9 @@ class OAuthClient(BaseModel):
     vendor that matches a loopback redirect exactly, port included; without
     them any port is used. `prompt` is sent with every authorization, for a
     vendor that needs it (`consent`, to consent to a narrower set of scopes).
+    So are `authorization_params`, which only a vendor-specific key may name
+    (`access_type: offline`, for a vendor that hands out a refresh token only
+    when asked), never one Core sets itself.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -84,6 +90,9 @@ class OAuthClient(BaseModel):
         default=None, min_length=1, max_length=10
     )
     prompt: Literal["consent", "login", "select_account"] | None = None
+    authorization_params: dict[
+        AuthorizationParam, Annotated[str, Field(pattern=r"^[A-Za-z0-9._~-]{1,64}$")]
+    ] = Field(default_factory=dict)
     authorization_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     token_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)

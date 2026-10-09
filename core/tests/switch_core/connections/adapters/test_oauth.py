@@ -431,6 +431,29 @@ class TestWhereTheMetadataIs:
         await _sign_in(plain, vendor)
         assert "prompt" not in vendor.authorizations[-1]
 
+    async def test_sends_the_catalogs_extra_parameters_with_every_authorization(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            CLI_ENTRY.replace(
+                "    client_settings: EXAMPLE\n",
+                "    client_settings: EXAMPLE\n"
+                "    authorization_params:\n"
+                "      access_type: offline\n"
+                "      include_granted_scopes: 'false'\n",
+            ),
+        )
+        await _sign_in(adapter, vendor)
+        await _sign_in(adapter, vendor)
+        for authorization in vendor.authorizations:
+            assert authorization["access_type"] == "offline"
+            assert authorization["include_granted_scopes"] == "false"
+            assert authorization["redirect_uri"] == REDIRECT
+        plain, _ = _adapter(vendor, CLI_ENTRY)
+        await _sign_in(plain, vendor)
+        assert "access_type" not in vendor.authorizations[-1]
+
 
 class TestThroughTheBroker:
     async def test_agents_renewing_at_once_refresh_a_rotating_sign_in_once(

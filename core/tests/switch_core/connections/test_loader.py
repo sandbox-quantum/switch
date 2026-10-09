@@ -528,6 +528,8 @@ def test_loads_an_oauth_entry_whose_tool_is_a_cli(catalog_copy):
     assert cli.deny == ["auth", "--profile"]
     assert cli.path_flags == {"--upload": "read", "--output": "write", "-o": "write"}
     assert (cli.output_cap_bytes, cli.timeout_s) == (65536, 120)
+    assert definition.auth.oauth is not None
+    assert definition.auth.oauth.authorization_params == {}
     assert (
         cli.token_refused.exit_code,
         cli.token_refused.json_path,
@@ -582,6 +584,23 @@ def test_loads_an_oauth_entry_whose_tool_is_a_cli(catalog_copy):
         ("  timeout_s: 120\n", "", "timeout_s"),
         ("  deny: [auth, --profile]\n", "", "deny"),
         ("exit_code: 1,", "exit_code: 0,", "exit_code"),
+        (
+            "    client_settings: EXAMPLE\n",
+            "    client_settings: EXAMPLE\n"
+            "    authorization_params: { redirect_uri: https://elsewhere.test }\n",
+            "authorization_params",
+        ),
+        (
+            "    client_settings: EXAMPLE\n",
+            "    client_settings: EXAMPLE\n    authorization_params: { scope: all }\n",
+            "authorization_params",
+        ),
+        (
+            "    client_settings: EXAMPLE\n",
+            "    client_settings: EXAMPLE\n"
+            "    authorization_params: { access_type: 'offline&scope=all' }\n",
+            "authorization_params",
+        ),
         ("json_path: error.code", "json_path: error/code", "json_path"),
         (
             "  token_refused: { exit_code: 1, json_path: error.code, value: 401 }\n",

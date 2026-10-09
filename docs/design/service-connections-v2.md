@@ -34,6 +34,9 @@ auth:
     redirect: [loopback]      # loopback (Switch Console) and/or core (Core's callback)
     loopback_ports: [39231, 39232, 39233, 39234, 39235]
     prompt: consent           # sent with every authorization
+    # authorization_params: { access_type: offline }   # also sent with every
+    #   authorization; only keys Core does not set itself (access_type,
+    #   include_granted_scopes)
     revocation_discovered: true   # or revocation_url: https://…
   identity:                   # GET with the token; dotted paths in its JSON
     url: https://api.atlassian.com/me
