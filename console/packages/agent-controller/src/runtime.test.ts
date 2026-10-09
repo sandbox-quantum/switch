@@ -265,34 +265,38 @@ describe('InProcessRuntime', () => {
   });
 
   it('resolves working directories', async () => {
-    expect(await runtime.workingDirectory('scout', null)).toBe(
+    expect(await runtime.workingDirectory('agent-1', 'scout', null)).toBe(
       join(dir, 'data', 'workspaces', 'scout')
     );
     expect(statSync(join(dir, 'data', 'workspaces', 'scout')).isDirectory()).toBe(true);
-    expect(await runtime.workingDirectory('scout', dir)).toBe(dir);
-    await expect(runtime.workingDirectory('scout', 'relative/dir')).rejects.toMatchObject({
+    expect(await runtime.workingDirectory('agent-1', 'scout', dir)).toBe(dir);
+    await expect(
+      runtime.workingDirectory('agent-1', 'scout', 'relative/dir')
+    ).rejects.toMatchObject({
       reason: 'definition_invalid',
     });
-    await expect(runtime.workingDirectory('scout', join(dir, 'missing'))).rejects.toMatchObject({
+    await expect(
+      runtime.workingDirectory('agent-1', 'scout', join(dir, 'missing'))
+    ).rejects.toMatchObject({
       reason: 'definition_invalid',
     });
-    await expect(runtime.workingDirectory('scout', bundle)).rejects.toMatchObject({
+    await expect(runtime.workingDirectory('agent-1', 'scout', bundle)).rejects.toMatchObject({
       reason: 'definition_invalid',
     });
   });
 
   it('makes a missing directory inside the workspaces directory, and only there', async () => {
     const named = join(dir, 'data', 'workspaces', 'chosen', 'nested');
-    expect(await runtime.workingDirectory('scout', named)).toBe(named);
+    expect(await runtime.workingDirectory('agent-1', 'scout', named)).toBe(named);
     expect(statSync(named).isDirectory()).toBe(true);
     const escaping = join(dir, 'data', 'workspaces', '..', 'outside');
-    await expect(runtime.workingDirectory('scout', escaping)).rejects.toMatchObject({
+    await expect(runtime.workingDirectory('agent-1', 'scout', escaping)).rejects.toMatchObject({
       reason: 'definition_invalid',
     });
     expect(existsSync(join(dir, 'data', 'outside'))).toBe(false);
-    await expect(runtime.workingDirectory('scout', join(dir, 'data', 'workspaces'))).resolves.toBe(
-      join(dir, 'data', 'workspaces')
-    );
+    await expect(
+      runtime.workingDirectory('agent-1', 'scout', join(dir, 'data', 'workspaces'))
+    ).resolves.toBe(join(dir, 'data', 'workspaces'));
   });
 });
 

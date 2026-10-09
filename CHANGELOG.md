@@ -3053,6 +3053,18 @@ tags; see RELEASING.md.
 
 ### [Unreleased]
 
+#### Added
+- **Each agent as a Linux user of its own.** On Linux with systemd and polkit,
+  `sudo switch-agent-controller install-service --separate-users` sets up, once,
+  a pool of agent users, a unit template that runs an agent as one of them, a
+  polkit rule that lets the controller start only those units, and the
+  controller as a system service. Each agent then runs as its own user and sees
+  only its own directory. It cannot see the home directories, the controller's
+  data, the other agents or the cloud instance metadata, and the rest of the
+  system is read-only to it. Agents get provider keys from the controller's
+  `--env-file`, not its user's own logins. `--agent-users` sets how many agents
+  can run (16 by default).
+
 #### Fixed
 - **A refusal that cannot pass stops the controller instead of retrying it
   forever.** The server answers `protocol_unsupported` when it no longer speaks

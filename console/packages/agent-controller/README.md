@@ -20,6 +20,10 @@ same one in-process agent hosts use, over a WebSocket on the relay's port, and i
 not stopped when the controller exits: it reconnects when the controller is back.
 Changing an agent's isolation restarts it the other way.
 
+On Linux, a controller set up for it runs every agent, whatever its isolation, as
+a Linux user of its own under systemd, seeing only its own directory: see
+[Each agent as a Linux user of its own](#each-agent-as-a-linux-user-of-its-own).
+
 The controller holds **one** connection to Switch, a WebSocket, for all of its agents and hands
 each shared agent's events to its agent host directly. Each agent host makes its calls to Switch
 through a **local relay** on a loopback port, which adds the controller's
@@ -175,6 +179,74 @@ Sessions inherit only the provider variables Switch knows (API keys, base URLs,
 model overrides, and the Vertex AI, Bedrock and Google Cloud settings), plus the
 basics a CLI needs. The file is read once at start; restart the service after
 changing it.
+
+### Each agent as a Linux user of its own
+
+By default every agent runs as the user the controller runs as, so an agent can
+read the controller's files, its credential and the other agents' files. On Linux
+with systemd and polkit, each agent can instead run as a Linux user of its own,
+which sees only its own directory. Set it up once, as root, after enrolling:
+
+```bash
+sudo npm install --global <the release's .tgz URL>   # Node and the controller system-wide
+switch-agent-controller enroll --server https://switch.example.com --code <code>
+sudo switch-agent-controller install-service --separate-users [--env-file /etc/switch/agents.env]
+```
+
+`install-service --separate-users` runs as root and sets up, for the user who ran
+`sudo` (or `--user <name>`) and the data directory (`--data-dir`, by default that
+user's default one):
+
+- a pool of system users, `sa<uid>-01` … (16 by default, `--agent-users <n>` up to
+  99), all in a group of their own, `switch-agents-<uid>`;
+- a systemd template unit, `switch-agent-<uid>@.service`, that runs an agent as
+  one of them;
+- a polkit rule that lets the controller's user start, stop, restart and reset
+  those units and nothing else, so the controller itself never needs root;
+- the agents' directories, in `/var/lib/switch-agents/<uid>` (`--agents-dir`);
+- the controller as a system service of that user,
+  `switch-agent-controller-<uid>.service`, run with
+  `--agent-runtime separate-user` and the agents' group as a supplementary group,
+  so it can read what its agents write. It replaces the user service, which must
+  be uninstalled first.
+
+The setup is written to `/etc/switch-agent-controller/separate-users-<uid>.json`.
+Running the setup again rewrites everything and adds agent users. `sudo
+switch-agent-controller uninstall-service --separate-users` stops the controller
+and its agents, then removes what the setup made except the agents' directories.
+
+Each agent claims a free user from the pool when it is first started, and runs as
+`switch-agent-<uid>@<NN>.service`. systemd restarts an agent host that crashes. The
+agent:
+
+- sees only its own directory, always at `/var/lib/switch-agents/<uid>/agent`,
+  whichever user it runs as, with its `home` and its `workspace` in it. The
+  controller reports that path as its workspaces folder, so an agent created
+  with no directory works in a folder named after it there. A definition naming
+  a directory outside it is refused (`definition_invalid`);
+- cannot see the home directories, the controller's data directory, the other
+  agents' processes, or the cloud instance metadata address, and the rest of the
+  system is read-only to it;
+- gets its relay credentials and the provider settings from the controller's
+  environment (the `--env-file`) through systemd, never the controller user's own
+  provider logins in its home. Give each provider an API key or a token, for
+  example `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`. `doctor` checks the
+  providers the way an agent would see them.
+
+Node, the controller and the provider CLIs must be installed outside the home
+directories (`/usr`, `/usr/local` or `/opt`), where the agents can reach them; the
+setup and the controller refuse what is not. An agent removed from the machine
+frees its user, and its directory is moved to `released/<agent id>` under the
+agents' directory, where it is picked up again if the agent comes back. Before an
+agent starts, root hands it back the files in its directory that another agent
+user owns, so an agent can move from one user to another. Only files in the
+agents' group are handed back.
+
+When every user in the pool runs an agent, the next agent fails with
+`capacity_exceeded` until the setup is run again with a larger `--agent-users`.
+Agents' units keep running when the controller stops, as isolated agents do.
+`status` run in a shell without the agents' group shows each agent's unit state
+only.
 
 ### The controller credential
 

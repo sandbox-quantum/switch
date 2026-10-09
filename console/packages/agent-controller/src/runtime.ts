@@ -104,11 +104,11 @@ export interface AgentRuntime extends AgentRunner {
   writeCredentials(agentId: string, credentials: RelayCredentials): Promise<void>;
   deleteCredentials(agentId: string): Promise<void>;
   /**
-   * `directory` from the definition, or a workspace under the data directory.
-   * A directory inside the workspaces folder is made when missing; any other
-   * must already exist.
+   * `directory` from the definition, or a workspace of the agent's own when it
+   * names none. A directory inside the workspaces folder is made when
+   * missing; any other must already exist.
    */
-  workingDirectory(name: string, directory: string | null): Promise<string>;
+  workingDirectory(agentId: string, name: string, directory: string | null): Promise<string>;
   probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness>;
 }
 
@@ -116,21 +116,54 @@ export interface AgentRuntime extends AgentRunner {
 export const STOP_TIMEOUT_MS = 30_000;
 const PROBE_TIMEOUT_MS = 90_000;
 
-/** Asks a provider's CLI, through the shared-host bundle's `--probe`, whether it is signed in. */
+/**
+ * Asks a provider's CLI, through the shared-host bundle's `--probe`, whether
+ * it is signed in, with the environment the agents would have.
+ */
 export async function probeProvider(
   bundlePath: string,
   provider: Provider,
   binaryPath: string,
-  cwd: string
+  cwd: string,
+  env: NodeJS.ProcessEnv
 ): Promise<ProviderReadiness> {
   const { stdout } = await execute(
     process.execPath,
     [bundlePath, '--probe', provider, cwd, binaryPath],
-    { timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, env: process.env }
+    { timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, env }
   );
   const line = stdout.trim().split('\n').at(-1) ?? '';
   return providerReadinessSchema.parse(JSON.parse(line));
 }
+/** What an agent host's credentials file holds; see `readSharedCredentials`. */
+export function relayCredentialsBody(agentId: string, credentials: RelayCredentials): string {
+  return JSON.stringify({
+    env: {
+      SWITCH_API_ENDPOINT: credentials.endpoint,
+      SWITCH_API_TOKEN: credentials.token,
+      SWITCH_AGENT_ID: agentId,
+      SWITCH_AGENT_HUB: credentials.hub,
+    },
+  });
+}
+
+/** A credentials file's relay, token and hub; null when it is not one, or is another agent's. */
+export function parseRelayCredentials(text: string, agentId: string): RelayCredentials | null {
+  try {
+    const env = (JSON.parse(text) as { env?: Record<string, unknown> }).env ?? {};
+    const endpoint = env.SWITCH_API_ENDPOINT;
+    const token = env.SWITCH_API_TOKEN;
+    // Written before the hub: an empty one, which no relay names, so the file is written again.
+    const hub = typeof env.SWITCH_AGENT_HUB === 'string' ? env.SWITCH_AGENT_HUB : '';
+    if (env.SWITCH_AGENT_ID !== agentId) return null;
+    return typeof endpoint === 'string' && typeof token === 'string'
+      ? { endpoint, token, hub }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Failures an agent host is started again after, within `CRASH_WINDOW_MS`. */
 const MAX_CRASHES = 3;
 const CRASH_WINDOW_MS = 10 * 60 * 1000;
@@ -300,42 +333,23 @@ export class InProcessRuntime implements AgentRuntime {
 
   async readCredentials(agentId: string): Promise<RelayCredentials | null> {
     const text = await readOptional(this.credentialsPath(agentId));
-    if (text === null) return null;
-    try {
-      const env = (JSON.parse(text) as { env?: Record<string, unknown> }).env ?? {};
-      const endpoint = env.SWITCH_API_ENDPOINT;
-      const token = env.SWITCH_API_TOKEN;
-      // Written before the hub: an empty one, which no relay names, so the file is written again.
-      const hub = typeof env.SWITCH_AGENT_HUB === 'string' ? env.SWITCH_AGENT_HUB : '';
-      if (env.SWITCH_AGENT_ID !== agentId) return null;
-      return typeof endpoint === 'string' && typeof token === 'string'
-        ? { endpoint, token, hub }
-        : null;
-    } catch {
-      return null;
-    }
+    return text === null ? null : parseRelayCredentials(text, agentId);
   }
 
   async writeCredentials(agentId: string, credentials: RelayCredentials): Promise<void> {
     await mkdir(this.deps.layout.agentDir(agentId), { recursive: true, mode: 0o700 });
-    await writeAtomic(
-      this.credentialsPath(agentId),
-      JSON.stringify({
-        env: {
-          SWITCH_API_ENDPOINT: credentials.endpoint,
-          SWITCH_API_TOKEN: credentials.token,
-          SWITCH_AGENT_ID: agentId,
-          SWITCH_AGENT_HUB: credentials.hub,
-        },
-      })
-    );
+    await writeAtomic(this.credentialsPath(agentId), relayCredentialsBody(agentId, credentials));
   }
 
   async deleteCredentials(agentId: string): Promise<void> {
     await removeOptional(this.credentialsPath(agentId));
   }
 
-  async workingDirectory(name: string, directory: string | null): Promise<string> {
+  async workingDirectory(
+    _agentId: string,
+    name: string,
+    directory: string | null
+  ): Promise<string> {
     if (directory === null) {
       const path = agentWorkspace(this.deps.workspaces, name);
       await mkdir(path, { recursive: true });
@@ -552,7 +566,7 @@ export class InProcessRuntime implements AgentRuntime {
   }
 
   probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness> {
-    return probeProvider(this.deps.bundlePath, provider, binaryPath, cwd);
+    return probeProvider(this.deps.bundlePath, provider, binaryPath, cwd, process.env);
   }
 
   private async writeFlags(root: string, flags: WatchFlags): Promise<void> {

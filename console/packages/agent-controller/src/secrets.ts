@@ -149,6 +149,11 @@ export const runCommand: CommandRunner = (file, args, input) =>
       }
       resolve({ stdout });
     });
+    // A command that exits without reading its input closes the pipe first;
+    // its exit status says how it went, not the write.
+    child.stdin?.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EPIPE') reject(error);
+    });
     child.stdin?.end(input ?? '');
   });
 

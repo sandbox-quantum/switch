@@ -20,9 +20,17 @@ function alive(pid: number): boolean {
   }
 }
 
+/**
+ * `fileMode(0o600)` from `host-permissions`, written out: this module takes
+ * no relative import, since its tests load it on its own in a child process.
+ */
+function recordMode(): number {
+  return process.env.SWITCH_HOST_SHARED_GROUP === '1' ? 0o640 : 0o600;
+}
+
 async function save(path: string, value: unknown, replace: boolean): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
-  const file = await open(temporary, 'wx', 0o600);
+  const file = await open(temporary, 'wx', recordMode());
   try {
     await file.writeFile(JSON.stringify(value));
     await file.sync();
