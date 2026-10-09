@@ -553,7 +553,7 @@ class SwitchConfig(BaseSettings):
     # https://github.com/sandbox-quantum/hoot/pull/2397) is appended, the same
     # convention `otlp_endpoint`/`telemetry_endpoint` follow. Defaults to the
     # company API; override for a different deployment or a local stack.
-    switch_trust_endpoint: str = "https://api.flintai.dev"
+    switch_trust_endpoint: str = "https://api.switchagents.ai"
 
     # Authenticates with Switch Trust and names which policy to run. Both
     # unset (the default) is what turns the whole feature off — see

@@ -4,6 +4,7 @@ sites that use them.
 """
 
 import json
+import uuid
 
 import httpx
 import pytest
@@ -38,17 +39,42 @@ async def test_posts_the_one_message_with_the_expected_headers():
         seen["url"] = str(request.url)
         seen["policy"] = request.headers.get("x-guardrails-policy-id")
         seen["key"] = request.headers.get("x-flintai-api-key")
+        seen["agent_name"] = request.headers.get("x-agent-name")
+        seen["session_id"] = request.headers.get("x-agent-session-id")
+        seen["turn_id"] = request.headers.get("x-agent-turn-id")
         seen["body"] = json.loads(request.content)
         return httpx.Response(200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_OK"})
 
     client = _client(handler)
-    result = await client.check(role="user", content="hi")
+    result = await client.check(role="user", content="hi", room_id="room-1")
 
     assert seen["url"] == "https://trust.example/guardrails/check"
     assert seen["policy"] == "pol_123"
     assert seen["key"] == "k"
+    # Always the same constant agent identity (Switch has no single "agent" to
+    # attribute a check to); the room and a fresh per-check id carry the
+    # per-call distinction instead.
+    assert seen["agent_name"] == "Switch Rooms"
+    assert seen["session_id"] == "room-1"
+    assert uuid.UUID(str(seen["turn_id"]))  # a fresh, well-formed UUID
     assert seen["body"] == {"messages": [{"role": "user", "content": "hi"}]}
     assert result.blocked is False
+
+
+@pytest.mark.asyncio
+async def test_each_check_gets_its_own_turn_id():
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("x-agent-turn-id"))
+        return httpx.Response(200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_OK"})
+
+    client = _client(handler)
+    await client.check(role="user", content="hi", room_id="room-1")
+    await client.check(role="user", content="hi", room_id="room-1")
+
+    assert len(seen) == 2
+    assert seen[0] != seen[1]
 
 
 @pytest.mark.asyncio
@@ -66,7 +92,7 @@ async def test_a_trailing_slash_on_the_base_url_does_not_double_up():
         timeout_seconds=1.0,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
-    await client.check(role="user", content="hi")
+    await client.check(role="user", content="hi", room_id="room-1")
     assert seen["url"] == "https://trust.example/guardrails/check"
 
 
@@ -91,7 +117,9 @@ async def test_a_blocked_outcome_carries_its_findings():
         )
 
     client = _client(handler)
-    result = await client.check(role="user", content="my email is user@example.com")
+    result = await client.check(
+        role="user", content="my email is user@example.com", room_id="room-1"
+    )
 
     assert result.blocked is True
     assert result.policy_name == "Default Policy"
@@ -106,7 +134,7 @@ async def test_a_blocked_outcome_carries_its_findings():
 async def test_an_error_response_raises_rather_than_allowing_silently():
     client = _client(lambda request: httpx.Response(503, text="unavailable"))
     with pytest.raises(GuardrailsCheckError, match="503"):
-        await client.check(role="user", content="hi")
+        await client.check(role="user", content="hi", room_id="room-1")
 
 
 @pytest.mark.asyncio
@@ -116,19 +144,21 @@ async def test_a_network_failure_raises():
 
     client = _client(handler)
     with pytest.raises(GuardrailsCheckError, match="failed"):
-        await client.check(role="user", content="hi")
+        await client.check(role="user", content="hi", room_id="room-1")
 
 
 @pytest.mark.asyncio
 async def test_null_client_always_allows():
-    result = await NullTrustClient().check(role="user", content="anything")
+    result = await NullTrustClient().check(
+        role="user", content="anything", room_id="room-1"
+    )
     assert result.blocked is False
 
 
 @pytest.mark.asyncio
 async def test_check_message_fails_open_on_error():
     client = _client(lambda request: httpx.Response(500, text="boom"))
-    result = await check_message(client, role="user", content="hi")
+    result = await check_message(client, role="user", content="hi", room_id="room-1")
     assert result == TrustCheckResult(
         outcome="errored", policy_id=None, policy_name=None
     )
@@ -141,7 +171,9 @@ async def test_check_message_passes_through_a_block():
             200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_BLOCKED"}
         )
     )
-    result = await check_message(client, role="assistant", content="hi")
+    result = await check_message(
+        client, role="assistant", content="hi", room_id="room-1"
+    )
     assert result.blocked is True
 
 
@@ -179,7 +211,9 @@ async def test_a_redacted_outcome_swaps_the_detected_text():
 
     client = _client(handler)
     result = await client.check(
-        role="user", content="email me at user@example.com please"
+        role="user",
+        content="email me at user@example.com please",
+        room_id="room-1",
     )
 
     assert result.outcome == "redacted"
@@ -195,7 +229,7 @@ async def test_a_redacted_outcome_with_no_detected_text_redacts_nothing():
             200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_REDACTED", "findings": []}
         )
     )
-    result = await client.check(role="user", content="hello")
+    result = await client.check(role="user", content="hello", room_id="room-1")
     assert result.outcome == "redacted"
     assert result.redacted_content == "hello"
 
@@ -211,7 +245,7 @@ async def test_an_alerted_outcome_is_not_blocked():
             },
         )
     )
-    result = await client.check(role="user", content="hi")
+    result = await client.check(role="user", content="hi", room_id="room-1")
     assert result.outcome == "alerted"
     assert result.blocked is False
     assert result.redacted_content is None
@@ -222,7 +256,7 @@ async def test_an_unrecognised_outcome_is_treated_as_errored_not_allowed_silentl
     client = _client(
         lambda request: httpx.Response(200, json={"outcome": "SOMETHING_NEW"})
     )
-    result = await client.check(role="user", content="hi")
+    result = await client.check(role="user", content="hi", room_id="room-1")
     assert result.outcome == "errored"
 
 
