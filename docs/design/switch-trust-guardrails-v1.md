@@ -151,32 +151,14 @@ to the message it's about, rather than becoming a second thing to read.
 
 ## Config
 
-New fields on `SwitchConfig` (`core/switch_core/config.py`), mirroring the
-existing all-or-nothing settings groups (`_validate_slack_app`,
-`core/switch_core/config.py:986`):
-
-```python
-switch_trust_endpoint: str = "https://api.switchagents.ai"
-switch_trust_api_key: str = ""
-switch_trust_policy_id: str = ""
-switch_trust_timeout_seconds: float = 2.0
-```
-
-`switch_trust_endpoint` is a base URL; the client appends
-`/guardrails/check` — the check-only route added in
-[hoot#2397](https://github.com/sandbox-quantum/hoot/pull/2397) — rather than
-treating the configured value as the full check URL.
-
-A `trust_enabled` property returns `bool(switch_trust_api_key and
-switch_trust_policy_id)`. A `_validate_switch_trust` model validator checks
-the endpoint's URL shape (scheme/host, no path/query — mirroring
-`_validate_observability`'s OTLP check) when it's overridden from the default,
-and that `switch_trust_api_key`/`switch_trust_policy_id` are both set or both
-empty.
-
-When `trust_enabled` is false, a `NullTrustClient` is injected — mirrors
-`telemetry/sink.py`'s `NullSink`: off is a client that always allows, so no
-call site has to branch on whether the feature is on.
+v1 shipped as four env-var fields on `SwitchConfig`
+(`switch_trust_endpoint`/`switch_trust_api_key`/`switch_trust_policy_id`/
+`switch_trust_timeout_seconds`, with a `trust_enabled` property and a
+`_validate_switch_trust` validator), with `NullTrustClient` injected whenever
+`trust_enabled` was false — mirroring `telemetry/sink.py`'s `NullSink`, so no
+call site had to branch on whether the feature was on. These env vars were a
+bootstrap stopgap, never a real deployment's config, and are gone: see
+§Settings UI below for what replaced them.
 
 ## Execution plan
 
@@ -246,9 +228,72 @@ call site has to branch on whether the feature is on.
   whole deployment. Multiple tenants wanting different policies needs a DB
   table, migration, and an admin API — a materially bigger lift than the env
   var config in this doc.
-- **Settings UI**: a dedicated Switch Trust section, either in the gateway
-  operator dashboard or in Console's "server properties" — neither surface has
-  an existing settings page to extend today, so this is new UI work in either
-  home.
 - **Media/attachment checks**: images and files aren't sent to Switch Trust in
   v1.
+
+## Settings UI
+
+The env-var config above was always a bootstrap stopgap, not the intended
+long-term home: it requires a deploy to change, and it isn't visible from
+anywhere a deployment operator actually looks. This section replaces it with
+a DB-backed, editable settings surface — still one global policy for the whole
+deployment (no per-tenant override; that's still the bigger lift described
+above).
+
+**Storage**: a new `trust_settings` table — a single row (`endpoint`,
+`policy_id`, `api_key_encrypted`, `updated_at`), upserted in place rather than
+modeled as a list. `api_key_encrypted` is encrypted via `config.keyring`, the
+same mechanism `ProviderConnection` already uses for per-user provider
+credentials. The table starts empty — there is no migration step to carry
+over the old `SWITCH_TRUST_*` env vars, since those never had a real
+deployment depending on them. The `switch_trust_endpoint`,
+`switch_trust_api_key`, `switch_trust_policy_id` fields, `trust_enabled`
+property, and `_validate_switch_trust` validator are removed from
+`SwitchConfig` entirely; endpoint URL-shape validation moves to the new
+settings' write path.
+
+The check timeout is the one exception: `switch_trust_timeout_seconds` stays
+a `SwitchConfig` field (default 2s, validated positive), fixed at deploy time
+rather than joining the DB-backed settings. Getting the endpoint, policy or
+key wrong locks guardrails out entirely, which an operator needs to fix
+without a restart — but the timeout is a tuning knob with a safe default, not
+something to expose to day-to-day editing or surface in the settings UI.
+
+**Resolution**: `TrustClient` gains a `DynamicTrustClient` implementation that
+reads the current row on every `check()` call (via the new
+`TrustSettingsStore`) instead of a client built once at boot from static
+config, using `SwitchConfig.switch_trust_timeout_seconds` for the timeout on
+every call. No row, or an incomplete one (missing `api_key`/`policy_id`),
+behaves exactly like today's `NullTrustClient` — `outcome="ok"`, no request
+made — except decided per call rather than at startup, so a settings change
+takes effect on the next message with no restart. `trust/setup.py::build_trust_client`
+now always returns a `DynamicTrustClient` wired to the store; `NullTrustClient`
+remains for tests that want no DB involved at all.
+
+**Gateway API**: a new router, `core/switch_core/gateway/trust_settings.py`,
+deployment-scoped (no `{tenant_id}` in the path) and gated by `require_admin`
+— the existing deployment-operator check (`users.role == "admin"`), distinct
+from `require_tenant_admin` — since this setting applies to the whole
+deployment, not one tenant.
+
+- `GET /trust-settings` — `endpoint`, `policy_id`, `has_api_key`,
+  `api_key_last4`, and a derived `enabled`. The real API key is never
+  returned.
+- `PUT /trust-settings` — full update of the non-secret fields; `api_key`
+  omitted or `null` leaves the stored key untouched, so changing the endpoint
+  or policy id doesn't force re-entering the secret.
+- `DELETE /trust-settings` — clears the row, equivalent to turning guardrails
+  off.
+
+**Console UI**: a new section on the server's Home page, between "Messaging
+apps" and "Full admin interface" — not a separate view, since there's little
+enough here to configure that a full page would be a detour rather than a
+destination. Gated on the connected server's reported `user.role === "admin"`
+directly — not the broader `administersWorkspaceInScope()` helper, which also
+admits a plain workspace owner and would be too wide for a deployment-level
+setting — and hidden entirely for anyone else, since there's nothing read-only
+to show a non-operator. Labeled "Switch Trust Endpoint", "Guardrails Policy
+ID" and "Switch Trust API key" rather than the gateway's own field names, to
+read as Switch Trust's settings rather than generic form fields; the timeout
+is not surfaced at all. The key field shows "configured, ending •••1234"
+instead of ever prefilling the real value, matching the write-only API above.

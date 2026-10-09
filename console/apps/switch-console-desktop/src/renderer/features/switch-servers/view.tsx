@@ -35,6 +35,7 @@ import {
 } from '@renderer/lib/ui/dropdown-menu';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { GuardrailsSection } from './GuardrailsSection';
 import { localServerStore } from './local-server-store';
 import { LocalServerControls } from './LocalServerControls';
 import { managedTelemetryNotice } from './managed-telemetry-notice';
@@ -374,6 +375,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
 
             {connected && <ServerStatTiles serverId={serverId} />}
             {connected && <MessagingAppsCard serverId={serverId} />}
+            {connected && <GuardrailsSection serverId={serverId} />}
           </>
         )}
 

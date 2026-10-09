@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -1476,3 +1477,70 @@ class BudgetResponse(BaseModel):
     spent: int
     resets_at: datetime
     exhausted: bool
+
+
+# ── Switch Trust ──────────────────────────────────────────────────────────────
+
+
+class TrustSettingsResponse(BaseModel):
+    """Switch Trust's one server-global settings row. The API key itself is
+    never returned — `has_api_key`/`api_key_last4` only confirm one is set,
+    the way the stored secret is surfaced everywhere else in the gateway."""
+
+    endpoint: str
+    policy_id: str | None
+    has_api_key: bool
+    api_key_last4: str | None
+    enabled: bool
+
+
+class TrustSettingsUpdateRequest(BaseModel):
+    """`api_key` omitted (or null) leaves whatever key is already stored
+    untouched, so changing the endpoint or policy id doesn't force re-entering
+    the secret. Use `DELETE /trust-settings` to turn Switch Trust off.
+
+    No `timeout_seconds` here: unlike the rest of Switch Trust's settings,
+    the check timeout is fixed at deploy time (`SwitchConfig.
+    switch_trust_timeout_seconds`), not admin-editable."""
+
+    endpoint: str
+    policy_id: str | None
+    api_key: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_endpoint(self) -> TrustSettingsUpdateRequest:
+        value = self.endpoint
+        if value != value.strip():
+            raise ValueError("endpoint has leading or trailing whitespace")
+        parts = urlsplit(value)
+        if parts.scheme not in ("http", "https"):
+            raise ValueError("endpoint must be an http(s) URL")
+        if not parts.netloc:
+            raise ValueError("endpoint must include a host")
+        if parts.path.strip("/"):
+            raise ValueError(
+                "endpoint is the service's base URL — /guardrails/check is "
+                "appended to it, so it must have no path of its own"
+            )
+        if parts.query or parts.fragment:
+            raise ValueError(
+                "endpoint must be a bare base URL: a query or fragment is "
+                "dropped when /guardrails/check is appended, so it would "
+                "silently never be sent"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_api_key(self) -> TrustSettingsUpdateRequest:
+        if self.api_key is not None and not self.api_key.strip():
+            raise ValueError(
+                "api_key must not be blank; omit it to leave the stored key "
+                "unchanged, or use DELETE /trust-settings to turn Switch "
+                "Trust off"
+            )
+        return self
+
+    @field_validator("policy_id")
+    @classmethod
+    def _blank_policy_id_is_unset(cls, value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None

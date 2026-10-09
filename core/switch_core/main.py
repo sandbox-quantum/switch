@@ -561,7 +561,7 @@ async def run(config: SwitchConfig) -> None:
     )
 
     # ── Switch Trust guardrails ──────────────────────────────────────────────
-    trust_client, trust_http = build_trust_client(config)
+    trust_client, trust_http = build_trust_client(session_factory, config)
 
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
@@ -1027,8 +1027,7 @@ async def run(config: SwitchConfig) -> None:
                 # product event is the least valuable thing in it.
                 await protocol.sessions.aclose()
                 await _drain_telemetry(telemetry, message_telemetry, telemetry_http)
-                if trust_http is not None:
-                    await trust_http.aclose()
+                await trust_http.aclose()
                 await observability.aclose()
                 # So a probe during teardown gets a 503 rather than the last
                 # cached answer, which may still say ready.

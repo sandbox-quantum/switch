@@ -2,48 +2,31 @@
 
 One function, so `main.py` does not have to know the difference between a
 deployment with guardrails configured and one without — it asks for a client
-and gets one either way.
+and gets one either way, and whether it actually checks anything is decided
+per call from the `trust_settings` row (see `trust/client.py`), not at boot.
 """
 
 from __future__ import annotations
 
-import logging
-
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.config import SwitchConfig
-from switch_core.trust.client import HttpTrustClient, NullTrustClient, TrustClient
-
-logger = logging.getLogger(__name__)
+from switch_core.db.stores.trust_settings_store import TrustSettingsStore
+from switch_core.trust.client import DynamicTrustClient, TrustClient
 
 
 def build_trust_client(
+    session_factory: async_sessionmaker[AsyncSession],
     config: SwitchConfig,
-) -> tuple[TrustClient, httpx.AsyncClient | None]:
-    """The trust client, and its HTTP client so `main` can close it.
-
-    Returns a `NullTrustClient` (no request ever made) unless both
-    `SWITCH_TRUST_API_KEY` and `SWITCH_TRUST_POLICY_ID` are set.
-    """
-    api_key = config.switch_trust_api_key
-    policy_id = config.switch_trust_policy_id
-    if not api_key or not policy_id:
-        logger.info(
-            "Switch Trust is off; messages are not checked before sending. Set "
-            "SWITCH_TRUST_API_KEY and SWITCH_TRUST_POLICY_ID to turn it on."
-        )
-        return NullTrustClient(), None
-
+) -> tuple[TrustClient, httpx.AsyncClient]:
+    """The trust client, and its HTTP client so `main` can close it."""
     http_client = httpx.AsyncClient()
-    client = HttpTrustClient(
-        base_url=config.switch_trust_endpoint,
-        api_key=api_key,
-        policy_id=policy_id,
-        timeout_seconds=config.switch_trust_timeout_seconds,
+    client = DynamicTrustClient(
+        session_factory=session_factory,
+        store=TrustSettingsStore(),
+        keyring=config.keyring,
         client=http_client,
-    )
-    logger.info(
-        "Switch Trust is ON: messages are checked against %s before sending.",
-        config.switch_trust_endpoint,
+        timeout_seconds=config.switch_trust_timeout_seconds,
     )
     return client, http_client

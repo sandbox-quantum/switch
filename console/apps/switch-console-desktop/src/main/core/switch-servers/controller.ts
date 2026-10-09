@@ -31,6 +31,8 @@ import {
 import type {
   AddServerParams,
   BundledChatSignIn,
+  ClearTrustSettingsResult,
+  FetchTrustSettingsResult,
   PasswordLoginParams,
   RenameServerParams,
   ServerConnectionStatus,
@@ -40,6 +42,8 @@ import type {
   SwitchServer,
   UpdateServerParams,
   UpdateServerResult,
+  UpdateTrustSettingsParams,
+  UpdateTrustSettingsResult,
 } from '@shared/core/switch-servers/switch-servers';
 import type { JoinableWorkspaces, PendingInvitations } from '@shared/core/workspaces/invitations';
 import { isWithdrawnWorkspace, type Workspace } from '@shared/core/workspaces/workspaces';
@@ -102,6 +106,11 @@ import {
   updateServer,
 } from './servers-store';
 import { requireSwitchCloudEndpoint, switchCloudEndpoint } from './switch-cloud';
+import {
+  clearTrustSettingsOnServer,
+  fetchTrustSettingsFromServer,
+  updateTrustSettingsOnServer,
+} from './trust-settings';
 
 /** A sign-in's own error union, as a reportable code. Never its message. */
 const SIGN_IN_FAILURE: Record<LoginError['kind'], TelemetrySignInFailure> = {
@@ -507,6 +516,20 @@ export const switchServersController = createRPCController({
 
   getAuthConfig: async (serverId: string): Promise<SwitchAuthConfig> =>
     fetchAuthConfig(await requireReachableServer(serverId)),
+
+  /** Switch Trust's one server-global guardrails settings row. Admin-only
+   * (a deployment operator) — not scoped to a workspace, since one policy
+   * covers the whole deployment. */
+  getTrustSettings: async (serverId: string): Promise<FetchTrustSettingsResult> =>
+    fetchTrustSettingsFromServer(await requireReachableServer(serverId)),
+
+  updateTrustSettings: async (
+    params: UpdateTrustSettingsParams
+  ): Promise<UpdateTrustSettingsResult> =>
+    updateTrustSettingsOnServer(await requireReachableServer(params.serverId), params),
+
+  clearTrustSettings: async (serverId: string): Promise<ClearTrustSettingsResult> =>
+    clearTrustSettingsOnServer(await requireReachableServer(serverId)),
 
   // Reported here rather than in `auth.ts`: the same functions are used to
   // re-authenticate a managed server on its own and to log in while starting a
