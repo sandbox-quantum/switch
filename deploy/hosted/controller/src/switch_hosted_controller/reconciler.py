@@ -91,6 +91,12 @@ class Reconciler:
             if not machine.instance_launch_issued:
                 if not self._unchanged(claim, DesiredState.RUNNING):
                     return self._store.cancel_queued_instance_launch(claim)
+                if machine.image_id != self._cloud.image_id:
+                    # No instance is left, and the data volume is kept: the
+                    # one moment the machine can move onto the configured image.
+                    machine = self._store.use_image(claim, self._cloud.image_id)
+                    if not self._same_claim(claim, machine):
+                        return machine
                 self._cloud.validate_image(machine)
                 self._cloud.validate_capacity()
                 if not self._unchanged(claim, DesiredState.RUNNING):

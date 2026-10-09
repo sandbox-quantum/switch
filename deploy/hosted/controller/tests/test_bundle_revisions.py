@@ -95,6 +95,7 @@ class FakeCore:
 
 class FakeCloud:
     availability_zone = "us-east-1a"
+    image_id = "ami-0123456789abcdef0"
 
     def __init__(self, store: MachineStore):
         self.store = store

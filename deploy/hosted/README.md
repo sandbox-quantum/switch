@@ -140,8 +140,10 @@ switch-hosted-controller --config /etc/switch-hosted/controller.json delete <mac
 switch-hosted-controller --config /etc/switch-hosted/controller.json upgrade <machine-id> --confirm-instance-id i-0123456789abcdef0
 ```
 
-`upgrade` moves a stopped machine whose instance is terminated onto the
-configured image, keeping its disk. A queued command is not confirmation that
+Every new instance of a machine launches from the configured image: a
+relaunch for new user data, a recovery, or a retained machine starting again
+moves it onto a new `image_id`, keeping its disk. `upgrade` does it for a
+stopped machine whose instance is terminated. A queued command is not confirmation that
 AWS has done it. Deletion needs `--confirm-machine-id` and exactly one of
 `--retain-volume` or `--delete-volume`. Deleting a machine does not remove
 snapshots, roles, the NAT gateway or the controller's database.
@@ -174,7 +176,8 @@ runs a controller per workspace. To upgrade:
 
 1. Bake an image from this `machine/`, which reads bundle version 5, set it as
    `image_id`, and deploy it before or with the new hosted controller: a
-   running machine on an older image is relaunched on it at its next revision.
+   running machine on an older image is relaunched from the new one at its
+   next revision.
 2. Replace `tenant_id` in `controller.json` with `allowed_tenant_ids`: the
    old workspace's id in a list to keep cloud machines to it, or `null`.
 3. Upgrade Core. Each machine keeps its id, its controller and its agents.

@@ -296,6 +296,20 @@ class MachineStore:
     def mark_volume_create_intent(self, claim: Machine) -> Machine:
         return self._mark_intent(claim, "volume_create_intent")
 
+    def use_image(self, claim: Machine, image_id: str) -> Machine:
+        """Launch the machine's next instance from `image_id`: only while it has
+        no instance and no launch is issued, so nothing launched is told apart
+        from its launch request by the image."""
+        self._connection.execute(
+            """
+            UPDATE machines SET image_id = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
+            AND instance_id IS NULL AND instance_launch_issued = 0
+            """,
+            (image_id, claim.machine_id, claim.desired_revision, claim.operation_id),
+        )
+        return self.get(claim.machine_id)
+
     def upgrade_terminated(self, claim: Machine, image_id: str) -> Machine:
         if (
             claim.desired_state is not DesiredState.STOPPED

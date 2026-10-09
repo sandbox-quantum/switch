@@ -79,6 +79,7 @@ def ready_to_launch(tmp_path: Path):
     )
     machine = with_bundle(store, machine.machine_id, 1)
     cloud = Mock(spec=Ec2Cloud)
+    cloud.image_id = cfg.image_id
     cloud.get_volume.return_value = volume(cfg, machine)
     cloud.get_instance.return_value = None
     cloud.discover_instance.return_value = None
@@ -188,6 +189,7 @@ def test_definitely_rejected_volume_create_lets_retention_finish(tmp_path: Path)
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)
     cloud = Mock(spec=Ec2Cloud)
+    cloud.image_id = cfg.image_id
     cloud.get_volume.return_value = None
     cloud.create_volume.side_effect = client_error("VolumeLimitExceeded", 400, "CreateVolume")
     Reconciler(store, cloud).reconcile_all()

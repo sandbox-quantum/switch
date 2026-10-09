@@ -276,7 +276,8 @@ def test_retained_with_a_missing_volume_needs_attention(tmp_path: Path):
 
 
 class LaunchCloud:
-    def __init__(self):
+    def __init__(self, image_id: str = "ami-0123456789abcdef0"):
+        self.image_id = image_id
         self.launched = []
 
     def get_volume(self, machine):
@@ -320,6 +321,35 @@ def test_running_after_retained_launches_the_next_instance_on_the_kept_volume(tm
         first, f"instance-{first.instance_seq}"
     )
     assert tokens._token(launched, "data-volume") == tokens._token(first, "data-volume")
+    store.close()
+
+
+def test_a_new_instance_moves_onto_the_configured_image(tmp_path: Path):
+    cfg = config(tmp_path)
+    store, machine = store_and_machine(cfg)
+    first = record_compute(store, machine, cfg.availability_zone)
+    store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
+    Reconciler(store, DeletionCloud(["terminated"])).reconcile(machine.machine_id)
+    with_bundle(store, machine.machine_id, 2)
+    store.set_desired(machine.machine_id, DesiredState.RUNNING, None)
+    cloud = LaunchCloud(image_id="ami-22222222222222222")
+
+    relaunched = Reconciler(store, cloud).reconcile(machine.machine_id)
+
+    [launched] = cloud.launched
+    assert first.image_id == cfg.image_id
+    assert launched.image_id == relaunched.image_id == "ami-22222222222222222"
+    assert relaunched.data_volume_id == first.data_volume_id
+    store.close()
+
+
+def test_the_image_of_an_issued_launch_is_not_changed(tmp_path: Path):
+    cfg = config(tmp_path)
+    store, machine = store_and_machine(cfg)
+    machine = store.record_volume(machine.machine_id, "vol-0123456789abcdef0", "us-east-1a")
+    machine = store.mark_instance_launch_intent(machine)
+    machine = store.mark_instance_launch_issued(machine, datetime.now(UTC))
+    assert store.use_image(machine, "ami-22222222222222222").image_id == cfg.image_id
     store.close()
 
 
