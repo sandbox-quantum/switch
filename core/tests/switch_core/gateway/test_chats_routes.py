@@ -1151,6 +1151,7 @@ async def test_an_agent_owner_sees_bridged_rooms_and_dms_holding_their_agent(
     assert listed[channel]["channelName"] == "general"
     assert [a["id"] for a in listed[channel]["agents"]] == [agent.id]
     assert listed[channel]["canManage"] is False
+    assert listed[channel]["ownsAgent"] is True
     assert listed[dm]["bridgeType"] == "discord"
     assert listed[dm]["channelType"] == "direct"
 
@@ -1250,7 +1251,8 @@ async def test_the_periodic_recheck_finds_a_room_the_agent_joined_elsewhere(
 async def test_an_agent_owner_cannot_leave_or_be_removed(chats: _Harness) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
     room_id = await chats.new_chat(chats.bob, agent, "c1")
-    assert room_id in await _listed(chats, chats.alice)
+    assert (await _listed(chats, chats.alice))[room_id]["ownsAgent"] is True
+    assert (await _listed(chats, chats.bob))[room_id]["ownsAgent"] is False
 
     removed = await chats.client.delete(
         f"/chats/{room_id}/members/{chats.alice.id}", headers=chats.as_user(chats.bob)

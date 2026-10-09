@@ -137,6 +137,7 @@ async def _summary(
     return await chat_summary(
         session,
         room,
+        viewer_id=user.id,
         can_manage=await service.can_manage(session, tenant_id, user, room),
     )
 

@@ -73,6 +73,8 @@ class ChatSummary(CamelModel):
     channel_name: str | None
     agents: list[ChatAgent]
     can_manage: bool
+    # The viewer owns one of the agents, which keeps them in the room.
+    owns_agent: bool
     last_message: ChatLastMessage | None
 
 
@@ -123,7 +125,7 @@ async def _bridge(session: AsyncSession, room: Room) -> CollaborationBridge | No
 
 
 async def chat_summary(
-    session: AsyncSession, room: Room, *, can_manage: bool
+    session: AsyncSession, room: Room, *, viewer_id: str, can_manage: bool
 ) -> ChatSummary:
     agent_rows = (
         await session.execute(
@@ -176,6 +178,7 @@ async def chat_summary(
             for agent in agents
         ],
         can_manage=can_manage,
+        owns_agent=any(agent.owner_id == viewer_id for agent in agents),
         last_message=(
             ChatLastMessage(
                 seq=last.seq,
