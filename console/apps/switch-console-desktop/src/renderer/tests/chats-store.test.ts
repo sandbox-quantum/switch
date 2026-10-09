@@ -82,4 +82,16 @@ describe('ChatsStore', () => {
     expect(api.list).toHaveBeenCalledTimes(1);
     expect(store.chat('r1')).toBeUndefined();
   });
+
+  it('lets a chat be read again when access comes back', async () => {
+    const { store } = setup(async () => [summary('r1', 1)]);
+    await store.connect('s1');
+    const timeline = store.timelines.get('s1', 'r1');
+    store.remove('r1');
+    expect(timeline.accessLost).toBe(true);
+
+    store.upsert(summary('r1', 2));
+    expect(timeline.accessLost).toBe(false);
+    expect(timeline.loaded).toBe(false);
+  });
 });

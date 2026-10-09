@@ -119,6 +119,7 @@ export class ChatsStore {
   upsert(chat: ChatSummary): void {
     this.chats.set(chat.roomId, chat);
     this.removed.delete(chat.roomId);
+    if (this.serverId) this.timelines.peek(this.serverId, chat.roomId)?.restore();
   }
 
   /** A chat the person made or was let into from here, ahead of the feed. */

@@ -225,6 +225,14 @@ export class ChatTimeline {
     this.held = null;
   }
 
+  /** Access came back: read the room again from scratch. */
+  restore(): void {
+    if (!this.accessLost) return;
+    this.accessLost = false;
+    this.loaded = false;
+    this.loadError = null;
+  }
+
   private find(requestId: string): PendingSend | undefined {
     return this.pending.find((send) => send.requestId === requestId);
   }
