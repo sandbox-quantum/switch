@@ -66,7 +66,7 @@ async def _reply(
 
 class TestOfflineOwnerMessage:
     def test_owner_leads_and_is_the_one_asked(self) -> None:
-        msg = _offline_owner_message("ownerhandle", "louisa", "cd /x && claude …")
+        msg = _offline_owner_message("ownerhandle", "louisa")
         # The owner is first, because they are the only person who can act.
         assert msg.startswith("@ownerhandle — ")
         assert "Open Switch Console" in msg
@@ -76,32 +76,30 @@ class TestOfflineOwnerMessage:
     def test_never_says_session(self) -> None:
         # Which process is attached to which room is Switch's business, not
         # something to put in front of a reader in a chat channel.
-        msg = _offline_owner_message("ownerhandle", "louisa", "cd /x && claude …")
+        msg = _offline_owner_message("ownerhandle", "louisa")
         assert "session" not in msg.lower()
         assert "I'm not online in this room" in msg
 
     def test_unmentionable_owner_still_names_who_must_act(self) -> None:
         # No claimed account on this platform → nobody to tag. The message must
         # not read as something the room at large can resolve.
-        msg = _offline_owner_message(None, "louisa", "cd /x && claude …")
+        msg = _offline_owner_message(None, "louisa")
         assert not msg.startswith("@ownerhandle")
         assert "**My owner needs to open Switch Console**" in msg
         assert "@louisa needs me" in msg
         assert "session" not in msg.lower()
 
-    def test_command_is_offered_as_the_alternative(self) -> None:
-        msg = _offline_owner_message("ownerhandle", "louisa", "cd /x && claude go")
-        assert "```\ncd /x && claude go\n```" in msg
-
     def test_owner_asking_their_own_agent_is_not_named_twice(self) -> None:
         # The common case. "@louisa — … and @louisa needs me" reads as a stutter.
-        msg = _offline_owner_message("louisa", "louisa", "cd /x && claude …")
+        msg = _offline_owner_message("louisa", "louisa")
         assert msg.count("@louisa") == 1
         assert "needs me" not in msg
         assert msg.startswith("@louisa — I'm not online in this room. ")
 
-    def test_no_command_leaves_no_empty_code_block(self) -> None:
-        msg = _offline_owner_message("ownerhandle", "louisa", None)
+    def test_offers_no_terminal_command(self) -> None:
+        # A CLI started by hand gets none of the Switch tools, so the reply
+        # must not suggest one.
+        msg = _offline_owner_message("ownerhandle", "louisa")
         assert "```" not in msg
         assert "Open Switch Console" in msg
 
@@ -112,12 +110,10 @@ class TestUnavailableReplyRouting:
         assert msg.startswith("@ownerhandle — ")
         assert "session" not in msg.lower()
 
-    async def test_the_command_names_the_agent(self) -> None:
-        # A directory can hold several provisioned agents, in which case the
-        # started session is asked which one it is.
+    async def test_no_terminal_command_even_with_a_working_directory(self) -> None:
         msg = await _reply(_client("ownerhandle"), _auto_session_claude_agent())
-        assert "you are cc-bug-fixing" in msg
-        assert "cd /srv/work && claude " in msg
+        assert "```" not in msg
+        assert "claude " not in msg
 
     async def test_a_live_session_elsewhere_still_wins(self) -> None:
         # Somewhere the asker can go right now beats asking the owner to start
@@ -128,7 +124,8 @@ class TestUnavailableReplyRouting:
             other_room_names=["Hub"],
         )
         assert "**Hub**" in msg
-        assert "Open Switch Console" not in msg
+        assert "Ask me there" in msg
+        assert "```" not in msg
 
     async def test_session_addressable_is_untouched(self) -> None:
         agent = _agent(
@@ -140,11 +137,12 @@ class TestUnavailableReplyRouting:
         )
         msg = await _reply(_client("ownerhandle"), agent)
         assert "I don't have a session connected to this room." in msg
-        assert "Open Switch Console" not in msg
+        assert "in Switch Console" in msg
+        assert "```" not in msg
 
     async def test_auto_session_without_a_known_agent_still_answers(self) -> None:
-        # Registered via `register-other`: no connect command exists, but the
-        # owner still has to open the app.
+        # Registered via `register-other`: no known-agent spec, but the owner
+        # still has to open the app.
         msg = await _reply(_client("ownerhandle"), _agent("auto_session", {}))
         assert "Open Switch Console" in msg
         assert "```" not in msg

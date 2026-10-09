@@ -35,12 +35,14 @@ and describe what was asked.
   it can be set; the agent's settings expose instructions, auto-session, auto-approve,
   addressing and advanced provider configuration, and show the directory read-only at most.
   Moving an agent means removing it and adding it again. The editable "Repo dir" on the web
-  dashboard's agent page (and via the agent-update tool) is metadata for the generated
-  copy-and-paste session command only — editing it does not relocate anything, it just makes
-  the dashboard disagree with where the agent actually runs.
+  dashboard's agent page (and via the agent-update tool) is a label only. It used to feed a
+  copy-and-paste session command in the agent's offline reply, which has since been removed.
+  Editing it does not relocate anything, it just makes the dashboard disagree with where the
+  agent actually runs.
 - **Confirmed by:** Switch Console's new-agent dialog and settings panel in `console/`, which
-  has no directory field or update path after creation; and `repo_dir`'s only consumer being
-  the generated connect command in `core/switch_core/gateway/known_agents.py`.
+  has no directory field or update path after creation; and nothing on the server reading
+  `repo_dir` since the connect command in `core/switch_core/gateway/known_agents.py` was
+  removed.
 - **Fixed in:** `AGENT.md` (Switch Console steps) and `knowledge/GOTCHAS.md` (new entry).
 
 ### 2026-08-24 — "who can talk to your agent" has four choices, and it is in the settings

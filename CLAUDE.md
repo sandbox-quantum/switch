@@ -168,12 +168,12 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   docs repository, never here. Start at `docs/README.md` for how the sync
   works; `docs/official/internals/` covers architecture and the agent
   protocol for readers of this repo.
-- `docs/old/ARCHITECTURE.md` — historical system overview: components, domain
-  model, key flows, entry points, and a code map. Predates the docs sync and
-  may lag the tree.
-- `docs/old/api/AGENT_PROTOCOL.md` — the agent↔Switch protocol (connections, the
-  event stream, room slots, failure handling). Authoritative where it and
-  `ARCHITECTURE.md` overlap
+- `docs/old/ARCHITECTURE.md` — historical system overview from when Switch ran
+  on Matrix. Much of it no longer matches the code; read it for background only.
+- `docs/old/api/AGENT_PROTOCOL.md` — the original design of the agent↔Switch
+  protocol (connections, the event stream, room slots, failure handling). Parts
+  are out of date; where it and the code disagree, the code in
+  `core/switch_core/bridges/agent/` is right.
 - `docs/old/bridges/` — collaboration bridge setup: `README.md` plus one page each
   for Slack, Mattermost, Discord, Teams, and Telegram
 - `docs/old/GATEWAY_OIDC_SETUP.md` — configuring the gateway's bring-your-own
