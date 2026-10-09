@@ -318,6 +318,11 @@ class TestControllerMachines:
             code = (await _prepare(hosted, machine.id))["controller"]["enrollment_code"]
             async with harness.client() as client:
                 first = await _enroll(client, code)
+                await _connected(client, harness, owner, first)
+                created = await create_managed_agent(
+                    client, owner, name="reviewer", controller_id=first["controller_id"]
+                )
+                assert created.status_code == 201, created.text
                 revoked = await client.delete(
                     f"/gateway/management/controllers/{first['controller_id']}",
                     cookies=cookies_for(owner),
@@ -329,9 +334,17 @@ class TestControllerMachines:
                 second_code = prepared["controller"]["enrollment_code"]
                 assert second_code not in {None, code}
                 second = await _enroll(client, second_code)
+                agent = await client.get(
+                    f"/gateway/management/agents/{created.json()['agent_id']}",
+                    cookies=cookies_for(owner),
+                )
+                assert agent.status_code == 200, agent.text
+                assert agent.json()["controller_id"] == second["controller_id"]
             assert (
                 await _machine(harness.session_factory, machine.id)
             ).controller_id == (second["controller_id"])
+            summary = await hosted.get(f"/hosted-machines/{machine.id}")
+            assert summary.json()["agents"] == [created.json()["agent_id"]]
 
     async def test_an_agentless_machine_is_retained_only_once_its_agents_are_gone(
         self, harness: Harness

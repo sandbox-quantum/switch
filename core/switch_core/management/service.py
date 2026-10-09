@@ -314,18 +314,32 @@ class ManagementService:
         )
         await self.api_keys.delete(session, key.id)
         replaced: str | None = None
+        moved: list[AgentDefinitionRow] = []
+        revisions: dict[str, int] = {}
         if machine is not None:
             replaced = machine.controller_id
             machine.controller_id = controller.id
             if replaced is not None and replaced != controller.id:
                 await self._revoke(session, tenant_id, replaced)
+                moved = await self._move_placed(
+                    session, tenant_id, replaced, controller.id
+                )
+                revisions = await self._bump_and_collect(
+                    session, tenant_id, {replaced, controller.id}
+                )
         await session.commit()
         if replaced is not None and replaced != controller.id:
             self._announce_revoked(replaced)
+            for row in moved:
+                await self._bind(session, tenant_id, row)
+            self._nudge(revisions)
             logger.info(
-                "Cloud machine %s enrolled again; revoked its previous controller %s",
+                "Cloud machine %s enrolled again; revoked its previous controller %s "
+                "and moved its %d agent(s) to %s",
                 consumed.hosted_machine_id,
                 replaced,
+                len(moved),
+                controller.id,
             )
         logger.info(
             "Enrolled agent controller %s (%s) by code for user %s",
@@ -729,6 +743,27 @@ class ManagementService:
         await self.controllers.delete_sealed_logins(
             session, tenant_id, controller_id, None
         )
+
+    async def _move_placed(
+        self, session: AsyncSession, tenant_id: str, source: str, target: str
+    ) -> list[AgentDefinitionRow]:
+        """Place every agent of `source` on `target`, as they were. The caller
+        commits, then binds them."""
+        moved = []
+        for row, _agent in await self.definitions.list_for_controller(
+            session, tenant_id, source
+        ):
+            moved.append(
+                await self.definitions.update(
+                    session,
+                    tenant_id,
+                    row.agent_id,
+                    controller_id=target,
+                    desired_state=row.desired_state,
+                    definition=row.definition,
+                )
+            )
+        return moved
 
     def _announce_revoked(self, controller_id: str) -> None:
         self.notifier.credential_revoked(controller_id)
