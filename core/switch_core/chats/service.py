@@ -5,6 +5,8 @@ Membership is the only read authority. A person sees a room when their
 the tenant; a room's visibility and any claimed platform account do not count.
 Membership is granted by creating a chat, by a room manager (the room's owner
 or a tenant admin) adding a tenant member, or by a manager adding themselves.
+It is also granted to anyone who owns an agent in a room, for as long as they
+do: `sync_owned_rooms` puts them in and takes back what was held only for that.
 
 Requests a person may retry carry a request id, recorded in `chat_operations`
 per user. The same id with the same payload answers what the first attempt
@@ -24,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import markdown
-from sqlalchemy import delete, exists, select, update
+from sqlalchemy import ColumnElement, delete, exists, false, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -37,6 +39,7 @@ from switch_core.db.models import (
     Agent,
     ChatHidden,
     ChatOperation,
+    ChatOwnerGrant,
     Client,
     ClientRoom,
     MediaBlob,
@@ -239,9 +242,18 @@ class ChatService:
         if not await self.has_tenant_role(session, tenant_id, user.id):
             raise refusal
         client = await self.member_client(session, user.id)
-        if client is None or not await self._is_in_room(session, client.id, room.id):
-            raise refusal
-        return room, client
+        if client is not None and await self._is_in_room(session, client.id, room.id):
+            return room, client
+        if room.archived_at is None and await self.owns_agent_in(
+            session, user.id, room.id
+        ):
+            await self.sync_owned_rooms(tenant_id, user.id)
+            client = await self.member_client(session, user.id)
+            if client is not None and await self._is_in_room(
+                session, client.id, room.id
+            ):
+                return room, client
+        raise refusal
 
     async def can_manage(
         self, session: AsyncSession, tenant_id: str, user: User, room: Room
@@ -260,6 +272,159 @@ class ChatService:
                 "NOT_A_MANAGER",
                 "Only the room's owner or a workspace admin can do that.",
             )
+
+    # ── Agent owners ─────────────────────────────────────────────────────────
+
+    async def owns_agent_in(
+        self, session: AsyncSession, user_id: str, room_id: str
+    ) -> bool:
+        return bool(
+            await session.scalar(
+                select(exists().where(Room.id == room_id, _owns_agent_in_room(user_id)))
+            )
+        )
+
+    async def sync_owned_rooms(self, tenant_id: str, user_id: str) -> None:
+        """Put the user in every live room holding an agent they own, and take
+        back each membership held only for that once they no longer do.
+
+        Such a membership is marked by a `ChatOwnerGrant`; being invited,
+        creating the chat or joining as a manager removes the mark, and the
+        membership then stays when the agent goes. Cheap when nothing changed:
+        two queries.
+        """
+        async with self._lock("owned", tenant_id, user_id):
+            async with tenant_session(self.session_factory, tenant_id) as session:
+                if not await self.has_tenant_role(session, tenant_id, user_id):
+                    return
+                client = await self.member_client(session, user_id)
+                joined: ColumnElement[bool] = (
+                    exists().where(
+                        ClientRoom.client_id == client.id,
+                        ClientRoom.room_id == Room.id,
+                    )
+                    if client is not None
+                    else false()
+                )
+                to_join = list(
+                    (
+                        await session.execute(
+                            select(Room)
+                            .where(
+                                Room.tenant_id == tenant_id,
+                                Room.archived_at.is_(None),
+                                _owns_agent_in_room(user_id),
+                                ~joined,
+                            )
+                            .order_by(Room.created_at)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                to_drop = list(
+                    (
+                        await session.execute(
+                            select(Room)
+                            .join(ChatOwnerGrant, ChatOwnerGrant.room_id == Room.id)
+                            .where(
+                                ChatOwnerGrant.user_id == user_id,
+                                ~_owns_agent_in_room(user_id),
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if not to_join and not to_drop:
+                    return
+                user = await self._user_store.get(session, user_id)
+                assert user is not None
+                if to_join:
+                    # Marked before joining: a join cut short leaves a mark
+                    # the next pass completes or clears, never a membership
+                    # that would outlive the agent unmarked.
+                    await session.execute(
+                        pg_insert(ChatOwnerGrant)
+                        .values(
+                            [
+                                {
+                                    "tenant_id": tenant_id,
+                                    "user_id": user_id,
+                                    "room_id": room.id,
+                                }
+                                for room in to_join
+                            ]
+                        )
+                        .on_conflict_do_nothing(
+                            index_elements=["tenant_id", "user_id", "room_id"]
+                        )
+                    )
+                    await session.commit()
+            if client is None:
+                client = await self.member_actor(tenant_id, user)
+            for room in to_join:
+                await self._join(tenant_id, room, client)
+            for room in to_drop:
+                with tenant_scope(tenant_id):
+                    await self._provisioning.kick_user(
+                        room.transport_room_id, client.transport_user_id
+                    )
+            if to_drop:
+                async with tenant_session(self.session_factory, tenant_id) as session:
+                    await session.execute(
+                        delete(ChatOwnerGrant).where(
+                            ChatOwnerGrant.user_id == user_id,
+                            ChatOwnerGrant.room_id.in_([room.id for room in to_drop]),
+                        )
+                    )
+                    await session.commit()
+            logger.info(
+                "Agent owner %s: joined %d room(s), left %d",
+                user_id,
+                len(to_join),
+                len(to_drop),
+            )
+        self._memberships_changed(tenant_id, [user_id])
+
+    async def sync_room(self, tenant_id: str, room_id: str) -> None:
+        """`sync_owned_rooms` for everyone a change to this room's agents may
+        concern: the owners of its agents and the holders of owner grants."""
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            owners = set(
+                (
+                    await session.execute(
+                        select(Agent.owner_id)
+                        .join(room_agents, room_agents.c.agent_id == Agent.id)
+                        .where(
+                            room_agents.c.room_id == room_id,
+                            Agent.owner_id.is_not(None),
+                        )
+                    )
+                ).scalars()
+            )
+            holders = set(
+                (
+                    await session.execute(
+                        select(ChatOwnerGrant.user_id).where(
+                            ChatOwnerGrant.room_id == room_id
+                        )
+                    )
+                ).scalars()
+            )
+        for user_id in sorted(
+            user_id for user_id in owners | holders if user_id is not None
+        ):
+            await self.sync_owned_rooms(tenant_id, user_id)
+
+    async def _make_lasting(self, tenant_id: str, user_id: str, room_id: str) -> None:
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            await session.execute(
+                delete(ChatOwnerGrant).where(
+                    ChatOwnerGrant.user_id == user_id, ChatOwnerGrant.room_id == room_id
+                )
+            )
+            await session.commit()
 
     # ── Listing ──────────────────────────────────────────────────────────────
 
@@ -400,6 +565,7 @@ class ChatService:
                 )
         client = await self.member_actor(tenant_id, target)
         await self._join(tenant_id, room, client)
+        await self._make_lasting(tenant_id, target_user_id, room.id)
         self._memberships_changed(tenant_id, [target_user_id])
         return room
 
@@ -420,10 +586,25 @@ class ChatService:
                 ):
                     return
                 client = found
+            if await self.owns_agent_in(session, target_user_id, room.id):
+                raise ChatError(
+                    409,
+                    "AGENT_OWNER",
+                    (
+                        "You own an agent in this chat, so you stay in it while "
+                        "the agent does. You can remove it from your list instead."
+                    )
+                    if actor.id == target_user_id
+                    else (
+                        "They own an agent in this chat, so they stay in it "
+                        "while the agent does."
+                    ),
+                )
         with tenant_scope(tenant_id):
             await self._provisioning.kick_user(
                 room.transport_room_id, client.transport_user_id
             )
+        await self._make_lasting(tenant_id, target_user_id, room.id)
         self._memberships_changed(tenant_id, [target_user_id])
 
     async def archive(self, tenant_id: str, user: User, room_id: str) -> None:
@@ -638,6 +819,7 @@ class ChatService:
                 await self._room_service.reconcile_room(room)
             client = await self.member_actor(tenant_id, user)
             await self._join(tenant_id, room, client)
+            await self._make_lasting(tenant_id, user.id, room.id)
             async with tenant_session(self.session_factory, tenant_id) as session:
                 await session.execute(
                     update(ChatOperation)
@@ -887,6 +1069,15 @@ class ChatService:
         if mention_regex(agent.name).search(strip_emphasis(body)) is not None:
             return body
         return f"@{agent.name} {body}" if body else f"@{agent.name}"
+
+
+def _owns_agent_in_room(user_id: str) -> ColumnElement[bool]:
+    """True for a `Room` row holding an agent `user_id` owns."""
+    return exists().where(
+        room_agents.c.room_id == Room.id,
+        room_agents.c.agent_id == Agent.id,
+        Agent.owner_id == user_id,
+    )
 
 
 def _staged_result(staged: StagedUpload) -> dict[str, object]:

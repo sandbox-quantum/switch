@@ -2,6 +2,8 @@
 
 Every route except creating a chat requires the caller's membership of the
 room (`ChatService.require_member`); adding a member requires managing it.
+Owning an agent in a room makes its owner a member (`sync_owned_rooms`), so
+the list, the event stream and the room routes bring that up to date first.
 Refusals are `ChatError`s, answered as `{"detail": {"code", "message"}}`.
 """
 
@@ -153,6 +155,7 @@ async def _member_list(
 @router.get("", response_model=ChatList)
 async def list_chats(user: CurrentUser, service: Service) -> ChatList:
     tenant_id = require_tenant_id()
+    await service.sync_owned_rooms(tenant_id, user.id)
     async with tenant_session(service.session_factory, tenant_id) as session:
         if not await service.has_tenant_role(session, tenant_id, user.id):
             return ChatList(chats=[])
@@ -399,10 +402,13 @@ class _ChatStream:
     ) -> tuple[list[bytes], bool]:
         """Frames for what changed, and whether the stream may continue.
 
-        `read` names the rooms to read new messages from; None reads all.
+        `read` names the rooms to read new messages from; None reads all,
+        and first brings the caller's agent-owner memberships up to date.
         """
         frames: list[bytes] = []
         service = self.service
+        if read is None:
+            await service.sync_owned_rooms(self.tenant_id, self.user.id)
         async with tenant_session(service.session_factory, self.tenant_id) as session:
             if not await service.has_tenant_role(session, self.tenant_id, self.user.id):
                 frames.extend(self._untrack(room_id) for room_id in list(self.cursors))
