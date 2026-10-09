@@ -2113,29 +2113,6 @@ class SwitchCoreProcess(Base):
     )
 
 
-# ── Feature flags ────────────────────────────────────────────────────────────
-
-
-class FeatureFlag(Base):
-    """Server-global on/off switch keyed by a well-known flag name.
-
-    A row exists only once a flag has been written; an absent row means the
-    flag is OFF (its default). Which keys are writable is enforced in the
-    application layer (see ``switch_core.feature_flags``), not by the table.
-    """
-
-    __tablename__ = "feature_flags"
-
-    key: Mapped[str] = mapped_column(Text, primary_key=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    updated_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
-
-
 # ── Messages ─────────────────────────────────────────────────────────────────
 
 

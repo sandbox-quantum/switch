@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from switch_core.feature_flags import KNOWN_FEATURE_FLAGS
 from switch_core.keys import Keyring
 from switch_core.outbound import OutboundPolicy
 
@@ -157,6 +158,12 @@ class SwitchConfig(BaseSettings):
     # refused. Link-local and metadata addresses are refused even when listed.
     # See `outbound.py`.
     outbound_allowed_private_hosts: str = ""
+
+    # Feature flags that are on for this deployment: comma-separated keys from
+    # `feature_flags.KNOWN_FEATURE_FLAGS`. Every other flag is off. Fixed for
+    # the life of the process; an unknown key is a startup error rather than a
+    # silently ignored typo.
+    feature_flags_enabled: str = ""
 
     # Gateway admin seed
     gateway_admin_email: str
@@ -992,6 +999,27 @@ class SwitchConfig(BaseSettings):
                 "on a deployment that does not isolate them from each other."
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_feature_flags_enabled(self) -> "SwitchConfig":
+        unknown = sorted(self._enabled_feature_flags() - KNOWN_FEATURE_FLAGS)
+        if unknown:
+            raise ValueError(
+                f"FEATURE_FLAGS_ENABLED names unknown feature flag(s): {unknown}. "
+                f"Known flags: {sorted(KNOWN_FEATURE_FLAGS)}."
+            )
+        return self
+
+    def _enabled_feature_flags(self) -> set[str]:
+        return {
+            key.strip() for key in self.feature_flags_enabled.split(",") if key.strip()
+        }
+
+    @property
+    def feature_flags(self) -> dict[str, bool]:
+        """Every known flag and whether this deployment turned it on."""
+        enabled = self._enabled_feature_flags()
+        return {key: key in enabled for key in sorted(KNOWN_FEATURE_FLAGS)}
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":

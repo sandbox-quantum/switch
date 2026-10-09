@@ -114,9 +114,7 @@ POLICY_NAME = "tenant_isolation"
 # so widening it fails the suite until someone changes the test too.
 #
 # A person is not a tenant member (`users`), nor is the record of how they
-# prove who they are (`oidc_identities`); `feature_flags` is a deployment
-# switch, and a flag that needs to vary per customer is a new scoped table
-# rather than a nullable column here. Alembic's `alembic_version` needs no
+# prove who they are (`oidc_identities`). Alembic's `alembic_version` needs no
 # entry: Alembic owns that table and never registers it on this metadata.
 #
 # The three telemetry tables are global because each records a fact about the
@@ -136,7 +134,6 @@ GLOBAL_TABLES = frozenset(
     {
         "users",
         "oidc_identities",
-        "feature_flags",
         "deployment_identity",
         "telemetry_milestones",
         "telemetry_snapshot_watermark",
