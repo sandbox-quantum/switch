@@ -14,14 +14,20 @@ from switch_hosted_controller.store import MachineStore
 
 VOLUME_ID = "vol-0123456789abcdef0"
 INSTANCE_ID = "i-0123456789abcdef0"
+SEAT_A = "5e1c2b4a-0000-4000-8000-0000000000a1"
+SEAT_B = "5e1c2b4a-0000-4000-8000-0000000000b1"
+CONTROLLER_A = "9a1c2b4a-0000-4000-8000-0000000000aa"
 
 
-def code(revision: int) -> str:
-    return f"swce_SyntheticCodeRevision{revision:04d}"
+def code(revision: int, seat: int = 0) -> str:
+    if seat == 0:
+        return f"swce_SyntheticCodeRevision{revision:04d}"
+    return f"swce_SyntheticCode{seat}Revision{revision:04d}"
 
 
 class FakeCore:
-    """Core's controller routes: one machine, a revision, one enrollment code per revision."""
+    """Core's controller routes: one machine, a revision, and one controller per
+    seated workspace, each enrolled or with one enrollment code per revision."""
 
     def __init__(self, machine_id: str):
         self.machine_id = machine_id
@@ -30,11 +36,12 @@ class FakeCore:
         self.desired_state = "running"
         self.retain_until: str | None = None
         self.code_revision: int | None = None
-        self.code = ""
+        self.seats = [SEAT_A]
+        self.codes: dict[str, tuple[int, str]] = {}
+        self.controller_ids: dict[str, str] = {}
         self.prepared_revisions: list[int] = []
         self.observations: list[dict] = []
         self.prepare_failures = 0
-        self.controller_id: str | None = None
 
     def machine(self, revision: int | None = None) -> dict:
         return {
@@ -60,21 +67,22 @@ class FakeCore:
             self.prepare_failures -= 1
             raise GatewayError(503)
         self.prepared_revisions.append(self.revision)
-        if self.controller_id is not None:
-            controller = {"id": self.controller_id, "enrollment_code": None}
-        else:
-            if self.code_revision != self.revision:
-                self.code_revision = self.revision
-                self.code = code(self.revision)
-            controller = {"id": None, "enrollment_code": self.code}
+        self.code_revision = self.revision
         return {
             "machine_id": self.machine_id,
             "revision": self.revision,
             "bundle_revision": self.revision,
             "api_endpoint": "https://switch.example.test/agent-api",
-            "controller": controller,
+            "controllers": [self.controller(index, key) for index, key in enumerate(self.seats)],
             "extra": "ignored",
         }
+
+    def controller(self, index: int, key: str) -> dict:
+        if key in self.controller_ids:
+            return {"key": key, "id": self.controller_ids[key], "enrollment_code": None}
+        if self.codes.get(key, (None, ""))[0] != self.revision:
+            self.codes[key] = (self.revision, code(self.revision, index))
+        return {"key": key, "id": None, "enrollment_code": self.codes[key][1]}
 
     def sleep(self) -> None:
         self.revision += 1
@@ -94,7 +102,7 @@ class FakeCloud:
         self.instance: dict | None = None
         self.user_data: str | None = None
         self.calls: list[str] = []
-        self.codes_at_boot: list[str] = []
+        self.codes_at_boot: list[list[str | None]] = []
 
     def get_volume(self, machine):
         return self.volume
@@ -127,7 +135,9 @@ class FakeCloud:
     def _boot(self) -> None:
         assert self.instance is not None and self.volume is not None
         assert self.user_data is not None
-        self.codes_at_boot.append(json.loads(self.user_data)["controller"]["enrollmentCode"])
+        self.codes_at_boot.append(
+            [entry["enrollmentCode"] for entry in json.loads(self.user_data)["controllers"]]
+        )
         self.calls.append("boot")
         self.instance["State"] = {"Name": "running"}
         self.volume["State"] = "in-use"
@@ -217,7 +227,7 @@ def test_new_revision_prepares_once_and_records_its_bundle(tmp_path, instance_la
     first_bundle = store.get(MACHINE_ID).bundle
     assert core.prepared_revisions == [1]
     assert store.get(MACHINE_ID).bundle_token == first
-    assert stored_bundle(store)["controller"]["enrollmentCode"] == code(1)
+    assert stored_bundle(store)["controllers"][0]["enrollmentCode"] == code(1)
 
     core.revision = 2
     sync(gateway, core)
@@ -227,12 +237,12 @@ def test_new_revision_prepares_once_and_records_its_bundle(tmp_path, instance_la
     assert core.prepared_revisions == [1, 2]
     bundle = stored_bundle(store)
     assert bundle == {
-        "version": 4,
+        "version": 5,
         "installationId": "test-installation",
         "machineId": MACHINE_ID,
         "dataVolumeId": VOLUME_ID,
         "apiEndpoint": "https://switch.example.test/agent-api",
-        "controller": {"id": None, "enrollmentCode": code(2)},
+        "controllers": [{"key": SEAT_A, "id": None, "enrollmentCode": code(2)}],
     }
     machine = store.get(MACHINE_ID)
     assert machine.required_bundle_token == machine.bundle_token == second
@@ -252,7 +262,7 @@ def test_older_revision_is_a_no_op(tmp_path):
     machine = store.get(MACHINE_ID)
     assert machine.required_bundle_revision == 2
     assert machine.bundle_token == token(core.machine_id, 2)
-    assert stored_bundle(store)["controller"]["enrollmentCode"] == code(2)
+    assert stored_bundle(store)["controllers"][0]["enrollmentCode"] == code(2)
     store.close()
 
 
@@ -263,12 +273,12 @@ def test_revision_moved_before_prepare_writes_nothing(tmp_path):
     machine = store.get(MACHINE_ID)
     assert machine.bundle_token == token(core.machine_id, 1)
     assert machine.required_bundle_token == token(core.machine_id, 2)
-    assert stored_bundle(store)["controller"]["enrollmentCode"] == code(1)
+    assert stored_bundle(store)["controllers"][0]["enrollmentCode"] == code(1)
 
     sync(gateway, core)
     assert core.prepared_revisions == [1, 3, 3]
     assert store.get(MACHINE_ID).bundle_token == token(core.machine_id, 3)
-    assert stored_bundle(store)["controller"]["enrollmentCode"] == code(3)
+    assert stored_bundle(store)["controllers"][0]["enrollmentCode"] == code(3)
     store.close()
 
 
@@ -281,12 +291,12 @@ def test_failed_prepare_keeps_the_previous_bundle_until_a_retry_succeeds(tmp_pat
     machine = store.get(MACHINE_ID)
     assert machine.required_bundle_token == token(core.machine_id, 2)
     assert machine.bundle_token == token(core.machine_id, 1)
-    assert stored_bundle(store)["controller"]["enrollmentCode"] == code(1)
+    assert stored_bundle(store)["controllers"][0]["enrollmentCode"] == code(1)
 
     sync(gateway, core)
     assert core.prepared_revisions == [1, 2]
     assert store.get(MACHINE_ID).bundle_token == token(core.machine_id, 2)
-    assert stored_bundle(store)["controller"]["enrollmentCode"] == code(2)
+    assert stored_bundle(store)["controllers"][0]["enrollmentCode"] == code(2)
     store.close()
 
 
@@ -296,7 +306,7 @@ def test_a_bundle_for_a_superseded_revision_is_not_recorded(tmp_path):
     store.record_bundle(MACHINE_ID, token(core.machine_id, 1), '{"stale":true}')
     machine = store.get(MACHINE_ID)
     assert machine.bundle_token == token(core.machine_id, 1)
-    assert stored_bundle(store)["controller"]["enrollmentCode"] == code(1)
+    assert stored_bundle(store)["controllers"][0]["enrollmentCode"] == code(1)
     store.close()
 
 
@@ -316,7 +326,7 @@ def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
     machine = store.get(MACHINE_ID)
     assert machine.observed_state is ObservedState.RUNNING
     assert machine.instance_bundle == machine.bundle
-    assert cloud.codes_at_boot == [code(1)]
+    assert cloud.codes_at_boot == [[code(1)]]
     assert core.observations[-1] == {
         "state": "running",
         "revision": 1,
@@ -352,7 +362,7 @@ def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
     poll()
     poll()
     assert cloud.calls[-2:] == ["run_instance", "boot"]
-    assert cloud.codes_at_boot == [code(1), code(3)]
+    assert cloud.codes_at_boot == [[code(1)], [code(3)]]
     assert json.loads(cloud.user_data) == stored_bundle(store)
     assert store.get(MACHINE_ID).bundle_token == woken
     assert store.get(MACHINE_ID).instance_bundle == store.get(MACHINE_ID).bundle
@@ -388,21 +398,114 @@ def test_an_enrolled_machine_wakes_on_the_user_data_it_enrolled_with(tmp_path):
     for _ in range(4):
         poll()
     enrolled_with = store.get(MACHINE_ID).bundle
-    core.controller_id = "9a1c2b4a-0000-4000-8000-0000000000aa"
+    core.controller_ids[SEAT_A] = CONTROLLER_A
 
     sleep_and_wake()
     assert "terminate_instance" not in cloud.calls
     assert cloud.calls[-2:] == ["start_instance", "boot"]
-    assert json.loads(store.get(MACHINE_ID).bundle)["controller"] == {
-        "id": core.controller_id,
-        "enrollmentCode": None,
-    }
+    assert json.loads(store.get(MACHINE_ID).bundle)["controllers"] == [
+        {"key": SEAT_A, "id": CONTROLLER_A, "enrollmentCode": None}
+    ]
     assert store.get(MACHINE_ID).instance_bundle == cloud.user_data == enrolled_with
 
-    core.controller_id = None
+    core.controller_ids.clear()
     sleep_and_wake()
     poll()
     poll()
     assert cloud.calls[-3:] == ["terminate_instance", "run_instance", "boot"]
-    assert cloud.codes_at_boot == [code(1), code(1), code(5)]
+    assert cloud.codes_at_boot == [[code(1)], [code(1)], [code(5)]]
     assert store.get(MACHINE_ID).instance_bundle == cloud.user_data == store.get(MACHINE_ID).bundle
+
+
+def running_machine(tmp_path):
+    store, core, gateway = harness(tmp_path)
+    cloud = FakeCloud(store)
+    reconciler = Reconciler(store, cloud)
+
+    def poll() -> None:
+        gateway.sync_machines(gateway.machines())
+        reconciler.reconcile_all()
+        gateway.report_observations(gateway.machines())
+
+    for _ in range(4):
+        poll()
+    machine = store.get(MACHINE_ID)
+    assert machine.observed_state is ObservedState.RUNNING
+    assert machine.instance_bundle == machine.bundle
+    return store, core, cloud, poll
+
+
+def test_a_workspace_joining_a_running_machine_relaunches_it_on_the_same_volume(tmp_path):
+    store, core, cloud, poll = running_machine(tmp_path)
+    core.controller_ids[SEAT_A] = CONTROLLER_A
+    core.seats.append(SEAT_B)
+    core.revision += 1
+
+    poll()
+    assert cloud.calls[-1] == "stop_instance"
+    assert core.observations[-1]["state"] == "provisioning"
+    assert json.loads(store.get(MACHINE_ID).bundle)["controllers"] == [
+        {"key": SEAT_A, "id": CONTROLLER_A, "enrollmentCode": None},
+        {"key": SEAT_B, "id": None, "enrollmentCode": code(2, 1)},
+    ]
+    poll()
+    assert cloud.calls[-1] == "terminate_instance"
+    poll()
+    poll()
+    assert cloud.calls[-2:] == ["run_instance", "boot"]
+    assert cloud.codes_at_boot == [[code(1)], [None, code(2, 1)]]
+    assert json.loads(cloud.user_data) == stored_bundle(store)
+    for _ in range(3):
+        poll()
+    machine = store.get(MACHINE_ID)
+    assert machine.observed_state is ObservedState.RUNNING
+    assert machine.instance_bundle == machine.bundle
+    assert machine.data_volume_id == VOLUME_ID
+    assert machine.previous_instance_id == INSTANCE_ID
+    assert machine.instance_id != INSTANCE_ID
+    assert machine.recovery_count == 0
+    assert cloud.calls.count("stop_instance") == 1
+    assert cloud.calls.count("terminate_instance") == 1
+    assert cloud.calls.count("run_instance") == 2
+    store.close()
+
+
+def test_a_revision_that_only_names_the_enrolled_controller_keeps_the_machine_running(
+    tmp_path,
+):
+    store, core, cloud, poll = running_machine(tmp_path)
+    enrolled_with = store.get(MACHINE_ID).bundle
+    core.controller_ids[SEAT_A] = CONTROLLER_A
+    core.revision += 1
+
+    for _ in range(3):
+        poll()
+    machine = store.get(MACHINE_ID)
+    assert core.prepared_revisions == [1, 2]
+    assert json.loads(machine.bundle)["controllers"] == [
+        {"key": SEAT_A, "id": CONTROLLER_A, "enrollmentCode": None}
+    ]
+    assert machine.instance_bundle == enrolled_with
+    assert machine.observed_state is ObservedState.RUNNING
+    assert machine.instance_id == INSTANCE_ID
+    assert cloud.calls.count("stop_instance") == 0
+    assert cloud.calls.count("run_instance") == 1
+    store.close()
+
+
+def test_a_running_instance_whose_user_data_is_unknown_is_left_running(tmp_path):
+    store, core, cloud, poll = running_machine(tmp_path)
+    store._connection.execute("UPDATE machines SET instance_bundle = NULL")
+    core.seats.append(SEAT_B)
+    core.revision += 1
+
+    for _ in range(3):
+        poll()
+    machine = store.get(MACHINE_ID)
+    assert len(json.loads(machine.bundle)["controllers"]) == 2
+    assert machine.instance_bundle is None
+    assert machine.observed_state is ObservedState.RUNNING
+    assert cloud.instance is not None and cloud.instance["State"]["Name"] == "running"
+    assert cloud.calls.count("stop_instance") == 0
+    assert cloud.calls.count("run_instance") == 1
+    store.close()

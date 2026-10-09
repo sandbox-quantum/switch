@@ -1,9 +1,10 @@
 # Switch cloud machines on EC2
 
-A Switch cloud machine is an EC2 VM, one per user, that runs the standard
-`switch-agent-controller`: the program a laptop or an SSH host runs agents
-with. The user's managed agents placed on it run there, each as a Linux user
-of its own. Each machine has a retained, encrypted EBS data disk.
+A Switch cloud machine is an EC2 VM, one per user whatever workspaces they
+use it in, that runs the standard `switch-agent-controller`, the program a
+laptop or an SSH host runs agents with, once per workspace. The user's managed
+agents placed on it run there, each as a Linux user of its own. Each machine
+has a retained, encrypted EBS data disk.
 
 This directory holds what runs the machines:
 
@@ -27,15 +28,23 @@ authenticated HTTPS API, as any agents controller does.
 ## How a user gets a machine
 
 Picking "Switch cloud" in Switch Console claims the user's machine
-(`POST /gateway/hosted-machines/ensure`) and creates a managed agent on its
-controller once the machine is ready. Self sign-up claims one too, so it warms
+(`POST /gateway/hosted-machines/ensure`), or joins it from this workspace when
+the user already has one, and creates a managed agent on the machine's
+controller for this workspace once it has reported. A machine serves up to 8
+workspaces. Self sign-up claims one too, so it warms
 while the user signs in. The hosted controller polls Core for the machines that
-should exist, creates the data volume, and launches the VM with a bundle that
-carries a one-time enrollment code as its user data. The machine enrolls its
-controller with that code, and its status reports are its heartbeat from then
-on. An instance's user data is set when it launches: when the machine must
-enroll again, the hosted controller terminates the stopped instance and
-launches a new one with the new code, on the same data volume.
+should exist, creates the data volume, and launches the VM with a bundle as its
+user data. The machine runs one agents controller per workspace seated on it,
+and the bundle (version 5) lists them in Core's order, each under its seat key
+with either the controller it enrolled as or a one-time enrollment code. The
+machine enrolls each controller with its code, and their status reports are
+its heartbeat from then on. The machine sleeps only once every controller on it reports no session,
+and its disk is retained only once no workspace has an agent on it. An
+instance's user data is set when it launches:
+when a controller must enroll again or a workspace joins the machine, the hosted controller stops the instance if it is running, terminates
+it and launches a new one with the new bundle, on the same data volume. A
+bundle that only names the controllers enrolled with the codes the instance
+already holds does not replace the instance.
 
 Provider logins are given to the machine on demand from Switch Console, sealed
 to its controller's own key: Core relays only ciphertext.
@@ -47,9 +56,12 @@ Core needs agent management (`AGENT_MANAGEMENT_ENABLED`, with
 above 0 without it.
 
 Mount a private JSON file through `HOSTED_CONTROLLER_CONFIG_PATH` with
-`tenant_id`, a dedicated `token` of at least 32 characters and the HTTPS
-`agent_api_endpoint` the machines enroll against. Core refuses unknown keys.
-`HOSTED_LAUNCH_CAPACITY` is how many machines may exist at once, 0–100; 0
+`allowed_tenant_ids`, a dedicated `token` of at least 32 characters and the
+HTTPS `agent_api_endpoint` the machines enroll against. `allowed_tenant_ids`
+lists the workspaces whose members may use cloud machines, or is `null` for
+every workspace. Core refuses unknown keys, the old `tenant_id` among them.
+`HOSTED_LAUNCH_CAPACITY` is how many machines may exist at once across the
+server, one per user, 0–100; 0
 disables cloud machines. Keep it no higher than the hosted controller's
 `max_machines`. The backend chart exposes
 `switchCore.hostedControllerSecret` (file `controller.json`),
@@ -61,10 +73,11 @@ the matching `token` and `instance_type`, and set the chart's
 `gatewaySecretName` to it. `instance_type` is used for every new machine and
 must be one of `allowed_instance_types` in both Terraform and the controller
 configuration; `c7i.2xlarge` is recommended. The token authorizes only the
-hosted controller routes for its tenant. It is not a user or agent API key.
+hosted controller routes, for every machine on the server: their lifecycle
+and the controllers they run, never a workspace's agents, rooms or logins. It
+is not a user or agent API key.
 
-Only the configured tenant may claim machines. Keep every value and key out of
-this public repository.
+Keep every value and key out of this public repository.
 
 ## Prepare an environment
 
@@ -88,8 +101,8 @@ ingress and no Docker socket. VPC NACLs block RFC1918 egress but not IMDS or the
 AWS resolver: agents cannot reach instance metadata (their units deny it), but
 grant the instance role no authority anyway. The boot reads the machine's
 bundle from instance metadata as root. Anyone in the AWS account who can read
-an instance's user data can read its enrollment code, which is spent at the
-first boot and expires after 30 minutes.
+an instance's user data can read its enrollment codes, each spent at the boot
+that enrolls its controller and expiring after 30 minutes.
 
 ## Controller configuration
 
@@ -153,6 +166,20 @@ owner stopped stays stopped.
 
 A machine that does not start, or whose controller does not report, within 10
 minutes goes to error. Use Retry in Switch Console.
+
+## Moving to one machine per user
+
+A machine used to belong to one workspace. It now belongs to its owner and
+runs a controller per workspace. To upgrade:
+
+1. Bake an image from this `machine/`, which reads bundle version 5, set it as
+   `image_id`, and deploy it before or with the new hosted controller: a
+   running machine on an older image is relaunched on it at its next revision.
+2. Replace `tenant_id` in `controller.json` with `allowed_tenant_ids`: the
+   old workspace's id in a list to keep cloud machines to it, or `null`.
+3. Upgrade Core. Each machine keeps its id, its controller and its agents.
+   The migration refuses to run while one user has machines that are not
+   deleted in two workspaces.
 
 ## Moving off machine slots
 
