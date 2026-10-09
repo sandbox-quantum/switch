@@ -106,6 +106,17 @@ export function checkCommand(tool: CliTool, args: unknown): CheckedCommand {
   const paths: PathArgument[] = [];
   for (let index = 1; index < list.length; index += 1) {
     const arg = list[index];
+    // A positional file argument follows its word directly, wherever the word
+    // stands; held to that, no option can come between them and hide it.
+    const positional = tool.path_args.find((path) => path.after === arg);
+    if (positional) {
+      const next = list[index + 1];
+      if (next === undefined || next.startsWith('-'))
+        throw new CommandRefused(`\`${arg}\` takes a file path right after it.`);
+      paths.push({ index: index + 1, prefix: '', path: next, direction: positional.direction });
+      index += 1;
+      continue;
+    }
     if (!arg.startsWith('-') || arg === '-') continue;
     if (arg === '--') throw new CommandRefused('`--` is not accepted; pass options as options.');
     const denied = deniedFlags.find((flag) => flagValue(arg, flag) !== null);
@@ -141,30 +152,20 @@ function inside(root: string, path: string): boolean {
   return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
 }
 
-/** Where a run's files are: the session's, and this run's own. */
-type RunFolders = {
-  /** The session's working folder, which path arguments are held to. */
-  cwd: string;
-  /** This run's working folder: empty but for its own `.env` and the files staged into it. */
-  run: string;
-};
-
-type Staged = { args: string[]; moves: { from: string; to: string; named: string }[] };
+/** A path argument, found inside the session's folder: the file read, or the one to write. */
+export type ResolvedPath = PathArgument & { file: string };
 
 /**
- * The command with each path argument replaced by a file in the run's own
- * folder: a file read is copied in from the session's folder; a file written
- * is moved out to it once the run succeeds. Paths, symbolic links resolved,
- * must stay inside the session's folder.
+ * Each path argument as the file it names, symbolic links resolved, which
+ * must be inside the session's folder (`cwd`): a file read must exist; a
+ * file written must be in an existing folder there, and be a plain file if
+ * it exists. Done before anything is asked for or run.
  */
-export async function stagePaths(checked: CheckedCommand, folders: RunFolders): Promise<Staged> {
-  const root = await realpath(folders.cwd);
-  const args = [...checked.args];
-  const moves: Staged['moves'] = [];
-  for (const [n, path] of checked.paths.entries()) {
-    const named = resolve(folders.cwd, path.path);
-    const staged = join(folders.run, path.direction === 'read' ? 'in' : 'out', String(n));
-    await mkdir(staged, { recursive: true });
+export async function resolvePaths(checked: CheckedCommand, cwd: string): Promise<ResolvedPath[]> {
+  const root = await realpath(cwd);
+  const resolved: ResolvedPath[] = [];
+  for (const path of checked.paths) {
+    const named = resolve(cwd, path.path);
     if (path.direction === 'read') {
       let source: string;
       try {
@@ -176,9 +177,7 @@ export async function stagePaths(checked: CheckedCommand, folders: RunFolders): 
         throw new CommandRefused(`\`${path.path}\` is outside this session's folder.`);
       if (!(await stat(source)).isFile())
         throw new CommandRefused(`\`${path.path}\` is not a file.`);
-      const copy = join(staged, basename(source));
-      await copyFile(source, copy);
-      args[path.index] = path.prefix + relative(folders.run, copy);
+      resolved.push({ ...path, file: source });
       continue;
     }
     const name = basename(named);
@@ -196,11 +195,30 @@ export async function stagePaths(checked: CheckedCommand, folders: RunFolders): 
     const existing = await lstat(target).catch(() => null);
     if (existing && !existing.isFile())
       throw new CommandRefused(`\`${path.path}\` exists and is not a plain file.`);
-    const output = join(staged, name);
-    args[path.index] = path.prefix + relative(folders.run, output);
-    moves.push({ from: output, to: target, named: path.path });
+    resolved.push({ ...path, file: target });
   }
-  return { args, moves };
+  return resolved;
+}
+
+type Staged = { args: string[]; moves: { from: string; to: string; named: string }[] };
+
+/**
+ * The command with each path argument replaced by a file in the run's own
+ * folder (`run`): a file read is copied in from the session's folder; a file
+ * written is moved out to it once the run succeeds.
+ */
+async function stagePaths(args: string[], paths: ResolvedPath[], run: string): Promise<Staged> {
+  const staged = [...args];
+  const moves: Staged['moves'] = [];
+  for (const [n, path] of paths.entries()) {
+    const folder = join(run, path.direction === 'read' ? 'in' : 'out', String(n));
+    await mkdir(folder, { recursive: true });
+    const inRun = join(folder, basename(path.file));
+    if (path.direction === 'read') await copyFile(path.file, inRun);
+    else moves.push({ from: inRun, to: path.file, named: path.path });
+    staged[path.index] = path.prefix + relative(run, inRun);
+  }
+  return { args: staged, moves };
 }
 
 /** Moves a file or folder, across filesystems too. */
@@ -437,8 +455,10 @@ class CliRunner {
   async call(name: string, input: Record<string, unknown>): Promise<ToolResult> {
     if (name !== this.tool.binary) throw new Error(`There is no tool ${name} here.`);
     let checked: CheckedCommand;
+    let paths: ResolvedPath[];
     try {
       checked = checkCommand(this.tool, input.args);
+      paths = await resolvePaths(checked, this.deps.cwd);
     } catch (error) {
       if (error instanceof CommandRefused) return refusal(error.message);
       throw error;
@@ -447,8 +467,7 @@ class CliRunner {
     let rejected: string | null = null;
     for (let attempt = 0; ; attempt += 1) {
       const token = await this.token(rejected);
-      const result = await this.runOnce(binary, checked, token);
-      if (result.kind === 'refused') return refusal(result.message);
+      const result = await this.runOnce(binary, checked.args, paths, token);
       if (result.kind === 'done') return result.result;
       if (attempt > 0)
         return refusal(
@@ -469,13 +488,10 @@ class CliRunner {
 
   private async runOnce(
     binary: string,
-    checked: CheckedCommand,
+    args: string[],
+    paths: ResolvedPath[],
     token: string
-  ): Promise<
-    | { kind: 'done'; result: ToolResult }
-    | { kind: 'refused'; message: string }
-    | { kind: 'token-refused' }
-  > {
+  ): Promise<{ kind: 'done'; result: ToolResult } | { kind: 'token-refused' }> {
     const home = join(this.folder, 'home');
     const config = join(this.folder, 'config');
     const runs = join(this.folder, 'runs');
@@ -490,13 +506,7 @@ class CliRunner {
       await mkdir(tmp, { mode: 0o700 });
       // An empty .env of its own, so the tool loads none from a folder above.
       await writeFile(join(run, '.env'), '', { mode: 0o600 });
-      let staged: Staged;
-      try {
-        staged = await stagePaths(checked, { cwd: this.deps.cwd, run });
-      } catch (error) {
-        if (error instanceof CommandRefused) return { kind: 'refused', message: error.message };
-        throw error;
-      }
+      const staged = await stagePaths(args, paths, run);
       const outcome = await runBinary({
         binary,
         args: staged.args,

@@ -1136,6 +1136,7 @@ class TestPassThrough:
                 "allow": ["items", "boards"],
                 "deny": ["auth", "--profile"],
                 "path_flags": {"--upload": "read", "--output": "write", "-o": "write"},
+                "path_args": [{"after": "+put", "direction": "read"}],
                 "output_cap_bytes": 65536,
                 "timeout_s": 120,
                 "token_refused": {

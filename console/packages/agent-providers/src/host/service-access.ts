@@ -26,6 +26,13 @@ export const cliToolSchema = z.object({
   allow: z.array(z.string().regex(COMMAND)).min(1),
   deny: z.array(z.string().refine((value) => COMMAND.test(value) || FLAG.test(value))),
   path_flags: z.record(z.string().regex(FLAG), z.enum(['read', 'write'])),
+  /** Positional file arguments: the one right after `after`, wherever it stands. */
+  path_args: z.array(
+    z.object({
+      after: z.string().regex(/^\+?[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/),
+      direction: z.enum(['read', 'write']),
+    })
+  ),
   output_cap_bytes: z.number().int().min(1024),
   timeout_s: z.number().int().min(1),
   token_refused: z.object({

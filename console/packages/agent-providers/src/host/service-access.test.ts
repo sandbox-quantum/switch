@@ -136,6 +136,7 @@ describe('readServiceGrants', () => {
       allow: ['items'],
       deny: ['auth', '--profile'],
       path_flags: { '--output': 'write', '-o': 'write' },
+      path_args: [],
       output_cap_bytes: 65536,
       timeout_s: 120,
       token_refused: { exit_code: 1, json_path: 'error.code', value: 401 },

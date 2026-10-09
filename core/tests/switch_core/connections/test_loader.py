@@ -14,7 +14,6 @@ PLACEHOLDERS = {
     "asana",
     "gitlab",
     "bitbucket",
-    "google-workspace",
     "microsoft-365",
     "datadog",
     "new-relic",
@@ -27,15 +26,96 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_and_atlassian():
-    assert set(CATALOG) == PLACEHOLDERS | {"github", "atlassian"}
+def test_shipped_catalog_enables_github_atlassian_and_google_workspace():
+    assert set(CATALOG) == PLACEHOLDERS | {"github", "atlassian", "google-workspace"}
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "atlassian",
         "github",
+        "google-workspace",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+
+
+GOOGLE = "https://www.googleapis.com/auth/"
+
+
+def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_must():
+    definition = CATALOG["google-workspace"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "GOOGLE_WORKSPACE"
+    # A refresh token comes only with offline access, and again on a later
+    # sign-in only when consent is asked for.
+    assert oauth.authorization_params == {"access_type": "offline"}
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_url == "https://oauth2.googleapis.com/revoke"
+    assert definition.auth.refresh == "reusable"
+    assert definition.auth.identity is not None
+    assert (definition.auth.identity.account_id, definition.auth.identity.label) == (
+        "sub",
+        "email",
+    )
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3920,
+    )
+    access = definition.access
+    assert access is not None and access.write is not None
+    read = set(access.read.scopes or [])
+    write = set(access.write.scopes or [])
+    # Google answers with full scope URLs, which the level is read from.
+    assert {"openid", f"{GOOGLE}userinfo.email"} <= read < write
+    assert all(scope == "openid" or scope.startswith(GOOGLE) for scope in write)
+    assert not any("gmail" in scope or "mail.google" in scope for scope in write)
+    assert {scope.removeprefix(GOOGLE) for scope in write - read} == {
+        "drive",
+        "documents",
+        "spreadsheets",
+        "presentations",
+        "calendar.events",
+    }
+    cli = definition.cli
+    assert cli is not None and definition.mcp is None
+    assert (cli.binary, cli.token_env, cli.config_env) == (
+        "gws",
+        "GOOGLE_WORKSPACE_CLI_TOKEN",
+        "GOOGLE_WORKSPACE_CLI_CONFIG_DIR",
+    )
+    assert cli.allow == ["drive", "docs", "sheets", "slides", "calendar", "schema"]
+    assert {"auth", "gmail", "--api-version", "--sanitize"} <= set(cli.deny)
+    assert cli.path_flags == {"--upload": "read", "--output": "write", "-o": "write"}
+    assert [(arg.after, arg.direction) for arg in cli.path_args] == [
+        ("+upload", "read")
+    ]
+    assert (
+        cli.token_refused.exit_code,
+        cli.token_refused.json_path,
+        cli.token_refused.value,
+    ) == (1, "error.code", 401)
+    assert cli.release.version == "0.22.5"
+    assert sorted(cli.release.targets) == [
+        "darwin-arm64",
+        "darwin-x64",
+        "linux-arm64",
+        "linux-x64",
+        "win32-x64",
+    ]
+    for target, build in cli.release.targets.items():
+        assert build.url.startswith(
+            "https://github.com/googleworkspace/cli/releases/download/v0.22.5/"
+        )
+        assert build.path == ("gws.exe" if target == "win32-x64" else "gws")
+        if target.startswith("linux"):
+            assert build.url.endswith("-unknown-linux-musl.tar.gz")
 
 
 def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
@@ -519,6 +599,7 @@ CLI_ENTRY = (
         "  allow: [items, boards]\n"
         "  deny: [auth, --profile]\n"
         "  path_flags: { --upload: read, --output: write, -o: write }\n"
+        "  path_args: [{ after: +put, direction: read }]\n"
         "  output_cap_bytes: 65536\n"
         "  timeout_s: 120\n"
         "  token_refused: { exit_code: 1, json_path: error.code, value: 401 }\n"
@@ -542,6 +623,7 @@ def test_loads_an_oauth_entry_whose_tool_is_a_cli(catalog_copy):
     assert cli.allow == ["items", "boards"]
     assert cli.deny == ["auth", "--profile"]
     assert cli.path_flags == {"--upload": "read", "--output": "write", "-o": "write"}
+    assert [(arg.after, arg.direction) for arg in cli.path_args] == [("+put", "read")]
     assert (cli.output_cap_bytes, cli.timeout_s) == (65536, 120)
     assert definition.auth.oauth is not None
     assert definition.auth.oauth.authorization_params == {}
@@ -626,6 +708,22 @@ def test_loads_an_oauth_entry_whose_tool_is_a_cli(catalog_copy):
             "token_refused",
         ),
         (CLI_RELEASE, "", "release"),
+        (
+            "{ after: +put, direction: read }",
+            "{ after: +put, direction: run }",
+            "direction",
+        ),
+        (
+            "{ after: +put, direction: read }",
+            "{ after: '+put x', direction: read }",
+            "after",
+        ),
+        (
+            "[{ after: +put, direction: read }]",
+            "[{ after: +put, direction: read }, { after: +put, direction: write }]",
+            "named twice",
+        ),
+        ("  path_args: [{ after: +put, direction: read }]\n", "", "path_args"),
         ("version: 1.2.3", "version: latest version", "version"),
         ("      linux-x64:\n", "      freebsd-x64:\n", "targets"),
         (
@@ -664,7 +762,7 @@ def test_rejects_a_github_entry_with_a_cli(catalog_copy):
         catalog_copy,
         "tools:\n",
         "cli:\n  name: gh\n  binary: gh\n  token_env: GH_TOKEN\n  allow: [repo]\n"
-        "  deny: []\n  path_flags: {}\n  output_cap_bytes: 65536\n  timeout_s: 60\n"
+        "  deny: []\n  path_flags: {}\n  path_args: []\n  output_cap_bytes: 65536\n  timeout_s: 60\n"
         "  token_refused: { exit_code: 1, json_path: status, value: 401 }\n"
         + CLI_RELEASE
         + "tools:\n",

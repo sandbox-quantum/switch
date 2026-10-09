@@ -72,6 +72,9 @@ switch (what) {
     console.log(basename(path) + ' ' + readFileSync(path, 'utf8'));
     break;
   }
+  case '+put':
+    console.log(basename(rest[0]) + ' ' + readFileSync(rest[0], 'utf8'));
+    break;
   case 'download':
     writeFileSync('download.pdf', '%PDF');
     console.log(JSON.stringify({ saved_file: 'download.pdf' }));
@@ -91,7 +94,8 @@ const TOOL: CliTool = {
   config_env: 'EXCLI_CONFIG_DIR',
   allow: ['items', 'boards'],
   deny: ['auth', '--profile'],
-  path_flags: { '--upload': 'read', '--output': 'write', '-o': 'write', '--file': 'read' },
+  path_flags: { '--upload': 'read', '--output': 'write', '-o': 'write' },
+  path_args: [{ after: '+put', direction: 'read' }],
   output_cap_bytes: 2048,
   timeout_s: 30,
   token_refused: { exit_code: 1, json_path: 'error.code', value: 401 },
@@ -163,6 +167,22 @@ describe('checkCommand', () => {
     expect(refused(args)).toThrow(CommandRefused);
     expect(refused(args)).toThrow(message);
   });
+
+  it('finds a positional file argument after its word, wherever the word stands', () => {
+    expect(checkCommand(TOOL, ['items', '+put', 'a.txt', '--name', 'A']).paths).toEqual([
+      { index: 2, prefix: '', path: 'a.txt', direction: 'read' },
+    ]);
+    expect(checkCommand(TOOL, ['items', '--format', 'json', '+put', '/etc/hosts']).paths).toEqual([
+      { index: 4, prefix: '', path: '/etc/hosts', direction: 'read' },
+    ]);
+  });
+
+  it.each([[['items', '+put']], [['items', '+put', '--name', 'x', 'a.txt']]])(
+    'refuses a positional file argument that is not right after its word: %j',
+    (args) => {
+      expect(refused(args)).toThrow('takes a file path right after it');
+    }
+  );
 
   it('lets a negative number through as a value', () => {
     expect(checkCommand(TOOL, ['items', 'list', '--offset', '-10']).paths).toEqual([]);
@@ -424,11 +444,24 @@ describe.skipIf(process.platform === 'win32')('startVendorClis', () => {
     await mkdir(join(session, 'out'));
     await writeFile(join(root, 'outside.txt'), 'secret');
     await symlink(join(root, 'outside.txt'), join(session, 'escape'));
-    const { run } = await started([token(GOOD)]);
+    const { run, asked } = await started([token(GOOD)]);
     const result = await run(['items', 'read', ...flag]);
     expect(result.isError).toBe(true);
     expect(result.text).toContain(message);
     expect(result.text).not.toContain('secret');
+    expect(asked).toEqual([]);
+  });
+
+  it('reads a positional file from the session’s folder, and nothing outside it', async () => {
+    await writeFile(join(session, 'deck.md'), 'slides');
+    const { run } = await started([token(GOOD)]);
+    expect(await run(['items', '+put', 'deck.md'])).toEqual({
+      isError: false,
+      text: 'deck.md slides\n',
+    });
+    const outside = await run(['items', '--format', 'json', '+put', '/etc/hosts']);
+    expect(outside.isError).toBe(true);
+    expect(outside.text).toContain('outside this session');
   });
 
   it('keeps what a run leaves behind unasked, and says where', async () => {

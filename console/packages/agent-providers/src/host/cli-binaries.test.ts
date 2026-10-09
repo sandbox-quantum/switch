@@ -19,6 +19,7 @@ function tool(targets: CliTool['release']['targets']): CliTool {
     allow: ['items'],
     deny: [],
     path_flags: {},
+    path_args: [],
     output_cap_bytes: 65536,
     timeout_s: 60,
     token_refused: { exit_code: 1, json_path: 'error.code', value: 401 },

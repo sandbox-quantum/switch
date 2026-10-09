@@ -217,6 +217,15 @@ class TokenRefused(BaseModel):
     value: int | str
 
 
+class PathArgument(BaseModel):
+    """A command's positional argument that is a local file: the one right
+    after the word `after`, wherever that word stands."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    after: str = Field(pattern=r"^\+?[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
+    direction: Literal["read", "write"]
+
+
 ReleaseTarget = Literal[
     "darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"
 ]
@@ -255,8 +264,8 @@ class ConnectionCli(BaseModel):
     one, names a configuration folder made for the session. A command's first
     argument must be in `allow` and not in `deny`, which also names flags
     refused anywhere in a command. `path_flags` are the flags whose value is a
-    local file, read or written; the session host keeps them inside the
-    session's folder. Output past `output_cap_bytes` goes to a file, and a run
+    local file, read or written, and `path_args` the positional arguments that
+    are; the session host keeps both inside the session's folder. Output past `output_cap_bytes` goes to a file, and a run
     is stopped after `timeout_s`. A run that ends as `token_refused` says is
     run once more with a token asked for again. `release` pins the build every
     session runs.
@@ -272,6 +281,7 @@ class ConnectionCli(BaseModel):
     path_flags: dict[
         Annotated[str, Field(pattern=FLAG_PATTERN)], Literal["read", "write"]
     ]
+    path_args: list[PathArgument]
     output_cap_bytes: int = Field(ge=1024, le=10 * 1024 * 1024)
     timeout_s: int = Field(ge=5, le=600)
     token_refused: TokenRefused
@@ -289,6 +299,9 @@ class ConnectionCli(BaseModel):
         denied_paths = sorted(set(self.path_flags) & set(self.deny))
         if denied_paths:
             raise ValueError(f"path flags that are also denied: {denied_paths}")
+        afters = [argument.after for argument in self.path_args]
+        if len(set(afters)) != len(afters):
+            raise ValueError("a path argument is named twice")
         if self.token_env == self.config_env:
             raise ValueError("token_env and config_env name the same variable")
         return self

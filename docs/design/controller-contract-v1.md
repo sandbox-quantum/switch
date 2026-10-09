@@ -241,6 +241,8 @@ type ServiceCliTool = {               // as the catalog entry's `cli` block has 
   allow: string[]                     // a command's first argument is one of these
   deny: string[]                      // first arguments, and flags refused anywhere in a command
   path_flags: Record<string, "read" | "write">   // flags whose value is a local file, kept inside the session's folder
+  path_args: { after: string; direction: "read" | "write" }[]
+                                      // positional local files: the argument right after the word `after`
   output_cap_bytes: number            // more output goes to a file, whose path is returned
   timeout_s: number
   token_refused: { exit_code: number; json_path: string; value: number | string }

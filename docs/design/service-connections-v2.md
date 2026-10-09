@@ -75,6 +75,7 @@ cli:
   allow: [items, boards]   # a command's first argument must be one of these
   deny: [auth, --profile]  # first arguments, and flags refused anywhere
   path_flags: { --upload: read, --output: write, -o: write }
+  path_args: [{ after: +put, direction: read }]   # `excli +put <file>`
   output_cap_bytes: 65536  # more goes to a file
   timeout_s: 120
   token_refused:           # how a run says the vendor refused its token,
@@ -168,7 +169,10 @@ host runs the vendor's binary itself:
 - **Checked first, never a shell.** The first argument must be allowed and not
   denied; a denied flag is refused in any form (`--f`, `--f=v`, `-fv`); short
   options may not be combined, so no path flag hides in a cluster; `--` is
-  refused. Nothing runs, and no token is asked for, for a refused command.
+  refused. A positional file (`path_args`) must come right after its word,
+  wherever that word stands, so no option can stand between them. Every path
+  is checked against the session's folder before anything else: nothing runs,
+  and no token is asked for, for a refused command.
 - **A folder of its own.** Each run works in a fresh folder holding only an
   empty `.env` (a tool that loads `.env` from its folder or a parent's finds
   that one and stops) and the files staged for it. A path flag's file must be
