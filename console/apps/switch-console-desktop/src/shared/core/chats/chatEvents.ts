@@ -1,5 +1,5 @@
 import { defineEvent } from '@shared/lib/ipc/events';
-import type { ChatMessage, ChatStreamState, ChatSummary } from './chats';
+import type { ChatMessage, ChatRemovalReason, ChatStreamState, ChatSummary } from './chats';
 
 /**
  * The chats live feed, pushed by the main process. Every event names the
@@ -10,13 +10,21 @@ export const chatMessageChannel = defineEvent<{ serverId: string; message: ChatM
   'chat:message'
 );
 
-/** A chat appeared (new membership) or its summary changed. */
+/** A chat entered the list (new membership, or it qualifies again) or its summary changed. */
 export const chatSummaryChannel = defineEvent<{ serverId: string; chat: ChatSummary }>(
   'chat:summary'
 );
 
-/** The person no longer has access to the room: removed, left, or lost their tenant role. */
-export const chatRemovedChannel = defineEvent<{ serverId: string; roomId: string }>('chat:removed');
+/**
+ * The room left the person's list. `access`: they lost it (removed, left,
+ * lost their tenant role, or it was archived). `unlisted`: still a member, so
+ * an open chat keeps reading and posting; it is only off the list.
+ */
+export const chatRemovedChannel = defineEvent<{
+  serverId: string;
+  roomId: string;
+  reason: ChatRemovalReason;
+}>('chat:removed');
 
 export const chatStreamStateChannel = defineEvent<{
   serverId: string;

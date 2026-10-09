@@ -95,7 +95,16 @@ export const chatUploadSchema = z.object({
 });
 export type ChatUpload = z.infer<typeof chatUploadSchema>;
 export const chatMembersSchema = z.object({ members: z.array(chatMemberSchema) });
-export const chatRemovedSchema = z.object({ roomId: z.string() });
+/**
+ * `access`: the person lost the room (membership, workspace role, archive).
+ * `unlisted`: still a member, but the room no longer qualifies for the list.
+ */
+export const chatRemovalReasonSchema = z.enum(['access', 'unlisted']);
+export type ChatRemovalReason = z.infer<typeof chatRemovalReasonSchema>;
+export const chatRemovedSchema = z.object({
+  roomId: z.string(),
+  reason: chatRemovalReasonSchema,
+});
 
 /** The gateway's coded refusal: `{ detail: { code, message } }`. */
 export const chatErrorBodySchema = z.object({

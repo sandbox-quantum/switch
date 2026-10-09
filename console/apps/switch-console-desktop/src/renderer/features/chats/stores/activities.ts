@@ -26,5 +26,7 @@ export const agentActivities = new AgentActivities({
 events.on(chatActivityChangedChannel, ({ serverId, agentId }) =>
   agentActivities.refresh(serverId, agentId)
 );
-events.on(chatRemovedChannel, ({ serverId, roomId }) => agentActivities.drop(serverId, roomId));
+events.on(chatRemovedChannel, ({ serverId, roomId, reason }) => {
+  if (reason === 'access') agentActivities.drop(serverId, roomId);
+});
 events.on(chatResetChannel, ({ serverId }) => agentActivities.drop(serverId, null));

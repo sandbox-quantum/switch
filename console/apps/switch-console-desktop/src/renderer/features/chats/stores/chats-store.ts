@@ -7,7 +7,12 @@ import {
   chatStreamStateChannel,
   chatSummaryChannel,
 } from '@shared/core/chats/chatEvents';
-import type { ChatMessage, ChatStreamState, ChatSummary } from '@shared/core/chats/chats';
+import type {
+  ChatMessage,
+  ChatRemovalReason,
+  ChatStreamState,
+  ChatSummary,
+} from '@shared/core/chats/chats';
 import { ChatTimelines, type TimelineApi } from './chat-timeline-store';
 
 /**
@@ -15,8 +20,10 @@ import { ChatTimelines, type TimelineApi } from './chat-timeline-store';
  * live by the main process's feed, and the timelines of the chats opened.
  *
  * A reset (sign-out, tenant switch) drops everything held for the server; a
- * removal drops the room's messages and marks it lost, so an open chat can
- * say so instead of quietly emptying.
+ * removal for lost access drops the room's messages and marks it lost, so an
+ * open chat can say so instead of quietly emptying. A room merely unlisted
+ * (still a member, e.g. no agents left) only leaves the list: an open chat
+ * keeps reading and posting, and catches up if the room is listed again.
  */
 
 export type ChatsApi = {
@@ -29,7 +36,9 @@ export type ChatsApi = {
 export type ChatsEvents = {
   onMessage: (cb: (data: { serverId: string; message: ChatMessage }) => void) => () => void;
   onSummary: (cb: (data: { serverId: string; chat: ChatSummary }) => void) => () => void;
-  onRemoved: (cb: (data: { serverId: string; roomId: string }) => void) => () => void;
+  onRemoved: (
+    cb: (data: { serverId: string; roomId: string; reason: ChatRemovalReason }) => void
+  ) => () => void;
   onState: (
     cb: (data: { serverId: string; state: ChatStreamState; detail: string | null }) => void
   ) => () => void;
@@ -43,6 +52,8 @@ export class ChatsStore {
   chats = new Map<string, ChatSummary>();
   /** Rooms the person lost access to since the feed started. */
   removed = new Set<string>();
+  /** Rooms off the list while the person is still a member. */
+  unlisted = new Set<string>();
   streamState: ChatStreamState = 'offline';
   streamDetail: string | null = null;
   listError: string | null = null;
@@ -58,8 +69,8 @@ export class ChatsStore {
       if (serverId === this.serverId) this.upsert(chat);
     });
     events.onMessage(({ serverId, message }) => this.message(serverId, message));
-    events.onRemoved(({ serverId, roomId }) => {
-      if (serverId === this.serverId) this.remove(roomId);
+    events.onRemoved(({ serverId, roomId, reason }) => {
+      if (serverId === this.serverId) this.remove(roomId, reason);
     });
     events.onState(({ serverId, state, detail }) => {
       if (serverId !== this.serverId) return;
@@ -85,6 +96,7 @@ export class ChatsStore {
         this.serverId = serverId;
         this.chats = new Map();
         this.removed = new Set();
+        this.unlisted = new Set();
         this.userId = null;
         this.tenantId = null;
         this.listError = null;
@@ -119,7 +131,10 @@ export class ChatsStore {
   upsert(chat: ChatSummary): void {
     this.chats.set(chat.roomId, chat);
     this.removed.delete(chat.roomId);
-    if (this.serverId) this.timelines.peek(this.serverId, chat.roomId)?.restore();
+    const timeline = this.serverId ? this.timelines.peek(this.serverId, chat.roomId) : undefined;
+    timeline?.restore();
+    // The feed did not follow the room while it was off the list.
+    if (this.unlisted.delete(chat.roomId) && timeline?.loaded) void timeline.load();
   }
 
   /** A chat the person made or was let into from here, ahead of the feed. */
@@ -171,8 +186,13 @@ export class ChatsStore {
     }
   }
 
-  remove(roomId: string): void {
+  remove(roomId: string, reason: ChatRemovalReason): void {
     this.chats.delete(roomId);
+    if (reason === 'unlisted') {
+      this.unlisted.add(roomId);
+      return;
+    }
+    this.unlisted.delete(roomId);
     this.removed.add(roomId);
     if (this.serverId) this.timelines.peek(this.serverId, roomId)?.revoke();
   }
@@ -182,6 +202,7 @@ export class ChatsStore {
     if (serverId !== this.serverId) return;
     this.chats = new Map();
     this.removed = new Set();
+    this.unlisted = new Set();
     this.userId = null;
     this.tenantId = null;
     void this.connect(serverId);

@@ -25,9 +25,9 @@ function dropMedia(match: (serverId: string, roomId: string) => boolean): void {
     void url.then((value) => URL.revokeObjectURL(value)).catch(() => {});
   }
 }
-events.on(chatRemovedChannel, ({ serverId, roomId }) =>
-  dropMedia((s, r) => s === serverId && r === roomId)
-);
+events.on(chatRemovedChannel, ({ serverId, roomId, reason }) => {
+  if (reason === 'access') dropMedia((s, r) => s === serverId && r === roomId);
+});
 events.on(chatResetChannel, ({ serverId }) => dropMedia((s) => s === serverId));
 
 function mediaUrl(serverId: string, roomId: string, uri: string): Promise<string> {

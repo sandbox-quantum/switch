@@ -1,6 +1,7 @@
 import {
   type ChatMessage,
   chatMessageSchema,
+  type ChatRemovalReason,
   chatRemovedSchema,
   type ChatStreamState,
   type ChatSummary,
@@ -24,7 +25,7 @@ export const STALL_MS = 60_000;
 export type ChatStreamSink = {
   message: (message: ChatMessage) => void;
   summary: (chat: ChatSummary) => void;
-  removed: (roomId: string) => void;
+  removed: (roomId: string, reason: ChatRemovalReason) => void;
   state: (state: ChatStreamState, detail: string | null) => void;
 };
 
@@ -217,9 +218,9 @@ export class ChatStream {
         return;
       }
       case 'chat.removed': {
-        const { roomId } = chatRemovedSchema.parse(data);
+        const { roomId, reason } = chatRemovedSchema.parse(data);
         this.cursors.delete(roomId);
-        this.deps.sink.removed(roomId);
+        this.deps.sink.removed(roomId, reason);
         return;
       }
       case 'ready':

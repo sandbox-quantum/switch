@@ -54,7 +54,7 @@ function feed() {
 function harness(lists: ChatSummary[][], unauthorized = false) {
   const states: { state: ChatStreamState; detail: string | null }[] = [];
   const messages: ChatMessage[] = [];
-  const removed: string[] = [];
+  const removed: [string, string][] = [];
   const summaries: ChatSummary[] = [];
   const opened: string[] = [];
   const feeds: ReturnType<typeof feed>[] = [];
@@ -83,7 +83,7 @@ function harness(lists: ChatSummary[][], unauthorized = false) {
     sink: {
       message: (m) => messages.push(m),
       summary: (c) => summaries.push(c),
-      removed: (roomId) => removed.push(roomId),
+      removed: (roomId, reason) => removed.push([roomId, reason]),
       state: (state, detail) => states.push({ state, detail }),
     },
   };
@@ -168,8 +168,8 @@ describe('ChatStream', () => {
     const stream = new ChatStream(h.deps);
     stream.start();
     await vi.waitFor(() => expect(h.feeds).toHaveLength(1));
-    h.feeds[0]!.send('chat.removed', { roomId: 'room-a' });
-    await vi.waitFor(() => expect(h.removed).toEqual(['room-a']));
+    h.feeds[0]!.send('chat.removed', { roomId: 'room-a', reason: 'unlisted' });
+    await vi.waitFor(() => expect(h.removed).toEqual([['room-a', 'unlisted']]));
     expect(stream.cursor('room-a')).toBeUndefined();
     stream.stop();
   });

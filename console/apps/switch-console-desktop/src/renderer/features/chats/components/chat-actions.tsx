@@ -112,7 +112,7 @@ export function chatActions(serverId: string, chat: ChatSummary): ChatAction[] {
             const userId = switchServersStore.statusFor(serverId)?.user?.id;
             if (!userId) throw new Error('Sign in to this server again to leave the chat.');
             await rpc.chats.removeMember(serverId, chat.roomId, userId);
-            chatsStore.remove(chat.roomId);
+            chatsStore.remove(chat.roomId, 'access');
             leaveIfOpen(chat.roomId);
           }, 'Could not leave the chat.'),
       }),

@@ -51,7 +51,7 @@ function makeStream(serverId: string, workspaceId: string): ChatStream {
     sink: {
       message: (message) => events.emit(chatMessageChannel, { serverId, message }),
       summary: (chat) => events.emit(chatSummaryChannel, { serverId, chat }),
-      removed: (roomId) => events.emit(chatRemovedChannel, { serverId, roomId }),
+      removed: (roomId, reason) => events.emit(chatRemovedChannel, { serverId, roomId, reason }),
       state: (state, detail) => {
         if (state === 'offline')
           log.warn('Chats live feed offline', { event: 'chat_stream_offline', serverId, detail });
