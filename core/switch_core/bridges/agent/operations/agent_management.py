@@ -1,7 +1,7 @@
 """Agent operations on the owner's agent management: machines and managed agents.
 
 These exist only on a server running agent management
-(`AGENT_MANAGEMENT_ENABLED`): they are declared in their own operation group,
+(the `agent_management` feature flag): they are declared in their own operation group,
 and the group is enabled when the process wiring hands over management's
 implementation of `AgentManagementPort` (`enable_agent_management`). Until
 then they are on neither front door.

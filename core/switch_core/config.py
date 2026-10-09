@@ -13,7 +13,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from switch_core.feature_flags import KNOWN_FEATURE_FLAGS
+from switch_core.feature_flags import (
+    AGENT_MANAGEMENT,
+    KNOWN_FEATURE_FLAGS,
+    SWITCH_CLOUD,
+    SWITCH_CLOUD_HOSTED_AGENTS,
+)
 from switch_core.keys import Keyring
 from switch_core.outbound import OutboundPolicy
 
@@ -228,8 +233,8 @@ class SwitchConfig(BaseSettings):
     # OIDC first sign-in alike), read from the users table so it holds across
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
-    # How many cloud machines the bound tenant may have at once. Cloud machines
-    # run the agents controller, so they need AGENT_MANAGEMENT_ENABLED.
+    # How many cloud machines the bound tenant may have at once: at least 1 with
+    # the `switch_cloud.hosted_agents` flag on, and 0 with it off.
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
     hosted_disk_retention_days: int = Field(default=7, ge=1, le=90)
@@ -621,11 +626,12 @@ class SwitchConfig(BaseSettings):
     # evicted past this, so a flood of tokens cannot grow the process.
     agent_auth_cache_max_entries: int = 4096
 
-    # Agent management: managed agent definitions, the agent controllers that
-    # run them, and the controller-facing routes under /v1/management and
-    # /v1/controllers. Off by default; with it off none of those routes are
-    # mounted and the bearer middleware never treats a token as a controller's.
-    agent_management_enabled: bool = False
+    # AGENT_MANAGEMENT_ENABLED, replaced by the `agent_management` feature flag.
+    # Read only to refuse a deployment that still turns it on, which would
+    # otherwise lose agent management without a word.
+    legacy_agent_management_enabled: bool | None = Field(
+        default=None, validation_alias="agent_management_enabled"
+    )
     # Signs controller access tokens. Required (at least 32 characters) when
     # agent management is on, and deliberately separate from SECRET_KEYS so
     # rotating one never invalidates the other.
@@ -725,17 +731,18 @@ class SwitchConfig(BaseSettings):
                 "CONTROLLER_STATUS_INTERVAL_SECONDS must be at least 1, got "
                 f"{self.controller_status_interval_seconds!r}."
             )
+        if self.legacy_agent_management_enabled:
+            raise ValueError(
+                "AGENT_MANAGEMENT_ENABLED has been replaced by a feature flag: "
+                f"remove it and add {AGENT_MANAGEMENT!r} to FEATURE_FLAGS_ENABLED."
+            )
         if not self.agent_management_enabled:
-            if self.hosted_launch_capacity > 0:
-                raise ValueError(
-                    "HOSTED_LAUNCH_CAPACITY needs AGENT_MANAGEMENT_ENABLED: cloud "
-                    "machines run the agents controller."
-                )
             return self
         if not self.controller_token_secret:
             raise ValueError(
-                "CONTROLLER_TOKEN_SECRET is required when AGENT_MANAGEMENT_ENABLED "
-                "is true: it signs the access tokens agent controllers use."
+                "CONTROLLER_TOKEN_SECRET is required when the "
+                f"{AGENT_MANAGEMENT!r} feature flag is on: it signs the access "
+                "tokens agent controllers use."
             )
         if len(self.controller_token_secret) < 32:
             raise ValueError(
@@ -1015,11 +1022,47 @@ class SwitchConfig(BaseSettings):
             key.strip() for key in self.feature_flags_enabled.split(",") if key.strip()
         }
 
+    @model_validator(mode="after")
+    def _validate_hosted_agents(self) -> "SwitchConfig":
+        if not self.hosted_agents_enabled:
+            if self.hosted_launch_capacity > 0:
+                raise ValueError(
+                    "HOSTED_LAUNCH_CAPACITY is above 0 but the "
+                    f"{SWITCH_CLOUD_HOSTED_AGENTS!r} feature flag is off: add it to "
+                    "FEATURE_FLAGS_ENABLED, or set the capacity to 0."
+                )
+            return self
+        missing = [
+            flag
+            for flag in (SWITCH_CLOUD, AGENT_MANAGEMENT)
+            if not self.feature_flags[flag]
+        ]
+        if missing:
+            raise ValueError(
+                f"The {SWITCH_CLOUD_HOSTED_AGENTS!r} feature flag needs {missing} in "
+                "FEATURE_FLAGS_ENABLED too: cloud machines belong to Switch Cloud "
+                "and run the agents controller."
+            )
+        if self.hosted_launch_capacity < 1:
+            raise ValueError(
+                f"HOSTED_LAUNCH_CAPACITY must be at least 1 with the "
+                f"{SWITCH_CLOUD_HOSTED_AGENTS!r} feature flag on."
+            )
+        return self
+
     @property
     def feature_flags(self) -> dict[str, bool]:
         """Every known flag and whether this deployment turned it on."""
         enabled = self._enabled_feature_flags()
         return {key: key in enabled for key in sorted(KNOWN_FEATURE_FLAGS)}
+
+    @property
+    def agent_management_enabled(self) -> bool:
+        return self.feature_flags[AGENT_MANAGEMENT]
+
+    @property
+    def hosted_agents_enabled(self) -> bool:
+        return self.feature_flags[SWITCH_CLOUD_HOSTED_AGENTS]
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":

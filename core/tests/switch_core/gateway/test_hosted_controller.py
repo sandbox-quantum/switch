@@ -118,6 +118,7 @@ async def controller_app(session_factory):
         hosted_idle_stop_minutes=0,
         hosted_disk_retention_days=7,
         hosted_launch_capacity=2,
+        hosted_agents_enabled=True,
     )
     app = FastAPI()
     app.state.hosted_controller_settings = settings

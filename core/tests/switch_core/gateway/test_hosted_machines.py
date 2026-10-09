@@ -341,15 +341,15 @@ async def test_ensure_refuses_when_every_machine_is_in_use(controller_app):  # n
     assert refused.json() == {"detail": MACHINES_FULL}
 
 
-@pytest.mark.parametrize("disabled", ["capacity", "settings", "tenant"])
+@pytest.mark.parametrize("disabled", ["flag", "settings", "tenant"])
 async def test_ensure_is_unavailable_when_machines_are_not_enabled(
     controller_app,  # noqa: F811
     disabled,
 ):
     app = controller_app
     fastapi_app = app.client._transport.app
-    if disabled == "capacity":
-        app.config.hosted_launch_capacity = 0
+    if disabled == "flag":
+        app.config.hosted_agents_enabled = False
     elif disabled == "settings":
         fastapi_app.state.hosted_controller_settings = None
     else:

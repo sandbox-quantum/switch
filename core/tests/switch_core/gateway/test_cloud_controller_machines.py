@@ -93,6 +93,7 @@ def _hosted_app(
         hosted_idle_stop_minutes=30,
         hosted_disk_retention_days=7,
         hosted_launch_capacity=1,
+        hosted_agents_enabled=True,
     )
 
     async def session():
@@ -511,7 +512,7 @@ async def test_a_controller_machine_needs_agent_management(
             f"/hosted-controller/machines/{machine.id}/prepare", headers=HEADERS
         )
     assert response.status_code == 409, response.text
-    assert "AGENT_MANAGEMENT_ENABLED" in response.json()["detail"]
+    assert "agent_management feature flag" in response.json()["detail"]
 
 
 def test_a_waking_machine_is_judged_by_its_last_report() -> None:

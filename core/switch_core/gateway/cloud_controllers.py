@@ -58,7 +58,7 @@ class CloudEnrollmentUnavailable(Exception):
 def cloud_enrollment() -> CloudEnrollment:
     if _enrollment is None:
         raise CloudEnrollmentUnavailable(
-            "Cloud machines need agent management: set AGENT_MANAGEMENT_ENABLED."
+            "Cloud machines need agent management: turn on the agent_management feature flag."
         )
     return _enrollment
 
