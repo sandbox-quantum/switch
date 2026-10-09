@@ -32,3 +32,6 @@ the one users act on.
   document that describes agents and rooms to create and the params a
   deployer fills in. The bundled Switch expert (`switch-expert/template.yaml`)
   is the worked example.
+- [`connectors-roadmap.md`](connectors-roadmap.md): the service connectors
+  contributors can add, what's known about each, and the security rules every
+  connector follows.
