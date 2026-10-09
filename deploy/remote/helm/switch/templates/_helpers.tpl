@@ -107,6 +107,7 @@ TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY: {{ .Values.secrets.teamsAppNotifica
 TELEGRAM_APP_BOT_TOKEN: {{ required "secrets.telegramAppBotToken is required when switchCore.telegramApp.enabled" .Values.secrets.telegramAppBotToken | b64enc | quote }}
 TELEGRAM_APP_WEBHOOK_SECRET: {{ required "secrets.telegramAppWebhookSecret is required when switchCore.telegramApp.enabled" .Values.secrets.telegramAppWebhookSecret | b64enc | quote }}
 {{- end }}
+{{- end }}
 
 {{/*
 PostgreSQL connection details.
