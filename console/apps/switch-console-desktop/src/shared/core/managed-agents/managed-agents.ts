@@ -53,6 +53,11 @@ export type ManagedMachine = {
   state: 'online' | 'offline' | 'unknown' | 'revoked';
 };
 
+/** Whether the machine is the owner's Switch cloud machine: Switch enrolls its controller as kind `ec2`. */
+export function isCloudMachine(machine: Pick<ManagedMachine, 'kind'>): boolean {
+  return machine.kind === 'ec2';
+}
+
 /** A provider on a machine, as the machine last reported it. */
 export type MachineProvider = {
   /** The Switch definition provider id (`claude`, `codex`, …). */

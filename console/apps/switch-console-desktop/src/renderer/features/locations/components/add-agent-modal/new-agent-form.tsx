@@ -724,6 +724,8 @@ export const NewAgentForm = observer(function NewAgentForm({
                 ) : isMachineRun ? (
                   serverMachine?.local?.kind === 'this-computer' ? (
                     <Monitor className="size-4 text-foreground-muted" />
+                  ) : serverMachine?.cloud ? (
+                    <Cloud className="size-4 text-foreground-muted" />
                   ) : (
                     <Server className="size-4 text-foreground-muted" />
                   )
@@ -741,6 +743,8 @@ export const NewAgentForm = observer(function NewAgentForm({
                   <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
                     {option.icon === 'monitor' ? (
                       <Monitor className="size-4 text-foreground-muted" />
+                    ) : option.icon === 'cloud' ? (
+                      <Cloud className="size-4 text-foreground-muted" />
                     ) : (
                       <Server className="size-4 text-foreground-muted" />
                     )}
@@ -797,7 +801,11 @@ export const NewAgentForm = observer(function NewAgentForm({
           )}
           {isMachineRun && serverMachine && (
             <p className="flex items-start gap-1.5 text-xs text-foreground-muted">
-              <Server className="mt-0.5 size-3.5 shrink-0" />
+              {serverMachine.cloud ? (
+                <Cloud className="mt-0.5 size-3.5 shrink-0" />
+              ) : (
+                <Server className="mt-0.5 size-3.5 shrink-0" />
+              )}
               <span>
                 {serverMachine.state === 'online'
                   ? `Runs as a managed agent on ${serverMachine.name}.`

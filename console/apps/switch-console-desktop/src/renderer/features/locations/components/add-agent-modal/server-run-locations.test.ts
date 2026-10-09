@@ -52,14 +52,14 @@ describe('the run locations a server with agent management offers', () => {
     ]);
   });
 
-  it('lists the Switch cloud machine only while it is online, tagged as the cloud', () => {
+  it('lists the Switch cloud machine only while it is online, as the cloud', () => {
     const cloud = machine({ id: 'ec2', name: 'Switch cloud', kind: 'ec2', cloud: true });
     expect(machineRunLocations([cloud])).toEqual([
       {
         value: 'machine:ec2',
         label: 'Switch cloud',
         tag: 'cloud',
-        icon: 'server',
+        icon: 'cloud',
         disabled: false,
       },
     ]);

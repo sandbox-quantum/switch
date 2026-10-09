@@ -18,7 +18,7 @@ export type RunLocationOption = {
   label: string;
   /** The right-hand tag: what sort of machine it is. */
   tag: string;
-  icon: 'monitor' | 'server';
+  icon: 'monitor' | 'server' | 'cloud';
   disabled: boolean;
 };
 
@@ -48,7 +48,8 @@ export function machineRunLocations(machines: OwnedMachine[]): RunLocationOption
               : machine.cloud
                 ? 'cloud'
                 : machine.kind,
-        icon: machine.local?.kind === 'this-computer' ? 'monitor' : 'server',
+        icon:
+          machine.local?.kind === 'this-computer' ? 'monitor' : machine.cloud ? 'cloud' : 'server',
         disabled: offline,
       };
     });

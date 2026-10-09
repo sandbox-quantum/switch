@@ -1,11 +1,11 @@
-import { Server, ServerOff } from 'lucide-react';
+import { Cloud, CloudOff, Server, ServerOff } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
-import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { isValidProviderId } from '@shared/core/providers/agent-provider-registry';
 import { type AgentPresence, SidebarAgentRow } from '../sidebar/agent-row';
 import {
@@ -71,7 +71,13 @@ const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: Ma
         !thisComputer && (
           <Tooltip>
             <TooltipTrigger>
-              {machineDown || !agent.machine ? (
+              {agent.machine && isCloudMachine(agent.machine) ? (
+                machineDown ? (
+                  <CloudOff className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
+                ) : (
+                  <Cloud className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />
+                )
+              ) : machineDown || !agent.machine ? (
                 <ServerOff className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
               ) : (
                 <Server className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />
