@@ -192,6 +192,12 @@ services:
       MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: switch
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
       MM_TEAMSETTINGS_TEAMMATENAMEDISPLAY: "full_name"
+      MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
+      MM_LOGSETTINGS_ENABLESENTRY: "false"
+      MM_SERVICESETTINGS_ENABLESECURITYFIXALERT: "false"
+      MM_ANNOUNCEMENTSETTINGS_ADMINNOTICESENABLED: "false"
+      MM_ANNOUNCEMENTSETTINGS_USERNOTICESENABLED: "false"
+      MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE: "false"
       # Neither plugin is usable in a bundled Switch deployment: Copilot has no
       # configured provider and throws a 404 looking up its bot on every page
       # load, and Calls ships a WebRTC service nothing here can reach.
