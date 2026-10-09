@@ -173,7 +173,7 @@ def test_upgrade_moves_the_machine_onto_the_new_image(capsys, config_path):
     assert machine.image_id == "ami-11111111111111111"
     assert machine.previous_instance_id == "i-0123456789abcdef0"
     assert machine.data_volume_id == "vol-0123456789abcdef0"
-    assert machine.instance_bundle_token is None
+    assert machine.instance_bundle is None
 
 
 class OneIteration:

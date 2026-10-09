@@ -56,4 +56,4 @@ class Machine:
     required_bundle_token: str | None
     bundle_token: str | None
     bundle: str | None
-    instance_bundle_token: str | None
+    instance_bundle: str | None

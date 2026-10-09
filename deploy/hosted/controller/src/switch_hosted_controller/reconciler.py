@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import UTC, datetime, timedelta
@@ -103,9 +104,7 @@ class Reconciler:
                 if rejected(exc):
                     self._store.clear_unlaunched_instance(machine)
                 raise
-            return self._store.record_instance(
-                machine.machine_id, instance_id, machine.bundle_token
-            )
+            return self._store.record_instance(machine.machine_id, instance_id, machine.bundle)
         if instance is None:
             return self._attention(
                 claim,
@@ -129,10 +128,12 @@ class Reconciler:
             return self._store.replace_terminated(terminated, unexpected=unexpected)
         if state == "stopped":
             if _bundle_ready(machine) and self._unchanged(claim, DesiredState.RUNNING):
-                if machine.instance_bundle_token != machine.bundle_token:
+                if machine.bundle is not None and needs_new_user_data(
+                    machine.instance_bundle, machine.bundle
+                ):
                     self._cloud.replace_user_data(machine)
                     machine = self._store.record_instance_bundle(
-                        machine.machine_id, instance["InstanceId"], machine.bundle_token
+                        machine.machine_id, instance["InstanceId"], machine.bundle
                     )
                 self._cloud.start_instance(machine)
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
@@ -346,6 +347,25 @@ def _bundle_ready(machine: Machine) -> bool:
     return (
         machine.required_bundle_token is not None
         and machine.bundle_token == machine.required_bundle_token
+    )
+
+
+def needs_new_user_data(current: str | None, wanted: str) -> bool:
+    """Whether an instance booting from the bundle `current` must get `wanted` first.
+
+    Not when `wanted` only names the controller the machine enrolled as with
+    the code in `current`: the boot keeps an enrollment made with that code.
+    """
+    if current is None:
+        return True
+    have, want = json.loads(current), json.loads(wanted)
+    have_controller, want_controller = have.pop("controller"), want.pop("controller")
+    if have != want:
+        return True
+    if want_controller["enrollmentCode"] is not None:
+        return want_controller["enrollmentCode"] != have_controller["enrollmentCode"]
+    return have_controller["enrollmentCode"] is None and (
+        have_controller["id"] != want_controller["id"]
     )
 
 

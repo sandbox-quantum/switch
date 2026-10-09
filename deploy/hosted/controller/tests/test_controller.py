@@ -13,7 +13,7 @@ from botocore.stub import Stubber
 from switch_hosted_controller.cloud import CloudCapacityError, CloudResourceError, Ec2Cloud
 from switch_hosted_controller.config import ConfigError, ControllerConfig
 from switch_hosted_controller.model import DesiredState, Machine, ObservedState
-from switch_hosted_controller.reconciler import Reconciler
+from switch_hosted_controller.reconciler import Reconciler, needs_new_user_data
 from switch_hosted_controller.store import (
     SLOT_ROWS_MESSAGE,
     CapacityError,
@@ -246,8 +246,8 @@ def test_retained_release_starts_the_next_instance_sequence(tmp_path: Path):
     assert released.data_volume_id == "vol-0123456789abcdef0"
     assert released.instance_seq == machine.instance_seq + 1
     assert released.recovery_count == 0
-    assert machine.instance_bundle_token == "bundle-1"
-    assert released.instance_bundle_token is None
+    assert machine.instance_bundle == "bundle-1"
+    assert released.instance_bundle is None
     store.close()
 
 
@@ -372,19 +372,23 @@ def test_stop_and_start_use_only_recorded_instance(tmp_path: Path):
     store.close()
 
 
-def stopped_instance_with_bundle(cfg: ControllerConfig, instance_token: str | None):
+REVISION_1_BUNDLE = bundle_json(MACHINE_ID, "swce_SyntheticCodeRevision0001")
+REVISION_2_BUNDLE = bundle_json(MACHINE_ID, "swce_SyntheticCodeRevision0002")
+
+
+def stopped_instance_with_bundle(cfg: ControllerConfig, instance_bundle: str | None):
     store, machine = store_and_machine(cfg)
     store.record_volume(machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone)
-    store.record_instance(machine.machine_id, "i-0123456789abcdef0", instance_token)
+    store.record_instance(machine.machine_id, "i-0123456789abcdef0", instance_bundle)
     return store, with_bundle(store, machine.machine_id, 2)
 
 
-@pytest.mark.parametrize("instance_token", ["bundle-1", None])
+@pytest.mark.parametrize("instance_bundle", [REVISION_1_BUNDLE, None])
 def test_starting_an_instance_with_a_stale_bundle_replaces_its_user_data_first(
-    tmp_path: Path, instance_token
+    tmp_path: Path, instance_bundle
 ):
     cfg = config(tmp_path)
-    store, machine = stopped_instance_with_bundle(cfg, instance_token)
+    store, machine = stopped_instance_with_bundle(cfg, instance_bundle)
     attachment = {"InstanceId": machine.instance_id, "Device": "/dev/sdf", "State": "attached"}
     client = ec2_client()
     with Stubber(client) as stubber:
@@ -409,13 +413,13 @@ def test_starting_an_instance_with_a_stale_bundle_replaces_its_user_data_first(
         result = Reconciler(store, Ec2Cloud(client, cfg)).reconcile(machine.machine_id)
         stubber.assert_no_pending_responses()
     assert result.observed_state is ObservedState.PROVISIONING
-    assert result.instance_bundle_token == "bundle-2"
+    assert result.instance_bundle == REVISION_2_BUNDLE
     store.close()
 
 
 def test_starting_an_instance_with_the_current_bundle_only_starts_it(tmp_path: Path):
     cfg = config(tmp_path)
-    store, machine = stopped_instance_with_bundle(cfg, "bundle-2")
+    store, machine = stopped_instance_with_bundle(cfg, REVISION_2_BUNDLE)
     client = ec2_client()
     with Stubber(client) as stubber:
         stubber.add_response(
@@ -434,7 +438,82 @@ def test_starting_an_instance_with_the_current_bundle_only_starts_it(tmp_path: P
         result = Reconciler(store, Ec2Cloud(client, cfg)).reconcile(machine.machine_id)
         stubber.assert_no_pending_responses()
     assert result.observed_state is ObservedState.PROVISIONING
-    assert result.instance_bundle_token == "bundle-2"
+    assert result.instance_bundle == REVISION_2_BUNDLE
+    store.close()
+
+
+def _with_controller(bundle: str, controller_id: str | None, enrollment_code: str | None) -> str:
+    value = json.loads(bundle)
+    value["controller"] = {"id": controller_id, "enrollmentCode": enrollment_code}
+    return json.dumps(value, separators=(",", ":"))
+
+
+CONTROLLER_A = "9a1c2b4a-0000-4000-8000-0000000000aa"
+CONTROLLER_B = "9a1c2b4a-0000-4000-8000-0000000000bb"
+
+
+@pytest.mark.parametrize(
+    ("current", "wanted", "replaced"),
+    [
+        (None, REVISION_2_BUNDLE, True),
+        (REVISION_2_BUNDLE, REVISION_2_BUNDLE, False),
+        (REVISION_1_BUNDLE, REVISION_2_BUNDLE, True),
+        (REVISION_1_BUNDLE, _with_controller(REVISION_1_BUNDLE, CONTROLLER_A, None), False),
+        (
+            _with_controller(REVISION_1_BUNDLE, CONTROLLER_A, None),
+            _with_controller(REVISION_1_BUNDLE, CONTROLLER_A, None),
+            False,
+        ),
+        (
+            _with_controller(REVISION_1_BUNDLE, CONTROLLER_A, None),
+            _with_controller(REVISION_1_BUNDLE, CONTROLLER_B, None),
+            True,
+        ),
+        (_with_controller(REVISION_1_BUNDLE, CONTROLLER_A, None), REVISION_2_BUNDLE, True),
+        (
+            REVISION_1_BUNDLE,
+            REVISION_1_BUNDLE.replace("switch.example.test", "other.example.test"),
+            True,
+        ),
+        (
+            REVISION_1_BUNDLE,
+            _with_controller(
+                REVISION_1_BUNDLE.replace("switch.example.test", "other.example.test"),
+                CONTROLLER_A,
+                None,
+            ),
+            True,
+        ),
+    ],
+)
+def test_user_data_is_replaced_only_when_the_boot_would_need_it(current, wanted, replaced):
+    assert needs_new_user_data(current, wanted) is replaced
+
+
+def test_starting_an_enrolled_instance_keeps_the_user_data_it_enrolled_with(tmp_path: Path):
+    cfg = config(tmp_path)
+    store, machine = stopped_instance_with_bundle(cfg, REVISION_1_BUNDLE)
+    enrolled = _with_controller(REVISION_1_BUNDLE, CONTROLLER_A, None)
+    store.require_bundle(machine.machine_id, 3, "bundle-3")
+    machine = store.record_bundle(machine.machine_id, "bundle-3", enrolled)
+    client = ec2_client()
+    with Stubber(client) as stubber:
+        stubber.add_response(
+            "describe_volumes",
+            {"Volumes": [volume(cfg, machine)]},
+            {"VolumeIds": [machine.data_volume_id]},
+        )
+        stubber.add_response(
+            "describe_instances",
+            {"Reservations": [{"Instances": [instance(cfg, machine, "stopped")]}]},
+            {"InstanceIds": [machine.instance_id]},
+        )
+        stubber.add_response(
+            "start_instances", {"StartingInstances": []}, {"InstanceIds": [machine.instance_id]}
+        )
+        result = Reconciler(store, Ec2Cloud(client, cfg)).reconcile(machine.machine_id)
+        stubber.assert_no_pending_responses()
+    assert result.instance_bundle == REVISION_1_BUNDLE
     store.close()
 
 
@@ -442,9 +521,9 @@ def test_instance_bundle_is_recorded_only_for_the_recorded_instance(tmp_path: Pa
     cfg = config(tmp_path)
     store, machine = stopped_instance_with_bundle(cfg, "bundle-1")
     unchanged = store.record_instance_bundle(machine.machine_id, "i-fffffffffffffffff", "bundle-2")
-    assert unchanged.instance_bundle_token == "bundle-1"
+    assert unchanged.instance_bundle == "bundle-1"
     current = store.record_instance_bundle(machine.machine_id, machine.instance_id, "bundle-2")
-    assert current.instance_bundle_token == "bundle-2"
+    assert current.instance_bundle == "bundle-2"
     store.close()
 
 
@@ -508,7 +587,7 @@ def test_recovery_requires_terminated_predecessor_and_retains_disk(tmp_path):
     assert replacement.data_volume_id == "vol-0123456789abcdef0"
     assert replacement.recovery_count == 1
     assert replacement.instance_seq == 1
-    assert replacement.instance_bundle_token is None
+    assert replacement.instance_bundle is None
     assert not replacement.instance_launch_issued
     cloud = Ec2Cloud(ec2_client(), cfg)
     assert cloud._token(machine, "instance-0") != cloud._token(replacement, "instance-1")
@@ -611,7 +690,8 @@ def test_slot_era_database_with_only_deleted_machines_is_reopened_clean(tmp_path
     ).fetchall()
     connection.close()
     assert "slot_id" not in columns
-    assert {"bundle", "instance_bundle_token"} <= columns
+    assert {"bundle", "instance_bundle"} <= columns
+    assert "instance_bundle_token" not in columns
     assert indexes == []
     reopened = MachineStore(cfg.state_db_path, cfg.fingerprint())
     assert reopened.list() == [machine]
@@ -671,7 +751,7 @@ def test_image_upgrade_requires_stopped_terminal_claim_and_preserves_disk(tmp_pa
     assert upgraded.data_volume_id == machine.data_volume_id
     assert upgraded.desired_state is DesiredState.STOPPED
     assert upgraded.image_id != machine.image_id
-    assert upgraded.instance_bundle_token is None
+    assert upgraded.instance_bundle is None
     with pytest.raises(StoreError, match="changed"):
         store.upgrade_terminated(machine, "ami-11111111111111111")
     store.close()
@@ -713,3 +793,32 @@ def test_terminating_worker_waits_without_profile_or_replacement(tmp_path, desir
         assert result.error is None
         stubber.assert_no_pending_responses()
     store.close()
+
+
+@pytest.mark.parametrize("current", [True, False])
+def test_a_database_that_kept_bundle_tokens_keeps_the_current_instance_bundle(
+    tmp_path: Path, current: bool
+):
+    cfg = config(tmp_path)
+    store, machine = stopped_instance_with_bundle(cfg, None)
+    store.close()
+    connection = sqlite3.connect(cfg.state_db_path)
+    connection.executescript(
+        """
+        ALTER TABLE machines ADD COLUMN instance_bundle_token TEXT;
+        ALTER TABLE machines DROP COLUMN instance_bundle;
+        """
+    )
+    connection.execute(
+        "UPDATE machines SET instance_bundle_token = ?",
+        (machine.bundle_token if current else "bundle-1",),
+    )
+    connection.commit()
+    connection.close()
+    reopened = MachineStore(cfg.state_db_path, cfg.fingerprint())
+    assert reopened.get(machine.machine_id).instance_bundle == (machine.bundle if current else None)
+    reopened.close()
+    connection = sqlite3.connect(cfg.state_db_path)
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(machines)")}
+    connection.close()
+    assert "instance_bundle_token" not in columns

@@ -34,6 +34,7 @@ class FakeCore:
         self.prepared_revisions: list[int] = []
         self.observations: list[dict] = []
         self.prepare_failures = 0
+        self.controller_id: str | None = None
 
     def machine(self, revision: int | None = None) -> dict:
         return {
@@ -58,16 +59,20 @@ class FakeCore:
         if self.prepare_failures:
             self.prepare_failures -= 1
             raise GatewayError(503)
-        if self.code_revision != self.revision:
-            self.code_revision = self.revision
-            self.code = code(self.revision)
         self.prepared_revisions.append(self.revision)
+        if self.controller_id is not None:
+            controller = {"id": self.controller_id, "enrollment_code": None}
+        else:
+            if self.code_revision != self.revision:
+                self.code_revision = self.revision
+                self.code = code(self.revision)
+            controller = {"id": None, "enrollment_code": self.code}
         return {
             "machine_id": self.machine_id,
             "revision": self.revision,
-            "bundle_revision": self.code_revision,
+            "bundle_revision": self.revision,
             "api_endpoint": "https://switch.example.test/agent-api",
-            "controller": {"id": None, "enrollment_code": self.code},
+            "controller": controller,
             "extra": "ignored",
         }
 
@@ -117,6 +122,7 @@ class FakeCloud:
         assert self.instance is not None and self.volume is not None
         assert self.user_data is not None
         self.codes_at_boot.append(json.loads(self.user_data)["controller"]["enrollmentCode"])
+        self.calls.append("boot")
         self.instance["State"] = {"Name": "running"}
         self.volume["State"] = "in-use"
         self.volume["Attachments"] = [
@@ -188,7 +194,7 @@ def launched(tmp_path, *, instance_launch_issued: bool = False):
     if instance_launch_issued:
         machine = store.mark_instance_launch_intent(store.get(MACHINE_ID))
         machine = store.mark_instance_launch_issued(machine, datetime.now(UTC))
-        store.record_instance(MACHINE_ID, INSTANCE_ID, machine.bundle_token)
+        store.record_instance(MACHINE_ID, INSTANCE_ID, machine.bundle)
     assert store.get(MACHINE_ID).instance_launch_issued is instance_launch_issued
     return store, core, gateway
 
@@ -197,6 +203,7 @@ def launched(tmp_path, *, instance_launch_issued: bool = False):
 def test_new_revision_prepares_once_and_records_its_bundle(tmp_path, instance_launch_issued):
     store, core, gateway = launched(tmp_path, instance_launch_issued=instance_launch_issued)
     first = token(core.machine_id, 1)
+    first_bundle = store.get(MACHINE_ID).bundle
     assert core.prepared_revisions == [1]
     assert store.get(MACHINE_ID).bundle_token == first
     assert stored_bundle(store)["controller"]["enrollmentCode"] == code(1)
@@ -219,7 +226,7 @@ def test_new_revision_prepares_once_and_records_its_bundle(tmp_path, instance_la
     machine = store.get(MACHINE_ID)
     assert machine.required_bundle_token == machine.bundle_token == second
     assert machine.required_bundle_revision == 2
-    assert machine.instance_bundle_token == (first if instance_launch_issued else None)
+    assert machine.instance_bundle == (first_bundle if instance_launch_issued else None)
     store.close()
 
 
@@ -297,7 +304,7 @@ def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
     first = token(core.machine_id, 1)
     machine = store.get(MACHINE_ID)
     assert machine.observed_state is ObservedState.RUNNING
-    assert machine.instance_bundle_token == first
+    assert machine.instance_bundle == machine.bundle
     assert cloud.codes_at_boot == [code(1)]
     assert core.observations[-1] == {
         "state": "running",
@@ -330,13 +337,53 @@ def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
     poll()
     woken = token(core.machine_id, 3)
     assert core.prepared_revisions == [1, 3]
-    assert cloud.calls[-2:] == ["replace_user_data", "start_instance"]
+    assert cloud.calls[-3:] == ["replace_user_data", "start_instance", "boot"]
     assert cloud.codes_at_boot == [code(1), code(3)]
     assert json.loads(cloud.user_data) == stored_bundle(store)
-    assert store.get(MACHINE_ID).instance_bundle_token == woken
+    assert store.get(MACHINE_ID).bundle_token == woken
+    assert store.get(MACHINE_ID).instance_bundle == store.get(MACHINE_ID).bundle
     poll()
     machine = store.get(MACHINE_ID)
     assert machine.observed_state is ObservedState.RUNNING
     assert machine.instance_launch_issued
     assert cloud.calls.count("replace_user_data") == 1
     store.close()
+
+
+def test_an_enrolled_machine_wakes_on_the_user_data_it_enrolled_with(tmp_path):
+    store, core, gateway = harness(tmp_path)
+    cloud = FakeCloud(store)
+    reconciler = Reconciler(store, cloud)
+
+    def poll() -> None:
+        gateway.sync_machines(gateway.machines())
+        reconciler.reconcile_all()
+        gateway.report_observations(gateway.machines())
+
+    def sleep_and_wake() -> None:
+        core.sleep()
+        poll()
+        poll()
+        assert cloud.instance is not None and cloud.instance["State"]["Name"] == "stopped"
+        core.wake()
+        poll()
+
+    for _ in range(4):
+        poll()
+    enrolled_with = store.get(MACHINE_ID).bundle
+    core.controller_id = "9a1c2b4a-0000-4000-8000-0000000000aa"
+
+    sleep_and_wake()
+    assert "replace_user_data" not in cloud.calls
+    assert cloud.calls[-2:] == ["start_instance", "boot"]
+    assert json.loads(store.get(MACHINE_ID).bundle)["controller"] == {
+        "id": core.controller_id,
+        "enrollmentCode": None,
+    }
+    assert store.get(MACHINE_ID).instance_bundle == cloud.user_data == enrolled_with
+
+    core.controller_id = None
+    sleep_and_wake()
+    assert cloud.calls[-3:] == ["replace_user_data", "start_instance", "boot"]
+    assert cloud.codes_at_boot == [code(1), code(1), code(5)]
+    assert store.get(MACHINE_ID).instance_bundle == cloud.user_data == store.get(MACHINE_ID).bundle

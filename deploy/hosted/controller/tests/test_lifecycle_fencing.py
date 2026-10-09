@@ -170,8 +170,8 @@ def test_start_callback_cannot_publish_stale_success_or_error(tmp_path: Path, st
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)
     machine = record_compute(store, machine, cfg.availability_zone)
-    with_bundle(store, machine.machine_id, 1)
-    store.record_instance_bundle(machine.machine_id, machine.instance_id, "bundle-1")
+    bundled = with_bundle(store, machine.machine_id, 1)
+    store.record_instance_bundle(machine.machine_id, machine.instance_id, bundled.bundle)
     store.set_observed(machine, ObservedState.STOPPED)
     cloud = StartRaceCloud(cfg.state_db_path, cfg.fingerprint(), fail=start_fails)
 
@@ -302,7 +302,7 @@ def test_running_after_retained_launches_the_next_instance_on_the_kept_volume(tm
     first = record_compute(store, machine, cfg.availability_zone)
     store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
     Reconciler(store, DeletionCloud(["terminated"])).reconcile(machine.machine_id)
-    with_bundle(store, machine.machine_id, 2)
+    bundled = with_bundle(store, machine.machine_id, 2)
     store.set_desired(machine.machine_id, DesiredState.RUNNING, None)
     cloud = LaunchCloud()
 
@@ -311,7 +311,7 @@ def test_running_after_retained_launches_the_next_instance_on_the_kept_volume(tm
     assert relaunched.instance_id == "i-0000000000000000b"
     assert relaunched.data_volume_id == first.data_volume_id
     assert relaunched.previous_instance_id == first.instance_id
-    assert relaunched.instance_bundle_token == "bundle-2"
+    assert relaunched.instance_bundle == bundled.bundle
     [launched] = cloud.launched
     assert launched.instance_seq == 1
     assert launched.bundle == store.get(machine.machine_id).bundle

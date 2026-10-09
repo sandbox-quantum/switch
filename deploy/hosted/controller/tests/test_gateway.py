@@ -311,7 +311,7 @@ def test_core_machine_list_and_prepare_produce_the_bundle(tmp_path):
 def test_running_observation_matches_the_core_fixture(tmp_path):
     store, gateway, listed = synced_from_core(tmp_path)
     machine = store.get(listed["machine_id"])
-    store.record_instance(machine.machine_id, "i-0123456789abcdef0", machine.bundle_token)
+    store.record_instance(machine.machine_id, "i-0123456789abcdef0", machine.bundle)
     store.set_observed(store.get(listed["machine_id"]), ObservedState.RUNNING, None)
     gateway.report_observations(gateway.machines())
     path, body = gateway.request.call_args_list[-1].args

@@ -74,7 +74,7 @@ class MachineStore:
                 required_bundle_token TEXT,
                 bundle_token TEXT,
                 bundle TEXT,
-                instance_bundle_token TEXT,
+                instance_bundle TEXT,
                 error TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -85,6 +85,7 @@ class MachineStore:
             );
             """
         )
+        self._keep_instance_bundles()
         self._bind_fingerprint(controller_fingerprint)
 
     def close(self) -> None:
@@ -123,6 +124,23 @@ class MachineStore:
             BEGIN IMMEDIATE;
             DROP INDEX IF EXISTS machines_one_live_row_per_slot;
             DROP TABLE machines;
+            COMMIT;
+            """
+        )
+
+    def _keep_instance_bundles(self) -> None:
+        """Move a database that kept only the token of an instance's bundle to
+        keeping the bundle itself; one no longer current is not known."""
+        columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(machines)")}
+        if "instance_bundle_token" not in columns:
+            return
+        self._connection.executescript(
+            """
+            BEGIN IMMEDIATE;
+            ALTER TABLE machines ADD COLUMN instance_bundle TEXT;
+            UPDATE machines SET instance_bundle = bundle
+                WHERE instance_bundle_token IS NOT NULL AND instance_bundle_token = bundle_token;
+            ALTER TABLE machines DROP COLUMN instance_bundle_token;
             COMMIT;
             """
         )
@@ -291,7 +309,7 @@ class MachineStore:
             raise StoreError("the machine already uses this image")
         cursor = self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
-            instance_bundle_token = NULL,
+            instance_bundle = NULL,
             image_id = ?, instance_seq = instance_seq + 1,
             desired_revision = desired_revision + 1, operation_id = ?,
             instance_launch_intent = 0, instance_launch_issued = 0, instance_launch_issued_at = NULL,
@@ -324,7 +342,7 @@ class MachineStore:
             require_recovery_allowed(claim)
         self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
-            instance_bundle_token = NULL,
+            instance_bundle = NULL,
             instance_seq = instance_seq + 1,
             recovery_count = recovery_count + ?, instance_launch_intent = 0,
             instance_launch_issued = 0, instance_launch_issued_at = NULL,
@@ -349,7 +367,7 @@ class MachineStore:
             raise StoreError("release requires a confirmed terminated instance")
         self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
-            instance_bundle_token = NULL,
+            instance_bundle = NULL,
             instance_seq = instance_seq + 1,
             instance_launch_intent = 0, instance_launch_issued = 0, instance_launch_issued_at = NULL,
             instance_terminate_issued = 0,
@@ -423,24 +441,20 @@ class MachineStore:
         )
         return self.get(machine_id)
 
-    def record_instance(
-        self, machine_id: str, instance_id: str, bundle_token: str | None
-    ) -> Machine:
-        """Record the machine's instance, launched with the bundle of `bundle_token`,
+    def record_instance(self, machine_id: str, instance_id: str, bundle: str | None) -> Machine:
+        """Record the machine's instance, launched with `bundle` as its user data,
         or None when that is not known."""
-        self._set_once(
-            machine_id, "instance_id", instance_id, extra=("instance_bundle_token", bundle_token)
-        )
+        self._set_once(machine_id, "instance_id", instance_id, extra=("instance_bundle", bundle))
         return self.get(machine_id)
 
-    def record_instance_bundle(self, machine_id: str, instance_id: str, token: str) -> Machine:
-        """Record that the instance now boots from the bundle of `token`."""
+    def record_instance_bundle(self, machine_id: str, instance_id: str, bundle: str) -> Machine:
+        """Record that the instance now boots from `bundle`."""
         self._connection.execute(
             """
-            UPDATE machines SET instance_bundle_token = ?, updated_at = CURRENT_TIMESTAMP
+            UPDATE machines SET instance_bundle = ?, updated_at = CURRENT_TIMESTAMP
             WHERE machine_id = ? AND instance_id = ?
             """,
-            (token, machine_id, instance_id),
+            (bundle, machine_id, instance_id),
         )
         return self.get(machine_id)
 
@@ -572,7 +586,7 @@ class MachineStore:
             values: list[str | None] = [value]
             if extra is not None:
                 extra_column, extra_value = extra
-                if extra_column not in {"volume_az", "instance_bundle_token"}:
+                if extra_column not in {"volume_az", "instance_bundle"}:
                     raise ValueError("invalid extra column")
                 assignments.insert(1, f"{extra_column} = ?")
                 values.append(extra_value)
@@ -644,5 +658,5 @@ def _machine(row: sqlite3.Row) -> Machine:
         required_bundle_token=row["required_bundle_token"],
         bundle_token=row["bundle_token"],
         bundle=row["bundle"],
-        instance_bundle_token=row["instance_bundle_token"],
+        instance_bundle=row["instance_bundle"],
     )
