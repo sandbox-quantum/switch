@@ -16,6 +16,7 @@ function summary(roomId: string, seq: number): ChatSummary {
     channelName: null,
     agents: [{ id: 'a1', name: 'ada', displayName: null, iconUrl: null, provider: null }],
     canManage: true,
+    ownsAgent: false,
     lastMessage: { seq, sentAt: '2026-01-01T00:00:00Z', preview: 'hi', senderName: 'Ada' },
   };
 }

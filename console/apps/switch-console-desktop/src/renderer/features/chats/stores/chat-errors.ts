@@ -9,7 +9,7 @@ import { RpcError } from '@shared/lib/ipc/rpc-error';
  * same request id is safe.
  */
 export type ChatFailure = {
-  kind: 'not-a-member' | 'request-reused' | 'refused' | 'not-a-manager' | 'other';
+  kind: 'not-a-member' | 'request-reused' | 'refused' | 'not-a-manager' | 'agent-owner' | 'other';
   message: string;
   /** The server may have applied the request; retrying with the same id is safe. */
   uncertain: boolean;
@@ -20,6 +20,7 @@ const API_CODES: Record<string, ChatFailure['kind']> = {
   REQUEST_REUSED: 'request-reused',
   MESSAGE_REFUSED: 'refused',
   NOT_A_MANAGER: 'not-a-manager',
+  AGENT_OWNER: 'agent-owner',
 };
 
 export function chatFailure(error: unknown): ChatFailure {

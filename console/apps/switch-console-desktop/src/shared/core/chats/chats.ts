@@ -24,6 +24,8 @@ export const chatSummarySchema = z.object({
   channelName: z.string().nullable(),
   agents: z.array(chatAgentSchema),
   canManage: z.boolean(),
+  /** The viewer owns one of the agents, which keeps them in the room: they cannot leave it. */
+  ownsAgent: z.boolean().default(false),
   lastMessage: z
     .object({
       seq: z.number().int(),

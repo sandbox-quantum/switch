@@ -24,7 +24,7 @@ import {
 import { type ChatSummary, chatAgentLabel } from '@shared/core/chats/chats';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import { chatsStore } from '../stores/chats';
-import { chatActions } from './chat-actions';
+import { ChatActionItems, chatActions } from './chat-actions';
 
 const STREAM_LABEL = {
   connecting: 'Connecting…',
@@ -125,18 +125,7 @@ export const ChatHeaderControls = observer(function ChatHeaderControls({
           <MoreHorizontal className="size-4" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          {chatActions(serverId, chat).map((action) => (
-            <Fragment key={action.key}>
-              {action.separatorBefore && <DropdownMenuSeparator />}
-              <DropdownMenuItem
-                variant={action.destructive ? 'destructive' : 'default'}
-                onClick={action.run}
-              >
-                {action.icon}
-                {action.label}
-              </DropdownMenuItem>
-            </Fragment>
-          ))}
+          <ChatActionItems actions={chatActions(serverId, chat)} />
           {channelUrl && (
             <DropdownMenuItem onClick={() => openRoomChannel(chat.roomId)}>
               <ExternalLink className="size-4" />

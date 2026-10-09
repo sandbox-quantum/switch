@@ -1,11 +1,12 @@
 import { Archive, EyeOff, LogOut, Pencil, Users } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { showModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
+import { DropdownMenuItem, DropdownMenuSeparator } from '@renderer/lib/ui/dropdown-menu';
 import type { ChatSummary } from '@shared/core/chats/chats';
 import { chatsStore } from '../stores/chats';
 
@@ -15,6 +16,9 @@ export type ChatAction = {
   icon: ReactNode;
   destructive?: boolean;
   separatorBefore?: boolean;
+  /** Shown but not offered, with `hint` saying why. */
+  disabled?: boolean;
+  hint?: string;
   run: () => void;
 };
 
@@ -37,7 +41,8 @@ function leaveIfOpen(roomId: string): void {
  * What can be done to a chat from its row or its header. Rename and archive
  * change the room for everyone, so they are offered only to its managers;
  * removing it from the list is the person's own and comes back with the next
- * message; leaving takes their membership away.
+ * message; leaving takes their membership away, and is not offered to someone
+ * who owns one of its agents, since owning an agent keeps them in the room.
  */
 export function chatActions(serverId: string, chat: ChatSummary): ChatAction[] {
   const actions: ChatAction[] = [
@@ -94,6 +99,8 @@ export function chatActions(serverId: string, chat: ChatSummary): ChatAction[] {
     label: 'Leave chat',
     icon: <LogOut className="size-4" />,
     destructive: true,
+    disabled: chat.ownsAgent,
+    hint: chat.ownsAgent ? 'You own an agent in this room' : undefined,
     run: () =>
       showModal('confirmActionModal', {
         title: `Leave ${chat.name}?`,
@@ -111,4 +118,29 @@ export function chatActions(serverId: string, chat: ChatSummary): ChatAction[] {
       }),
   });
   return actions;
+}
+
+/** A chat's actions as dropdown menu items. */
+export function ChatActionItems({ actions }: { actions: ChatAction[] }) {
+  return actions.map((action) => (
+    <Fragment key={action.key}>
+      {action.separatorBefore && <DropdownMenuSeparator />}
+      <DropdownMenuItem
+        variant={action.destructive ? 'destructive' : 'default'}
+        disabled={action.disabled}
+        title={action.hint}
+        onClick={action.run}
+      >
+        {action.icon}
+        {action.hint ? (
+          <span className="flex flex-col">
+            {action.label}
+            <span className="text-xs text-foreground-muted">{action.hint}</span>
+          </span>
+        ) : (
+          action.label
+        )}
+      </DropdownMenuItem>
+    </Fragment>
+  ));
 }
