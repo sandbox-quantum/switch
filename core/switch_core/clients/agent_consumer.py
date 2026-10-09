@@ -343,6 +343,7 @@ class AgentConsumer(Consumer[AgentActor]):
         super().__init__(actor=actor)
         self._event_buffer = event_buffer
         self._agent_store = agent_store
+        self._preloaded_agent: Agent | None = None
         self._room_store = room_store
         self._bridge_store = bridge_store
         self._document_store = document_store
@@ -406,12 +407,22 @@ class AgentConsumer(Consumer[AgentActor]):
         fail the client at boot over a row that exists, which is why nothing
         here falls back to whatever is ambient.
         """
-        async with tenant_session(self.session_factory, self.tenant_id) as session:
-            agent = await self._agent_store.get_by_client_id(session, self.client_id)
-            if agent is None:
-                raise RuntimeError(f"No agent found for client: {self.client_id}")
-            self.actor.set_agent(agent)
+        agent = self._preloaded_agent
+        self._preloaded_agent = None
+        if agent is None:
+            async with tenant_session(self.session_factory, self.tenant_id) as session:
+                agent = await self._agent_store.get_by_client_id(
+                    session, self.client_id
+                )
+        if agent is None:
+            raise RuntimeError(f"No agent found for client: {self.client_id}")
+        self.actor.set_agent(agent)
         await super().start()
+
+    def preload_agent(self, agent: Agent) -> None:
+        """Hand `start` the agent row read in bulk at boot, so it needs no
+        query of its own. Used once: a restart reads it fresh."""
+        self._preloaded_agent = agent
 
     # ── Event hooks ───────────────────────────────────────────────────────────
 
