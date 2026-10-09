@@ -33,7 +33,7 @@ def _config(**overrides: object) -> SwitchConfig:
 def test_off_by_default() -> None:
     config = _config()
     assert config.trust_enabled is False
-    assert config.switch_trust_endpoint == "https://api.flintai.dev"
+    assert config.switch_trust_endpoint == "https://api.switchagents.ai"
 
 
 def test_setting_both_enables_it() -> None:

@@ -255,6 +255,7 @@ class Harness:
         protocol: AgentCore,
         room_service: RoomService,
         client_lifecycle: ClientLifecycleService,
+        client_factory: ClientFactory,
         room_store: RoomStore,
         event_buffer: EventBuffer,
         owner_id: str,
@@ -263,6 +264,12 @@ class Harness:
         self.protocol = protocol
         self.room_service = room_service
         self.client_lifecycle = client_lifecycle
+        # Not registered by default — most tests never need a running admin
+        # client, and one running in every test room changes what every
+        # room_join-watching test sees (admin is itself a room member once its
+        # client runs). A test that needs the SystemActor (e.g. to read back an
+        # admin notice) registers it itself, through this, before start_clients().
+        self.client_factory = client_factory
         self.room_store = room_store
         self.event_buffer = event_buffer
         self.owner_id = owner_id
@@ -651,6 +658,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
             protocol=protocol,
             room_service=room_service,
             client_lifecycle=client_lifecycle,
+            client_factory=client_factory,
             room_store=session_env.room_store,
             event_buffer=event_buffer,
             owner_id=owner_id,

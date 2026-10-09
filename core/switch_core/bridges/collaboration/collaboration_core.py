@@ -88,6 +88,7 @@ from switch_core.trust.client import (
     TrustClient,
     check_message,
     trust_annotation,
+    trust_redaction_notice,
 )
 
 if TYPE_CHECKING:
@@ -954,7 +955,10 @@ class CollaborationCore:
 
         if not msg.attachments:
             check = await check_message(
-                self._trust_client, role="user", content=content
+                self._trust_client,
+                role="user",
+                content=content,
+                room_id=room_id,
             )
             if check.blocked:
                 logger.warning(
@@ -974,6 +978,14 @@ class CollaborationCore:
                 return
             if check.redacted_content is not None:
                 content = check.redacted_content
+                redaction_notice = trust_redaction_notice(check)
+                if redaction_notice is not None:
+                    await self._adapter.admin_message(
+                        msg.channel_id,
+                        redaction_notice,
+                        msg.root_id or msg.message_ref,
+                        message_type=AdminMessageType.TRUST_REDACTED.value,
+                    )
             annotation = trust_annotation(check)
             if annotation is not None:
                 content = f"{content}\n\n{annotation}"
