@@ -82,6 +82,15 @@ value registered with the IdP **character for character** — scheme, host,
 port and path — or the provider refuses the callback before Switch ever sees
 it.
 
+Put it on the host browser sign-in starts on. The login route keeps the flow's
+state in a cookie on that host, so a callback that comes back to a different
+host finds no state and the sign-in fails. A server serving its own dashboard
+has one address and that is the host. A server still split across two hosts
+starts sign-in on the dashboard's, and so does Switch Console for a server it
+saved with a separate dashboard address. Once you retire the separate
+dashboard host, move the redirect URL (here and at the IdP) to the server's
+own address.
+
 ### What turning off email-verified enforcement means
 
 By default, a login is refused unless the IdP's token asserts
