@@ -426,10 +426,9 @@ pnpm run lint
   is out of step is read off the running container, not inferred from what we last wrote —
   and a host that cannot be read is reported as unknown, never as agreeing.
 - **The toggle defaults to on (opt-out).** A non-dismissible first-run notice says what is
-  shared and carries the off switch (`docs/TELEMETRY.md`, "Consent"). The payload still
-  carries a random per-install id, which makes it pseudonymous personal data under
-  GDPR/nFADP. Whether an opt-out default covers that is an open question for whoever owns
-  privacy; do not add anything identifying to the payload while it is open.
+  shared and carries the off switch (the repo-root `docs/TELEMETRY.md`, "Consent"). The payload
+  carries a random per-install id, which makes it pseudonymous personal data under GDPR/nFADP,
+  so do not add anything else identifying to it.
 - **What a telemetry payload may contain.** Add an event only by adding it to the closed
   catalogue in `src/main/core/telemetry/events.ts`: its property types are literal unions,
   numbers and booleans, and `TELEMETRY_EVENT_PROPERTIES` names the same fields as data, which
@@ -656,7 +655,7 @@ pnpm run test
   `approvalPolicy: 'never'` and nothing else. The sandbox is deliberately **not** overridden: "Bypass
   permissions" promises unattended approvals, not unattended filesystem and
   network access, so the user's own `sandbox_mode` from `~/.codex/config.toml`
-  stands. See `packages/plugins/src/agents/impl/codex/index.ts`.
+  stands. See `packages/agent-providers/src/codex/codex-adapter.ts`.
 - App updates in dev: the update service is inert outside packaged builds, so the
   "update available" UI cannot be exercised by `pnpm run dev` alone. Set
   `SWITCHDASH_FAKE_UPDATE` to replay the lifecycle against a simulated release —

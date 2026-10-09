@@ -116,7 +116,7 @@ id, no IP field, no Switch identity.
 
 | Event | Fields, with example values |
 |---|---|
-| `view_opened` | `view_id`, one of exactly 17: `home`, `location`, `session`, `cloudSession`, `managedAgent`, `room`, `settings`, `server`, `serverAgents`, `serverRooms`, `remoteHosts`, `remoteHost`, `templateImport`, `templates`, `templateDetail`, `templateUse`, `templateCapture` |
+| `view_opened` | `view_id`, one of exactly 16: `home`, `location`, `session`, `managedAgent`, `room`, `settings`, `server`, `serverAgents`, `serverRooms`, `remoteHosts`, `remoteHost`, `templateImport`, `templates`, `templateDetail`, `templateUse`, `templateCapture` |
 | `command_executed` | `command_id`, one of exactly 9: `app.settings`, `app.newLocation`, `app.addServer`, `app.toggleTheme`, `app.navigateBack`, `app.navigateForward`, `session.pin`, `session.nextSession`, `session.prevSession` · `invoked_by`: `palette` / `shortcut` |
 | `deeplink_opened` | `resolved`: `true` / `false` · `cold_start`: `true` / `false`. **The URL is never sent.** |
 | `onboarding_step_started` | `step_id`, one of exactly 4: `addServer`, `agentProviders`, `onboardAgents`, `createRoom` |

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from switch_core.clients.agent_consumer import AgentConsumer, _offline_owner_message
+from switch_core.clients.agent_consumer import (
+    AgentConsumer,
+    _offline_owner_message,
+    _start_from_console_message,
+)
 
 """The reply an auto_session agent gives when it is addressed and nothing is
 there to bring it online (CHOO-2344).
@@ -124,10 +128,10 @@ class TestUnavailableReplyRouting:
             other_room_names=["Hub"],
         )
         assert "**Hub**" in msg
-        assert "Ask me there" in msg
+        assert "you can ask me there" in msg
         assert "```" not in msg
 
-    async def test_session_addressable_is_untouched(self) -> None:
+    async def test_session_addressable_points_at_switch_console(self) -> None:
         agent = _agent(
             "session_addressable",
             {
@@ -146,3 +150,58 @@ class TestUnavailableReplyRouting:
         msg = await _reply(_client("ownerhandle"), _agent("auto_session", {}))
         assert "Open Switch Console" in msg
         assert "```" not in msg
+
+    async def test_a_passive_agent_is_not_told_it_has_no_session(self) -> None:
+        # A passive agent is never live in real time, even while a session is
+        # open and working, so "I don't have a session" would be wrong.
+        agent = _agent(
+            "session_passive",
+            {
+                "known_agent_type": "claude-code",
+                "known_agent_options": {"channels_enabled": False},
+            },
+        )
+        for kwargs in ({}, {"other_room_names": ["Hub"]}):
+            msg = await _reply(_client("ownerhandle"), agent, **kwargs)
+            assert "I read room messages asynchronously" in msg
+            assert "I don't have a session" not in msg
+
+
+class TestStartFromConsoleMessage:
+    """The reply for a Console-run agent with sessions elsewhere, or a session
+    here that is not live. It always points at Switch Console and never offers
+    a terminal command, since a CLI started by hand gets none of the Switch
+    tools."""
+
+    def test_no_session_names_the_owner_and_offers_no_command(self) -> None:
+        msg = _start_from_console_message("worker.test", "cmcd", "louisa", None, False)
+        assert msg == (
+            "I don't have a session connected to this room. "
+            "@cmcd can start one by opening **worker.test** in Switch Console."
+        )
+
+    def test_the_owner_asking_is_called_you(self) -> None:
+        msg = _start_from_console_message("worker.test", "cmcd", "cmcd", None, False)
+        assert "You can start one by opening **worker.test** in Switch Console." in msg
+        assert "@cmcd" not in msg
+
+    def test_an_unlinked_owner_is_named_without_a_mention(self) -> None:
+        msg = _start_from_console_message("worker.test", None, "louisa", None, False)
+        assert "My owner can start one" in msg
+        assert "@" not in msg
+
+    def test_sessions_elsewhere_are_offered_first(self) -> None:
+        msg = _start_from_console_message(
+            "worker.test", "cmcd", "louisa", ["Hub", "Ops", "Triage"], False
+        )
+        assert (
+            "I'm working in **Hub**, **Ops** and **Triage**, so you can ask me there."
+            in msg
+        )
+        assert "Or @cmcd can start one here" in msg
+        assert "```" not in msg
+
+    def test_a_session_here_that_is_not_live_asks_for_a_restart(self) -> None:
+        msg = _start_from_console_message("worker.test", "cmcd", "cmcd", None, True)
+        assert "isn't reporting as live" in msg
+        assert "You can restart it by opening **worker.test** in Switch Console." in msg

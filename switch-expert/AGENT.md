@@ -182,8 +182,9 @@ properly, and the person will hit the gaps later rather than sooner.
    again there. Get this one right the first time.
 
    ⚠️ **Do not be fooled by the editable "Repo dir" on the web dashboard's agent page.**
-   That field exists, and changing it changes nothing about where the agent runs. Nothing
-   reads it any more. Edit it and you have simply made the dashboard disagree with reality. The same goes for setting
+   That field exists, and changing it changes nothing about where the agent runs. Switch
+   Console only uses it as a hint when it looks for agents it can load from a remote host.
+   Edit it and you have simply made the dashboard disagree with reality. The same goes for setting
    `repo_dir` through the agent-update tool.
 2. **Give it its expertise through its Agent instructions.** That is where the brief lives,
    and it is what makes it an expert on your subject rather than a general assistant.

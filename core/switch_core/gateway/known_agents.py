@@ -48,59 +48,6 @@ class KnownAgent(ABC):
     def parse_options(cls, raw: dict[str, Any] | None) -> KnownAgentOptions:
         return cls.options_schema.model_validate(raw or {})
 
-    @classmethod
-    def start_session_instructions(
-        cls,
-        agent: Agent,
-        owner_handle: str | None,
-        other_room_names: list[str] | None,
-        connected_not_live: bool,
-    ) -> str:
-        """Return markdown telling the agent's owner how to bring it online in
-        the room it was just addressed in. Posted when the agent is addressed
-        but has no live session there.
-
-        Sessions are started by Switch Console, its sidecar on an SSH host, or
-        an agents controller, never by hand: a CLI started in a terminal gets
-        none of the Switch tools. So the answer is always to start it from
-        Switch Console, and no terminal command is offered.
-
-        `owner_handle` is the agent owner's account on the platform this room
-        is bridged to, @-mentioned so they are actually notified. None when the
-        agent has no owner or that owner has claimed no account there, in which
-        case the message still posts and says "my owner". It is passed in
-        rather than read from `options`: the right handle depends on which
-        platform the room is on, which the caller knows and a per-agent setting
-        could not.
-
-        When `other_room_names` is set, the agent has no session here but does
-        have live sessions in those rooms; the message names them as somewhere
-        the asker can go instead.
-
-        When `connected_not_live` is set, a session is bound to this room but
-        is not reporting as live; the message says so and asks for a restart.
-        """
-        prefix = f"@{owner_handle} — " if owner_handle else ""
-        actor = "you" if owner_handle else "my owner"
-        console = f"opening **{agent.name}** in Switch Console"
-        if connected_not_live:
-            return (
-                f"{prefix}I have a session connected to this room, but it isn't "
-                "reporting as live, so I'm not receiving messages. "
-                f"{actor.capitalize()} can restart it by {console}."
-            )
-        if other_room_names:
-            where = ", ".join(f"**{name}**" for name in other_room_names)
-            return (
-                f"{prefix}I don't have a session in this room right now, but I do "
-                f"have one in {where}. Ask me there, or {actor} can start one here "
-                f"by {console}."
-            )
-        return (
-            f"{prefix}I don't have a session connected to this room. "
-            f"{actor.capitalize()} can start one by {console}."
-        )
-
 
 class ClaudeCodeOptions(KnownAgentOptions):
     channels_enabled: bool = True
