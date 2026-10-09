@@ -42,6 +42,7 @@ import { updateService } from './core/updates/update-service';
 import { viewStateService } from './core/view-state/view-state-service';
 import { reconcileAllWorkspaces } from './core/workspaces/reconcile-workspaces';
 import { initializeDatabase } from './db/initialize';
+import { databaseOpenFailureDialog } from './db/open-failure-dialog';
 import { logAppExit, logAppStart, registerAppDiagnostics } from './lib/app-diagnostics';
 import {
   getLogFilePath,
@@ -119,23 +120,13 @@ void app.whenReady().then(async () => {
     }
   } catch (error) {
     log.error('Failed to initialize database:', error);
-    // The one failure with no UI to fall back on: the app is about to quit, so
-    // whatever the user needs to act has to be in this box. Name the likely
-    // causes and where the log is, then the raw error under its own heading.
-    const logPath = getLogFilePath();
-    dialog.showErrorBox(
-      `${PRODUCT_NAME} could not open its database`,
-      [
-        `${PRODUCT_NAME} cannot start without it, so it is closing.`,
-        '',
-        'The usual causes are another copy of the app already running, a full disk, or the database file having been moved or made read-only. Closing the other copy and reopening is worth trying first.',
-        logPath ? `\nFull details are in the log: ${logPath}` : '',
-        '',
-        `Error: ${error instanceof Error ? error.message : String(error)}`,
-      ]
-        .filter((line) => line !== '')
-        .join('\n')
+    const { title, body } = databaseOpenFailureDialog(
+      error,
+      PRODUCT_NAME,
+      app.getPath('userData'),
+      getLogFilePath()
     );
+    dialog.showErrorBox(title, body);
     app.quit();
     return;
   }

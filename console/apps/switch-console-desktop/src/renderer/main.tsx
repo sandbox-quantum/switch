@@ -17,6 +17,7 @@ import { log } from '@renderer/utils/logger';
 import { initSoundPlayer } from '@renderer/utils/soundPlayer';
 import type { NavigationSnapshot, SidebarSnapshot } from '@shared/view-state';
 import { App } from './App';
+import { renderBootstrapFailure } from './bootstrap-failure';
 import { ErrorBoundary } from './lib/components/error-boundary';
 import { appState } from './lib/stores/app-state';
 
@@ -63,4 +64,5 @@ async function bootstrap() {
 
 bootstrap().catch((error: unknown) => {
   log.error('Renderer bootstrap failed:', error);
+  renderBootstrapFailure(document.getElementById('root') ?? document.body, error);
 });

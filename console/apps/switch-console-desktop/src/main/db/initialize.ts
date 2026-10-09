@@ -11,7 +11,7 @@ const sqlFiles = import.meta.glob('@root/drizzle/*.sql', {
   eager: true,
 }) as Record<string, string>;
 
-type JournalEntry = { idx: number; when: number; tag: string; breakpoints: boolean };
+export type JournalEntry = { idx: number; when: number; tag: string; breakpoints: boolean };
 
 /**
  * Bundled migration SQL that the journal does not list.
@@ -40,7 +40,46 @@ function migrationTagFromKey(key: string): string | null {
   return base?.endsWith('.sql') ? base.slice(0, -'.sql'.length) : null;
 }
 
+/**
+ * The database has migrations applied that this build does not know about: it
+ * was last opened by a newer build, or one that diverged from this one —
+ * Canary or a build from source, which share the stable channel's data
+ * directory, or a stable hotfix tagged off main (CHOO-3384).
+ *
+ * Opening it anyway means booting on a schema this build was not written for:
+ * the first query that touches a changed table fails, and the renderer is left
+ * on a blank window. Refusing with a clear message is the only safe outcome, as
+ * downgrading a schema is not something the migrations can do.
+ */
+export class DatabaseFromNewerBuildError extends Error {
+  readonly unknownMigrations: number;
+
+  constructor(unknownTimestamps: number[], newestKnown: number) {
+    super(
+      `The database was last opened by a newer or different version of the app: it has ` +
+        `${unknownTimestamps.length} migration(s) this version does not know about ` +
+        `(ledger timestamps ${unknownTimestamps.join(', ')}; newest known ${newestKnown}).`
+    );
+    this.name = 'DatabaseFromNewerBuildError';
+    this.unknownMigrations = unknownTimestamps.length;
+  }
+}
+
 function runBundledMigrations(connection: BetterSqlite3.Database): void {
+  applyMigrations(connection, (journal as { entries: JournalEntry[] }).entries, sqlFiles);
+}
+
+/**
+ * Applies `entries` (journal order) from `sqlFiles` to `connection`.
+ *
+ * Exported so tests can run the runner against an older journal — the way an
+ * older build sees a database — without rebuilding the bundle.
+ */
+export function applyMigrations(
+  connection: BetterSqlite3.Database,
+  entries: JournalEntry[],
+  sqlFiles: Record<string, string>
+): void {
   const migrationLog = log.child({ component: 'db-migration' });
   const startedAt = Date.now();
   const applied: string[] = [];
@@ -52,8 +91,6 @@ function runBundledMigrations(connection: BetterSqlite3.Database): void {
       created_at NUMERIC
     )
   `);
-
-  const entries = (journal as { entries: JournalEntry[] }).entries;
 
   const orphans = orphanedMigrationTags(
     Object.keys(sqlFiles),
@@ -74,10 +111,33 @@ function runBundledMigrations(connection: BetterSqlite3.Database): void {
     Object.keys(sqlFiles).map((key) => [migrationTagFromKey(key), key] as const)
   );
 
-  const lastRow = connection
-    .prepare('SELECT created_at FROM __drizzle_migrations ORDER BY created_at DESC LIMIT 1')
-    .get() as { created_at: number } | undefined;
-  const lastTimestamp = lastRow?.created_at ?? 0;
+  // Each ledger row is matched to its journal entry by timestamp, rather than
+  // treating the newest timestamp as "everything up to here is applied". A
+  // high-water mark cannot see a migration from a build that diverged from this
+  // one (a stable hotfix stamped after Canary's newest looks like the newer
+  // build), and it skips an entry stamped below a migration applied out of
+  // order — both boot the app on a schema it was not written for.
+  const appliedTimestamps = new Set(
+    (
+      connection.prepare('SELECT created_at FROM __drizzle_migrations').all() as {
+        created_at: number;
+      }[]
+    ).map((row) => Number(row.created_at))
+  );
+  const knownTimestamps = new Set(entries.map((entry) => entry.when));
+  const unknownTimestamps = [...appliedTimestamps]
+    .filter((timestamp) => !knownTimestamps.has(timestamp))
+    .sort((a, b) => a - b);
+  if (unknownTimestamps.length) {
+    const newestKnown = Math.max(0, ...knownTimestamps);
+    migrationLog.error('Database was migrated by a newer or different build', {
+      event: 'db_migration_newer_schema',
+      unknownTimestamps,
+      newestKnown,
+      unknownMigrations: unknownTimestamps.length,
+    });
+    throw new DatabaseFromNewerBuildError(unknownTimestamps, newestKnown);
+  }
 
   // Apply migrations with foreign keys disabled. SQLite's table-recreation
   // pattern (CREATE __new / copy / DROP / RENAME) used to drop columns that are
@@ -90,7 +150,7 @@ function runBundledMigrations(connection: BetterSqlite3.Database): void {
     // fact, so which one was being applied is recorded as it happens.
     connection.transaction(() => {
       for (const entry of entries) {
-        if (entry.when <= lastTimestamp) continue;
+        if (appliedTimestamps.has(entry.when)) continue;
 
         const sqlKey = sqlByTag.get(entry.tag);
         if (!sqlKey) throw new Error(`Missing bundled SQL for migration: ${entry.tag}`);
