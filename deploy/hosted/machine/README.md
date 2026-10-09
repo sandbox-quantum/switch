@@ -23,17 +23,17 @@ machine.
 
    Once the machine has a controller, `controller.id` names it and
    `enrollmentCode` is null. The bundle never holds a long-lived credential.
-   Before it starts a stopped instance, the hosted controller replaces its
-   user data only when the boot needs it: a new enrollment code or a new
-   endpoint. A bundle that only names the controller the machine enrolled as
-   with the code it already has is not needed, since the boot keeps that
-   enrollment.
+   An instance boots from the bundle it was launched with. When the machine
+   needs a new enrollment code or a new endpoint, the hosted controller
+   terminates the stopped instance and launches a new one with the new bundle,
+   on the same data volume. A bundle that only names the controller the
+   machine enrolled as is not one of those: the boot keeps an enrollment made
+   with the code it already has.
 4. `switch-machine-boot.service` runs as root at every boot
    (`switch_machine_boot.py`):
-   - It reads the bundle from the instance's user data (IMDSv2) on every boot,
-     so a bundle replaced while the instance was stopped is the one used. An
-     instance with no user data was not launched by the hosted controller: the
-     boot stops there and is not retried.
+   - It reads the bundle from the instance's user data (IMDSv2) on every boot.
+     An instance with no user data was not launched by the hosted controller:
+     the boot stops there and is not retried.
    - It waits for the data volume, which is attached after the instance
      starts.
    - It formats the volume only if it is blank, then mounts it on `/data`

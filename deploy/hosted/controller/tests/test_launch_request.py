@@ -69,38 +69,6 @@ def test_run_request_refuses_a_machine_without_a_bundle(tmp_path: Path):
     store.close()
 
 
-def test_user_data_replacement_writes_the_stored_bundle(tmp_path: Path):
-    cfg = config(tmp_path)
-    store, machine = store_and_machine(cfg)
-    store.record_instance(machine.machine_id, "i-0123456789abcdef0", None)
-    machine = with_bundle(store, machine.machine_id, 2)
-    client = ec2_client()
-    with Stubber(client) as stubber:
-        stubber.add_response(
-            "modify_instance_attribute",
-            {},
-            {"InstanceId": machine.instance_id, "UserData": {"Value": machine.bundle.encode()}},
-        )
-        Ec2Cloud(client, cfg).replace_user_data(machine)
-        stubber.assert_no_pending_responses()
-    store.close()
-
-
-@pytest.mark.parametrize(
-    "missing", [{"instance_id": None}, {"bundle": None}], ids=["instance", "bundle"]
-)
-def test_user_data_replacement_refuses_without_an_instance_and_bundle(tmp_path: Path, missing):
-    cfg = config(tmp_path)
-    store, machine = store_and_machine(cfg)
-    store.record_instance(machine.machine_id, "i-0123456789abcdef0", None)
-    machine = replace(with_bundle(store, machine.machine_id, 1), **missing)
-    client = ec2_client()
-    with Stubber(client):
-        with pytest.raises(CloudResourceError, match="user data"):
-            Ec2Cloud(client, cfg).replace_user_data(machine)
-    store.close()
-
-
 def test_tags_filters_and_tokens_are_keyed_by_machine(tmp_path: Path):
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)

@@ -169,9 +169,9 @@ class StartRaceCloud:
 def test_start_callback_cannot_publish_stale_success_or_error(tmp_path: Path, start_fails: bool):
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)
-    machine = record_compute(store, machine, cfg.availability_zone)
+    store.record_volume(machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone)
     bundled = with_bundle(store, machine.machine_id, 1)
-    store.record_instance_bundle(machine.machine_id, machine.instance_id, bundled.bundle)
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0", bundled.bundle)
     store.set_observed(machine, ObservedState.STOPPED)
     cloud = StartRaceCloud(cfg.state_db_path, cfg.fingerprint(), fail=start_fails)
 

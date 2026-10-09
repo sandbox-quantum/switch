@@ -33,8 +33,9 @@ while the user signs in. The hosted controller polls Core for the machines that
 should exist, creates the data volume, and launches the VM with a bundle that
 carries a one-time enrollment code as its user data. The machine enrolls its
 controller with that code, and its status reports are its heartbeat from then
-on. When the machine must enroll again, the hosted controller replaces the user
-data of the stopped instance before starting it.
+on. An instance's user data is set when it launches: when the machine must
+enroll again, the hosted controller terminates the stopped instance and
+launches a new one with the new code, on the same data volume.
 
 Provider logins are given to the machine on demand from Switch Console, sealed
 to its controller's own key: Core relays only ciphertext.
@@ -109,8 +110,8 @@ Never run two installations with the same installation ID, scale the
 Deployment, or bypass the lock. The probes check a local progress timestamp, not
 cloud or provider readiness.
 
-The hosted controller may change only the data retention and the user data of
-the instances it tagged as its own.
+The hosted controller may change only the data retention of the instances it
+tagged as its own, never their user data or security groups.
 
 ## Operator commands
 

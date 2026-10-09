@@ -215,14 +215,6 @@ class Ec2Cloud:
             ],
         )
 
-    def replace_user_data(self, machine: Machine) -> None:
-        """Give the stopped instance the machine's current bundle to boot from."""
-        if machine.instance_id is None or machine.bundle is None:
-            raise CloudResourceError("cannot set user data without a recorded instance and bundle")
-        self._ec2.modify_instance_attribute(
-            InstanceId=machine.instance_id, UserData={"Value": machine.bundle.encode()}
-        )
-
     def start_instance(self, machine: Machine) -> None:
         if machine.instance_id is None:
             raise CloudResourceError("cannot start without a recorded instance")

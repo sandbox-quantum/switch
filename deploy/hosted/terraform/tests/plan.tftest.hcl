@@ -50,8 +50,8 @@ run "rendered_permissions" {
   assert {
     condition = alltrue([for statement in jsondecode(aws_iam_role_policy.controller.policy).Statement :
       statement.Condition.Null[startswith(statement.Sid, "CreateManaged") || statement.Sid == "TagOnCreate" ? "aws:RequestTag/switch:machine-id" : "ec2:ResourceTag/switch:machine-id"] == "false"
-      if contains(["CreateManagedLaunchResources", "CreateManagedRoot", "CreateManagedData", "TagOnCreate", "ManageOwned", "SetDataRetentionAndUserData"], statement.Sid)
-    ]) && length([for statement in jsondecode(aws_iam_role_policy.controller.policy).Statement : statement if contains(["CreateManagedLaunchResources", "CreateManagedRoot", "CreateManagedData", "TagOnCreate", "ManageOwned", "SetDataRetentionAndUserData"], statement.Sid)]) == 6
+      if contains(["CreateManagedLaunchResources", "CreateManagedRoot", "CreateManagedData", "TagOnCreate", "ManageOwned", "PreserveAttachedData"], statement.Sid)
+    ]) && length([for statement in jsondecode(aws_iam_role_policy.controller.policy).Statement : statement if contains(["CreateManagedLaunchResources", "CreateManagedRoot", "CreateManagedData", "TagOnCreate", "ManageOwned", "PreserveAttachedData"], statement.Sid)]) == 6
     error_message = "Managed resources must carry a machine id tag."
   }
   assert {
@@ -73,13 +73,13 @@ run "rendered_permissions" {
   assert {
     condition = alltrue([for statement in jsondecode(aws_iam_role_policy.controller.policy).Statement :
       statement.Condition.StringEquals["ec2:ResourceTag/switch:managed-by"] == "switch-hosted-controller"
-      if contains(["ManageOwned", "SetDataRetentionAndUserData"], statement.Sid)
+      if contains(["ManageOwned", "PreserveAttachedData"], statement.Sid)
     ])
     error_message = "Lifecycle permissions require the full controller ownership marker."
   }
   assert {
-    condition     = one([for statement in jsondecode(aws_iam_role_policy.controller.policy).Statement : statement if statement.Sid == "SetDataRetentionAndUserData"]).Condition.StringEquals["ec2:Attribute"] == ["blockDeviceMapping", "userData"]
-    error_message = "Controller may modify only the data retention and the user data of its instances."
+    condition     = one([for statement in jsondecode(aws_iam_role_policy.controller.policy).Statement : statement if statement.Sid == "PreserveAttachedData"]).Condition.StringEquals["ec2:Attribute"] == "blockDeviceMapping"
+    error_message = "Controller may modify only the data retention of its instances: a machine's user data is set when its instance launches."
   }
   assert {
     condition     = one([for statement in jsondecode(aws_iam_role_policy.controller.policy).Statement : statement if statement.Sid == "CreateManagedRoot"]).Condition.NumericEquals["ec2:VolumeSize"] == var.root_volume_gib

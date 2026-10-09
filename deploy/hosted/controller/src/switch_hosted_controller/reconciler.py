@@ -131,11 +131,15 @@ class Reconciler:
                 if machine.bundle is not None and needs_new_user_data(
                     machine.instance_bundle, machine.bundle
                 ):
-                    self._cloud.replace_user_data(machine)
-                    machine = self._store.record_instance_bundle(
-                        machine.machine_id, instance["InstanceId"], machine.bundle
-                    )
-                self._cloud.start_instance(machine)
+                    # An instance's user data is set when it launches, so it
+                    # makes way for one launched with the new bundle; the data
+                    # volume is kept.
+                    machine = self._store.mark_instance_terminate_issued(claim)
+                    if not self._same_claim(claim, machine):
+                        return machine
+                    self._cloud.terminate_instance(machine)
+                else:
+                    self._cloud.start_instance(machine)
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
         if state in {"pending", "stopping", "shutting-down"}:
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
@@ -351,7 +355,8 @@ def _bundle_ready(machine: Machine) -> bool:
 
 
 def needs_new_user_data(current: str | None, wanted: str) -> bool:
-    """Whether an instance booting from the bundle `current` must get `wanted` first.
+    """Whether an instance booting from the bundle `current` must make way for
+    one launched with `wanted`.
 
     Not when `wanted` only names the controller the machine enrolled as with
     the code in `current`: the boot keeps an enrollment made with that code.

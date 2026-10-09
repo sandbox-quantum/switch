@@ -447,17 +447,6 @@ class MachineStore:
         self._set_once(machine_id, "instance_id", instance_id, extra=("instance_bundle", bundle))
         return self.get(machine_id)
 
-    def record_instance_bundle(self, machine_id: str, instance_id: str, bundle: str) -> Machine:
-        """Record that the instance now boots from `bundle`."""
-        self._connection.execute(
-            """
-            UPDATE machines SET instance_bundle = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE machine_id = ? AND instance_id = ?
-            """,
-            (bundle, machine_id, instance_id),
-        )
-        return self.get(machine_id)
-
     def mark_instance_terminal_observed(self, machine_id: str, instance_id: str) -> Machine:
         cursor = self._connection.execute(
             """

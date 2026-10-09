@@ -110,6 +110,12 @@ class FakeCloud:
         return VOLUME_ID
 
     def get_instance(self, machine):
+        if (
+            machine.instance_id is None
+            and self.instance is not None
+            and self.instance["State"]["Name"] == "terminated"
+        ):
+            return None
         return self.instance
 
     def validate_image(self, machine):
@@ -126,14 +132,15 @@ class FakeCloud:
         self.instance["State"] = {"Name": "running"}
         self.volume["State"] = "in-use"
         self.volume["Attachments"] = [
-            {"InstanceId": INSTANCE_ID, "Device": "/dev/sdf", "State": "attached"}
+            {"InstanceId": self.instance["InstanceId"], "Device": "/dev/sdf", "State": "attached"}
         ]
 
     def run_instance(self, machine):
         self.calls.append("run_instance")
         self.user_data = machine.bundle
+        launched = self.calls.count("run_instance")
         self.instance = {
-            "InstanceId": INSTANCE_ID,
+            "InstanceId": INSTANCE_ID if launched == 1 else f"i-{launched:017x}",
             "BlockDeviceMappings": [
                 {
                     "DeviceName": "/dev/sdf",
@@ -142,12 +149,16 @@ class FakeCloud:
             ],
         }
         self._boot()
-        return INSTANCE_ID
+        return self.instance["InstanceId"]
 
-    def replace_user_data(self, machine):
-        self.calls.append("replace_user_data")
+    def terminate_instance(self, machine):
+        self.calls.append("terminate_instance")
         assert self.instance is not None and self.instance["State"]["Name"] == "stopped"
-        self.user_data = machine.bundle
+        assert self.volume is not None
+        self.instance["State"] = {"Name": "terminated"}
+        self.volume["State"] = "available"
+        self.volume["Attachments"] = []
+        self.user_data = None
 
     def start_instance(self, machine):
         self.calls.append("start_instance")
@@ -328,7 +339,7 @@ def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
     core.prepare_failures = 1
     poll()
     assert store.get(MACHINE_ID).desired_state is DesiredState.RUNNING
-    assert "replace_user_data" not in cloud.calls
+    assert "terminate_instance" not in cloud.calls
     assert cloud.calls.count("start_instance") == 0
     assert cloud.instance["State"]["Name"] == "stopped"
     assert core.observations[-1]["state"] == "provisioning"
@@ -337,7 +348,10 @@ def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
     poll()
     woken = token(core.machine_id, 3)
     assert core.prepared_revisions == [1, 3]
-    assert cloud.calls[-3:] == ["replace_user_data", "start_instance", "boot"]
+    assert cloud.calls[-1] == "terminate_instance"
+    poll()
+    poll()
+    assert cloud.calls[-2:] == ["run_instance", "boot"]
     assert cloud.codes_at_boot == [code(1), code(3)]
     assert json.loads(cloud.user_data) == stored_bundle(store)
     assert store.get(MACHINE_ID).bundle_token == woken
@@ -346,7 +360,10 @@ def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
     machine = store.get(MACHINE_ID)
     assert machine.observed_state is ObservedState.RUNNING
     assert machine.instance_launch_issued
-    assert cloud.calls.count("replace_user_data") == 1
+    assert machine.data_volume_id == VOLUME_ID
+    assert machine.previous_instance_id == INSTANCE_ID
+    assert machine.recovery_count == 0
+    assert cloud.calls.count("terminate_instance") == 1
     store.close()
 
 
@@ -374,7 +391,7 @@ def test_an_enrolled_machine_wakes_on_the_user_data_it_enrolled_with(tmp_path):
     core.controller_id = "9a1c2b4a-0000-4000-8000-0000000000aa"
 
     sleep_and_wake()
-    assert "replace_user_data" not in cloud.calls
+    assert "terminate_instance" not in cloud.calls
     assert cloud.calls[-2:] == ["start_instance", "boot"]
     assert json.loads(store.get(MACHINE_ID).bundle)["controller"] == {
         "id": core.controller_id,
@@ -384,6 +401,8 @@ def test_an_enrolled_machine_wakes_on_the_user_data_it_enrolled_with(tmp_path):
 
     core.controller_id = None
     sleep_and_wake()
-    assert cloud.calls[-3:] == ["replace_user_data", "start_instance", "boot"]
+    poll()
+    poll()
+    assert cloud.calls[-3:] == ["terminate_instance", "run_instance", "boot"]
     assert cloud.codes_at_boot == [code(1), code(1), code(5)]
     assert store.get(MACHINE_ID).instance_bundle == cloud.user_data == store.get(MACHINE_ID).bundle

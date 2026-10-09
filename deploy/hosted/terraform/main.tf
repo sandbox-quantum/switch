@@ -80,8 +80,8 @@ resource "aws_iam_role_policy" "controller" {
     { Sid       = "ManageOwned", Effect = "Allow", Action = ["ec2:StartInstances", "ec2:StopInstances", "ec2:TerminateInstances", "ec2:AttachVolume", "ec2:DeleteVolume"], Resource = ["${local.ec2_arn_base}:instance/*", "${local.ec2_arn_base}:volume/*"],
       Condition = { StringEquals = { "ec2:ResourceTag/switch:installation-id" = var.installation_id, "ec2:ResourceTag/switch:managed-by" = "switch-hosted-controller", "ec2:ResourceTag/switch:purpose" = ["worker", "data"] }, Null = { "ec2:ResourceTag/switch:machine-id" = "false" } }
     },
-    { Sid       = "SetDataRetentionAndUserData", Effect = "Allow", Action = ["ec2:ModifyInstanceAttribute"], Resource = "${local.ec2_arn_base}:instance/*",
-      Condition = { StringEquals = { "ec2:ResourceTag/switch:installation-id" = var.installation_id, "ec2:ResourceTag/switch:managed-by" = "switch-hosted-controller", "ec2:ResourceTag/switch:purpose" = ["worker", "data"], "ec2:Attribute" = ["blockDeviceMapping", "userData"] }, Null = { "ec2:ResourceTag/switch:machine-id" = "false" } }
+    { Sid       = "PreserveAttachedData", Effect = "Allow", Action = ["ec2:ModifyInstanceAttribute"], Resource = "${local.ec2_arn_base}:instance/*",
+      Condition = { StringEquals = { "ec2:ResourceTag/switch:installation-id" = var.installation_id, "ec2:ResourceTag/switch:managed-by" = "switch-hosted-controller", "ec2:ResourceTag/switch:purpose" = ["worker", "data"], "ec2:Attribute" = "blockDeviceMapping" }, Null = { "ec2:ResourceTag/switch:machine-id" = "false" } }
     },
     { Sid = "PassOnlyMachineRole", Effect = "Allow", Action = ["iam:PassRole"], Resource = aws_iam_role.machine.arn, Condition = { StringEquals = { "iam:PassedToService" = "ec2.amazonaws.com" } } },
     { Sid = "DenyUnapprovedType", Effect = "Deny", Action = ["ec2:RunInstances"], Resource = "${local.ec2_arn_base}:instance/*", Condition = { StringNotEquals = { "ec2:InstanceType" = var.allowed_instance_types } } },

@@ -384,7 +384,7 @@ def stopped_instance_with_bundle(cfg: ControllerConfig, instance_bundle: str | N
 
 
 @pytest.mark.parametrize("instance_bundle", [REVISION_1_BUNDLE, None])
-def test_starting_an_instance_with_a_stale_bundle_replaces_its_user_data_first(
+def test_an_instance_with_a_stale_bundle_makes_way_for_one_launched_with_the_new_one(
     tmp_path: Path, instance_bundle
 ):
     cfg = config(tmp_path)
@@ -403,17 +403,16 @@ def test_starting_an_instance_with_a_stale_bundle_replaces_its_user_data_first(
             {"InstanceIds": [machine.instance_id]},
         )
         stubber.add_response(
-            "modify_instance_attribute",
-            {},
-            {"InstanceId": machine.instance_id, "UserData": {"Value": machine.bundle.encode()}},
-        )
-        stubber.add_response(
-            "start_instances", {"StartingInstances": []}, {"InstanceIds": [machine.instance_id]}
+            "terminate_instances",
+            {"TerminatingInstances": []},
+            {"InstanceIds": [machine.instance_id]},
         )
         result = Reconciler(store, Ec2Cloud(client, cfg)).reconcile(machine.machine_id)
         stubber.assert_no_pending_responses()
     assert result.observed_state is ObservedState.PROVISIONING
-    assert result.instance_bundle == REVISION_2_BUNDLE
+    assert result.instance_terminate_issued
+    assert result.instance_id == "i-0123456789abcdef0"
+    assert result.data_volume_id == "vol-0123456789abcdef0"
     store.close()
 
 
@@ -514,16 +513,6 @@ def test_starting_an_enrolled_instance_keeps_the_user_data_it_enrolled_with(tmp_
         result = Reconciler(store, Ec2Cloud(client, cfg)).reconcile(machine.machine_id)
         stubber.assert_no_pending_responses()
     assert result.instance_bundle == REVISION_1_BUNDLE
-    store.close()
-
-
-def test_instance_bundle_is_recorded_only_for_the_recorded_instance(tmp_path: Path):
-    cfg = config(tmp_path)
-    store, machine = stopped_instance_with_bundle(cfg, "bundle-1")
-    unchanged = store.record_instance_bundle(machine.machine_id, "i-fffffffffffffffff", "bundle-2")
-    assert unchanged.instance_bundle == "bundle-1"
-    current = store.record_instance_bundle(machine.machine_id, machine.instance_id, "bundle-2")
-    assert current.instance_bundle == "bundle-2"
     store.close()
 
 
