@@ -201,9 +201,7 @@ class TestTheRegistryAsksTheController:
         holder = registry.controllers.holder_id(binding)
 
         assert not registry.is_live("agent")
-        assert not registry.relay_session_command(
-            "agent", {"origin": {}}, worker_only=False
-        )
+        assert not registry.relay_session_command("agent", {"origin": {}})
         assert holder not in registry.live_connection_ids()
 
         conn = _go_live(registry, ("agent", {ROOM}))
@@ -218,9 +216,7 @@ class TestTheRegistryAsksTheController:
         assert holder in registry.live_connection_ids()
         assert registry.live_connection_count() == 1
         assert rooms_occupied("agent", registry) == {ROOM}
-        assert registry.relay_session_command(
-            "agent", {"origin": {"roomId": ROOM}}, worker_only=False
-        )
+        assert registry.relay_session_command("agent", {"origin": {"roomId": ROOM}})
         assert conn.session_commands == [("agent", {"origin": {"roomId": ROOM}})]
 
         _lapse(conn)
@@ -474,9 +470,7 @@ class TestTheAgentClientsReplies:
         }
         assert not registry.is_live("auto")
         assert rooms_occupied("auto", registry) == set()
-        assert not registry.relay_session_command(
-            "auto", {"origin": {"roomId": ROOM}}, worker_only=False
-        )
+        assert not registry.relay_session_command("auto", {"origin": {"roomId": ROOM}})
 
         registry.controllers.bind(
             Binding(
@@ -604,9 +598,6 @@ def _addressing_client(
     async def _gate_addressed(*_args: Any) -> _GateOutcome:
         return _GateOutcome(addressed=True, refusal=None)
 
-    async def _not_hosted(_agent: object, _event: object) -> None:
-        return None
-
     ns = _client(registry, agent_id)
     ns.agent = SimpleNamespace(
         id=agent_id,
@@ -619,7 +610,6 @@ def _addressing_client(
     ns._compute_addressed = _addressed
     ns._fresh_agent = _fresh_agent
     ns._gate_addressed = _gate_addressed
-    ns._note_hosted_addressed = _not_hosted
     ns._report_addressed = lambda *_a, **_k: None
     ns._triggered_by_auto_reply = AgentConsumer._triggered_by_auto_reply
     ns.actor = SimpleNamespace(send_message=sent)

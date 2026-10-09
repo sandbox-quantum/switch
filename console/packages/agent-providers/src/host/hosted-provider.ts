@@ -2,69 +2,11 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
-import { z } from 'zod';
 import { refreshCodexAuthentication } from '../codex/home';
 import { importOpenCodeConsole } from './opencode-console';
-import { type HostedCredential, hostedCredentialSchema } from './provider-login';
-import { readSharedCredentials, type SharedHostConfig } from './shared-config';
+import type { HostedCredential } from './provider-login';
 
 export type { HostedCredential } from './provider-login';
-
-async function hostedOrigin(config: SharedHostConfig): Promise<{ origin: string; token: string }> {
-  const credentials = await readSharedCredentials(config);
-  const url = new URL(credentials.SWITCH_API_ENDPOINT);
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash)
-    throw new Error('Cloud control requires an HTTPS server origin.');
-  return { origin: url.href.replace(/\/$/, ''), token: credentials.SWITCH_API_TOKEN };
-}
-
-/** A POST to the agent's `/hosted` routes, authenticated as the agent. */
-export async function hostedRequest(
-  config: SharedHostConfig,
-  path: string,
-  body: unknown
-): Promise<unknown> {
-  const { origin, token } = await hostedOrigin(config);
-  const response = await fetch(`${origin}/hosted${path}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    redirect: 'error',
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new Error(`Cloud control request failed (HTTP ${response.status}).`);
-  }
-  return response.json();
-}
-
-export async function fetchHostedProvider(config: SharedHostConfig): Promise<HostedCredential> {
-  const { origin, token } = await hostedOrigin(config);
-  let response: Response;
-  try {
-    response = await fetch(`${origin}/hosted/provider-credential`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      redirect: 'error',
-      signal: AbortSignal.timeout(30000),
-    });
-  } catch {
-    throw new Error('Cloud provider access could not be checked.');
-  }
-  if (response.status === 403) {
-    await response.body?.cancel();
-    return { status: 'revoked' };
-  }
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new Error(`Cloud provider access check failed (HTTP ${response.status}).`);
-  }
-  const result = hostedCredentialSchema.parse(await response.json());
-  if (result.status === 'connected' && result.provider !== config.start.provider)
-    throw new Error('Cloud provider credentials do not match this session.');
-  return result;
-}
 
 export function applyHostedProvider(
   env: Record<string, string>,
@@ -75,7 +17,6 @@ export function applyHostedProvider(
     'CLAUDE_CODE_OAUTH_TOKEN',
     'OPENAI_API_KEY',
     'CURSOR_API_KEY',
-    'SWITCH_HOSTED_AUTH_JSON',
   ])
     delete env[key];
   if (credential.status === 'revoked')

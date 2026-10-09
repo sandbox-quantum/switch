@@ -3,10 +3,6 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { openCodeConsoleCredentialSchema } from '@switch-console/agent-providers';
 import Database from 'better-sqlite3';
-import { resolveAgentExecutable } from '@main/core/agent-runtime/impl/resolve-agent-executable';
-import { localDependencyManager } from '@main/core/dependencies/dependency-managers';
-import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
-import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 
 export function localOpenCodeDatabasePath(): string {
   return join(
@@ -49,44 +45,4 @@ export function readOpenCodeConsole(path: string): string | null {
   } finally {
     db?.close();
   }
-}
-
-let cliInfo: { expires: number; value: { version: string; command: string } } | undefined;
-let cliFailure: { expires: number; error: Error } | undefined;
-export async function getOpenCodeLoginCommand() {
-  if (cliFailure && cliFailure.expires > Date.now()) throw cliFailure.error;
-  if (cliInfo && cliInfo.expires > Date.now()) return cliInfo.value;
-  const ctx = new LocalExecutionContext();
-  try {
-    const binary = await resolveAgentExecutable({
-      providerId: 'opencode',
-      binaryName: 'opencode',
-      ctx,
-      hostDependencyStore,
-      cachedStatePath: localDependencyManager.get('opencode')?.path,
-    });
-    const version = (await ctx.exec(binary, ['--version'], { timeout: 10000 })).stdout.trim();
-    const result = /^2\./.test(version)
-      ? { stdout: '', stderr: '' }
-      : await ctx.exec(binary, ['console', '--help'], { timeout: 10000 });
-    const help = result.stdout + result.stderr;
-    const command = openCodeLoginCommand(version, help);
-    const value = { version, command };
-    cliInfo = { expires: Date.now() + 30000, value };
-    return value;
-  } catch {
-    const error = new Error(
-      'Could not detect the installed OpenCode CLI. Check its installation in Settings.'
-    );
-    cliFailure = { expires: Date.now() + 30000, error };
-    throw error;
-  } finally {
-    ctx.dispose();
-  }
-}
-
-export function openCodeLoginCommand(version: string, consoleHelp: string): string {
-  if (/^2\./.test(version)) return 'opencode auth login opencode';
-  if (/opencode console login/.test(consoleHelp)) return 'opencode console login';
-  return 'opencode auth login';
 }

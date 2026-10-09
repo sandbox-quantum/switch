@@ -37,13 +37,6 @@ def rate_limited(response: httpx.Response) -> bool:
     )
 
 
-def repository_writable(repository: dict) -> bool:
-    permissions = repository.get("permissions")
-    return isinstance(permissions, dict) and any(
-        permissions.get(key) is True for key in ("push", "maintain", "admin")
-    )
-
-
 @dataclass
 class GitHubFlow:
     tenant_id: str

@@ -25,14 +25,12 @@ import { fieldCatalogueState, type ModelCatalogueResult } from '../agent-model-c
  */
 export function AgentAdvancedConfig({
   providerId,
-  cloud,
   sshHost,
   dir,
   initial,
   onChange,
 }: {
   providerId: AgentProviderId | null;
-  cloud: boolean;
   sshHost: string | null;
   dir: string;
   /** The attributes the form starts from; pass a stable value, a new one resets the form. */
@@ -49,9 +47,7 @@ export function AgentAdvancedConfig({
     ? catalogue
     : {
         kind: 'unavailable' as const,
-        reason: cloud
-          ? 'Model suggestions are unavailable before the cloud worker starts. You can enter a model alias or ID.'
-          : 'No execution directory is configured yet. You can enter a model alias or ID.',
+        reason: 'No execution directory is configured yet. You can enter a model alias or ID.',
       };
   const { data: allFields } = useQuery({
     queryKey: ['agentDefinitionFields', providerId],

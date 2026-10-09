@@ -40,8 +40,11 @@ from switch_core.gateway.dependencies import (
     get_system_session,
     get_user_store,
 )
-from switch_core.gateway.hosted_launches import hosted_settings
-from switch_core.gateway.hosted_machines import MachineUnavailable, ensure_machine
+from switch_core.gateway.hosted_machines import (
+    MachineUnavailable,
+    ensure_machine,
+    hosted_settings,
+)
 from switch_core.gateway.schemas import (
     AuthConfigResponse,
     ChangePasswordRequest,

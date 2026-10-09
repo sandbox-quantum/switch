@@ -47,16 +47,13 @@ vi.mock('./console-identity', () => ({
 }));
 
 const {
-  cloudLifecycle,
-  getCloudLaunchConfiguration,
+  cloudMachineLifecycle,
+  listCloudMachines,
   getConnectionCatalog,
   getGitHubConnection,
   startGitHubConnection,
   completeGitHubConnection,
   confirmGitHubConnection,
-  getClaudeConnection,
-  connectClaude,
-  disconnectClaude,
   acceptInvitation,
   acceptPendingInvitation,
   addBridgeTeam,
@@ -86,7 +83,6 @@ const {
   registerKnownAgent,
   updateAgentDisplayName,
   updateBridge,
-  updateCloudLaunchConfiguration,
   AgentManagementUnavailableError,
   enrollConsoleController,
   fetchAdvancedConfigSchema,
@@ -620,7 +616,7 @@ describe('room creation', () => {
       ) as never
     );
 
-    await expect(cloudLifecycle(SERVER, 'launch', 'retry', 3)).rejects.toMatchObject({
+    await expect(cloudMachineLifecycle(SERVER, 'machine', 'start', 3)).rejects.toMatchObject({
       status: 409,
       detail: 'The owner stopped the cloud machine. Start it in Switch Console.',
       code: 'machine_stopped',
@@ -812,7 +808,7 @@ describe('ownsOwnerAddressedAgent', () => {
   });
 });
 
-describe('cloud agent edits', () => {
+describe('agent display name', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal('fetch', fetchMock);
@@ -821,56 +817,6 @@ describe('cloud agent edits', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-  });
-
-  const configuration = {
-    description: 'Reviews pull requests',
-    instructions: 'Be brief.',
-    definition_attributes: { model: 'opus' },
-  };
-
-  it('reads the configuration a launch carries', async () => {
-    fetchMock.mockResolvedValue(jsonResponse(configuration) as never);
-
-    await expect(getCloudLaunchConfiguration(SERVER, 'launch-1')).resolves.toEqual(configuration);
-    const [url] = fetchMock.mock.calls[0] as unknown as [string];
-    expect(url).toBe('https://switch.example.com/gateway/hosted-launches/launch-1/configuration');
-  });
-
-  it('PUTs the new instructions with the rendered definition', async () => {
-    fetchMock.mockResolvedValue(jsonResponse(configuration) as never);
-
-    await updateCloudLaunchConfiguration(SERVER, 'launch-1', {
-      instructions: 'Be brief.',
-      definition_attributes: { model: 'opus' },
-      definition: '---\nname: helper\n---\nBe brief.',
-    });
-
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [
-      string,
-      { method: string; body: string },
-    ];
-    expect(url).toBe('https://switch.example.com/gateway/hosted-launches/launch-1/configuration');
-    expect(init.method).toBe('PUT');
-    expect(JSON.parse(init.body)).toEqual({
-      instructions: 'Be brief.',
-      definition_attributes: { model: 'opus' },
-      definition: '---\nname: helper\n---\nBe brief.',
-    });
-  });
-
-  it('surfaces a refused configuration rather than reporting it saved', async () => {
-    fetchMock.mockResolvedValue(
-      errorResponse(409, '{"detail":"This worker has been removed."}') as never
-    );
-
-    await expect(
-      updateCloudLaunchConfiguration(SERVER, 'launch-1', {
-        instructions: '',
-        definition_attributes: {},
-        definition: 'x',
-      })
-    ).rejects.toMatchObject({ status: 409, detail: 'This worker has been removed.' });
   });
 
   it('PUTs a display name, or null to clear it', async () => {
@@ -1034,73 +980,6 @@ describe('deleteBridge', () => {
   });
 });
 
-describe('Claude cloud connection transport', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.stubGlobal('fetch', fetchMock);
-    getSessionCookie.mockResolvedValue(makeJwt(7200));
-  });
-  afterEach(() => vi.unstubAllGlobals());
-  it('refuses to send provider credentials over HTTP', async () => {
-    await expect(
-      connectClaude(
-        {
-          id: 'insecure',
-          name: 'Insecure',
-          gatewayUrl: 'http://switch.example.com',
-          managed: false,
-        } as never,
-        'api-key',
-        'SYNTHETIC'
-      )
-    ).rejects.toThrow('HTTPS');
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-  it('sends the credential only in an authenticated PUT body', async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          status: 'connected',
-          kind: 'api-key',
-          verified_at: '2026-01-01T00:00:00Z',
-        })
-      )
-    );
-    await connectClaude(SERVER, 'api-key', 'SYNTHETIC-CREDENTIAL');
-    const [url, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe('https://switch.example.com/gateway/provider-connections/claude');
-    expect(options.method).toBe('PUT');
-    expect(JSON.parse(options.body as string)).toEqual({
-      kind: 'api-key',
-      credential: 'SYNTHETIC-CREDENTIAL',
-    });
-    expect(cookieHeaderOf(fetchMock.mock.calls[0])).toContain('switch_auth=');
-  });
-  it('reads metadata and deletes without a credential body', async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: 'not_connected' })));
-    expect(await getClaudeConnection(SERVER)).toEqual({ status: 'not_connected' });
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await disconnectClaude(SERVER);
-    const [, options] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
-    expect(options.method).toBe('DELETE');
-    expect(options.body).toBeUndefined();
-  });
-  it('rejects malformed connection status', async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ status: 'connected', kind: 'unknown' }))
-    );
-    await expect(getClaudeConnection(SERVER)).rejects.toThrow('invalid Claude connection status');
-  });
-  it('surfaces a failed verification instead of reporting a connection', async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ detail: 'Claude could not complete the check.' }), {
-        status: 422,
-      })
-    );
-    await expect(connectClaude(SERVER, 'api-key', 'SYNTHETIC-CREDENTIAL')).rejects.toThrow();
-  });
-});
-
 describe('GitHub connection transport', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1249,21 +1128,17 @@ describe('sign-up support', () => {
       disk: null,
       memory: null,
       agents: [],
+      controller_id: null,
     };
     fetchMock.mockResolvedValueOnce(jsonResponse(machine));
-    // A server from before machines could run the controller: a worker machine.
-    await expect(ensureCloudMachine(SERVER)).resolves.toEqual({
-      ...machine,
-      runtime: 'worker',
-      controller_id: null,
-    });
+    await expect(ensureCloudMachine(SERVER)).resolves.toEqual(machine);
     const [url, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://switch.example.com/gateway/hosted-machines/ensure');
     expect(options.method).toBe('POST');
     expect(cookieHeaderOf(fetchMock.mock.calls[0])).toContain('switch_auth=');
   });
 
-  it('reads a machine that runs the agents controller, and the controller it enrolled as', async () => {
+  it('reads the controller a machine enrolled as', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         machine_id: 'm-1',
@@ -1280,14 +1155,38 @@ describe('sign-up support', () => {
         disk: null,
         memory: null,
         agents: ['agent-1'],
-        runtime: 'controller',
         controller_id: 'controller-7',
       })
     );
     await expect(ensureCloudMachine(SERVER)).resolves.toMatchObject({
-      runtime: 'controller',
       controller_id: 'controller-7',
     });
+  });
+
+  it('lists the caller’s cloud machines, and none on a server without them', async () => {
+    const machine = {
+      machine_id: 'm-1',
+      state: 'ready',
+      desired_state: 'running',
+      stop_reason: null,
+      sleeping: false,
+      revision: 2,
+      instance_type: null,
+      error: null,
+      error_code: null,
+      retain_until: null,
+      heartbeat_at: null,
+      disk: null,
+      memory: null,
+      agents: [],
+      controller_id: null,
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse({ machines: [machine] }));
+    await expect(listCloudMachines(SERVER)).resolves.toEqual([machine]);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/hosted-machines');
+    fetchMock.mockResolvedValueOnce(errorResponse(404, '{"detail":"Not Found"}'));
+    await expect(listCloudMachines(SERVER)).resolves.toBeNull();
   });
 
   it('raises the server’s explanation when no machine can be had', async () => {

@@ -62,7 +62,6 @@ class MachineStore:
                 volume_az TEXT,
                 instance_id TEXT,
                 previous_instance_id TEXT,
-                previous_runtime_fingerprint TEXT,
                 retain_until TEXT,
                 observed_revision INTEGER NOT NULL DEFAULT 0,
                 observed_operation_id TEXT,
@@ -289,9 +288,7 @@ class MachineStore:
     def mark_volume_create_intent(self, claim: Machine) -> Machine:
         return self._mark_intent(claim, "volume_create_intent")
 
-    def upgrade_terminated(
-        self, claim: Machine, image_id: str, previous_runtime_fingerprint: str
-    ) -> Machine:
+    def upgrade_terminated(self, claim: Machine, image_id: str) -> Machine:
         if (
             claim.desired_state is not DesiredState.STOPPED
             or not claim.instance_id
@@ -304,7 +301,7 @@ class MachineStore:
             raise StoreError("the machine already uses this image")
         cursor = self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
-            image_id = ?, previous_runtime_fingerprint = ?, instance_seq = instance_seq + 1,
+            image_id = ?, instance_seq = instance_seq + 1,
             desired_revision = desired_revision + 1, operation_id = ?,
             instance_launch_intent = 0, instance_launch_issued = 0, instance_launch_issued_at = NULL,
             instance_terminate_issued = 0,
@@ -313,7 +310,6 @@ class MachineStore:
             AND desired_state = 'stopped' AND instance_id = ? AND instance_terminal_observed = 1""",
             (
                 image_id,
-                previous_runtime_fingerprint,
                 str(uuid.uuid4()),
                 claim.machine_id,
                 claim.desired_revision,
@@ -337,7 +333,7 @@ class MachineStore:
             require_recovery_allowed(claim)
         self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
-            previous_runtime_fingerprint = NULL, instance_seq = instance_seq + 1,
+            instance_seq = instance_seq + 1,
             recovery_count = recovery_count + ?, instance_launch_intent = 0,
             instance_launch_issued = 0, instance_launch_issued_at = NULL,
             instance_terminate_issued = 0,
@@ -361,7 +357,7 @@ class MachineStore:
             raise StoreError("release requires a confirmed terminated instance")
         self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
-            previous_runtime_fingerprint = NULL, instance_seq = instance_seq + 1,
+            instance_seq = instance_seq + 1,
             instance_launch_intent = 0, instance_launch_issued = 0, instance_launch_issued_at = NULL,
             instance_terminate_issued = 0,
             instance_terminal_observed = 0, updated_at = CURRENT_TIMESTAMP
@@ -621,7 +617,6 @@ def _machine(row: sqlite3.Row) -> Machine:
         instance_profile_arn=row["instance_profile_arn"],
         instance_id=row["instance_id"],
         previous_instance_id=row["previous_instance_id"],
-        previous_runtime_fingerprint=row["previous_runtime_fingerprint"],
         instance_seq=row["instance_seq"],
         recovery_count=row["recovery_count"],
         data_volume_id=row["data_volume_id"],

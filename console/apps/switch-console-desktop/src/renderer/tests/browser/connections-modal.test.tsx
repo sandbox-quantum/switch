@@ -1,6 +1,6 @@
 /**
  * Connections open from a server's Your Agents page at any time, not only from
- * the setup wizard. The button is offered on a server with cloud agents; the
+ * the setup wizard. The button is offered on a server with cloud machines; the
  * modal shows the server's catalog, says so when the catalog cannot be read
  * (an older server has no catalog endpoint) rather than showing an empty one,
  * and opens the GitHub step in place, with a way back to the grid.
@@ -12,23 +12,20 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { RpcError, serializeRpcError } from '@shared/lib/ipc/rpc-error';
 
-const sdkHost = vi.hoisted(() => ({
-  cloudAgents: vi.fn(),
-  cloudMachines: vi.fn(),
-}));
 const modalHost = vi.hoisted(() => ({
   show: (_id: string, _args: unknown): void => {
     throw new Error('No modal host is mounted.');
   },
 }));
 const switchServers = vi.hoisted(() => ({
+  cloudMachines: vi.fn(),
   getConnectionCatalog: vi.fn(),
   getGitHubConnection: vi.fn(),
 }));
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { sdkHost, switchServers },
+  rpc: { switchServers },
 }));
 
 vi.mock('@renderer/features/locations/stores/agents-store', () => ({
@@ -113,9 +110,7 @@ let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 beforeEach(() => {
-  sdkHost.cloudAgents.mockReset();
-  sdkHost.cloudMachines.mockReset();
-  sdkHost.cloudMachines.mockResolvedValue(null);
+  switchServers.cloudMachines.mockReset();
   switchServers.getConnectionCatalog.mockReset();
   switchServers.getGitHubConnection.mockReset();
 });
@@ -158,24 +153,24 @@ async function openConnections(): Promise<HTMLElement> {
   return dialog()!;
 }
 
-it('offers Connections on a server with cloud agents', async () => {
-  sdkHost.cloudAgents.mockResolvedValue([]);
+it('offers Connections on a server with cloud machines', async () => {
+  switchServers.cloudMachines.mockResolvedValue([]);
   await render();
 
   await vi.waitFor(() => expect(button(/^connections$/i, container!)).toBeDefined());
 });
 
-it('offers no Connections on a server without cloud agents', async () => {
-  sdkHost.cloudAgents.mockResolvedValue(null);
+it('offers no Connections on a server without cloud machines', async () => {
+  switchServers.cloudMachines.mockResolvedValue(null);
   await render();
 
-  await vi.waitFor(() => expect(sdkHost.cloudAgents).toHaveBeenCalled());
+  await vi.waitFor(() => expect(switchServers.cloudMachines).toHaveBeenCalled());
   await act(async () => {});
   expect(button(/^connections$/i, container!)).toBeUndefined();
 });
 
 it('shows the server’s connection grid', async () => {
-  sdkHost.cloudAgents.mockResolvedValue([]);
+  switchServers.cloudMachines.mockResolvedValue([]);
   switchServers.getConnectionCatalog.mockResolvedValue(CATALOG);
   await render();
   const modal = await openConnections();
@@ -190,7 +185,7 @@ it('shows the server’s connection grid', async () => {
 });
 
 it('shows the real error when the catalog cannot be read', async () => {
-  sdkHost.cloudAgents.mockResolvedValue([]);
+  switchServers.cloudMachines.mockResolvedValue([]);
   switchServers.getConnectionCatalog.mockRejectedValue(
     new RpcError(
       serializeRpcError(
@@ -216,7 +211,7 @@ it('shows the real error when the catalog cannot be read', async () => {
 });
 
 it('opens the GitHub step from the grid and returns to it', async () => {
-  sdkHost.cloudAgents.mockResolvedValue([]);
+  switchServers.cloudMachines.mockResolvedValue([]);
   switchServers.getConnectionCatalog.mockResolvedValue(CATALOG);
   switchServers.getGitHubConnection.mockResolvedValue({
     status: 'not_connected',

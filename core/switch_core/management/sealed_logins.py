@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 PUBLIC_KEY_ALG = "X25519"
 SEALED_LOGIN_ALG = "X25519-HKDF-SHA256-A256GCM"
-# An auth file is at most 16 KiB (`providers/credentials.py`); sealing adds the
+# A provider auth file is at most 16 KiB; sealing adds the
 # JSON around it and the tag.
 MAX_CIPHERTEXT_BYTES = 20 * 1024
 

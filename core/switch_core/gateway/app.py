@@ -44,9 +44,7 @@ from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
 from switch_core.gateway.github_connections import router as github_connections_router
 from switch_core.gateway.hosted_controller import router as hosted_controller_router
-from switch_core.gateway.hosted_launches import router as hosted_launches_router
 from switch_core.gateway.hosted_machines import router as hosted_machines_router
-from switch_core.gateway.hosted_relay import router as hosted_relay_router
 from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.gateway.messaging_installs import (
     router as messaging_installs_router,
@@ -54,12 +52,6 @@ from switch_core.gateway.messaging_installs import (
 from switch_core.gateway.oidc_routes import register_oidc_client
 from switch_core.gateway.oidc_routes import router as oidc_router
 from switch_core.gateway.packages import router as packages_router
-from switch_core.gateway.provider_connections import (
-    router as provider_connections_router,
-)
-from switch_core.gateway.provider_verifications import (
-    router as provider_verifications_router,
-)
 from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
@@ -69,7 +61,6 @@ from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.keys import Purpose
-from switch_core.providers.claude_verifier import ClaudeVerifier
 from switch_core.providers.github import GitHubConnections
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
@@ -145,18 +136,10 @@ def create_gateway_app(
         < config.hosted_launch_capacity
     ):
         raise ValueError(
-            "Cloud launch capacity requires enough configured machine slots."
+            "Cloud machine capacity requires enough configured machine slots."
         )
-    app.include_router(hosted_launches_router, tags=["hosted-launches"])
-    app.include_router(hosted_relay_router, tags=["hosted-launches"])
     app.include_router(hosted_machines_router, tags=["hosted-machines"])
-    if (
-        config.hosted_provider_verification_enabled
-        and app.state.hosted_controller_settings is None
-    ):
-        raise ValueError("Provider verification requires a hosted controller.")
     app.include_router(hosted_controller_router, tags=["hosted-controller"])
-    app.include_router(provider_verifications_router, tags=["provider-verifications"])
     app.state.github_connections = (
         GitHubConnections(config.hosted_github_config_path)
         if config.hosted_github_config_path
@@ -167,16 +150,6 @@ def create_gateway_app(
         tags=["provider-connections"],
     )
     app.include_router(connection_catalog_router, tags=["provider-connections"])
-    app.state.claude_verifier = (
-        ClaudeVerifier(config.hosted_claude_verifier_path)
-        if config.hosted_claude_verifier_path
-        else None
-    )
-    app.include_router(
-        provider_connections_router,
-        prefix="/provider-connections",
-        tags=["provider-connections"],
-    )
 
     # authlib's OIDC client stores transient state/nonce/PKCE in the request
     # session across the IdP redirect round-trip; SameSite=Lax lets the cookie

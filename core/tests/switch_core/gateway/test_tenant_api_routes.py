@@ -35,8 +35,6 @@ from switch_core.db.models import (
     Agent,
     ApiKey,
     Client,
-    GitHubIssuedToken,
-    HostedLaunch,
     Invitation,
     ProviderConnection,
     Tenant,
@@ -62,7 +60,6 @@ from switch_core.gateway.invite_mail import (
 )
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.keys import Keyring
-from switch_core.providers.github_installation import GitHubInstallationCredentials
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
 _KEYRING = Keyring.parse("test:" + _SECRET, legacy_secret=None)
@@ -1453,7 +1450,7 @@ class TestMemberRoutes:
             assert await session.get(TenantMember, (TENANT_A, owner_id)) is not None
 
     async def test_removing_a_member_deletes_their_membership(
-        self, session_factory: async_sessionmaker[AsyncSession], monkeypatch
+        self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         owner_id = await _make_member(
@@ -1464,12 +1461,6 @@ class TestMemberRoutes:
         )
         token = _token(owner_id, "remover@example.invalid", TENANT_A)
         async with tenant_session(session_factory, TENANT_A) as session:
-            launch = HostedLaunch(
-                id=str(uuid.uuid4()),
-                owner_id=target_id,
-                name="pending-member-worker",
-                spec={},
-            )
             session.add(
                 ProviderConnection(
                     user_id=target_id,
@@ -1481,29 +1472,7 @@ class TestMemberRoutes:
                     verified_at=datetime.now(UTC),
                 )
             )
-            session.add(launch)
-            await session.flush()
-            session.add(
-                GitHubIssuedToken(
-                    id=str(uuid.uuid4()),
-                    owner_id=target_id,
-                    launch_id=launch.id,
-                    launch_revision=1,
-                    encrypted_token=_KEYRING.encrypt("SYNTHETIC-REPOSITORY"),
-                    expires_at=datetime.now(UTC) + timedelta(hours=1),
-                    revoke_requested=False,
-                    attempts=0,
-                )
-            )
             await session.commit()
-
-        async def revoke_after_removal(value):
-            assert value == "SYNTHETIC-REPOSITORY"
-            async with tenant_session(session_factory, TENANT_A) as session:
-                assert await session.get(TenantMember, (TENANT_A, target_id)) is None
-
-        revoke = AsyncMock(side_effect=revoke_after_removal)
-        monkeypatch.setattr(GitHubInstallationCredentials, "revoke", revoke)
 
         app = _app(session_factory)
         github = SimpleNamespace(
@@ -1520,13 +1489,12 @@ class TestMemberRoutes:
         assert response.status_code == 200, response.text
         github.revoke.assert_awaited_once_with("SYNTHETIC-USER-TOKEN")
         assert set(github.flows) == {"other"}
-        revoke.assert_awaited_once()
         async with session_factory() as session:
             assert await session.get(TenantMember, (TENANT_A, target_id)) is None
             assert (
                 await session.scalar(
-                    select(GitHubIssuedToken).where(
-                        GitHubIssuedToken.owner_id == target_id
+                    select(ProviderConnection).where(
+                        ProviderConnection.user_id == target_id
                     )
                 )
                 is None

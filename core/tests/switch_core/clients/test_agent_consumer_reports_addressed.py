@@ -19,7 +19,6 @@ from switch_core.clients.admin_messages import PLATFORM_MARKER
 from switch_core.clients.agent_consumer import (
     AUTO_REPLY_FLAG,
     AgentConsumer,
-    HostedNote,
     _GateOutcome,
 )
 from switch_core.clients.room_meta import RoomMeta
@@ -51,10 +50,9 @@ def _consumer(
     addressed: bool,
     allowed: bool = True,
     live: bool = True,
-    hosted: HostedNote | None = None,
 ) -> SimpleNamespace:
-    """An AgentConsumer stand-in with addressing, the policy gate, whether the
-    agent is live in the room and a hosted agent's mailbox fixed by the test."""
+    """An AgentConsumer stand-in with addressing, the policy gate and whether
+    the agent is live in the room fixed by the test."""
     meta = RoomMeta(
         room_id="room-1", name="Room", bridge_id=None, channel_type="channel_public"
     )
@@ -81,9 +79,6 @@ def _consumer(
     ) -> str | None:
         return None
 
-    async def _note_hosted_addressed(_a: object, _e: object) -> HostedNote | None:
-        return hosted
-
     ns = SimpleNamespace(
         agent=SimpleNamespace(
             id="agent-1", name="agent-a", metadata_={"known_agent_type": "codex"}
@@ -97,7 +92,6 @@ def _consumer(
         _gate_addressed=_gate_addressed,
         _is_available=_is_available,
         _reply_when_unavailable_here=_reply_when_unavailable_here,
-        _note_hosted_addressed=_note_hosted_addressed,
         _post_auto_reply=_ignore_post,
         _sender_handle=lambda _e: "@alice",
         _triggered_by_auto_reply=AgentConsumer._triggered_by_auto_reply,
@@ -187,66 +181,6 @@ async def test_a_message_to_an_offline_agent_is_reported_as_not_live() -> None:
 
     [report] = consumer._message_telemetry.addressed
     assert report["agent_live"] is False
-
-
-async def test_a_message_a_hosted_agents_mailbox_refused_is_reported_as_not_live() -> (
-    None
-):
-    """A stopped or broken cloud worker is an agent that was asked and was not
-    there, the same as any other offline agent — not a message nobody sent."""
-    consumer = _consumer(
-        addressed=True,
-        live=False,
-        hosted=HostedNote(
-            launch=None, machine=None, refusal="worker stopped", deliver=False
-        ),
-    )
-
-    await _deliver(consumer, _message())
-
-    [report] = consumer._message_telemetry.addressed
-    assert report["agent_live"] is False
-
-
-async def test_a_message_a_live_hosted_worker_could_not_take_is_not_live() -> None:
-    """A full mailbox or a lost provider refuses the message even with a
-    worker attached, so the agent could not act on it."""
-    consumer = _consumer(
-        addressed=True,
-        live=True,
-        hosted=HostedNote(
-            launch=None, machine=None, refusal="mailbox full", deliver=False
-        ),
-    )
-
-    await _deliver(consumer, _message())
-
-    [report] = consumer._message_telemetry.addressed
-    assert report["agent_live"] is False
-
-
-async def test_a_message_held_for_a_waking_hosted_agent_is_reported() -> None:
-    consumer = _consumer(
-        addressed=True,
-        live=False,
-        hosted=HostedNote(launch=None, machine=None, refusal=None, deliver=True),
-    )
-
-    await _deliver(consumer, _message())
-
-    assert len(consumer._message_telemetry.addressed) == 1
-
-
-async def test_a_redelivery_the_mailbox_already_holds_is_not_counted_again() -> None:
-    """The same message seen a second time is one request, not two."""
-    consumer = _consumer(
-        addressed=True,
-        hosted=HostedNote(launch=None, machine=None, refusal=None, deliver=False),
-    )
-
-    await _deliver(consumer, _message())
-
-    assert consumer._message_telemetry.addressed == []
 
 
 async def test_a_telemetry_failure_does_not_cost_the_agent_the_message(

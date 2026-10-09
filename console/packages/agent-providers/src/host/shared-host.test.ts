@@ -1002,14 +1002,14 @@ it('says a session is busy for each thing that keeps it from parking, and idle o
     busy: false,
     reasons: [],
   });
-  // Subagents still at work after the turn ended keep it from parking, and its worker awake.
+  // Subagents still at work after the turn ended keep it from parking.
   expect(sessionBusy(snapshot({ status: 'ready' }, ['completed'], []), 'none', 0, true)).toEqual({
     busy: true,
     reasons: [{ kind: 'turn_running', count: 1 }],
   });
 });
 
-it('stops holding its worker awake for a reset decision after the bound, and keeps the decision', async () => {
+it('stops holding its host busy for a reset decision after the bound, and keeps the decision', async () => {
   const lastBusy = (host: Harness) =>
     host.parent.sent.filter((m) => m.kind === 'busy').at(-1) as unknown as
       | { busy: boolean; reasons: { kind: string; count: number }[] }

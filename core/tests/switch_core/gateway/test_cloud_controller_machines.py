@@ -1,6 +1,6 @@
 """Switch cloud machines that run the agents controller, end to end against Postgres.
 
-The hosted controller prepares a `controller` machine; Core hands it a
+The hosted controller prepares a cloud machine; Core hands it a
 one-time enrollment code (the same one on every retry of a revision); the
 controller enrolls with it and becomes the machine's, as a Switch cloud
 controller; its status reports make the machine ready; and the managed agents
@@ -29,7 +29,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.hosted_machine_store import (
     HostedMachineStore,
     bump_revision,
-    lock_launches,
+    lock_claims,
 )
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.cloud_controllers import (
@@ -38,7 +38,6 @@ from switch_core.gateway.cloud_controllers import (
 )
 from switch_core.gateway.dependencies import (
     get_config,
-    get_protocol,
     get_session,
     get_session_factory,
 )
@@ -86,7 +85,6 @@ def _hosted_app(
         tenant_id=require_tenant_id(),
         token=TOKEN,
         machine_slots=["slot-a"],
-        github_private_key_path="/tmp/synthetic-signing-key.pem",
         agent_api_endpoint=API_ENDPOINT,
     )
     app.include_router(controller_router)
@@ -96,9 +94,6 @@ def _hosted_app(
         hosted_idle_stop_minutes=30,
         hosted_disk_retention_days=7,
         hosted_launch_capacity=1,
-        hosted_machine_runtime="controller",
-        hosted_controller_config_path="/tmp/synthetic-controller.json",
-        hosted_github_config_path=None,
     )
 
     async def session():
@@ -111,7 +106,6 @@ def _hosted_app(
     app.dependency_overrides[get_session] = session
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_config] = lambda: config
-    app.dependency_overrides[get_protocol] = lambda: SimpleNamespace()
     app.dependency_overrides[get_current_user] = current_user
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://switch.example.test"
@@ -122,13 +116,12 @@ async def _claim(
     session_factory: async_sessionmaker[AsyncSession], owner: User
 ) -> HostedMachine:
     async with session_factory() as session:
-        await lock_launches(session)
+        await lock_claims(session)
         machine = await HostedMachineStore().claim(
             session,
             owner_id=owner.id,
             slots=["slot-a"],
             capacity=1,
-            runtime="controller",
             now=datetime.now(UTC),
         )
         await session.commit()
@@ -217,11 +210,9 @@ class TestControllerMachines:
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
-        assert machine.runtime == "controller"
         async with _hosted_app(harness.session_factory, owner) as hosted:
             first = await _prepare(hosted, machine.id)
             retried = await _prepare(hosted, machine.id)
-            assert first["runtime"] == "controller"
             assert first["bundle_revision"] == first["revision"]
             assert first["api_endpoint"] == API_ENDPOINT
             code = first["controller"]["enrollment_code"]
@@ -317,7 +308,6 @@ class TestControllerMachines:
                 assert created.status_code == 201, created.text
             summary = await hosted.get(f"/hosted-machines/{machine.id}")
             assert summary.status_code == 200, summary.text
-            assert summary.json()["runtime"] == "controller"
             assert summary.json()["controller_id"] == enrolled["controller_id"]
             assert summary.json()["agents"] == [created.json()["agent_id"]]
 
@@ -372,24 +362,25 @@ class TestControllerMachines:
                 session, locked, retention_days=7, now=datetime.now(UTC)
             )
             assert await store.ever_hosted(session, locked)
-
-    async def test_a_worker_launch_is_refused_on_a_controller_machine(
-        self, harness: Harness
-    ) -> None:
-        owner = await add_member(harness.session_factory, "ada")
-        await _claim(harness.session_factory, owner)
-        async with harness.session_factory() as session:
-            await lock_launches(session)
-            claimed = await HostedMachineStore().claim(
-                session,
-                owner_id=owner.id,
-                slots=["slot-a"],
-                capacity=1,
-                runtime="worker",
-                now=datetime.now(UTC),
+            await session.commit()
+        async with harness.client() as client:
+            deleted = await client.delete(
+                f"/gateway/management/agents/{created.json()['agent_id']}",
+                cookies=cookies_for(owner),
             )
-            # A reused machine keeps the runtime it was claimed with.
-            assert claimed.runtime == "controller"
+            assert deleted.status_code == 200, deleted.text
+        async with harness.session_factory() as session:
+            locked = await store.locked(session, machine.id)
+            assert locked is not None
+            assert not await store.has_agents(session, locked)
+            now = datetime.now(UTC)
+            assert await store.retain_if_empty(
+                session, locked, retention_days=7, now=now
+            )
+            assert (locked.desired_state, locked.retain_until) == (
+                "retained",
+                now + timedelta(days=7),
+            )
 
     @pytest.mark.parametrize(
         ("heartbeat_age", "sessions", "sleeps"),
@@ -417,7 +408,6 @@ class TestControllerMachines:
         async with _hosted_app(harness.session_factory, owner) as hosted:
             listed = await hosted.get("/hosted-controller/machines", headers=HEADERS)
         assert listed.status_code == 200, listed.text
-        assert listed.json()["machines"][0]["runtime"] == "controller"
         after = await _machine(harness.session_factory, machine.id)
         if sleeps:
             # With no agent on it, an idle machine is released rather than stopped.

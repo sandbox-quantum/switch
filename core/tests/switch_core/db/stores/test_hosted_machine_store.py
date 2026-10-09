@@ -3,7 +3,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from switch_core.db.models import HostedLaunch, HostedMachine, User, require_tenant_id
+from switch_core.db.models import (
+    AgentDefinition,
+    HostedMachine,
+    User,
+    require_tenant_id,
+)
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_BEING_REMOVED,
     MACHINE_NEEDS_ADMIN,
@@ -11,15 +16,17 @@ from switch_core.db.stores.hosted_machine_store import (
     HostedMachineConflict,
     HostedMachineStore,
     idle_sleeping,
-    lock_launches,
+    lock_claims,
     machine_starting,
     owner_stopped,
 )
-from switch_core.keys import Keyring
-from tests.switch_core.hosted_machine_helpers import seed_launch, seed_machine
+from tests.switch_core.hosted_machine_helpers import (
+    link_controller,
+    place_managed_agent,
+    seed_machine,
+)
 
 SLOTS = ["slot-a", "slot-b"]
-TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 
 
 @pytest.fixture
@@ -43,13 +50,12 @@ async def factory(session_factory):
 
 async def claim(factory, owner_id, slots=SLOTS, capacity=2):
     async with factory() as session:
-        await lock_launches(session)
+        await lock_claims(session)
         machine = await HostedMachineStore().claim(
             session,
             owner_id=owner_id,
             slots=slots,
             capacity=capacity,
-            runtime="worker",
             now=datetime.now(UTC),
         )
         await session.commit()
@@ -79,8 +85,8 @@ async def test_claim_creates_a_queued_machine(factory):
         machine.state,
         machine.desired_state,
         machine.revision,
-        machine.agents_version,
-    ) == ("owner-a", "slot-a", 1, "queued", "running", 1, 1)
+        machine.controller_id,
+    ) == ("owner-a", "slot-a", 1, "queued", "running", 1, None)
     assert machine_starting(machine)
 
 
@@ -383,111 +389,173 @@ async def test_reusing_a_retained_machine_still_ready_waits_for_it_to_reconnect(
     assert machine_starting(machine)
 
 
-async def test_retain_if_empty_retains_only_once_no_agent_is_left(factory):
+async def ready_machine(session, owner_id="owner-a"):
+    return await seed_machine(
+        session,
+        owner_id=owner_id,
+        slot_id="slot-a",
+        state="ready",
+        desired_state="running",
+        stop_reason=None,
+        revision=2,
+        generation=1,
+    )
+
+
+async def test_retain_if_empty_retains_only_once_no_agent_is_placed(factory):
     store = HostedMachineStore()
     async with factory() as session:
-        machine = await seed_machine(
-            session,
-            owner_id="owner-a",
-            slot_id="slot-a",
-            state="ready",
-            desired_state="running",
-            stop_reason=None,
-            revision=2,
-            generation=1,
-        )
-        launch = await seed_launch(
-            session,
-            machine=machine,
-            request_id="request-1",
-            name="helper",
-            state="ready",
-            desired_state="running",
-            revision=1,
-            agent_id=None,
-            spec={},
+        machine = await ready_machine(session)
+        controller = await link_controller(session, machine)
+        definition = await place_managed_agent(
+            session, owner_id="owner-a", controller_id=controller.id, name="helper"
         )
         now = datetime.now(UTC)
-        assert [row.id for row in await store.launches(session, machine.id)] == [
-            "request-1"
-        ]
+        assert await store.has_agents(session, machine)
         assert not await store.retain_if_empty(
             session, machine, retention_days=7, now=now
         )
-        assert machine.revision == 2
-        launch.desired_state = "deleted"
+        assert (machine.desired_state, machine.revision) == ("running", 2)
+        definition.controller_id = None
         assert await store.retain_if_empty(session, machine, retention_days=7, now=now)
-        assert (machine.desired_state, machine.revision, machine.retain_until) == (
-            "retained",
-            3,
-            now + timedelta(days=7),
-        )
-        launch.state = "deleted"
-        assert await store.launches(session, machine.id) == []
+        assert (
+            machine.desired_state,
+            machine.stop_reason,
+            machine.revision,
+            machine.retain_until,
+        ) == ("retained", None, 3, now + timedelta(days=7))
         await session.commit()
 
 
-async def test_machine_capability_is_stable_per_revision_and_rotates(factory):
-    store = HostedMachineStore()
-    machine = await claim(factory, "owner-a")
-    assert not store.capability_matches(machine, "anything")
-    first = store.issue_capability(machine, TEST_KEYRING)
-    assert store.issue_capability(machine, TEST_KEYRING) == first
-    assert machine.machine_capability_revision == 1
-    assert store.capability_matches(machine, first)
-    assert not store.capability_matches(machine, first + "x")
-    store.stop(machine, "owner", datetime.now(UTC))
-    assert store.capability_matches(machine, first)
-    second = store.issue_capability(machine, TEST_KEYRING)
-    assert second != first
-    assert machine.machine_capability_revision == 2
-    assert store.capability_matches(machine, second)
-    assert not store.capability_matches(machine, first)
-
-
-async def test_locked_launch_returns_the_launch_and_its_machine(factory):
+async def test_only_agents_on_the_machine_s_own_controller_count(factory):
     store = HostedMachineStore()
     async with factory() as session:
-        machine = await seed_machine(
+        machine = await ready_machine(session)
+        other = await seed_machine(
             session,
-            owner_id="owner-a",
-            slot_id="slot-a",
+            owner_id="owner-b",
+            slot_id="slot-b",
             state="ready",
             desired_state="running",
             stop_reason=None,
             revision=1,
             generation=1,
         )
-        await seed_launch(
-            session,
-            machine=machine,
-            request_id="request-1",
-            name="helper",
-            state="ready",
-            desired_state="running",
-            revision=1,
-            agent_id=None,
-            spec={},
+        mine = await link_controller(session, machine)
+        theirs = await link_controller(session, other)
+        await place_managed_agent(
+            session, owner_id="owner-b", controller_id=theirs.id, name="theirs"
         )
-        session.add(
-            HostedLaunch(
-                id="legacy",
-                owner_id="owner-a",
-                name="removed:legacy",
-                spec={},
-                state="deleted",
-                desired_state="deleted",
+        assert not await store.has_agents(session, machine)
+        assert await store.managed_agent_ids(session, machine) == []
+        placed = [
+            await place_managed_agent(
+                session, owner_id="owner-a", controller_id=mine.id, name=name
             )
+            for name in ("reviewer", "builder")
+        ]
+        assert await store.has_agents(session, machine)
+        assert await store.managed_agent_ids(session, machine) == sorted(
+            definition.agent_id for definition in placed
+        )
+
+
+async def test_a_machine_without_a_controller_has_no_agents(factory):
+    store = HostedMachineStore()
+    async with factory() as session:
+        machine = await ready_machine(session)
+        assert not await store.has_agents(session, machine)
+        assert await store.managed_agent_ids(session, machine) == []
+        assert not await store.ever_hosted(session, machine)
+
+
+async def test_release_if_empty_expires_a_machine_whose_controller_never_enrolled(
+    factory,
+):
+    store = HostedMachineStore()
+    async with factory() as session:
+        machine = await ready_machine(session)
+        now = datetime.now(UTC)
+        assert await store.release_if_empty(session, machine, retention_days=7, now=now)
+        assert (machine.desired_state, machine.revision, machine.retain_until) == (
+            "retained",
+            3,
+            now,
+        )
+
+
+async def test_release_if_empty_keeps_the_disk_of_a_machine_that_enrolled(factory):
+    store = HostedMachineStore()
+    async with factory() as session:
+        machine = await ready_machine(session)
+        await link_controller(session, machine)
+        assert await store.ever_hosted(session, machine)
+        now = datetime.now(UTC)
+        assert await store.release_if_empty(session, machine, retention_days=7, now=now)
+        assert (machine.desired_state, machine.retain_until) == (
+            "retained",
+            now + timedelta(days=7),
+        )
+
+
+async def test_release_if_empty_leaves_a_machine_with_agents(factory):
+    store = HostedMachineStore()
+    async with factory() as session:
+        machine = await ready_machine(session)
+        controller = await link_controller(session, machine)
+        await place_managed_agent(
+            session, owner_id="owner-a", controller_id=controller.id, name="helper"
+        )
+        assert not await store.release_if_empty(
+            session, machine, retention_days=7, now=datetime.now(UTC)
+        )
+        assert (machine.desired_state, machine.revision, machine.retain_until) == (
+            "running",
+            2,
+            None,
+        )
+
+
+async def test_removing_the_agent_takes_it_off_the_machine(factory):
+    store = HostedMachineStore()
+    async with factory() as session:
+        machine = await ready_machine(session)
+        controller = await link_controller(session, machine)
+        definition = await place_managed_agent(
+            session, owner_id="owner-a", controller_id=controller.id, name="helper"
         )
         await session.commit()
     async with factory() as session:
-        launch, locked = await store.locked_launch(session, "request-1")
-        assert launch is not None and locked is not None
-        assert (launch.id, locked.id) == ("request-1", machine.id)
-        legacy, none = await store.locked_launch(session, "legacy")
-        assert legacy is not None and none is None
-        assert await store.locked_launch(session, "missing") == (None, None)
-        assert await store.owned(session, machine.id, "owner-a") is not None
+        row = await session.get(AgentDefinition, definition.id)
+        await session.delete(row)
+        await session.commit()
+    async with factory() as session:
+        machine = await store.get(session, machine.id)
+        assert machine is not None
+        assert not await store.has_agents(session, machine)
+        assert await store.ever_hosted(session, machine)
+
+
+async def test_owned_and_live_for_owner(factory):
+    store = HostedMachineStore()
+    async with factory() as session:
+        machine = await ready_machine(session)
+        await seed_machine(
+            session,
+            owner_id="owner-a",
+            slot_id="slot-b",
+            state="deleted",
+            desired_state="deleted",
+            stop_reason=None,
+            revision=1,
+            generation=1,
+        )
+        await session.commit()
+    async with factory() as session:
+        assert (await store.owned(session, machine.id, "owner-a")).id == machine.id
         assert await store.owned(session, machine.id, "owner-b") is None
         assert (await store.live_for_owner(session, "owner-a")).id == machine.id
+        assert await store.live_for_owner(session, "owner-b") is None
+        assert (await store.locked(session, machine.id)).id == machine.id
+        assert await store.locked(session, "missing") is None
         assert await session.get(HostedMachine, (require_tenant_id(), machine.id))

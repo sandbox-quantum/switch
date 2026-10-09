@@ -11,7 +11,6 @@ from test_controller import (
     CORE_FIXTURES,
     FIXTURE_SECRET_ARN,
     MACHINE_ID,
-    WORKER_TESTDATA,
     config,
     fixture_config,
     insert_machine,
@@ -30,7 +29,7 @@ from switch_hosted_controller.store import CapacityError, MachineStore
 
 FIXTURES = Path(__file__).parent / "fixtures"
 VOLUME_ID = "vol-0123456789abcdef0"
-CAPABILITY = "SYNTHETIC-MACHINE-CAPABILITY-0123456789"
+CODE = "swce_SyntheticEnrollmentCode0000"
 OTHER_MACHINE_ID = "3f1c2b4a-0000-4000-8000-000000000002"
 
 
@@ -56,8 +55,8 @@ def prepared_machine(**overrides) -> dict:
         "generation": 1,
         "revision": 1,
         "bundle_revision": 1,
-        "machine_capability": CAPABILITY,
         "api_endpoint": "https://switch.example.test/agent-api",
+        "controller": {"id": None, "enrollment_code": CODE},
         **overrides,
     }
 
@@ -136,7 +135,7 @@ def test_launch_retry_reuses_the_slot_and_row(tmp_path):
     token = str(uuid5(NAMESPACE_URL, f"{MACHINE_ID}:1"))
     assert store.get(MACHINE_ID).bundle_token == token
     assert json.loads(saved[token]) == {
-        "version": 2,
+        "version": 3,
         "machineId": MACHINE_ID,
         "assignment": {
             "installationId": cfg.installation_id,
@@ -144,22 +143,9 @@ def test_launch_retry_reuses_the_slot_and_row(tmp_path):
             "generation": 1,
             "dataVolumeId": VOLUME_ID,
         },
-        "machineCapability": CAPABILITY,
         "apiEndpoint": "https://switch.example.test/agent-api",
+        "controller": {"id": None, "enrollmentCode": CODE},
     }
-    store.close()
-
-
-@pytest.mark.parametrize("capability", [None, "", "short", "has space in it 0123", 7])
-def test_bundle_refuses_a_missing_or_malformed_capability(tmp_path, capability):
-    cfg = config(tmp_path)
-    store = open_store(cfg)
-    machine = insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
-    prepared = prepared_machine(machine_capability=capability)
-    if capability is None:
-        del prepared["machine_capability"]
-    with pytest.raises(ConfigError, match="capability"):
-        make_gateway(cfg, store).bundle(prepared, machine)
     store.close()
 
 
@@ -173,12 +159,12 @@ def test_bundle_refuses_an_invalid_api_endpoint(tmp_path, endpoint):
     store.close()
 
 
-def test_machine_without_a_capability_writes_no_bundle(tmp_path):
+def test_machine_without_a_controller_writes_no_bundle(tmp_path):
     cfg = config(tmp_path)
     store = open_store(cfg)
     gateway = make_gateway(cfg, store)
     prepared = prepared_machine()
-    del prepared["machine_capability"]
+    del prepared["controller"]
     gateway.request = Mock(return_value=prepared)
     gateway.secrets.describe_secret.return_value = {"VersionIdsToStages": {}}
     core = CoreMachine.parse(core_machine())
@@ -335,14 +321,14 @@ def synced_from_core(tmp_path) -> tuple[MachineStore, Gateway, dict]:
     secrets = Mock()
     secrets.describe_secret.return_value = {"VersionIdsToStages": {}}
     gateway = make_gateway(cfg, store, secrets, instance_type="c7i.2xlarge")
-    gateway.request = routed([listed], core_fixture("prepare_response.json"))
+    gateway.request = routed([listed], core_fixture("prepare_controller_response.json"))
     gateway.sync_machines(gateway.machines())
     return store, gateway, listed
 
 
 def test_core_machine_list_and_prepare_produce_the_bundle(tmp_path):
     store, gateway, listed = synced_from_core(tmp_path)
-    prepared = core_fixture("prepare_response.json")
+    prepared = core_fixture("prepare_controller_response.json")
     core = CoreMachine.parse(listed)
     assert (core.machine_id, core.slot_id, core.desired_state) == (
         listed["machine_id"],
@@ -361,7 +347,7 @@ def test_core_machine_list_and_prepare_produce_the_bundle(tmp_path):
     assert (put["SecretId"], put["ClientRequestToken"]) == (FIXTURE_SECRET_ARN, token)
     bundle = json.loads(put["SecretString"])
     assert bundle == {
-        "version": 2,
+        "version": 3,
         "machineId": prepared["machine_id"],
         "assignment": {
             "installationId": "inst-test",
@@ -369,10 +355,9 @@ def test_core_machine_list_and_prepare_produce_the_bundle(tmp_path):
             "generation": prepared["generation"],
             "dataVolumeId": listed["data_volume_id"],
         },
-        "machineCapability": prepared["machine_capability"],
         "apiEndpoint": prepared["api_endpoint"],
+        "controller": {"id": None, "enrollmentCode": prepared["controller"]["enrollment_code"]},
     }
-    assert bundle == json.loads((WORKER_TESTDATA / "bundle.json").read_text())
     store.close()
 
 
@@ -663,32 +648,6 @@ def test_invalid_core_machine_does_not_block_the_others(tmp_path):
     store.close()
 
 
-def test_a_controller_machine_gets_a_bundle_with_its_enrollment_code(tmp_path):
-    [listed] = core_fixture("machines_response.json")["machines"]
-    prepared = core_fixture("prepare_controller_response.json")
-    cfg = fixture_config(tmp_path, "c7i.2xlarge")
-    store = open_store(cfg)
-    secrets = Mock()
-    secrets.describe_secret.return_value = {"VersionIdsToStages": {}}
-    gateway = make_gateway(cfg, store, secrets, instance_type="c7i.2xlarge")
-    gateway.request = routed([listed], prepared)
-    gateway.sync_machines(gateway.machines())
-    bundle = json.loads(gateway.secrets.put_secret_value.call_args.kwargs["SecretString"])
-    assert bundle == {
-        "version": 3,
-        "machineId": prepared["machine_id"],
-        "assignment": {
-            "installationId": "inst-test",
-            "slotId": prepared["slot_id"],
-            "generation": prepared["generation"],
-            "dataVolumeId": listed["data_volume_id"],
-        },
-        "apiEndpoint": prepared["api_endpoint"],
-        "controller": {"id": None, "enrollmentCode": prepared["controller"]["enrollment_code"]},
-    }
-    store.close()
-
-
 @pytest.mark.parametrize(
     "controller",
     [
@@ -703,12 +662,7 @@ def test_a_controller_bundle_refuses_what_is_not_one(tmp_path, controller):
     cfg = config(tmp_path)
     store = open_store(cfg)
     machine = insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
-    prepared = {
-        **prepared_machine(),
-        "runtime": "controller",
-        "controller": controller,
-    }
-    del prepared["machine_capability"]
+    prepared = {**prepared_machine(), "controller": controller}
     with pytest.raises((ConfigError, ValueError)):
         make_gateway(cfg, store).bundle(prepared, machine)
     store.close()
@@ -718,12 +672,7 @@ def test_an_enrolled_controller_machine_gets_its_controller_and_no_code(tmp_path
     cfg = config(tmp_path)
     store = open_store(cfg)
     machine = insert_machine(store, cfg, "slot-1", 1, MACHINE_ID)
-    prepared = {
-        **prepared_machine(),
-        "runtime": "controller",
-        "controller": {"id": MACHINE_ID, "enrollment_code": None},
-    }
+    prepared = {**prepared_machine(), "controller": {"id": MACHINE_ID, "enrollment_code": None}}
     bundle = make_gateway(cfg, store).bundle(prepared, machine)
     assert bundle["controller"] == {"id": MACHINE_ID, "enrollmentCode": None}
-    assert "machineCapability" not in bundle
     store.close()

@@ -1,14 +1,13 @@
-# Switch cloud machines that run the agents controller
+# The Switch cloud machine image
 
-A machine claimed while Switch has `HOSTED_MACHINE_RUNTIME=controller` runs
-`switch-agent-controller`, the program any machine runs agents with. It does
-not run the hosted worker in `../worker`. The owner's managed agents placed on
-it run there, each as a Linux user of its own, and they use the provider logins
-the owner gives the machine.
+A Switch cloud machine runs `switch-agent-controller`, the program any machine
+runs agents with. The owner's managed agents placed on it run there, each as a
+Linux user of its own, and they use the provider logins the owner gives the
+machine.
 
 ## How a machine comes up
 
-1. Core claims the machine for its owner and records `runtime: controller`.
+1. Core claims the machine for its owner.
 2. The hosted controller creates the data volume and asks Core to prepare the
    machine. Until a controller enrolls for the machine, Core answers with a
    one-time **enrollment code**. The code is bound to the machine and is valid
@@ -83,15 +82,12 @@ instance of the image must give the files on it the same owners.
 
 `agent-users` (16 by default) is how many agents a machine can run at once.
 
-## Switching a deployment over
+## Running it
 
-- Core needs `AGENT_MANAGEMENT_ENABLED` as well as the hosted settings. Set
-  `HOSTED_MACHINE_RUNTIME=controller`. Machines claimed before that keep the
-  worker runtime.
+- Core needs `AGENT_MANAGEMENT_ENABLED` as well as the hosted settings; see
+  [../README.md](../README.md).
 - The hosted controller's `image_id` must be an image baked here.
-- Launches (`/hosted-launches`) are refused while the runtime is `controller`.
-  Cloud agents are managed agents placed on the owner's cloud machine.
-- A controller machine is stopped once its status reports say no session has
+- A machine is stopped once its status reports say no session has
   run for `HOSTED_IDLE_STOP_MINUTES`. A message addressed to one of its agents,
   or placing an agent on it, starts it again; Switch keeps the message (up to
   15 minutes, in memory) until the controller is back and resumes from its

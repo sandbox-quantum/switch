@@ -355,8 +355,6 @@ class Ec2Cloud:
         }
         if machine.previous_instance_id:
             metadata["previousInstanceId"] = machine.previous_instance_id
-        if machine.previous_runtime_fingerprint:
-            metadata["previousRuntimeFingerprint"] = machine.previous_runtime_fingerprint
         encoded = base64.b64encode(json.dumps(metadata, separators=(",", ":")).encode()).decode()
         return "\n".join(
             [

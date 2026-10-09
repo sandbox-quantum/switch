@@ -221,20 +221,13 @@ class SwitchConfig(BaseSettings):
     # OIDC first sign-in alike), read from the users table so it holds across
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    # How many cloud machines the bound tenant may have at once. Cloud machines
+    # run the agents controller, so they need AGENT_MANAGEMENT_ENABLED.
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
-    # What a cloud machine claimed from now on runs: the hosted worker, which
-    # runs launches, or the agents controller, which enrolls with a one-time
-    # code and runs the owner's managed agents (needs AGENT_MANAGEMENT_ENABLED).
-    # A machine keeps the runtime it was claimed with.
-    hosted_machine_runtime: Literal["worker", "controller"] = "worker"
-    hosted_sessions_per_agent: int = Field(default=8, ge=1, le=100)
-    hosted_agents_per_owner: int = Field(default=3, ge=1, le=100)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
     hosted_disk_retention_days: int = Field(default=7, ge=1, le=90)
     hosted_controller_config_path: str | None = None
     hosted_github_config_path: str | None = None
-    hosted_provider_verification_enabled: bool = False
-    hosted_claude_verifier_path: str | None = None
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
     # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
     # Only a local stack served over http:// should turn it off.
@@ -716,6 +709,11 @@ class SwitchConfig(BaseSettings):
                 f"{self.controller_status_interval_seconds!r}."
             )
         if not self.agent_management_enabled:
+            if self.hosted_launch_capacity > 0:
+                raise ValueError(
+                    "HOSTED_LAUNCH_CAPACITY needs AGENT_MANAGEMENT_ENABLED: cloud "
+                    "machines run the agents controller."
+                )
             return self
         if not self.controller_token_secret:
             raise ValueError(
@@ -1452,14 +1450,6 @@ class SwitchConfig(BaseSettings):
         # additionally proves it was issued for the host we asked for.
         context.check_hostname = self.db_ssl_mode == "verify-full"
         return {"ssl": context}
-
-
-def hosted_configured(config: SwitchConfig) -> bool:
-    """Whether this server runs cloud agents: it has a hosted controller or launch capacity."""
-    return (
-        config.hosted_controller_config_path is not None
-        or config.hosted_launch_capacity > 0
-    )
 
 
 def deprecated_env_names() -> list[str]:

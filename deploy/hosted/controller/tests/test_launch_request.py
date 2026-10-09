@@ -9,10 +9,8 @@ import pytest
 from botocore.stub import ANY, Stubber
 from test_controller import (
     MACHINE_ID,
-    WORKER_TESTDATA,
     config,
     ec2_client,
-    fixture_machine,
     store_and_machine,
 )
 
@@ -71,25 +69,13 @@ def test_run_request_is_valid_and_user_data_contains_only_assignment_refs(tmp_pa
     store.close()
 
 
-def test_user_data_matches_the_worker_assignment_fixture(tmp_path: Path):
-    cfg, store, machine = fixture_machine(tmp_path, "m6i.large")
-    fixture = json.loads((WORKER_TESTDATA / "assignment.json").read_text())
-    assert json.loads(assignment(Ec2Cloud(ec2_client(), cfg)._user_data(machine))) == fixture
-    store.close()
-
-
 def test_user_data_carries_the_predecessor_only_when_set(tmp_path: Path):
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)
     cloud = Ec2Cloud(ec2_client(), cfg)
-    successor = replace(
-        machine,
-        previous_instance_id="i-0123456789abcdef0",
-        previous_runtime_fingerprint="sha256:" + "a" * 64,
-    )
+    successor = replace(machine, previous_instance_id="i-0123456789abcdef0")
     metadata = json.loads(assignment(cloud._user_data(successor)))
     assert metadata["previousInstanceId"] == "i-0123456789abcdef0"
-    assert metadata["previousRuntimeFingerprint"] == "sha256:" + "a" * 64
     assert "previousInstanceId" not in json.loads(assignment(cloud._user_data(machine)))
     store.close()
 

@@ -65,8 +65,12 @@ class FakeSecrets:
         return response["VersionId"], json.loads(response["SecretString"])
 
 
+def code(revision: int) -> str:
+    return f"swce_SyntheticCodeRevision{revision:04d}"
+
+
 class FakeCore:
-    """Core's controller routes: one machine, a revision, one capability per revision."""
+    """Core's controller routes: one machine, a revision, one enrollment code per revision."""
 
     def __init__(self, machine_id: str):
         self.machine_id = machine_id
@@ -76,8 +80,8 @@ class FakeCore:
         self.revision = 1
         self.desired_state = "running"
         self.retain_until: str | None = None
-        self.capability_revision: int | None = None
-        self.capability = ""
+        self.code_revision: int | None = None
+        self.code = ""
         self.prepared_revisions: list[int] = []
         self.observations: list[dict] = []
         self.prepare_failures = 0
@@ -92,7 +96,7 @@ class FakeCore:
             "revision": self.revision if revision is None else revision,
             "data_volume_id": None,
             "retain_until": self.retain_until,
-            "bundle_revision": self.capability_revision,
+            "bundle_revision": self.code_revision,
             "owner_hint": "ignored by the controller",
         }
 
@@ -107,18 +111,18 @@ class FakeCore:
         if self.prepare_failures:
             self.prepare_failures -= 1
             raise GatewayError(503)
-        if self.capability_revision != self.revision:
-            self.capability_revision = self.revision
-            self.capability = f"SYNTHETIC-CAPABILITY-REVISION-{self.revision:04d}"
+        if self.code_revision != self.revision:
+            self.code_revision = self.revision
+            self.code = code(self.revision)
         self.prepared_revisions.append(self.revision)
         return {
             "machine_id": self.machine_id,
             "slot_id": self.slot_id,
             "generation": self.generation,
             "revision": self.revision,
-            "bundle_revision": self.capability_revision,
-            "machine_capability": self.capability,
+            "bundle_revision": self.code_revision,
             "api_endpoint": "https://switch.example.test/agent-api",
+            "controller": {"id": None, "enrollment_code": self.code},
             "extra": "ignored",
         }
 
@@ -256,7 +260,7 @@ def test_new_revision_prepares_once_and_writes_one_current_version(
     assert secrets.versions[first]["stages"] == set()
     version_id, bundle = secrets.current()
     assert version_id == second
-    assert bundle["machineCapability"] == "SYNTHETIC-CAPABILITY-REVISION-0002"
+    assert bundle["controller"]["enrollmentCode"] == code(2)
     assert bundle["assignment"]["dataVolumeId"] == VOLUME_ID
     machine = store.get(MACHINE_ID)
     assert machine.required_bundle_token == machine.bundle_token == second
@@ -331,7 +335,7 @@ def test_lost_put_response_and_resource_exists_retry_keep_one_version(tmp_path):
         sync(gateway, core)
 
     assert [put["token"] for put in secrets.puts].count(second) == 1
-    assert secrets.current()[1]["machineCapability"] == "SYNTHETIC-CAPABILITY-REVISION-0002"
+    assert secrets.current()[1]["controller"]["enrollmentCode"] == code(2)
     assert store.get(MACHINE_ID).bundle_token == second
     store.close()
 
@@ -352,7 +356,7 @@ def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
     first = token(core.machine_id, 1)
     booted, bundle = secrets.current()
     assert booted == first
-    assert bundle["machineCapability"] == "SYNTHETIC-CAPABILITY-REVISION-0001"
+    assert bundle["controller"]["enrollmentCode"] == code(1)
     assert core.observations[-1] == {
         "state": "running",
         "revision": 1,
@@ -384,7 +388,7 @@ def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
     woken = token(core.machine_id, 3)
     version_id, bundle = secrets.current()
     assert version_id == woken
-    assert bundle["machineCapability"] == "SYNTHETIC-CAPABILITY-REVISION-0003"
+    assert bundle["controller"]["enrollmentCode"] == code(3)
     assert core.prepared_revisions == [1, 3]
     assert [put["token"] for put in secrets.puts] == [first, woken]
     assert cloud.calls.count("start_instance") == 1

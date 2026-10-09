@@ -54,16 +54,10 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 MAX_JSON_BYTES = 128 * 1024
 VOLUME_WAIT_SECONDS = 600
 SECRET_WAIT_SECONDS = 300
-# The bundle of a worker machine: this image cannot run it, and says so.
-OBSOLETE_EXIT_CODE = 75
 
 
 class BootError(RuntimeError):
     """Booting cannot go on; the message says why."""
-
-
-class ObsoleteBundle(BootError):
-    pass
 
 
 @dataclass(frozen=True)
@@ -120,7 +114,7 @@ def load_assignment(path: Path = ASSIGNMENT_PATH) -> Assignment:
     value = _load_json(path, "machine assignment")
     if not isinstance(value, dict):
         raise BootError("The machine assignment is not an object.")
-    optional = {"previousInstanceId", "previousRuntimeFingerprint"}
+    optional = {"previousInstanceId"}
     value = _strict(
         {key: item for key, item in value.items() if key not in optional},
         {
@@ -187,17 +181,11 @@ def load_machine_config(path: Path = MACHINE_CONFIG_PATH) -> MachineConfig:
 
 
 def parse_bundle(raw: str, assignment: Assignment) -> Bundle:
-    """The bundle for this machine, as `controller_bundle` in the hosted controller writes it."""
+    """The bundle for this machine, as `Gateway.bundle` in the hosted controller writes it."""
     try:
         value = json.loads(raw)
     except ValueError:
         raise BootError("The machine bundle is not JSON.") from None
-    if isinstance(value, dict) and value.get("version") == 2:
-        raise ObsoleteBundle(
-            "The machine bundle is a hosted worker's, which this image does not run: "
-            "launch worker machines from the worker image, or have Switch claim "
-            "machines with HOSTED_MACHINE_RUNTIME=controller."
-        )
     value = _strict(
         value,
         {"version", "machineId", "assignment", "apiEndpoint", "controller"},
@@ -285,8 +273,6 @@ def read_bundle(
             if not isinstance(raw, str):
                 raise BootError("The machine bundle is not a string.")
             return parse_bundle(raw, assignment)
-        except ObsoleteBundle:
-            raise
         except Exception as error:
             if time.monotonic() > deadline:
                 raise BootError(f"The machine bundle cannot be read: {error}") from None
@@ -543,9 +529,6 @@ def main(argv: list[str] | None = None) -> int:
             prepare_storage(commands, assignment.volume_id)
             reconcile_marker(DATA_MOUNT, assignment, bundle.machine_id)
             start_controller(commands, config, assignment, bundle)
-    except ObsoleteBundle as error:
-        logger.error("%s", error)
-        return OBSOLETE_EXIT_CODE
     except BootError as error:
         logger.error("%s", error)
         return 1

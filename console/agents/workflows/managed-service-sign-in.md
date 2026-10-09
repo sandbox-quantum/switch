@@ -9,29 +9,21 @@ and an invalid value is reported where the Cloud would be.
 Add server → Connect to Switch Cloud reuses server registration, password/SSO
 sign-in (or creating an account, where the server allows sign-up) and encrypted
 session storage. A matching server entry is reused, and an account already
-signed in goes straight on to the provider selector. The provider selector shows
-the registered providers; Claude Code is the only enabled provider in this
-increment.
+signed in goes straight on to the connections step, then to a new agent whose
+run location is Switch cloud.
 
-## Claude Code connection
+## Switch cloud agents
 
-The screen offers an API key or subscription setup token with official setup
-instructions. Verify and connect sends the credential over the authenticated
-HTTPS gateway connection. The server runs a fixed, tool-free Claude Code request
-before storing the credential encrypted for the current tenant and user.
-Verification consumes a small amount of API credit or subscription allowance.
+Signing in to Switch Cloud claims and starts the user's cloud machine
+(`/gateway/hosted-machines/ensure`). The machine runs the agents controller, so
+a Switch cloud agent is a managed agent placed on that machine's controller
+once it has enrolled and is online, created like an agent on any other machine.
+Provider logins reach the machine sealed to its controller ("Give login"); the
+server stores no provider credentials of its own. Your Agents shows the machine
+with its state, disk, and start, stop and retry.
 
-The status endpoint returns only the credential kind and last successful check
-time. The UI can reopen a connection, replace it, or remove it. Failed verification
-does not overwrite an existing connection. Removal deletes the server-side
-credential; it does not revoke it at Anthropic. Signing out does not remove a
-cloud connection. Legacy local drafts are never uploaded automatically and are
-still cleared on sign-out or server removal.
-
-See `deploy/hosted/README.md` for the backend verifier image. A backend without
-verification enabled returns a visible unavailable error. GitHub connection,
-worker credential delivery and cloud agent creation are separate steps; connecting
-Claude does not provision a worker or start a room agent.
+Legacy local Claude drafts are never uploaded and are still cleared on sign-out
+or server removal.
 
 ## GitHub connection
 
@@ -55,5 +47,4 @@ URL is `<origin>/gateway/provider-connections/github/callback`. Keep expiring us
 tokens enabled in the GitHub App. No app secret belongs in Console build settings.
 
 The handoff store is bounded and process-local, matching the singleton backend.
-This step does not issue worker installation tokens or provision agents. The app
-signing key and worker credential renewal belong to cloud-agent setup.
+This step does not provision agents.

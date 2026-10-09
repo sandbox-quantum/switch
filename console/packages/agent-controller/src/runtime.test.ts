@@ -64,7 +64,6 @@ function openStream(agentId: string): OpenAgentStream {
       start: () => {},
       setSpawnCapable: () => {},
       replacePlacements: async () => {},
-      workerCall: () => Promise.reject(new Error('not a worker')),
     };
   };
 }

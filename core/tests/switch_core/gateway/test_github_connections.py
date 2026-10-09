@@ -2,11 +2,9 @@ import asyncio
 import json
 import secrets
 import time
-from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
-from uuid import uuid4
 
 import httpx
 import pytest
@@ -14,8 +12,6 @@ from fastapi import FastAPI
 from sqlalchemy import select, text
 
 from switch_core.db.models import (
-    GitHubIssuedToken,
-    HostedLaunch,
     ProviderConnection,
     User,
     require_tenant_id,
@@ -433,34 +429,12 @@ async def test_oauth_revocation_deletes_only_the_selected_token(
     assert request.call_args.kwargs["json"] == {"access_token": "SYNTHETIC-OLD-ACCESS"}
 
 
-async def test_relink_queues_existing_installation_tokens(github_app, monkeypatch):
-    client, github, identity, factory = github_app
+async def test_relink_revokes_the_previous_sign_in(github_app):
+    client, github, _, _ = github_app
     first = await authorize(client)
     await relay(client, first)
     assert (await complete(client, first)).status_code == 204
     assert (await confirm(client, first)).status_code == 200
-    async with factory() as session:
-        launch = HostedLaunch(
-            id=str(uuid4()), owner_id=identity["user"].id, name="relink-worker", spec={}
-        )
-        session.add(launch)
-        await session.flush()
-        issued = GitHubIssuedToken(
-            id=str(uuid4()),
-            owner_id=launch.owner_id,
-            launch_id=launch.id,
-            launch_revision=1,
-            encrypted_token=TEST_KEYRING.encrypt("SYNTHETIC-INSTALLATION"),
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-            revoke_requested=False,
-            attempts=0,
-        )
-        session.add(issued)
-        await session.commit()
-    monkeypatch.setattr(
-        "switch_core.gateway.github_connections.revoke_pending",
-        AsyncMock(return_value=True),
-    )
     github.exchange.return_value = {
         **github.exchange.return_value,
         "access_token": "SYNTHETIC-RELINKED-ACCESS",
@@ -470,8 +444,5 @@ async def test_relink_queues_existing_installation_tokens(github_app, monkeypatc
     assert (await complete(client, second)).status_code == 204
     response = await confirm(client, second)
     assert response.status_code == 200
-    assert response.json()["warning"]
+    assert response.json()["warning"] is None
     github.revoke.assert_awaited_once_with("SYNTHETIC-ACCESS")
-    async with factory() as session:
-        row = await session.get(GitHubIssuedToken, (require_tenant_id(), issued.id))
-        assert row.revoke_requested
