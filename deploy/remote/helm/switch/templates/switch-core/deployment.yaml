@@ -82,6 +82,7 @@ spec:
               value: /etc/switch-github/github.json
             {{- end }}
             {{- include "switch.coreEnv" (merge (dict "omitOwnerCredentials" true) .) | nindent 12 }}
+          {{- include "switch.preStopDrain" . | nindent 10 }}
           # Readiness checks the database; liveness deliberately does not.
           # There is one replica, so a failing readiness probe empties the
           # Service rather than shifting traffic — which is right while the

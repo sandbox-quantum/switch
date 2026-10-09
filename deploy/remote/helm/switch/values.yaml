@@ -10,6 +10,12 @@ global:
   # private registry (e.g. a private GHCR namespace). Applied to every pod. Leave
   # empty for public images.
   imagePullSecrets: []
+  # Seconds each pod behind a Service (switch-core, gateway, Mattermost) waits in
+  # a preStop hook before it is sent SIGTERM, so the endpoint and any load
+  # balancer stop routing to it first and a roll does not answer requests with
+  # 503s. Uses the native `sleep` lifecycle action (Kubernetes 1.30+); set 0 to
+  # render no hook on an older cluster.
+  preStopSleepSeconds: 5
 
 # ── Ingress ─────────────────────────────────────────────────────────────────
 # Generic Ingress for the web surface. Bring your own ingress controller

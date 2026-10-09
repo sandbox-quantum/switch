@@ -432,6 +432,22 @@ than something you discover hours later at Graph subscription time.
 {{- end }}
 
 {{/*
+preStop drain for a container behind a Service: hold the old pod for a few
+seconds after it is marked terminating, so endpoint and load-balancer
+deregistration land before the process gets SIGTERM. The native `sleep` action
+needs no shell, which the distroless images do not have.
+Usage: {{- include "switch.preStopDrain" . | nindent 10 }}
+*/}}
+{{- define "switch.preStopDrain" -}}
+{{- with .Values.global.preStopSleepSeconds -}}
+lifecycle:
+  preStop:
+    sleep:
+      seconds: {{ . }}
+{{- end }}
+{{- end }}
+
+{{/*
 Prepend the global image registry if set.
 Usage: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
 */}}

@@ -82,6 +82,26 @@ version of their own to them without also giving them a release of their own.
   pods twice. Rendering fails when the secret is missing or shorter than 32
   characters. Remove variables set by hand before the first upgrade that renders
   them (see the chart README).
+- **`global.preStopSleepSeconds`** (default `5`): switch-core, gateway and
+  Mattermost wait that long in a `preStop` hook before SIGTERM, so a roll stops
+  answering with 503s while endpoints and load balancers catch up. Uses the
+  native `sleep` action (Kubernetes 1.30+); `0` renders no hook.
+
+#### Changed
+- **The published Helm chart pins its images by digest.** The release writes
+  each image's registry digest into the chart's values before packaging, so
+  `switchCore.image`, `gateway.image` and `setup.image` default to
+  `<image>:<version>@sha256:…` with `imagePullPolicy: IfNotPresent`, and
+  `global.imageRegistry` defaults to the registry the release published to.
+  Pinning the chart version now pins the exact images; a deployment no longer
+  needs to set the three image values, and setting them by tag opts back out of
+  the pin. Values that set `global.imageRegistry` to a mirror keep working when
+  the mirror copies images byte for byte (digests survive a copy). A values
+  default change: check any values file that relied on the old defaults.
+- **Every merge to main publishes a dev build** of the images and chart, under
+  `<version>-dev.<run>.g<sha>`: never `latest`, and skipped by Helm unless asked
+  for by exact version. Each run records every digest in its summary and in a
+  `release-pins` artifact.
 
 #### Fixed
 - **The Helm chart's Ingress now routes every agent API path to switch-core.**
