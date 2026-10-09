@@ -1,11 +1,11 @@
-"""Switch cloud machines that run the agents controller.
+"""Switch cloud machines, which run the agents controller.
 
-A machine claimed with `HOSTED_MACHINE_RUNTIME=controller` boots the same
-`switch-agent-controller` any machine can run, and enrolls it with a one-time
-code Core mints for the machine and hands over when it prepares it. The
-controller it enrolls as is linked to the machine (`controller_id`); the
-owner's managed agents placed on it run there, each as a Linux user of its
-own, and its status reports are what make the machine ready.
+A cloud machine boots the same `switch-agent-controller` any machine can
+run, and enrolls it with a one-time code Core mints for the machine and hands
+over when it prepares it. The controller it enrolls as is linked to the
+machine (`controller_id`); the owner's managed agents placed on it run there,
+each as a Linux user of its own, and its status reports are what make the
+machine ready.
 
 Enrollment codes and controllers belong to agent management, which Core does
 not import (`management/wiring.py` installs it here with
@@ -58,8 +58,7 @@ class CloudEnrollmentUnavailable(Exception):
 def cloud_enrollment() -> CloudEnrollment:
     if _enrollment is None:
         raise CloudEnrollmentUnavailable(
-            "Cloud machines that run the agents controller need agent management: set "
-            "AGENT_MANAGEMENT_ENABLED, or HOSTED_MACHINE_RUNTIME=worker."
+            "Cloud machines need agent management: set AGENT_MANAGEMENT_ENABLED."
         )
     return _enrollment
 
@@ -128,7 +127,7 @@ async def record_controller_status(
     records the machine's disk and memory, and makes a machine that started
     at this revision ready. The caller commits."""
     machine = await machine_of_controller(session, controller_id)
-    if machine is None or machine.runtime != "controller":
+    if machine is None:
         return
     now = datetime.now(UTC)
     machine.heartbeat = {
@@ -166,7 +165,7 @@ async def wake_controller_machine(
     is left stopped. None for a controller that runs on no cloud machine. The
     caller holds no other machine lock, and commits."""
     machine = await machine_of_controller(session, controller_id)
-    if machine is None or machine.runtime != "controller":
+    if machine is None:
         return None
     store = HostedMachineStore()
     if idle_sleeping(machine):

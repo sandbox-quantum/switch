@@ -6,6 +6,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Progress } from '@renderer/lib/ui/progress';
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 import { type MachineAction, machinePresentation } from './cloud-machine-state';
+import { CLOUD_MACHINES_KEY } from './use-cloud-agents';
 
 function gigabytes(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
@@ -35,11 +36,11 @@ export function CloudMachineCard({
         action,
         machine.revision
       );
-      await queryClient.invalidateQueries({ queryKey: ['cloud-agents'] });
+      await queryClient.invalidateQueries({ queryKey: [CLOUD_MACHINES_KEY] });
       setConfirmStop(false);
     } catch (error) {
       setActionError(failureText(error, 'Machine operation failed.'));
-      void queryClient.invalidateQueries({ queryKey: ['cloud-agents'] });
+      void queryClient.invalidateQueries({ queryKey: [CLOUD_MACHINES_KEY] });
     } finally {
       setPending(false);
     }

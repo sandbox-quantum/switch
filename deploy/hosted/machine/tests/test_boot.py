@@ -127,11 +127,6 @@ def test_a_bundle_that_is_not_this_machines_is_refused(raw):
         boot.parse_bundle(raw, ASSIGNMENT)
 
 
-def test_a_workers_bundle_is_obsolete():
-    with pytest.raises(boot.ObsoleteBundle):
-        boot.parse_bundle(json.dumps({"version": 2}), ASSIGNMENT)
-
-
 LSBLK_BLANK = json.dumps(
     {
         "blockdevices": [

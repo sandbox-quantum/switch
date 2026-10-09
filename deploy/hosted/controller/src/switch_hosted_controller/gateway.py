@@ -21,7 +21,6 @@ from .store import MachineStore, SlotInUseError
 
 logger = logging.getLogger(__name__)
 
-CAPABILITY_RE = re.compile(r"^[\x21-\x7e]{16,4096}$")
 ENROLLMENT_CODE_RE = re.compile(r"^swce_[A-Za-z0-9_-]{16,128}$")
 CORE_DESIRED_STATES = {"running", "stopped", "retained", "deleted"}
 SETUP_FAILED_MESSAGE = (
@@ -458,30 +457,7 @@ class Gateway:
         }
 
     def bundle(self, prepared: dict, machine: Machine) -> dict:
-        if prepared.get("runtime") == "controller":
-            return self.controller_bundle(prepared, machine)
-        capability = prepared.get("machine_capability")
-        if not isinstance(capability, str) or not CAPABILITY_RE.fullmatch(capability):
-            raise ConfigError("Cloud gateway returned no valid machine capability.")
-        endpoint = prepared.get("api_endpoint")
-        url = urlsplit(endpoint) if isinstance(endpoint, str) else None
-        if url is None or url.scheme != "https" or not url.hostname:
-            raise ConfigError("Cloud gateway returned no valid API endpoint.")
-        return {
-            "version": 2,
-            "machineId": machine.machine_id,
-            "assignment": {
-                "installationId": self.config.installation_id,
-                "slotId": machine.slot_id,
-                "generation": machine.generation,
-                "dataVolumeId": machine.data_volume_id,
-            },
-            "machineCapability": capability,
-            "apiEndpoint": endpoint,
-        }
-
-    def controller_bundle(self, prepared: dict, machine: Machine) -> dict:
-        """The bundle a machine running the agents controller boots from: the
+        """The bundle a machine boots its agents controller from: the
         controller it enrolled as, or the one-time code it enrolls with until
         it has one. Never a long-lived credential: the machine keeps the one it
         enrolls with on its own data volume."""
@@ -491,7 +467,7 @@ class Gateway:
             raise ConfigError("Cloud gateway returned no valid API endpoint.")
         controller = prepared.get("controller")
         if not isinstance(controller, dict):
-            raise ConfigError("Cloud gateway returned no controller for a controller machine.")
+            raise ConfigError("Cloud gateway returned no controller for the machine.")
         controller_id = controller.get("id")
         code = controller.get("enrollment_code")
         if controller_id is not None:

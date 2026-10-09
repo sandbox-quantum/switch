@@ -1,1 +1,0 @@
-{"version":2,"installationId":"inst-test","slotId":"slot-a","generation":1,"assignmentSecretId":"arn:aws:secretsmanager:us-east-1:000000000000:secret:switch-hosted/inst-test/slot-a","dataVolumeId":"vol-0123456789abcdef0","dataDevice":"/dev/sdf","mountPath":"/data"}

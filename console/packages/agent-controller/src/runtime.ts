@@ -514,15 +514,7 @@ export class InProcessRuntime implements AgentRuntime {
     const stopRecording = recordWatcherHealth(root, control);
     const done = (async () => {
       try {
-        await runAgentHost(
-          root,
-          config,
-          signal,
-          sessions,
-          control,
-          null,
-          this.deps.openStream(agentId)
-        );
+        await runAgentHost(root, config, signal, sessions, control, this.deps.openStream(agentId));
       } finally {
         stopRecording();
         await sessions.close();

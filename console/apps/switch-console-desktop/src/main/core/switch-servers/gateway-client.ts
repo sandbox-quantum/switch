@@ -8,29 +8,19 @@ import {
   noteManagedServerUnanswered,
 } from '@main/core/managed-switch-server/managed-server-status';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
-import { cloudLaunchSchema, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
+import { type CloudMachine, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
 import type {
   AdvancedConfigField,
   ManagedMachine,
 } from '@shared/core/managed-agents/managed-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
-import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
-import type {
-  ClaudeCredentialKind,
-  ClaudeConnection,
-} from '@shared/core/switch-servers/claude-credential';
-import type {
-  CloudLaunchConfiguration,
-  CloudLaunchInput,
-} from '@shared/core/switch-servers/cloud-launch';
 import { connectionCatalogSchema } from '@shared/core/switch-servers/connection-catalog';
 import {
   gitHubConnectionSchema,
   gitHubFlowSchema,
 } from '@shared/core/switch-servers/github-connection';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
-import { cloudProviderConnectionSchema } from '@shared/core/switch-servers/provider-credential';
 import type {
   AddressingPolicy,
   AddTeamsTeamResult,
@@ -161,7 +151,7 @@ export class GatewayError extends Error {
      * the raw status line, which reads as noise in a form. */
     readonly detail?: string,
     /** The refusal's machine-readable name, from a body such as
-     * `{"detail": …, "code": "worker_waking"}`. Present only when the body
+     * `{"detail": …, "code": "machine_stopped"}`. Present only when the body
      * carried one. */
     readonly code?: string,
     /** The response body as it came, for a caller that reads an envelope other
@@ -2498,101 +2488,19 @@ export async function createRoom(
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
 }
 
-async function readClaudeConnection(response: Response): Promise<ClaudeConnection> {
-  const value: unknown = await response.json();
-  if (typeof value === 'object' && value !== null && 'status' in value) {
-    if (value.status === 'not_connected') return { status: 'not_connected' };
-    if (
-      value.status === 'connected' &&
-      'kind' in value &&
-      (value.kind === 'api-key' || value.kind === 'setup-token') &&
-      'verified_at' in value &&
-      typeof value.verified_at === 'string' &&
-      Number.isFinite(Date.parse(value.verified_at))
-    ) {
-      return { status: 'connected', kind: value.kind, verified_at: value.verified_at };
-    }
+/**
+ * The caller's cloud machines, or null when the server offers none: a server
+ * without cloud machines answers the route with 404.
+ */
+export async function listCloudMachines(server: SwitchServer): Promise<CloudMachine[] | null> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, '/hosted-machines', { authenticated: true });
+  } catch (error) {
+    if (error instanceof GatewayError && error.kind === 'http' && error.status === 404) return null;
+    throw error;
   }
-  throw new GatewayError('http', 'The server returned an invalid Claude connection status.');
-}
-
-export async function getClaudeConnection(server: SwitchServer): Promise<ClaudeConnection> {
-  const response = await gatewayFetch(server, '/provider-connections/claude', {
-    authenticated: true,
-  });
-  return readClaudeConnection(response);
-}
-
-export async function createCloudLaunch(
-  server: SwitchServer,
-  input: CloudLaunchInput & { definition: string }
-) {
-  if (new URL(server.gatewayUrl).protocol !== 'https:')
-    throw new Error('Cloud agents require an HTTPS Switch server.');
-  return cloudLaunchSchema.parse(
-    await (
-      await gatewayFetch(server, '/hosted-launches', {
-        authenticated: true,
-        method: 'POST',
-        body: input,
-      })
-    ).json()
-  );
-}
-
-const cloudConfigurationSchema = z.object({
-  description: z.string(),
-  instructions: z.string(),
-  definition_attributes: z.record(z.string(), z.unknown()),
-});
-
-export async function getCloudLaunchConfiguration(
-  server: SwitchServer,
-  requestId: string
-): Promise<CloudLaunchConfiguration> {
-  return cloudConfigurationSchema.parse(
-    await (
-      await gatewayFetch(
-        server,
-        `/hosted-launches/${encodeURIComponent(requestId)}/configuration`,
-        { authenticated: true }
-      )
-    ).json()
-  ) as CloudLaunchConfiguration;
-}
-
-/** Replace a launch's instructions and definition; Core applies them at the agent's next start. */
-export async function updateCloudLaunchConfiguration(
-  server: SwitchServer,
-  requestId: string,
-  body: Omit<CloudLaunchConfiguration, 'description'> & { definition: string }
-): Promise<CloudLaunchConfiguration> {
-  return cloudConfigurationSchema.parse(
-    await (
-      await gatewayFetch(
-        server,
-        `/hosted-launches/${encodeURIComponent(requestId)}/configuration`,
-        { authenticated: true, method: 'PUT', body }
-      )
-    ).json()
-  ) as CloudLaunchConfiguration;
-}
-
-export async function cloudLifecycle(
-  server: SwitchServer,
-  requestId: string,
-  action: 'stop' | 'start' | 'restart' | 'remove' | 'retry',
-  revision: number
-) {
-  return cloudLaunchSchema.extend({ access_warning: z.string().nullable().optional() }).parse(
-    await (
-      await gatewayFetch(server, `/hosted-launches/${encodeURIComponent(requestId)}/lifecycle`, {
-        authenticated: true,
-        method: 'POST',
-        body: { action, revision },
-      })
-    ).json()
-  );
+  return z.object({ machines: z.array(cloudMachineSchema) }).parse(await response.json()).machines;
 }
 
 export async function cloudMachineLifecycle(
@@ -2629,29 +2537,6 @@ export async function ensureCloudMachine(server: SwitchServer) {
     throw error;
   }
   return cloudMachineSchema.parse(await response.json());
-}
-
-export async function connectClaude(
-  server: SwitchServer,
-  kind: ClaudeCredentialKind,
-  credential: string
-): Promise<ClaudeConnection> {
-  if (new URL(server.gatewayUrl).protocol !== 'https:') {
-    throw new GatewayError('http', 'Claude credentials require an HTTPS Switch server.');
-  }
-  const response = await gatewayFetch(server, '/provider-connections/claude', {
-    authenticated: true,
-    method: 'PUT',
-    body: { kind, credential },
-  });
-  return readClaudeConnection(response);
-}
-
-export async function disconnectClaude(server: SwitchServer): Promise<void> {
-  await gatewayFetch(server, '/provider-connections/claude', {
-    authenticated: true,
-    method: 'DELETE',
-  });
 }
 
 export async function getConnectionCatalog(server: SwitchServer) {
@@ -2749,43 +2634,6 @@ export async function disconnectGitHub(server: SwitchServer) {
   });
   if (response.status === 204) return { warning: null };
   return z.object({ warning: z.string().nullable() }).parse(await response.json());
-}
-
-export async function getCloudProviderConnection(server: SwitchServer, provider: AgentProviderId) {
-  return cloudProviderConnectionSchema.parse(
-    await (
-      await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
-        authenticated: true,
-      })
-    ).json()
-  );
-}
-export async function connectCloudProvider(
-  server: SwitchServer,
-  provider: Exclude<AgentProviderId, 'claude'>,
-  kind: 'api-key' | 'auth-json',
-  credential: string
-) {
-  if (new URL(server.gatewayUrl).protocol !== 'https:')
-    throw new Error('Provider credentials require HTTPS.');
-  return cloudProviderConnectionSchema.parse(
-    await (
-      await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
-        authenticated: true,
-        method: 'PUT',
-        body: { kind, credential },
-      })
-    ).json()
-  );
-}
-export async function disconnectCloudProvider(
-  server: SwitchServer,
-  provider: Exclude<AgentProviderId, 'claude'>
-) {
-  await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
-    authenticated: true,
-    method: 'DELETE',
-  });
 }
 
 // ── Agent management: controllers and the agents placed on them ─────────────

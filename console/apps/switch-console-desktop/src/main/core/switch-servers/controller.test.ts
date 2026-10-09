@@ -52,11 +52,6 @@ vi.mock('@main/core/workspaces/workspaces-store', () => ({ listWorkspacesForServ
 vi.mock('@main/lib/logger', () => ({
   log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
-vi.mock('./local-provider-sign-in', () => ({
-  getLocalProviderSignIn: vi.fn(),
-  localProviderAuthPath: vi.fn(),
-  readLocalProviderSignIn: vi.fn(),
-}));
 vi.mock('./auth', () => ({ oidcLogin: vi.fn(), passwordLogin, signup }));
 // Reads this install's own agent rows, and through them the database client.
 vi.mock('./backfill-agent-icons', () => ({ backfillAgentIcons: vi.fn() }));

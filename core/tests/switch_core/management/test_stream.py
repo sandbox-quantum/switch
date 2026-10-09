@@ -356,9 +356,7 @@ class TestLiveChanges:
             surface="slack",
             requester_name="Ada",
         )
-        assert harness.protocol.connections.relay_session_command(
-            agent_id, command, worker_only=False
-        )
+        assert harness.protocol.connections.relay_session_command(agent_id, command)
         (frame,) = await take(stream, 1)
         await stream.aclose()
 

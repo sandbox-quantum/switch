@@ -22,7 +22,6 @@ it('isolates config, preserves rollouts and refreshed auth on resume, and protec
     sessionId: '../session',
     sourceHome,
     config: 'model = "test-model"',
-    auth: 'copy-once' as const,
   };
   const home = await prepareCodexSessionHome(input);
   expect(parse(await readFile(join(home, 'config.toml'), 'utf8'))).toEqual({
@@ -55,7 +54,6 @@ it('allows native environment or keychain authentication when no login file exis
       sessionId: 'session',
       sourceHome: join(root, 'missing'),
       config: '',
-      auth: 'copy-once',
     })
   ).resolves.toEqual(expect.any(String));
 });
@@ -68,7 +66,6 @@ it('removes a Switch skill file an earlier build left in the session home', asyn
     sessionId: 'session',
     sourceHome: join(root, 'missing'),
     config: '',
-    auth: 'copy-once' as const,
   };
   const home = await prepareCodexSessionHome(input);
   await mkdir(join(home, 'skills/switch'), { recursive: true });
@@ -88,7 +85,6 @@ it('links the user’s own Codex skills into a session home that has no skills f
     sessionId: 'session',
     sourceHome,
     config: '',
-    auth: 'copy-once',
   });
   expect(await readFile(join(home, 'skills', '.system', 'SKILL.md'), 'utf8')).toBe('system skill');
 });

@@ -5,10 +5,8 @@ import { join, resolve } from 'node:path';
 import { openSwitchStream, runAgentHost } from './agent-host';
 import { AttachmentTransfers } from './attachment-transfers';
 import { type ControlContext, ensureSessions, serveControl } from './control';
-import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
 import { dirMode } from './host-permissions';
 import { materializeHostedProvider } from './hosted-provider';
-import { hostedWorker } from './hosted-watcher';
 import { openHubStream } from './hub-stream';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
 import { replaceOwner } from './ownership-lock';
@@ -115,7 +113,6 @@ async function main(): Promise<void> {
       signal: stop.signal,
       build: process.argv[1]!,
       links: null,
-      logRedactions: [],
     });
   } else if (mode === '--watch-worker') {
     const stop = new AbortController();
@@ -148,7 +145,6 @@ async function main(): Promise<void> {
         login,
         config.execution?.binaryPath ?? config.start.provider
       );
-    const hosted = await hostedWorker(config, resolve(root), context);
     // An agents controller running this agent host in a process of its own
     // names its hub: the agent's events come from there, not from Switch.
     const hub = config.execution
@@ -169,7 +165,6 @@ async function main(): Promise<void> {
           stop.signal,
           supervision,
           control,
-          hosted,
           hub ? openHubStream(hub) : openSwitchStream
         ).finally(() => stop.abort()),
         serveControl(resolve(root), context, stop.signal),
@@ -247,23 +242,17 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (error) {
-  if (error instanceof WorkerObsoleteError) {
-    // Not a failure of this bundle's to record: the worker service waits for a current one.
-    console.error(error.message);
-    process.exitCode = OBSOLETE_BUNDLE_EXIT_CODE;
-  } else {
-    if (
-      root !== '--probe' &&
-      root !== '--models' &&
-      mode !== '--supervise' &&
-      mode !== '--watch-supervise'
-    ) {
-      await mkdir(join(root, 'supervisor'), { recursive: true, mode: dirMode(0o700) });
-      await replaceOwner(join(root, 'supervisor', 'failure.json'), {
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-    console.error(error);
-    process.exitCode = 1;
+  if (
+    root !== '--probe' &&
+    root !== '--models' &&
+    mode !== '--supervise' &&
+    mode !== '--watch-supervise'
+  ) {
+    await mkdir(join(root, 'supervisor'), { recursive: true, mode: dirMode(0o700) });
+    await replaceOwner(join(root, 'supervisor', 'failure.json'), {
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
+  console.error(error);
+  process.exitCode = 1;
 }

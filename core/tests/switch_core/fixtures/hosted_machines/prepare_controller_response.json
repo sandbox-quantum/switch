@@ -4,7 +4,6 @@
   "generation": 1,
   "revision": 1,
   "bundle_revision": 1,
-  "runtime": "controller",
   "api_endpoint": "https://switch.example.test/agent-api",
   "controller": {
     "id": null,

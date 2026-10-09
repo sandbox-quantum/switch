@@ -57,7 +57,7 @@ from switch_core.gateway.auth import (
 )
 from switch_core.gateway.auth_routes import router as auth_router
 from switch_core.gateway.collaborations import router as bridges_router
-from switch_core.gateway.hosted_launches import hosted_settings
+from switch_core.gateway.hosted_machines import hosted_settings
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.keys import Keyring
 from switch_core.room_service import RoomService

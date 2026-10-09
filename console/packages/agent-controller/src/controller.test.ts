@@ -107,7 +107,6 @@ function watcher(agentId = 'agent-1') {
   const stream = runtime.openStream!(agentId)({
     creds: { agentId, apiEndpoint: credentials.endpoint, token: credentials.token },
     connectionId: `controller-${agentId}`,
-    worker: null,
     scope: 'all',
     filter: 'addressed',
     spawnCapable: true,
@@ -264,7 +263,6 @@ describe('runController', () => {
     openHubStream(credentials.hub)({
       creds: { agentId: 'agent-1', apiEndpoint: credentials.endpoint, token: credentials.token },
       connectionId: 'isolated-host',
-      worker: null,
       scope: 'all',
       filter: 'addressed',
       rooms: [],

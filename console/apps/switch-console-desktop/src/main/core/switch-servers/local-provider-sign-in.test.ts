@@ -3,21 +3,17 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getOpenCodeLoginCommand } from './local-opencode-sign-in';
-import {
-  getLocalProviderSignIn,
-  localProviderAuthPath,
-  readLocalProviderSignIn,
-} from './local-provider-sign-in';
+import { localProviderAuthPath, readLocalProviderSignIn } from './local-provider-sign-in';
 
 vi.mock('./local-opencode-sign-in', () => ({
   localOpenCodeDatabasePath: () => '/fixture/opencode.db',
   readOpenCodeConsole: () => null,
-  getOpenCodeLoginCommand: vi.fn(async () => ({
-    version: '2.0.0',
-    command: 'opencode auth login opencode',
-  })),
 }));
+
+/** The local sign-in for `provider` at its usual path, or null when there is none. */
+function localSignIn(provider: 'codex' | 'opencode' | 'antigravity') {
+  return readLocalProviderSignIn(provider, localProviderAuthPath(provider));
+}
 
 let home: string;
 const subscription = {
@@ -43,18 +39,17 @@ describe('local Codex subscription detection', () => {
   it('uses CODEX_HOME and detects later writes without exposing credentials', async () => {
     const path = join(home, 'auth.json');
     expect(localProviderAuthPath('codex')).toBe(path);
-    expect(await getLocalProviderSignIn('codex')).toEqual({ path, status: 'missing' });
+    expect(await localSignIn('codex')).toBeNull();
     await writeFile(path, JSON.stringify(subscription));
-    expect(await getLocalProviderSignIn('codex')).toEqual({ path, status: 'ready' });
-    expect(await readLocalProviderSignIn('codex', path)).toBe(JSON.stringify(subscription));
+    expect(await localSignIn('codex')).toBe(JSON.stringify(subscription));
     await rm(path);
-    expect(await getLocalProviderSignIn('codex')).toEqual({ path, status: 'missing' });
+    expect(await localSignIn('codex')).toBeNull();
   });
   it('keeps partial contents out of errors and detects the completed write', async () => {
     await writeFile(localProviderAuthPath('codex'), '{"placeholder-private-content":');
-    await expect(getLocalProviderSignIn('codex')).rejects.toThrow('Waiting for Codex');
+    await expect(localSignIn('codex')).rejects.toThrow('Waiting for Codex');
     await writeFile(localProviderAuthPath('codex'), JSON.stringify(subscription));
-    expect((await getLocalProviderSignIn('codex')).status).toBe('ready');
+    expect(await localSignIn('codex')).toBe(JSON.stringify(subscription));
   });
   it.each([
     { OPENAI_API_KEY: 'placeholder-api-key' },
@@ -63,11 +58,11 @@ describe('local Codex subscription detection', () => {
     [],
   ])('rejects API-only or incomplete subscription data', async (value) => {
     await writeFile(localProviderAuthPath('codex'), JSON.stringify(value));
-    await expect(getLocalProviderSignIn('codex')).rejects.toThrow('Sign in to Codex with ChatGPT');
+    await expect(localSignIn('codex')).rejects.toThrow('Sign in to Codex with ChatGPT');
   });
   it('rejects oversized files before reading their contents', async () => {
     await writeFile(localProviderAuthPath('codex'), 'x'.repeat(16385));
-    await expect(getLocalProviderSignIn('codex')).rejects.toThrow('smaller than 16 KiB');
+    await expect(localSignIn('codex')).rejects.toThrow('smaller than 16 KiB');
   });
 });
 
@@ -81,7 +76,7 @@ describe.each(['opencode', 'antigravity'] as const)('local %s sign-in detection'
     expect(path).toBe(
       join(home, provider === 'opencode' ? 'opencode/auth.json' : 'antigravity-acp/acp_token.json')
     );
-    expect(await getLocalProviderSignIn(provider)).toMatchObject({ path, status: 'missing' });
+    expect(await localSignIn(provider)).toBeNull();
     await mkdir(dirname(path), { recursive: true });
     const credential = JSON.stringify(
       provider === 'opencode'
@@ -89,10 +84,9 @@ describe.each(['opencode', 'antigravity'] as const)('local %s sign-in detection'
         : { placeholder: 'fixture-only' }
     );
     await writeFile(path, credential);
-    expect(await getLocalProviderSignIn(provider)).toMatchObject({ path, status: 'ready' });
-    expect(await readLocalProviderSignIn(provider, path)).toBe(credential);
+    expect(await localSignIn(provider)).toBe(credential);
     await rm(path);
-    expect((await getLocalProviderSignIn(provider)).status).toBe('missing');
+    expect(await localSignIn(provider)).toBeNull();
   });
   it.each(['{}', '[]', 'null', '"placeholder"', '{"private-content":', 'x'.repeat(16385)])(
     'rejects invalid data without exposing contents (case %#)',
@@ -100,9 +94,9 @@ describe.each(['opencode', 'antigravity'] as const)('local %s sign-in detection'
       const path = localProviderAuthPath(provider);
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, value);
-      await expect(getLocalProviderSignIn(provider)).rejects.toThrow();
+      await expect(localSignIn(provider)).rejects.toThrow();
       try {
-        await getLocalProviderSignIn(provider);
+        await localSignIn(provider);
       } catch (error) {
         expect(String(error)).not.toContain(value);
       }
@@ -114,7 +108,7 @@ describe.each(['opencode', 'antigravity'] as const)('local %s sign-in detection'
             : { placeholder: 'fixture-only' }
         )
       );
-      expect((await getLocalProviderSignIn(provider)).status).toBe('ready');
+      expect(await localSignIn(provider)).not.toBeNull();
     }
   );
 });
@@ -140,17 +134,4 @@ it('retries a sign-in file that is still being written', async () => {
   await delay(30);
   await writeFile(path, JSON.stringify(subscription));
   expect(await reading).toBe(JSON.stringify(subscription));
-});
-
-it('still detects an OpenCode login when CLI detection fails, with a visible warning', async () => {
-  vi.stubEnv('XDG_DATA_HOME', home);
-  const path = localProviderAuthPath('opencode');
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify({ opencode: { type: 'api', key: 'fixture-only' } }));
-  vi.mocked(getOpenCodeLoginCommand).mockRejectedValueOnce(new Error('CLI detection unavailable'));
-  expect(await getLocalProviderSignIn('opencode')).toMatchObject({
-    status: 'ready',
-    path,
-    detectionWarning: expect.stringContaining('CLI detection unavailable'),
-  });
 });

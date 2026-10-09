@@ -8,8 +8,8 @@ import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
 import { Label } from '@renderer/lib/ui/label';
 import type { SignupMachine, SwitchAuthConfig } from '@shared/core/switch-servers/switch-servers';
+import { loadSwitchCloudOrigin, managedCloudServerId } from './switch-cloud-origin';
 import { switchServersStore } from './switch-servers-store';
-import { loadSwitchCloudOrigin, managedCloudServerId } from './use-cloud-launches';
 
 /**
  * Signing in to a Switch server, wherever that is asked for.

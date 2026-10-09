@@ -54,7 +54,6 @@ ingress:
   # gateway: the Bearer-auth agent bridge + MCP, and public OAuth/MCP discovery.
   agentApiPaths:
     - /agents
-    - /hosted
     # Session hosts report session starts, turn activity and approval requests
     # here, and poll for approval answers.
     - /agent-sessions
@@ -168,13 +167,11 @@ switchCore:
   # Existing Secret with github.json (client_id, client_secret, slug, origin).
   githubConnectionsSecret: ""
   hostedControllerSecret: ""
+  # How many cloud machines may run at once. Cloud machines run the agents
+  # controller and their owner's managed agents, so they need agentManagement.
   hostedLaunchCapacity: 0
-  # worker: cloud machines run the hosted worker. controller: they run the
-  # agents controller and the owner's managed agents (needs agentManagement).
-  hostedMachineRuntime: worker
   hostedDiskRetentionDays: 7
   hostedIdleStopMinutes: 30
-  hostedProviderVerificationEnabled: false
   image: switch-core:latest
   imagePullPolicy: Always
   logLevel: INFO

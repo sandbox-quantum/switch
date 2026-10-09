@@ -29,7 +29,7 @@ from switch_core.gateway.dependencies import (
     get_system_session,
     get_user_store,
 )
-from switch_core.gateway.hosted_launches import LAUNCH_DISABLED
+from switch_core.gateway.hosted_machines import MACHINES_DISABLED
 from switch_core.gateway.hosted_machines import router as machine_router
 from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
@@ -57,7 +57,6 @@ async def signup_app(session_factory):
         gateway_oidc_enabled=False,
         gateway_oidc_provider_label=None,
         hosted_launch_capacity=2,
-        hosted_machine_runtime="worker",
         keyring=TEST_KEYRING,
         gateway_cookie_secure=False,
     )
@@ -255,7 +254,7 @@ async def test_signup_succeeds_without_cloud_capacity(signup_app, caplog):
     assert response.status_code == 201, response.text
     assert response.json()["machine"] == {
         "status": "unavailable",
-        "reason": LAUNCH_DISABLED,
+        "reason": MACHINES_DISABLED,
     }
     assert await _machines(app) == []
     assert "has no cloud machine warming" in caplog.text
@@ -432,7 +431,7 @@ async def test_ensure_refuses_when_cloud_machines_are_off(signup_app):
     app.config.hosted_launch_capacity = 0
     response = await _ensure(app, "new.person@example.com")
     assert response.status_code == 503
-    assert response.json()["detail"] == LAUNCH_DISABLED
+    assert response.json()["detail"] == MACHINES_DISABLED
 
 
 async def _user_count(app) -> int:

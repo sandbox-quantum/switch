@@ -19,7 +19,6 @@ from switch_hosted_controller.store import CapacityError, MachineStore, SlotInUs
 MACHINE_ID = "3f1c2b4a-0000-4000-8000-000000000001"
 
 
-WORKER_TESTDATA = Path(__file__).parents[2] / "worker" / "testdata"
 CORE_FIXTURES = (
     Path(__file__).parents[4] / "core" / "tests" / "switch_core" / "fixtures" / "hosted_machines"
 )
@@ -517,20 +516,19 @@ def test_image_upgrade_requires_stopped_terminal_claim_and_preserves_disk(tmp_pa
     store.record_volume(machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone)
     machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0")
     with pytest.raises(StoreError, match="stopped"):
-        store.upgrade_terminated(machine, "ami-11111111111111111", "sha256:" + "a" * 64)
+        store.upgrade_terminated(machine, "ami-11111111111111111")
     machine = store.set_desired(machine.machine_id, DesiredState.STOPPED, None)
     with pytest.raises(StoreError, match="terminated"):
-        store.upgrade_terminated(machine, "ami-11111111111111111", "sha256:" + "a" * 64)
+        store.upgrade_terminated(machine, "ami-11111111111111111")
     machine = store.mark_instance_terminal_observed(machine.machine_id, machine.instance_id)
-    upgraded = store.upgrade_terminated(machine, "ami-11111111111111111", "sha256:" + "a" * 64)
+    upgraded = store.upgrade_terminated(machine, "ami-11111111111111111")
     assert upgraded.instance_id is None
     assert upgraded.previous_instance_id == machine.instance_id
     assert upgraded.data_volume_id == machine.data_volume_id
-    assert upgraded.previous_runtime_fingerprint == "sha256:" + "a" * 64
     assert upgraded.desired_state is DesiredState.STOPPED
     assert upgraded.image_id != machine.image_id
     with pytest.raises(StoreError, match="changed"):
-        store.upgrade_terminated(machine, "ami-11111111111111111", "sha256:" + "a" * 64)
+        store.upgrade_terminated(machine, "ami-11111111111111111")
     store.close()
 
 

@@ -40,7 +40,6 @@ class Machine:
     instance_profile_arn: str
     instance_id: str | None
     previous_instance_id: str | None
-    previous_runtime_fingerprint: str | None
     instance_seq: int
     recovery_count: int
     data_volume_id: str | None

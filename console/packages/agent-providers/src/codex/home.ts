@@ -10,19 +10,12 @@ export async function prepareCodexSessionHome(input: {
   sessionId: string;
   sourceHome: string;
   config: string;
-  /**
-   * `refresh` replaces the session's login whenever the source login changes
-   * (a hosted worker, whose owner can reconnect the provider); `copy-once`
-   * keeps whatever the session refreshed after its first copy.
-   */
-  auth: 'copy-once' | 'refresh';
 }): Promise<string> {
   const key = createHash('sha256').update(input.sessionId).digest('hex');
   const home = join(input.root, key);
   await mkdir(home, { recursive: true, mode: 0o700 });
   await chmod(home, 0o700);
-  if (input.auth === 'refresh') await refreshCodexAuthentication(home, input.sourceHome);
-  else await copyCodexAuthenticationOnce(home, input.sourceHome);
+  await copyCodexAuthenticationOnce(home, input.sourceHome);
   const sourceConfig = await optionalText(join(input.sourceHome, 'config.toml'));
   const config = { ...(sourceConfig ? parse(sourceConfig) : {}), ...parse(input.config) };
   // The session host registers its own `switch` server; an entry of that name

@@ -4,7 +4,6 @@ import argparse
 import json
 import logging
 import os
-import re
 import signal
 import sys
 import threading
@@ -24,7 +23,6 @@ from .lock import ControllerAlreadyRunning, ControllerLock
 from .model import DesiredState, Machine
 from .reconciler import Reconciler
 from .store import MachineStore, StoreError
-from .verification import VerificationWorkers
 
 
 def parser() -> argparse.ArgumentParser:
@@ -49,11 +47,10 @@ def parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--delete-volume", action="store_true")
 
     upgrade = subparsers.add_parser(
-        "upgrade", help="use the configured image after the old worker is stopped and terminated"
+        "upgrade", help="use the configured image after the old instance is stopped and terminated"
     )
     upgrade.add_argument("slot_id")
     upgrade.add_argument("--confirm-instance-id", required=True)
-    upgrade.add_argument("--previous-runtime-fingerprint", required=True)
 
     subparsers.add_parser("list")
     health = subparsers.add_parser("health")
@@ -130,10 +127,6 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
                 raise StoreError(
                     "stop the machine and confirm its recorded instance before upgrading"
                 )
-            if not re.fullmatch(r"sha256:[0-9a-f]{64}", args.previous_runtime_fingerprint):
-                raise ConfigError(
-                    "previous runtime fingerprint must be the sha256:<64 hex> runtimeFingerprint from the trusted disk marker"
-                )
             cloud = Ec2Cloud(boto3.client("ec2", region_name=config.region), config)
             instance = cloud.get_instance(machine)
             volume = cloud.get_volume(machine)
@@ -149,9 +142,7 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
                 )
             cloud.validate_image(replace(machine, image_id=config.image_id))
             claim = store.mark_instance_terminal_observed(machine.machine_id, machine.instance_id)
-            _print_machine(
-                store.upgrade_terminated(claim, config.image_id, args.previous_runtime_fingerprint)
-            )
+            _print_machine(store.upgrade_terminated(claim, config.image_id))
             return 0
         raise AssertionError(f"unhandled command {args.command}")
     finally:
@@ -174,7 +165,6 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
                 if gateway_path
                 else None
             )
-            verification = VerificationWorkers(ec2, config, gateway) if gateway else None
             _touch_health()
             if command == "reconcile-once":
                 try:
@@ -190,13 +180,6 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
             signal.signal(signal.SIGTERM, request_stop)
             signal.signal(signal.SIGINT, request_stop)
             while not stop.is_set():
-                if verification:
-                    try:
-                        verification.reconcile()
-                    except Exception as error:
-                        logging.error(
-                            "Provider verification reconciliation failed: %s", type(error).__name__
-                        )
                 listed = None
                 if gateway:
                     try:

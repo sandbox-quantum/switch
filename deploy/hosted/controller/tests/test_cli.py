@@ -110,9 +110,6 @@ def test_invalid_requests_exit_2(capsys, config_path, argv):
     assert error["error"]
 
 
-FINGERPRINT = "sha256:" + "0123456789abcdef" * 4
-
-
 def stopped_with_instance(config_path: Path, machine_id: str) -> None:
     config = ControllerConfig.load(config_path)
     store = MachineStore(config.state_db_path, config.fingerprint())
@@ -124,7 +121,7 @@ def stopped_with_instance(config_path: Path, machine_id: str) -> None:
         store.close()
 
 
-def upgrade(capsys, config_path: Path, fingerprint: str):
+def upgrade(capsys, config_path: Path):
     return run(
         capsys,
         config_path,
@@ -132,27 +129,10 @@ def upgrade(capsys, config_path: Path, fingerprint: str):
         "slot-a",
         "--confirm-instance-id",
         "i-0123456789abcdef0",
-        "--previous-runtime-fingerprint",
-        fingerprint,
     )
 
 
-@pytest.mark.parametrize(
-    "fingerprint", ["0123456789abcdef" * 4, "sha256:0000", "sha256:" + "A" * 64]
-)
-def test_upgrade_refuses_a_fingerprint_not_in_the_disk_marker_format(
-    capsys, config_path, fingerprint
-):
-    _, created = run(capsys, config_path, "create", "slot-a", "--instance-type", "m6i.large")
-    stopped_with_instance(config_path, created["machine_id"])
-    with patch("switch_hosted_controller.cli.Ec2Cloud") as cloud:
-        code, error = upgrade(capsys, config_path, fingerprint)
-    assert code == 2
-    assert "runtimeFingerprint" in error["error"]
-    cloud.assert_not_called()
-
-
-def test_upgrade_writes_the_disk_marker_fingerprint_to_user_data(capsys, config_path):
+def test_upgrade_moves_the_machine_onto_the_new_image(capsys, config_path):
     _, created = run(capsys, config_path, "create", "slot-a", "--instance-type", "m6i.large")
     stopped_with_instance(config_path, created["machine_id"])
     raw = json.loads(config_path.read_text())
@@ -164,7 +144,7 @@ def test_upgrade_writes_the_disk_marker_fingerprint_to_user_data(capsys, config_
     ):
         cloud.return_value.get_instance.return_value = {"State": {"Name": "terminated"}}
         cloud.return_value.get_volume.return_value = {"State": "available", "Attachments": []}
-        code, _ = upgrade(capsys, config_path, FINGERPRINT)
+        code, _ = upgrade(capsys, config_path)
     assert code == 0
     config = ControllerConfig.load(config_path)
     store = MachineStore(config.state_db_path, config.fingerprint())
@@ -172,12 +152,12 @@ def test_upgrade_writes_the_disk_marker_fingerprint_to_user_data(capsys, config_
         machine = store.get(created["machine_id"])
     finally:
         store.close()
-    assert machine.previous_runtime_fingerprint == FINGERPRINT
+    assert machine.image_id == "ami-11111111111111111"
     user_data = Ec2Cloud(Mock(), config)._user_data(machine)
     encoded = next(
         line.split("content: ", 1)[1] for line in user_data.splitlines() if "content: " in line
     )
-    assert json.loads(base64.b64decode(encoded))["previousRuntimeFingerprint"] == FINGERPRINT
+    assert json.loads(base64.b64decode(encoded))["previousInstanceId"] == "i-0123456789abcdef0"
 
 
 class OneIteration:
@@ -209,7 +189,6 @@ def test_serve_lists_core_machines_once_per_poll(tmp_path, config_path):
     request = Mock(return_value={"machines": []})
     with (
         patch("switch_hosted_controller.cli.boto3"),
-        patch("switch_hosted_controller.cli.VerificationWorkers"),
         patch("switch_hosted_controller.cli._touch_health"),
         patch("switch_hosted_controller.cli.signal.signal"),
         patch("switch_hosted_controller.cli.threading.Event", OneIteration),
