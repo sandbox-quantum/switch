@@ -18,18 +18,24 @@ name: switch release
 # `0.30.0rc1`) so the running server reports the RC it is; nothing is committed.
 #
 # Dev builds: every push to `main` publishes the stack as
-# `<pyproject version>-dev.<run number>.g<short sha>` — never `latest`, and a
-# semver pre-release Helm skips unless asked for by exact version — so the dev
-# environment runs what is on main from published artifacts rather than building
-# from source at deploy time. The version identifies the commit; it says nothing
-# about ordering against releases. No compose artifact: Switch Console bundles
-# that from releases only.
+# `<next patch>-dev.<run number>.g<short sha>` under a separate `dev/` namespace
+# (ghcr.io/<owner>/dev/…) — never `latest`, never mixed into the release
+# packages' tag lists, and a semver pre-release Helm skips unless asked for by
+# exact version — so the dev environment runs what is on main from published
+# artifacts rather than building from source at deploy time. "Next patch" is one
+# above the newest release tag on main, so a dev build sorts after the release it
+# contains. A newer push cancels an in-flight dev build; switch-dev-cleanup.yml
+# prunes old ones. No compose artifact: Switch Console bundles that from
+# releases only.
 #
 # Build once, pin by digest: the chart is packaged only after the images are
 # pushed, with each image's registry digest written into its values.yaml
 # (scripts/pin_chart_images.py). Pinning the chart therefore pins the exact
 # images, and what runs is reproducible from that one pin. The run summary and
-# the `release-pins` artifact carry every digest, chart included.
+# the `release-pins` artifact carry every digest, chart included. A version is
+# published once: a run (or re-run) whose chart version already exists in the
+# registry fails before building, since a rebuilt chart would point the same
+# version at different digests.
 #
 # Artifacts go to GHCR by default, and the packages are public alongside the
 # repo. REGISTRY / IMAGE_NAMESPACE are the only things to change to retarget
@@ -47,10 +53,19 @@ on:
       - main
   workflow_dispatch:
 
+# Pushes to main share a group and the newest wins: an in-flight dev build of an
+# older commit is superseded, so a busy merge day does not queue parallel
+# emulated arm64 builds. Tags and dispatch runs each get their own group and are
+# never cancelled — a cancelled release would be a half-published one.
+concurrency:
+  group: switch-release-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'main' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
 env:
   REGISTRY: ghcr.io
   # GHCR namespace = the repo owner (lowercase). Images land at
   # ghcr.io/<owner>/<image>; the Helm chart at ghcr.io/<owner>/charts/switch.
+  # Dev builds go one level down, under <owner>/dev (prep's `namespace`).
   IMAGE_NAMESPACE: ${{ github.repository_owner }}
 
 jobs:
@@ -59,7 +74,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # To ask the registry whether this version is already published.
+      packages: read
     outputs:
+      images: ${{ steps.images.outputs.images }}
+      namespace: ${{ steps.version.outputs.namespace }}
       version: ${{ steps.version.outputs.version }}
       python_version: ${{ steps.version.outputs.python_version }}
       push: ${{ steps.version.outputs.push }}
@@ -116,10 +135,20 @@ jobs:
             channel=release
             [ "$latest" = true ] || channel=rc
           elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
+            # One patch above the newest release on main, so the build sorts
+            # after the release it contains (a `-dev`/`.dev` version sorts
+            # before its own base) and before any later release or RC.
+            released="$(git tag --merged HEAD --list 'switch-v*' | sed 's/^switch-v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
+            if [ -z "$released" ]; then
+              echo "::error::No switch-v<X.Y.Z> release tag is reachable from main; cannot place a dev version."
+              exit 1
+            fi
+            IFS=. read -r major minor patch <<<"$released"
+            base="$major.$minor.$((patch + 1))"
             # The `g` keeps the identifier alphanumeric: an all-digit short sha
             # with a leading zero is not valid semver.
-            tag_version="${pkg_version}-dev.${GITHUB_RUN_NUMBER}.g${GITHUB_SHA::7}"
-            python_version="${pkg_version}.dev${GITHUB_RUN_NUMBER}"
+            tag_version="${base}-dev.${GITHUB_RUN_NUMBER}.g${GITHUB_SHA::7}"
+            python_version="${base}.dev${GITHUB_RUN_NUMBER}"
             push=true
             latest=false
             channel=dev
@@ -130,13 +159,51 @@ jobs:
             latest=false
             channel=dry-run
           fi
+          namespace="$IMAGE_NAMESPACE"
+          [ "$channel" != dev ] || namespace="$IMAGE_NAMESPACE/dev"
           {
+            echo "namespace=$namespace"
             echo "version=$tag_version"
             echo "python_version=$python_version"
             echo "push=$push"
             echo "latest=$latest"
             echo "channel=$channel"
           } | tee -a "$GITHUB_OUTPUT"
+
+      - name: List the images
+        # scripts/pin_chart_images.py is the one list of first-party images; the
+        # build matrix, the pin and the recorded pins all come from it.
+        id: images
+        run: echo "images=$(python3 scripts/pin_chart_images.py images)" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Set up Helm
+        if: ${{ steps.version.outputs.push == 'true' }}
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      - name: Refuse to republish a version
+        # A re-run rebuilds the images (builds are not bit-for-bit reproducible)
+        # and would push the chart again under the same version, pointing at the
+        # new digests, so a version pin would no longer mean what it meant.
+        # Checked before anything is built.
+        if: ${{ steps.version.outputs.push == 'true' }}
+        env:
+          NAMESPACE: ${{ steps.version.outputs.namespace }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+          chart="oci://$REGISTRY/$NAMESPACE/charts/switch"
+          if out="$(helm show chart "$chart" --version "$VERSION" 2>&1)"; then
+            echo "::error::$chart:$VERSION is already published. A version is published once; cut a new one."
+            exit 1
+          fi
+          # Only a plain "not found" means unpublished; an auth or network
+          # error must not read as permission to push.
+          if ! grep -q ': not found$' <<<"$out"; then
+            echo "::error::Could not tell whether $chart:$VERSION exists: $out"
+            exit 1
+          fi
+          echo "$chart:$VERSION is not published yet: $out"
 
       # The published compose artifact declares its stack-compose range twice:
       # in the file (for whoever has already downloaded it) and as an OCI
@@ -162,13 +229,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - image: switch-core
-            dockerfile: deploy/shared_resources/images/Dockerfile.switch
-          - image: gateway
-            dockerfile: deploy/shared_resources/images/Dockerfile.gateway
-          - image: setup
-            dockerfile: deploy/shared_resources/images/Dockerfile.setup
+        include: ${{ fromJSON(needs.prep.outputs.images) }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -221,8 +282,8 @@ jobs:
             SWITCH_GIT_COMMIT=${{ github.sha }}
             SWITCH_GIT_REPOSITORY_URL=${{ github.server_url }}/${{ github.repository }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ needs.prep.outputs.version }}
-            ${{ needs.prep.outputs.latest == 'true' && format('{0}/{1}/{2}:latest', env.REGISTRY, env.IMAGE_NAMESPACE, matrix.image) || '' }}
+            ${{ env.REGISTRY }}/${{ needs.prep.outputs.namespace }}/${{ matrix.image }}:${{ needs.prep.outputs.version }}
+            ${{ needs.prep.outputs.latest == 'true' && format('{0}/{1}/{2}:latest', env.REGISTRY, needs.prep.outputs.namespace, matrix.image) || '' }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
 
@@ -261,7 +322,7 @@ jobs:
       packages: write
     env:
       VERSION: ${{ needs.prep.outputs.version }}
-      PUSH: ${{ needs.prep.outputs.push }}
+      NAMESPACE: ${{ needs.prep.outputs.namespace }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -285,26 +346,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check the registry serves every pinned image
+        if: ${{ needs.prep.outputs.push == 'true' }}
+        run: |
+          for file in "$RUNNER_TEMP"/digests/*; do
+            docker buildx imagetools inspect "$REGISTRY/$NAMESPACE/$(basename "$file")@$(cat "$file")" >/dev/null
+          done
+
       - name: Pin image digests into the chart
         # A dry run pushed no images, so it pins placeholder digests: the pin
         # and the check below still run, and nothing is published.
         run: |
-          args=()
-          for image in switch-core gateway setup; do
-            if [ "$PUSH" = true ]; then
-              digest="$(cat "$RUNNER_TEMP/digests/$image")"
-              # The registry must serve the exact reference the chart will name.
-              docker buildx imagetools inspect "$REGISTRY/$IMAGE_NAMESPACE/$image@$digest" >/dev/null
-            else
-              digest="sha256:$(printf '0%.0s' $(seq 64))"
-            fi
-            args+=(--digest "$image=$digest")
-          done
+          if [ "${{ needs.prep.outputs.push }}" = true ]; then
+            source=(--digests-dir "$RUNNER_TEMP/digests")
+          else
+            source=(--placeholder-digests)
+          fi
           python3 scripts/pin_chart_images.py pin \
             --values deploy/remote/helm/switch/values.yaml \
-            --registry "$REGISTRY/$IMAGE_NAMESPACE" \
+            --registry "$REGISTRY/$NAMESPACE" \
             --version "$VERSION" \
-            "${args[@]}"
+            "${source[@]}"
           git diff -- deploy/remote/helm/switch/values.yaml
 
       - name: Lint chart
@@ -320,11 +382,15 @@ jobs:
             --destination "$RUNNER_TEMP/chart"
 
       - name: Check the packaged chart is digest-pinned
-        # Renders the .tgz that is about to be pushed, not the source tree.
+        # Renders the .tgz that is about to be pushed, not the source tree:
+        # once as configured by default, once with the optional workloads on.
         run: |
-          helm template switch "$RUNNER_TEMP/chart/switch-$VERSION.tgz" \
-            -f deploy/remote/helm/render-check-values.yaml \
-            | python3 scripts/pin_chart_images.py verify --registry "$REGISTRY/$IMAGE_NAMESPACE"
+          for overlay in "" "-f deploy/remote/helm/render-check-optional-values.yaml"; do
+            # shellcheck disable=SC2086 # $overlay is deliberately split into two words
+            helm template switch "$RUNNER_TEMP/chart/switch-$VERSION.tgz" \
+              -f deploy/remote/helm/render-check-values.yaml $overlay \
+              | python3 scripts/pin_chart_images.py verify --registry "$REGISTRY/$NAMESPACE"
+          done
 
       - name: Log in to GHCR (Helm OCI)
         if: ${{ needs.prep.outputs.push == 'true' }}
@@ -336,8 +402,19 @@ jobs:
         id: push
         if: ${{ needs.prep.outputs.push == 'true' }}
         run: |
-          helm push "$RUNNER_TEMP/chart/switch-$VERSION.tgz" \
-            "oci://$REGISTRY/$IMAGE_NAMESPACE/charts" 2>&1 | tee "$RUNNER_TEMP/helm-push.log"
+          # prep refused a published version, but a re-run of this job alone
+          # skips prep, so ask again right before pushing.
+          chart="oci://$REGISTRY/$NAMESPACE/charts/switch"
+          if out="$(helm show chart "$chart" --version "$VERSION" 2>&1)"; then
+            echo "::error::$chart:$VERSION is already published; refusing to overwrite it."
+            exit 1
+          fi
+          if ! grep -q ': not found$' <<<"$out"; then
+            echo "::error::Could not tell whether $chart:$VERSION exists: $out"
+            exit 1
+          fi
+          helm push "$RUNNER_TEMP/chart/switch-$VERSION.tgz" "oci://$REGISTRY/$NAMESPACE/charts" 2>&1 \
+            | tee "$RUNNER_TEMP/helm-push.log"
           digest="$(sed -n 's/^Digest: *//p' "$RUNNER_TEMP/helm-push.log")"
           if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "::error::helm push printed no chart digest; got '$digest'"
@@ -350,37 +427,16 @@ jobs:
         # promotes this build next (an environment's pins file), so it never has
         # to be copied out of a log by hand.
         if: ${{ needs.prep.outputs.push == 'true' }}
-        env:
-          CHART_DIGEST: ${{ steps.push.outputs.digest }}
-          CHANNEL: ${{ needs.prep.outputs.channel }}
         run: |
-          python3 - <<'PY' > "$RUNNER_TEMP/release-pins.json"
-          import json, os, pathlib
-          ns = f"{os.environ['REGISTRY']}/{os.environ['IMAGE_NAMESPACE']}"
-          version = os.environ["VERSION"]
-          digests = pathlib.Path(os.environ["RUNNER_TEMP"], "digests")
-          print(json.dumps({
-              "version": version,
-              "channel": os.environ["CHANNEL"],
-              "commit": os.environ["GITHUB_SHA"],
-              "chart": {"ref": f"oci://{ns}/charts/switch", "version": version, "digest": os.environ["CHART_DIGEST"]},
-              "images": {
-                  name: {"ref": f"{ns}/{name}", "digest": (digests / name).read_text().strip()}
-                  for name in ("switch-core", "gateway", "setup")
-              },
-          }, indent=2))
-          PY
-          {
-            echo "## switch $VERSION ($CHANNEL)"
-            echo
-            echo "| Artifact | Pinned reference |"
-            echo "| --- | --- |"
-            echo "| chart | \`oci://$REGISTRY/$IMAGE_NAMESPACE/charts/switch:$VERSION@$CHART_DIGEST\` |"
-            for image in switch-core gateway setup; do
-              echo "| $image | \`$REGISTRY/$IMAGE_NAMESPACE/$image@$(cat "$RUNNER_TEMP/digests/$image")\` |"
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
-          cat "$RUNNER_TEMP/release-pins.json"
+          python3 scripts/pin_chart_images.py record \
+            --digests-dir "$RUNNER_TEMP/digests" \
+            --registry "$REGISTRY/$NAMESPACE" \
+            --version "$VERSION" \
+            --channel "${{ needs.prep.outputs.channel }}" \
+            --commit "$GITHUB_SHA" \
+            --chart-digest "${{ steps.push.outputs.digest }}" \
+            --json "$RUNNER_TEMP/release-pins.json" \
+            --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the pins
         if: ${{ needs.prep.outputs.push == 'true' }}

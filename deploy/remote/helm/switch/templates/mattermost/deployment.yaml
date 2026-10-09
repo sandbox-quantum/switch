@@ -75,7 +75,6 @@ spec:
             - name: MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS
               value: "{{ $core }} {{ $core }}.{{ .Release.Namespace }} {{ $core }}.{{ .Release.Namespace }}.svc.cluster.local"
             {{- end }}
-          {{- include "switch.preStopDrain" . | nindent 10 }}
           readinessProbe:
             httpGet:
               path: /api/v4/system/ping

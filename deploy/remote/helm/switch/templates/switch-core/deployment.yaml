@@ -39,7 +39,7 @@ spec:
         # finds nothing pending.
         - name: migrate
           image: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
-          imagePullPolicy: {{ .Values.switchCore.imagePullPolicy }}
+          imagePullPolicy: {{ include "switch.imagePullPolicy" (dict "policy" .Values.switchCore.imagePullPolicy "image" .Values.switchCore.image) }}
           command: ["switch-migrate"]
           env:
             {{- include "switch.coreEnv" . | nindent 12 }}
@@ -52,7 +52,7 @@ spec:
       containers:
         - name: switch-core
           image: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
-          imagePullPolicy: {{ .Values.switchCore.imagePullPolicy }}
+          imagePullPolicy: {{ include "switch.imagePullPolicy" (dict "policy" .Values.switchCore.imagePullPolicy "image" .Values.switchCore.image) }}
           ports:
             - containerPort: 8000
               protocol: TCP
@@ -82,7 +82,6 @@ spec:
               value: /etc/switch-github/github.json
             {{- end }}
             {{- include "switch.coreEnv" (merge (dict "omitOwnerCredentials" true) .) | nindent 12 }}
-          {{- include "switch.preStopDrain" . | nindent 10 }}
           # Readiness checks the database; liveness deliberately does not.
           # There is one replica, so a failing readiness probe empties the
           # Service rather than shifting traffic — which is right while the

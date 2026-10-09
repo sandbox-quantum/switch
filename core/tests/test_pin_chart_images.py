@@ -8,7 +8,9 @@ release. Silently pinning nothing, or the wrong line, is the failure to rule out
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 
@@ -25,9 +27,9 @@ DIGESTS = {
 }
 
 
-def _load() -> ModuleType:
-    path = REPO_ROOT / "scripts" / "pin_chart_images.py"
-    spec = importlib.util.spec_from_file_location("pin_chart_images", path)
+def _load(name: str) -> ModuleType:
+    path = REPO_ROOT / "scripts" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -35,13 +37,20 @@ def _load() -> ModuleType:
     return module
 
 
-pin_chart_images = _load()
+pin_chart_images = _load("pin_chart_images")
+prune_dev_packages = _load("prune_dev_packages")
+
+
+def test_the_image_table_matches_the_dockerfiles_and_values() -> None:
+    values = yaml.safe_load(VALUES.read_text())
+    for image in pin_chart_images.IMAGES.values():
+        assert (REPO_ROOT / image.dockerfile).is_file()
+        assert "image" in values[image.values_key]
 
 
 def test_pins_every_first_party_image_in_the_real_values_file() -> None:
-    original = VALUES.read_text()
     pinned = yaml.safe_load(
-        pin_chart_images.pin(original, "ghcr.io/acme", "1.2.3", DIGESTS)
+        pin_chart_images.pin(VALUES.read_text(), "ghcr.io/acme", "1.2.3", DIGESTS)
     )
 
     assert pinned["global"]["imageRegistry"] == "ghcr.io/acme"
@@ -50,8 +59,6 @@ def test_pins_every_first_party_image_in_the_real_values_file() -> None:
     )
     assert pinned["gateway"]["image"] == f"gateway:1.2.3@{DIGESTS['gateway']}"
     assert pinned["setup"]["image"] == f"setup:1.2.3@{DIGESTS['setup']}"
-    for key in ("switchCore", "gateway", "setup"):
-        assert pinned[key]["imagePullPolicy"] == "IfNotPresent"
 
 
 def test_changes_only_the_pinned_lines() -> None:
@@ -63,10 +70,9 @@ def test_changes_only_the_pinned_lines() -> None:
         for a, b in zip(original.splitlines(), pinned.splitlines(), strict=True)
         if a != b
     ]
-    assert len(changed) == 7  # the registry, then an image and a pull policy per image
-    assert (
-        yaml.safe_load(original)["mattermost"] == yaml.safe_load(pinned)["mattermost"]
-    )
+    assert len(changed) == 4  # the registry, then one image line per image
+    # Pull policy is left to the chart, which derives it from the digest.
+    assert yaml.safe_load(pinned)["switchCore"]["imagePullPolicy"] == ""
 
 
 @pytest.mark.parametrize(
@@ -84,6 +90,18 @@ def test_refuses_digests_that_do_not_cover_exactly_the_images(
 ) -> None:
     with pytest.raises(pin_chart_images.PinError):
         pin_chart_images.pin(VALUES.read_text(), "ghcr.io/acme", "1.2.3", digests)
+
+
+def test_reads_digests_from_a_directory_and_refuses_a_stray_file(
+    tmp_path: Path,
+) -> None:
+    for name, digest in DIGESTS.items():
+        (tmp_path / name).write_text(digest + "\n")
+    assert pin_chart_images.read_digests(tmp_path) == DIGESTS
+
+    (tmp_path / "sidecar").write_text("sha256:" + "d" * 64)
+    with pytest.raises(pin_chart_images.PinError, match="sidecar"):
+        pin_chart_images.read_digests(tmp_path)
 
 
 def test_refuses_a_values_file_whose_shape_moved() -> None:
@@ -122,30 +140,104 @@ def _pinned(name: str) -> str:
     return f"ghcr.io/acme/{name}:1.2.3@{DIGESTS[name]}"
 
 
-def test_verify_accepts_a_fully_pinned_render() -> None:
-    rendered = "---\n".join(
+def _render(*extra: str) -> str:
+    return "---\n".join(
         [
             _pod(_pinned("switch-core"), init=(_pinned("switch-core"), "busybox:1.36")),
             _pod(_pinned("gateway")),
             _pod(_pinned("setup"), "postgres:16-alpine"),
+            *(_pod(ref) for ref in extra),
         ]
     )
-    assert len(pin_chart_images.verify(rendered, "ghcr.io/acme")) == 3
 
 
-def test_verify_rejects_a_first_party_image_by_tag() -> None:
-    rendered = "---\n".join(
-        [
-            _pod(_pinned("switch-core"), init=("ghcr.io/acme/switch-core:1.2.3",)),
-            _pod(_pinned("gateway")),
-            _pod(_pinned("setup")),
-        ]
-    )
-    with pytest.raises(pin_chart_images.PinError, match="not pinned"):
-        pin_chart_images.verify(rendered, "ghcr.io/acme")
+def test_verify_accepts_a_fully_pinned_render() -> None:
+    assert len(pin_chart_images.verify(_render(), "ghcr.io/acme")) == 3
+
+
+@pytest.mark.parametrize(
+    ("extra", "problem"),
+    [
+        ("ghcr.io/acme/switch-core:1.2.3", "not pinned by digest"),
+        ("switch-core:latest", "not from ghcr.io/acme"),
+        ("ghcr.io/other/gateway:1.2.3@" + DIGESTS["gateway"], "not from ghcr.io/acme"),
+        ("registry.example:5000/setup", "not pinned by digest"),
+        (
+            "ghcr.io/acme/sidecar:1.2.3@" + "sha256:" + "d" * 64,
+            "not a known first-party image",
+        ),
+    ],
+    ids=[
+        "by-tag",
+        "bypasses-registry",
+        "other-registry",
+        "port-in-host",
+        "unknown-image",
+    ],
+)
+def test_verify_rejects_a_stray_first_party_reference(extra: str, problem: str) -> None:
+    with pytest.raises(pin_chart_images.PinError, match=problem):
+        pin_chart_images.verify(_render(extra), "ghcr.io/acme")
 
 
 def test_verify_rejects_a_render_missing_an_image() -> None:
     rendered = "---\n".join([_pod(_pinned("switch-core")), _pod(_pinned("gateway"))])
     with pytest.raises(pin_chart_images.PinError, match="setup"):
         pin_chart_images.verify(rendered, "ghcr.io/acme")
+
+
+def test_record_lists_every_image_and_the_chart() -> None:
+    chart = "sha256:" + "e" * 64
+    pins, summary = pin_chart_images.record(
+        DIGESTS, "ghcr.io/acme/dev", "1.2.4-dev.7.gabc1234", "dev", "abc", chart
+    )
+
+    loaded = json.loads(pins)
+    assert loaded["chart"] == {
+        "ref": "oci://ghcr.io/acme/dev/charts/switch",
+        "version": "1.2.4-dev.7.gabc1234",
+        "digest": chart,
+    }
+    assert {
+        name: entry["digest"] for name, entry in loaded["images"].items()
+    } == DIGESTS
+    for name, digest in DIGESTS.items():
+        assert f"ghcr.io/acme/dev/{name}@{digest}" in summary
+
+
+def _version(created: datetime, *tags: str) -> dict:
+    return {
+        "id": id(created),
+        "name": "x",
+        "created_at": created.isoformat(),
+        "metadata": {"container": {"tags": list(tags)}},
+    }
+
+
+NOW = datetime(2026, 10, 9, tzinfo=UTC)
+
+
+def test_prune_keeps_everything_young_or_among_the_newest() -> None:
+    builds = [_version(NOW - timedelta(days=40 + n), f"b{n}") for n in range(5)]
+    assert prune_dev_packages.doomed(builds, NOW, timedelta(days=30), keep=5) == []
+
+
+def test_prune_deletes_old_builds_beyond_the_kept_ones_with_their_platform_manifests() -> (
+    None
+):
+    builds = []
+    for n in range(4):
+        index = NOW - timedelta(days=40 + n)
+        builds.append(_version(index, f"b{n}"))
+        builds.append(
+            _version(index - timedelta(seconds=30))
+        )  # its untagged platform manifest
+
+    doomed = prune_dev_packages.doomed(builds, NOW, timedelta(days=30), keep=2)
+
+    kept = [v for v in builds if v not in doomed]
+    assert {tag for v in kept for tag in v["metadata"]["container"]["tags"]} == {
+        "b0",
+        "b1",
+    }
+    assert len(kept) == 4  # two indexes and both of their platform manifests

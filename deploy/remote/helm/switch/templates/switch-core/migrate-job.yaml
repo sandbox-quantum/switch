@@ -47,7 +47,7 @@ spec:
       containers:
         - name: migrate
           image: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
-          imagePullPolicy: {{ .Values.switchCore.imagePullPolicy }}
+          imagePullPolicy: {{ include "switch.imagePullPolicy" (dict "policy" .Values.switchCore.imagePullPolicy "image" .Values.switchCore.image) }}
           command: ["switch-migrate"]
           env:
             {{- include "switch.coreEnv" $ctx | nindent 12 }}

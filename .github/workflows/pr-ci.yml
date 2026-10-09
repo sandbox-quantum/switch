@@ -94,6 +94,7 @@ jobs:
               # Tested from core/tests, so a change to it alone still runs them.
               - 'scripts/check_migration_heads_for_open_prs.py'
               - 'scripts/pin_chart_images.py'
+              - 'scripts/prune_dev_packages.py'
             console:
               - *shared
               - 'console/**'
@@ -109,9 +110,6 @@ jobs:
             # actually find a new head — not on every backend-touching push.
             migrations:
               - 'core/switch_core/migrations/versions/**'
-            # Spans every tree, so it gets its own filter rather than riding
-            # any one of them. Includes the files whose versions the registry is
-            # checked against, so a release bump cannot land without the check.
             # The switch Helm chart and what the release does to it before
             # publishing (pins the image digests into values.yaml).
             chart:
@@ -119,6 +117,9 @@ jobs:
               - 'deploy/remote/helm/**'
               - 'scripts/pin_chart_images.py'
               - '.github/workflows/switch-release.yml'
+            # Spans every tree, so it gets its own filter rather than riding
+            # any one of them. Includes the files whose versions the registry is
+            # checked against, so a release bump cannot land without the check.
             artifacts:
               - *shared
               - 'artifacts.yaml'
@@ -272,15 +273,18 @@ jobs:
         run: helm lint deploy/remote/helm/switch
 
       - name: Every first-party image is pinned by digest once pinned
+        # Rendered as configured by default and with the optional workloads on,
+        # so an image behind a feature flag is checked too.
         run: |
-          zero="sha256:$(printf '0%.0s' $(seq 64))"
           python3 scripts/pin_chart_images.py pin \
             --values deploy/remote/helm/switch/values.yaml \
-            --registry ghcr.io/render-check --version 0.0.0-check \
-            --digest "switch-core=$zero" --digest "gateway=$zero" --digest "setup=$zero"
-          helm template switch deploy/remote/helm/switch \
-            -f deploy/remote/helm/render-check-values.yaml \
-            | python3 scripts/pin_chart_images.py verify --registry ghcr.io/render-check
+            --registry ghcr.io/render-check --version 0.0.0-check --placeholder-digests
+          for overlay in "" "-f deploy/remote/helm/render-check-optional-values.yaml"; do
+            # shellcheck disable=SC2086 # $overlay is deliberately split into two words
+            helm template switch deploy/remote/helm/switch \
+              -f deploy/remote/helm/render-check-values.yaml $overlay \
+              | python3 scripts/pin_chart_images.py verify --registry ghcr.io/render-check
+          done
 
   gateway:
     name: Gateway UI
