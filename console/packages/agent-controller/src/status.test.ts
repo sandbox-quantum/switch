@@ -387,6 +387,23 @@ describe('PathProviderLocator', () => {
     expect(await locator.locate('claude')).toBeNull();
     expect(await locator.locate('codex')).toBeNull();
   });
+
+  it('reads the version of a CLI that writes in its home first, with a home of its own', async () => {
+    const script = join(dir, 'opencode');
+    writeFileSync(
+      script,
+      '#!/bin/sh\nmkdir -p "$XDG_DATA_HOME/opencode" "$HOME/.cache" || exit 1\necho 1.18.35\n'
+    );
+    chmodSync(script, 0o755);
+    const previous = process.env.HOME;
+    process.env.HOME = '/nonexistent';
+    try {
+      const located = await new PathProviderLocator(dir).locate('opencode');
+      expect(located).toEqual({ path: script, version: '1.18.35' });
+    } finally {
+      process.env.HOME = previous;
+    }
+  });
 });
 
 describe('StatusCollector', () => {
