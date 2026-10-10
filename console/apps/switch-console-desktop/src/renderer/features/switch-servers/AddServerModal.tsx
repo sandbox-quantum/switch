@@ -24,9 +24,10 @@ import type {
   AddServerChoiceName,
   AddServerStepName,
 } from '@shared/core/switch-servers/add-server-steps';
-import type {
-  ServerApiUrlPropagation,
-  SwitchServer,
+import {
+  type ServerApiUrlPropagation,
+  type SwitchServer,
+  urlOrigin,
 } from '@shared/core/switch-servers/switch-servers';
 import { ConnectionsStep } from './connections-step';
 import { LinkAccountsStep } from './link-accounts-step';
@@ -344,7 +345,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
 // Step 1 — choose where the server lives
 // ---------------------------------------------------------------------------
 
-function ChooseStep({
+export const ChooseStep = observer(function ChooseStep({
   onLocal,
   onRemoteHost,
   onExternal,
@@ -358,6 +359,13 @@ function ChooseStep({
   onClose: () => void;
 }) {
   const cloud = useSwitchCloud();
+  // Switch Cloud is one server: once it is added, its workspaces are in the
+  // switcher, and offering to add it again would only lead back to it.
+  const cloudAdded =
+    cloud.kind === 'open' &&
+    switchServersStore.servers.some(
+      (server) => urlOrigin(server.gatewayUrl) === urlOrigin(cloud.url)
+    );
   const [cloudAttempt, setCloudAttempt] = useState<{ connecting: boolean; error: string | null }>({
     connecting: false,
     error: null,
@@ -387,7 +395,7 @@ function ChooseStep({
       <div className="grid gap-3">
         {/* Offered only when this build knows where the Cloud is. A failed read
             is shown rather than dropped, since it means the build is broken. */}
-        {cloud.kind === 'open' && (
+        {cloud.kind === 'open' && !cloudAdded && (
           <ChoiceCard
             icon={
               cloudAttempt.connecting ? (
@@ -437,7 +445,7 @@ function ChooseStep({
       </div>
     </WizardFrame>
   );
-}
+});
 
 export function ChoiceCard({
   icon,
