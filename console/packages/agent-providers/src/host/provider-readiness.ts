@@ -90,6 +90,11 @@ export async function checkProviderReadiness(input: {
         await stopOpencodeServer(server);
       }
     }
+    if (input.provider === 'cursor' && input.env.CURSOR_API_KEY?.trim())
+      // `cursor-agent about` and `status` answer "Not logged in" whatever API
+      // key they run with, so a key cannot be checked without spending a
+      // request: it is taken as given, and a bad one fails the first turn.
+      return result('authenticated', 'Signs in with the Cursor API key it was given.');
     if (input.provider === 'claude' || input.provider === 'cursor') {
       let output: string;
       try {

@@ -1,6 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import { checkProviderReadiness, parseAuthentication } from './provider-readiness';
 
+describe('a Cursor API key', () => {
+  it('is taken as given: Cursor cannot check one without spending a request', async () => {
+    expect(
+      await checkProviderReadiness({
+        provider: 'cursor',
+        binaryPath: '/nonexistent/cursor-agent',
+        cwd: '/',
+        env: { CURSOR_API_KEY: 'crsr_synthetic' },
+      })
+    ).toEqual({
+      status: 'authenticated',
+      message: 'Signs in with the Cursor API key it was given.',
+      models: [],
+    });
+  });
+});
+
 describe('provider authentication', () => {
   it('recognizes signed-out Claude without assuming an installed CLI is ready', () => {
     expect(parseAuthentication('claude', '{"loggedIn":false}').status).toBe('unauthenticated');

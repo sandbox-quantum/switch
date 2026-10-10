@@ -340,11 +340,13 @@ describe('ProviderStatuses with logins given to the machine', () => {
 
     answer = sealedAnswer('sk-ant-oat-expired');
     runtime.loginReadiness = { status: 'unauthenticated', message: 'Token expired.', models: [] };
-    expect(await statuses.check('claude')).toMatchObject({
+    const expired = await statuses.check('claude');
+    expect(expired).toMatchObject({
       auth: 'expired',
       auth_source: 'sealed',
       reason: 'provider_login_expired',
     });
+    expect(expired.auth_problem).toContain('Token expired.');
     expect(statuses.loginProblem('claude')?.message).toContain('Token expired.');
     expect(await statuses.givenLogin('claude')).toBeNull();
 
