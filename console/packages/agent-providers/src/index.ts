@@ -123,7 +123,7 @@ export {
   watcherHealthSchema,
 } from './host/watcher-tools';
 
-export { prepareCodexSessionHome } from './codex/home';
+export { prepareCodexSessionHome, withManagedCodexSandbox } from './codex/home';
 export { readSharedCredentials, sharedConfigSchema } from './host/shared-config';
 export type { SharedHostConfig } from './host/shared-config';
 

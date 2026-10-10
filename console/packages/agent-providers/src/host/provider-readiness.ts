@@ -3,6 +3,8 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import {
   ANTIGRAVITY_SIGN_IN,
+  antigravityProfile,
+  antigravitySignedIn,
   createAntigravityClient,
   initializeAntigravity,
 } from '../antigravity/runtime';
@@ -90,6 +92,11 @@ export async function checkProviderReadiness(input: {
         await stopOpencodeServer(server);
       }
     }
+    if (input.provider === 'cursor' && input.env.CURSOR_API_KEY?.trim())
+      // `cursor-agent about` and `status` answer "Not logged in" whatever API
+      // key they run with, so a key cannot be checked without spending a
+      // request: it is taken as given, and a bad one fails the first turn.
+      return result('authenticated', 'Signs in with the Cursor API key it was given.');
     if (input.provider === 'claude' || input.provider === 'cursor') {
       let output: string;
       try {
@@ -117,9 +124,10 @@ export async function checkProviderReadiness(input: {
       // agent's own answer to the question being asked: the sign-ins it still
       // wants. Empty means none outstanding.
       const initialized = await initializeAntigravity(client);
-      return initialized.authMethods?.length
-        ? result('unauthenticated', ANTIGRAVITY_SIGN_IN)
-        : result('authenticated', 'Signed in to Antigravity ACP.');
+      return !initialized.authMethods?.length ||
+        (await antigravitySignedIn(antigravityProfile(input.env)))
+        ? result('authenticated', 'Signed in to Antigravity ACP.')
+        : result('unauthenticated', ANTIGRAVITY_SIGN_IN);
     }
     if (input.provider !== 'codex')
       return result('unknown', 'This provider has no authentication check.');

@@ -129,7 +129,9 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
           }),
         locator: {
           locate: async (provider) =>
-            provider === 'claude' ? { path: fakeClaude, version: '2.0.0' } : null,
+            provider === 'claude'
+              ? { path: fakeClaude, version: '2.0.0', versionProblem: null }
+              : null,
         },
         fetch,
         openWebSocket: core.openWebSocket,

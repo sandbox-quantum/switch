@@ -47,7 +47,10 @@ describe('buildWatcherTemplate', () => {
     expect(template.execution).toMatchObject({
       credentialsPath: '/data/agents/agent-1/credentials.json',
       binaryPath: `/usr/bin/${provider}`,
-      codexConfig: provider === 'codex' ? 'developer_instructions = "Review pull requests."\n' : '',
+      codexConfig:
+        provider === 'codex'
+          ? 'sandbox_mode = "workspace-write"\ndeveloper_instructions = "Review pull requests."\n'
+          : '',
     });
     expect(template.execution!.inheritEnv).toEqual(
       expect.arrayContaining(['PATH', 'HOME', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY'])
@@ -110,7 +113,9 @@ describe('buildWatcherTemplate', () => {
       ...advanced,
     });
     expect(template.start.input.model).toEqual({ id: 'gpt-5.5', options: { effort: 'high' } });
-    expect(template.execution!.codexConfig).toBe(console.codexConfig);
+    expect(template.execution!.codexConfig).toBe(
+      `sandbox_mode = "workspace-write"\n${console.codexConfig}`
+    );
     expect(template.execution!.codexConfig).toContain('model_verbosity = "low"');
     expect(template.execution!.codexConfig).toContain('web_search = true');
     expect(template.start.input).not.toHaveProperty('agentDefinition');
