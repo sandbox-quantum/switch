@@ -27,7 +27,12 @@ from switch_core.db.models import (
     MachineWorkspace,
     require_tenant_id,
 )
-from switch_core.db.stores.hosted_machine_store import CloudMachineStore, idle_sleeping
+from switch_core.db.stores.hosted_machine_store import (
+    CloudMachineStore,
+    await_reconnect,
+    bump_revision,
+    idle_sleeping,
+)
 from switch_core.keys import Keyring
 
 # How recent the machine's last status report must be for its silence to count
@@ -123,6 +128,25 @@ async def machine_of_controller(
     if machine is None or machine.state == "deleted":
         return None
     return machine, workspace
+
+
+async def enroll_revoked_again(
+    session: AsyncSession, controller_id: str, now: datetime
+) -> CloudMachine | None:
+    """After the bound workspace's controller on a cloud machine is revoked,
+    give the machine a new revision, so it is prepared again with a new code
+    for that workspace and, running, relaunched on the same disk to enroll.
+    The other workspaces keep their enrollment. A machine that is not meant to
+    run enrolls at its next start. None for a controller on no cloud machine.
+    The caller commits."""
+    found = await machine_of_controller(session, controller_id)
+    if found is None:
+        return None
+    machine, _workspace = found
+    if machine.desired_state == "running":
+        bump_revision(machine, now)
+        await_reconnect(machine)
+    return machine
 
 
 def controller_reports(machine: CloudMachine) -> dict[str, dict[str, Any]]:
