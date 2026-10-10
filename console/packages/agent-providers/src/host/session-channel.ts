@@ -32,7 +32,8 @@ export const HOST_HUNG_UP_MS = 15000;
  * requests (`ready`). The other way round, the host says which session it is
  * (`identity`, again whenever its generation moves) and asks its parent
  * (`ask`) for what only the holder of the agent's connection can do: list the
- * Switch tools and run one. The parent answers (`answer`).
+ * Switch tools, run one, and post a turn's reply the agent left unposted. The
+ * parent answers (`answer`).
  */
 
 export const sessionRequestSchema = z.discriminatedUnion('type', [
@@ -69,6 +70,17 @@ export const hostAskSchema = z.discriminatedUnion('type', [
     type: z.literal('tool'),
     name: z.string().min(1),
     arguments: z.record(z.string(), z.unknown()),
+  }),
+  /**
+   * The host's own post, as the agent, to the room a turn was started from:
+   * the turn ended without the agent posting there. Refused unless the session
+   * still attends `roomId`.
+   */
+  z.object({
+    type: z.literal('room-reply'),
+    roomId: z.string().min(1),
+    threadId: z.string().min(1).nullable(),
+    body: z.string().min(1),
   }),
 ]);
 export type HostAsk = z.infer<typeof hostAskSchema>;
@@ -577,6 +589,11 @@ export type ParentChannel = {
   identify: (identity: HostIdentity) => void;
   /** Ask the parent, rejecting if it does not answer or goes away. */
   ask: (ask: HostAsk) => Promise<unknown>;
+  /**
+   * Hear each Switch tool call the parent answered, with its result, before
+   * the caller does. Returns the unsubscribe.
+   */
+  onToolAnswered: (listener: (name: string, result: unknown) => void) => () => void;
   /** Say whether the session is busy, and why; `barrier` answers a `busyBarrier`. */
   busy: (state: BusyState, barrier: number | null) => void;
   /** Answer each `busyBarrier` with this, once it resolves. */
@@ -604,6 +621,7 @@ export function connectParent(port: ParentPort): ParentChannel {
   let barrier: (() => Promise<BusyState>) | null = null;
   let serving = true;
   let nextAsk = 0;
+  const toolListeners = new Set<(name: string, result: unknown) => void>();
   const asks = new Map<
     number,
     {
@@ -683,9 +701,24 @@ export function connectParent(port: ParentPort): ParentChannel {
           asks.delete(id);
           reject(new Error('The parent process did not answer in time.'));
         }, ASK_TIMEOUT_MS);
-        asks.set(id, { resolve, reject, timer });
+        const answered = (value: unknown) => {
+          if (ask.type === 'tool')
+            for (const listener of toolListeners) {
+              try {
+                listener(ask.name, value);
+              } catch (error) {
+                console.error(`A tool-call listener failed: ${String(error)}`);
+              }
+            }
+          resolve(value);
+        };
+        asks.set(id, { resolve: answered, reject, timer });
         send({ kind: 'ask', id, ask });
       });
+    },
+    onToolAnswered: (listener) => {
+      toolListeners.add(listener);
+      return () => toolListeners.delete(listener);
     },
     close: () => {
       serving = false;

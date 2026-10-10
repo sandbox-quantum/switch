@@ -12,7 +12,7 @@ import {
 } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { stubSwitchFetch } from '../testing/agent-sessions-server';
-import { connectParent } from './session-channel';
+import { connectParent, type ParentChannel } from './session-channel';
 import { parkAfterMs, RESET_HOLD_MS, runSharedHost, sessionBusy } from './shared-host';
 import { hostParked } from './shared-state';
 
@@ -89,6 +89,8 @@ type Harness = {
   switchCore: ReturnType<typeof stubSwitchFetch>;
   media: Map<string, Uint8Array>;
   parent: ReturnType<typeof fakeParent>;
+  /** The host's end of the pipe, as its Switch tools use it. */
+  channel: ParentChannel;
   stop: () => Promise<unknown>;
   snapshotEpoch: () => Promise<string>;
 };
@@ -261,6 +263,7 @@ async function start(
   const session = structuredClone(SESSION);
   if (opts.rooms) session.capabilities.attachmentMimeTypes = ['text/plain'];
   if (opts.resettable) session.capabilities.reset = true;
+  const channel = connectParent(parent.port);
   const running = runSharedHost(
     {
       root,
@@ -275,7 +278,7 @@ async function start(
         mcpServers: {},
       },
       ...(opts.rooms ? { roomConnection: { connectionId: 'controller' } } : {}),
-      parent: connectParent(parent.port),
+      parent: channel,
       parkAfterMs: opts.parkAfterMs ?? null,
       instructions: opts.instructions ?? null,
     },
@@ -313,6 +316,7 @@ async function start(
     switchCore,
     media,
     parent,
+    channel,
     stop: async () => {
       stop.abort();
       return outcome;
@@ -1242,3 +1246,67 @@ it('keeps the session running when the start record cannot even be removed', asy
     expect(await host.stop()).toBeNull();
   }
 }, 20000);
+
+it('posts for a room turn that ended without the agent posting, and not for one that posted', async () => {
+  const host = await start({ rooms: true });
+  const asks = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask'
+    );
+  const answer = (id: number, value: unknown) =>
+    host.parent.port.emit('message', { kind: 'answer', id, ok: true, value });
+  const turn = async (sequence: number) => {
+    const before = host.turns.length;
+    expect(
+      await host.parent.ask({ type: 'room', handoff: roomMessage(sequence, 'hi') })
+    ).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(before + 1), { timeout: 5000 });
+    return host.turns.at(-1)!.turnId;
+  };
+  try {
+    const silent = await turn(1);
+    host.emit({
+      type: 'item.completed',
+      turnId: silent,
+      item: {
+        id: 'a',
+        type: 'assistant_message',
+        status: 'completed',
+        title: '',
+        text: 'Hello there',
+      },
+    });
+    host.emit({ type: 'turn.completed', turnId: silent, outcome: 'completed', usage: [] });
+    await vi.waitFor(() => expect(asks()).toHaveLength(1), { timeout: 5000 });
+    expect(asks()[0]!.ask).toEqual({
+      type: 'room-reply',
+      roomId: 'room',
+      threadId: null,
+      body: 'I finished without posting a reply. My last words were:\n\nHello there',
+    });
+    answer(asks()[0]!.id, null);
+
+    const answered = await turn(2);
+    // The provider's Switch tool call, as the session's MCP server makes it.
+    const posting = host.channel.ask({
+      type: 'tool',
+      name: 'post_message',
+      arguments: { body: 'Hi!' },
+    });
+    await vi.waitFor(() => expect(asks()).toHaveLength(2));
+    answer(asks()[1]!.id, { content: [{ type: 'text', text: '{"event_id":"e"}' }] });
+    await posting;
+    host.emit({ type: 'turn.completed', turnId: answered, outcome: 'completed', usage: [] });
+    await vi.waitFor(async () => {
+      const { value } = await host.parent.ask({ type: 'snapshot' });
+      expect((value as Snapshot).turns.find((t) => t.turnId === answered)?.status).toBe(
+        'completed'
+      );
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(asks()).toHaveLength(2);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});

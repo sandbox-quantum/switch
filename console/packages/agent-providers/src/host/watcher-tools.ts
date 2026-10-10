@@ -11,7 +11,7 @@ import {
 } from '@sandboxaq/switch-agent-runtime/hosted';
 import { z } from 'zod';
 import type { PlacementMap, SessionPlacements } from './placements';
-import type { AskHandler, Caller } from './session-channel';
+import type { AskHandler, Caller, HostAsk } from './session-channel';
 import { sharedConfigSchema } from './shared-config';
 
 /**
@@ -122,9 +122,34 @@ export function sessionToolAnswerer(deps: {
     };
   };
 
+  /**
+   * Posts, as the session, a reply its turn left unposted. Only into the room
+   * the turn came from, and only while the session still attends it: a post
+   * goes to whichever room the session holds, and one it has moved to since
+   * did not ask.
+   */
+  const roomReply = async (
+    caller: Caller,
+    catalog: SwitchToolCatalog,
+    ask: Extract<HostAsk, { type: 'room-reply' }>
+  ): Promise<null> => {
+    const attended = deps.placements.roomOf(caller.sessionId);
+    if (attended !== ask.roomId)
+      throw new Error(
+        `Session ${caller.sessionId} no longer attends room ${ask.roomId}${attended ? ` (it attends ${attended})` : ''}, so its reply was not posted there.`
+      );
+    const posted = await catalog.call(await context(caller), 'post_message', {
+      body: ask.body,
+      ...(ask.threadId ? { thread_id: ask.threadId } : {}),
+    });
+    if (posted.isError) throw new Error(resultText(posted));
+    return null;
+  };
+
   return async (caller, ask) => {
     const catalog = await tools();
     if (ask.type === 'tools') return catalog.tools();
+    if (ask.type === 'room-reply') return roomReply(caller, catalog, ask);
     if (ask.name === 'connect_to_room') return connect(caller, catalog, ask.arguments);
     return catalog.call(await context(caller), ask.name, ask.arguments);
   };
