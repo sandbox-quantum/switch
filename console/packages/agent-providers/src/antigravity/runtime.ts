@@ -20,14 +20,19 @@ export async function createAntigravityClient(input: {
   const profile =
     input.env.GEMINI_HOME ||
     join(input.env.HOME || homedir(), '.local', 'state', 'switch', 'antigravity-acp');
-  await mkdir(profile, { recursive: true, mode: 0o700 });
-  await writeFile(
-    join(profile, 'settings.json'),
-    JSON.stringify({ auth: { type: 'oauth-personal' } }),
-    { mode: 0o600, flag: 'wx' }
-  ).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== 'EEXIST') throw error;
-  });
+  // Antigravity ACP up to 1.1 reads its settings at the profile's root; 1.3
+  // reads them beside its token, in `antigravity-acp/`. Without the auth type
+  // recorded, a signed-in profile answers `initialize` as signed out.
+  for (const directory of [profile, join(profile, 'antigravity-acp')]) {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await writeFile(
+      join(directory, 'settings.json'),
+      JSON.stringify({ auth: { type: 'oauth-personal' } }),
+      { mode: 0o600, flag: 'wx' }
+    ).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EEXIST') throw error;
+    });
+  }
   const raw = basename(input.binaryPath).startsWith('agy_acp_server');
   return new StdioJsonRpcClient({
     command: input.binaryPath,
