@@ -91,9 +91,7 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
         """Hardcoded on purpose, and hardcoded twice on purpose.
 
         `users` is a person rather than a tenant member, `oidc_identities`
-        records how that person proves who they are, and `feature_flags` is a
-        deployment switch — a flag that has to vary per customer is a new
-        scoped table, not a nullable column there. `cloud_machines` is a
+        records how that person proves who they are. `cloud_machines` is a
         person's VM, one per person whatever workspaces it serves; what it
         runs in each is the scoped `machine_workspaces`. `alembic_version` is
         global too but is not in this metadata: Alembic owns it.
@@ -102,7 +100,6 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             "cloud_machines",
             "users",
             "oidc_identities",
-            "feature_flags",
             # Facts about the installation, not about anything in it: which
             # deployment this is to the analytics relay and when it was
             # installed, which once-ever milestones it has reported, and when

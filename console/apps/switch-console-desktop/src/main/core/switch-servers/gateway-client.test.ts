@@ -75,6 +75,7 @@ const {
   removeBridgeTeam,
   createInvitation,
   fetchInvitations,
+  fetchCanCreateWorkspace,
   fetchInviteEmailEnabled,
   createRoom,
   deleteBridge,
@@ -1211,6 +1212,13 @@ describe('sign-up support', () => {
     await expect(listCloudMachines(SERVER)).resolves.toBeNull();
   });
 
+  it('reads no cloud machines where the server says this workspace cannot claim one', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ available: false, machines: [] }));
+    await expect(listCloudMachines(SERVER)).resolves.toBeNull();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ available: true, machines: [] }));
+    await expect(listCloudMachines(SERVER)).resolves.toEqual([]);
+  });
+
   it('raises the server’s explanation when no machine can be had', async () => {
     fetchMock.mockResolvedValueOnce(
       errorResponse(503, JSON.stringify({ detail: 'Cloud machines are not offered here.' }))
@@ -2004,6 +2012,20 @@ describe('workspace invitations', () => {
 
     fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
     await expect(fetchInviteEmailEnabled(SERVER)).resolves.toBeNull();
+  });
+
+  it('reads whether the server lets the account create a workspace', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ can_create_workspace: false }) as never);
+    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(false);
+
+    fetchMock.mockResolvedValue(jsonResponse({ can_create_workspace: true }) as never);
+    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(true);
+
+    // Older servers refused nothing up front, so nothing is hidden on them.
+    fetchMock.mockResolvedValue(jsonResponse({ state: 'ready' }) as never);
+    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(true);
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(true);
   });
 
   it('keeps the link when an older server says nothing about the e-mail', async () => {

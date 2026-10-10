@@ -900,6 +900,21 @@ describe('moving every agent automatically', () => {
     expect(tries()).toBe(4);
   });
 
+  it('asks again at once about agents left alone once told to recheck them all', async () => {
+    all = [PARENT];
+    world.eligibility = { management: false, owner: null, ownedByMe: false };
+    const migration = service();
+    await migration.migrateEverything();
+    expect(adopted()).toHaveLength(0);
+    expect((await migration.overview()).leftAlone).toBe(1);
+    world.eligibility = { management: true, owner: 'Ada', ownedByMe: true };
+    await migration.migrateEverything();
+    expect(adopted()).toHaveLength(0);
+    migration.recheckAll();
+    await migration.migrateEverything();
+    expect(adopted()).toHaveLength(1);
+  });
+
   it('counts what it left alone and what it could not ask about', async () => {
     const base = deps().management;
     const migration = service({

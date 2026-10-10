@@ -24,9 +24,10 @@ import type {
   AddServerChoiceName,
   AddServerStepName,
 } from '@shared/core/switch-servers/add-server-steps';
-import type {
-  ServerApiUrlPropagation,
-  SwitchServer,
+import {
+  type ServerApiUrlPropagation,
+  type SwitchServer,
+  urlOrigin,
 } from '@shared/core/switch-servers/switch-servers';
 import { ConnectionsStep } from './connections-step';
 import { LinkAccountsStep } from './link-accounts-step';
@@ -85,6 +86,16 @@ type Props = BaseModalProps<void> & {
    * connect-by-URL form; `remoteHost` sets up a managed stack on an SSH host. */
   mode?: 'local' | 'remoteHost' | 'external';
 };
+
+/**
+ * Where signing in to Switch Cloud leads: on to setting up cloud agents when
+ * the Cloud offers them (its `hosted_agents` flag), otherwise to the step any
+ * other server ends on.
+ */
+async function stepAfterCloudSignIn(serverId: string): Promise<Step> {
+  const flags = await rpc.featureFlags.current(serverId);
+  return flags.success && flags.data.flags.hosted_agents ? 'managedGitHub' : 'linkAccounts';
+}
 
 type Step =
   | 'managedAgent'
@@ -209,8 +220,10 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
    * chooser rather than to a connect-by-URL form it never passed through. An
    * account already signed in goes on to setting up its cloud agents.
    */
-  const enterCloud = (server: SwitchServer) => {
-    const next: Step = switchServersStore.isConnected(server.id) ? 'managedGitHub' : 'signIn';
+  const enterCloud = async (server: SwitchServer) => {
+    const next: Step = switchServersStore.isConnected(server.id)
+      ? await stepAfterCloudSignIn(server.id)
+      : 'signIn';
     setConnected(server);
     setChoice('cloud');
     setStep(next);
@@ -293,7 +306,8 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
         onClose={props.onClose}
         onSignedIn={(signedIn) => {
           setMachineUnavailable(machineUnavailableReason(signedIn));
-          goToStep(choice === 'cloud' ? 'managedGitHub' : 'linkAccounts');
+          if (choice === 'cloud') void stepAfterCloudSignIn(connected.id).then(goToStep);
+          else goToStep('linkAccounts');
         }}
       />
     );
@@ -331,7 +345,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
 // Step 1 — choose where the server lives
 // ---------------------------------------------------------------------------
 
-function ChooseStep({
+export const ChooseStep = observer(function ChooseStep({
   onLocal,
   onRemoteHost,
   onExternal,
@@ -345,6 +359,13 @@ function ChooseStep({
   onClose: () => void;
 }) {
   const cloud = useSwitchCloud();
+  // Switch Cloud is one server: once it is added, its workspaces are in the
+  // switcher, and offering to add it again would only lead back to it.
+  const cloudAdded =
+    cloud.kind === 'open' &&
+    switchServersStore.servers.some(
+      (server) => urlOrigin(server.gatewayUrl) === urlOrigin(cloud.url)
+    );
   const [cloudAttempt, setCloudAttempt] = useState<{ connecting: boolean; error: string | null }>({
     connecting: false,
     error: null,
@@ -374,7 +395,7 @@ function ChooseStep({
       <div className="grid gap-3">
         {/* Offered only when this build knows where the Cloud is. A failed read
             is shown rather than dropped, since it means the build is broken. */}
-        {cloud.kind === 'open' && (
+        {cloud.kind === 'open' && !cloudAdded && (
           <ChoiceCard
             icon={
               cloudAttempt.connecting ? (
@@ -424,7 +445,7 @@ function ChooseStep({
       </div>
     </WizardFrame>
   );
-}
+});
 
 export function ChoiceCard({
   icon,

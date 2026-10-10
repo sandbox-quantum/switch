@@ -19,7 +19,7 @@ _MANAGEMENT = "switch_core.management"
 
 # The only Core modules allowed to import the management package.
 _ALLOWED_IMPORTERS = {
-    # Builds the module when AGENT_MANAGEMENT_ENABLED is set, hands its
+    # Builds the module when the agent_management feature flag is on, hands its
     # authenticator to the bearer middleware, and installs its routes.
     "switch_core.main",
 }

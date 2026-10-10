@@ -19,6 +19,7 @@ function shape(differences: Partial<Parameters<typeof shellShape>[0]>) {
     installIsEmpty: true,
     viewWorksWithoutServer: false,
     onboardingInProgress: false,
+    onboardingEnabled: true,
     ...differences,
   });
 }
@@ -32,6 +33,15 @@ describe('what fills the window', () => {
 
   it('onboards only once the install is known to be empty', () => {
     expect(shape({})).toBe('onboarding');
+  });
+
+  it('opens the workspace on a fresh install when the build has no first-run pages', () => {
+    expect(shape({ onboardingEnabled: false })).toBe('workspace');
+    expect(shape({ onboardingEnabled: false, onboardingInProgress: true })).toBe('workspace');
+  });
+
+  it('still waits for the read when the build has no first-run pages', () => {
+    expect(shape({ onboardingEnabled: false, loaded: false })).toBe('loading');
   });
 
   /**

@@ -13,6 +13,11 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from switch_core.feature_flags import (
+    AGENT_MANAGEMENT,
+    HOSTED_AGENTS,
+    KNOWN_FEATURE_FLAGS,
+)
 from switch_core.keys import Keyring
 from switch_core.outbound import OutboundPolicy
 
@@ -158,6 +163,12 @@ class SwitchConfig(BaseSettings):
     # See `outbound.py`.
     outbound_allowed_private_hosts: str = ""
 
+    # Feature flags that are on for this deployment: comma-separated keys from
+    # `feature_flags.KNOWN_FEATURE_FLAGS`. Every other flag is off. Fixed for
+    # the life of the process; an unknown key is a startup error rather than a
+    # silently ignored typo.
+    feature_flags_enabled: str = ""
+
     # Gateway admin seed
     gateway_admin_email: str
     gateway_admin_password: str
@@ -221,8 +232,10 @@ class SwitchConfig(BaseSettings):
     # OIDC first sign-in alike), read from the users table so it holds across
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
-    # How many cloud machines the bound tenant may have at once. Cloud machines
-    # run the agents controller, so they need AGENT_MANAGEMENT_ENABLED.
+    # How many cloud machines the bound tenant may have at once; 0 means this
+    # server cannot run them. The `hosted_agents` flag is what offers them.
+    # Cloud machines run the agents controller, so above 0 this needs the
+    # `agent_management` flag.
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
     hosted_disk_retention_days: int = Field(default=7, ge=1, le=90)
@@ -614,11 +627,12 @@ class SwitchConfig(BaseSettings):
     # evicted past this, so a flood of tokens cannot grow the process.
     agent_auth_cache_max_entries: int = 4096
 
-    # Agent management: managed agent definitions, the agent controllers that
-    # run them, and the controller-facing routes under /v1/management and
-    # /v1/controllers. Off by default; with it off none of those routes are
-    # mounted and the bearer middleware never treats a token as a controller's.
-    agent_management_enabled: bool = False
+    # AGENT_MANAGEMENT_ENABLED, replaced by the `agent_management` feature flag.
+    # Read only to refuse a deployment that still turns it on, which would
+    # otherwise lose agent management without a word.
+    legacy_agent_management_enabled: bool | None = Field(
+        default=None, validation_alias="agent_management_enabled"
+    )
     # Signs controller access tokens. Required (at least 32 characters) when
     # agent management is on, and deliberately separate from SECRET_KEYS so
     # rotating one never invalidates the other.
@@ -718,17 +732,24 @@ class SwitchConfig(BaseSettings):
                 "CONTROLLER_STATUS_INTERVAL_SECONDS must be at least 1, got "
                 f"{self.controller_status_interval_seconds!r}."
             )
+        if self.legacy_agent_management_enabled:
+            raise ValueError(
+                "AGENT_MANAGEMENT_ENABLED has been replaced by a feature flag: "
+                f"remove it and add {AGENT_MANAGEMENT!r} to FEATURE_FLAGS_ENABLED."
+            )
         if not self.agent_management_enabled:
             if self.hosted_launch_capacity > 0:
                 raise ValueError(
-                    "HOSTED_LAUNCH_CAPACITY needs AGENT_MANAGEMENT_ENABLED: cloud "
-                    "machines run the agents controller."
+                    "HOSTED_LAUNCH_CAPACITY needs the "
+                    f"{AGENT_MANAGEMENT!r} feature flag: cloud machines run the "
+                    "agents controller."
                 )
             return self
         if not self.controller_token_secret:
             raise ValueError(
-                "CONTROLLER_TOKEN_SECRET is required when AGENT_MANAGEMENT_ENABLED "
-                "is true: it signs the access tokens agent controllers use."
+                "CONTROLLER_TOKEN_SECRET is required when the "
+                f"{AGENT_MANAGEMENT!r} feature flag is on: it signs the access "
+                "tokens agent controllers use."
             )
         if len(self.controller_token_secret) < 32:
             raise ValueError(
@@ -992,6 +1013,35 @@ class SwitchConfig(BaseSettings):
                 "on a deployment that does not isolate them from each other."
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_feature_flags_enabled(self) -> "SwitchConfig":
+        unknown = sorted(self._enabled_feature_flags() - KNOWN_FEATURE_FLAGS)
+        if unknown:
+            raise ValueError(
+                f"FEATURE_FLAGS_ENABLED names unknown feature flag(s): {unknown}. "
+                f"Known flags: {sorted(KNOWN_FEATURE_FLAGS)}."
+            )
+        return self
+
+    def _enabled_feature_flags(self) -> set[str]:
+        return {
+            key.strip() for key in self.feature_flags_enabled.split(",") if key.strip()
+        }
+
+    @property
+    def feature_flags(self) -> dict[str, bool]:
+        """Every known flag and whether this deployment turned it on."""
+        enabled = self._enabled_feature_flags()
+        return {key: key in enabled for key in sorted(KNOWN_FEATURE_FLAGS)}
+
+    @property
+    def agent_management_enabled(self) -> bool:
+        return self.feature_flags[AGENT_MANAGEMENT]
+
+    @property
+    def hosted_agents_enabled(self) -> bool:
+        return self.feature_flags[HOSTED_AGENTS]
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":

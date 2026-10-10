@@ -14,18 +14,11 @@ import {
 } from '@renderer/lib/ui/dialog';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/lib/ui/select';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 import { createWorkspaceFailureText } from './describe-create-failure';
 
 type CreateWorkspaceModalArgs = {
-  /** The server to create it on — the one the window is currently scoped to. */
+  /** The server to create it on: the one whose "New workspace" was chosen. */
   serverId: string;
 };
 
@@ -58,10 +51,9 @@ function whyNotReady(serverId: string): string | null {
 /**
  * Make a workspace from the switcher.
  *
- * A workspace belongs to a server, so the first thing this has to be sure of is
- * which one. It opens on the server the window is already in and offers the
- * others only where there is a choice to make — on the ordinary single-server
- * install the question never appears.
+ * A workspace belongs to a server, and the switcher has already said which:
+ * each server's group ends with its own New workspace, so the server is the
+ * one whose row was chosen and this asks only for the name.
  *
  * Only a server you are signed in to can be asked. Offering the rest and
  * letting Create come back with an authentication failure would blame the name
@@ -79,7 +71,6 @@ export const CreateWorkspaceModal = observer(function CreateWorkspaceModal({
   onClose,
 }: Props) {
   const { transitionModal, setCloseGuard } = useModalContext();
-  const [chosen, setChosen] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -93,17 +84,7 @@ export const CreateWorkspaceModal = observer(function CreateWorkspaceModal({
    */
   const [created, setCreated] = useState<Workspace | null>(null);
 
-  const candidates = switchServersStore.servers.filter((server) =>
-    switchServersStore.isConnected(server.id)
-  );
-  // The server the window is in, when it can be asked; otherwise the only one
-  // that can. A default that is not a candidate would hide the picker on a
-  // question the user still has to answer, and leave Create disabled with the
-  // usable server offered nowhere.
-  const fallback = candidates.some((server) => server.id === serverId)
-    ? serverId
-    : (candidates[0]?.id ?? serverId);
-  const where = chosen ?? fallback;
+  const where = serverId;
   const target = switchServersStore.serverById(where);
   const notReady = whyNotReady(where);
   const trimmed = name.trim();
@@ -150,7 +131,9 @@ export const CreateWorkspaceModal = observer(function CreateWorkspaceModal({
   return (
     <>
       <DialogHeader showCloseButton={false}>
-        <DialogTitle>Create a workspace</DialogTitle>
+        <DialogTitle>
+          {target ? `Create a workspace on ${target.name}` : 'Create a workspace'}
+        </DialogTitle>
       </DialogHeader>
       <DialogContentArea className="pt-0">
         <FieldGroup>
@@ -171,28 +154,6 @@ export const CreateWorkspaceModal = observer(function CreateWorkspaceModal({
             />
           </Field>
 
-          {candidates.length > 1 && (
-            <Field>
-              <FieldLabel>Server</FieldLabel>
-              <Select
-                value={where}
-                onValueChange={(value) => value && setChosen(value)}
-                disabled={submitting || created !== null}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {candidates.map((server) => (
-                    <SelectItem key={server.id} value={server.id}>
-                      {server.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          )}
-
           {created !== null ? (
             <p className="text-xs text-foreground-muted">
               {created.name} was created on {target?.name ?? 'the server'}, but this window could
@@ -200,7 +161,7 @@ export const CreateWorkspaceModal = observer(function CreateWorkspaceModal({
             </p>
           ) : notReady !== null ? (
             <p className="text-xs text-destructive">{notReady}</p>
-          ) : target !== null && candidates.length <= 1 ? (
+          ) : target !== null ? (
             <p className="text-xs text-foreground-muted">
               It will live on {target.name}, along with its rooms and agents.
             </p>

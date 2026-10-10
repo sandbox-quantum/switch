@@ -19,6 +19,7 @@ const switchServers = vi.hoisted(() => ({
   ensureCloudMachine: vi.fn(),
   switchCloud: vi.fn(),
 }));
+const featureFlags = vi.hoisted(() => ({ current: vi.fn() }));
 const workspaces = vi.hoisted(() => ({
   list: vi.fn(async () => []),
   getActiveId: vi.fn(async () => null),
@@ -27,7 +28,7 @@ const workspaces = vi.hoisted(() => ({
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { switchServers, workspaces },
+  rpc: { switchServers, workspaces, featureFlags },
 }));
 
 import {
@@ -67,7 +68,12 @@ beforeEach(() => {
     user: null,
   });
   switchServers.ensureCloudMachine.mockResolvedValue({});
+  featureFlags.current.mockResolvedValue(hostedAgents(true));
 });
+
+function hostedAgents(enabled: boolean) {
+  return { success: true, data: { flags: { hosted_agents: enabled } } };
+}
 
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
@@ -239,5 +245,20 @@ it('warms the cloud machine after signing in to Switch Cloud', async () => {
   await submit(el);
 
   await vi.waitFor(() => expect(onSignedIn).toHaveBeenCalledWith({ machine: null }));
-  expect(switchServers.ensureCloudMachine).toHaveBeenCalledWith('server');
+  await vi.waitFor(() => expect(switchServers.ensureCloudMachine).toHaveBeenCalledWith('server'));
+});
+
+it('leaves the cloud machine alone when Switch Cloud turns cloud machines off', async () => {
+  featureFlags.current.mockResolvedValue(hostedAgents(false));
+  switchServers.passwordLogin.mockResolvedValue({ success: true, data: {} });
+  const onSignedIn = vi.fn();
+  const el = await render(onSignedIn);
+  await type(el, 'test-email', 'ada@example.com');
+  await type(el, 'test-password', 'correct-horse');
+
+  await submit(el);
+
+  await vi.waitFor(() => expect(onSignedIn).toHaveBeenCalledWith({ machine: null }));
+  await vi.waitFor(() => expect(featureFlags.current).toHaveBeenCalledWith('server'));
+  expect(switchServers.ensureCloudMachine).not.toHaveBeenCalled();
 });

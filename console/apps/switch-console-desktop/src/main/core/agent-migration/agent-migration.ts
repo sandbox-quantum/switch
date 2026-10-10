@@ -16,6 +16,7 @@ import {
   embeddedControllerDataDir,
   embeddedControllerService,
 } from '@main/core/embedded-controller/embedded-controllers';
+import { featureFlagsService } from '@main/core/feature-flags/feature-flags';
 import { hostControllerDataDir } from '@main/core/host-controllers/host-controller-service';
 import { hostControllerService } from '@main/core/host-controllers/host-controllers';
 import { locationManager } from '@main/core/locations/location-manager';
@@ -770,6 +771,9 @@ export const agentMigrationService = new AgentMigrationService({
 
 const AUTO_MIGRATION_INTERVAL_MS = 60_000;
 let autoMigrationTimer: NodeJS.Timeout | null = null;
+// Agents asked about while their server had agent management off are not asked
+// again for a while; a server turning it on is the moment to ask at once.
+let stopFollowingFlags: (() => void) | null = null;
 
 function migrateEverythingLogged(): void {
   agentMigrationService.migrateEverything().catch((error: unknown) => {
@@ -788,9 +792,16 @@ export function startAutoMigration(): void {
   if (autoMigrationTimer) return;
   migrateEverythingLogged();
   autoMigrationTimer = setInterval(migrateEverythingLogged, AUTO_MIGRATION_INTERVAL_MS);
+  stopFollowingFlags = featureFlagsService.subscribe((state) => {
+    if (!state.flags.agent_management) return;
+    agentMigrationService.recheckAll();
+    migrateEverythingLogged();
+  });
 }
 
 export function stopAutoMigration(): void {
   if (autoMigrationTimer) clearInterval(autoMigrationTimer);
   autoMigrationTimer = null;
+  stopFollowingFlags?.();
+  stopFollowingFlags = null;
 }

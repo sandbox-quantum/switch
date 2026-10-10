@@ -720,7 +720,7 @@ async def run(config: SwitchConfig) -> None:
         frontend_base_url=config.frontend_base_url,
     )
 
-    # ── Agent management (off unless AGENT_MANAGEMENT_ENABLED) ───────────────
+    # ── Agent management (off unless the agent_management flag is on) ─────────
     # Built before the agent bridge app because its authenticator is the bearer
     # middleware's controller branch; its routes are installed once both apps
     # exist, below.

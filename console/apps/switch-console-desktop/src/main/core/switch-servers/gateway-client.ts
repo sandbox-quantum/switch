@@ -9,6 +9,7 @@ import {
 } from '@main/core/managed-switch-server/managed-server-status';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
 import { type CloudMachine, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
+import type { RemoteFeatureFlag } from '@shared/core/feature-flags/feature-flags';
 import type {
   AdvancedConfigField,
   ManagedMachine,
@@ -397,6 +398,16 @@ function mapUser(json: UserResponseJson): SwitchUser {
     role: json.role,
     server: mapServerDeclaration(json.server ?? null),
   };
+}
+
+const featureFlagsResponseSchema = z.object({
+  flags: z.array(z.object({ key: z.string(), enabled: z.boolean() })),
+});
+
+/** The server's feature flags, which its deployment sets and nothing can change. */
+export async function fetchFeatureFlags(server: SwitchServer): Promise<RemoteFeatureFlag[]> {
+  const res = await gatewayFetch(server, '/feature-flags', { authenticated: true });
+  return featureFlagsResponseSchema.parse(await res.json()).flags;
 }
 
 export async function fetchMe(server: SwitchServer): Promise<SwitchUser> {
@@ -792,6 +803,33 @@ export async function fetchInviteEmailEnabled(server: SwitchServer): Promise<boo
     );
   }
   return json.invite_email_enabled;
+}
+
+/**
+ * Whether the signed-in account may create a workspace on this server: the
+ * server's own answer, which covers its sign-up mode, the per-person cap, and
+ * a deployment that keeps to one workspace because it is not isolating them.
+ *
+ * True on a server older than the answer (no session route, or no field): it
+ * refused nothing up front either.
+ */
+export async function fetchCanCreateWorkspace(server: SwitchServer): Promise<boolean> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/auth/session', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return true;
+    throw cause;
+  }
+  const json = (await res.json()) as { can_create_workspace?: unknown };
+  if (json.can_create_workspace === undefined) return true;
+  if (typeof json.can_create_workspace !== 'boolean') {
+    throw new GatewayError(
+      'http',
+      `${server.name} reported an unreadable can_create_workspace: ${String(json.can_create_workspace)}`
+    );
+  }
+  return json.can_create_workspace;
 }
 
 /** Options for `registerKnownAgent`, matching the gateway's
@@ -2564,8 +2602,9 @@ export async function createRoom(
 }
 
 /**
- * The caller's cloud machines, or null when the server offers none: a server
- * without cloud machines answers the route with 404.
+ * The caller's cloud machines, or null when the server offers none: it says
+ * this workspace cannot claim one (`available: false`), or, from before it
+ * said so, answers the route with 404.
  */
 export async function listCloudMachines(server: SwitchServer): Promise<CloudMachine[] | null> {
   let response: Response;
@@ -2575,7 +2614,10 @@ export async function listCloudMachines(server: SwitchServer): Promise<CloudMach
     if (error instanceof GatewayError && error.kind === 'http' && error.status === 404) return null;
     throw error;
   }
-  return z.object({ machines: z.array(cloudMachineSchema) }).parse(await response.json()).machines;
+  const listed = z
+    .object({ available: z.boolean().optional(), machines: z.array(cloudMachineSchema) })
+    .parse(await response.json());
+  return listed.available === false ? null : listed.machines;
 }
 
 export async function cloudMachineLifecycle(
@@ -2715,7 +2757,7 @@ export async function disconnectGitHub(server: SwitchServer) {
 
 /**
  * The server does not run agent management: its `/gateway/management` routes
- * are not mounted (`AGENT_MANAGEMENT_ENABLED` is off), so they answer a bare
+ * are not mounted (its `agent_management` flag is off), so they answer a bare
  * 404 rather than one in the management error envelope.
  */
 export class AgentManagementUnavailableError extends Error {

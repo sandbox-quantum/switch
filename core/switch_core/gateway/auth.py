@@ -486,6 +486,7 @@ def describe_session_state(
     user: User,
     tenant_claim: str | None,
     tenants: list[TenantMembershipResponse],
+    tenants_isolated: bool,
 ) -> SessionStateResponse:
     """What `_resolve_tenant_id` would make of this session, as data.
 
@@ -516,7 +517,10 @@ def describe_session_state(
         tenant=tenant,
         tenants=tenants,
         state=state,
-        can_create_workspace=workspace_creation_refusal(
+        # A deployment that is not isolating tenants keeps to the one it has,
+        # for operators too: `POST /tenants` would refuse any name.
+        can_create_workspace=tenants_isolated
+        and workspace_creation_refusal(
             config,
             is_operator=is_operator,
             workspaces_created=user.workspaces_created,

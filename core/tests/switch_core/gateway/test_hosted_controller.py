@@ -137,6 +137,7 @@ async def controller_app(session_factory):
         hosted_idle_stop_minutes=0,
         hosted_disk_retention_days=7,
         hosted_launch_capacity=2,
+        hosted_agents_enabled=True,
     )
     app = FastAPI()
     app.state.hosted_controller_settings = settings
@@ -340,9 +341,7 @@ async def test_routes_are_unavailable_without_controller_settings(controller_app
     app.client._transport.app.state.hosted_controller_settings = None
     response = await app.client.get("/hosted-controller/machines", headers=HEADERS)
     assert response.status_code == 503
-    assert response.json() == {
-        "detail": "Switch cloud machines are not enabled on this server."
-    }
+    assert response.json() == {"detail": "This server does not support cloud agents."}
 
 
 async def test_machines_lists_every_live_machine_with_the_contract_keys(

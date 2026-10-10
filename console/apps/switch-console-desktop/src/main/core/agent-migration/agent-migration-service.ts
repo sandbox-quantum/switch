@@ -400,6 +400,14 @@ export class AgentMigrationService {
     };
   }
 
+  /**
+   * Forgets every agent that could not be managed, so the next pass asks Switch
+   * about each again: a server that has just turned agent management on.
+   */
+  recheckAll(): void {
+    for (const agentId of this.unmanageableUntil.keys()) this.recheck(agentId);
+  }
+
   /** Forgets that an agent could not be managed, so the next pass asks Switch again. */
   recheck(agentId: string): void {
     this.unmanageableUntil.delete(agentId);

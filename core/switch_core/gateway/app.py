@@ -42,6 +42,7 @@ from switch_core.gateway.connectors import router as connectors_router
 from switch_core.gateway.dependencies import init_dependencies
 from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
+from switch_core.gateway.feature_flags import router as feature_flags_router
 from switch_core.gateway.github_connections import router as github_connections_router
 from switch_core.gateway.hosted_controller import router as hosted_controller_router
 from switch_core.gateway.hosted_machines import router as hosted_machines_router
@@ -188,6 +189,7 @@ def create_gateway_app(
     app.include_router(templates_router, tags=["templates"])
     app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
+    app.include_router(feature_flags_router, tags=["feature-flags"])
     app.include_router(
         messaging_installs_router,
         prefix="/messaging-apps",

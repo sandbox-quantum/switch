@@ -51,9 +51,13 @@ to its controller's own key: Core relays only ciphertext.
 
 ## Enable cloud machines
 
-Core needs agent management (`AGENT_MANAGEMENT_ENABLED`, with
-`CONTROLLER_TOKEN_SECRET`): it refuses to start with `HOSTED_LAUNCH_CAPACITY`
-above 0 without it.
+Switch Console offers cloud machines on a server whose `hosted_agents` feature
+flag is on. The server runs them only once it is set up as below, which needs
+agent management too: `FEATURE_FLAGS_ENABLED=hosted_agents,agent_management`,
+with `CONTROLLER_TOKEN_SECRET` set. Core refuses to start with
+`HOSTED_LAUNCH_CAPACITY` above 0 without agent management. A server with the
+flag on and nothing set up answers a claim with "This server does not support
+cloud agents."
 
 Mount a private JSON file through `HOSTED_CONTROLLER_CONFIG_PATH` with
 `allowed_tenant_ids`, a dedicated `token` of at least 32 characters and the
@@ -62,7 +66,7 @@ lists the workspaces whose members may use cloud machines, or is `null` for
 every workspace. Core refuses unknown keys, the old `tenant_id` among them.
 `HOSTED_LAUNCH_CAPACITY` is how many machines may exist at once across the
 server, one per user, 0–100; 0
-disables cloud machines. Keep it no higher than the hosted controller's
+means the server cannot run them. Keep it no higher than the hosted controller's
 `max_machines`. The backend chart exposes
 `switchCore.hostedControllerSecret` (file `controller.json`),
 `switchCore.hostedLaunchCapacity`, `switchCore.hostedIdleStopMinutes` and

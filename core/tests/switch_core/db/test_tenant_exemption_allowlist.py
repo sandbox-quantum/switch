@@ -28,8 +28,8 @@ module, never directly through a store any endpoint could declare for itself.
 **A raw `session_factory()` call** is the other surface. It inherits whatever
 is ambient, which in background code is nothing at all, since the long-lived
 tasks deliberately unbind (see `tenant_context.no_tenant`). Such a session can
-now only read the tables that carry no policy — `users`, `oidc_identities`,
-`feature_flags` — so it is no longer a way to cross a tenant boundary, but it
+now only read the tables that carry no policy — `users`, `oidc_identities`
+and the installation's telemetry records — so it is no longer a way to cross a tenant boundary, but it
 is still a session whose call site did not say what it was for.
 
 A module failing either check is not a bug in the test. It means someone

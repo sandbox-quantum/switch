@@ -423,6 +423,23 @@
        is the design's passive step, one stop darker. */
     --fg-passive: #8d8d8d;
 
+    /* An elevated menu over the sidebar (the workspace switcher): a surface a
+       step off the material, with a soft shadow, so it lifts rather than
+       reading as more sidebar. Text steps down from the names it lists, so
+       those are what the eye lands on. */
+    --menu-surface: #ffffff;
+    --menu-field: #f6f6f5;
+    --menu-shadow: 0 20px 44px rgb(0 0 0 / 0.12);
+    --menu-faint: rgb(0 0 0 / 0.03);
+    --menu-pill: rgb(0 0 0 / 0.06);
+    --menu-tile: #ebebea;
+    --menu-tile-fg: #6f6f6f;
+    --menu-tile-active-fg: #f5fbf7;
+    --fg-name: #1f1f1f;
+    --fg-action: #3a3a3a;
+    --fg-icon: #8d8d8d;
+    --fg-dim: #8a8a8a;
+
     /* The segmented control's track. Its own token rather than `--hair-soft`,
        which in dark lands within a couple of levels of the raised segment and
        leaves the active option indistinguishable from the inactive one. */
@@ -719,6 +736,19 @@
     --accent-solid: #33513f;
 
     --fg-passive: #8d8d8d;
+
+    --menu-surface: #262626;
+    --menu-field: #1e1e1e;
+    --menu-shadow: 0 20px 44px rgb(0 0 0 / 0.28);
+    --menu-faint: rgb(255 255 255 / 0.03);
+    --menu-pill: rgb(255 255 255 / 0.1);
+    --menu-tile: #333333;
+    --menu-tile-fg: #bbbbbb;
+    --menu-tile-active-fg: #f5fbf7;
+    --fg-name: #ededed;
+    --fg-action: #d8d8d8;
+    --fg-icon: #9a9a9a;
+    --fg-dim: #9a9a9a;
 
     /* Darker than the material rather than lighter, so the raised segment
        reads as sitting on top of the track instead of merging into it. */

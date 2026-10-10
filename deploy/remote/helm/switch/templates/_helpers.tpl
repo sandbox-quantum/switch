@@ -60,7 +60,10 @@ SECRET_KEYS: {{ required "secrets.secretKeys is required (\"<id>:<secret>\", see
 JWT_SECRET_KEY: {{ . | b64enc | quote }}
 {{- end }}
 {{- if .Values.switchCore.agentManagement.enabled }}
-{{- $controllerSecret := required "secrets.controllerTokenSecret is required when switchCore.agentManagement.enabled" .Values.secrets.controllerTokenSecret }}
+{{- fail "switchCore.agentManagement.enabled has been replaced by a feature flag: remove it and add \"agent_management\" to switchCore.featureFlags.enabled." }}
+{{- end }}
+{{- if has "agent_management" .Values.switchCore.featureFlags.enabled }}
+{{- $controllerSecret := required "secrets.controllerTokenSecret is required with the agent_management feature flag on" .Values.secrets.controllerTokenSecret }}
 {{- if lt (len $controllerSecret) 32 }}
 {{- fail "secrets.controllerTokenSecret must be at least 32 characters; switch-core refuses to start with a shorter one." }}
 {{- end }}
@@ -661,18 +664,14 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
       name: {{ include "switch.secretName" . }}
       key: JWT_SECRET_KEY
       optional: true
-{{- with .Values.switchCore.agentManagement }}
-{{- if .enabled }}
-- name: AGENT_MANAGEMENT_ENABLED
-  value: "true"
+{{- if has "agent_management" .Values.switchCore.featureFlags.enabled }}
 - name: CONTROLLER_TOKEN_SECRET
   valueFrom:
     secretKeyRef:
-      name: {{ include "switch.secretName" $ }}
+      name: {{ include "switch.secretName" . }}
       key: CONTROLLER_TOKEN_SECRET
 - name: CONTROLLER_STATUS_INTERVAL_SECONDS
-  value: {{ .statusIntervalSeconds | quote }}
-{{- end }}
+  value: {{ .Values.switchCore.agentManagement.statusIntervalSeconds | quote }}
 {{- end }}
 - name: GATEWAY_ADMIN_EMAIL
   valueFrom:
@@ -736,6 +735,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 {{- if $outboundHosts }}
 - name: OUTBOUND_ALLOWED_PRIVATE_HOSTS
   value: {{ join "," $outboundHosts | quote }}
+{{- end }}
+{{- with .Values.switchCore.featureFlags.enabled }}
+- name: FEATURE_FLAGS_ENABLED
+  value: {{ join "," . | quote }}
 {{- end }}
 {{- with .Values.switchCore.smtp }}
 {{- if .enabled }}

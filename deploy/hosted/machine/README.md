@@ -149,7 +149,8 @@ can run at once.
 
 ## Running it
 
-- Core needs `AGENT_MANAGEMENT_ENABLED` as well as the hosted settings; see
+- Core needs the `hosted_agents` and `agent_management` feature flags as
+  well as the hosted settings; see
   [../README.md](../README.md).
 - The hosted controller's `image_id` must be an image baked here.
 - A machine is stopped once its status reports say no session has
