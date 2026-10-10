@@ -685,7 +685,7 @@ describe('finding a workspace in the menu', () => {
 });
 
 describe('the server headings', () => {
-  it('marks the Switch Cloud server as official and names where the others are', async () => {
+  it('names each server and nothing else: no address, no "Official"', async () => {
     await openSwitcher(
       [server('cloud', 'Switch Cloud'), server('srv-2', 'Local dev')],
       [workspace('ws-a', 'cloud'), workspace('ws-b', 'srv-2')],
@@ -695,9 +695,8 @@ describe('the server headings', () => {
     const labels = [...document.querySelectorAll('[data-slot="dropdown-menu-label"]')].map(
       (el) => el.textContent
     );
-    expect(labels[0]).toContain('Official');
-    expect(labels[1]).toContain('srv-2.example.invalid');
-    expect(labels[1]).not.toContain('Official');
+    expect(labels[0]).toBe('Switch Cloud');
+    expect(labels[1]).toBe('Local dev');
   });
 });
 

@@ -134,11 +134,7 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher() {
   return showsServers(cloud.kind) ? (
     <ServerMenu activeServer={activeServer} />
   ) : (
-    <WorkspaceMenu
-      active={active}
-      activeServer={activeServer}
-      cloudOrigin={cloud.kind === 'open' ? cloud.url : null}
-    />
+    <WorkspaceMenu active={active} activeServer={activeServer} />
   );
 });
 
@@ -306,12 +302,9 @@ const ServerMenuItem = observer(function ServerMenuItem({
 const WorkspaceMenu = observer(function WorkspaceMenu({
   active,
   activeServer,
-  cloudOrigin,
 }: {
   active: Workspace;
   activeServer: SwitchServer;
-  /** Switch Cloud's origin when this build knows it, to mark its server as the official one. */
-  cloudOrigin: string | null;
 }) {
   const store = switchServersStore;
   const { navigate } = useNavigate();
@@ -364,12 +357,7 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
         <DropdownMenuContent align="start" className="w-80">
           <WorkspaceSearch value={query} onChange={setQuery} />
           {store.servers.map((server) => (
-            <ServerWorkspaceGroup
-              key={server.id}
-              server={server}
-              query={query}
-              official={cloudOrigin !== null && originOf(server.gatewayUrl) === cloudOrigin}
-            />
+            <ServerWorkspaceGroup key={server.id} server={server} query={query} />
           ))}
           {!anyMatch && (
             <div className="px-2 py-3 text-center text-xs text-foreground-muted">
@@ -420,23 +408,6 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
 export function matchesQuery(name: string, query: string): boolean {
   const q = query.trim().toLowerCase();
   return q === '' || name.toLowerCase().includes(q);
-}
-
-function originOf(url: string): string | null {
-  try {
-    return new URL(url).origin;
-  } catch {
-    return null;
-  }
-}
-
-/** Where a server is, as its heading says it: the host and port it answers on. */
-function serverAddress(server: SwitchServer): string {
-  try {
-    return new URL(server.gatewayUrl).host;
-  } catch {
-    return server.gatewayUrl;
-  }
 }
 
 /**
@@ -501,21 +472,18 @@ const LocalServerPendingButton = observer(function LocalServerPendingButton() {
 const ServerWorkspaceGroup = observer(function ServerWorkspaceGroup({
   server,
   query,
-  official,
 }: {
   server: SwitchServer;
   query: string;
-  official: boolean;
 }) {
   // A server you are not signed in to cannot be asked about invitations, so
   // the hooks that ask only mount where it can.
   return serverAvailability(server.id) === 'available' ? (
-    <AvailableServerWorkspaceGroup server={server} query={query} official={official} />
+    <AvailableServerWorkspaceGroup server={server} query={query} />
   ) : (
     <ServerWorkspaceGroupBody
       server={server}
       query={query}
-      official={official}
       invitations={NO_OFFERS.invitations}
       joinable={NO_OFFERS.joinable}
       invitationsFailed={false}
@@ -529,22 +497,13 @@ const NO_OFFERS: { invitations: PendingInvitation[]; joinable: JoinableWorkspace
   joinable: [],
 };
 
-function AvailableServerWorkspaceGroup({
-  server,
-  query,
-  official,
-}: {
-  server: SwitchServer;
-  query: string;
-  official: boolean;
-}) {
+function AvailableServerWorkspaceGroup({ server, query }: { server: SwitchServer; query: string }) {
   const invitations = usePendingInvitations(server.id);
   const joinable = useJoinableWorkspaces(server.id);
   return (
     <ServerWorkspaceGroupBody
       server={server}
       query={query}
-      official={official}
       invitations={listedInvitations(invitations.data)}
       joinable={listedJoinable(joinable.data)}
       invitationsFailed={invitations.isError}
@@ -556,7 +515,6 @@ function AvailableServerWorkspaceGroup({
 const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
   server,
   query,
-  official,
   invitations,
   joinable,
   invitationsFailed,
@@ -564,7 +522,6 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
 }: {
   server: SwitchServer;
   query: string;
-  official: boolean;
   invitations: PendingInvitation[];
   joinable: JoinableWorkspace[];
   invitationsFailed: boolean;
@@ -637,13 +594,6 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
           </>
         )}
         {drift && <ServerDriftIndicator drift={drift} />}
-        <span className="ml-auto shrink-0 pl-2 font-normal tracking-normal normal-case">
-          {official ? (
-            <span className="text-green-600 dark:text-green-500">Official</span>
-          ) : (
-            <span className="text-foreground-passive">{serverAddress(server)}</span>
-          )}
-        </span>
       </DropdownMenuLabel>
       {signedOut && signInTarget && whole && (
         <DropdownMenuItem onClick={openForSignIn}>
