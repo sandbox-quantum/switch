@@ -30,6 +30,7 @@ export type FeatureFlagsServiceDeps = {
  */
 export class FeatureFlagsService {
   private readonly states = new Map<string, ServerFeatureFlags>();
+  private readonly listeners = new Set<(state: ServerFeatureFlags) => void>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private inflight: Promise<void> | null = null;
 
@@ -66,6 +67,15 @@ export class FeatureFlagsService {
   async current(server: SwitchServer): Promise<ServerFeatureFlags> {
     if (this.states.get(server.id)?.fetchedAt == null) await this.readOne(server);
     return this.get(server.id);
+  }
+
+  /**
+   * Calls `listener` whenever a server's flags change, as `onChange` is, for
+   * the main process's own consumers. Returns the way to stop.
+   */
+  subscribe(listener: (state: ServerFeatureFlags) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   /** Whether any server read so far turns `key` on. */
@@ -125,6 +135,7 @@ export class FeatureFlagsService {
       previous.error !== next.error
     ) {
       this.deps.onChange(next);
+      for (const listener of this.listeners) listener(next);
     }
   }
 }
