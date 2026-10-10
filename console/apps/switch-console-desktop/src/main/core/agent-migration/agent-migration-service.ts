@@ -70,11 +70,15 @@ export type MachineHealth =
 
 /** Switch's agent management, through the signed-in session of the agent's workspace. */
 export interface MigrationManagementPort {
-  /** Whether the server runs agent management, and whether the signed-in user owns the agent. */
+  /**
+   * Whether the server runs agent management, and whether the signed-in user
+   * owns the agent. `gone` when the server says it has no such agent: it was
+   * deleted there.
+   */
   eligibility(
     workspaceId: string,
     switchAgentId: string
-  ): Promise<{ management: boolean; owner: string | null; ownedByMe: boolean }>;
+  ): Promise<{ management: boolean; owner: string | null; ownedByMe: boolean; gone?: true }>;
   /** `PUT /gateway/management/agents/{id}`: places the agent on the controller. */
   adopt(
     workspaceId: string,
@@ -155,6 +159,11 @@ export type AgentMigrationDeps = {
     list(): Promise<MigrationAgent[]>;
     /** Somebody stopped this agent's watcher by hand. */
     stoppedByHand(agentId: string): Promise<boolean>;
+    /**
+     * Removes an agent its server has deleted from this Console. Only the
+     * Console's row: files on its machine are left where they are.
+     */
+    forget(agentId: string): Promise<void>;
   };
   definitions: {
     build(agent: MigrationAgent): Promise<BuiltDefinition>;
@@ -454,6 +463,26 @@ export class AgentMigrationService {
       }
       this.unasked.delete(agent.id);
       this.retryAt.delete(`ask:${agent.id}`);
+      if (eligibility.gone) {
+        // Deleted on its server: there is nothing to move it to and no way back,
+        // and listing it here (and under Legacy) only keeps asking about it.
+        this.deps.log.warn('Removing an agent its server no longer has', {
+          agentId: agent.id,
+          switchAgentId: agent.switchAgentId,
+        });
+        try {
+          await this.deps.agents.forget(agent.id);
+        } catch (error) {
+          this.deps.log.error('Could not remove an agent its server no longer has', {
+            agentId: agent.id,
+            error: message(error),
+          });
+          this.backOff(`ask:${agent.id}`, now);
+        }
+        this.leftAlone.delete(agent.id);
+        this.problems.delete(agent.id);
+        continue;
+      }
       if (!eligibility.management || !eligibility.ownedByMe) {
         this.unmanageableUntil.set(agent.id, now + this.deps.unmanageableRecheckMs);
         this.problems.delete(agent.id);
@@ -1001,6 +1030,8 @@ export class AgentMigrationService {
         agent.workspaceId!,
         agent.switchAgentId!
       );
+      if (eligibility.gone)
+        return 'Its server no longer has this agent, so Console removes it on its next check.';
       if (!eligibility.management)
         return 'This server does not have agent management turned on, so it cannot run agents on machines.';
       if (!eligibility.ownedByMe)

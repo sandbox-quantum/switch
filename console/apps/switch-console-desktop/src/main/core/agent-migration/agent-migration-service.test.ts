@@ -61,7 +61,7 @@ type World = {
   /** What the machine looks like once `enable` has turned it on; null leaves it as it was. */
   lookupAfterEnable: TargetLookup | null;
   enableFails: boolean;
-  eligibility: { management: boolean; owner: string | null; ownedByMe: boolean };
+  eligibility: { management: boolean; owner: string | null; ownedByMe: boolean; gone?: true };
   stoppedByHand: boolean;
   controllerRunning: boolean[];
   failAdoptOn: string | null;
@@ -87,6 +87,9 @@ function deps(): AgentMigrationDeps {
       get: async (agentId) => (agentId === PARENT.id ? PARENT : null),
       list: async () => [PARENT],
       stoppedByHand: async () => world.stoppedByHand,
+      forget: async (agentId) => {
+        world.calls.push(`forget ${agentId}`);
+      },
     },
     definitions: {
       build: async () => BUILT,
@@ -913,6 +916,18 @@ describe('moving every agent automatically', () => {
     migration.recheckAll();
     await migration.migrateEverything();
     expect(adopted()).toHaveLength(1);
+  });
+
+  it('removes an agent its server has deleted, and moves nothing for it', async () => {
+    all = [PARENT];
+    world.eligibility = { management: true, owner: null, ownedByMe: false, gone: true };
+    const migration = service();
+    await migration.migrateEverything();
+    expect(world.calls).toContain(`forget ${PARENT.id}`);
+    expect(adopted()).toHaveLength(0);
+    const overview = await migration.overview();
+    expect(overview.leftAlone).toBe(0);
+    expect(overview.unasked).toBe(0);
   });
 
   it('counts what it left alone and what it could not ask about', async () => {

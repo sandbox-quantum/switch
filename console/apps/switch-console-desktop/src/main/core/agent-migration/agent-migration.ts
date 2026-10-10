@@ -7,6 +7,7 @@ import { agentLaunchConfig } from '@main/core/agents/agent-launch-config';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { resolveWorkdirFsFor } from '@main/core/agents/agent-workdir-fs';
 import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
+import { deleteAgent } from '@main/core/agents/deleteAgent';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { getAgents } from '@main/core/agents/getAgents';
 import { agentSettingsRelativePath } from '@main/core/agents/switch-settings-paths';
@@ -37,6 +38,7 @@ import {
   fetchManagedAgent,
   fetchManagementControllers,
   fetchMe,
+  GatewayError,
   managementErrorMessage,
   putManagedAgent,
   revealAgentApiKey,
@@ -290,10 +292,15 @@ const management: MigrationManagementPort = {
           return { management: false, owner: null, ownedByMe: false };
         throw error;
       }
-      const [me, detail] = await Promise.all([
-        fetchMe(server),
-        fetchAgentDetail(server, switchAgentId),
-      ]);
+      let detail;
+      try {
+        detail = await fetchAgentDetail(server, switchAgentId);
+      } catch (error) {
+        if (error instanceof GatewayError && error.kind === 'http' && error.status === 404)
+          return { management: true, owner: null, ownedByMe: false, gone: true };
+        throw error;
+      }
+      const me = await fetchMe(server);
       return {
         management: true,
         owner: detail.ownerName,
@@ -724,6 +731,12 @@ export const agentMigrationService = new AgentMigrationService({
       return agents;
     },
     stoppedByHand: async (agentId) => (await listStoppedControllerAgentIds()).includes(agentId),
+    forget: (agentId) =>
+      deleteAgent(agentId, {
+        deleteInSwitch: false,
+        removeProvisionedFiles: false,
+        trigger: 'server_teardown',
+      }),
   },
   definitions: { build: buildDefinition },
   targets: {
