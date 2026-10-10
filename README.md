@@ -283,8 +283,7 @@ Compose or Helm configuration.
 
 Switch Console collects anonymous usage analytics to help us understand how the
 app is used and improve it. Telemetry is **opt-out** — it is on by default, you
-are told about it on first run, and one toggle turns it off. Switch Core (the
-server) sends no telemetry at all.
+are told about it on first run, and one toggle turns it off.
 
 What we collect:
 
@@ -318,6 +317,22 @@ checked before every event, so there is no queued backlog.
 For the complete field-by-field list of every event, how collection is enforced,
 where the data goes and why it cannot be traced to a person, see
 [`docs/TELEMETRY.md`](docs/TELEMETRY.md).
+
+**Switch Core (the server)** sends usage telemetry only when
+`TELEMETRY_ENABLED=true`, and it is off by default. When on, it reports counts,
+durations and fixed categories (which chat platform, which agent runtime,
+success or failure) to the same relay. Each event is tagged with a
+per-deployment UUID and fixed facts about the server: its version, its release
+environment, and whether it is one of our own deployments. Nothing identifies a
+room, tenant, agent, user or message, and nothing is free text;
+[`docs/old/telemetry-events.md`](docs/old/telemetry-events.md) lists every
+event.
+
+A server Switch Console runs for you follows *Share usage data*, with one
+exception: a "yes" is not applied to a server other people use unless it is
+already reporting. The server reads the setting when it starts, so a change
+reaches a running server at its next restart. Console says when a server is out
+of step and offers to restart it.
 
 ## Contributing
 
