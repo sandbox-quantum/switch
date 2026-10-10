@@ -2,6 +2,7 @@ import { cn } from '@renderer/utils/utils';
 
 const SIZE = {
   sm: 'size-5 rounded-md text-[10px]',
+  tile: 'size-[22px] rounded-[7px] text-[10.5px]',
   md: 'size-[26px] rounded-md text-xs',
   lg: 'size-9 rounded-lg text-lg',
 } as const;
@@ -25,9 +26,13 @@ export function WorkspaceAvatar({
       className={cn(
         'flex shrink-0 items-center justify-center font-semibold before:content-[attr(data-initial)]',
         SIZE[size],
-        active
-          ? 'bg-[var(--accent-solid)] text-white'
-          : 'bg-background-tertiary text-foreground-muted'
+        size === 'tile'
+          ? active
+            ? 'bg-[var(--accent-solid)] text-[var(--menu-tile-active-fg)]'
+            : 'bg-[var(--menu-tile)] text-[var(--menu-tile-fg)]'
+          : active
+            ? 'bg-[var(--accent-solid)] text-white'
+            : 'bg-background-tertiary text-foreground-muted'
       )}
     />
   );

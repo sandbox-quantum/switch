@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { ChevronsUpDown, Plus, Search, Server, UserPlus } from 'lucide-react';
+import { Check, ChevronsUpDown, Plus, Search, Server, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import {
@@ -20,7 +20,6 @@ import { useToast } from '@renderer/lib/hooks/use-toast';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { SwitchConsoleMark } from '@renderer/lib/switch-console-mark';
-import { Button } from '@renderer/lib/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -292,6 +291,16 @@ const ServerMenuItem = observer(function ServerMenuItem({
   );
 });
 
+// The workspace menu's rows, as one place to read the sizes off: workspace
+// rows a little denser than the app's default menu row, action rows a fixed
+// height, and the small buttons on a row light enough not to compete with it.
+const WORKSPACE_ROW =
+  'gap-2.5 rounded-[7px] px-[9px] py-[5px] text-[13px] focus:bg-[var(--sel-soft)]';
+const ACTION_ROW =
+  'h-[30px] gap-2.5 rounded-[7px] px-[9px] py-0 text-[13px] text-[var(--fg-action)] focus:bg-[var(--sel-soft)] [&_svg]:text-[var(--fg-icon)]';
+const ROW_BUTTON =
+  'inline-flex h-[22px] shrink-0 items-center gap-1 rounded-[6px] px-[9px] text-[11.5px] text-[var(--fg-action)] disabled:opacity-60';
+
 /**
  * Workspaces listed under the server hosting them rather than in one flat
  * list. A workspace only means anything on its server — two servers can each
@@ -334,7 +343,7 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
             <button
               type="button"
               aria-label="Switch workspace"
-              className="flex w-full items-center gap-[10px] rounded-lg px-2 py-1.5 text-left hover:bg-[var(--sel-soft)]"
+              className="flex w-full items-center gap-[10px] rounded-[9px] px-2 py-1.5 text-left hover:bg-[var(--sel-soft)] data-[popup-open]:bg-[var(--sel-soft)]"
             >
               <WorkspaceAvatar name={active.name} size="md" active />
               <span className="min-w-0 flex-1">
@@ -354,7 +363,10 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
             </button>
           }
         />
-        <DropdownMenuContent align="start" className="w-80">
+        <DropdownMenuContent
+          align="start"
+          className="w-80 rounded-[var(--radius-elevated)] bg-[var(--menu-surface)] p-1.5 shadow-[var(--menu-shadow)] ring-[0.5px] ring-[var(--hair)]"
+        >
           <WorkspaceSearch value={query} onChange={setQuery} />
           {store.servers.map((server) => (
             <ServerWorkspaceGroup key={server.id} server={server} query={query} />
@@ -364,16 +376,16 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
               No workspace or server matches “{query.trim()}”.
             </div>
           )}
-          <DropdownMenuSeparator />
+          <DropdownMenuSeparator className="mx-1 my-1.5 h-[0.5px] bg-[var(--hair)]" />
           {/* New workspace and Invite live with the server and the workspace
               they act on, so only what belongs to no server is left here. */}
-          <DropdownMenuItem onClick={() => showAddServerModal({})}>
+          <DropdownMenuItem className={ACTION_ROW} onClick={() => showAddServerModal({})}>
             <Server className="size-4" />
             Add server…
           </DropdownMenuItem>
           {/* The welcome screen is what the app opens with before any server
               exists; once one does, this is how it stays reachable. */}
-          <DropdownMenuItem onClick={() => navigate('home')}>
+          <DropdownMenuItem className={ACTION_ROW} onClick={() => navigate('home')}>
             <SwitchConsoleMark size={16} />
             About Switch
           </DropdownMenuItem>
@@ -398,7 +410,7 @@ export function matchesQuery(name: string, query: string): boolean {
 function WorkspaceSearch({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
     <div className="relative px-1 pt-1 pb-1.5">
-      <Search className="pointer-events-none absolute top-1/2 left-3.5 size-3.5 -translate-y-1/2 text-foreground-muted" />
+      <Search className="pointer-events-none absolute top-1/2 left-3.5 size-3.5 -translate-y-1/2 text-[var(--fg-dim)]" />
       <input
         autoFocus
         type="text"
@@ -411,7 +423,7 @@ function WorkspaceSearch({ value, onChange }: { value: string; onChange: (v: str
             event.stopPropagation();
           }
         }}
-        className="h-8 w-full rounded-md border border-border bg-background-tertiary pr-2 pl-8 text-sm text-foreground outline-none placeholder:text-foreground-muted focus:border-foreground-muted"
+        className="h-[30px] w-full rounded-[7px] border-[0.5px] border-[var(--hair)] bg-[var(--menu-field)] pr-2 pl-8 text-[13px] text-[var(--fg-name)] outline-none placeholder:text-[var(--fg-dim)] focus:border-[var(--hair-strong)]"
       />
     </div>
   );
@@ -565,7 +577,7 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
 
   return (
     <DropdownMenuGroup>
-      <DropdownMenuLabel className="flex items-center gap-1.5 px-2 pt-2.5 pb-1 text-[11px] font-semibold tracking-wide text-foreground-muted uppercase">
+      <DropdownMenuLabel className="flex items-center gap-1.5 px-[9px] pt-2.5 pb-1 text-[10.5px] font-semibold tracking-[0.06em] text-[var(--fg-passive)] uppercase">
         <Icon className="size-3 shrink-0" />
         <span className="min-w-0 truncate">{server.name}</span>
         {drift && <ServerDriftIndicator drift={drift} />}
@@ -623,7 +635,10 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
             <JoinableWorkspaceMenuItem key={offer.tenantId} offer={offer} server={server} />
           ))}
           {whole && (
-            <DropdownMenuItem onClick={createWorkspace} className="text-foreground-muted">
+            <DropdownMenuItem
+              onClick={createWorkspace}
+              className={cn(ACTION_ROW, 'text-[var(--fg-dim)]')}
+            >
               <Plus className="size-4" />
               New workspace
             </DropdownMenuItem>
@@ -661,16 +676,15 @@ const UnavailableServerRow = observer(function UnavailableServerRow({
         : null;
 
   return (
-    <div className="mx-1 flex items-center gap-2 rounded-md bg-background-tertiary/60 px-2 py-1.5 text-sm text-foreground-muted">
-      <span className="flex size-5 shrink-0 items-center justify-center">
+    <div className="flex h-[30px] items-center rounded-[7px] bg-[var(--menu-faint)] pr-1 text-[12.5px] text-[var(--fg-dim)]">
+      <span className="mx-2 flex shrink-0 items-center">
         <ServerStatusDot server={server} />
       </span>
       <span className="min-w-0 flex-1 truncate">{serverStatusLabel(server)}</span>
       {action && (
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-6 px-2 text-xs"
+        <button
+          type="button"
+          className={cn(ROW_BUTTON, 'border-[0.5px] border-[var(--hair-strong)] bg-transparent')}
           disabled={action.disabled}
           onClick={(event) => {
             event.stopPropagation();
@@ -678,7 +692,7 @@ const UnavailableServerRow = observer(function UnavailableServerRow({
           }}
         >
           {action.label}
-        </Button>
+        </button>
       )}
     </div>
   );
@@ -731,7 +745,7 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
       // at a glance. `aria-current` carries the same fact for anything that
       // cannot see either.
       aria-current={isActive ? 'true' : undefined}
-      className={cn('group/ws', isActive && 'bg-[var(--sel)]')}
+      className={cn('group/ws', WORKSPACE_ROW, isActive && 'bg-[var(--sel-soft)]')}
       disabled={unavailable !== null}
       title={unavailable ? UNAVAILABLE_REASON[unavailable](workspace.name) : undefined}
       onClick={() => {
@@ -750,8 +764,8 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
           });
       }}
     >
-      <WorkspaceAvatar name={workspace.name} size="sm" active={isActive} />
-      <span data-row-name className="min-w-0 flex-1 truncate text-sm text-foreground">
+      <WorkspaceAvatar name={workspace.name} size="tile" active={isActive} />
+      <span data-row-name className="min-w-0 flex-1 truncate text-[var(--fg-name)]">
         {workspace.name}
       </span>
       {unavailable && (
@@ -759,23 +773,28 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
           {UNAVAILABLE_BADGE[unavailable]}
         </span>
       )}
-      {/* Shown on the row under the pointer, and only where the gateway would
+      {/* Shown on the open workspace and on the row under the pointer, and only where the gateway would
           take it: it refuses members, and a button that always ends in a 403
           is a trap. */}
       {canInvite && (
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-6 shrink-0 gap-1 px-2 text-xs opacity-0 group-hover/ws:opacity-100 group-data-[highlighted]/ws:opacity-100 focus-visible:opacity-100"
+        <button
+          type="button"
+          className={cn(
+            ROW_BUTTON,
+            'bg-[var(--menu-pill)]',
+            !isActive &&
+              'opacity-0 group-hover/ws:opacity-100 group-data-[highlighted]/ws:opacity-100 focus-visible:opacity-100'
+          )}
           onClick={(event) => {
             event.stopPropagation();
             showInvitePeopleModal({ workspaceId: workspace.id });
           }}
         >
-          <UserPlus className="size-3.5" />
+          <UserPlus className="size-3" />
           Invite
-        </Button>
+        </button>
       )}
+      {isActive && !canInvite && <Check className="size-3.5 shrink-0 text-[var(--fg-icon)]" />}
     </DropdownMenuItem>
   );
 });
@@ -821,6 +840,7 @@ function PendingInvitationMenuItem({
   return (
     <DropdownMenuItem
       title={invitationSummary(invitation)}
+      className={WORKSPACE_ROW}
       data-testid="pending-invitation-item"
       onClick={() => {
         void workspacesStore
@@ -839,8 +859,8 @@ function PendingInvitationMenuItem({
           );
       }}
     >
-      <WorkspaceAvatar name={invitation.workspaceName} size="sm" />
-      <span data-row-name className="min-w-0 flex-1 truncate text-sm text-foreground">
+      <WorkspaceAvatar name={invitation.workspaceName} size="tile" />
+      <span data-row-name className="min-w-0 flex-1 truncate text-[var(--fg-name)]">
         {invitation.workspaceName}
       </span>
       <InvitedBadge />
@@ -862,6 +882,7 @@ function JoinableWorkspaceMenuItem({
   return (
     <DropdownMenuItem
       title={joinableSummary(offer)}
+      className={WORKSPACE_ROW}
       data-testid="joinable-workspace-item"
       onClick={() => {
         void workspacesStore
@@ -880,8 +901,8 @@ function JoinableWorkspaceMenuItem({
           );
       }}
     >
-      <WorkspaceAvatar name={offer.workspaceName} size="sm" />
-      <span data-row-name className="min-w-0 flex-1 truncate text-sm text-foreground">
+      <WorkspaceAvatar name={offer.workspaceName} size="tile" />
+      <span data-row-name className="min-w-0 flex-1 truncate text-[var(--fg-name)]">
         {offer.workspaceName}
       </span>
       <span className="shrink-0 text-xs font-medium text-foreground-muted">Join</span>
