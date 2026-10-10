@@ -6,7 +6,7 @@ import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
-import { isValidProviderId } from '@shared/core/providers/agent-provider-registry';
+import { getProvider, isValidProviderId } from '@shared/core/providers/agent-provider-registry';
 import { type AgentPresence, SidebarAgentRow } from '../sidebar/agent-row';
 import {
   type ManagedAgentState,
@@ -33,12 +33,21 @@ export const ManagedAgentList = observer(function ManagedAgentList() {
   if (!agents.data?.length) return null;
   return (
     <div className="flex flex-col gap-[2px]" aria-label="Managed agents">
-      {agents.data.map((agent) => (
+      {attentionFirst(agents.data).map((agent) => (
         <ManagedAgentRow key={agent.agentId} agent={agent} />
       ))}
     </div>
   );
 });
+
+/**
+ * The agents that need looking at first — a failed agent, or one whose machine
+ * is gone — and the rest in the order the server listed them.
+ */
+export function attentionFirst(agents: ManagedAgentView[]): ManagedAgentView[] {
+  const needsAttention = (agent: ManagedAgentView) => managedAgentState(agent).tone === 'problem';
+  return [...agents.filter(needsAttention), ...agents.filter((agent) => !needsAttention(agent))];
+}
 
 const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: ManagedAgentView }) {
   const { navigate } = useNavigate();
@@ -52,6 +61,7 @@ const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: Ma
     machines.data?.find((machine) => machine.id === agent.machine?.id)?.local?.kind ===
     'this-computer';
   const machineDown = agent.machine !== null && agent.machine.state !== 'online';
+  const providerName = isValidProviderId(provider) ? getProvider(provider)?.name : null;
   return (
     <SidebarAgentRow
       label={label}
@@ -66,7 +76,9 @@ const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: Ma
         tone: PRESENCE_TONE[state.tone],
         label: state.detail ? `${state.label}: ${state.detail}` : state.label,
       }}
-      dimmed={machineDown}
+      dimmed={machineDown || state.tone === 'idle'}
+      showProviderMark={false}
+      title={providerName ? `${label} · ${providerName}` : label}
       marks={
         !thisComputer && (
           <Tooltip>
