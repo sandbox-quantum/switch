@@ -33,8 +33,8 @@ from switch_core.db.stores.hosted_machine_store import (
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.cloud_controllers import (
     controller_machine_idle,
-    enroll_revoked_again,
     controller_reports,
+    enroll_revoked_again,
     record_controller_status,
     set_cloud_enrollment,
 )
