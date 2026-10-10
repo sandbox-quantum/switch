@@ -75,6 +75,7 @@ const {
   removeBridgeTeam,
   createInvitation,
   fetchInvitations,
+  fetchCanCreateWorkspace,
   fetchInviteEmailEnabled,
   createRoom,
   deleteBridge,
@@ -2011,6 +2012,20 @@ describe('workspace invitations', () => {
 
     fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
     await expect(fetchInviteEmailEnabled(SERVER)).resolves.toBeNull();
+  });
+
+  it('reads whether the server lets the account create a workspace', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ can_create_workspace: false }) as never);
+    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(false);
+
+    fetchMock.mockResolvedValue(jsonResponse({ can_create_workspace: true }) as never);
+    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(true);
+
+    // Older servers refused nothing up front, so nothing is hidden on them.
+    fetchMock.mockResolvedValue(jsonResponse({ state: 'ready' }) as never);
+    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(true);
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(true);
   });
 
   it('keeps the link when an older server says nothing about the e-mail', async () => {

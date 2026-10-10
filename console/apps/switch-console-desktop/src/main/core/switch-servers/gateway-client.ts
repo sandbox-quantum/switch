@@ -805,6 +805,33 @@ export async function fetchInviteEmailEnabled(server: SwitchServer): Promise<boo
   return json.invite_email_enabled;
 }
 
+/**
+ * Whether the signed-in account may create a workspace on this server: the
+ * server's own answer, which covers its sign-up mode, the per-person cap, and
+ * a deployment that keeps to one workspace because it is not isolating them.
+ *
+ * True on a server older than the answer (no session route, or no field): it
+ * refused nothing up front either.
+ */
+export async function fetchCanCreateWorkspace(server: SwitchServer): Promise<boolean> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/auth/session', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return true;
+    throw cause;
+  }
+  const json = (await res.json()) as { can_create_workspace?: unknown };
+  if (json.can_create_workspace === undefined) return true;
+  if (typeof json.can_create_workspace !== 'boolean') {
+    throw new GatewayError(
+      'http',
+      `${server.name} reported an unreadable can_create_workspace: ${String(json.can_create_workspace)}`
+    );
+  }
+  return json.can_create_workspace;
+}
+
 /** Options for `registerKnownAgent`, matching the gateway's
  * `RegisterKnownAgentRequest.options`. The gateway validates these against the
  * options schema of the `agent_type` being registered and ignores keys that type

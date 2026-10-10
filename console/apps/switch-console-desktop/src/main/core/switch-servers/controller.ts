@@ -50,6 +50,7 @@ import {
   joinWorkspaceByDomain,
   createTenant,
   fetchAuthConfig,
+  fetchCanCreateWorkspace,
   fetchMe,
   fetchJoinableWorkspaces,
   fetchPendingInvitations,
@@ -191,6 +192,9 @@ export const switchServersController = createRPCController({
     withReachableServerWorkspaceSession(params.serverId, (server) =>
       fetchAgentIconChoices(server, params.name, params.page)
     ),
+  /** Whether the signed-in account may create a workspace on the server. */
+  canCreateWorkspace: (serverId: string) =>
+    withServerWorkspaceSession(serverId, (server) => fetchCanCreateWorkspace(server)),
   /** The caller's cloud machines, or null when the server offers none. */
   cloudMachines: (serverId: string) =>
     withServerWorkspaceSession(serverId, async (server) =>

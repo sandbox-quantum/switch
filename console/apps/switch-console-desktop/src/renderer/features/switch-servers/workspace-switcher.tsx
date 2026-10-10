@@ -1,4 +1,4 @@
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronsUpDown, Plus, Search, Server, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
@@ -17,6 +17,7 @@ import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar'
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
+import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { SwitchConsoleMark } from '@renderer/lib/switch-console-mark';
@@ -474,6 +475,7 @@ const ServerWorkspaceGroup = observer(function ServerWorkspaceGroup({
     <ServerWorkspaceGroupBody
       server={server}
       query={query}
+      canCreateWorkspace={false}
       invitations={NO_OFFERS.invitations}
       joinable={NO_OFFERS.joinable}
       invitationsFailed={false}
@@ -490,10 +492,19 @@ const NO_OFFERS: { invitations: PendingInvitation[]; joinable: JoinableWorkspace
 function AvailableServerWorkspaceGroup({ server, query }: { server: SwitchServer; query: string }) {
   const invitations = usePendingInvitations(server.id);
   const joinable = useJoinableWorkspaces(server.id);
+  // The server's own answer, so New workspace is not offered where creating
+  // one is refused: a deployment that keeps to one workspace, invite-only
+  // sign-up, or a spent allowance. Offered until it has said no.
+  const canCreate = useQuery({
+    queryKey: ['can-create-workspace', server.id],
+    queryFn: () => rpc.switchServers.canCreateWorkspace(server.id),
+    staleTime: 60_000,
+  });
   return (
     <ServerWorkspaceGroupBody
       server={server}
       query={query}
+      canCreateWorkspace={canCreate.data !== false}
       invitations={listedInvitations(invitations.data)}
       joinable={listedJoinable(joinable.data)}
       invitationsFailed={invitations.isError}
@@ -505,6 +516,7 @@ function AvailableServerWorkspaceGroup({ server, query }: { server: SwitchServer
 const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
   server,
   query,
+  canCreateWorkspace,
   invitations,
   joinable,
   invitationsFailed,
@@ -512,6 +524,7 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
 }: {
   server: SwitchServer;
   query: string;
+  canCreateWorkspace: boolean;
   invitations: PendingInvitation[];
   joinable: JoinableWorkspace[];
   invitationsFailed: boolean;
@@ -594,7 +607,9 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
         <>
           {noMembership && whole && (
             <div className="px-2 py-1.5 text-xs text-foreground-muted">
-              No workspace yet — create one, or accept an invitation below.
+              {canCreateWorkspace
+                ? 'No workspace yet — create one, or accept an invitation below.'
+                : 'No workspace yet — accept an invitation below.'}
             </div>
           )}
           {all.length === 0 ? (
@@ -634,7 +649,7 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
           {shownJoinable.map((offer) => (
             <JoinableWorkspaceMenuItem key={offer.tenantId} offer={offer} server={server} />
           ))}
-          {whole && (
+          {whole && canCreateWorkspace && (
             <DropdownMenuItem
               onClick={createWorkspace}
               className={cn(ACTION_ROW, 'text-[var(--fg-dim)]')}

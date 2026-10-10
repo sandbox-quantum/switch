@@ -28,6 +28,7 @@ const state = vi.hoisted(() => ({
   toast: vi.fn(),
   unavailable: new Set<string>(),
   noMembership: new Set<string>(),
+  noCreate: new Set<string>(),
   listPendingInvitations: vi.fn(),
   acceptPendingInvitation: vi.fn(),
   listJoinableWorkspaces: vi.fn(),
@@ -40,6 +41,7 @@ vi.mock('@renderer/lib/ipc', () => ({
     switchServers: {
       listPendingInvitations: state.listPendingInvitations,
       listJoinableWorkspaces: state.listJoinableWorkspaces,
+      canCreateWorkspace: (serverId: string) => Promise.resolve(!state.noCreate.has(serverId)),
     },
   },
   events: { on: () => () => {}, emit: () => {} },
@@ -224,6 +226,7 @@ beforeEach(() => {
   state.toast.mockReset();
   state.unavailable.clear();
   state.noMembership.clear();
+  state.noCreate.clear();
   state.listPendingInvitations.mockReset().mockResolvedValue({ kind: 'listed', invitations: [] });
   state.acceptPendingInvitation.mockReset();
   state.listJoinableWorkspaces.mockReset().mockResolvedValue({ kind: 'listed', workspaces: [] });
@@ -399,6 +402,22 @@ describe('inviting people from the switcher', () => {
 });
 
 describe('new workspaces from the switcher', () => {
+  it('is not offered on a server that says you cannot create one there', async () => {
+    state.noCreate.add('srv-2');
+    await openSwitcher(
+      [server('srv-1', 'Acme'), server('srv-2', 'Local dev')],
+      [workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-2')],
+      'ws-a'
+    );
+    await settle();
+
+    const groups = [...document.querySelectorAll<HTMLElement>('[data-slot="dropdown-menu-group"]')];
+    const rows = (group: HTMLElement) =>
+      [...group.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent);
+    expect(rows(groups[0]!)).toContain('New workspace');
+    expect(rows(groups[1]!)).not.toContain('New workspace');
+  });
+
   it('ends each server you can use with its own New workspace', async () => {
     state.unavailable.add('srv-3');
     await openSwitcher(
