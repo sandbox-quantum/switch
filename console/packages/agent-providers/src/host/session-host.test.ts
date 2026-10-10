@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdtemp, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Command, Session } from '@switch-console/shared/session-v1';
+import type { Command, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ProviderConversationUnavailableError, type ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
-import { HostedSession } from './session-host';
+import { HostedSession, lastAssistantText, type RoomReply, unpostedReply } from './session-host';
 
 const roots: string[] = [];
 const hosts: HostedSession[] = [];
@@ -1209,4 +1209,224 @@ it('starts a conversation on recovery when the first start never opened one', as
     expect.not.objectContaining({ resume: expect.anything() })
   );
   await vi.waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+});
+
+function roomMessage(commandId: string, threadId: string | null): Command {
+  return {
+    ...message(commandId),
+    origin: {
+      actorId: '@person:test',
+      surface: 'switch-web',
+      roomId: 'room',
+      threadId,
+      messageId: `message-${commandId}`,
+    },
+  };
+}
+
+/** A host that can post to its rooms, through `reply`. */
+async function startReplying(
+  reply: (reply: RoomReply) => Promise<void>,
+  root?: string
+): Promise<Awaited<ReturnType<typeof start>>> {
+  const dir = root ?? (await mkdtemp(join(tmpdir(), 'sdk-host-test-')));
+  if (!root) roots.push(dir);
+  const fixture = setup('cursor');
+  const host = await HostedSession.start(
+    dir,
+    { ...fixture.config, replyToRoom: reply },
+    fixture.adapter
+  );
+  hosts.push(host);
+  await vi.waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  return { ...fixture, root: dir, host };
+}
+
+function said(
+  emit: (event: Record<string, unknown>) => void,
+  turnId: string,
+  id: string,
+  text: string
+) {
+  emit({
+    type: 'item.completed',
+    turnId,
+    item: { id, type: 'assistant_message', status: 'completed', title: '', text },
+  });
+}
+
+async function roomReplyRecords(root: string): Promise<unknown[]> {
+  return (await readFile(join(root, 'inbox.jsonl'), 'utf8'))
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .filter((record) => record.type === 'room-reply');
+}
+
+it('posts the last words of a room turn that ended without posting, once, in its thread', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, root, adapter } = await startReplying(reply);
+  await host.command(roomMessage('turn', 'thread'));
+  await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  said(emit, 'turn', 'first', 'Let me look.');
+  said(emit, 'turn', 'last', '  Upgrade your plan to continue  ');
+  emit({ type: 'turn.completed', turnId: 'turn', outcome: 'completed', usage: [] });
+  await vi.waitFor(() =>
+    expect(host.snapshot().notices.map((notice) => notice.code)).toContain('ROOM_REPLY_POSTED')
+  );
+  expect(reply).toHaveBeenCalledExactlyOnceWith({
+    roomId: 'room',
+    threadId: 'thread',
+    body: 'I finished without posting a reply. My last words were:\n\nUpgrade your plan to continue',
+  });
+  expect(await roomReplyRecords(root)).toEqual([{ type: 'room-reply', commandId: 'turn' }]);
+
+  await host.shutdown();
+  const again = vi.fn(async (_reply: RoomReply) => {});
+  const recovered = await startReplying(again, root);
+  await recovered.host.barrier();
+  expect(again).not.toHaveBeenCalled();
+  expect(await roomReplyRecords(root)).toHaveLength(1);
+});
+
+it('leaves a room turn alone when the agent posted to the room during it', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, adapter } = await startReplying(reply);
+  await host.command(roomMessage('posted', null));
+  await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  host.agentPostedToRoom();
+  said(emit, 'posted', 'done', 'Posted the answer.');
+  emit({ type: 'turn.completed', turnId: 'posted', outcome: 'completed', usage: [] });
+  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  // A post counts for the turn it was made in, not the next one.
+  await host.command(roomMessage('silent', null));
+  await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  emit({ type: 'turn.completed', turnId: 'silent', outcome: 'completed', usage: [] });
+  await vi.waitFor(() => expect(reply).toHaveBeenCalledOnce());
+  expect(reply).toHaveBeenCalledWith({
+    roomId: 'room',
+    threadId: null,
+    body: 'I finished without replying.',
+  });
+});
+
+it('tells the room a failed turn with nothing to show failed, and why', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, adapter } = await startReplying(reply);
+  await host.command(roomMessage('failed', 'thread'));
+  await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  emit({
+    type: 'turn.completed',
+    turnId: 'failed',
+    outcome: 'error',
+    message: 'Not signed in.',
+    usage: [],
+  });
+  await vi.waitFor(() => expect(reply).toHaveBeenCalledOnce());
+  expect(reply).toHaveBeenCalledWith({
+    roomId: 'room',
+    threadId: 'thread',
+    body: 'I finished without replying. The turn failed: Not signed in.',
+  });
+});
+
+it('tells the room a turn that never reached the provider failed', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, adapter } = await startReplying(reply);
+  vi.mocked(adapter.sendTurn).mockRejectedValueOnce(new Error('quota exhausted'));
+  await host.command(roomMessage('unsent', null));
+  await vi.waitFor(() => expect(reply).toHaveBeenCalledOnce());
+  expect(reply.mock.calls[0]![0].body).toBe(
+    'I finished without replying. The turn failed: Error: quota exhausted'
+  );
+});
+
+it('posts nothing for a turn no room message started', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, adapter } = await startReplying(reply);
+  await host.command(message('console'));
+  await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  said(emit, 'console', 'answer', 'Here you go.');
+  emit({ type: 'turn.completed', turnId: 'console', outcome: 'completed', usage: [] });
+  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await host.barrier();
+  expect(reply).not.toHaveBeenCalled();
+});
+
+it('posts nothing for a room turn the host stopped', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, adapter } = await startReplying(reply);
+  await host.command(roomMessage('cut', null));
+  await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  vi.mocked(adapter.stopSession).mockImplementationOnce(async () => {
+    emit({ type: 'turn.completed', turnId: 'cut', outcome: 'interrupted', usage: [] });
+    emit({ type: 'session.exited', reason: 'Stopped' });
+  });
+  await host.command({ ...message('stop'), body: { type: 'session.stop' } });
+  await vi.waitFor(() => expect(host.snapshot().session.status).toBe('stopped'));
+  expect(reply).not.toHaveBeenCalled();
+});
+
+it('keeps the session working when the room reply cannot be posted', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const reply = vi.fn(async (_reply: RoomReply) => {
+    throw new Error('Switch refused post_message');
+  });
+  const { host, emit, adapter } = await startReplying(reply);
+  await host.command(roomMessage('first', null));
+  await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+  await vi.waitFor(() =>
+    expect(host.snapshot().notices.map((notice) => notice.code)).toContain('ROOM_REPLY_FAILED')
+  );
+  expect(
+    warn.mock.calls.some(([line]) => String(line).includes('Switch refused post_message'))
+  ).toBe(true);
+  expect((await host.command(message('second'))).status).toBe('applied');
+  await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  expect(host.snapshot().session.status).toBe('ready');
+  warn.mockRestore();
+});
+
+it('reads the last thing the agent said in a turn, whole', () => {
+  const item = (itemId: string, turnId: string, text: string, kind = 'assistant-message') => ({
+    itemId,
+    turnId,
+    revision: 1,
+    kind,
+    status: 'completed',
+    title: '',
+    text,
+    attachments: [],
+    origin: null,
+  });
+  const snapshot = {
+    items: [
+      item('a', 'turn', 'First.'),
+      item('b', 'turn', 'Long '),
+      item('tool', 'turn', '', 'tool-activity'),
+      item('b:part:1', 'turn', 'answer'),
+      item('c', 'turn', '   '),
+      item('d', 'other', 'Another turn.'),
+    ],
+  } as unknown as Snapshot;
+  expect(lastAssistantText(snapshot, 'turn')).toBe('Long answer');
+  expect(lastAssistantText(snapshot, 'missing')).toBe('');
+});
+
+it('caps what a room reply quotes and adds the failure the text does not already say', () => {
+  const long = unpostedReply('x'.repeat(5000), 'completed', null);
+  expect(long.endsWith('x…')).toBe(true);
+  expect(long.length).toBe(
+    'I finished without posting a reply. My last words were:\n\n'.length + 4000
+  );
+  expect(
+    unpostedReply('Upgrade your plan to continue', 'error', 'Upgrade your plan to continue')
+  ).toBe(
+    'I finished without posting a reply. My last words were:\n\nUpgrade your plan to continue'
+  );
+  expect(unpostedReply('Halfway there', 'interrupted', 'Stopped by a person')).toBe(
+    'I finished without posting a reply. My last words were:\n\nHalfway there\n\n(The turn was interrupted: Stopped by a person)'
+  );
+  expect(unpostedReply('', 'error', null)).toBe('I finished without replying. The turn failed.');
 });

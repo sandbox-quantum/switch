@@ -119,3 +119,38 @@ it('keeps telling the other listeners when one of them throws', () => {
   expect(error.mock.calls[0]?.[0]).toContain('broken listener');
   error.mockRestore();
 });
+
+it('posts a session’s room reply only into the room it still attends', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'watcher-tools-'));
+  roots.push(base);
+  const placements = await SessionPlacements.open(base, () => []);
+  const answer = sessionToolAnswerer({
+    identity: { agentId: 'agent', apiEndpoint: 'http://127.0.0.1', token: 't' } as never,
+    connectionId: 'connection',
+    placements,
+    publish: async () => {},
+  });
+  calls.connect.mockResolvedValue({ content: [{ type: 'text', text: '{"event_id":"e"}' }] });
+  const session = await caller(base, 'session');
+  await placements.place('session', 'room');
+
+  await expect(
+    answer(session, { type: 'room-reply', roomId: 'room', threadId: 'thread', body: 'Hello' })
+  ).resolves.toBeNull();
+  await answer(session, { type: 'room-reply', roomId: 'room', threadId: null, body: 'Top' });
+  expect(calls.connect.mock.calls).toEqual([
+    ['session', 'post_message', { body: 'Hello', thread_id: 'thread' }],
+    ['session', 'post_message', { body: 'Top' }],
+  ]);
+
+  await placements.place('session', 'elsewhere');
+  await expect(
+    answer(session, { type: 'room-reply', roomId: 'room', threadId: null, body: 'Late' })
+  ).rejects.toThrow('no longer attends room room (it attends elsewhere)');
+  expect(calls.connect).toHaveBeenCalledTimes(2);
+
+  calls.connect.mockResolvedValue({ isError: true, content: [{ type: 'text', text: 'refused' }] });
+  await expect(
+    answer(session, { type: 'room-reply', roomId: 'elsewhere', threadId: null, body: 'Nope' })
+  ).rejects.toThrow('refused');
+});

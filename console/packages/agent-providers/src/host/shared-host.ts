@@ -126,6 +126,31 @@ export function sessionBusy(
   return { busy: reasons.length > 0, reasons };
 }
 
+/**
+ * The Switch tools that put something the agent wrote in front of a room: a
+ * turn that called one of them has answered. Each posts to the room the
+ * session is connected to (only `send_attachment` can name another), so a
+ * call counts whichever room it reached.
+ */
+export const ROOM_POSTING_TOOLS = new Set([
+  'post_message',
+  'send_targeted_message',
+  'send_attachment',
+  'delegate_task',
+  'update_task',
+  'finalise_task',
+]);
+
+/** Whether a Switch tool result is a post that landed. */
+export function postedToRoom(name: string, result: unknown): boolean {
+  if (!ROOM_POSTING_TOOLS.has(name)) return false;
+  return (
+    typeof result === 'object' &&
+    result !== null &&
+    (result as { isError?: unknown }).isError !== true
+  );
+}
+
 class TransportError extends Error {}
 class RequestError extends Error {
   constructor(
@@ -186,6 +211,7 @@ export async function runSharedHost(
   let failure: unknown = null;
   let shutdown: Promise<void> | null = null;
   let reporting: Promise<void> | null = null;
+  let stopHearingTools: (() => void) | null = null;
 
   const callOnce = async (
     route: string,
@@ -315,9 +341,17 @@ export async function runSharedHost(
       return { data, sha256: createHash('sha256').update(data).digest('hex') };
     };
 
+    const parentChannel = options.parent;
     host = await HostedSession.start(
       options.root,
       {
+        ...(parentChannel && options.roomConnection
+          ? {
+              replyToRoom: async (reply) => {
+                await parentChannel.ask({ type: 'room-reply', ...reply });
+              },
+            }
+          : {}),
         session: options.session,
         input: options.input,
         resumeOperationId: options.resumeOperationId,
@@ -341,6 +375,13 @@ export async function runSharedHost(
       },
       adapter
     );
+    // Every Switch tool call the provider makes goes up this pipe, whatever
+    // the provider calls the tool in its own transcript.
+    const hosted = host;
+    stopHearingTools =
+      parentChannel?.onToolAnswered((name, result) => {
+        if (postedToRoom(name, result)) hosted.agentPostedToRoom();
+      }) ?? null;
 
     // ── What the host reports ────────────────────────────────────────────────
     const reporter = await ActivityReporter.load(options.root);
@@ -858,6 +899,7 @@ export async function runSharedHost(
   } catch (error) {
     if (!signal.aborted) failure ??= error;
   } finally {
+    stopHearingTools?.();
     stopped.abort();
     await reporting;
     try {
