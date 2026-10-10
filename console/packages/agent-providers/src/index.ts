@@ -110,6 +110,16 @@ export {
   type SealingKeyPair,
 } from './sealed-login';
 export {
+  type GoogleCredentials,
+  googleCredentialsSchema,
+  parseGoogleCredentials,
+  parseVertexLogin,
+  VERTEX_CREDENTIALS_FILE,
+  type VertexLogin,
+  vertexLoginCredential,
+  vertexLoginSchema,
+} from './vertex-login';
+export {
   SessionHostFailedError,
   SessionLinks,
   SessionUnavailableError,
