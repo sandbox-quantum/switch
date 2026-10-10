@@ -84,6 +84,11 @@ _ALLOWED_MODULES = {
     # is reachable by any endpoint that declares it, which would make this
     # list name one module while the exemption was open to every route.
     "switch_core.gateway.auth",
+    # A user's cloud machine is global and the cloud controller acts for no
+    # tenant: which workspaces a machine serves comes from
+    # `tenants_of_cloud_machine`, and each one's row on the machine is then
+    # read with that workspace bound.
+    "switch_core.db.stores.hosted_machine_store",
     # Enumerating tenants at boot, and starting one bridge or one connector by
     # id from a context bound to somebody else's tenant.
     "switch_core.clients.client_lifecycle_service",

@@ -91,6 +91,12 @@ class Reconciler:
             if not machine.instance_launch_issued:
                 if not self._unchanged(claim, DesiredState.RUNNING):
                     return self._store.cancel_queued_instance_launch(claim)
+                if machine.image_id != self._cloud.image_id:
+                    # No instance is left, and the data volume is kept: the
+                    # one moment the machine can move onto the configured image.
+                    machine = self._store.use_image(claim, self._cloud.image_id)
+                    if not self._same_claim(claim, machine):
+                        return machine
                 self._cloud.validate_image(machine)
                 self._cloud.validate_capacity()
                 if not self._unchanged(claim, DesiredState.RUNNING):
@@ -133,7 +139,7 @@ class Reconciler:
                 ):
                     # An instance's user data is set when it launches, so it
                     # makes way for one launched with the new bundle; the data
-                    # volume is kept.
+                    # volume is kept. A running instance is stopped first.
                     machine = self._store.mark_instance_terminate_issued(claim)
                     if not self._same_claim(claim, machine):
                         return machine
@@ -145,6 +151,15 @@ class Reconciler:
             return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
         if state != "running":
             return self._attention(claim, f"instance is {state}; automatic replacement is disabled")
+        if (
+            machine.bundle is not None
+            and machine.instance_bundle is not None
+            and _bundle_ready(machine)
+            and needs_new_user_data(machine.instance_bundle, machine.bundle)
+            and self._unchanged(claim, DesiredState.RUNNING)
+        ):
+            self._cloud.stop_instance(machine)
+            return self._store.set_observed(claim, ObservedState.PROVISIONING, None)
 
         attachments = volume.get("Attachments", [])
         if volume["State"] == "available" and not attachments:
@@ -358,20 +373,36 @@ def needs_new_user_data(current: str | None, wanted: str) -> bool:
     """Whether an instance booting from the bundle `current` must make way for
     one launched with `wanted`.
 
-    Not when `wanted` only names the controller the machine enrolled as with
-    the code in `current`: the boot keeps an enrollment made with that code.
+    Not when `wanted` only names, for a seat, the controller the machine
+    enrolled as with the code `current` holds for that seat: the boot keeps an
+    enrollment made with that code.
     """
     if current is None:
         return True
+    if current == wanted:
+        return False
     have, want = json.loads(current), json.loads(wanted)
-    have_controller, want_controller = have.pop("controller"), want.pop("controller")
-    if have != want:
+    have_seats, want_seats = _seats(have), _seats(want)
+    if have_seats is None or want_seats is None or have != want:
         return True
-    if want_controller["enrollmentCode"] is not None:
-        return want_controller["enrollmentCode"] != have_controller["enrollmentCode"]
-    return have_controller["enrollmentCode"] is None and (
-        have_controller["id"] != want_controller["id"]
-    )
+    if have_seats.keys() != want_seats.keys():
+        return True
+    return any(_seat_needs_new_user_data(have_seats[key], want_seats[key]) for key in want_seats)
+
+
+def _seats(bundle: dict) -> dict[str | None, dict] | None:
+    """Pop the bundle's controllers off it, by seat key."""
+    if bundle.get("version") == 5:
+        return {entry["key"]: entry for entry in bundle.pop("controllers")}
+    if bundle.get("version") == 4:
+        return {None: bundle.pop("controller")}
+    return None
+
+
+def _seat_needs_new_user_data(have: dict, want: dict) -> bool:
+    if want["enrollmentCode"] is not None:
+        return want["enrollmentCode"] != have["enrollmentCode"]
+    return have["enrollmentCode"] is None and have["id"] != want["id"]
 
 
 def _volume_mapping(instance: dict[str, Any], volume_id: str) -> dict[str, Any] | None:

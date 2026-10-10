@@ -91,10 +91,13 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
         """Hardcoded on purpose, and hardcoded twice on purpose.
 
         `users` is a person rather than a tenant member, `oidc_identities`
-        records how that person proves who they are. `alembic_version` is
+        records how that person proves who they are. `cloud_machines` is a
+        person's VM, one per person whatever workspaces it serves; what it
+        runs in each is the scoped `machine_workspaces`. `alembic_version` is
         global too but is not in this metadata: Alembic owns it.
         """
         assert set(GLOBAL_TABLES) == {
+            "cloud_machines",
             "users",
             "oidc_identities",
             # Facts about the installation, not about anything in it: which

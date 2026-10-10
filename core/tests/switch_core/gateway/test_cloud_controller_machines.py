@@ -18,18 +18,26 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import (
+    TENANT_ZERO_ID,
     AgentController,
-    HostedMachine,
+    AgentControllerEnrollmentCode,
+    CloudMachine,
+    MachineWorkspace,
+    TenantMember,
     User,
     require_tenant_id,
 )
 from switch_core.db.stores.hosted_machine_store import (
-    HostedMachineStore,
+    CloudMachineStore,
     bump_revision,
+    ever_hosted,
     lock_claims,
+    workspace_on,
+    workspaces_on,
 )
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.cloud_controllers import (
@@ -46,6 +54,8 @@ from switch_core.gateway.hosted_machines import router as machines_router
 from switch_core.management.placement import placement_refusal
 from switch_core.management.process_lease import ProcessLeases
 from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.tenant_context import tenant_scope
+from tests.switch_core.hosted_machine_helpers import add_tenant
 from tests.switch_core.management.harness import (
     TEST_KEYRING,
     Harness,
@@ -82,7 +92,7 @@ def _hosted_app(
 ) -> httpx.AsyncClient:
     app = FastAPI()
     app.state.hosted_controller_settings = HostedControllerSettings(
-        tenant_id=require_tenant_id(),
+        allowed_tenant_ids=[require_tenant_id()],
         token=TOKEN,
         agent_api_endpoint=API_ENDPOINT,
     )
@@ -114,11 +124,12 @@ def _hosted_app(
 
 async def _claim(
     session_factory: async_sessionmaker[AsyncSession], owner: User
-) -> HostedMachine:
+) -> CloudMachine:
     async with session_factory() as session:
         await lock_claims(session)
-        machine = await HostedMachineStore().claim(
+        machine, _workspace = await CloudMachineStore().claim(
             session,
+            session_factory,
             owner_id=owner.id,
             capacity=1,
             now=datetime.now(UTC),
@@ -129,18 +140,38 @@ async def _claim(
 
 async def _machine(
     session_factory: async_sessionmaker[AsyncSession], machine_id: str
-) -> HostedMachine:
+) -> CloudMachine:
     async with session_factory() as session:
-        machine = await session.get(HostedMachine, (require_tenant_id(), machine_id))
+        machine = await session.get(CloudMachine, machine_id)
         assert machine is not None
         return machine
+
+
+async def _workspace(
+    session_factory: async_sessionmaker[AsyncSession], machine_id: str
+) -> MachineWorkspace:
+    """The bound workspace's row on the machine."""
+    async with session_factory() as session:
+        workspace = await workspace_on(session, machine_id)
+        assert workspace is not None
+        return workspace
+
+
+def _heartbeat(workspace_id: str, at: datetime, sessions: int) -> dict:
+    return {
+        "disk": None,
+        "memory": None,
+        "controllers": {
+            workspace_id: {"at": at.isoformat(), "sessions_running": sessions}
+        },
+    }
 
 
 async def _update(
     session_factory: async_sessionmaker[AsyncSession], machine_id: str, **values
 ) -> None:
     async with session_factory() as session:
-        machine = await HostedMachineStore().locked(session, machine_id)
+        machine = await CloudMachineStore().locked(session, machine_id)
         assert machine is not None
         for key, value in values.items():
             setattr(machine, key, value)
@@ -151,7 +182,7 @@ async def _new_revision(
     session_factory: async_sessionmaker[AsyncSession], machine_id: str
 ) -> None:
     async with session_factory() as session:
-        machine = await HostedMachineStore().locked(session, machine_id)
+        machine = await CloudMachineStore().locked(session, machine_id)
         assert machine is not None
         bump_revision(machine, datetime.now(UTC))
         await session.commit()
@@ -214,18 +245,23 @@ class TestControllerMachines:
             retried = await _prepare(hosted, machine.id)
             assert first["bundle_revision"] == first["revision"]
             assert first["api_endpoint"] == API_ENDPOINT
-            code = first["controller"]["enrollment_code"]
+            [entry] = first["controllers"]
+            code = entry["enrollment_code"]
             assert code.startswith("swce_")
-            assert first["controller"]["id"] is None
+            assert entry["id"] is None
+            assert (
+                entry["key"]
+                == (await _workspace(harness.session_factory, machine.id)).id
+            )
             # A retry of the same revision hands over the same code.
-            assert retried["controller"] == first["controller"]
+            assert retried["controllers"] == first["controllers"]
             assert "machine_capability" not in first
             # The shape the hosted controller is tested against.
             fixture = json.loads(
                 (FIXTURES / "prepare_controller_response.json").read_text()
             )
             assert set(first) == set(fixture)
-            assert set(first["controller"]) == set(fixture["controller"])
+            assert set(entry) == set(fixture["controllers"][0])
 
             async with harness.client() as client:
                 enrolled = await _enroll(client, code)
@@ -250,15 +286,87 @@ class TestControllerMachines:
                 assert controller.kind == "ec2"
                 assert controller.name == "Switch cloud"
             assert (
-                await _machine(harness.session_factory, machine.id)
+                await _workspace(harness.session_factory, machine.id)
             ).controller_id == (enrolled["controller_id"])
 
             await _new_revision(harness.session_factory, machine.id)
             enrolled_since = await _prepare(hosted, machine.id)
-            assert enrolled_since["controller"] == {
-                "id": enrolled["controller_id"],
-                "enrollment_code": None,
-            }
+            assert enrolled_since["controllers"] == [
+                {
+                    "key": entry["key"],
+                    "id": enrolled["controller_id"],
+                    "enrollment_code": None,
+                }
+            ]
+
+    async def test_a_machine_serving_two_workspaces_enrolls_a_controller_in_each(
+        self, harness: Harness
+    ) -> None:
+        factory = harness.session_factory
+        owner = await add_member(factory, "ada")
+        async with factory() as session:
+            await add_tenant(session, "tenant-b")
+            await session.commit()
+        with tenant_scope("tenant-b"):
+            async with factory() as session:
+                session.add(
+                    TenantMember(tenant_id="tenant-b", user_id=owner.id, role="member")
+                )
+                await session.commit()
+        machine = await _claim(factory, owner)
+        with tenant_scope("tenant-b"):
+            joined = await _claim(factory, owner)
+            there = await _workspace(factory, machine.id)
+        assert joined.id == machine.id
+        here = await _workspace(factory, machine.id)
+        async with _hosted_app(factory, owner) as hosted:
+            prepared = await _prepare(hosted, machine.id)
+            assert prepared["revision"] == 2
+            first, second = prepared["controllers"]
+            assert (first["key"], second["key"]) == (here.id, there.id)
+            assert first["id"] is None and second["id"] is None
+            assert first["enrollment_code"] != second["enrollment_code"]
+            # Each code is minted in the workspace its controller enrolls in.
+            for tenant_id, workspace in ((TENANT_ZERO_ID, here), ("tenant-b", there)):
+                with tenant_scope(tenant_id):
+                    async with factory() as session:
+                        codes = list(
+                            await session.scalars(
+                                select(AgentControllerEnrollmentCode).where(
+                                    AgentControllerEnrollmentCode.machine_workspace_id
+                                    == workspace.id
+                                )
+                            )
+                        )
+                assert [(code.tenant_id, code.owner_id) for code in codes] == [
+                    (tenant_id, owner.id)
+                ]
+
+            async with harness.client() as client:
+                enrolled = await _enroll(client, second["enrollment_code"])
+            assert (await _workspace(factory, machine.id)).controller_id is None
+            with tenant_scope("tenant-b"):
+                assert (await _workspace(factory, machine.id)).controller_id == (
+                    enrolled["controller_id"]
+                )
+                async with factory() as session:
+                    controller = await session.get(
+                        AgentController, enrolled["controller_id"]
+                    )
+                    assert controller is not None
+                    assert (controller.tenant_id, controller.kind) == (
+                        "tenant-b",
+                        "ec2",
+                    )
+            again = await _prepare(hosted, machine.id)
+            assert again["controllers"] == [
+                first,
+                {
+                    "key": there.id,
+                    "id": enrolled["controller_id"],
+                    "enrollment_code": None,
+                },
+            ]
 
     async def test_its_status_reports_make_it_ready_and_its_agents_are_the_machines(
         self, harness: Harness
@@ -266,7 +374,9 @@ class TestControllerMachines:
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
         async with _hosted_app(harness.session_factory, owner) as hosted:
-            code = (await _prepare(hosted, machine.id))["controller"]["enrollment_code"]
+            code = (await _prepare(hosted, machine.id))["controllers"][0][
+                "enrollment_code"
+            ]
             async with harness.client() as client:
                 enrolled = await _enroll(client, code)
                 token = await client.post(
@@ -316,7 +426,9 @@ class TestControllerMachines:
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
         async with _hosted_app(harness.session_factory, owner) as hosted:
-            code = (await _prepare(hosted, machine.id))["controller"]["enrollment_code"]
+            code = (await _prepare(hosted, machine.id))["controllers"][0][
+                "enrollment_code"
+            ]
             async with harness.client() as client:
                 first = await _enroll(client, code)
                 await _connected(client, harness, owner, first)
@@ -330,9 +442,9 @@ class TestControllerMachines:
                 )
                 assert revoked.status_code == 200, revoked.text
                 await _new_revision(harness.session_factory, machine.id)
-                prepared = await _prepare(hosted, machine.id)
-                assert prepared["controller"]["id"] is None
-                second_code = prepared["controller"]["enrollment_code"]
+                [prepared] = (await _prepare(hosted, machine.id))["controllers"]
+                assert prepared["id"] is None
+                second_code = prepared["enrollment_code"]
                 assert second_code not in {None, code}
                 second = await _enroll(client, second_code)
                 agent = await client.get(
@@ -342,7 +454,7 @@ class TestControllerMachines:
                 assert agent.status_code == 200, agent.text
                 assert agent.json()["controller_id"] == second["controller_id"]
             assert (
-                await _machine(harness.session_factory, machine.id)
+                await _workspace(harness.session_factory, machine.id)
             ).controller_id == (second["controller_id"])
             summary = await hosted.get(f"/hosted-machines/{machine.id}")
             assert summary.json()["agents"] == [created.json()["agent_id"]]
@@ -353,7 +465,9 @@ class TestControllerMachines:
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
         async with _hosted_app(harness.session_factory, owner) as hosted:
-            code = (await _prepare(hosted, machine.id))["controller"]["enrollment_code"]
+            code = (await _prepare(hosted, machine.id))["controllers"][0][
+                "enrollment_code"
+            ]
             async with harness.client() as client:
                 enrolled = await _enroll(client, code)
                 await _connected(client, harness, owner, enrolled)
@@ -365,15 +479,16 @@ class TestControllerMachines:
                     desired_state="stopped",
                 )
                 assert created.status_code == 201, created.text
-        store = HostedMachineStore()
+        store = CloudMachineStore()
         async with harness.session_factory() as session:
             locked = await store.locked(session, machine.id)
             assert locked is not None
-            assert await store.has_agents(session, locked)
+            workspaces = await workspaces_on(harness.session_factory, machine.id)
+            assert [workspace.agent_count for workspace in workspaces] == [1]
             assert not await store.retain_if_empty(
-                session, locked, retention_days=7, now=datetime.now(UTC)
+                locked, workspaces, retention_days=7, now=datetime.now(UTC)
             )
-            assert await store.ever_hosted(session, locked)
+            assert ever_hosted(workspaces)
             await session.commit()
         async with harness.client() as client:
             deleted = await client.delete(
@@ -384,10 +499,11 @@ class TestControllerMachines:
         async with harness.session_factory() as session:
             locked = await store.locked(session, machine.id)
             assert locked is not None
-            assert not await store.has_agents(session, locked)
+            workspaces = await workspaces_on(harness.session_factory, machine.id)
+            assert [workspace.agent_count for workspace in workspaces] == [0]
             now = datetime.now(UTC)
             assert await store.retain_if_empty(
-                session, locked, retention_days=7, now=now
+                locked, workspaces, retention_days=7, now=now
             )
             assert (locked.desired_state, locked.retain_until) == (
                 "retained",
@@ -408,13 +524,14 @@ class TestControllerMachines:
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
+        workspace = await _workspace(harness.session_factory, machine.id)
         now = datetime.now(UTC)
         await _update(
             harness.session_factory,
             machine.id,
             state="ready",
             active_at=now - timedelta(hours=2),
-            heartbeat={"disk": None, "memory": None, "sessions_running": sessions},
+            heartbeat=_heartbeat(workspace.id, now - heartbeat_age, sessions),
             heartbeat_at=now - heartbeat_age,
         )
         async with _hosted_app(harness.session_factory, owner) as hosted:
@@ -433,7 +550,9 @@ class TestControllerMachines:
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
         async with _hosted_app(harness.session_factory, owner) as hosted:
-            code = (await _prepare(hosted, machine.id))["controller"]["enrollment_code"]
+            code = (await _prepare(hosted, machine.id))["controllers"][0][
+                "enrollment_code"
+            ]
             async with harness.client() as client:
                 enrolled = await _enroll(client, code)
                 await _connected(client, harness, owner, enrolled)
@@ -445,12 +564,13 @@ class TestControllerMachines:
                 )
                 assert created.status_code == 201, created.text
             now = datetime.now(UTC)
+            workspace = await _workspace(harness.session_factory, machine.id)
             await _update(
                 harness.session_factory,
                 machine.id,
                 state="ready",
                 active_at=now - timedelta(hours=2),
-                heartbeat={"disk": None, "memory": None, "sessions_running": 0},
+                heartbeat=_heartbeat(workspace.id, now, 0),
                 heartbeat_at=now,
             )
             listed = await hosted.get("/hosted-controller/machines", headers=HEADERS)
@@ -464,7 +584,9 @@ class TestControllerMachines:
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
         async with _hosted_app(harness.session_factory, owner) as hosted:
-            code = (await _prepare(hosted, machine.id))["controller"]["enrollment_code"]
+            code = (await _prepare(hosted, machine.id))["controllers"][0][
+                "enrollment_code"
+            ]
             async with harness.client() as client:
                 enrolled = await _enroll(client, code)
         await _update(

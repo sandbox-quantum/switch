@@ -983,6 +983,6 @@ function cloudStartingText(machine: CloudMachine): string {
   if (machine.desired_state === 'stopped')
     return 'Your cloud machine is stopped. Start it from Your Agents, then add the agent.';
   return machine.controller_id === null
-    ? 'Starting your cloud machine. Its first start takes a few minutes…'
+    ? 'Starting your cloud machine for this workspace. If it already runs agents in another workspace, it restarts once to join this one. This takes a few minutes…'
     : 'Waiting for your cloud machine to come online…';
 }

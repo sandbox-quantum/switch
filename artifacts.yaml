@@ -108,6 +108,11 @@ artifacts:
     version_from: switch-core
     published_as: setup
 
+  hosted-controller:
+    description: The service that launches and stops Switch cloud machines.
+    version_from: switch-core
+    published_as: hosted-controller
+
   helm-chart:
     description: >-
       The Kubernetes chart. Its values.yaml is a consumer-facing interface —

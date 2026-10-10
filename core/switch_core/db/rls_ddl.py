@@ -130,8 +130,16 @@ POLICY_NAME = "tenant_isolation"
 # when it started, its last renewal and when it stopped. A process holds
 # controller sockets for every tenant at once, so its lease belongs to none of
 # them, and it holds no customer data, only that the process is alive.
+#
+# `cloud_machines` is a user's Switch cloud VM: one per person, whichever
+# workspaces it serves, as the person is global. It holds the VM's lifecycle,
+# disk and instance, and no workspace's data: what the machine runs for a
+# workspace is that workspace's `machine_workspaces` row, which is scoped, and
+# `tenants_of_cloud_machine` (`db/tenant_lookup.py`) is how the cloud
+# controller, which acts for no tenant, finds which workspaces those are.
 GLOBAL_TABLES = frozenset(
     {
+        "cloud_machines",
         "users",
         "oidc_identities",
         "deployment_identity",

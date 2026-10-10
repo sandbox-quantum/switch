@@ -20,6 +20,8 @@ from .store import MachineStore
 logger = logging.getLogger(__name__)
 
 ENROLLMENT_CODE_RE = re.compile(r"^swce_[A-Za-z0-9_-]{16,128}$")
+BUNDLE_VERSION = 5
+MAX_CONTROLLERS = 8
 CORE_DESIRED_STATES = {"running", "stopped", "retained", "deleted"}
 SETUP_FAILED_MESSAGE = (
     "Cloud machine setup failed. Retry; if it still fails, contact your administrator."
@@ -383,33 +385,53 @@ class Gateway:
         }
 
     def bundle(self, prepared: dict, machine: Machine) -> dict:
-        """The bundle a machine boots its agents controller from, its instance's
-        user data: the controller it enrolled as, or the one-time code it
+        """The bundle a machine boots its agents controllers from, its
+        instance's user data: one controller per workspace seated on the
+        machine, each the controller it enrolled as or the one-time code it
         enrolls with until it has one. Never a long-lived credential: the
-        machine keeps the one it enrolls with on its own data volume."""
+        machine keeps the ones it enrolls with on its own data volume."""
         endpoint = prepared.get("api_endpoint")
         url = urlsplit(endpoint) if isinstance(endpoint, str) else None
         if url is None or url.scheme != "https" or not url.hostname:
             raise ConfigError("Cloud gateway returned no valid API endpoint.")
-        controller = prepared.get("controller")
-        if not isinstance(controller, dict):
-            raise ConfigError("Cloud gateway returned no controller for the machine.")
-        controller_id = controller.get("id")
-        code = controller.get("enrollment_code")
-        if controller_id is not None:
-            if code is not None or not isinstance(controller_id, str):
-                raise ConfigError("Cloud gateway returned an invalid controller.")
-            controller_id = str(UUID(controller_id))
-        elif not isinstance(code, str) or not ENROLLMENT_CODE_RE.fullmatch(code):
-            raise ConfigError("Cloud gateway returned no valid enrollment code.")
+        controllers = prepared.get("controllers")
+        if not isinstance(controllers, list) or not 1 <= len(controllers) <= MAX_CONTROLLERS:
+            raise ConfigError("Cloud gateway returned no valid controllers for the machine.")
+        entries = [_controller_entry(controller) for controller in controllers]
+        if len({entry["key"] for entry in entries}) != len(entries):
+            raise ConfigError("Cloud gateway returned duplicate controller keys.")
         return {
-            "version": 4,
+            "version": BUNDLE_VERSION,
             "installationId": self.config.installation_id,
             "machineId": machine.machine_id,
             "dataVolumeId": machine.data_volume_id,
             "apiEndpoint": endpoint,
-            "controller": {"id": controller_id, "enrollmentCode": code},
+            "controllers": entries,
         }
+
+
+def _controller_entry(controller: Any) -> dict:
+    if not isinstance(controller, dict):
+        raise ConfigError("Cloud gateway returned an invalid controller.")
+    key = _uuid(controller.get("key"), "Cloud gateway returned an invalid controller key.")
+    controller_id = controller.get("id")
+    code = controller.get("enrollment_code")
+    if controller_id is not None:
+        if code is not None:
+            raise ConfigError("Cloud gateway returned an invalid controller.")
+        controller_id = _uuid(controller_id, "Cloud gateway returned an invalid controller.")
+    elif not isinstance(code, str) or not ENROLLMENT_CODE_RE.fullmatch(code):
+        raise ConfigError("Cloud gateway returned no valid enrollment code.")
+    return {"key": key, "id": controller_id, "enrollmentCode": code}
+
+
+def _uuid(value: Any, message: str) -> str:
+    if not isinstance(value, str):
+        raise ConfigError(message)
+    try:
+        return str(UUID(value))
+    except ValueError:
+        raise ConfigError(message) from None
 
 
 def _at_rest(machine: Machine) -> bool:
