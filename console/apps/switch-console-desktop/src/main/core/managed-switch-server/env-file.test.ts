@@ -133,6 +133,10 @@ describe('buildEnvFile', () => {
       // controller token secret generated for the stack.
       'AGENT_MANAGEMENT_ENABLED',
       'CONTROLLER_TOKEN_SECRET',
+      // Every feature flag is off unless a deployment lists it, and a managed
+      // stack lists none: agent management and cloud agents, the flags a
+      // server would turn on, are not offered from a loopback stack yet.
+      'FEATURE_FLAGS_ENABLED',
       // Private hosts Switch may reach at a tenant- or agent-supplied URL. The
       // compose file always allows the bundled Mattermost; a managed stack
       // allows nothing more until its operator says so.

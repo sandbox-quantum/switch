@@ -130,7 +130,9 @@ def test_the_bundle_is_read_strictly():
         api_endpoint="https://switch.example.test/agent-api",
         controllers=(
             boot.BundleController(key=KEY_A, controller_id=None, enrollment_code=CODE),
-            boot.BundleController(key=KEY_B, controller_id=CONTROLLER_ID, enrollment_code=None),
+            boot.BundleController(
+                key=KEY_B, controller_id=CONTROLLER_ID, enrollment_code=None
+            ),
         ),
     )
 
@@ -271,7 +273,9 @@ def test_a_blank_volume_is_formatted_and_mounted(monkeypatch, tmp_path):
     ]
 
 
-def test_a_volume_attached_late_is_waited_for_and_a_formatted_one_kept(monkeypatch, tmp_path):
+def test_a_volume_attached_late_is_waited_for_and_a_formatted_one_kept(
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr(boot, "DATA_MOUNT", tmp_path / "data")
     commands = FakeCommands(
         {
@@ -349,12 +353,17 @@ def test_the_first_boot_numbers_the_seats_in_bundle_order(machine):
     raw = bundle(enrolled_entry(KEY_B), enrolled_entry(KEY_A, OTHER_CONTROLLER_ID))
     assert boot.boot_controllers(commands, CONFIG, boot.parse_bundle(raw)) == {}
     path = machine / ".switch-controllers.json"
-    assert json.loads(path.read_text()) == {"version": 1, "controllers": {KEY_B: 0, KEY_A: 1}}
+    assert json.loads(path.read_text()) == {
+        "version": 1,
+        "controllers": {KEY_B: 0, KEY_A: 1},
+    }
     assert stat.S_IMODE(path.lstat().st_mode) == 0o600
     assert setups(commands) == ["switch-controller", "switch-controller-1"]
 
 
-def test_a_seat_that_left_keeps_its_index_and_its_data_and_its_controller_is_stopped(machine):
+def test_a_seat_that_left_keeps_its_index_and_its_data_and_its_controller_is_stopped(
+    machine,
+):
     boot.save_indexes(machine, {KEY_A: 0, KEY_B: 1})
     left = boot.seat_for(1, CONFIG)
     left.data_dir.mkdir(parents=True)
@@ -362,10 +371,17 @@ def test_a_seat_that_left_keeps_its_index_and_its_data_and_its_controller_is_sto
     commands = FakeCommands()
     raw = bundle(enrolled_entry(KEY_A))
     assert boot.boot_controllers(commands, CONFIG, boot.parse_bundle(raw)) == {}
-    assert ["/usr/bin/systemctl", "disable", "--now", "switch-agent-controller-2200.service"] in (
-        commands.calls
-    )
-    assert ["/usr/bin/systemctl", "stop", "switch-agent-2200@*.service"] in commands.calls
+    assert [
+        "/usr/bin/systemctl",
+        "disable",
+        "--now",
+        "switch-agent-controller-2200.service",
+    ] in (commands.calls)
+    assert [
+        "/usr/bin/systemctl",
+        "stop",
+        "switch-agent-2200@*.service",
+    ] in commands.calls
     assert (left.data_dir / "controller.db").read_text() == "kept"
     assert setups(commands) == ["switch-controller"]
     assert boot.load_indexes(machine) == {KEY_A: 0, KEY_B: 1}
@@ -377,14 +393,16 @@ def test_a_seat_that_left_keeps_its_index_and_its_data_and_its_controller_is_sto
     assert setups(again) == ["switch-controller", "switch-controller-2"]
 
 
-def test_a_controller_that_left_is_stopped_even_when_its_unit_is_not_on_this_root_volume(machine):
+def test_a_controller_that_left_is_stopped_even_when_its_unit_is_not_on_this_root_volume(
+    machine,
+):
     boot.save_indexes(machine, {KEY_A: 0, KEY_B: 1})
-    missing = (
-        "Failed to disable unit: Unit file switch-agent-controller-2200.service does not exist."
-    )
+    missing = "Failed to disable unit: Unit file switch-agent-controller-2200.service does not exist."
     commands = FakeCommands({"disable --now": [(1, missing)]})
     assert (
-        boot.boot_controllers(commands, CONFIG, boot.parse_bundle(bundle(enrolled_entry(KEY_A))))
+        boot.boot_controllers(
+            commands, CONFIG, boot.parse_bundle(bundle(enrolled_entry(KEY_A)))
+        )
         == {}
     )
     failing = FakeCommands({"disable --now": [(1, "Access denied")]})
@@ -399,7 +417,9 @@ def test_a_seat_without_a_free_index_fails_alone(machine):
     boot.save_indexes(machine, {uuid_key(n): n for n in range(1, 8)} | {KEY_A: 0})
     commands = FakeCommands()
     raw = bundle(enrolled_entry(KEY_A), enrolled_entry(KEY_B, OTHER_CONTROLLER_ID))
-    [(key, failure)] = boot.boot_controllers(commands, CONFIG, boot.parse_bundle(raw)).items()
+    [(key, failure)] = boot.boot_controllers(
+        commands, CONFIG, boot.parse_bundle(raw)
+    ).items()
     assert key == KEY_B and "no free controller index" in failure
     assert setups(commands) == ["switch-controller"]
 
@@ -517,8 +537,16 @@ def test_users_that_exist_with_their_fixed_ids_are_kept():
 @pytest.mark.parametrize(
     "answers",
     [
-        {"getent passwd switch-controller-1": [(0, "switch-controller-1:x:4242:2200::/:/bin/sh")]},
-        {"getent passwd switch-controller-1": [(0, "switch-controller-1:x:2200:100::/:/bin/sh")]},
+        {
+            "getent passwd switch-controller-1": [
+                (0, "switch-controller-1:x:4242:2200::/:/bin/sh")
+            ]
+        },
+        {
+            "getent passwd switch-controller-1": [
+                (0, "switch-controller-1:x:2200:100::/:/bin/sh")
+            ]
+        },
         {"getent group switch-controller-1": [(0, "switch-controller-1:x:4242:")]},
         {"getent group switch-agents-2200": [(0, "switch-agents-2200:x:4242:")]},
         {"getent passwd sa2200-01": [(0, "sa2200-01:x:4242:2201::/:/bin/sh")]},
@@ -528,7 +556,9 @@ def test_a_user_or_group_with_another_id_is_refused(answers):
     commands = FakeCommands({**answers, "getent": [(2, "")]})
     seat = boot.seat_for(1, CONFIG)
     with pytest.raises(boot.BootError, match="another"):
-        boot.ensure_identities(commands, dataclasses.replace(CONFIG, agent_users=1), seat)
+        boot.ensure_identities(
+            commands, dataclasses.replace(CONFIG, agent_users=1), seat
+        )
     refused = next(name for name in answers)
     assert commands.calls[-1] == ["/usr/bin/getent", *refused.split()[1:]]
 
@@ -539,7 +569,10 @@ def test_another_indexs_unit_is_ordered_after_the_boot(machine):
     assert boot.boot_controllers(commands, CONFIG, boot.parse_bundle(raw)) == {}
     systemd = boot.SYSTEMD_SYSTEM_DIR
     drop_in = systemd / "switch-agent-controller-2200.service.d" / "after-boot.conf"
-    assert drop_in.read_text() == (SCRIPT.parent / "controller-after-boot.conf").read_text()
+    assert (
+        drop_in.read_text()
+        == (SCRIPT.parent / "controller-after-boot.conf").read_text()
+    )
     assert stat.S_IMODE(drop_in.stat().st_mode) == 0o644
     assert not (systemd / "switch-agent-controller-2000.service.d").exists()
     reloads = [i for i, call in enumerate(commands.calls) if "daemon-reload" in call]
@@ -558,7 +591,11 @@ def test_another_index_enrolls_and_runs_on_its_own_paths_as_its_own_user(machine
     [enroll] = commands.ran("enroll")
     assert enroll[:4] == ["/usr/sbin/runuser", "-u", "switch-controller-2", "--"]
     assert enroll[enroll.index("--data-dir") + 1] == str(seat.data_dir)
-    assert ["/usr/bin/chown", "switch-controller-2:", str(seat.data_dir)] in commands.calls
+    assert [
+        "/usr/bin/chown",
+        "switch-controller-2:",
+        str(seat.data_dir),
+    ] in commands.calls
     assert stat.S_IMODE(seat.data_dir.stat().st_mode) == 0o700
     for directory in (machine / "controllers", machine / "controllers" / "2"):
         assert stat.S_IMODE(directory.stat().st_mode) == 0o755
@@ -610,10 +647,14 @@ def test_an_enrolled_machine_only_starts_its_controller(machine):
 def test_a_new_code_sets_a_revoked_enrollment_aside(machine):
     (machine / ".switch-controller").mkdir()
     (machine / ".switch-controller" / "controller.db").write_text("old")
-    (machine / ".switch-controller-code").write_text(hashlib.sha256(b"swce_old").hexdigest())
+    (machine / ".switch-controller-code").write_text(
+        hashlib.sha256(b"swce_old").hexdigest()
+    )
     commands = FakeCommands({" status ": [(0, "Controller: old")]})
     start(commands)
-    assert (machine / ".switch-controller.replaced-7" / "controller.db").read_text() == "old"
+    assert (
+        machine / ".switch-controller.replaced-7" / "controller.db"
+    ).read_text() == "old"
     assert not (machine / ".switch-controller" / "controller.db").exists()
     assert len(commands.ran("enroll")) == 1
     assert (machine / ".switch-controller-code").read_text() != hashlib.sha256(
@@ -681,14 +722,20 @@ def test_one_failing_controller_does_not_keep_the_others_from_starting(
     assert len(commands.ran("enroll")) == 1 + boot.CONTROLLER_RETRIES
     assert setups(commands) == ["switch-controller-1"]
     [failure] = [
-        record.getMessage() for record in caplog.records if record.levelno == logging.ERROR
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.ERROR
     ]
     assert "switch-controller" in failure and KEY_A in failure
 
 
 def test_a_controller_that_fails_once_is_started_on_the_next_try(machine, monkeypatch):
     commands = FakeCommands(
-        {" status ": [(1, "Not enrolled.")], " enroll ": [(1, ""), (0, "")], "getent": [(2, "")]}
+        {
+            " status ": [(1, "Not enrolled.")],
+            " enroll ": [(1, ""), (0, "")],
+            "getent": [(2, "")],
+        }
     )
     parsed = boot.parse_bundle(bundle(entry(KEY_A)))
     monkeypatch.setattr(boot.os, "geteuid", lambda: 0)
@@ -717,7 +764,10 @@ def test_a_machine_whose_controllers_all_start_boots(machine, monkeypatch):
     monkeypatch.setattr(boot, "Commands", lambda: commands)
     monkeypatch.setattr(boot, "prepare_storage", lambda *_: None)
     assert boot.main([]) == 0
-    assert json.loads((machine / ".switch-machine.json").read_text())["machineId"] == MACHINE_ID
+    assert (
+        json.loads((machine / ".switch-machine.json").read_text())["machineId"]
+        == MACHINE_ID
+    )
     assert setups(commands) == ["switch-controller", "switch-controller-1"]
 
 
