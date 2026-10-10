@@ -87,11 +87,20 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
 }));
 
 vi.mock('@renderer/features/switch-servers/local-server-store', () => ({
-  localServerStore: { init: () => Promise.resolve(), dispose: () => {}, phase: 'stopped' },
+  localServerStore: {
+    init: () => Promise.resolve(),
+    dispose: () => {},
+    phase: 'stopped',
+    isTransitioning: false,
+  },
 }));
 
 vi.mock('@renderer/features/switch-servers/remote-server-store', () => ({
-  remoteServerStore: { init: () => Promise.resolve(), dispose: () => {} },
+  remoteServerStore: {
+    init: () => Promise.resolve(),
+    dispose: () => {},
+    isTransitioning: () => false,
+  },
 }));
 
 // Presentation of a server — its avatar, icon, status words and drift — is the
@@ -103,6 +112,8 @@ vi.mock('@renderer/features/switch-servers/server-presentation', () => ({
   ServerStatusDot: () => null,
   serverDrift: () => null,
   serverPlacementLabel: () => null,
+  serverState: (server: SwitchServer) =>
+    state.unavailable.has(server.id) ? 'signed-out' : 'connected',
   serverStatusLabel: (server: SwitchServer) => `${server.name} status`,
   serverSubtitleLabel: (server: SwitchServer) => `${server.name} status`,
 }));
@@ -241,8 +252,8 @@ describe('the workspaces the switcher offers', () => {
       group.querySelector('[data-slot="dropdown-menu-label"]')?.textContent,
       // The first span on a row is its name; a second one, where there is one,
       // is the role or the reason it cannot be opened.
-      [...group.querySelectorAll('[role="menuitem"]')].map(
-        (item) => item.querySelector('[data-row-name]')?.textContent
+      [...group.querySelectorAll('[role="menuitem"] [data-row-name]')].map(
+        (name) => name.textContent
       ),
     ]);
 
@@ -356,26 +367,54 @@ describe('a workspace that cannot be opened', () => {
 });
 
 describe('inviting people from the switcher', () => {
-  function inviteItem(): HTMLElement | undefined {
-    return [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) =>
-      item.textContent?.startsWith('Invite people')
+  function inviteButton(workspaceName: string): HTMLButtonElement | undefined {
+    const row = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (item) => item.querySelector('[data-row-name]')?.textContent === workspaceName
+    );
+    return [...(row?.querySelectorAll('button') ?? [])].find(
+      (button) => button.textContent === 'Invite'
     );
   }
 
-  it('is offered in a workspace the account administers', async () => {
+  it('is a button on each workspace row the account administers, not only the open one', async () => {
     await openSwitcher(
       [server('srv-1', 'Acme')],
-      [workspace('ws-a', 'srv-1', { role: 'admin' })],
+      [
+        workspace('ws-a', 'srv-1', { role: 'admin' }),
+        workspace('ws-b', 'srv-1', { role: 'owner' }),
+      ],
       'ws-a'
     );
 
-    expect(inviteItem()?.textContent).toBe('Invite people to ws-a…');
+    expect(inviteButton('ws-a')).toBeDefined();
+    expect(inviteButton('ws-b')).toBeDefined();
+    expect(document.body.textContent).not.toContain('Invite people to');
   });
 
   it('is not offered to a member, whom the server would refuse', async () => {
     await openSwitcher([server('srv-1', 'Acme')], [workspace('ws-a', 'srv-1')], 'ws-a');
 
-    expect(inviteItem()).toBeUndefined();
+    expect(inviteButton('ws-a')).toBeUndefined();
+  });
+});
+
+describe('new workspaces from the switcher', () => {
+  it('ends each server you can use with its own New workspace', async () => {
+    state.unavailable.add('srv-3');
+    await openSwitcher(
+      [server('srv-1', 'Acme'), server('srv-2', 'Local dev'), server('srv-3', 'Pi')],
+      [workspace('ws-a', 'srv-1'), workspace('ws-b', 'srv-2'), workspace('ws-c', 'srv-3')],
+      'ws-a'
+    );
+
+    const groups = [...document.querySelectorAll<HTMLElement>('[data-slot="dropdown-menu-group"]')];
+    const lastRow = (group: HTMLElement) =>
+      [...group.querySelectorAll('[role="menuitem"]')].at(-1)?.textContent;
+    expect(groups.map((group) => lastRow(group))).toEqual([
+      'New workspace',
+      'New workspace',
+      undefined,
+    ]);
   });
 });
 
@@ -705,7 +744,7 @@ describe('a server with no workspace to show yet', () => {
     return [...document.querySelectorAll('[role="menuitem"]')].map((el) => el.textContent ?? '');
   }
 
-  it('offers Sign in… instead of a workspace named after a server you are signed out of', async () => {
+  it('collapses a server you are signed out of to one row with Sign in', async () => {
     state.unavailable.add('cloud');
     await openSwitcher(
       [server('srv-1', 'Acme'), server('cloud', 'Switch Cloud')],
@@ -713,11 +752,11 @@ describe('a server with no workspace to show yet', () => {
       'ws-a'
     );
 
-    expect(menuText()).toContain('Sign in…');
+    expect(document.body.textContent).toContain('Switch Cloud status');
     expect(names()).not.toContain('Switch Cloud');
 
-    const signIn = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
-      (el) => el.textContent === 'Sign in…'
+    const signIn = [...document.querySelectorAll<HTMLElement>('button')].find(
+      (el) => el.textContent === 'Sign in'
     );
     await act(async () => signIn!.click());
     expect(state.setActive).toHaveBeenCalledWith('Switch Cloud');
@@ -733,7 +772,7 @@ describe('a server with no workspace to show yet', () => {
     );
 
     expect(document.body.textContent).toContain('No workspace yet');
-    expect(menuText()).toContain('Create a workspace…');
+    expect(menuText()).toContain('New workspace');
     expect(names()).not.toContain('Switch Cloud');
   });
 

@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { Check, ChevronsUpDown, LogIn, Plus, Search, Server, UserPlus } from 'lucide-react';
+import { ChevronsUpDown, Plus, Search, Server, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import {
@@ -20,6 +20,7 @@ import { useToast } from '@renderer/lib/hooks/use-toast';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { SwitchConsoleMark } from '@renderer/lib/switch-console-mark';
+import { Button } from '@renderer/lib/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -49,6 +50,7 @@ import {
   ServerStatusDot,
   serverDrift,
   serverPlacementLabel,
+  serverState,
   serverStatusLabel,
   serverSubtitleLabel,
 } from './server-presentation';
@@ -309,8 +311,6 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
   const store = switchServersStore;
   const { navigate } = useNavigate();
   const showAddServerModal = useShowModal('addServerModal');
-  const showCreateWorkspaceModal = useShowModal('createWorkspaceModal');
-  const showInvitePeopleModal = useShowModal('invitePeopleModal');
   const [query, setQuery] = useState('');
 
   const drift = serverDrift(activeServer);
@@ -365,34 +365,12 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
             </div>
           )}
           <DropdownMenuSeparator />
-          {/* Offered only where the gateway would take it: it refuses members,
-              and a menu item that always ends in a 403 is a trap. */}
-          {administersWorkspace(active) && (
-            <DropdownMenuItem onClick={() => showInvitePeopleModal({ workspaceId: active.id })}>
-              <UserPlus className="size-4" />
-              Invite people to {active.name}…
-            </DropdownMenuItem>
-          )}
-          {/* Above Add server because it is the commoner errand by far: you add
-              a server once and make workspaces on it for as long as you use
-              it. It opens on the server you are already in — the modal asks
-              which only where there is more than one to ask about. */}
-          <DropdownMenuItem
-            onClick={() =>
-              showCreateWorkspaceModal({
-                serverId: activeServer.id,
-                onSuccess: (workspace) => navigate('server', { serverId: workspace.serverId }),
-              })
-            }
-          >
-            <Plus className="size-4" />
-            New workspace…
-          </DropdownMenuItem>
+          {/* New workspace and Invite live with the server and the workspace
+              they act on, so only what belongs to no server is left here. */}
           <DropdownMenuItem onClick={() => showAddServerModal({})}>
             <Server className="size-4" />
             Add server…
           </DropdownMenuItem>
-          <DropdownMenuSeparator />
           {/* The welcome screen is what the app opens with before any server
               exists; once one does, this is how it stays reachable. */}
           <DropdownMenuItem onClick={() => navigate('home')}>
@@ -569,6 +547,8 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
     ? joinable
     : joinable.filter((j) => matchesQuery(j.workspaceName, query));
   const extraRows = (signedOut && signInTarget) || noMembership;
+  // Collapsed to one row, a server not usable here is found by its own name.
+  if (searching && !whole && availability !== 'available') return null;
   if (
     searching &&
     !(whole && extraRows) &&
@@ -577,67 +557,51 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
     return null;
   }
   const available = availability === 'available';
+  const createWorkspace = () =>
+    showCreateWorkspaceModal({
+      serverId: server.id,
+      onSuccess: (workspace) => navigate('server', { serverId: workspace.serverId }),
+    });
 
   return (
     <DropdownMenuGroup>
       <DropdownMenuLabel className="flex items-center gap-1.5 px-2 pt-2.5 pb-1 text-[11px] font-semibold tracking-wide text-foreground-muted uppercase">
         <Icon className="size-3 shrink-0" />
         <span className="min-w-0 truncate">{server.name}</span>
-        {/* Said only when something is wrong: a heading for every server that
-            is fine would be noise on each of them. */}
-        {!available && (
-          <>
-            <ServerStatusDot server={server} />
-            <span className="shrink-0 font-normal tracking-normal normal-case">
-              {serverStatusLabel(server)}
-            </span>
-          </>
-        )}
         {drift && <ServerDriftIndicator drift={drift} />}
       </DropdownMenuLabel>
-      {signedOut && signInTarget && whole && (
-        <DropdownMenuItem onClick={openForSignIn}>
-          <LogIn className="size-4" />
-          Sign in…
-        </DropdownMenuItem>
-      )}
-      {noMembership && whole && (
-        <>
-          <div className="px-2 py-1.5 text-xs text-foreground-muted">
-            No workspace yet — create one, or accept an invitation below.
-          </div>
-          <DropdownMenuItem
-            onClick={() =>
-              showCreateWorkspaceModal({
-                serverId: server.id,
-                onSuccess: (workspace) => navigate('server', { serverId: workspace.serverId }),
-              })
-            }
-          >
-            <Plus className="size-4" />
-            Create a workspace…
-          </DropdownMenuItem>
-        </>
-      )}
-      {all.length === 0 ? (
-        // Registering a server is what creates its first workspace, so a server
-        // with none did not finish being registered. Saying so beats an empty
-        // heading, which reads as a rendering fault.
-        <div className="px-2 py-1.5 text-xs text-foreground-muted">
-          No workspace yet — this server has not finished being set up.
-        </div>
+      {/* A server this window cannot use right now collapses to one row that
+          says why and offers the one thing that changes it: its workspaces
+          cannot be opened from here until then, so listing them would only
+          offer clicks that fail. */}
+      {!available ? (
+        whole && (
+          <UnavailableServerRow server={server} onSignIn={signInTarget ? openForSignIn : null} />
+        )
       ) : (
-        workspaces.map((workspace) => (
-          <WorkspaceMenuItem
-            key={workspace.id}
-            workspace={workspace}
-            server={server}
-            onServerCount={all.length}
-          />
-        ))
-      )}
-      {available && (
         <>
+          {noMembership && whole && (
+            <div className="px-2 py-1.5 text-xs text-foreground-muted">
+              No workspace yet — create one, or accept an invitation below.
+            </div>
+          )}
+          {all.length === 0 ? (
+            // Registering a server is what creates its first workspace, so a
+            // server with none did not finish being registered. Saying so beats
+            // an empty heading, which reads as a rendering fault.
+            <div className="px-2 py-1.5 text-xs text-foreground-muted">
+              No workspace yet — this server has not finished being set up.
+            </div>
+          ) : (
+            workspaces.map((workspace) => (
+              <WorkspaceMenuItem
+                key={workspace.id}
+                workspace={workspace}
+                server={server}
+                onServerCount={all.length}
+              />
+            ))
+          )}
           {invitationsFailed && (
             <div className="px-2 py-1.5 text-xs text-foreground-muted">
               Could not check for invitations to your address.
@@ -658,9 +622,65 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
           {shownJoinable.map((offer) => (
             <JoinableWorkspaceMenuItem key={offer.tenantId} offer={offer} server={server} />
           ))}
+          {whole && (
+            <DropdownMenuItem onClick={createWorkspace} className="text-foreground-muted">
+              <Plus className="size-4" />
+              New workspace
+            </DropdownMenuItem>
+          )}
         </>
       )}
     </DropdownMenuGroup>
+  );
+});
+
+/**
+ * A server whose workspaces cannot be opened from here right now, as one row:
+ * its state, and the button that changes it — Start for a stack this Console
+ * runs that is stopped, Sign in for a server it is signed out of.
+ */
+const UnavailableServerRow = observer(function UnavailableServerRow({
+  server,
+  onSignIn,
+}: {
+  server: SwitchServer;
+  onSignIn: (() => void) | null;
+}) {
+  const state = serverState(server);
+  const remoteHost = server.managementKind === 'remote' ? server.sshHost : null;
+  const starting = remoteHost
+    ? remoteServerStore.isTransitioning(remoteHost)
+    : localServerStore.isTransitioning;
+  const start = () =>
+    void (remoteHost ? remoteServerStore.start(remoteHost, server.name) : localServerStore.start());
+  const action =
+    state === 'not-running'
+      ? { label: starting ? 'Starting…' : 'Start', onClick: start, disabled: starting }
+      : state === 'signed-out' && onSignIn
+        ? { label: 'Sign in', onClick: onSignIn, disabled: false }
+        : null;
+
+  return (
+    <div className="mx-1 flex items-center gap-2 rounded-md bg-background-tertiary/60 px-2 py-1.5 text-sm text-foreground-muted">
+      <span className="flex size-5 shrink-0 items-center justify-center">
+        <ServerStatusDot server={server} />
+      </span>
+      <span className="min-w-0 flex-1 truncate">{serverStatusLabel(server)}</span>
+      {action && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-6 px-2 text-xs"
+          disabled={action.disabled}
+          onClick={(event) => {
+            event.stopPropagation();
+            action.onClick();
+          }}
+        >
+          {action.label}
+        </Button>
+      )}
+    </div>
   );
 });
 
@@ -696,12 +716,14 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
 }) {
   const { navigate } = useNavigate();
   const { toast } = useToast();
+  const showInvitePeopleModal = useShowModal('invitePeopleModal');
   const isActive = workspacesStore.activeId === workspace.id;
   // Kept in the list rather than hidden: its agents are still here and the row
   // is the only thing that says where they went. Disabled, because the gateway
   // refuses every call scoped to it — offering it would turn a fact the app
   // already knows into an error after the click.
   const unavailable = workspaceUnavailability(workspace, onServerCount);
+  const canInvite = unavailable === null && administersWorkspace(workspace);
 
   return (
     <DropdownMenuItem
@@ -709,7 +731,7 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
       // at a glance. `aria-current` carries the same fact for anything that
       // cannot see either.
       aria-current={isActive ? 'true' : undefined}
-      className={cn(isActive && 'bg-[var(--sel)]')}
+      className={cn('group/ws', isActive && 'bg-[var(--sel)]')}
       disabled={unavailable !== null}
       title={unavailable ? UNAVAILABLE_REASON[unavailable](workspace.name) : undefined}
       onClick={() => {
@@ -737,7 +759,23 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
           {UNAVAILABLE_BADGE[unavailable]}
         </span>
       )}
-      {isActive && <Check className="size-4 shrink-0 text-foreground" />}
+      {/* Shown on the row under the pointer, and only where the gateway would
+          take it: it refuses members, and a button that always ends in a 403
+          is a trap. */}
+      {canInvite && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-6 shrink-0 gap-1 px-2 text-xs opacity-0 group-hover/ws:opacity-100 group-data-[highlighted]/ws:opacity-100 focus-visible:opacity-100"
+          onClick={(event) => {
+            event.stopPropagation();
+            showInvitePeopleModal({ workspaceId: workspace.id });
+          }}
+        >
+          <UserPlus className="size-3.5" />
+          Invite
+        </Button>
+      )}
     </DropdownMenuItem>
   );
 });
