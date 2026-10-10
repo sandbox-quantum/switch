@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, statfs } from 'node:fs/promises';
-import { arch, freemem, platform, release, totalmem } from 'node:os';
+import { access, mkdtemp, rm, statfs } from 'node:fs/promises';
+import { arch, freemem, platform, release, tmpdir, totalmem } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { ProviderReadiness } from '@switch-console/agent-providers';
@@ -77,14 +77,30 @@ export class PathProviderLocator implements ProviderLocator {
   }
 }
 
+/**
+ * The version a CLI prints. It runs with a home of its own for the probe: some
+ * (OpenCode) create their data directories before printing anything, and the
+ * controller's user may have no home they can write in.
+ */
 async function readVersion(binary: string, args: string[]): Promise<string | null> {
+  const home = await mkdtemp(join(tmpdir(), 'switch-version-'));
   try {
     const { stdout, stderr } = await promisify(execFile)(binary, args, {
       timeout: VERSION_TIMEOUT_MS,
+      env: {
+        ...process.env,
+        HOME: home,
+        XDG_CONFIG_HOME: join(home, '.config'),
+        XDG_DATA_HOME: join(home, '.local', 'share'),
+        XDG_STATE_HOME: join(home, '.local', 'state'),
+        XDG_CACHE_HOME: join(home, '.cache'),
+      },
     });
     return `${stdout}\n${stderr}`.match(/\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/)?.[0] ?? null;
   } catch {
     return null;
+  } finally {
+    await rm(home, { recursive: true, force: true });
   }
 }
 
