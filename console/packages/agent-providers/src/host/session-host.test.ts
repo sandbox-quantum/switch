@@ -1193,3 +1193,20 @@ it('knows which command started a turn', async () => {
   expect(host.originOf('turn')).toEqual(message('turn').origin);
   expect(host.originOf('unknown')).toBeNull();
 });
+
+it('starts a conversation on recovery when the first start never opened one', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-host-test-'));
+  roots.push(root);
+  const failing = setup('cursor');
+  vi.mocked(failing.adapter.startSession).mockRejectedValueOnce(new Error('Invalid params'));
+  await expect(HostedSession.start(root, failing.config, failing.adapter)).rejects.toThrow(
+    'Invalid params'
+  );
+  const recovered = setup('cursor');
+  const host = await HostedSession.start(root, recovered.config, recovered.adapter);
+  hosts.push(host);
+  expect(recovered.adapter.startSession).toHaveBeenCalledWith(
+    expect.not.objectContaining({ resume: expect.anything() })
+  );
+  await vi.waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+});
