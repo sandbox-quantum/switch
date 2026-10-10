@@ -123,18 +123,16 @@ describe('where a new agent runs', () => {
     expect(el.querySelector('button')).toBeNull();
   });
 
-  it('turns this computer on from the form, then looks again', async () => {
+  it('sets this computer up for managed agents as soon as it is chosen, without asking', async () => {
     const onEnabled = vi.fn();
-    const el = await render(
+    await render(
       notice(
         { management: true, target: null, blocker: 'Turn it on first.', canEnable: true },
         null,
         onEnabled
       )
     );
-    const button = el.querySelector('button')!;
-    expect(button.textContent).toBe('Run managed agents on this computer');
-    await act(async () => button.click());
+    expect(embeddedEnable).toHaveBeenCalledTimes(1);
     expect(embeddedEnable).toHaveBeenCalledWith({
       serverId: 'server-1',
       workspaceId: 'workspace-1',
@@ -143,19 +141,33 @@ describe('where a new agent runs', () => {
     expect(onEnabled).toHaveBeenCalled();
   });
 
-  it('makes an SSH host a machine from the form', async () => {
-    const el = await render(
+  it('sets an SSH host up as a machine as soon as it is chosen', async () => {
+    await render(
       notice(
         { management: true, target: null, blocker: 'Make it a machine.', canEnable: true },
         'box'
       )
     );
-    await act(async () => el.querySelector('button')!.click());
     expect(hostEnable).toHaveBeenCalledWith({
       sshHost: 'box',
       serverId: 'server-1',
       workspaceId: 'workspace-1',
     });
+  });
+
+  it('offers the button to try again when setting it up failed, and does not retry by itself', async () => {
+    embeddedEnable.mockRejectedValueOnce(new Error('no controller'));
+    const el = await render(
+      notice(
+        { management: true, target: null, blocker: 'Turn it on first.', canEnable: true },
+        null
+      )
+    );
+    expect(embeddedEnable).toHaveBeenCalledTimes(1);
+    const button = el.querySelector('button')!;
+    expect(button.textContent).toBe('Run managed agents on this computer');
+    await act(async () => button.click());
+    expect(embeddedEnable).toHaveBeenCalledTimes(2);
   });
 
   it('says Console runs the agent on a server without agent management', async () => {

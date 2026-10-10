@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { events, rpc } from '@renderer/lib/ipc';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { agentMigrationChannel } from '@shared/events/agentMigrationEvents';
@@ -24,6 +25,9 @@ export function useManagedAgents(serverId: string | null) {
   const queryClient = useQueryClient();
   const signedIn = serverId !== null && switchServersStore.isConnected(serverId);
   const user = serverId === null ? null : (switchServersStore.statusFor(serverId)?.user ?? null);
+  // The list is the workspace's, not the server's: switching workspace on the
+  // same server has to read it again rather than show the last one.
+  const workspaceId = workspacesStore.idOnServerInScope(serverId);
   useEffect(
     () =>
       events.on(agentMigrationChannel, (event) => {
@@ -33,7 +37,7 @@ export function useManagedAgents(serverId: string | null) {
     [queryClient, serverId]
   );
   return useQuery({
-    queryKey: [MANAGED_AGENTS_KEY, serverId, user?.id ?? null],
+    queryKey: [MANAGED_AGENTS_KEY, serverId, workspaceId, user?.id ?? null],
     queryFn: () => rpc.managedAgents.list(serverId!),
     enabled: signedIn,
     refetchInterval: (query) => (query.state.data === null ? false : MANAGED_AGENTS_REFRESH_MS),
@@ -44,7 +48,12 @@ export function useManagedAgents(serverId: string | null) {
 /** The signed-in user's machines on the server, with what each reported; null without agent management. */
 export function useOwnedMachines(serverId: string) {
   return useQuery({
-    queryKey: [MANAGED_AGENTS_KEY, serverId, 'machines'],
+    queryKey: [
+      MANAGED_AGENTS_KEY,
+      serverId,
+      'machines',
+      workspacesStore.idOnServerInScope(serverId),
+    ],
     queryFn: () => rpc.managedAgents.machines(serverId),
     refetchInterval: 15000,
   });
@@ -53,7 +62,12 @@ export function useOwnedMachines(serverId: string) {
 /** The owner's machines on the server, with what each last reported. Null without agent management. */
 export function useManagedMachines(serverId: string) {
   return useQuery({
-    queryKey: [MANAGED_AGENTS_KEY, serverId, 'machines'],
+    queryKey: [
+      MANAGED_AGENTS_KEY,
+      serverId,
+      'machines',
+      workspacesStore.idOnServerInScope(serverId),
+    ],
     queryFn: () => rpc.managedAgents.machines(serverId),
     refetchInterval: (query) => (query.state.data ? 5000 : false),
     retry: false,
