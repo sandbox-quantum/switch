@@ -33,7 +33,7 @@ export const ManagedAgentList = observer(function ManagedAgentList() {
   if (!agents.data?.length) return null;
   return (
     <div className="flex flex-col gap-[2px]" aria-label="Managed agents">
-      {attentionFirst(agents.data).map((agent) => (
+      {disconnectedLast(agents.data).map((agent) => (
         <ManagedAgentRow key={agent.agentId} agent={agent} />
       ))}
     </div>
@@ -41,12 +41,14 @@ export const ManagedAgentList = observer(function ManagedAgentList() {
 });
 
 /**
- * The agents that need looking at first — a failed agent, or one whose machine
- * is gone — and the rest in the order the server listed them.
+ * The agents in the order the server listed them, with the ones that cannot
+ * run right now — no machine, or a machine that is offline or removed — at the
+ * bottom, where they stay out of the way of the agents that can.
  */
-export function attentionFirst(agents: ManagedAgentView[]): ManagedAgentView[] {
-  const needsAttention = (agent: ManagedAgentView) => managedAgentState(agent).tone === 'problem';
-  return [...agents.filter(needsAttention), ...agents.filter((agent) => !needsAttention(agent))];
+export function disconnectedLast(agents: ManagedAgentView[]): ManagedAgentView[] {
+  const disconnected = (agent: ManagedAgentView) =>
+    agent.machine === null || agent.machine.state !== 'online';
+  return [...agents.filter((agent) => !disconnected(agent)), ...agents.filter(disconnected)];
 }
 
 const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: ManagedAgentView }) {

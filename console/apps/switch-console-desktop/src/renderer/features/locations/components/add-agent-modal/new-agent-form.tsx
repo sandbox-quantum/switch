@@ -151,7 +151,12 @@ export const NewAgentForm = observer(function NewAgentForm({
   const askForMachines =
     !!selectedServerId && !!workspacesStore.idOnServerInScope(selectedServerId);
   const machinesQuery = useQuery({
-    queryKey: [MANAGED_AGENTS_KEY, selectedServerId, 'machines'],
+    queryKey: [
+      MANAGED_AGENTS_KEY,
+      selectedServerId,
+      'machines',
+      workspacesStore.idOnServerInScope(selectedServerId),
+    ],
     queryFn: () => rpc.managedAgents.machines(selectedServerId!),
     enabled: askForMachines,
     refetchInterval: (query) => (query.state.data ? 5000 : false),
