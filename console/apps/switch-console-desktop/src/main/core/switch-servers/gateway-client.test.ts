@@ -1211,6 +1211,13 @@ describe('sign-up support', () => {
     await expect(listCloudMachines(SERVER)).resolves.toBeNull();
   });
 
+  it('reads no cloud machines where the server says this workspace cannot claim one', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ available: false, machines: [] }));
+    await expect(listCloudMachines(SERVER)).resolves.toBeNull();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ available: true, machines: [] }));
+    await expect(listCloudMachines(SERVER)).resolves.toEqual([]);
+  });
+
   it('raises the server’s explanation when no machine can be had', async () => {
     fetchMock.mockResolvedValueOnce(
       errorResponse(503, JSON.stringify({ detail: 'Cloud machines are not offered here.' }))

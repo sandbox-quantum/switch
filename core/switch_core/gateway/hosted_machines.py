@@ -195,14 +195,22 @@ async def _owned(
 async def owned_machines(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    settings: Annotated[HostedControllerSettings | None, Depends(hosted_settings)],
 ) -> dict:
     """The owner's machine, when it serves the bound workspace: in another
-    workspace it is the same machine, joined from there."""
+    workspace it is the same machine, joined from there. `available` says
+    whether the bound workspace may claim one here at all, so a client can
+    offer cloud agents only where claiming one can work."""
+    available = settings is not None and machines_enabled(config, settings)
     machine = await CloudMachineStore().live_for_owner(session, user.id)
     workspace = None if machine is None else await workspace_on(session, machine.id)
     if machine is None or workspace is None:
-        return {"machines": []}
-    return {"machines": [await machine_summary(session, machine, workspace)]}
+        return {"available": available, "machines": []}
+    return {
+        "available": available,
+        "machines": [await machine_summary(session, machine, workspace)],
+    }
 
 
 @router.post("/ensure")

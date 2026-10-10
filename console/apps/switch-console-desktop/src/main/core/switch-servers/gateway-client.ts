@@ -2575,8 +2575,9 @@ export async function createRoom(
 }
 
 /**
- * The caller's cloud machines, or null when the server offers none: a server
- * without cloud machines answers the route with 404.
+ * The caller's cloud machines, or null when the server offers none: it says
+ * this workspace cannot claim one (`available: false`), or, from before it
+ * said so, answers the route with 404.
  */
 export async function listCloudMachines(server: SwitchServer): Promise<CloudMachine[] | null> {
   let response: Response;
@@ -2586,7 +2587,10 @@ export async function listCloudMachines(server: SwitchServer): Promise<CloudMach
     if (error instanceof GatewayError && error.kind === 'http' && error.status === 404) return null;
     throw error;
   }
-  return z.object({ machines: z.array(cloudMachineSchema) }).parse(await response.json()).machines;
+  const listed = z
+    .object({ available: z.boolean().optional(), machines: z.array(cloudMachineSchema) })
+    .parse(await response.json());
+  return listed.available === false ? null : listed.machines;
 }
 
 export async function cloudMachineLifecycle(

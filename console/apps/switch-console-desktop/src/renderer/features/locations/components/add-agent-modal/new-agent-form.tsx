@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Cloud, Monitor, Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCloudMachines } from '@renderer/features/cloud-agents/use-cloud-agents';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
@@ -133,11 +134,17 @@ export const NewAgentForm = observer(function NewAgentForm({
   const selectedServer = switchServersStore.servers.find(
     (server) => server.id === selectedServerId
   );
-  // Running in the cloud is offered wherever the server's flag offers it. A
-  // server that cannot run cloud machines says so when one is claimed.
+  // Running in the cloud is offered where the server's flag offers it, and can
+  // be chosen only where the server says this workspace can claim a machine:
+  // its cloud machine list is null where it cannot, and undefined until read.
   const serverFlags = useFeatureFlags(selectedServerId);
-  const cloudAvailable = !!selectedServer && serverFlags['hosted_agents'];
+  const cloudOffered = !!selectedServer && serverFlags['hosted_agents'];
+  const cloudMachines = useCloudMachines(cloudOffered ? selectedServerId : null);
+  const cloudAvailable = cloudOffered && Array.isArray(cloudMachines.data);
+  const cloudNotSetUp = cloudOffered && cloudMachines.data === null;
   const isCloudRun = runHost === 'cloud';
+  // Why the form moved off Switch cloud by itself, said under the picker.
+  const [cloudFallback, setCloudFallback] = useState<string | null>(null);
 
   // On a server with agent management the server lists where agents can run:
   // every machine the user owns there. Null when it does not run management.
@@ -247,6 +254,17 @@ export const NewAgentForm = observer(function NewAgentForm({
       setRunHost(LOCAL_RUN_LOCATION);
     }
   }, [allowedHosts, runHost]);
+
+  // Switch cloud was chosen (or preset) on a server that turns out not to run
+  // cloud machines: run here instead, and say why rather than leave the form
+  // unable to add the agent.
+  useEffect(() => {
+    if (runHost !== 'cloud' || !cloudNotSetUp) return;
+    setRunHost(LOCAL_RUN_LOCATION);
+    setCloudFallback(
+      'Cloud agents are not set up on this server, so this agent will run on this computer.'
+    );
+  }, [cloudNotSetUp, runHost]);
 
   // The cloud machine's controller is online: the agent goes on it, as on any machine.
   useEffect(() => {
@@ -761,11 +779,17 @@ export const NewAgentForm = observer(function NewAgentForm({
                   <span className="text-xs text-foreground-muted">local</span>
                 </SelectItem>
               )}
-              {cloudAvailable && !cloudMachineListed && (
-                <SelectItem value="cloud">
+              {cloudOffered && !cloudMachineListed && (
+                <SelectItem value="cloud" disabled={!cloudAvailable}>
                   <Cloud className="size-4 text-foreground-muted" />
                   <span className="flex-1">Switch cloud</span>
-                  <span className="text-xs text-foreground-muted">preview</span>
+                  <span className="text-xs text-foreground-muted">
+                    {cloudAvailable
+                      ? 'preview'
+                      : cloudNotSetUp
+                        ? 'not set up on this server'
+                        : 'checking…'}
+                  </span>
                 </SelectItem>
               )}
               {allowedHosts
@@ -781,6 +805,12 @@ export const NewAgentForm = observer(function NewAgentForm({
                 ))}
             </SelectContent>
           </Select>
+          {cloudFallback && !isCloudRun && (
+            <p className="flex items-start gap-1.5 text-xs text-foreground-muted" role="status">
+              <Cloud className="mt-0.5 size-3.5 shrink-0" />
+              <span>{cloudFallback}</span>
+            </p>
+          )}
           {!isCloudRun && !management && runLocationConstrained && (
             <p className="text-xs text-foreground-muted">
               {targetServer?.managementKind === 'remote'

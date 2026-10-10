@@ -122,7 +122,10 @@ async def test_other_owners_machines_read_as_missing(controller_app):  # noqa: F
     fastapi_app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
         id="someone-else"
     )
-    assert (await app.client.get("/hosted-machines")).json() == {"machines": []}
+    assert (await app.client.get("/hosted-machines")).json() == {
+        "available": True,
+        "machines": [],
+    }
     assert (
         await app.client.get(f"/hosted-machines/{app.machine_id}")
     ).status_code == 404
@@ -374,6 +377,7 @@ async def test_ensure_is_unavailable_when_machines_are_not_enabled(
     response = await _ensure(app)
     assert response.status_code == 503
     assert response.json() == {"detail": "This server does not support cloud agents."}
+    assert (await app.client.get("/hosted-machines")).json()["available"] is False
 
 
 async def test_every_workspace_may_use_machines_when_none_is_listed(
@@ -500,7 +504,10 @@ async def test_a_workspace_the_machine_does_not_serve_lists_no_machine(
         await add_tenant(session, "tenant-b")
         await session.commit()
     with tenant_scope("tenant-b"):
-        assert (await app.client.get("/hosted-machines")).json() == {"machines": []}
+        assert (await app.client.get("/hosted-machines")).json() == {
+            "available": False,
+            "machines": [],
+        }
         assert (
             await app.client.get(f"/hosted-machines/{app.machine_id}")
         ).status_code == 404
