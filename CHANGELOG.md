@@ -45,6 +45,11 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Deploy-time feature flags.** Capabilities are gated by a feature-flag
+  setting (`FEATURE_FLAGS_ENABLED`, Helm `switchCore.featureFlags.enabled`)
+  rather than per-capability environment variables. Known flags:
+  `agent_management`, `hosted_agents`, `switch_cloud`, and
+  `ecosystem.show_owners`.
 - **Switch cloud machines that run the agents controller sleep when idle,
   and wake on a message.** Such a machine is stopped once its status reports
   say no session has run for `HOSTED_IDLE_STOP_MINUTES` (released, as before,
@@ -82,6 +87,19 @@ version of their own to them without also giving them a release of their own.
   pods twice. Rendering fails when the secret is missing or shorter than 32
   characters. Remove variables set by hand before the first upgrade that renders
   them (see the chart README).
+
+#### Changed
+- **Agent management moved behind the `agent_management` feature flag.** The old
+  `AGENT_MANAGEMENT_ENABLED` setting is gone: switch-core refuses to start when
+  it is still set to true, and the Helm chart refuses to render with
+  `switchCore.agentManagement.enabled: true`. Enable the `agent_management` flag
+  instead.
+- **Hosted launches require `agent_management`.** `HOSTED_LAUNCH_CAPACITY` above
+  0 now needs the `agent_management` flag enabled.
+
+#### Removed
+- **The `feature_flags` table is dropped.** The migration logs which flags were
+  on at upgrade so they can be re-expressed through the feature-flag setting.
 
 #### Fixed
 - **The Helm chart's Ingress now routes every agent API path to switch-core.**
