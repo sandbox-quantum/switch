@@ -42,17 +42,19 @@ to its controller's own key: Core relays only ciphertext.
 
 ## Enable cloud machines
 
-Cloud machines are turned on by the `switch_cloud.hosted_agents` feature flag,
-which needs the `switch_cloud` and `agent_management` flags too:
-`FEATURE_FLAGS_ENABLED=switch_cloud,switch_cloud.hosted_agents,agent_management`,
-with `CONTROLLER_TOKEN_SECRET` set. Core refuses to start with the flag on and
-any of that missing, and with `HOSTED_LAUNCH_CAPACITY` above 0 and the flag off.
+Switch Console offers cloud machines on a server whose `hosted_agents` feature
+flag is on. The server runs them only once it is set up as below, which needs
+agent management too: `FEATURE_FLAGS_ENABLED=hosted_agents,agent_management`,
+with `CONTROLLER_TOKEN_SECRET` set. Core refuses to start with
+`HOSTED_LAUNCH_CAPACITY` above 0 without agent management. A server with the
+flag on and nothing set up answers a claim with "This server does not support
+cloud agents."
 
 Mount a private JSON file through `HOSTED_CONTROLLER_CONFIG_PATH` with
 `tenant_id`, a dedicated `token` of at least 32 characters and the HTTPS
 `agent_api_endpoint` the machines enroll against. Core refuses unknown keys.
-`HOSTED_LAUNCH_CAPACITY` is how many machines may exist at once: 1–100 with
-the flag on, 0 with it off. Keep it no higher than the hosted controller's
+`HOSTED_LAUNCH_CAPACITY` is how many machines may exist at once, 0–100; 0
+means the server cannot run them. Keep it no higher than the hosted controller's
 `max_machines`. The backend chart exposes
 `switchCore.hostedControllerSecret` (file `controller.json`),
 `switchCore.hostedLaunchCapacity`, `switchCore.hostedIdleStopMinutes` and
@@ -149,7 +151,7 @@ owner stopped stays stopped.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `HOSTED_LAUNCH_CAPACITY` | 0 | Machines at once, at most 100. At least 1 with `switch_cloud.hosted_agents` on, 0 with it off. |
+| `HOSTED_LAUNCH_CAPACITY` | 0 | Machines at once, at most 100. 0 disables. |
 | `HOSTED_IDLE_STOP_MINUTES` | 30 | Idle minutes before a machine sleeps. 0 disables. At most 1440. |
 | `HOSTED_DISK_RETENTION_DAYS` | 7 | Days a disk is kept after its last agent leaves. 1–90. |
 

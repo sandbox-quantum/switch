@@ -88,7 +88,7 @@ function warmCloudMachine(serverId: string): void {
   void loadSwitchCloudOrigin().then(async () => {
     if (serverId !== managedCloudServerId()) return;
     const flags = await rpc.featureFlags.current(serverId);
-    if (!flags.success || !flags.data.flags['switch_cloud.hosted_agents']) return;
+    if (!flags.success || !flags.data.flags['hosted_agents']) return;
     rpc.switchServers.ensureCloudMachine(serverId).catch((cause: unknown) => {
       toast({
         title: 'Your cloud machine did not start',

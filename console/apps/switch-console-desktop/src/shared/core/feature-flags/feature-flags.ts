@@ -12,7 +12,7 @@ import { IS_CANARY, IS_DEV } from '@shared/app-identity';
 export const CONSOLE_FEATURE_FLAGS = [
   'ecosystem.show_owners',
   'switch_cloud',
-  'switch_cloud.hosted_agents',
+  'hosted_agents',
   'agent_management',
 ] as const;
 

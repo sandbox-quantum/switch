@@ -86,6 +86,16 @@ type Props = BaseModalProps<void> & {
   mode?: 'local' | 'remoteHost' | 'external';
 };
 
+/**
+ * Where signing in to Switch Cloud leads: on to setting up cloud agents when
+ * the Cloud offers them (its `hosted_agents` flag), otherwise to the step any
+ * other server ends on.
+ */
+async function stepAfterCloudSignIn(serverId: string): Promise<Step> {
+  const flags = await rpc.featureFlags.current(serverId);
+  return flags.success && flags.data.flags.hosted_agents ? 'managedGitHub' : 'linkAccounts';
+}
+
 type Step =
   | 'managedAgent'
   | 'managedGitHub'
@@ -209,8 +219,10 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
    * chooser rather than to a connect-by-URL form it never passed through. An
    * account already signed in goes on to setting up its cloud agents.
    */
-  const enterCloud = (server: SwitchServer) => {
-    const next: Step = switchServersStore.isConnected(server.id) ? 'managedGitHub' : 'signIn';
+  const enterCloud = async (server: SwitchServer) => {
+    const next: Step = switchServersStore.isConnected(server.id)
+      ? await stepAfterCloudSignIn(server.id)
+      : 'signIn';
     setConnected(server);
     setChoice('cloud');
     setStep(next);
@@ -293,7 +305,8 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
         onClose={props.onClose}
         onSignedIn={(signedIn) => {
           setMachineUnavailable(machineUnavailableReason(signedIn));
-          goToStep(choice === 'cloud' ? 'managedGitHub' : 'linkAccounts');
+          if (choice === 'cloud') void stepAfterCloudSignIn(connected.id).then(goToStep);
+          else goToStep('linkAccounts');
         }}
       />
     );

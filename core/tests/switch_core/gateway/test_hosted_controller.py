@@ -258,9 +258,7 @@ async def test_routes_are_unavailable_without_controller_settings(controller_app
     app.client._transport.app.state.hosted_controller_settings = None
     response = await app.client.get("/hosted-controller/machines", headers=HEADERS)
     assert response.status_code == 503
-    assert response.json() == {
-        "detail": "Switch cloud machines are not enabled on this server."
-    }
+    assert response.json() == {"detail": "This server does not support cloud agents."}
 
 
 async def test_machines_lists_every_live_machine_with_the_contract_keys(

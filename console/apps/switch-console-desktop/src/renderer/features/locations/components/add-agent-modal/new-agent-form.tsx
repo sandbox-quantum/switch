@@ -14,7 +14,6 @@ import {
 } from '@renderer/features/remote-hosts/host-readiness-notice';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
-import { isSwitchCloudServer } from '@renderer/features/switch-servers/switch-cloud-origin';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
@@ -134,13 +133,10 @@ export const NewAgentForm = observer(function NewAgentForm({
   const selectedServer = switchServersStore.servers.find(
     (server) => server.id === selectedServerId
   );
-  // Switch Cloud offers everything any server does, and running in the cloud
-  // besides, once the server turns cloud machines on.
+  // Running in the cloud is offered wherever the server's flag offers it. A
+  // server that cannot run cloud machines says so when one is claimed.
   const serverFlags = useFeatureFlags(selectedServerId);
-  const cloudAvailable =
-    !!selectedServer &&
-    isSwitchCloudServer(selectedServer) &&
-    serverFlags['switch_cloud.hosted_agents'];
+  const cloudAvailable = !!selectedServer && serverFlags['hosted_agents'];
   const isCloudRun = runHost === 'cloud';
 
   // On a server with agent management the server lists where agents can run:

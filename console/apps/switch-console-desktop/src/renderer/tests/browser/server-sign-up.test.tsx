@@ -72,7 +72,7 @@ beforeEach(() => {
 });
 
 function hostedAgents(enabled: boolean) {
-  return { success: true, data: { flags: { 'switch_cloud.hosted_agents': enabled } } };
+  return { success: true, data: { flags: { hosted_agents: enabled } } };
 }
 
 afterEach(async () => {

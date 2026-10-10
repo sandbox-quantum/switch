@@ -32,7 +32,6 @@ from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.feature_flags import SWITCH_CLOUD_HOSTED_AGENTS
 from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
@@ -132,10 +131,9 @@ def create_gateway_app(
         if config.hosted_controller_config_path
         else None
     )
-    if config.hosted_agents_enabled and app.state.hosted_controller_settings is None:
+    if config.hosted_launch_capacity and app.state.hosted_controller_settings is None:
         raise ValueError(
-            f"The {SWITCH_CLOUD_HOSTED_AGENTS!r} feature flag requires "
-            "HOSTED_CONTROLLER_CONFIG_PATH."
+            "HOSTED_LAUNCH_CAPACITY above 0 requires HOSTED_CONTROLLER_CONFIG_PATH."
         )
     app.include_router(hosted_machines_router, tags=["hosted-machines"])
     app.include_router(hosted_controller_router, tags=["hosted-controller"])

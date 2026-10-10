@@ -80,40 +80,27 @@ def test_the_old_setting_is_refused_from_the_environment(
         _config()
 
 
-_HOSTED = "switch_cloud,switch_cloud.hosted_agents,agent_management"
-
-
 def test_cloud_machines_are_off_by_default() -> None:
     config = _config()
     assert config.hosted_agents_enabled is False
     assert config.hosted_launch_capacity == 0
 
 
-def test_cloud_machines_on_with_what_they_need() -> None:
+def test_the_flag_offers_cloud_machines_on_a_server_that_cannot_run_them() -> None:
+    config = _config(feature_flags_enabled="hosted_agents")
+    assert config.hosted_agents_enabled is True
+    assert config.hosted_launch_capacity == 0
+
+
+def test_capacity_needs_agent_management() -> None:
+    with pytest.raises(ValueError, match="HOSTED_LAUNCH_CAPACITY needs"):
+        _config(hosted_launch_capacity=1)
+
+
+def test_capacity_with_agent_management_is_accepted() -> None:
     config = _config(
-        feature_flags_enabled=_HOSTED,
+        feature_flags_enabled="agent_management",
         controller_token_secret=_LONG_ENOUGH,
         hosted_launch_capacity=2,
     )
-    assert config.hosted_agents_enabled is True
-
-
-@pytest.mark.parametrize("left_out", ["switch_cloud", "agent_management"])
-def test_cloud_machines_need_the_cloud_and_agent_management(left_out: str) -> None:
-    flags = ",".join(f for f in _HOSTED.split(",") if f != left_out)
-    with pytest.raises(ValueError, match=left_out):
-        _config(
-            feature_flags_enabled=flags,
-            controller_token_secret=_LONG_ENOUGH,
-            hosted_launch_capacity=2,
-        )
-
-
-def test_cloud_machines_on_with_no_capacity_raises() -> None:
-    with pytest.raises(ValueError, match="HOSTED_LAUNCH_CAPACITY must be at least 1"):
-        _config(feature_flags_enabled=_HOSTED, controller_token_secret=_LONG_ENOUGH)
-
-
-def test_capacity_with_cloud_machines_off_raises() -> None:
-    with pytest.raises(ValueError, match="HOSTED_LAUNCH_CAPACITY is above 0"):
-        _config(hosted_launch_capacity=1)
+    assert config.hosted_launch_capacity == 2

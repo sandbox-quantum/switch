@@ -24,7 +24,7 @@ const propagateServerApiUrl = vi.hoisted(() => vi.fn());
 const followServerApiUrl = vi.hoisted(() => vi.fn());
 const listCloudMachines = vi.hoisted(() => vi.fn());
 const ensureCloudMachine = vi.hoisted(() => vi.fn());
-const serverFlags = vi.hoisted(() => ({ 'switch_cloud.hosted_agents': true }));
+const serverFlags = vi.hoisted(() => ({ hosted_agents: true }));
 
 // Stub the modules the controller imports that would otherwise pull electron /
 // ssh / agent side effects at load.
@@ -752,7 +752,7 @@ describe('finding the server an invite link is for', () => {
 describe('cloud machines', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    serverFlags['switch_cloud.hosted_agents'] = true;
+    serverFlags['hosted_agents'] = true;
   });
 
   it('lists and claims them on a server that turns them on', async () => {
@@ -763,13 +763,13 @@ describe('cloud machines', () => {
   });
 
   it('answers that there are none, without asking, when the server turns them off', async () => {
-    serverFlags['switch_cloud.hosted_agents'] = false;
+    serverFlags['hosted_agents'] = false;
     expect(await switchServersController.cloudMachines('srv')).toBeNull();
     expect(listCloudMachines).not.toHaveBeenCalled();
   });
 
   it('refuses to claim one when the server turns them off', async () => {
-    serverFlags['switch_cloud.hosted_agents'] = false;
+    serverFlags['hosted_agents'] = false;
     await expect(switchServersController.ensureCloudMachine('srv')).rejects.toThrow(
       'does not have cloud machines turned on'
     );

@@ -174,9 +174,10 @@ switchCore:
   # Existing Secret with github.json (client_id, client_secret, slug, origin).
   githubConnectionsSecret: ""
   hostedControllerSecret: ""
-  # How many cloud machines may run at once: at least 1 with the
-  # "switch_cloud.hosted_agents" feature flag on, which also needs the
-  # "switch_cloud" and "agent_management" flags, and 0 with it off.
+  # How many cloud machines may run at once; 0 means this server cannot run
+  # them. Cloud machines run the agents controller, so above 0 this needs the
+  # "agent_management" feature flag. The "hosted_agents" flag is what offers
+  # them in Switch Console.
   hostedLaunchCapacity: 0
   hostedDiskRetentionDays: 7
   hostedIdleStopMinutes: 30
@@ -335,7 +336,7 @@ switchCore:
   # ["ecosystem.show_owners"]. Every other flag is off, and no one can change
   # them while the server runs. An unknown flag stops switch-core at startup.
   # Known flags: ecosystem.show_owners, agent_management, switch_cloud,
-  # switch_cloud.hosted_agents.
+  # hosted_agents.
   featureFlags:
     enabled: []
   # Invitation e-mails. When enabled, an invitation addressed to an e-mail is

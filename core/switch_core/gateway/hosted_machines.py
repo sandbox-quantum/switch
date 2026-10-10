@@ -24,7 +24,7 @@ router = APIRouter(prefix="/hosted-machines")
 
 RETIRED_STATES = frozenset({"retained", "deleting", "deleted"})
 
-MACHINES_DISABLED = "Switch cloud machines are not enabled on this server."
+MACHINES_DISABLED = "This server does not support cloud agents."
 
 
 def hosted_settings(request: Request) -> HostedControllerSettings | None:
@@ -42,7 +42,11 @@ def controller_settings(request: Request) -> HostedControllerSettings:
 
 def machines_enabled(config: SwitchConfig, settings: HostedControllerSettings) -> bool:
     """Whether the bound tenant may claim cloud machines on this server."""
-    return config.hosted_agents_enabled and settings.tenant_id == require_tenant_id()
+    return (
+        config.hosted_agents_enabled
+        and config.hosted_launch_capacity > 0
+        and settings.tenant_id == require_tenant_id()
+    )
 
 
 def _usage(heartbeat: dict | None, key: str) -> dict | None:

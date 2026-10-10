@@ -180,9 +180,9 @@ async function registerSwitchCloud({ url }: SwitchCloudEndpoint): Promise<Switch
   return server;
 }
 
-/** Whether the server turns cloud machines on (its `switch_cloud.hosted_agents` flag). */
+/** Whether the server turns cloud machines on (its `hosted_agents` flag). */
 async function hostedAgentsOn(server: SwitchServer): Promise<boolean> {
-  return (await featureFlagsService.current(server)).flags['switch_cloud.hosted_agents'];
+  return (await featureFlagsService.current(server)).flags['hosted_agents'];
 }
 
 export const switchServersController = createRPCController({
