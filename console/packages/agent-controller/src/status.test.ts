@@ -2,6 +2,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateSealingKeyPair, sealProviderLogin } from '@switch-console/agent-providers';
+import { vertexCredentialFixture } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { type AgentObservation, emptyObservation } from './runtime';
@@ -264,15 +265,20 @@ describe('ProviderStatuses with logins given to the machine', () => {
   let answer: SealedLoginResponse | null;
   let reachable: boolean;
 
-  function sealedAnswer(credential: string, revision = 1): SealedLoginResponse {
+  function sealedAnswer(
+    credential: string,
+    revision = 1,
+    kind: 'setup-token' | 'vertex' = 'setup-token',
+    provider: 'claude' | 'codex' = 'claude'
+  ): SealedLoginResponse {
     return {
-      provider: 'claude',
+      provider,
       revision,
       sealed: sealProviderLogin({
         publicKey: keys.publicKey,
         controllerId: 'controller-1',
-        provider: 'claude',
-        login: { kind: 'setup-token', credential },
+        provider,
+        login: { kind, credential },
       }),
     };
   }
@@ -326,6 +332,35 @@ describe('ProviderStatuses with logins given to the machine', () => {
       credential: 'sk-ant-oat-given',
     });
     expect(runtime.loginProbes.map((login) => login.credential)).toEqual(['sk-ant-oat-given']);
+  });
+
+  it('uses a given Vertex AI login once Claude signs in with it', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+    answer = sealedAnswer(vertexCredentialFixture(), 4, 'vertex');
+    const statuses = build(runtime);
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    expect(await statuses.givenLogin('claude')).toEqual({
+      status: 'connected',
+      provider: 'claude',
+      revision: '4',
+      kind: 'vertex',
+      credential: vertexCredentialFixture(),
+    });
+    expect(runtime.loginProbes.map((login) => login.kind)).toEqual(['vertex']);
+  });
+
+  it('refuses a Vertex AI login given for another provider than Claude', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    answer = sealedAnswer(vertexCredentialFixture(), 1, 'vertex', 'codex');
+    const statuses = build(runtime);
+    expect(await statuses.check('codex')).toMatchObject({ auth: 'missing' });
+    expect(statuses.loginProblem('codex')).toEqual({
+      code: 'internal',
+      message: expect.stringContaining('Only Claude signs in through Vertex AI.'),
+    });
+    expect(runtime.loginProbes).toEqual([]);
   });
 
   it('says why a given login is not used', async () => {

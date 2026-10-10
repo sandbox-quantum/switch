@@ -13,10 +13,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { type OpenAgentStream, readSharedCredentials } from '@switch-console/agent-providers';
+import {
+  SERVICE_ACCOUNT_KEY_FIXTURE,
+  vertexCredentialFixture,
+} from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { dataLayout } from './paths';
-import { InProcessRuntime, isInside, observeOnDisk } from './runtime';
+import { InProcessRuntime, isInside, loginProbeEnvironment, observeOnDisk } from './runtime';
 import { buildWatcherTemplate } from './template';
 
 /** Stands in for the shared-host bundle: answers `--probe`. Sessions are never started here. */
@@ -262,6 +266,30 @@ describe('InProcessRuntime', () => {
       message: '--probe claude /tmp /usr/bin/claude',
       models: [],
     });
+  });
+
+  it('probes a Vertex AI login with its Google credential written in a directory of its own', async () => {
+    const checkDir = join(dir, 'login-check', 'claude');
+    const env = await loginProbeEnvironment(
+      checkDir,
+      {
+        status: 'connected',
+        provider: 'claude',
+        revision: '1',
+        kind: 'vertex',
+        credential: vertexCredentialFixture(),
+      },
+      '/usr/bin/claude'
+    );
+    const path = join(checkDir, 'provider-home', 'google-credentials.json');
+    expect(env).toEqual({
+      CLAUDE_CODE_USE_VERTEX: '1',
+      ANTHROPIC_VERTEX_PROJECT_ID: 'cg-vertexai',
+      CLOUD_ML_REGION: 'global',
+      GOOGLE_APPLICATION_CREDENTIALS: path,
+    });
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(SERVICE_ACCOUNT_KEY_FIXTURE);
   });
 
   it('resolves working directories', async () => {
