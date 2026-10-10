@@ -203,6 +203,8 @@ export const providerStatusSchema = z.object({
   auth_source: z.enum(['local', 'sealed']).nullable(),
   checked_at: time,
   reason: reasonCode.optional(),
+  /** Why no version was read from an installed CLI. */
+  version_problem: z.string().max(300).optional(),
 });
 export type ProviderStatus = z.infer<typeof providerStatusSchema>;
 

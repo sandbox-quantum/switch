@@ -20,7 +20,9 @@ function inputs(overrides: Partial<DoctorInputs> = {}): DoctorInputs {
     bundle: () => '/opt/shared-host.mjs',
     exchange: async () => ({}),
     locate: async (provider) =>
-      provider === 'claude' ? { path: '/usr/bin/claude', version: '2.1.0' } : null,
+      provider === 'claude'
+        ? { path: '/usr/bin/claude', version: '2.1.0', versionProblem: null }
+        : null,
     probe: async () => ({ status: 'authenticated', message: 'Signed in.', models: [] }),
     service: async () => 'running',
     latest: async () => ({ version: '0.2.0', packageUrl: 'https://example.invalid/p.tgz' }),

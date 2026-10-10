@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { generateSealingKeyPair } from '@switch-console/agent-providers';
 import packageJson from '../package.json' with { type: 'json' };
@@ -442,7 +442,7 @@ async function runCommand(args: string[]): Promise<number> {
                 }),
                 new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
               ),
-        locator: new PathProviderLocator(process.env.PATH),
+        locator: new PathProviderLocator(process.env.PATH, join(dataDir, 'version-probe')),
         fetch,
         openWebSocket: nodeWebSocket,
         log,
@@ -707,7 +707,7 @@ async function doctorCommand(args: string[]): Promise<number> {
     strict: true,
   });
   const { dataDir, store, secrets } = await openState(values['data-dir']);
-  const locator = new PathProviderLocator(process.env.PATH);
+  const locator = new PathProviderLocator(process.env.PATH, join(dataDir, 'version-probe'));
   try {
     const separateUsers = await findSeparateUsersConfig(currentUid(), dataDir);
     const separateRuntime = separateUsers

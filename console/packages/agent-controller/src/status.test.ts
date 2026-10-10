@@ -185,7 +185,7 @@ describe('mapAgentProcess', () => {
 
 describe('providerStatusFrom', () => {
   const at = '2026-01-01T00:00:00Z';
-  const located = { path: '/usr/bin/claude', version: '2.0.0' };
+  const located = { path: '/usr/bin/claude', version: '2.0.0', versionProblem: null };
   const readiness = (status: 'authenticated' | 'unauthenticated' | 'unconfigured' | 'unknown') => ({
     status,
     message: '',
@@ -382,8 +382,12 @@ describe('PathProviderLocator', () => {
     writeFileSync(script, '#!/bin/sh\necho "2026.01.15-abc"\n');
     chmodSync(script, 0o755);
     writeFileSync(join(dir, 'claude'), 'not executable');
-    const locator = new PathProviderLocator(`/nonexistent:${dir}`);
-    expect(await locator.locate('cursor')).toEqual({ path: script, version: '2026.01.15-abc' });
+    const locator = new PathProviderLocator(`/nonexistent:${dir}`, join(dir, 'probe-home'));
+    expect(await locator.locate('cursor')).toEqual({
+      path: script,
+      version: '2026.01.15-abc',
+      versionProblem: null,
+    });
     expect(await locator.locate('claude')).toBeNull();
     expect(await locator.locate('codex')).toBeNull();
   });
@@ -398,11 +402,36 @@ describe('PathProviderLocator', () => {
     const previous = process.env.HOME;
     process.env.HOME = '/nonexistent';
     try {
-      const located = await new PathProviderLocator(dir).locate('opencode');
-      expect(located).toEqual({ path: script, version: '1.18.35' });
+      const located = await new PathProviderLocator(dir, join(dir, 'probe-home')).locate(
+        'opencode'
+      );
+      expect(located).toEqual({ path: script, version: '1.18.35', versionProblem: null });
     } finally {
       process.env.HOME = previous;
     }
+  });
+});
+
+describe('a CLI whose version cannot be read', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'controller-version-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('says why, so the report can carry it', async () => {
+    const script = join(dir, 'opencode');
+    writeFileSync(script, '#!/bin/sh\necho "EROFS: read-only file system" >&2\nexit 1\n');
+    chmodSync(script, 0o755);
+    const located = await new PathProviderLocator(dir, join(dir, 'probe-home')).locate('opencode');
+    expect(located).toEqual({
+      path: script,
+      version: null,
+      versionProblem: 'exited 1: EROFS: read-only file system',
+    });
+    expect(
+      providerStatusFrom('opencode', located, null, '2026-01-01T00:00:00Z').version_problem
+    ).toBe('exited 1: EROFS: read-only file system');
   });
 });
 
