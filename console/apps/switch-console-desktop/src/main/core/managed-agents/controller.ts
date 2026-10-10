@@ -1,7 +1,9 @@
 import {
+  parseGoogleCredentials,
   type ProviderLogin,
   sealingKeyId,
   sealProviderLogin,
+  vertexLoginCredential,
 } from '@switch-console/agent-providers';
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
 import { hostControllerService } from '@main/core/host-controllers/host-controllers';
@@ -18,6 +20,10 @@ import {
   setManagedAgentDesiredState,
   updateManagedAgent,
 } from '@main/core/switch-servers/gateway-client';
+import {
+  localGoogleCredentialsPath,
+  readLocalGoogleCredentials,
+} from '@main/core/switch-servers/local-google-sign-in';
 import {
   localProviderAuthPath,
   readLocalProviderSignIn,
@@ -244,6 +250,21 @@ async function loginToGive(
   provider: AgentProviderId,
   input: MachineLoginInput
 ): Promise<ProviderLogin> {
+  if (input.source === 'vertex') {
+    if (provider !== 'claude') throw new Error('Only Claude signs in through Vertex AI.');
+    const text =
+      input.credentials.from === 'key'
+        ? input.credentials.json.trim()
+        : await readLocalGoogleCredentials(localGoogleCredentialsPath());
+    if (!text) throw new Error('Paste the service account key, or pick its JSON file.');
+    const credential = vertexLoginCredential({
+      project: input.project,
+      region: input.region,
+      credentials: parseGoogleCredentials(text),
+    });
+    if (credential.length > 16384) throw new Error('The Google credential is too large to give.');
+    return { kind: 'vertex', credential };
+  }
   if (input.source === 'typed') {
     const credential = input.credential.trim();
     if (!credential) throw new Error('Enter the key or token to give the machine.');
