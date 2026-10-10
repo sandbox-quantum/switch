@@ -195,7 +195,10 @@ export class CursorAdapter implements ProviderAdapter {
         input.mcpServers,
         initialized.agentCapabilities?.mcpCapabilities?.http
       );
-      await client.request('authenticate', { methodId: 'cursor_login' });
+      // With an API key the CLI is signed in already; `cursor_login` would
+      // ignore the key and start a browser sign-in, which a host cannot finish.
+      if (!input.env.CURSOR_API_KEY?.trim())
+        await client.request('authenticate', { methodId: 'cursor_login' });
       const mcpServers = Object.entries(input.mcpServers).map(([name, server]) =>
         server.transport === 'stdio'
           ? {

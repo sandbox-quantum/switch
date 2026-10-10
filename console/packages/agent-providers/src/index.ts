@@ -110,6 +110,16 @@ export {
   type SealingKeyPair,
 } from './sealed-login';
 export {
+  type GoogleCredentials,
+  googleCredentialsSchema,
+  parseGoogleCredentials,
+  parseVertexLogin,
+  VERTEX_CREDENTIALS_FILE,
+  type VertexLogin,
+  vertexLoginCredential,
+  vertexLoginSchema,
+} from './vertex-login';
+export {
   SessionHostFailedError,
   SessionLinks,
   SessionUnavailableError,
@@ -123,7 +133,7 @@ export {
   watcherHealthSchema,
 } from './host/watcher-tools';
 
-export { prepareCodexSessionHome } from './codex/home';
+export { prepareCodexSessionHome, withManagedCodexSandbox } from './codex/home';
 export { readSharedCredentials, sharedConfigSchema } from './host/shared-config';
 export type { SharedHostConfig } from './host/shared-config';
 

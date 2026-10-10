@@ -1,6 +1,7 @@
 import {
   generateSealingKeyPair,
   type HostedCredential,
+  hostedCredentialSchema,
   openProviderLogin,
   type SealingKeyPair,
 } from '@switch-console/agent-providers';
@@ -105,15 +106,18 @@ export class SealedLogins {
         provider,
         sealed: answer.sealed,
       });
-      return {
-        login: {
-          status: 'connected',
-          provider,
-          revision: String(answer.revision),
-          kind: opened.kind,
-          credential: opened.credential,
-        },
-      };
+      const login = hostedCredentialSchema.safeParse({
+        status: 'connected',
+        provider,
+        revision: String(answer.revision),
+        kind: opened.kind,
+        credential: opened.credential,
+      });
+      if (!login.success || login.data.status !== 'connected')
+        throw new Error(
+          `The ${provider} login given to this machine cannot be used: ${login.error?.issues[0]?.message ?? 'it is not a connected login'}`
+        );
+      return { login: login.data };
     } catch (error) {
       return { problem: { code: 'internal', message: errorMessage(error) } };
     }

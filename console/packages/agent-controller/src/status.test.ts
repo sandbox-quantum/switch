@@ -2,6 +2,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateSealingKeyPair, sealProviderLogin } from '@switch-console/agent-providers';
+import { vertexCredentialFixture } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { type AgentObservation, emptyObservation } from './runtime';
@@ -185,7 +186,7 @@ describe('mapAgentProcess', () => {
 
 describe('providerStatusFrom', () => {
   const at = '2026-01-01T00:00:00Z';
-  const located = { path: '/usr/bin/claude', version: '2.0.0' };
+  const located = { path: '/usr/bin/claude', version: '2.0.0', versionProblem: null };
   const readiness = (status: 'authenticated' | 'unauthenticated' | 'unconfigured' | 'unknown') => ({
     status,
     message: '',
@@ -264,15 +265,20 @@ describe('ProviderStatuses with logins given to the machine', () => {
   let answer: SealedLoginResponse | null;
   let reachable: boolean;
 
-  function sealedAnswer(credential: string, revision = 1): SealedLoginResponse {
+  function sealedAnswer(
+    credential: string,
+    revision = 1,
+    kind: 'setup-token' | 'vertex' = 'setup-token',
+    provider: 'claude' | 'codex' = 'claude'
+  ): SealedLoginResponse {
     return {
-      provider: 'claude',
+      provider,
       revision,
       sealed: sealProviderLogin({
         publicKey: keys.publicKey,
         controllerId: 'controller-1',
-        provider: 'claude',
-        login: { kind: 'setup-token', credential },
+        provider,
+        login: { kind, credential },
       }),
     };
   }
@@ -328,6 +334,35 @@ describe('ProviderStatuses with logins given to the machine', () => {
     expect(runtime.loginProbes.map((login) => login.credential)).toEqual(['sk-ant-oat-given']);
   });
 
+  it('uses a given Vertex AI login once Claude signs in with it', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+    answer = sealedAnswer(vertexCredentialFixture(), 4, 'vertex');
+    const statuses = build(runtime);
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    expect(await statuses.givenLogin('claude')).toEqual({
+      status: 'connected',
+      provider: 'claude',
+      revision: '4',
+      kind: 'vertex',
+      credential: vertexCredentialFixture(),
+    });
+    expect(runtime.loginProbes.map((login) => login.kind)).toEqual(['vertex']);
+  });
+
+  it('refuses a Vertex AI login given for another provider than Claude', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    answer = sealedAnswer(vertexCredentialFixture(), 1, 'vertex', 'codex');
+    const statuses = build(runtime);
+    expect(await statuses.check('codex')).toMatchObject({ auth: 'missing' });
+    expect(statuses.loginProblem('codex')).toEqual({
+      code: 'internal',
+      message: expect.stringContaining('Only Claude signs in through Vertex AI.'),
+    });
+    expect(runtime.loginProbes).toEqual([]);
+  });
+
   it('says why a given login is not used', async () => {
     const runtime = new FakeRuntime();
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
@@ -340,11 +375,13 @@ describe('ProviderStatuses with logins given to the machine', () => {
 
     answer = sealedAnswer('sk-ant-oat-expired');
     runtime.loginReadiness = { status: 'unauthenticated', message: 'Token expired.', models: [] };
-    expect(await statuses.check('claude')).toMatchObject({
+    const expired = await statuses.check('claude');
+    expect(expired).toMatchObject({
       auth: 'expired',
       auth_source: 'sealed',
       reason: 'provider_login_expired',
     });
+    expect(expired.auth_problem).toContain('Token expired.');
     expect(statuses.loginProblem('claude')?.message).toContain('Token expired.');
     expect(await statuses.givenLogin('claude')).toBeNull();
 
@@ -382,10 +419,56 @@ describe('PathProviderLocator', () => {
     writeFileSync(script, '#!/bin/sh\necho "2026.01.15-abc"\n');
     chmodSync(script, 0o755);
     writeFileSync(join(dir, 'claude'), 'not executable');
-    const locator = new PathProviderLocator(`/nonexistent:${dir}`);
-    expect(await locator.locate('cursor')).toEqual({ path: script, version: '2026.01.15-abc' });
+    const locator = new PathProviderLocator(`/nonexistent:${dir}`, join(dir, 'probe-home'));
+    expect(await locator.locate('cursor')).toEqual({
+      path: script,
+      version: '2026.01.15-abc',
+      versionProblem: null,
+    });
     expect(await locator.locate('claude')).toBeNull();
     expect(await locator.locate('codex')).toBeNull();
+  });
+
+  it('reads the version of a CLI that writes in its home first, with a home of its own', async () => {
+    const script = join(dir, 'opencode');
+    writeFileSync(
+      script,
+      '#!/bin/sh\nmkdir -p "$XDG_DATA_HOME/opencode" "$HOME/.cache" || exit 1\necho 1.18.35\n'
+    );
+    chmodSync(script, 0o755);
+    const previous = process.env.HOME;
+    process.env.HOME = '/nonexistent';
+    try {
+      const located = await new PathProviderLocator(dir, join(dir, 'probe-home')).locate(
+        'opencode'
+      );
+      expect(located).toEqual({ path: script, version: '1.18.35', versionProblem: null });
+    } finally {
+      process.env.HOME = previous;
+    }
+  });
+});
+
+describe('a CLI whose version cannot be read', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'controller-version-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('says why, so the report can carry it', async () => {
+    const script = join(dir, 'opencode');
+    writeFileSync(script, '#!/bin/sh\necho "EROFS: read-only file system" >&2\nexit 1\n');
+    chmodSync(script, 0o755);
+    const located = await new PathProviderLocator(dir, join(dir, 'probe-home')).locate('opencode');
+    expect(located).toEqual({
+      path: script,
+      version: null,
+      versionProblem: 'exited 1: EROFS: read-only file system',
+    });
+    expect(
+      providerStatusFrom('opencode', located, null, '2026-01-01T00:00:00Z').version_problem
+    ).toBe('exited 1: EROFS: read-only file system');
   });
 });
 

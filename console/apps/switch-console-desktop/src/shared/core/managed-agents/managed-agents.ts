@@ -69,12 +69,20 @@ export type MachineProvider = {
 };
 
 /**
- * A provider login to give a machine: a key or token typed in, or this
- * computer's own sign-in for the provider, read from its file.
+ * A provider login to give a machine: a key or token typed in, this
+ * computer's own sign-in for the provider, read from its file, or (Claude
+ * only) Google Vertex AI, with a service account key pasted or picked, or this
+ * computer's Google application-default sign-in.
  */
 export type MachineLoginInput =
   | { source: 'typed'; kind: 'api-key' | 'setup-token'; credential: string }
-  | { source: 'this-computer' };
+  | { source: 'this-computer' }
+  | {
+      source: 'vertex';
+      project: string;
+      region: string;
+      credentials: { from: 'key'; json: string } | { from: 'this-computer' };
+    };
 
 /** How giving a machine a login went: still being taken up, taken up, or why not. */
 export type MachineLoginOutcome =

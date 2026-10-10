@@ -275,6 +275,16 @@ when there is none. From then on the provider is reported ready with
   Antigravity) is written by the agent host in its own state. The agent runs in
   a process of its own, as a separate user under `--separate-users`, and is
   restarted when the login changes or is withdrawn.
+- Claude can also be given a Vertex AI login: a Google Cloud project, a region,
+  and a Google credential, either a service account key (recommended: one for a
+  service account that can use only Vertex AI, `roles/aiplatform.user`) or the
+  owner's own `gcloud auth application-default login` sign-in, which carries
+  all of their Google Cloud access. The agent host writes the credential to
+  `provider-home/google-credentials.json` in its own state (mode 0600), and the
+  agent's environment gets `CLAUDE_CODE_USE_VERTEX=1`,
+  `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` and
+  `GOOGLE_APPLICATION_CREDENTIALS` pointing at that file, with
+  `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` blanked.
 - Logins are kept in memory only, and fetched again every ten minutes and on
   each `provider.login` and `provider.recheck`. When Switch cannot be reached,
   the login already held is kept.

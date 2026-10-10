@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, statfs } from 'node:fs/promises';
+import { access, mkdir, statfs } from 'node:fs/promises';
 import { arch, freemem, platform, release, totalmem } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -25,7 +25,8 @@ import type { GivenLogin, LoginProblem, SealedLogins } from './sealed-logins';
 import type { AgentRow, ControllerStore } from './store';
 
 export const PROVIDER_TTL_MS = 10 * 60 * 1000;
-const VERSION_TIMEOUT_MS = 10_000;
+// A first run may unpack the CLI's own runtime (OpenCode's Bun) before printing.
+const VERSION_TIMEOUT_MS = 30_000;
 const DETAIL_LIMIT = 1000;
 /** A launch this recent with nothing alive yet is still starting, not crashed. */
 export const LAUNCH_GRACE_MS = 15_000;
@@ -39,7 +40,12 @@ export function contractPlatform(): Platform {
   };
 }
 
-export type LocatedProvider = { path: string; version: string | null };
+/** A provider's CLI, its version, and why none was read when it was not. */
+export type LocatedProvider = {
+  path: string;
+  version: string | null;
+  versionProblem: string | null;
+};
 
 /** Finds a provider's CLI on this machine. */
 export interface ProviderLocator {
@@ -51,7 +57,16 @@ export interface ProviderLocator {
  * as Console's dependency detection does, and asks it for its version.
  */
 export class PathProviderLocator implements ProviderLocator {
-  constructor(private readonly path: string | undefined) {}
+  /**
+   * `probeHome` is the home CLIs run with to print their version: some
+   * (OpenCode) write there before printing, and the controller's user may have
+   * none it can write in. Kept between probes, so a runtime a CLI unpacks on
+   * its first run is unpacked once.
+   */
+  constructor(
+    private readonly path: string | undefined,
+    private readonly probeHome: string
+  ) {}
 
   async locate(provider: Provider): Promise<LocatedProvider | null> {
     const plugin = pluginRegistry.get(provider);
@@ -66,26 +81,69 @@ export class PathProviderLocator implements ProviderLocator {
         } catch {
           continue;
         }
+        if (dependency.skipVersionProbe)
+          return { path: candidate, version: null, versionProblem: null };
         return {
           path: candidate,
-          version: dependency.skipVersionProbe
-            ? null
-            : await readVersion(candidate, dependency.versionArgs ?? ['--version']),
+          ...(await readVersion(
+            candidate,
+            dependency.versionArgs ?? ['--version'],
+            this.probeHome
+          )),
         };
       }
     return null;
   }
 }
 
-async function readVersion(binary: string, args: string[]): Promise<string | null> {
+/** The version a CLI prints, or why none could be read. */
+async function readVersion(
+  binary: string,
+  args: string[],
+  home: string
+): Promise<{ version: string | null; versionProblem: string | null }> {
   try {
+    await mkdir(home, { recursive: true, mode: 0o700 });
     const { stdout, stderr } = await promisify(execFile)(binary, args, {
       timeout: VERSION_TIMEOUT_MS,
+      env: {
+        ...process.env,
+        HOME: home,
+        XDG_CONFIG_HOME: join(home, '.config'),
+        XDG_DATA_HOME: join(home, '.local', 'share'),
+        XDG_STATE_HOME: join(home, '.local', 'state'),
+        XDG_CACHE_HOME: join(home, '.cache'),
+      },
     });
-    return `${stdout}\n${stderr}`.match(/\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/)?.[0] ?? null;
-  } catch {
-    return null;
+    const output = `${stdout}\n${stderr}`;
+    const version = output.match(/\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/)?.[0] ?? null;
+    return version
+      ? { version, versionProblem: null }
+      : { version: null, versionProblem: `printed no version: ${lastLine(output)}` };
+  } catch (error) {
+    const failed = error as NodeJS.ErrnoException & {
+      killed?: boolean;
+      code?: number | string;
+      stderr?: string;
+      stdout?: string;
+    };
+    const versionProblem = failed.killed
+      ? `timed out after ${VERSION_TIMEOUT_MS / 1000} s`
+      : typeof failed.code === 'number'
+        ? `exited ${failed.code}: ${lastLine(`${failed.stdout ?? ''}\n${failed.stderr ?? ''}`)}`
+        : errorMessage(error);
+    return { version: null, versionProblem: versionProblem.slice(0, 300) };
   }
+}
+
+function lastLine(output: string): string {
+  return (
+    output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .at(-1) ?? '(nothing)'
+  );
 }
 
 export function providerStatusFrom(
@@ -104,7 +162,13 @@ export function providerStatusFrom(
       checked_at: checkedAt,
       reason: 'provider_not_installed',
     };
-  const base = { provider, installed: true, version: located.version, checked_at: checkedAt };
+  const base = {
+    provider,
+    installed: true,
+    version: located.version,
+    ...(located.versionProblem ? { version_problem: located.versionProblem } : {}),
+    checked_at: checkedAt,
+  };
   if (!readiness) return { ...base, auth: 'unknown', auth_source: null, reason: 'internal' };
   switch (readiness.status) {
     case 'authenticated':
@@ -191,10 +255,13 @@ export class ProviderStatuses {
             auth: 'expired',
             auth_source: 'sealed',
             reason: 'provider_login_expired',
+            auth_problem: problem.message.slice(0, 300),
           };
         }
-      } else if (given) problem = given.problem;
-      else {
+      } else if (given) {
+        problem = given.problem;
+        if (problem) status = { ...status, auth_problem: problem.message.slice(0, 300) };
+      } else {
         const held = this.entries.get(provider);
         login = held?.login ?? null;
         problem = held?.problem ?? null;
@@ -204,6 +271,7 @@ export class ProviderStatuses {
             auth: held.status.auth,
             auth_source: 'sealed',
             reason: held.status.reason,
+            ...(held.status.auth_problem ? { auth_problem: held.status.auth_problem } : {}),
           };
       }
     }

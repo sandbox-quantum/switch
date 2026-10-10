@@ -436,12 +436,15 @@ class TestControllerMachines:
                     client, owner, name="reviewer", controller_id=first["controller_id"]
                 )
                 assert created.status_code == 201, created.text
+                before = (await _machine(harness.session_factory, machine.id)).revision
                 revoked = await client.delete(
                     f"/gateway/management/controllers/{first['controller_id']}",
                     cookies=cookies_for(owner),
                 )
                 assert revoked.status_code == 200, revoked.text
-                await _new_revision(harness.session_factory, machine.id)
+                assert (
+                    await _machine(harness.session_factory, machine.id)
+                ).revision == before + 1
                 [prepared] = (await _prepare(hosted, machine.id))["controllers"]
                 assert prepared["id"] is None
                 second_code = prepared["enrollment_code"]
