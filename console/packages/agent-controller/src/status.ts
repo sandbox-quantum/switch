@@ -255,10 +255,13 @@ export class ProviderStatuses {
             auth: 'expired',
             auth_source: 'sealed',
             reason: 'provider_login_expired',
+            auth_problem: problem.message.slice(0, 300),
           };
         }
-      } else if (given) problem = given.problem;
-      else {
+      } else if (given) {
+        problem = given.problem;
+        if (problem) status = { ...status, auth_problem: problem.message.slice(0, 300) };
+      } else {
         const held = this.entries.get(provider);
         login = held?.login ?? null;
         problem = held?.problem ?? null;
@@ -268,6 +271,7 @@ export class ProviderStatuses {
             auth: held.status.auth,
             auth_source: 'sealed',
             reason: held.status.reason,
+            ...(held.status.auth_problem ? { auth_problem: held.status.auth_problem } : {}),
           };
       }
     }
