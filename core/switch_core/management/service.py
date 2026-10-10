@@ -62,6 +62,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.hosted_machine_store import CloudMachineStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.gateway.cloud_controllers import (
+    enroll_revoked_again,
     record_controller_status,
     wake_controller_machine,
 )
@@ -727,8 +728,20 @@ class ManagementService:
         if controller.revoked_at is not None:
             return
         await self._revoke(session, tenant_id, controller_id)
+        machine = (
+            await enroll_revoked_again(session, controller_id, self.now())
+            if controller.kind == "ec2"
+            else None
+        )
         await session.commit()
         logger.info("Revoked agent controller %s", controller_id)
+        if machine is not None:
+            logger.info(
+                "Cloud machine %s enrolls a new controller for workspace %s at revision %s",
+                machine.id,
+                tenant_id,
+                machine.revision,
+            )
         self._announce_revoked(controller_id)
 
     async def _revoke(

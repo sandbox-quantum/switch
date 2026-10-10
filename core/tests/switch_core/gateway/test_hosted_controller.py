@@ -34,6 +34,7 @@ from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.cloud_controllers import (
     controller_machine_idle,
     controller_reports,
+    enroll_revoked_again,
     record_controller_status,
     set_cloud_enrollment,
 )
@@ -1338,3 +1339,49 @@ async def test_a_workspace_its_owner_left_no_longer_keeps_the_machine_awake(
     assert response.status_code == 200, response.text
     machine = await machine_of(app.factory, app.machine_id)
     assert set(controller_reports(machine)) == {app.workspace_id}
+
+
+async def test_a_revoked_workspace_controller_enrolls_again_and_the_others_keep_theirs(
+    controller_app,
+):
+    app = controller_app
+    here, _ = await enrolled(app, agents=1)
+    there = await join_workspace(app, "tenant-b", agents=1, member=True)
+    before = (await machine_of(app.factory, app.machine_id)).revision
+    with tenant_scope(there.tenant_id):
+        async with app.factory() as session:
+            controller = await session.get(AgentController, there.controller_id)
+            assert controller is not None
+            controller.revoked_at = datetime.now(UTC)
+            machine = await enroll_revoked_again(
+                session, there.controller_id, datetime.now(UTC)
+            )
+            await session.commit()
+    assert machine is not None and machine.revision == before + 1
+    response = await prepare(app.client, app.machine_id)
+    assert response.status_code == 200, response.text
+    by_key = {entry["key"]: entry for entry in response.json()["controllers"]}
+    assert (
+        by_key[app.workspace_id]["id"],
+        by_key[app.workspace_id]["enrollment_code"],
+    ) == (
+        here,
+        None,
+    )
+    assert by_key[there.workspace_id]["id"] is None
+    assert by_key[there.workspace_id]["enrollment_code"] is not None
+
+
+async def test_a_stopped_machine_enrolls_its_revoked_controller_at_its_next_start(
+    controller_app,
+):
+    app = controller_app
+    here, _ = await enrolled(app, agents=0)
+    await update_machine(
+        app.factory, app.machine_id, desired_state="stopped", stop_reason="owner"
+    )
+    before = (await machine_of(app.factory, app.machine_id)).revision
+    async with app.factory() as session:
+        assert await enroll_revoked_again(session, here, datetime.now(UTC)) is not None
+        await session.commit()
+    assert (await machine_of(app.factory, app.machine_id)).revision == before
