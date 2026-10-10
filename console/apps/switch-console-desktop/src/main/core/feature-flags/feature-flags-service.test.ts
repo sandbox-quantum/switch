@@ -89,6 +89,15 @@ describe('FeatureFlagsService', () => {
     expect((await h.service.current(server('a'))).flags.agent_management).toBe(true);
   });
 
+  it('says whether any server turns a flag on', async () => {
+    const h = harness([server('a'), server('b')]);
+    expect(h.service.anyEnabled('agent_management')).toBe(false);
+    h.responses.set('b', [{ key: 'agent_management', enabled: true }]);
+    await h.service.refreshAll();
+    expect(h.service.anyEnabled('agent_management')).toBe(true);
+    expect(h.service.anyEnabled('hosted_agents')).toBe(false);
+  });
+
   it('forgets a server that was removed', async () => {
     const h = harness([server('a')]);
     h.responses.set('a', [{ key: 'ecosystem.show_owners', enabled: true }]);

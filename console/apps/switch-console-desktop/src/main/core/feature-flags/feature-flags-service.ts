@@ -1,5 +1,6 @@
 import {
   allFeatureFlagsOff,
+  type FeatureFlagKey,
   resolveFeatureFlags,
   sameFeatureFlags,
   type RemoteFeatureFlag,
@@ -65,6 +66,11 @@ export class FeatureFlagsService {
   async current(server: SwitchServer): Promise<ServerFeatureFlags> {
     if (this.states.get(server.id)?.fetchedAt == null) await this.readOne(server);
     return this.get(server.id);
+  }
+
+  /** Whether any server read so far turns `key` on. */
+  anyEnabled(key: FeatureFlagKey): boolean {
+    return [...this.states.values()].some((state) => state.flags[key]);
   }
 
   /** Read every server's flags now. Concurrent calls share one pass. */

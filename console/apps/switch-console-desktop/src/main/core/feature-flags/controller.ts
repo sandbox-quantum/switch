@@ -1,5 +1,6 @@
 import { err, ok } from '@switch-console/shared';
 import { getServer } from '@main/core/switch-servers/servers-store';
+import type { FeatureFlagKey } from '@shared/core/feature-flags/feature-flags';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { featureFlagsService } from './feature-flags';
 
@@ -13,6 +14,8 @@ export const featureFlagsController = createRPCController({
     if (!server) return err(`No Switch server ${serverId}`);
     return ok(await featureFlagsService.current(server));
   },
+  /** Whether any connected server turns `key` on, as last read. */
+  anyEnabled: (key: FeatureFlagKey) => ok(featureFlagsService.anyEnabled(key)),
   /** Read every server's flags now rather than waiting for the next poll. */
   refresh: async () => {
     await featureFlagsService.refreshAll();
