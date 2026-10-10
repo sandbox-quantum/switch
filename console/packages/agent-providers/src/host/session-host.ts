@@ -256,7 +256,9 @@ export class HostedSession {
           );
           return host;
         }
-        if (!host.nativeId)
+        // A session whose provider never opened a conversation (its first
+        // start failed) has nothing to resume: it starts one below.
+        if (!host.nativeId && host.providerAnswered())
           throw new Error('Cannot recover a session without its native provider ID.');
         if (config.epochAuthority !== 'server') config.session.epoch = randomUUID();
         const next = host.replica.snapshot();
