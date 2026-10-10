@@ -367,6 +367,26 @@ def _schema_version(below: list[dict[str, Any]]) -> str:
     return _BASE_VERSION
 
 
+def _avatar_column(agent: AgentRendering) -> list[dict[str, Any]]:
+    if agent.icon_url is None:
+        return []
+    return [
+        {
+            "type": "Column",
+            "width": "auto",
+            "items": [
+                {
+                    "type": "Image",
+                    "url": agent.icon_url,
+                    "size": "Small",
+                    "style": "Person",
+                    "altText": agent.field_label,
+                }
+            ],
+        }
+    ]
+
+
 def agent_message_card(
     agent: AgentRendering,
     body: str,
@@ -412,19 +432,7 @@ def agent_message_card(
             {
                 "type": "ColumnSet",
                 "columns": [
-                    {
-                        "type": "Column",
-                        "width": "auto",
-                        "items": [
-                            {
-                                "type": "Image",
-                                "url": agent.icon_url,
-                                "size": "Small",
-                                "style": "Person",
-                                "altText": agent.field_label,
-                            }
-                        ],
-                    },
+                    *_avatar_column(agent),
                     {
                         "type": "Column",
                         "width": "stretch",

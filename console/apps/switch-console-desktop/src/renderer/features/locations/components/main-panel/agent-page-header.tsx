@@ -88,7 +88,7 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
         ) : (
           // Not registered on a server yet, so there is nothing to change the
           // icon on — shown, but not offered as editable.
-          <AgentAvatar name={title} iconUrl={null} size={88} />
+          <AgentAvatar name={title} iconUrl={null} serverId={agent?.serverId ?? null} size={88} />
         )
       }
       title={title}

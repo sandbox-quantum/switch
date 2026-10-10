@@ -1056,21 +1056,76 @@ export async function updateCanManageAgents(
   });
 }
 
+/** Whether a server generates and forwards third-party avatar URLs — DiceBear
+ * for an agent with no icon, `ui-avatars.com` for a relayed platform user — or
+ * has turned that off (`THIRD_PARTY_AVATARS_ENABLED` on the server). */
+export type AvatarSettings = { thirdPartyAvatarsEnabled: boolean };
+
+/** `GET /agents/avatar-settings` only changes when the Switch server's own
+ * process restarts, so each server's answer is reused for the rest of this
+ * app session rather than asked again on every caller — the picker, the new
+ * agent default and the icon backfill all end up asking within the same few
+ * seconds of a workspace loading. Evicted on failure so a transient network
+ * error does not poison the session with a wrong answer forever. */
+const avatarSettingsCache = new Map<string, Promise<AvatarSettings>>();
+
+/**
+ * Whether `server` allows a third-party avatar URL to be generated or sent
+ * anywhere (`GET /agents/avatar-settings`).
+ *
+ * A 404 is a server predating the setting: every such server always generated
+ * and forwarded these URLs, so absence reads as enabled — the same behavior as
+ * before the setting existed, and the same pattern as every other
+ * predates-the-capability field in this file. Any other failure propagates.
+ */
+export function fetchAvatarSettings(server: SwitchServer): Promise<AvatarSettings> {
+  const cached = avatarSettingsCache.get(server.id);
+  if (cached) return cached;
+  const request = requestAvatarSettings(server).catch((cause) => {
+    avatarSettingsCache.delete(server.id);
+    throw cause;
+  });
+  avatarSettingsCache.set(server.id, request);
+  return request;
+}
+
+async function requestAvatarSettings(server: SwitchServer): Promise<AvatarSettings> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/agents/avatar-settings', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) {
+      return { thirdPartyAvatarsEnabled: true };
+    }
+    throw cause;
+  }
+  const json = (await res.json()) as { third_party_avatars_enabled: boolean };
+  return { thirdPartyAvatarsEnabled: json.third_party_avatars_enabled };
+}
+
 /**
  * One page of the icons the server generates for an agent called `name`
  * (`GET /agents/icon-choices`): page 0 leads with the one an agent of that
- * name gets when nobody picks an icon.
+ * name gets when nobody picks an icon. `choices` is empty on a server that
+ * disables third-party avatars — callers that already know that from
+ * {@link fetchAvatarSettings} should not call this at all, but the server
+ * answers consistently either way.
  */
 export async function fetchAgentIconChoices(
   server: SwitchServer,
   name: string,
   page: number
-): Promise<string[]> {
+): Promise<{ choices: string[]; thirdPartyAvatarsEnabled: boolean }> {
   const query = new URLSearchParams({ name, page: String(page) });
   const res = await gatewayFetch(server, `/agents/icon-choices?${query.toString()}`, {
     authenticated: true,
   });
-  return ((await res.json()) as { choices: string[] }).choices;
+  const json = (await res.json()) as { choices: string[]; third_party_avatars_enabled?: boolean };
+  // Absent on a server predating the setting, which always generated them.
+  return {
+    choices: json.choices,
+    thirdPartyAvatarsEnabled: json.third_party_avatars_enabled ?? true,
+  };
 }
 
 /**

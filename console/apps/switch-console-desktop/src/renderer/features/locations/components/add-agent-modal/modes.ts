@@ -1,5 +1,6 @@
-import { useCallback, useState } from 'react';
-import { randomAgentAvatarUrl } from '@shared/core/agents/agent-avatar';
+import { useCallback, useEffect, useState } from 'react';
+import { useThirdPartyAvatarsEnabled } from '@renderer/lib/stores/use-avatar-settings';
+import { isThirdPartyAvatarUrl, randomAgentAvatarUrl } from '@shared/core/agents/agent-avatar';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
@@ -39,7 +40,7 @@ export type PickModeState = ReturnType<typeof usePickMode>;
  * local agent, one for a remote one — and switching between them swapped which
  * was on screen, so the name and description the user had typed vanished.
  */
-export function useConfigureAgentForm() {
+export function useConfigureAgentForm(serverId: string | null) {
   const [agentName, setAgentNameFolded] = useState('');
   // What was typed, before the identifier folded it to lowercase. The slug
   // offer hands this back as the display name, so the capitals in a typed
@@ -68,6 +69,19 @@ export function useConfigureAgentForm() {
   // generates" — that is what the ✕ in the picker returns to.
   const [initialIconUrl] = useState(randomAgentAvatarUrl);
   const [iconUrl, setIconUrl] = useState<string | null>(initialIconUrl);
+  const thirdPartyAvatarsEnabled = useThirdPartyAvatarsEnabled(serverId);
+
+  // The random bot above is drawn before anything is known about where the
+  // agent will land, so a server that turns out to disable third-party
+  // avatars has to lose it retroactively — sent as-is, it would be the one
+  // DiceBear URL this form ever created without the server's permission.
+  // Nothing else changes here while the server is still unknown or allows
+  // them: this only fires once the answer is a confirmed no.
+  useEffect(() => {
+    if (thirdPartyAvatarsEnabled === false && iconUrl !== null && isThirdPartyAvatarUrl(iconUrl)) {
+      setIconUrl(null);
+    }
+  }, [thirdPartyAvatarsEnabled, iconUrl]);
 
   const setAutoApprove = useCallback((value: boolean) => {
     setAutoApproveRaw(value);
@@ -151,6 +165,7 @@ export function useConfigureAgentForm() {
      * the user went and chose. Only the caption cares; the value sent to the
      * server is `iconUrl` either way. */
     iconIsGenerated: iconUrl === null || iconUrl === initialIconUrl,
+    thirdPartyAvatarsEnabled,
     isValid,
   };
 }

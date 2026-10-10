@@ -48,7 +48,13 @@ const AgentCrumb = observer(function AgentCrumb({ agent }: { agent: Agent | null
           // provider logo that used to sit here says what it runs on, which is
           // not what a crumb naming one agent is for.
           icon: agent ? (
-            <AgentAvatar name={label} iconUrl={iconUrl} size={16} className="bg-transparent" />
+            <AgentAvatar
+              name={label}
+              iconUrl={iconUrl}
+              serverId={agent.serverId}
+              size={16}
+              className="bg-transparent"
+            />
           ) : (
             <Bot className="size-3.5 shrink-0" />
           ),

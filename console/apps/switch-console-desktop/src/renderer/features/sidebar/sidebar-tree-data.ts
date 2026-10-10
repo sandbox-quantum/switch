@@ -226,5 +226,8 @@ function reportBackfill(workspaceId: string, outcome: AgentIconBackfill): void {
     });
     return;
   }
+  // 'written' and 'disabled' both fall through here silently: a server that
+  // disables third-party avatars wrote nothing on purpose, which is the
+  // outcome working as intended, not a problem to surface.
   reportedBackfill.delete(workspaceId);
 }

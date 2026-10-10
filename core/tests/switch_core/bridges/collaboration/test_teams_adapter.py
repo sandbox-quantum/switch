@@ -32,7 +32,9 @@ def _config() -> TeamsConnectionConfig:
 
 
 def _adapter() -> TeamsAdapter:
-    return TeamsAdapter(config=_config())
+    adapter = TeamsAdapter(config=_config())
+    adapter.set_third_party_avatars(True)
+    return adapter
 
 
 def _run(coro: Any) -> Any:

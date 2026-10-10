@@ -9,7 +9,11 @@ from datetime import datetime
 from typing import Any, ClassVar, Literal, Protocol, final, runtime_checkable
 
 from switch_core.agent_display_name import defuse_label_markup
-from switch_core.agent_icon import generated_icon_url, initials_icon_url
+from switch_core.agent_icon import (
+    generated_icon_url,
+    initials_icon_url,
+    is_third_party_avatar,
+)
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
@@ -77,7 +81,8 @@ class AgentRendering:
 
     field_label: str
     body_label: str
-    icon_url: str
+    # None when the platform should draw its own default icon for the sender.
+    icon_url: str | None
 
 
 @dataclass(frozen=True)
@@ -541,9 +546,19 @@ class PlatformAdapter(ABC):
         # size against this before downloading so an oversize file is rejected
         # loudly instead of being pulled down and discarded.
         self._max_attachment_bytes = 20 * 1024 * 1024
+        # Set by the lifecycle service from config.third_party_avatars_enabled.
+        # Off until then, so an adapter whose wiring was missed shows platform
+        # default icons, which someone notices, rather than quietly sending
+        # names to avatar services an operator has turned off.
+        self._third_party_avatars = False
 
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
+
+    def set_third_party_avatars(self, enabled: bool) -> None:
+        """Whether this adapter may hand platforms an icon drawn by an outside
+        avatar service (`agent_icon.is_third_party_avatar`)."""
+        self._third_party_avatars = enabled
 
     @classmethod
     async def prepare_config(
@@ -1731,6 +1746,11 @@ class PlatformAdapter(ABC):
         # than turning every agent into a person. The bridge core installs one
         # before the adapter starts, so a running bridge without it is a wiring
         # fault, and said so once.
+        #
+        # The face and the badge are both drawn by outside services that see
+        # the name. With third-party avatars off neither is built, and a stored
+        # icon on one of those services is withheld too, so the sender goes out
+        # with no icon and the platform draws its own default.
         if self._resolve_agent_presentation is None:
             if not self._reported_missing_resolver:
                 self._reported_missing_resolver = True
@@ -1740,25 +1760,40 @@ class PlatformAdapter(ABC):
                     type(self).__name__,
                 )
             label = agent_name
-            icon_url = generated_icon_url(agent_name)
+            icon_url = self._generated_icon(agent_name)
         else:
             found = await self._resolve_agent_presentation(agent_name)
             label = (found.display_name if found else None) or agent_name
             if found is None:
-                icon_url = initials_icon_url(agent_name)
+                icon_url = (
+                    initials_icon_url(agent_name) if self._third_party_avatars else None
+                )
+            elif found.icon_url is None:
+                icon_url = self._generated_icon(agent_name)
+            elif not self._third_party_avatars and is_third_party_avatar(
+                found.icon_url
+            ):
+                icon_url = None
             else:
-                icon_url = found.icon_url or generated_icon_url(agent_name)
+                icon_url = found.icon_url
         return AgentRendering(
             field_label=label,
             body_label=self.escape_label_for_body(label),
-            icon_url=self.adapt_icon_url(icon_url),
+            icon_url=None if icon_url is None else self.adapt_icon_url(icon_url),
         )
 
-    async def agent_icon_url(self, agent_name: str) -> str:
+    def _generated_icon(self, agent_name: str) -> str | None:
+        return generated_icon_url(agent_name) if self._third_party_avatars else None
+
+    async def agent_icon_url(self, agent_name: str) -> str | None:
         """The icon URL to render for an agent on this platform.
 
         Adapters call this wherever they need a per-message avatar: the agent's
-        own icon when it has one, otherwise this platform's existing default."""
+        own icon when it has one, otherwise this platform's existing default.
+        None when third-party avatars are off and the icon would have come from
+        an outside avatar service: the generated face or lettered badge, or a
+        stored icon on one of those services, whoever chose it. The platform
+        then draws its own default."""
         return (await self.agent_rendering(agent_name)).icon_url
 
     async def agent_label_for_body(self, agent_name: str) -> str:

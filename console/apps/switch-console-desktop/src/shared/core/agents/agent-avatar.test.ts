@@ -5,7 +5,9 @@ import {
   agentAvatarUrlForName,
   agentAvatarUrlForSeed,
   agentInitials,
+  isThirdPartyAvatarUrl,
   randomAgentAvatarUrl,
+  resolveAgentAvatarSrc,
 } from './agent-avatar';
 
 describe('randomAgentAvatarUrl', () => {
@@ -103,6 +105,88 @@ describe('agentAvatarChoices', () => {
     const worker = agentAvatarChoices('worker', 0);
     const manager = agentAvatarChoices('manager', 0);
     expect(worker.some((choice) => manager.includes(choice))).toBe(false);
+  });
+});
+
+describe('isThirdPartyAvatarUrl', () => {
+  it('matches a DiceBear URL', () => {
+    expect(isThirdPartyAvatarUrl(agentAvatarUrlForName('worker'))).toBe(true);
+  });
+
+  it('matches a ui-avatars.com URL', () => {
+    expect(isThirdPartyAvatarUrl('https://ui-avatars.com/api/?name=Ada+Lovelace')).toBe(true);
+  });
+
+  it('matches a subdomain of either host', () => {
+    expect(isThirdPartyAvatarUrl('https://api.dicebear.com/10.x/gaze/png?seed=x')).toBe(true);
+    expect(isThirdPartyAvatarUrl('https://cdn.ui-avatars.com/api/?name=x')).toBe(true);
+  });
+
+  it('matches regardless of case', () => {
+    expect(isThirdPartyAvatarUrl('https://API.DICEBEAR.COM/10.x/gaze/png?seed=x')).toBe(true);
+  });
+
+  it('ignores a trailing dot on the hostname, as the server does', () => {
+    // `dicebear.com.` names the same host as `dicebear.com`.
+    expect(isThirdPartyAvatarUrl('https://dicebear.com./10.x/gaze/png?seed=x')).toBe(true);
+    expect(isThirdPartyAvatarUrl('https://api.dicebear.com./10.x/gaze/png?seed=x')).toBe(true);
+    expect(isThirdPartyAvatarUrl('https://ui-avatars.com./api/?name=x')).toBe(true);
+  });
+
+  it('rejects a lookalike host that merely starts or ends with the name', () => {
+    // `api.dicebear.com` is a label under `.example`, not a DiceBear subdomain.
+    expect(isThirdPartyAvatarUrl('https://api.dicebear.com.example/x')).toBe(false);
+    expect(isThirdPartyAvatarUrl('https://notdicebear.com/x.png')).toBe(false);
+    expect(isThirdPartyAvatarUrl('https://ui-avatars.com.evil.test/api/?name=x')).toBe(false);
+  });
+
+  it('rejects an unrelated host', () => {
+    expect(isThirdPartyAvatarUrl('https://example.com/avatar.png')).toBe(false);
+  });
+
+  it('answers false for a URL that cannot be parsed', () => {
+    expect(isThirdPartyAvatarUrl('not a url')).toBe(false);
+  });
+});
+
+describe('resolveAgentAvatarSrc', () => {
+  // These are AgentAvatar's own states — pulled out so the privacy-sensitive
+  // decision ("may a name-seeded or stored third-party URL be shown at all")
+  // is tested without rendering the component.
+
+  it('falls back to the name-generated avatar when the server allows it and nothing was chosen', () => {
+    expect(resolveAgentAvatarSrc(null, 'worker', true)).toBe(agentAvatarUrlForName('worker'));
+  });
+
+  it('shows a chosen icon as-is when the server allows third-party avatars', () => {
+    expect(resolveAgentAvatarSrc('https://example.com/a.png', 'worker', true)).toBe(
+      'https://example.com/a.png'
+    );
+  });
+
+  it('shows nothing — not the name-generated avatar — when the server disables them', () => {
+    expect(resolveAgentAvatarSrc(null, 'worker', false)).toBeNull();
+  });
+
+  it('withholds a stored third-party icon when the server disables them', () => {
+    expect(resolveAgentAvatarSrc(agentAvatarUrlForName('worker'), 'worker', false)).toBeNull();
+  });
+
+  it('still shows a custom, non-third-party icon when the server disables third-party avatars', () => {
+    expect(resolveAgentAvatarSrc('https://example.com/a.png', 'worker', false)).toBe(
+      'https://example.com/a.png'
+    );
+  });
+
+  it('treats "not known yet" exactly like disabled, not like enabled', () => {
+    expect(resolveAgentAvatarSrc(null, 'worker', null)).toBeNull();
+    expect(resolveAgentAvatarSrc(agentAvatarUrlForName('worker'), 'worker', null)).toBeNull();
+  });
+
+  it('still shows a custom, non-third-party icon while the server is not known yet', () => {
+    expect(resolveAgentAvatarSrc('https://example.com/a.png', 'worker', null)).toBe(
+      'https://example.com/a.png'
+    );
   });
 });
 

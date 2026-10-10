@@ -104,6 +104,7 @@ def test_the_slack_adapter_applies_it_to_a_resolved_icon() -> None:
             workspace_id="T123",
         )
     )
+    adapter.set_third_party_avatars(True)
 
     async def resolver(name: str) -> AgentPresentation | None:
         return AgentPresentation(display_name=None, icon_url=DICEBEAR)
@@ -118,6 +119,10 @@ def test_hands_slack_an_icon_url_up_to_its_limit() -> None:
     at_limit = "https://example.com/" + "a" * (SLACK_ICON_URL_MAX - 20)
     assert len(at_limit) == SLACK_ICON_URL_MAX
     assert slack_icon_argument(at_limit, "worker") == at_limit
+
+
+def test_sends_no_icon_url_when_there_is_no_icon() -> None:
+    assert slack_icon_argument(None, "worker") is None
 
 
 def test_sends_no_icon_url_past_slacks_limit() -> None:

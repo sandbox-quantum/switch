@@ -101,6 +101,8 @@ const {
   fetchAgentManagementAccess,
   updateCanManageAgents,
   updateManagedAgent,
+  fetchAvatarSettings,
+  fetchAgentIconChoices,
 } = await import('./gateway-client');
 
 const SERVER = {
@@ -115,6 +117,14 @@ const MANAGED = {
   gatewayUrl: 'https://switch.example.com',
   managed: true,
 } as never;
+
+/** `SERVER` under a different id — `SERVER` is typed `as never` so TypeScript
+ * can hand it to every call expecting a full `SwitchServer`, but that also
+ * means it cannot be spread. Used where a test needs several distinct servers
+ * (e.g. the per-server avatar-settings cache) without redeclaring every field. */
+function serverWithId(id: string): typeof SERVER {
+  return { id, name: 'S', gatewayUrl: 'https://switch.example.com', managed: false } as never;
+}
 
 /** A structurally-valid JWT whose payload `exp` is `secondsFromNow` in the
  * future (or past when negative). Signature is a placeholder — the client only
@@ -2519,5 +2529,91 @@ describe('agent management calls', () => {
       respond(200, { providers: { claude: { fields: [{ key: 'tools', type: 'grid' }] } } })
     );
     await expect(fetchAdvancedConfigSchema(SERVER)).rejects.toThrow();
+  });
+});
+
+describe('fetchAvatarSettings', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(2 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reports the server’s own answer', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse({ third_party_avatars_enabled: false }));
+    const server = serverWithId('avatar-enabled-false');
+    await expect(fetchAvatarSettings(server)).resolves.toEqual({
+      thirdPartyAvatarsEnabled: false,
+    });
+  });
+
+  it('reads a 404 as a server predating the setting, which always sent these URLs', async () => {
+    fetchMock.mockImplementation(async () => errorResponse(404, '{"detail":"Not Found"}'));
+    const server = serverWithId('avatar-404');
+    await expect(fetchAvatarSettings(server)).resolves.toEqual({
+      thirdPartyAvatarsEnabled: true,
+    });
+  });
+
+  it('propagates any other failure rather than guessing an answer', async () => {
+    fetchMock.mockImplementation(async () => errorResponse(500, '{"detail":"boom"}'));
+    const server = serverWithId('avatar-500');
+    await expect(fetchAvatarSettings(server)).rejects.toThrow();
+  });
+
+  it('asks once per server for the rest of the session', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse({ third_party_avatars_enabled: true }));
+    const server = serverWithId('avatar-cached');
+    await fetchAvatarSettings(server);
+    await fetchAvatarSettings(server);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('asks again after a failure, rather than caching it', async () => {
+    const server = serverWithId('avatar-retry');
+    fetchMock.mockImplementationOnce(async () => errorResponse(500, '{"detail":"boom"}'));
+    await expect(fetchAvatarSettings(server)).rejects.toThrow();
+
+    fetchMock.mockImplementation(async () => jsonResponse({ third_party_avatars_enabled: true }));
+    await expect(fetchAvatarSettings(server)).resolves.toEqual({
+      thirdPartyAvatarsEnabled: true,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('fetchAgentIconChoices', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(2 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('carries the server’s flag with the choices', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ choices: [], third_party_avatars_enabled: false })
+    );
+    await expect(fetchAgentIconChoices(serverWithId('choices-off'), 'worker', 0)).resolves.toEqual({
+      choices: [],
+      thirdPartyAvatarsEnabled: false,
+    });
+  });
+
+  it('reads a missing flag as a server predating the setting, which always generated them', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ choices: ['https://example.com/a.png'] })
+    );
+    await expect(fetchAgentIconChoices(serverWithId('choices-old'), 'worker', 0)).resolves.toEqual({
+      choices: ['https://example.com/a.png'],
+      thirdPartyAvatarsEnabled: true,
+    });
   });
 });

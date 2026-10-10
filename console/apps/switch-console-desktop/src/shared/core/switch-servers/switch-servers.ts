@@ -239,7 +239,10 @@ export type AgentIconBackfill =
   | { kind: 'written'; written: number }
   /** The server has no agent-icon endpoint — it predates the feature. */
   | { kind: 'unsupported' }
-  | { kind: 'partial'; written: number; failed: number };
+  | { kind: 'partial'; written: number; failed: number }
+  /** The server disables third-party avatars, so nothing was generated or
+   * written — by the operator's own choice, not a failure. */
+  | { kind: 'disabled' };
 
 /** Read-only summary of a remote room (mirrors the gateway `RoomSummary`). */
 export type RemoteRoomSummary = {

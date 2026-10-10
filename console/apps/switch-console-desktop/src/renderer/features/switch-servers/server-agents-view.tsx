@@ -144,7 +144,7 @@ function ManagedAgentCard({ agent }: { agent: ManagedAgentView }) {
       />
       <div className="pointer-events-none flex flex-1 flex-col p-[14px]">
         <div className="flex flex-1 items-center justify-center py-3">
-          <AgentAvatar name={label} iconUrl={agent.iconUrl} size={66} />
+          <AgentAvatar name={label} iconUrl={agent.iconUrl} serverId={agent.serverId} size={66} />
         </div>
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-foreground">{label}</div>
@@ -198,7 +198,7 @@ const AgentCard = observer(function AgentCard({
 
       <div className="pointer-events-none flex flex-1 flex-col p-[14px]">
         <div className="flex flex-1 items-center justify-center py-3">
-          <AgentAvatar name={label} iconUrl={iconUrl} size={66} />
+          <AgentAvatar name={label} iconUrl={iconUrl} serverId={serverId} size={66} />
         </div>
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-foreground">{label}</div>

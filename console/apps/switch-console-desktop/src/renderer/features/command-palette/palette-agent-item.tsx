@@ -39,6 +39,7 @@ export const PaletteAgentItem = observer(function PaletteAgentItem({
         <AgentAvatar
           name={item.title}
           iconUrl={iconUrl}
+          serverId={agent?.serverId ?? null}
           size={16}
           className="-mx-px bg-transparent"
         />

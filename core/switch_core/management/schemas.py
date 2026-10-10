@@ -404,7 +404,8 @@ class CreateManagedAgentRequest(_GatewayBody):
     name: str
     description: str
     display_name: str | None = None
-    # Null for the icon its name generates (`agent_icon.generated_icon_url`).
+    # Null for the icon its name generates (`agent_icon.generated_icon_url`),
+    # or for no icon when the server has third-party avatars off.
     icon_url: str | None = None
     controller_id: str | None
     desired_state: DesiredState

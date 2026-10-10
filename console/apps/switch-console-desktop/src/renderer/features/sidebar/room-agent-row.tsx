@@ -119,6 +119,7 @@ export const RoomAgentRow = observer(function RoomAgentRow({
               <AgentAvatar
                 name={label}
                 iconUrl={iconUrl}
+                serverId={agent.serverId}
                 size={21}
                 className="-mx-[1.5px] bg-transparent"
               />

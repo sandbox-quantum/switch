@@ -2380,6 +2380,14 @@ class MattermostAdapter(PlatformAdapter):
         driver = self._admin_driver
         try:
             url = await self.agent_icon_url(agent_name)
+            if url is None:
+                # Nothing is uploaded, so the bot keeps the image it has: the
+                # default for a new bot, or whatever an earlier start set.
+                logger.debug(
+                    "[BOT-ICON] no icon to send for %s; leaving the bot's current image",
+                    agent_name,
+                )
+                return
             logger.debug("[BOT-ICON] fetching avatar for %s", agent_name)
             # This is the one place Switch dereferences an agent's icon URL
             # rather than handing it to a platform, so the fetch is bounded:

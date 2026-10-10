@@ -156,6 +156,16 @@ def test_a_card_with_no_mentions_carries_no_msteams_block() -> None:
     assert "msteams" not in agent_message_card(_RENDERING, "hello", [], [])
 
 
+def test_a_sender_with_no_icon_gets_no_image_element() -> None:
+    """An Image with no url is an invalid card, and Teams drops the whole post."""
+    rendering = AgentRendering(field_label="james", body_label="james", icon_url=None)
+    card = agent_message_card(rendering, "hello", [], [])
+    header = card["body"][0]
+    assert [item["type"] for col in header["columns"] for item in col["items"]] == [
+        "TextBlock"
+    ]
+
+
 # ── the app's own handle ─────────────────────────────────────────────────────
 
 

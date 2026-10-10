@@ -16,6 +16,7 @@ import { PaletteAgentItem } from '@renderer/features/command-palette/palette-age
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { ThemeContext } from '@renderer/lib/providers/theme-provider';
 import { AGENTS_METADATA_QUERY_KEY } from '@renderer/lib/stores/use-agents';
+import { avatarSettingsQueryKey } from '@renderer/lib/stores/use-avatar-settings';
 import { workspaceAgentsQueryKey } from '@renderer/lib/stores/use-workspace-agents';
 import type { Agent } from '@shared/core/agents/agents';
 import type { SearchItem } from '@shared/core/search';
@@ -89,13 +90,23 @@ afterEach(async () => {
   runInAction(() => agentsStore.byLocation.clear());
 });
 
-/** The `src` of the picture the search row draws for the agent. */
-async function rowAvatarSrc(options: {
-  /** Seed the local agent row, as a hit on a known agent would find it. */
+/**
+ * What the search row drew for the agent: the `src` of its picture, or null
+ * when it drew initials instead (no third-party avatar allowed, or none
+ * chosen).
+ */
+async function rowAvatar(options: {
+  /** Seed the local agent row, as a hit on a known agent would find it. A
+   * miss (false) means the row has no server to ask either, so it is also
+   * how "no server known" is exercised here. */
   known: boolean;
   /** The icon the server holds for it, or null for none. */
   iconUrl: string | null;
-}): Promise<string> {
+  /** The owning server's `THIRD_PARTY_AVATARS_ENABLED` answer. Left unset to
+   * exercise "not known yet" — `known: false` makes this moot, since there is
+   * then no server id to ask about. */
+  thirdPartyAvatarsEnabled?: boolean;
+}): Promise<string | null> {
   if (options.known) {
     runInAction(() => agentsStore.byLocation.set(LOCATION_ID, [AGENT]));
   }
@@ -110,6 +121,11 @@ async function rowAvatarSrc(options: {
   // so it resolves to nothing rather than reaching for a main process the test
   // does not have; the mark itself is the sidebar's, already covered there.
   client.setQueryData(AGENTS_METADATA_QUERY_KEY, []);
+  if (options.thirdPartyAvatarsEnabled !== undefined) {
+    client.setQueryData(avatarSettingsQueryKey(SERVER_ID), {
+      thirdPartyAvatarsEnabled: options.thirdPartyAvatarsEnabled,
+    });
+  }
 
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -130,26 +146,42 @@ async function rowAvatarSrc(options: {
 
   // `alt=""` is the avatar's; the provider mark carries its provider's name.
   const img = container.querySelector('img[alt=""]');
-  if (!img) throw new Error('the search row drew no picture at all');
-  return img.getAttribute('src') ?? '';
+  return img ? img.getAttribute('src') : null;
 }
 
 describe('an agent in search', () => {
   it('wears its own chosen icon', async () => {
-    const src = await rowAvatarSrc({ known: true, iconUrl: 'https://icons.example/reviewer.png' });
+    const src = await rowAvatar({ known: true, iconUrl: 'https://icons.example/reviewer.png' });
     expect(src).toBe('https://icons.example/reviewer.png');
   });
 
-  it('falls back to the face drawn from its name, not its provider logo', async () => {
-    const src = await rowAvatarSrc({ known: true, iconUrl: null });
+  it('falls back to the face drawn from its name on a server that allows it, not its provider logo', async () => {
+    const src = await rowAvatar({ known: true, iconUrl: null, thirdPartyAvatarsEnabled: true });
     expect(src).toContain('/gaze/png?');
     expect(src).toContain(AGENT_NAME);
   });
 
-  it('still draws a face when the app holds no local row for the hit', async () => {
+  it('withholds the generated face when its server disables third-party avatars', async () => {
+    const src = await rowAvatar({ known: true, iconUrl: null, thirdPartyAvatarsEnabled: false });
+    expect(src).toBeNull();
+  });
+
+  it('still shows a custom icon even when its server disables third-party avatars', async () => {
+    const src = await rowAvatar({
+      known: true,
+      iconUrl: 'https://icons.example/reviewer.png',
+      thirdPartyAvatarsEnabled: false,
+    });
+    expect(src).toBe('https://icons.example/reviewer.png');
+  });
+
+  it('shows initials rather than a face when the app holds no local row for the hit', async () => {
     // The lookup that used to supply the provider id can miss — a stale index
-    // entry, an agent removed since. A miss must not leave the row blank.
-    const src = await rowAvatarSrc({ known: false, iconUrl: null });
-    expect(src).toContain('/gaze/png?');
+    // entry, an agent removed since. A miss leaves no server to ask about
+    // third-party avatars either, so this is the same "unknown" case the
+    // privacy setting fails closed on: no name-seeded avatar until Console
+    // knows the server allows it.
+    const src = await rowAvatar({ known: false, iconUrl: null });
+    expect(src).toBeNull();
   });
 });

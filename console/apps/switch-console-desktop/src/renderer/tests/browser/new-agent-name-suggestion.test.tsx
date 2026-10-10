@@ -42,7 +42,7 @@ afterEach(async () => {
 });
 
 function Fields({ nameTaken }: { nameTaken: boolean }) {
-  form = useConfigureAgentForm();
+  form = useConfigureAgentForm(null);
   return <AgentIdentityFields form={form} serverId={null} nameTaken={nameTaken} />;
 }
 

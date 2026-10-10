@@ -817,6 +817,8 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: TELEMETRY_INTERNAL
   value: {{ .Values.switchCore.telemetry.internal | quote }}
 {{- end }}
+- name: THIRD_PARTY_AVATARS_ENABLED
+  value: {{ .Values.switchCore.thirdPartyAvatars.enabled | quote }}
 # switch-core sits behind the cluster/ALB and enforces its own
 # BearerAuthMiddleware, so fastmcp's browser-oriented DNS-rebinding
 # Host/Origin guard (default-on since mcp 1.28) only rejects the

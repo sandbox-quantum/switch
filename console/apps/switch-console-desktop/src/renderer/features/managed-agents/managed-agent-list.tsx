@@ -56,6 +56,7 @@ const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: Ma
     <SidebarAgentRow
       label={label}
       iconUrl={agent.iconUrl}
+      serverId={agent.serverId}
       providerId={isValidProviderId(provider) ? provider : null}
       isActive={currentView === 'managedAgent' && params.agentId === agent.agentId}
       depth={0}
