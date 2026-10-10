@@ -3,6 +3,8 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import {
   ANTIGRAVITY_SIGN_IN,
+  antigravityProfile,
+  antigravitySignedIn,
   createAntigravityClient,
   initializeAntigravity,
 } from '../antigravity/runtime';
@@ -122,9 +124,10 @@ export async function checkProviderReadiness(input: {
       // agent's own answer to the question being asked: the sign-ins it still
       // wants. Empty means none outstanding.
       const initialized = await initializeAntigravity(client);
-      return initialized.authMethods?.length
-        ? result('unauthenticated', ANTIGRAVITY_SIGN_IN)
-        : result('authenticated', 'Signed in to Antigravity ACP.');
+      return !initialized.authMethods?.length ||
+        (await antigravitySignedIn(antigravityProfile(input.env)))
+        ? result('authenticated', 'Signed in to Antigravity ACP.')
+        : result('unauthenticated', ANTIGRAVITY_SIGN_IN);
     }
     if (input.provider !== 'codex')
       return result('unknown', 'This provider has no authentication check.');
