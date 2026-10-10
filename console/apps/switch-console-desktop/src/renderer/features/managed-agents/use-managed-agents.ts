@@ -4,16 +4,21 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { events, rpc } from '@renderer/lib/ipc';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { agentMigrationChannel } from '@shared/events/agentMigrationEvents';
+import { MANAGED_AGENTS_KEY } from './use-managed-agents-key';
+import { useUserChangesLive } from './use-user-changes';
 
-export const MANAGED_AGENTS_KEY = 'managed-agents';
+export { MANAGED_AGENTS_KEY };
 
 /**
- * How often the list is read again on its own. Changes made from this Console
- * (an edit, a new agent, a move) refresh it straight away, and react-query
- * reads it again when the window regains focus and pauses while it is hidden,
- * so this only bounds how long a change made elsewhere takes to show.
+ * How often the list is read again on its own, against a server that does not
+ * push changes (`useUserChangesLive`). One that does tells Console when to
+ * read it, so it is not polled at all. Changes made from this Console (an
+ * edit, a new agent, a move) refresh it straight away either way, and
+ * react-query reads it again when the window regains focus.
  */
 const MANAGED_AGENTS_REFRESH_MS = 30_000;
+/** The machines list's polling rate against a server that does not push changes. */
+const MACHINES_REFRESH_MS = 15_000;
 
 /**
  * The signed-in user's managed agents on the server, as the server holds them,
@@ -24,6 +29,7 @@ export function useManagedAgents(serverId: string | null) {
   const queryClient = useQueryClient();
   const signedIn = serverId !== null && switchServersStore.isConnected(serverId);
   const user = serverId === null ? null : (switchServersStore.statusFor(serverId)?.user ?? null);
+  const pushed = useUserChangesLive(signedIn ? serverId : null);
   useEffect(
     () =>
       events.on(agentMigrationChannel, (event) => {
@@ -36,26 +42,31 @@ export function useManagedAgents(serverId: string | null) {
     queryKey: [MANAGED_AGENTS_KEY, serverId, user?.id ?? null],
     queryFn: () => rpc.managedAgents.list(serverId!),
     enabled: signedIn,
-    refetchInterval: (query) => (query.state.data === null ? false : MANAGED_AGENTS_REFRESH_MS),
+    refetchInterval: (query) =>
+      query.state.data === null || pushed ? false : MANAGED_AGENTS_REFRESH_MS,
     retry: false,
   });
 }
 
 /** The signed-in user's machines on the server, with what each reported; null without agent management. */
 export function useOwnedMachines(serverId: string) {
+  const pushed = useUserChangesLive(serverId);
   return useQuery({
     queryKey: [MANAGED_AGENTS_KEY, serverId, 'machines'],
     queryFn: () => rpc.managedAgents.machines(serverId),
-    refetchInterval: 15000,
+    refetchInterval: pushed ? false : MACHINES_REFRESH_MS,
   });
 }
 
 /** The owner's machines on the server, with what each last reported. Null without agent management. */
 export function useManagedMachines(serverId: string) {
+  const pushed = useUserChangesLive(serverId);
   return useQuery({
     queryKey: [MANAGED_AGENTS_KEY, serverId, 'machines'],
     queryFn: () => rpc.managedAgents.machines(serverId),
-    refetchInterval: (query) => (query.state.data ? 5000 : false),
+    // The same rate as `useOwnedMachines`: they share the key, so the faster
+    // of two different intervals would win for both.
+    refetchInterval: (query) => (query.state.data && !pushed ? MACHINES_REFRESH_MS : false),
     retry: false,
   });
 }

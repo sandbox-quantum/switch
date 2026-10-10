@@ -30,6 +30,7 @@ def _app() -> object:
         event_buffer=MagicMock(),
         session_factory=MagicMock(),
         user_store=MagicMock(),
+        user_changes=MagicMock(),
         external_user_store=MagicMock(),
         api_key_store=MagicMock(),
         invitation_store=MagicMock(),

@@ -27,8 +27,9 @@ vi.hoisted(() => {
 });
 
 vi.mock('@renderer/lib/ipc', () => ({
-  events: { on: vi.fn() },
+  events: { on: vi.fn(() => () => {}) },
   rpc: {
+    userChanges: { watch: async () => false, unwatch: async () => {} },
     embeddedController: { enable: embeddedEnable, defaultWorkspace },
     hostControllers: { enable: hostEnable },
     agents: { modelCatalogue },

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
+import { useUserChangesLive } from '@renderer/features/managed-agents/use-user-changes';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import {
@@ -141,11 +142,12 @@ export const NewAgentForm = observer(function NewAgentForm({
   // every machine the user owns there. Null when it does not run management.
   const askForMachines =
     !!selectedServerId && !!workspacesStore.idOnServerInScope(selectedServerId);
+  const machinesPushed = useUserChangesLive(askForMachines ? selectedServerId : null);
   const machinesQuery = useQuery({
     queryKey: [MANAGED_AGENTS_KEY, selectedServerId, 'machines'],
     queryFn: () => rpc.managedAgents.machines(selectedServerId!),
     enabled: askForMachines,
-    refetchInterval: (query) => (query.state.data ? 5000 : false),
+    refetchInterval: (query) => (query.state.data && !machinesPushed ? 5000 : false),
   });
   const serverMachines = askForMachines ? (machinesQuery.data ?? null) : null;
   const management = serverMachines !== null;

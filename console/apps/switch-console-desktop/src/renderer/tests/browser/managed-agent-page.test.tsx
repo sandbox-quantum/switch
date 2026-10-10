@@ -33,7 +33,12 @@ vi.hoisted(() => {
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { managedAgents, workspaces, agents: { modelCatalogue } },
+  rpc: {
+    managedAgents,
+    workspaces,
+    agents: { modelCatalogue },
+    userChanges: { watch: async () => false, unwatch: async () => {} },
+  },
 }));
 vi.mock(
   '@renderer/features/locations/components/settings-view/sections/addressing-policy-settings-section',

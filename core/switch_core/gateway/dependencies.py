@@ -37,6 +37,7 @@ from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
 from switch_core.telemetry import TelemetryService
+from switch_core.user_changes import LocalUserChanges
 
 _state: dict[str, Any] = {}
 
@@ -66,6 +67,7 @@ def init_dependencies(
     protocol: AgentCore,
     install_service: MessagingInstallService | None,
     invite_mailer: InviteMailer | None,
+    user_changes: LocalUserChanges,
     config: SwitchConfig,
 ) -> None:
     _state["agent_store"] = agent_store
@@ -91,6 +93,7 @@ def init_dependencies(
     _state["protocol"] = protocol
     _state["install_service"] = install_service
     _state["invite_mailer"] = invite_mailer
+    _state["user_changes"] = user_changes
     _state["config"] = config
 
 
@@ -228,6 +231,10 @@ def get_connector_store() -> ServerConnectorStore:
 
 def get_template_store() -> TemplateStore:
     return _state["template_store"]  # type: ignore[no-any-return]
+
+
+def get_user_changes() -> LocalUserChanges:
+    return _state["user_changes"]  # type: ignore[no-any-return]
 
 
 def get_config() -> SwitchConfig:

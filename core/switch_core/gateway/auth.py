@@ -12,6 +12,7 @@ import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.requests import HTTPConnection
 
 from switch_core.authz import Action, Principal, require
 from switch_core.config import SwitchConfig
@@ -193,7 +194,7 @@ async def _authenticate(
     return payload
 
 
-def _session_claims(request: Request, config: SwitchConfig) -> dict:
+def _session_claims(request: HTTPConnection, config: SwitchConfig) -> dict:
     token = request.cookies.get("switch_auth")
     if token is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -649,6 +650,45 @@ async def _bound_user(
             # Deleted between the two reads; rare, and still not a 500.
             raise HTTPException(status_code=401, detail="User not found")
         yield user
+
+
+@dataclass(frozen=True)
+class SocketCaller:
+    """Who opened a gateway WebSocket, and the tenant their session binds."""
+
+    user_id: str
+    tenant_id: str
+    # When the session cookie the socket was opened with expires, as a UNIX
+    # time: the socket is closed then, and the client opens it again with the
+    # cookie it has renewed meanwhile.
+    expires_at: float
+
+
+async def authenticate_socket(
+    connection: HTTPConnection,
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    config: SwitchConfig,
+) -> SocketCaller:
+    """`get_current_user`'s checks for a WebSocket, which has no request
+    session to load the user on and must not keep one for its lifetime.
+
+    The cookie, the account and the tenant resolution are exactly
+    `get_current_user`'s, each on a short session of its own that is closed
+    before this returns. Raises the same `HTTPException`s.
+    """
+    payload = _session_claims(connection, config)
+    user_id: str = payload["sub"]
+    tenant_id = await _resolve_tenant_id(
+        session_factory,
+        user_store,
+        user_id,
+        payload.get("tenant_id"),
+        config.gateway_tenant_choice_enabled,
+    )
+    return SocketCaller(
+        user_id=user_id, tenant_id=tenant_id, expires_at=float(payload["exp"])
+    )
 
 
 async def get_current_user(
