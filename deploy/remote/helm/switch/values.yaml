@@ -563,6 +563,11 @@ switchCore:
   # would never reach a client attached to the other. This is enforced at
   # render time; do not raise it.
   replicaCount: 1
+  # Lifts the single-replica check above, for a throwaway environment that runs
+  # two or more replicas on purpose to find what breaks while switch-core is
+  # made multi-pod. Never set it where people depend on the server: every
+  # in-process state named above splits across replicas and signals get lost.
+  multiReplicaTestBed: false
   # Run DB migrations (alembic upgrade head) as a pre-upgrade hook Job, before
   # the new pods roll, so a failed migration blocks the upgrade instead of
   # crash-looping the new pods. The switch-core pod also migrates in an init
