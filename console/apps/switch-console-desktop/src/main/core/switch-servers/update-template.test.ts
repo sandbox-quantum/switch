@@ -37,7 +37,7 @@ function response(status: number, body: unknown): Response {
     status,
     ok: status >= 200 && status < 300,
     json: async () => body,
-    headers: { getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => [] },
     text: async () => JSON.stringify(body),
   } as unknown as Response;
 }

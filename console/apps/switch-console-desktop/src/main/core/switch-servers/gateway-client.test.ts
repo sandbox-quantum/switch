@@ -141,7 +141,7 @@ function okMeResponse(): Response {
     status: 200,
     ok: true,
     json: async () => ({ id: 'u1', name: 'Ada', email: 'ada@example.com', role: 'user' }),
-    headers: { getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => [] },
     text: async () => '',
   } as unknown as Response;
 }
@@ -151,7 +151,7 @@ function unauthorizedResponse(): Response {
     status: 401,
     ok: false,
     json: async () => ({}),
-    headers: { getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => [] },
     text: async () => 'Token expired',
   } as unknown as Response;
 }
@@ -418,7 +418,7 @@ function jsonResponse(body: unknown): Response {
     status: 200,
     ok: true,
     json: async () => body,
-    headers: { getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => [] },
     text: async () => JSON.stringify(body),
   } as unknown as Response;
 }
@@ -428,7 +428,7 @@ function errorResponse(status: number, body: string): Response {
     status,
     ok: false,
     json: async () => ({}),
-    headers: { getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => [] },
     text: async () => body,
   } as unknown as Response;
 }
@@ -679,7 +679,7 @@ describe('registerKnownAgent', () => {
           status: 200,
           ok: true,
           json: async () => ({ id: 'sw-1', api_key: 'tok-123' }),
-          headers: { getSetCookie: () => [] },
+          headers: { get: () => null, getSetCookie: () => [] },
           text: async () => '',
         }) as unknown as Response
     );
@@ -1471,6 +1471,35 @@ describe('sign-up support', () => {
     expect((await fetchAuthConfig(SERVER)).signupEnabled).toBe(false);
   });
 
+  it.each([200, 404])(
+    'says the address does not route /gateway when a web page answers it (HTTP %i)',
+    async (status) => {
+      fetchMock.mockResolvedValueOnce(
+        new Response('<!doctype html><title>dashboard</title>', {
+          status,
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        })
+      );
+      await expect(fetchAuthConfig(SERVER)).rejects.toMatchObject({
+        name: 'NoManagementApiError',
+        message: expect.stringContaining('route /gateway on https://switch.example.com'),
+      });
+    }
+  );
+
+  it('reports a proxy’s 502 page as the failure it is, not as a missing route', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('<html>Bad Gateway</html>', {
+        status: 502,
+        headers: { 'content-type': 'text/html' },
+      })
+    );
+    await expect(fetchAuthConfig(SERVER)).rejects.toMatchObject({
+      name: 'GatewayError',
+      status: 502,
+    });
+  });
+
   it('warms the cloud machine with an authenticated POST', async () => {
     const machine = {
       machine_id: 'm-1',
@@ -1777,7 +1806,7 @@ describe('distributed Teams team placement', () => {
       status: 200,
       ok: true,
       json: async () => ({}),
-      headers: { getSetCookie: () => [] },
+      headers: { get: () => null, getSetCookie: () => [] },
       text: async () => '',
       arrayBuffer: async () => bytes,
     } as unknown as Response);
@@ -1877,7 +1906,7 @@ describe('acceptInvitation', () => {
       status: 200,
       ok: true,
       json: async () => ({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' }),
-      headers: { getSetCookie: () => setCookies },
+      headers: { get: () => null, getSetCookie: () => setCookies },
       text: async () => '',
     } as unknown as Response;
   }
@@ -2127,7 +2156,7 @@ describe('invitations addressed to the signed-in account', () => {
       status: 200,
       ok: true,
       json: async () => ({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' }),
-      headers: { getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
+      headers: { get: () => null, getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
       text: async () => '',
     } as never);
 
@@ -2191,7 +2220,7 @@ describe('joining a workspace by e-mail domain', () => {
       status: 200,
       ok: true,
       json: async () => ({ id: 't9', slug: 'skunk', name: 'Skunkworks', role: 'member' }),
-      headers: { getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
+      headers: { get: () => null, getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
       text: async () => '',
     } as never);
 
@@ -2274,7 +2303,7 @@ describe('workspace invitations', () => {
       status: 200,
       ok: true,
       json: async () => body,
-      headers: { getSetCookie: () => [] },
+      headers: { get: () => null, getSetCookie: () => [] },
       text: async () => '',
     } as unknown as Response;
   }
@@ -2386,7 +2415,7 @@ describe('agent management calls', () => {
       status,
       ok: status >= 200 && status < 300,
       json: async () => JSON.parse(text),
-      headers: { getSetCookie: () => [] },
+      headers: { get: () => null, getSetCookie: () => [] },
       text: async () => text,
     } as unknown as Response;
   }

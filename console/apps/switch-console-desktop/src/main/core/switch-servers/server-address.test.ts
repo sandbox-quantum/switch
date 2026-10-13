@@ -265,6 +265,24 @@ describe('separateDashboard', () => {
     ).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('keeps another port on the server’s own host', async () => {
+    roots({ 'http://10.0.0.5:8000': UNAUTHORIZED, 'http://10.0.0.5:3000': PAGE });
+
+    expect(await separateDashboard('http://10.0.0.5:8000', 'http://10.0.0.5:3000')).toBe(
+      'http://10.0.0.5:3000'
+    );
+  });
+
+  it.each([
+    ['another domain', 'https://switch-api.example.com', 'https://dashboard.example.net'],
+    ['another address', 'http://10.0.0.5:8000', 'http://10.0.0.6:3000'],
+  ])('takes no link’s word for a host on %s, and asks nothing', async (_case, url, candidate) => {
+    roots({ [url]: UNAUTHORIZED, [candidate]: PAGE });
+
+    expect(await separateDashboard(url, candidate)).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('assertServesDashboard', () => {

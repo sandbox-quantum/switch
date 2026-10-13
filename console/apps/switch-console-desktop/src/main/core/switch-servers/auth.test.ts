@@ -59,7 +59,7 @@ describe('reauthenticateManagedServer', () => {
     fetchMock.mockResolvedValue({
       status: 200,
       ok: true,
-      headers: { getSetCookie: () => ['switch_auth=fresh-jwt; Path=/; HttpOnly'] },
+      headers: { get: () => null, getSetCookie: () => ['switch_auth=fresh-jwt; Path=/; HttpOnly'] },
       json: async () => ({ id: 'u1' }),
     });
     getSessionCookie.mockResolvedValue('fresh-jwt');
@@ -100,7 +100,7 @@ describe('reauthenticateManagedServer', () => {
     fetchMock.mockResolvedValue({
       status: 401,
       ok: false,
-      headers: { getSetCookie: () => [] },
+      headers: { get: () => null, getSetCookie: () => [] },
       text: async () => '',
     });
 
@@ -117,7 +117,7 @@ describe('refreshSession', () => {
     });
     fetchMock.mockResolvedValue({
       ok: true,
-      headers: { getSetCookie: () => ['switch_auth=fresh-jwt; Path=/; HttpOnly'] },
+      headers: { get: () => null, getSetCookie: () => ['switch_auth=fresh-jwt; Path=/; HttpOnly'] },
     });
 
     expect(await refreshSession(REMOTE, 'old-jwt')).toBe('fresh-jwt');
@@ -133,7 +133,11 @@ describe('refreshSession', () => {
   });
 
   it('keeps the current session when renewal is refused', async () => {
-    fetchMock.mockResolvedValue({ ok: false, status: 401, headers: { getSetCookie: () => [] } });
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: () => null, getSetCookie: () => [] },
+    });
 
     expect(await refreshSession(REMOTE, 'old-jwt')).toBeNull();
     expect(setSessionCookie).not.toHaveBeenCalled();

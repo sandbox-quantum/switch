@@ -81,6 +81,7 @@ import type {
 import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
 import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from './auth';
 import { consoleIdentityHeaders } from './console-identity';
+import { NoManagementApiError } from './server-address';
 import { getSessionCookie, setSessionCookie } from './servers-store';
 
 /** The gateway management API is mounted under `/gateway` on the server. */
@@ -344,7 +345,22 @@ export async function gatewayRequest(
   if (response.status === 401) {
     throw new GatewayError('unauthorized', 'Switch session expired — please sign in again.', 401);
   }
+  if (answeredWithPage(response)) {
+    throw new NoManagementApiError(server.name, server.url, response.status);
+  }
   return response;
+}
+
+/**
+ * Whether something other than switch-core answered a `/gateway` call: every
+ * answer the management API gives is JSON, its 404 included, so a page that
+ * comes back successfully (a catch-all serving a web app) or as a 404 (a proxy
+ * with no route for the path) is not from it. A proxy's 502 page means the
+ * server is down, which the caller reports as it is.
+ */
+function answeredWithPage(response: Response): boolean {
+  const html = (response.headers.get('content-type') ?? '').toLowerCase().startsWith('text/html');
+  return html && (response.ok || response.status === 404);
 }
 
 /** The `retryable` beside `detail` in a coded refusal, or undefined without one. */

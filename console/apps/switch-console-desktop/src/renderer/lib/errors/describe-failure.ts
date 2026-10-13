@@ -93,6 +93,7 @@ export function describeFailure(error: unknown, fallback: string): FailureDescri
       case 'NotTheServerAddressError':
       case 'DuplicateServerUrlError':
       case 'NoDashboardError':
+      case 'NoManagementApiError':
         // Already a modeled, actionable sentence: the server and the page to
         // fix it on, who is changing the server and when to try again, which
         // agents to bring back first, or which address to enter instead.

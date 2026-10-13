@@ -73,6 +73,25 @@ export async function servesDashboard(origin: string): Promise<boolean | null> {
   }
 }
 
+/**
+ * A server's own address does not answer the management API under `/gateway`:
+ * something other than switch-core answered there with a web page. Console
+ * reaches every server's management API at its own address, the one its agents
+ * use, so a proxy in front of that address that routes only the agent API
+ * leaves Console nothing to talk to.
+ */
+export class NoManagementApiError extends Error {
+  constructor(serverName: string, url: string, status: number) {
+    super(
+      `${serverName} does not answer at ${url}/gateway: a web page came back (HTTP ${status}) ` +
+        `where switch-core answers the management API. Switch Console reaches a server's ` +
+        `management API at the server's own address. Ask whoever runs it to route /gateway on ` +
+        `${url} to switch-core, as the agent API already is.`
+    );
+    this.name = 'NoManagementApiError';
+  }
+}
+
 /** A server's dashboard pages cannot be opened, because nothing serves them. */
 export class NoDashboardError extends Error {
   constructor(serverName: string, origin: string) {
@@ -97,15 +116,45 @@ export async function assertServesDashboard(server: SwitchServer): Promise<void>
   if ((await servesDashboard(origin)) === false) throw new NoDashboardError(server.name, origin);
 }
 
+/** The domain a hostname sits in: the hostname without its first label, when
+ * that still has a dot in it. Null for a single-label name or an IP address. */
+function parentDomain(hostname: string): string | null {
+  if (hostname.startsWith('[') || /^[\d.]+$/.test(hostname)) return null;
+  const parent = hostname.slice(hostname.indexOf('.') + 1);
+  return hostname.includes('.') && parent.includes('.') ? parent : null;
+}
+
+/** Whether two addresses are on one host, or on sibling hosts of one domain:
+ * `switch-gateway.example.com` beside `switch-api.example.com`. With no
+ * public-suffix list to hand, a server whose host sits directly under a
+ * two-part suffix (`acme.co.uk`) counts every other site there as a sibling. */
+function onTheSameDomain(a: string, b: string): boolean {
+  const [hostA, hostB] = [new URL(a).hostname, new URL(b).hostname];
+  if (hostA === hostB) return true;
+  const parent = parentDomain(hostA);
+  return parent !== null && parent === parentDomain(hostB);
+}
+
 /**
  * The address to keep as a server's separate dashboard: `candidate`, when it
- * serves the dashboard and the server's own address does not; otherwise null.
+ * is on the server's own domain, serves the dashboard, and the server's own
+ * address does not; otherwise null.
  *
  * An invite link to an older server names its dashboard's host, which is the
- * one place Console learns that address without asking anyone for it.
+ * one place Console learns that address without asking anyone for it. A link
+ * is anyone's to write, though, and the address kept is where browser sign-in
+ * starts, so a host on another domain is not taken on its word.
  */
 export async function separateDashboard(url: string, candidate: string): Promise<string | null> {
   if (urlOrigin(candidate) === urlOrigin(url)) return null;
+  if (!onTheSameDomain(url, candidate)) {
+    log.warn('switch-servers: not keeping an invite link’s host as the dashboard address', {
+      url,
+      candidate,
+      reason: 'not on the server’s own domain',
+    });
+    return null;
+  }
   const [own, other] = await Promise.all([servesDashboard(url), servesDashboard(candidate)]);
   return own !== true && other === true ? candidate : null;
 }
