@@ -46,7 +46,18 @@ def test_the_dashboard_origin_defaults_to_the_servers_own() -> None:
         gateway_ui_dir="/app/gateway-ui",
         gateway_public_url="https://switch.example.com/",
     )
-    assert config.frontend_base_url == "https://switch.example.com"
+    assert config.dashboard_base_url == "https://switch.example.com"
+
+
+def test_the_default_does_not_move_where_a_sign_in_lands() -> None:
+    # A browser sign-in lands on FRONTEND_BASE_URL when one is set, and on the
+    # host that set its cookie otherwise. A split deployment's public origin
+    # need not be that host, so the default leaves FRONTEND_BASE_URL unset.
+    config = _config(
+        gateway_ui_dir="/app/gateway-ui",
+        gateway_public_url="https://switch-api.example.com",
+    )
+    assert config.frontend_base_url is None
 
 
 def test_a_named_dashboard_origin_is_kept() -> None:
@@ -55,16 +66,16 @@ def test_a_named_dashboard_origin_is_kept() -> None:
         gateway_public_url="https://switch-api.example.com",
         frontend_base_url="https://switch-gateway.example.com",
     )
-    assert config.frontend_base_url == "https://switch-gateway.example.com"
+    assert config.dashboard_base_url == "https://switch-gateway.example.com"
 
 
 def test_no_dashboard_origin_is_assumed_when_switch_core_serves_none() -> None:
     config = _config(gateway_public_url="https://switch.example.com")
-    assert config.frontend_base_url is None
+    assert config.dashboard_base_url is None
 
 
 def test_no_dashboard_origin_is_assumed_without_a_public_origin() -> None:
-    assert _config(gateway_ui_dir="/app/gateway-ui").frontend_base_url is None
+    assert _config(gateway_ui_dir="/app/gateway-ui").dashboard_base_url is None
 
 
 def test_invitation_mail_is_satisfied_by_the_servers_own_origin() -> None:
@@ -76,7 +87,7 @@ def test_invitation_mail_is_satisfied_by_the_servers_own_origin() -> None:
         gateway_smtp_host="smtp.example.com",
         gateway_smtp_from="Switch <invites@example.com>",
     )
-    assert config.frontend_base_url == "https://switch.example.com"
+    assert config.dashboard_base_url == "https://switch.example.com"
 
 
 def test_invitation_mail_still_requires_a_dashboard_origin_otherwise() -> None:

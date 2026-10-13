@@ -4,6 +4,7 @@ import json
 import logging
 from contextlib import AbstractContextManager, nullcontext
 from typing import Annotated, Any
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
 from authlib.integrations.starlette_client import OAuth, OAuthError
@@ -36,6 +37,10 @@ router = APIRouter()
 oauth = OAuth()
 _CLIENT_NAME = "gateway_oidc"
 
+# Marks the second leg of the hop to the callback's host (`_callback_host_hop`),
+# so a proxy that rewrites the Host header costs one redirect and not a loop.
+_ON_CALLBACK_HOST = "on_callback_host"
+
 
 def register_oidc_client(config: SwitchConfig) -> None:
     """Register the gateway OIDC client from config.
@@ -62,7 +67,42 @@ def _client() -> Any:
     return client
 
 
-@router.get("/auth/oidc/login")
+def _callback_host_hop(request: Request, redirect_url: str | None) -> str | None:
+    """Where to restart a sign-in begun on another host than the callback's.
+
+    The flow's state is kept in a cookie on the host the browser starts on, and
+    the identity provider returns the browser to `redirect_url`. A server that
+    answers on two hosts, its own serving the dashboard beside a separate
+    dashboard host the provider still returns to, would lose the state on the
+    way back. Hostnames only: a cookie is shared across ports, and a proxy may
+    drop the port from the Host header. None to start the flow here.
+    """
+    if not redirect_url:
+        return None
+    callback = urlsplit(redirect_url)
+    if callback.hostname == request.url.hostname:
+        return None
+    if request.query_params.get(_ON_CALLBACK_HOST):
+        logger.warning(
+            "OIDC login reached %s after being sent to %s, the host the identity "
+            "provider returns to; a proxy may be rewriting the Host header. "
+            "Starting the sign-in here, where it may lose its state on return.",
+            request.url.hostname,
+            callback.hostname,
+        )
+        return None
+    return urlunsplit(
+        (
+            callback.scheme,
+            callback.netloc,
+            request.url_for("oidc_login").path,
+            urlencode({_ON_CALLBACK_HOST: "1"}),
+            "",
+        )
+    )
+
+
+@router.get("/auth/oidc/login", name="oidc_login")
 async def oidc_login(
     request: Request,
     config: Annotated[SwitchConfig, Depends(get_config)],
@@ -70,6 +110,9 @@ async def oidc_login(
     if not config.gateway_oidc_enabled:
         raise HTTPException(status_code=404, detail="OIDC login is not configured")
     client = _client()
+    hop = _callback_host_hop(request, config.gateway_oidc_redirect_url)
+    if hop is not None:
+        return RedirectResponse(url=hop, status_code=302)
     # The redirect URI must exactly match the one registered with the IdP.
     # Behind a reverse proxy / Tailscale the request URL's scheme+host can't be
     # trusted, so prefer the explicitly configured value.
@@ -215,7 +258,10 @@ async def oidc_callback(
         await session.commit()
 
     # Verify-at-login only: we don't persist the IdP tokens. Land the browser
-    # back on the SPA with our own session cookie set.
+    # back on the SPA with our own session cookie set: on this host, where the
+    # cookie is, unless FRONTEND_BASE_URL names the dashboard's origin. Not
+    # `dashboard_base_url`, whose default is the server's public origin, which
+    # on a split deployment is not the host the provider returned to.
     response = RedirectResponse(url=config.frontend_base_url or "/", status_code=303)
     set_session_cookie(
         response,

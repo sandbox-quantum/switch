@@ -470,8 +470,8 @@ class SwitchConfig(BaseSettings):
     # port beside the API, so the server has one address; the image sets it.
     # Unset or empty, it serves no dashboard: a development run uses the Vite
     # dev server instead. Set to a directory with no build in it is a startup
-    # error. With it set, FRONTEND_BASE_URL defaults to GATEWAY_PUBLIC_URL:
-    # the dashboard is then on the server's own origin.
+    # error. With it set, links to the dashboard default to GATEWAY_PUBLIC_URL
+    # when FRONTEND_BASE_URL is unset (`dashboard_base_url`).
     gateway_ui_dir: Path | None = None
 
     @field_validator("gateway_ui_dir", mode="before")
@@ -977,20 +977,21 @@ class SwitchConfig(BaseSettings):
     def invite_email_enabled(self) -> bool:
         return bool(self.gateway_smtp_host)
 
-    @model_validator(mode="after")
-    def _default_frontend_base_url(self) -> "SwitchConfig":
-        """The dashboard's origin is the server's own when switch-core serves it.
+    @property
+    def dashboard_base_url(self) -> str | None:
+        """The origin links to the dashboard are built on.
 
-        Before the SMTP check, which requires one. Only ever fills a gap: a
-        deployment that names its dashboard's origin keeps it.
+        FRONTEND_BASE_URL when set; otherwise the server's own origin, when
+        switch-core serves the dashboard there. Not where a browser sign-in
+        lands: that stays on the host that set the session cookie unless
+        FRONTEND_BASE_URL names another, because a split deployment's public
+        origin need not be the host its identity provider returns to.
         """
-        if (
-            not self.frontend_base_url
-            and self.gateway_ui_dir is not None
-            and self.gateway_public_url
-        ):
-            self.frontend_base_url = self.gateway_public_url.rstrip("/")
-        return self
+        if self.frontend_base_url:
+            return self.frontend_base_url
+        if self.gateway_ui_dir is not None and self.gateway_public_url:
+            return self.gateway_public_url.rstrip("/")
+        return None
 
     @model_validator(mode="after")
     def _validate_smtp(self) -> "SwitchConfig":
@@ -1011,7 +1012,7 @@ class SwitchConfig(BaseSettings):
                 "GATEWAY_SMTP_FROM is required when GATEWAY_SMTP_HOST is set: "
                 "it is the address invitation e-mails are sent from."
             )
-        if not self.frontend_base_url:
+        if not self.dashboard_base_url:
             raise ValueError(
                 "FRONTEND_BASE_URL is required when GATEWAY_SMTP_HOST is set: "
                 "invitation e-mails link to the dashboard at that origin."

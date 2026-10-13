@@ -89,7 +89,7 @@ async def _wire_admin_client(harness: Harness, session_env: SessionEnv) -> None:
         agent_session_store=session_env.agent_session_store,
         room_service=harness.room_service,
         connections=AgentConnectionRegistry(),
-        frontend_base_url=session_env.config.frontend_base_url,
+        frontend_base_url=session_env.config.dashboard_base_url,
     )
     await harness.client_lifecycle.ensure_system_client("admin")
 

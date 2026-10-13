@@ -165,7 +165,7 @@ def _app(
         gateway_max_workspaces_per_user=max_workspaces_per_user,
         gateway_signup_mode=signup_mode,
         gateway_invite_emails_per_day=invite_emails_per_day,
-        frontend_base_url="https://switch.example.com/",
+        dashboard_base_url="https://switch.example.com/",
     )
     return app
 

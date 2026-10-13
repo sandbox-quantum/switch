@@ -653,7 +653,7 @@ async def run(config: SwitchConfig) -> None:
         room_role_store=room_role_store,
         external_user_store=external_user_store,
         connections=connections,
-        frontend_base_url=config.frontend_base_url,
+        frontend_base_url=config.dashboard_base_url,
         message_telemetry=message_telemetry,
     )
     # Members that only write: a person on another platform, and a bridge's own
@@ -723,7 +723,7 @@ async def run(config: SwitchConfig) -> None:
         agent_session_store=agent_session_store,
         room_service=room_service,
         connections=connections,
-        frontend_base_url=config.frontend_base_url,
+        frontend_base_url=config.dashboard_base_url,
     )
 
     # ── Agent management (off unless the agent_management flag is on) ─────────

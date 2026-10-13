@@ -638,7 +638,7 @@ async def harness(
             room_role_store=session_env.room_role_store,
             external_user_store=session_env.external_user_store,
             connections=connections,
-            frontend_base_url=config.frontend_base_url,
+            frontend_base_url=config.dashboard_base_url,
             message_telemetry=message_telemetry,
         )
         client_factory.register("user", HumanActor)

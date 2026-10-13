@@ -82,14 +82,13 @@ value registered with the IdP **character for character** — scheme, host,
 port and path — or the provider refuses the callback before Switch ever sees
 it.
 
-Put it on the host browser sign-in starts on. The login route keeps the flow's
-state in a cookie on that host, so a callback that comes back to a different
-host finds no state and the sign-in fails. A server serving its own dashboard
-has one address and that is the host. A server still split across two hosts
-starts sign-in on the dashboard's, and so does Switch Console for a server it
-saved with a separate dashboard address. Once you retire the separate
-dashboard host, move the redirect URL (here and at the IdP) to the server's
-own address.
+The login route keeps the flow's state in a cookie on the host sign-in runs
+on, so it has to run on the host the provider returns to. When this variable is
+set and a sign-in starts on another host, the login route first redirects to
+this URL's host and starts there. A server serving its own dashboard has one
+address, and that is normally the host to put here. A server still split
+across two hosts can keep the redirect URL on the dashboard's host until that
+host is retired; then move it (here and at the IdP) to the server's own address.
 
 ### What turning off email-verified enforcement means
 
