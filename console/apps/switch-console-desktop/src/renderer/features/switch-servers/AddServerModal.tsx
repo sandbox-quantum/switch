@@ -585,7 +585,7 @@ export const LocalSetupStep = observer(function LocalSetupStep({
               <SetupStepItem>
                 Pull the Switch images from GHCR (first run downloads a few GB)
               </SetupStepItem>
-              <SetupStepItem>Run Postgres, Matrix, Mattermost and Switch in Docker</SetupStepItem>
+              <SetupStepItem>Run Postgres, Mattermost and Switch in Docker</SetupStepItem>
               <SetupStepItem>
                 Register it as your active server, ready to onboard an agent
               </SetupStepItem>

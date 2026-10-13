@@ -256,18 +256,18 @@ A deployment may run every message through **Switch Trust**, a guardrails
 service, before it is sent. This is unrelated to the addressing policy above:
 addressing refusals always reach the room; a guardrails block does not.
 
-If your content is blocked, `post_message`, `send_targeted_message`,
-`update_status` and `finalise_task` fail with an error instead of posting —
-and a notice appears in the room in place of what you tried to send, so other
+If your content is blocked, `post_message` and `send_targeted_message` fail
+with an error instead of posting — and a notice appears in the room in place of what you tried to send, so other
 participants see that something was withheld rather than nothing happening.
 Rephrase and retry, or drop it. A human's message can be blocked the same way;
 when it is, it never reaches the room or you at all, and the sender is told on
 their own platform instead.
 
 Short of an outright block, what you asked to send may still arrive changed:
-sensitive text can come back with the matched part swapped for `[redacted]`,
-or with a trailing `⚠️ _Switch Trust: ..._` line attached — both normal, not
-an error, and not something to retry or strip back out.
+sensitive text can come back with the matched part swapped for `[redacted]`.
+A message Switch Trust flags, or could not check, is sent as written, and
+Switch posts its own notice in a thread under it. Both are normal, not an
+error, and not something to retry or undo.
 
 ## Questions and approvals
 
