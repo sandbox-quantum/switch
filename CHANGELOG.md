@@ -1642,6 +1642,12 @@ version of their own to them without also giving them a release of their own.
   returns it; Console only accepted the gateway's host and refused the sign-in
   as an invalid URL. It now accepts either of the server's own origins, over
   HTTPS. Google Workspace connects this way.
+- **The usage-data note says what a "yes" does on a shared server.** The
+  consent dialog and Settings said the answer applies to a server Console runs
+  for you. On a server other people also run from their own Console, a "yes"
+  turns sharing on only when none of them has used it in the last 14 days,
+  while a "no" turns it off for everyone at your next start; the note now says
+  so.
 
 ### [0.39.0] - 2026-10-12
 

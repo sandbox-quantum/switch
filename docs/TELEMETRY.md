@@ -241,7 +241,7 @@ every time the Console starts it, in both directions. "No" is written down
 explicitly rather than left out, because a stack started under a "yes" would
 otherwise keep the setting it started with.
 
-Two limits are stated in the app rather than left to be discovered.
+Three limits are stated in the app rather than left to be discovered.
 
 - **The server reads the setting when it starts.** Changing the answer while it
   is running does not reach it until it restarts, and the Console does not
@@ -254,11 +254,12 @@ Two limits are stated in the app rather than left to be discovered.
 - **A server reached by URL is not covered.** It is somebody else's deployment
   with its own answer, and the toggle neither reaches it nor claims to.
 
-A third limit is not yet stated in the app. **On a server other people's
-Consoles also use, a "yes" does not turn sharing on over them, but a "yes"
-can keep it on.** This concerns a server on an SSH host, which several people
-can run from their own Consoles; the server on the user's own machine has no
-other users, and the answer is applied there as given.
+The third is stated in the same note as the second, in a sentence; the detail
+is here. **On a server other people's Consoles also use, a "yes" does not turn
+sharing on over them, but a "yes" can keep it on.** This concerns a server on
+an SSH host, which several people can run from their own Consoles; the server
+on the user's own machine has no other users, and the answer is applied there
+as given.
 
 - **A "no" applies to everyone on the server**, but only when the Console that
   holds it starts the server. Until then the server keeps the setting it
@@ -278,9 +279,10 @@ other users, and the answer is applied there as given.
   no list yet counts as nobody else, entries that cannot be parsed are
   skipped, and a Console too old to write to the list is not counted.
 
-When a "yes" is held back, the Console says so only in its log. The server's
-page does not report the server as out of step, because a restart from that
-Console would hold it back again.
+When a "yes" is held back, the Console does not say so at the time: the note
+states the rule, and the log records each case. The server's page does not
+report the server as out of step, because a restart from that Console would
+hold it back again.
 
 ---
 
