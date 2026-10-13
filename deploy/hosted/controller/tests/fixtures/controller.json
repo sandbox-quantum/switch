@@ -10,12 +10,7 @@
   "max_machines": 1,
   "root_volume_gib": 20,
   "data_volume_gib": 40,
-  "machine_slots": {
-    "slot-a": {
-      "instance_profile_arn": "arn:aws:iam::123456789012:instance-profile/test-worker",
-      "assignment_secret_arn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:test-slot"
-    }
-  },
+  "instance_profile_arn": "arn:aws:iam::123456789012:instance-profile/test-worker",
   "state_db_path": "/var/lib/switch-hosted/state.db",
   "lock_path": "/var/lib/switch-hosted/controller.lock",
   "poll_interval_seconds": 1

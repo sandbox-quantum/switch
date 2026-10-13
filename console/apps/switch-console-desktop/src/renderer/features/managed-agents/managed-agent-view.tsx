@@ -105,6 +105,8 @@ function ManagedAgentActionsMenu({ agent }: { agent: ManagedAgentView }) {
       onSuccess: () =>
         void act(`${label} could not be deleted.`, async () => {
           await rpc.managedAgents.remove({ serverId: agent.serverId, agentId: agent.agentId });
+          // Its name is free again: the New agent form checks names against this list.
+          await queryClient.invalidateQueries({ queryKey: ['workspace-agents'] });
           navigate('serverAgents', { serverId: agent.serverId });
         }),
     });

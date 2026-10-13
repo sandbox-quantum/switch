@@ -250,6 +250,14 @@ handled in a way that leaves no trace.
 - **`switch.bridge.errors`** — an inbound bridge failure is a message a person
   sent that nobody received; from the platform it is indistinguishable from
   being ignored.
+- **`switch.bridge.throttle.held`** — how long a platform rate limit held a
+  publication back. On a shared app bot one tenant's burst holds back every
+  tenant, so a rising `delivery=shared` reading is the signal that per-tenant
+  fairness is needed.
+- **`switch.messaging.events_ignored`** — events from chats nobody claimed,
+  on a platform where the app routinely sits in them (a shared Telegram bot
+  with Group Privacy off). Counted instead of logged, so the drops that are
+  real losses — a bridge down, a migration's window — keep their own errors.
 - **`switch.connectors.running`** — connectors start fire-and-forget, each
   failure logged and stepped over, so one that never came up is a dead agent
   host nothing else reports.

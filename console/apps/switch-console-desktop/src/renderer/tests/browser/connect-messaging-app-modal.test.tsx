@@ -5,6 +5,9 @@
  * installing it — the consent screen opens in the browser and the dialog
  * watches for the connection it creates — and keeps the paste-your-tokens
  * form one click away. Where it has none, the form is all there is.
+ *
+ * A claim-based app (Telegram) is offered alongside: its link and code are
+ * shown here, and a workspace's first chat is watched for like an install.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
@@ -12,8 +15,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const listBridgeTypes = vi.hoisted(() => vi.fn());
-const listInstallablePlatforms = vi.hoisted(() => vi.fn());
+const listMessagingApps = vi.hoisted(() => vi.fn());
 const beginMessagingAppInstall = vi.hoisted(() => vi.fn());
+const beginChatClaim = vi.hoisted(() => vi.fn());
 const listBridges = vi.hoisted(() => vi.fn());
 const createBridge = vi.hoisted(() => vi.fn());
 const openExternalUrl = vi.hoisted(() => vi.fn());
@@ -30,8 +34,9 @@ vi.mock('@renderer/lib/ipc', () => ({
   rpc: {
     workspaces: {
       listBridgeTypes,
-      listInstallablePlatforms,
+      listMessagingApps,
       beginMessagingAppInstall,
+      beginChatClaim,
       listBridges,
       createBridge,
     },
@@ -77,8 +82,13 @@ beforeEach(() => {
     .mockResolvedValue([
       { key: 'slack', fields: [], channelCreationSupported: true, directorySearchSupported: true },
     ]);
-  listInstallablePlatforms.mockReset().mockResolvedValue(['slack']);
+  listMessagingApps.mockReset().mockResolvedValue({ installable: ['slack'], claimable: [] });
   beginMessagingAppInstall.mockReset().mockResolvedValue('https://slack.example/oauth?state=s');
+  beginChatClaim.mockReset().mockResolvedValue({
+    url: 'https://t.me/example_bot?startgroup=abc',
+    code: 'abc',
+    botHandle: '@example_bot',
+  });
   listBridges.mockReset().mockResolvedValue([bridge('b-old', 'slack')]);
   createBridge.mockReset();
   openExternalUrl.mockReset().mockResolvedValue(true);
@@ -102,7 +112,7 @@ async function render(): Promise<HTMLElement> {
     root!.render(
       <QueryClientProvider client={client}>
         <Dialog open onOpenChange={() => {}}>
-          <ConnectMessagingAppModal onSuccess={onSuccess} onClose={onClose} />
+          <ConnectMessagingAppModal onSuccess={onSuccess} onClose={onClose} onClosed={() => {}} />
         </Dialog>
       </QueryClientProvider>
     )
@@ -203,7 +213,7 @@ describe('the connect-messaging-app dialog', () => {
   });
 
   it('shows only the token form when the server has no app of its own', async () => {
-    listInstallablePlatforms.mockResolvedValue([]);
+    listMessagingApps.mockResolvedValue({ installable: [], claimable: [] });
     const el = await render();
 
     expect(el.textContent).toContain('Choose a platform');
@@ -211,10 +221,111 @@ describe('the connect-messaging-app dialog', () => {
   });
 
   it('falls back to the token form, and says why, when the check fails', async () => {
-    listInstallablePlatforms.mockRejectedValue(new Error('boom'));
+    listMessagingApps.mockRejectedValue(new Error('boom'));
     const el = await render();
 
     expect(el.textContent).toContain('Could not check which messaging apps');
     expect(el.textContent).toContain('Choose a platform');
+  });
+});
+
+describe('connecting a Telegram chat from the dialog', () => {
+  function telegram(connected: boolean, canAddChat = true) {
+    return {
+      installable: [],
+      claimable: [{ platform: 'telegram', connected, canAddChat }],
+    };
+  }
+
+  it('is offered for a claim-based app, with no token form', async () => {
+    listMessagingApps.mockResolvedValue(telegram(false));
+    const el = await render();
+
+    expect(findButton(el, 'Add to Telegram')).toBeDefined();
+    expect(el.textContent).not.toContain('Choose a platform');
+  });
+
+  it('is not offered when the server says this user may not add a chat', async () => {
+    listMessagingApps.mockResolvedValue(telegram(false, false));
+    const el = await render();
+
+    expect(findButton(el, 'Add to Telegram')).toBeUndefined();
+    expect(el.textContent).toContain('Choose a platform');
+  });
+
+  it('shows the link, bot handle and command, and hands back the first chat’s connection', async () => {
+    listMessagingApps.mockResolvedValue(telegram(false));
+    const el = await render();
+    listBridges
+      .mockResolvedValueOnce([bridge('b-old', 'slack')])
+      .mockResolvedValue([bridge('b-old', 'slack'), bridge('b-tg', 'telegram')]);
+
+    await act(async () => button(el, 'Add to Telegram').click());
+    await settle();
+
+    expect(beginChatClaim).toHaveBeenCalledWith({ workspaceId: 'ws-1', platform: 'telegram' });
+    expect(el.textContent).toContain('@example_bot');
+    expect(el.textContent).toContain('/connect abc');
+    expect(el.textContent).toContain('work once, for ten minutes');
+    expect(onSuccess).toHaveBeenCalledWith({
+      bridgeId: 'b-tg',
+      displayName: 'telegram b-tg',
+      directorySearchSupported: true,
+    });
+  });
+
+  it('leaves only that chat on screen once its link is shown', async () => {
+    listMessagingApps.mockResolvedValue({
+      installable: ['slack'],
+      claimable: [{ platform: 'telegram', connected: true, canAddChat: true }],
+    });
+    const el = await render();
+    expect(findButton(el, 'Add to Slack')).toBeDefined();
+
+    await act(async () => button(el, 'Add to Telegram').click());
+    await settle();
+
+    expect(findButton(el, 'Add to Slack')).toBeUndefined();
+    expect(findButton(el, 'Use your own app instead')).toBeUndefined();
+    expect(el.textContent).toContain('Add to Telegram');
+    expect(findButton(el, 'Close')).toBeDefined();
+  });
+
+  it('opens the group link in the browser', async () => {
+    listMessagingApps.mockResolvedValue(telegram(true));
+    const el = await render();
+
+    await act(async () => button(el, 'Add to Telegram').click());
+    await settle();
+    await act(async () => button(el, 'Add to a Telegram group').click());
+
+    expect(openExternalUrl).toHaveBeenCalledWith(
+      'https://t.me/example_bot?startgroup=abc',
+      'Could not open Telegram'
+    );
+  });
+
+  it('does not wait for a connection once the workspace has one', async () => {
+    listMessagingApps.mockResolvedValue(telegram(true));
+    const el = await render();
+
+    await act(async () => button(el, 'Add to Telegram').click());
+    await settle();
+
+    expect(el.textContent).toContain('/connect abc');
+    expect(listBridges).not.toHaveBeenCalled();
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
+
+  it('says so when the claim could not be started', async () => {
+    listMessagingApps.mockResolvedValue(telegram(true));
+    beginChatClaim.mockRejectedValue(new Error('claim refused'));
+    const el = await render();
+
+    await act(async () => button(el, 'Add to Telegram').click());
+    await settle();
+
+    expect(el.textContent).toContain('Could not start connecting a Telegram chat');
+    expect(findButton(el, 'Add to Telegram')).toBeDefined();
   });
 });

@@ -227,6 +227,20 @@ async def update_controller_info(
     )
 
 
+@router.get(
+    "/v1/management/controllers/{controller_id}/provider-credentials/{provider}"
+)
+async def get_sealed_login(
+    provider: str, principal: PathController, management: Management, session: Session
+) -> JSONResponse:
+    """The provider login given to this machine, sealed to its own key, or
+    404 `provider_login_missing`."""
+    return JSONResponse(
+        await management.own_sealed_login(session, principal, provider),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.post("/v1/management/controllers/{controller_id}/credential/rotate")
 async def rotate_credential(
     principal: PathController, management: Management, session: Session

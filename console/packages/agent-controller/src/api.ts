@@ -20,6 +20,9 @@ import {
   operationListSchema,
   type OperationResult,
   operationSchema,
+  type Provider,
+  type SealedLoginResponse,
+  sealedLoginResponseSchema,
   PROTOCOL_VERSION,
   type StatusReport,
   type StatusResponse,
@@ -395,6 +398,33 @@ export class ControllerClient {
       throw error;
     }
     return parsed(response, controllerInfoResponseSchema);
+  }
+
+  /**
+   * Registers the key this machine's provider logins are sealed to. A server
+   * already holding another key for it refuses (409): the machine must be
+   * enrolled again to get a new one.
+   */
+  async registerPublicKey(publicKey: string): Promise<void> {
+    await this.request(this.controllerPath, {
+      method: 'PATCH',
+      body: { public_key: { alg: 'X25519', key: publicKey } },
+    });
+  }
+
+  /** The provider login given to this machine, still sealed; null when none was given. */
+  async sealedLogin(provider: Provider): Promise<SealedLoginResponse | null> {
+    const response = await this.request(
+      `${this.controllerPath}/provider-credentials/${encodeURIComponent(provider)}`,
+      { method: 'GET' },
+      (status) => status === 200 || status === 404
+    );
+    if (response.status === 404) {
+      const error = await failure(response);
+      if (error.code === 'provider_login_missing') return null;
+      throw error;
+    }
+    return parsed(response, sealedLoginResponseSchema);
   }
 
   async rotateCredential(): Promise<string> {

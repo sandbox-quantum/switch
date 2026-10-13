@@ -1,11 +1,12 @@
 import path from 'node:path';
 import {
+  type AdvancedSettingKind,
+  type AdvancedSettings,
   type IRepoAgentsBehavior,
   type LocalRepoAgent,
   type PluginFs,
   type RepoAgentAttributes,
   type RepoAgentDefinition,
-  type RepoAgentField,
   type RepoAgentLaunchDefinition,
   RECOGNISED_SWITCH_TOOL_RULES,
   SWITCH_AGENT_SETTINGS_DIR,
@@ -54,130 +55,38 @@ const MD_SUFFIX = '.md';
  * instructions — so the key here is the canonical one, not `prompt`.
  */
 const BODY_KEY = 'instructions';
-const LIST_KEYS = new Set(['tools', 'disallowedTools']);
-const NUMBER_KEYS = new Set(['maxTurns']);
-const BOOLEAN_KEYS = new Set(['background']);
 
-/** Attribute fields Claude Code subagents support, in form display order. The
- * field keys match the `.claude/agents/<name>.md` frontmatter keys verbatim.
- * The system prompt is not among them: it is the agent's `instructions`, a
- * main attribute alongside name and description rather than an advanced
- * setting. hooks / mcpServers / skills are intentionally omitted — they are
- * nested/block-list YAML, edit the `.md` directly for those. */
-const CLAUDE_SUBAGENT_FIELDS: RepoAgentField[] = [
-  {
-    key: 'name',
-    label: 'Name',
-    type: 'text',
-    required: true,
-    immutableOnEdit: true,
-    placeholder: 'code-reviewer',
-    help: "The subagent's identity (lowercase letters, digits, . _ -). Can't be changed later.",
-  },
-  {
-    key: 'description',
-    label: 'Description',
-    type: 'text',
-    required: true,
-    placeholder: 'Reviews diffs for correctness and style.',
-    help: 'When the parent should delegate to this subagent.',
-  },
-  {
-    key: 'model',
-    label: 'Model',
-    type: 'text',
-    placeholder: 'inherit',
-    help: 'inherit, an alias (sonnet, opus, haiku, fable), or a full model id. Empty = inherit.',
-  },
-  {
-    key: 'tools',
-    label: 'Tools',
-    type: 'list',
-    placeholder: 'Read, Grep, Bash',
-    help: 'Comma-separated allowlist. Empty inherits all tools. The Switch tools are always kept.',
-  },
-  {
-    key: 'disallowedTools',
-    label: 'Disallowed tools',
-    type: 'list',
-    placeholder: 'Write, Edit',
-    help: 'Comma-separated tools to deny from the inherited/allowed set.',
-  },
-  {
-    key: 'permissionMode',
-    label: 'Permission mode',
-    type: 'select',
-    options: [
-      { value: '', label: 'Default (inherit)' },
-      { value: 'default', label: 'default' },
-      { value: 'acceptEdits', label: 'acceptEdits' },
-      { value: 'auto', label: 'auto' },
-      { value: 'dontAsk', label: 'dontAsk' },
-      { value: 'bypassPermissions', label: 'bypassPermissions' },
-      { value: 'plan', label: 'plan' },
-    ],
-  },
-  {
-    key: 'color',
-    label: 'Color',
-    type: 'select',
-    options: [
-      { value: '', label: 'None' },
-      { value: 'red', label: 'red' },
-      { value: 'blue', label: 'blue' },
-      { value: 'green', label: 'green' },
-      { value: 'yellow', label: 'yellow' },
-      { value: 'purple', label: 'purple' },
-      { value: 'orange', label: 'orange' },
-      { value: 'pink', label: 'pink' },
-      { value: 'cyan', label: 'cyan' },
-    ],
-  },
-  { key: 'maxTurns', label: 'Max turns', type: 'number', placeholder: 'unlimited' },
-  {
-    key: 'background',
-    label: 'Always run in background',
-    type: 'boolean',
-    help: 'Run this subagent as a background task.',
-  },
-  {
-    key: 'isolation',
-    label: 'Isolation',
-    type: 'select',
-    options: [
-      { value: '', label: 'None' },
-      { value: 'worktree', label: 'worktree (isolated git copy)' },
-    ],
-  },
-  {
-    key: 'effort',
-    label: 'Effort',
-    type: 'select',
-    options: [
-      { value: '', label: 'Inherit' },
-      { value: 'low', label: 'low' },
-      { value: 'medium', label: 'medium' },
-      { value: 'high', label: 'high' },
-      { value: 'xhigh', label: 'xhigh' },
-      { value: 'max', label: 'max' },
-    ],
-  },
-  {
-    key: 'memory',
-    label: 'Persistent memory',
-    type: 'select',
-    options: [
-      { value: '', label: 'Off' },
-      { value: 'user', label: 'user' },
-      { value: 'project', label: 'project' },
-      { value: 'local', label: 'local' },
-    ],
-  },
-];
+/**
+ * The advanced settings a subagent definition carries, keyed by their
+ * `.claude/agents/<name>.md` frontmatter keys verbatim, in the order they are
+ * written. The server defines the fields a person fills them in with; these
+ * are what this file writes. hooks / mcpServers / skills are intentionally
+ * absent — they are nested/block-list YAML, edit the `.md` directly for those.
+ */
+const CLAUDE_ADVANCED_SETTINGS: AdvancedSettings = {
+  tools: 'list',
+  disallowedTools: 'list',
+  permissionMode: 'text',
+  color: 'text',
+  maxTurns: 'number',
+  background: 'boolean',
+  isolation: 'text',
+  effort: 'text',
+  memory: 'text',
+};
 
-const FRONTMATTER_FIELD_KEYS = CLAUDE_SUBAGENT_FIELDS.map((f) => f.key).filter(
-  (key) => key !== 'name' && key !== 'description' && key !== BODY_KEY
-);
+const keysOfKind = (kind: AdvancedSettingKind): Set<string> =>
+  new Set(
+    Object.entries(CLAUDE_ADVANCED_SETTINGS)
+      .filter(([, settingKind]) => settingKind === kind)
+      .map(([key]) => key)
+  );
+const LIST_KEYS = keysOfKind('list');
+const NUMBER_KEYS = keysOfKind('number');
+const BOOLEAN_KEYS = keysOfKind('boolean');
+
+/** Frontmatter written after the name and description: the model, then the advanced settings. */
+const FRONTMATTER_FIELD_KEYS = ['model', ...Object.keys(CLAUDE_ADVANCED_SETTINGS)];
 
 type SubagentFrontmatter = {
   name: string | null;
@@ -531,8 +440,8 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
     return result;
   },
 
-  attributeFields(): RepoAgentField[] {
-    return CLAUDE_SUBAGENT_FIELDS;
+  advancedSettings(): AdvancedSettings {
+    return CLAUDE_ADVANCED_SETTINGS;
   },
 
   renderDefinition(attributes: RepoAgentAttributes): string {

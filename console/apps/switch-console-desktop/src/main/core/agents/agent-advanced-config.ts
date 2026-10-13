@@ -1,13 +1,15 @@
-import type { RepoAgentAttributes, RepoAgentField } from '@switch-console/core/agents/plugins';
+import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
+import { advancedSettings } from '@switch-console/plugins/agents';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import type { AgentAdvancedSettings } from '@shared/core/agents/agent-advanced-settings';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { readAgentConfig, setAgentSettings } from './agent-config';
 import { getAgentById } from './getAgentById';
 
 /**
- * An agent's "advanced configuration" — its per-agent model, reasoning effort,
- * system prompt and whatever else its provider exposes — read and written
- * without the caller knowing where the provider keeps it.
+ * An agent's "advanced configuration" — its per-agent model, reasoning effort
+ * and whatever else its provider exposes — read and written without the caller
+ * knowing where the provider keeps it.
  *
  * All of it is stored in one place — the agent's committed config file — and
  * turned into whatever the provider takes when a session launches: the agent
@@ -15,35 +17,19 @@ import { getAgentById } from './getAgentById';
  * `~/.codex/<name>.config.toml`). Either way a change reaches the next session,
  * not one already running.
  *
- * A provider with neither has no advanced configuration and the section renders
- * nothing.
+ * The fields the form shows are the Switch server's, for the agent's provider;
+ * the provider's plugin says which of them it applies. A provider with neither
+ * surface has no advanced configuration and the section renders nothing.
  */
 
-/** The fields this provider exposes, from whichever surface it keeps them in. */
-export function getAgentAdvancedFields(providerId: AgentProviderId): RepoAgentField[] {
+export function getAgentAdvancedSettings(providerId: AgentProviderId): AgentAdvancedSettings {
   const behavior = getPlugin(providerId).behavior;
-  const definitionFields = behavior.repoAgents?.attributeFields();
-  if (definitionFields) return definitionFields;
-  return behavior.mcp?.launchProfileFields?.() ?? [];
-}
-
-/** Where a provider keeps its per-agent settings. */
-export type AgentAdvancedSurface = 'definition' | 'launch-profile' | 'none';
-
-/**
- * Which of the two surfaces a provider uses, for a caller that has to treat them
- * differently — the renderer offers a restart only for a launch profile, which is
- * read once at spawn and so cannot reach a session already running.
- *
- * Reported rather than inferred from the provider id: that check was `=== 'codex'`
- * for as long as Codex was the only provider with a profile, and silently
- * excluded the next one.
- */
-export function getAgentAdvancedSurface(providerId: AgentProviderId): AgentAdvancedSurface {
-  const behavior = getPlugin(providerId).behavior;
-  if (behavior.repoAgents?.attributeFields()) return 'definition';
-  if (behavior.mcp?.launchProfileFields) return 'launch-profile';
-  return 'none';
+  const surface = behavior.repoAgents
+    ? 'definition'
+    : behavior.mcp?.launchProfileSettings
+      ? 'launch-profile'
+      : 'none';
+  return { surface, keys: Object.keys(advancedSettings(providerId)) };
 }
 
 /**
@@ -70,7 +56,7 @@ export async function updateAgentAdvancedConfig(params: {
   if (!agent) throw new Error(`No agent with id ${params.agentId}`);
 
   const behavior = getPlugin(agent.providerId).behavior;
-  if (!behavior.repoAgents && !behavior.mcp?.launchProfileFields) {
+  if (!behavior.repoAgents && !behavior.mcp?.launchProfileSettings) {
     throw new Error(`Agent ${params.agentId} has no editable advanced configuration.`);
   }
 

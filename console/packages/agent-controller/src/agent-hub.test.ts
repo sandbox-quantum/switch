@@ -61,7 +61,6 @@ function watcher(overrides: Partial<SwitchEventStreamDeps> = {}) {
   const stream = hub.open(AGENT, {
     creds: { agentId: AGENT, apiEndpoint: 'http://127.0.0.1:1', token: 'swlr_x' },
     connectionId: 'connection-1',
-    worker: null,
     scope: 'all',
     filter: 'addressed',
     spawnCapable: true,

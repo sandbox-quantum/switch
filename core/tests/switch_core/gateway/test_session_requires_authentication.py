@@ -39,7 +39,6 @@ from switch_core.gateway.auth import (
 )
 from switch_core.gateway.dependencies import get_session, get_system_session
 from switch_core.gateway.hosted_controller import controller_session
-from switch_core.gateway.provider_verifications import worker_session
 
 # The only routes that may open a session with no tenant bound. `get_session`
 # is unavailable to them because there is no `get_current_user` to bind one:
@@ -81,6 +80,10 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("GET", "/provider-connections/github/authorize"),
     ("GET", "/provider-connections/github/callback"),
     ("POST", "/provider-connections/github/callback"),
+    # The same handoff for every other service's sign-in (`connections/flows.py`).
+    ("GET", "/service-connections/{service}/flows/authorize"),
+    ("GET", "/service-connections/{service}/flows/callback"),
+    ("POST", "/service-connections/{service}/flows/callback"),
     # No caller yet: the sign-in surface and what it hands back.
     ("GET", "/auth/config"),
     ("GET", "/auth/oidc/login"),
@@ -119,6 +122,9 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # `list_joinable_tenants` and `join_tenant_by_domain`.
     ("GET", "/joinable-tenants"),
     ("POST", "/joinable-tenants/{tenant_id}/join"),
+    # Feature flags belong to the deployment and come from its config, so
+    # there is no workspace to scope them to and no session is opened.
+    ("GET", "/feature-flags"),
 }
 
 
@@ -215,27 +221,15 @@ def test_the_routes_that_never_bind_a_tenant_are_exactly_these() -> None:
     assert {
         route.key
         for route in ROUTES
-        if not route.binds_a_tenant
-        and controller_session not in route.calls
-        and worker_session not in route.calls
+        if not route.binds_a_tenant and controller_session not in route.calls
     } == _ROUTES_THAT_NEVER_BIND_A_TENANT
 
 
 def test_controller_credential_is_confined_to_the_controller_routes() -> None:
     assert {route.key for route in ROUTES if controller_session in route.calls} == {
-        ("GET", "/provider-verifications"),
-        ("POST", "/provider-verifications/{job_id}/prepare"),
-        ("POST", "/provider-verifications/{job_id}/observe"),
         ("GET", "/hosted-controller/machines"),
         ("POST", "/hosted-controller/machines/{machine_id}/prepare"),
         ("POST", "/hosted-controller/machines/{machine_id}/observation"),
-    }
-
-
-def test_verification_job_token_is_confined_to_its_worker_routes() -> None:
-    assert {route.key for route in ROUTES if worker_session in route.calls} == {
-        ("GET", "/provider-verifications/{job_id}/credential"),
-        ("POST", "/provider-verifications/{job_id}/result"),
     }
 
 

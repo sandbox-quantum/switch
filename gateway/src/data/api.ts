@@ -145,6 +145,9 @@ export interface BridgeDetail {
   // Whether this operator has allowed this connection to create channels.
   // Only meaningful when channel_creation_supported is true.
   channel_creation_enabled: boolean;
+  // Why no existing channel can be linked by id on this connection, or null
+  // when one can — the Switch Telegram app, whose chats come from connecting.
+  channel_ids_refused?: string | null;
   room_count: number;
   created_at: string;
   // Empty for platforms whose app is installed through their own admin UI.
@@ -1013,6 +1016,10 @@ export interface InstalledApp {
   id: string;
   platform: string;
   external_workspace_id: string;
+  // What a person calls it — a chat's room, or the workspace an OAuth install
+  // came from — while it still has one. Null once it has ended, and absent
+  // from a server that predates it.
+  name?: string | null;
   // "active", "disconnected" (ended here) or "revoked" (ended at the
   // platform). The last two are kept apart because an operator whose
   // connection stopped working needs to know which of the two it was.
@@ -1024,9 +1031,32 @@ export interface InstalledApp {
   ended_at: string | null;
 }
 
-export async function fetchInstallablePlatforms(): Promise<string[] | null> {
-  const res = await fetchJson<{ platforms: string[] }>("/messaging-apps");
-  return res === null ? null : res.platforms;
+// A platform installed by claiming a chat (Telegram) rather than by OAuth, and
+// what the signed-in person may do with it. Worked out by the server because
+// the split — an admin connects the first chat, members the rest — depends on
+// whether the organisation has a connection yet. `connected` outlives the
+// chats: the connection stays until an admin deletes it.
+export interface ClaimablePlatform {
+  platform: string;
+  connected: boolean;
+  can_add_chat: boolean;
+}
+
+// The OAuth platforms, offered to a tenant admin only, as the list they have
+// always been read as — with the claim-based platforms carried alongside, from
+// the same response, rather than fetched a second time.
+export type InstallablePlatforms = string[] & {
+  claimable?: ClaimablePlatform[];
+};
+
+export async function fetchInstallablePlatforms(): Promise<InstallablePlatforms | null> {
+  const res = await fetchJson<{
+    platforms: string[];
+    claimable?: ClaimablePlatform[];
+  }>("/messaging-apps");
+  return res === null
+    ? null
+    : Object.assign([...res.platforms], { claimable: res.claimable ?? [] });
 }
 
 export async function fetchInstalledApps(): Promise<InstalledApp[] | null> {
@@ -1045,6 +1075,19 @@ export async function beginAppInstall(platform: string): Promise<string> {
     "POST",
   );
   return res.authorize_url;
+}
+
+// A link that adds the bot to a group and connects it, and the bare code a
+// channel admin posts as `/connect <code>` instead, after adding the bot by
+// `bot_handle`. The link and code work once, for ten minutes.
+export interface ChatClaim {
+  url: string;
+  code: string;
+  bot_handle: string;
+}
+
+export async function beginChatClaim(platform: string): Promise<ChatClaim> {
+  return jsonRequest<ChatClaim>(`/messaging-apps/${platform}/claim`, "POST");
 }
 
 // Throwing, because 502 here means the platform refused to revoke, nothing was
@@ -2111,3 +2154,134 @@ export async function deleteBudget(tenantId: string, budgetId: string): Promise<
     throw new Error(errorText(detail?.detail, `${res.status} ${res.statusText}`));
   }
 }
+
+// ── Service connections and grants ───────────────────────────────────────────
+
+/** A grant giving an agent access to its owner's connection to a service. */
+export interface ServiceGrant {
+  service: string;
+  name: string;
+  access: "read" | "write";
+  tool_mode: "allow" | "deny";
+  tools: string[];
+  effective_tools: string[];
+  resources: Record<string, unknown>;
+  /** What the grant lets the agent do, in a sentence. */
+  summary: string;
+}
+
+export interface ServiceGrants {
+  grants: ServiceGrant[];
+  /** Whether anyone can address the agent, and so use its grants. */
+  addressing_open: boolean;
+}
+
+/** The agent's grants; only its owner may read them. */
+export async function fetchServiceGrants(agentId: string): Promise<ServiceGrants> {
+  return jsonRequest<ServiceGrants>(`/agents/${agentId}/service-grants`, "GET");
+}
+
+/**
+ * Create or replace the agent's grant on a service. `warning` is set when
+ * what the old grant gave out stays usable for a while.
+ */
+export async function setServiceGrant(
+  agentId: string,
+  service: string,
+  grant: { access: "read" | "write" | null; resources: Record<string, unknown> },
+): Promise<{ grant: ServiceGrant; warning: string | null }> {
+  // An on/off grant names no level: Switch gives it the connection's.
+  const body = grant.access === null ? { resources: grant.resources } : grant;
+  return jsonRequest(`/agents/${agentId}/service-grants/${service}`, "PUT", body);
+}
+
+/** A catalog service, with the signed-in person's connection to it. */
+export interface ServiceConnection {
+  slug: string;
+  name: string;
+  category: string;
+  description: string;
+  enabled: boolean;
+  connectable: boolean;
+  /** Why the service cannot be granted to agents on this server; null when it can. */
+  unavailable_reason: string | null;
+  status: "not_connected" | "active" | "needs_reauthorization" | "error";
+  /** Whether a grant hands the agent the owner's own token: on or off, at the connection's level. */
+  pass_through: boolean;
+  /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
+  token_lifetime: number | null;
+  /**
+   * What a person pastes to connect a service connected with a key, and where
+   * they make one; null for any other. A key is connected from Switch Console.
+   */
+  key: ServiceKeyForm | null;
+}
+
+/** One value a person pastes (a key: secret) or picks (a site, among `choices`) to connect. */
+export interface ServiceKeyField {
+  name: string;
+  label: string;
+  secret: boolean;
+  help: string | null;
+  choices: string[] | null;
+}
+
+export interface ServiceKeyForm {
+  fields: ServiceKeyField[];
+  help_url: string | null;
+}
+
+/** Every catalog service and the signed-in person's connection to it. */
+export async function fetchServiceConnections(): Promise<ServiceConnection[]> {
+  return (await jsonRequest<{ connections: ServiceConnection[] }>("/service-connections", "GET"))
+    .connections;
+}
+
+export async function removeServiceGrant(
+  agentId: string,
+  service: string,
+): Promise<{ warning: string | null }> {
+  return jsonRequest(`/agents/${agentId}/service-grants/${service}`, "DELETE");
+}
+
+export interface GitHubRepository {
+  id: number;
+  name: string;
+}
+
+export interface GitHubInstallation {
+  id: number;
+  account: string;
+  repositories: GitHubRepository[];
+}
+
+/** The signed-in person's GitHub connection, and the repositories the App lets them reach. */
+export type GitHubConnection =
+  | { status: "not_connected"; install_url: string }
+  | {
+      status: "connected";
+      login: string;
+      install_url: string;
+      installations: GitHubInstallation[];
+    };
+
+export async function fetchGitHubConnection(): Promise<GitHubConnection> {
+  return jsonRequest<GitHubConnection>("/provider-connections/github", "GET");
+}
+
+/**
+ * Owner-only addressing: the owner, and agents the owner runs. What the grant
+ * screens offer when anyone can address an agent with grants.
+ */
+export const OWNER_ONLY_POLICY: AddressingPolicy = {
+  rules: [
+    {
+      rooms: "*",
+      room_groups: "*",
+      users: [],
+      agents: [],
+      owner: true,
+      owner_agents: true,
+    },
+  ],
+};

@@ -192,6 +192,12 @@ services:
       MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: switch
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
       MM_TEAMSETTINGS_TEAMMATENAMEDISPLAY: "full_name"
+      MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
+      MM_LOGSETTINGS_ENABLESENTRY: "false"
+      MM_SERVICESETTINGS_ENABLESECURITYFIXALERT: "false"
+      MM_ANNOUNCEMENTSETTINGS_ADMINNOTICESENABLED: "false"
+      MM_ANNOUNCEMENTSETTINGS_USERNOTICESENABLED: "false"
+      MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE: "false"
       # Neither plugin is usable in a bundled Switch deployment: Copilot has no
       # configured provider and throws a 404 looking up its bot on every page
       # load, and Calls ships a WebRTC service nothing here can reach.
@@ -229,8 +235,11 @@ services:
       # The bundled Mattermost is on the compose network, a private address,
       # so it is always allowed; .env adds to it rather than replacing it.
       OUTBOUND_ALLOWED_PRIVATE_HOSTS: mattermost,${OUTBOUND_ALLOWED_PRIVATE_HOSTS:-}
+      # Replaced by the agent_management feature flag. Still passed through so
+      # switch-core refuses a .env that turns it on, rather than ignoring it.
       AGENT_MANAGEMENT_ENABLED: ${AGENT_MANAGEMENT_ENABLED:-false}
       CONTROLLER_TOKEN_SECRET: ${CONTROLLER_TOKEN_SECRET:-}
+      FEATURE_FLAGS_ENABLED: ${FEATURE_FLAGS_ENABLED:-}
       GATEWAY_ADMIN_EMAIL: ${GATEWAY_ADMIN_EMAIL}
       GATEWAY_ADMIN_PASSWORD: ${GATEWAY_ADMIN_PASSWORD}
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL}
@@ -259,6 +268,8 @@ services:
       # below: `${VAR:-}` would hand them an empty string, which fails boot.
       DISCORD_APP_MESSAGE_CONTENT:
       DISCORD_APP_MEMBERS:
+      TELEGRAM_APP_BOT_TOKEN: ${TELEGRAM_APP_BOT_TOKEN:-}
+      TELEGRAM_APP_WEBHOOK_SECRET: ${TELEGRAM_APP_WEBHOOK_SECRET:-}
       # Observability and log format. Forwarded because this service names
       # every variable it passes, so without them here, setting any of these
       # in `.env` does nothing and the Helm chart is the only way to turn

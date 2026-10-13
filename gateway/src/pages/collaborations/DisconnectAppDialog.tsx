@@ -35,15 +35,38 @@ import { platformLabel } from "../../theme/hootFormat";
  * whether the install has a token, but that field is not surfaced here. Any
  * platform not listed gets the default (revoking) copy. `noun` is what the
  * platform calls the place installed into — a Discord "server", not a
- * "workspace".
+ * "workspace". `rooms` is what happens to Switch's side: for most platforms
+ * the whole connection goes, but a Telegram chat is one room on a connection
+ * every other chat of the organisation keeps using.
  */
-const PLATFORM_COPY: Record<string, { noun: string; effect: string }> = {
+interface Copy {
+  noun: string;
+  effect: string;
+  rooms: string;
+}
+
+const CONNECTION_ROOMS = (noun: string) =>
+  "Rooms that used this connection are kept, but become internal-only: they " +
+  `stop mirroring to the ${noun}, and installing again creates a new ` +
+  "connection rather than reattaching them.";
+
+const PLATFORM_COPY: Record<string, Copy> = {
   discord: {
     noun: "server",
     effect:
       "Switch will stop mirroring messages to and from it. The bot stays in " +
       "the server until you remove it in Discord — disconnecting here does " +
       "not remove it.",
+    rooms: CONNECTION_ROOMS("server"),
+  },
+  telegram: {
+    noun: "chat",
+    effect: "The bot leaves the chat, and Switch stops mirroring it.",
+    rooms:
+      "The chat's room is kept, but becomes internal-only, and connecting " +
+      "the chat again creates a new room rather than reattaching it. Other " +
+      "connected Telegram chats are not affected, and Telegram stays on for " +
+      "this organisation even when this is its last chat.",
   },
   // The distributed Teams app holds no per-workspace token to revoke: one
   // install serves the whole Microsoft organisation, so disconnecting only
@@ -57,14 +80,22 @@ const PLATFORM_COPY: Record<string, { noun: string; effect: string }> = {
       "the app itself: a Microsoft admin removes \"Agent Switch\" in the " +
       "Teams admin center, and the enterprise application in the Microsoft " +
       "Entra admin center, to take it out of the organisation entirely.",
+    rooms: CONNECTION_ROOMS("organisation"),
   },
 };
-const DEFAULT_COPY = {
+const DEFAULT_COPY: Copy = {
   noun: "workspace",
   effect:
     "Switch's access token is revoked at the platform and the connection it " +
     "created is removed.",
+  rooms: CONNECTION_ROOMS("workspace"),
 };
+
+/** What `platform` calls the place an install goes into: a Discord server,
+ *  a Telegram chat, a Slack workspace. */
+export function installNoun(platform: string): string {
+  return (PLATFORM_COPY[platform] ?? DEFAULT_COPY).noun;
+}
 
 interface Props {
   install: InstalledApp | null;
@@ -107,13 +138,10 @@ export default function DisconnectAppDialog({
       <DialogContent>
         <DialogContentText>
           Disconnect Switch from the {platformLabel(install?.platform ?? "")}{" "}
-          {copy.noun} <b>{install?.external_workspace_id}</b>? {copy.effect}
+          {copy.noun} <b>{install?.name ?? install?.external_workspace_id}</b>?{" "}
+          {copy.effect}
         </DialogContentText>
-        <DialogContentText sx={{ mt: 2 }}>
-          Rooms that used this connection are kept, but become internal-only:
-          they stop mirroring to the {copy.noun}, and installing again creates a
-          new connection rather than reattaching them.
-        </DialogContentText>
+        <DialogContentText sx={{ mt: 2 }}>{copy.rooms}</DialogContentText>
         {error && (
           <Alert severity="error" sx={{ mt: 2 }}>
             {error}

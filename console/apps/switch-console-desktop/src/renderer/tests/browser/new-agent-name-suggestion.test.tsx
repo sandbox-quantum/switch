@@ -41,12 +41,12 @@ afterEach(async () => {
   form = null;
 });
 
-function Fields() {
+function Fields({ nameTaken }: { nameTaken: boolean }) {
   form = useConfigureAgentForm();
-  return <AgentIdentityFields form={form} serverId={null} />;
+  return <AgentIdentityFields form={form} serverId={null} nameTaken={nameTaken} />;
 }
 
-async function renderFields(): Promise<HTMLDivElement> {
+async function renderFields(nameTaken = false): Promise<HTMLDivElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -54,7 +54,7 @@ async function renderFields(): Promise<HTMLDivElement> {
   await act(async () =>
     root!.render(
       <QueryClientProvider client={client}>
-        <Fields />
+        <Fields nameTaken={nameTaken} />
       </QueryClientProvider>
     )
   );
@@ -155,5 +155,18 @@ describe('a rejected agent name', () => {
 
     expect(el.textContent).not.toContain(REJECTION);
     expect(suggestionButton(el)).toBeUndefined();
+  });
+});
+
+describe('a name another agent on the server has', () => {
+  it('says so under the name, not only on the greyed-out button', async () => {
+    const el = await renderFields(true);
+    await typeName(el, 'cloud-codex-test');
+    expect(el.textContent).toContain(
+      'An agent called cloud-codex-test already exists on this server. Pick another name.'
+    );
+    expect(
+      el.querySelector('input[placeholder="Name this agent"]')?.getAttribute('aria-invalid')
+    ).toBe('true');
   });
 });

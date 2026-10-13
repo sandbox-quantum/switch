@@ -22,6 +22,7 @@ import {
 } from '@renderer/features/locations/components/settings-view/sections/advanced-config-disclosure';
 import { AutoApproveRow } from '@renderer/features/locations/components/settings-view/sections/auto-approve-settings-section';
 import { CanManageAgentsRow } from '@renderer/features/locations/components/settings-view/sections/can-manage-agents-settings-section';
+import { ServiceGrantsRow } from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
 import { SettingRow } from '@renderer/features/locations/components/settings-view/sections/setting-row';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -33,10 +34,11 @@ import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
 import { Switch } from '@renderer/lib/ui/switch';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/lib/ui/tooltip';
-import type {
-  AdvancedConfigField,
-  ManagedAgentView,
-  OwnedMachine,
+import {
+  type AdvancedConfigField,
+  isCloudMachine,
+  type ManagedAgentView,
+  type OwnedMachine,
 } from '@shared/core/managed-agents/managed-agents';
 import {
   isValidProviderId,
@@ -273,6 +275,13 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
                 agentName={agent.name}
                 showName={false}
               />
+              <ServiceGrantsRow
+                serverId={agent.serverId}
+                workspaceId={agent.workspaceId}
+                agentId={agent.agentId}
+                agentName={managedAgentLabel(agent)}
+                cloud={agent.machine !== null && isCloudMachine(agent.machine)}
+              />
               <SettingRow
                 title="Directory"
                 info={{
@@ -300,22 +309,31 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
                   />
                 )}
               </SettingRow>
-              <SettingRow
-                title="Run in its own process"
-                info={{
-                  label: 'More info about running in its own process',
-                  content:
-                    'Isolated from the other agents on its machine, instead of inside the machine’s controller.',
-                }}
-                description="Keep it apart from the other agents on its machine."
-                control={
-                  <Switch
-                    aria-label="Run in its own process"
-                    checked={draft.ownProcess}
-                    onCheckedChange={(checked) => setValue('ownProcess', checked)}
-                  />
-                }
-              />
+              {machine?.cloud ? (
+                <SettingRow
+                  title="Runs in its own process"
+                  info={null}
+                  description="Switch cloud runs every agent as a user of its own, apart from the other agents and the machine's controller."
+                  control={null}
+                />
+              ) : (
+                <SettingRow
+                  title="Run in its own process"
+                  info={{
+                    label: 'More info about running in its own process',
+                    content:
+                      'Isolated from the other agents on its machine, instead of inside the machine’s controller.',
+                  }}
+                  description="Keep it apart from the other agents on its machine."
+                  control={
+                    <Switch
+                      aria-label="Run in its own process"
+                      checked={draft.ownProcess}
+                      onCheckedChange={(checked) => setValue('ownProcess', checked)}
+                    />
+                  }
+                />
+              )}
             </section>
             <div className="flex flex-col gap-2">
               <AdvancedConfigDisclosure

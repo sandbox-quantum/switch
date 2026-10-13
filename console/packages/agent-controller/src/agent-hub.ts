@@ -423,8 +423,6 @@ export class AgentHub {
         agent.placements = new Map(Object.entries(placements));
         this.deps.onChange();
       },
-      workerCall: () =>
-        Promise.reject(new Error('An agent run by an agents controller is not a hosted worker.')),
     };
   }
 

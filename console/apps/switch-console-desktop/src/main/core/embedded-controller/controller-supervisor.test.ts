@@ -1,3 +1,4 @@
+import { STOP_MESSAGE } from '@switch-console/agent-providers';
 import { describe, expect, it } from 'vitest';
 import type { EmbeddedControllerPhase } from '@shared/core/embedded-controller/embedded-controller';
 import {
@@ -5,7 +6,7 @@ import {
   type ControllerLogLevel,
   ControllerSupervisor,
 } from './controller-supervisor';
-import { fakeSpawn, waitFor } from './test-helpers/fake-controller-child';
+import { fakeSpawn, STOP_REQUEST, waitFor } from './test-helpers/fake-controller-child';
 
 const NOW = Date.parse('2026-01-01T00:00:00Z');
 
@@ -177,9 +178,25 @@ describe('ControllerSupervisor', () => {
     const child = calls[0]!.child;
     child.exitsOnSigterm = false;
     await supervisor.stop(20);
-    expect(child.signals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(child.signals).toEqual([STOP_REQUEST, 'SIGKILL']);
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(calls).toHaveLength(1);
+  });
+
+  it('asks over IPC on Windows, where SIGTERM would end it on the spot', async () => {
+    const platform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      const { supervisor, calls } = harness();
+      supervisor.start();
+      await waitFor(() => calls.length === 1, 'the spawn');
+      const child = calls[0]!.child;
+      await supervisor.stop(1_000);
+      expect(child.sent).toEqual([STOP_MESSAGE]);
+      expect(child.signals).toHaveLength(1);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+    }
   });
 
   it('waits for a released controller to exit by itself, and says when it does not', async () => {

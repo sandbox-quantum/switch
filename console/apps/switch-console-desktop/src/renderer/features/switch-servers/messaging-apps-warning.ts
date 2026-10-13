@@ -88,6 +88,9 @@ export function shouldOfferIdentityLinkOnConnect(app: {
  * never coming, and nothing says linking is still owed. This is the ordering
  * they cannot infer: be seen first, link second.
  *
+ * Only a chat connected to Switch counts — the bot stores nothing it hears
+ * anywhere else.
+ *
  * Null where the directory can be searched, because there the ordinary flow
  * asks at the moment it is offering to act.
  */
@@ -96,5 +99,5 @@ export function identityLinkOrderingNote(app: {
   directorySearchSupported: boolean;
 }): string | null {
   if (app.directorySearchSupported) return null;
-  return `${app.displayName} has no directory of users to search, so Switch does not know you there yet. Add the bot to a chat and send a message in it — you can then link your account from this app’s menu, once you are someone Switch has seen.`;
+  return `${app.displayName} has no directory of users to search, so Switch knows only people who have written in a chat connected to it. Send a message in a connected group, then link your account from this app’s menu.`;
 }

@@ -104,6 +104,10 @@ export class FakeCore {
   readonly beats: Record<string, number>[] = [];
   /** The machine's name and description, as `PATCH .../controllers/{id}` changes them. */
   info: { name: string; description: string | null } = { name: 'laptop', description: null };
+  /** The key the controller registered for sealed logins. */
+  publicKey: string | null = null;
+  /** The logins given to the machine, by provider, as `GET .../provider-credentials/{provider}` answers. */
+  readonly sealedLogins = new Map<string, { revision: number; sealed: unknown }>();
   /** Answers the next request to a path with this, once. */
   readonly scripted: { method: string; path: string; status: number; body: unknown }[] = [];
   /** What `GET .../media` sends, in these chunks; `waitBetween` holds back all but the first. */
@@ -401,10 +405,27 @@ export class FakeCore {
       });
     }
     if (method === 'PATCH' && url.pathname === base) {
-      const change = body as { name?: string; description?: string | null };
+      const change = body as {
+        name?: string;
+        description?: string | null;
+        public_key?: { alg: string; key: string };
+      };
+      if (change.public_key !== undefined) {
+        if (this.publicKey !== null && this.publicKey !== change.public_key.key)
+          return this.refuse(res, 409, 'validation_error');
+        this.publicKey = change.public_key.key;
+      }
       if (change.name !== undefined) this.info.name = change.name;
       if (change.description !== undefined) this.info.description = change.description;
       return this.json(res, 200, { id: this.controllerId, ...this.info, state: 'online' });
+    }
+    const given = url.pathname.match(
+      new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/provider-credentials/([^/]+)$`)
+    );
+    if (method === 'GET' && given) {
+      const login = this.sealedLogins.get(given[1]!);
+      if (!login) return this.refuse(res, 404, 'provider_login_missing');
+      return this.json(res, 200, { provider: given[1], ...login });
     }
     if (method === 'GET' && url.pathname === `${base}/assignment`) {
       const etag = `"${this.assignment.revision}"`;

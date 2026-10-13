@@ -423,10 +423,52 @@
        is the design's passive step, one stop darker. */
     --fg-passive: #8d8d8d;
 
+    /* An elevated menu over the sidebar (the workspace switcher): a surface a
+       step off the material, with a soft shadow, so it lifts rather than
+       reading as more sidebar. Text steps down from the names it lists, so
+       those are what the eye lands on. */
+    --menu-surface: #ffffff;
+    --menu-field: #f6f6f5;
+    --menu-shadow: 0 20px 44px rgb(0 0 0 / 0.12);
+    --menu-faint: rgb(0 0 0 / 0.03);
+    --menu-pill: rgb(0 0 0 / 0.06);
+    --menu-tile: #ebebea;
+    --menu-tile-fg: #6f6f6f;
+    --menu-tile-active-fg: #f5fbf7;
+    --fg-name: #1f1f1f;
+    --fg-action: #3a3a3a;
+    --fg-icon: #8d8d8d;
+    --fg-dim: #8a8a8a;
+
     /* The segmented control's track. Its own token rather than `--hair-soft`,
        which in dark lands within a couple of levels of the raised segment and
        leaves the active option indistinguishable from the inactive one. */
     --segment-track: rgb(0 0 0 / 0.06);
+
+    /* A managed server's state: a dot, a pill (tint + text on it) and a
+       message box (a fainter wash with a hairline of the same hue). Colour
+       lives only there; the text around them stays neutral. */
+    --srv-running: #4fa05e;
+    --srv-running-tint: rgb(79 160 94 / 0.14);
+    --srv-running-text: #2f7a3f;
+    --srv-working: #e0a23a;
+    --srv-working-tint: rgb(224 162 58 / 0.18);
+    --srv-working-text: #8a5a0f;
+    --srv-working-box: rgb(224 162 58 / 0.08);
+    --srv-working-line: rgb(224 162 58 / 0.3);
+    --srv-stopped: #8a8a8a;
+    --srv-stopped-tint: rgb(0 0 0 / 0.06);
+    --srv-stopped-text: #555555;
+    --srv-stopped-box: rgb(0 0 0 / 0.03);
+    --srv-stopped-line: rgb(0 0 0 / 0.1);
+    --srv-failed: #e5534b;
+    --srv-failed-tint: rgb(229 83 75 / 0.12);
+    --srv-failed-text: #b3261e;
+    --srv-failed-box: rgb(229 83 75 / 0.06);
+    --srv-failed-line: rgb(229 83 75 / 0.28);
+    --srv-primary: #2f5a43;
+    --srv-primary-fg: #f5fbf7;
+    --srv-mono: #3a3a3a;
 
     --panel-radius: 12px;
     --radius-elevated: 11px;
@@ -720,9 +762,44 @@
 
     --fg-passive: #8d8d8d;
 
+    --menu-surface: #262626;
+    --menu-field: #1e1e1e;
+    --menu-shadow: 0 20px 44px rgb(0 0 0 / 0.28);
+    --menu-faint: rgb(255 255 255 / 0.03);
+    --menu-pill: rgb(255 255 255 / 0.1);
+    --menu-tile: #333333;
+    --menu-tile-fg: #bbbbbb;
+    --menu-tile-active-fg: #f5fbf7;
+    --fg-name: #ededed;
+    --fg-action: #d8d8d8;
+    --fg-icon: #9a9a9a;
+    --fg-dim: #9a9a9a;
+
     /* Darker than the material rather than lighter, so the raised segment
        reads as sitting on top of the track instead of merging into it. */
     --segment-track: rgb(0 0 0 / 0.32);
+
+    --srv-running: #4fa05e;
+    --srv-running-tint: rgb(79 160 94 / 0.14);
+    --srv-running-text: #8fcb9e;
+    --srv-working: #e0a23a;
+    --srv-working-tint: rgb(224 162 58 / 0.14);
+    --srv-working-text: #e8c07a;
+    --srv-working-box: rgb(224 162 58 / 0.07);
+    --srv-working-line: rgb(224 162 58 / 0.25);
+    --srv-stopped: #6a6a6a;
+    --srv-stopped-tint: rgb(255 255 255 / 0.07);
+    --srv-stopped-text: #c8c8c8;
+    --srv-stopped-box: rgb(255 255 255 / 0.04);
+    --srv-stopped-line: rgb(255 255 255 / 0.1);
+    --srv-failed: #e5534b;
+    --srv-failed-tint: rgb(229 83 75 / 0.14);
+    --srv-failed-text: #f2b8b5;
+    --srv-failed-box: rgb(229 83 75 / 0.08);
+    --srv-failed-line: rgb(229 83 75 / 0.25);
+    --srv-primary: #2f5a43;
+    --srv-primary-fg: #f5fbf7;
+    --srv-mono: #c8c8c8;
 
     --panel-radius: 12px;
     --radius-elevated: 11px;

@@ -12,6 +12,9 @@ const m = vi.hoisted(() => ({
   start: vi.fn<(opts: StartStackOptions) => Promise<StartLocalServerResult>>(),
   stop: vi.fn(),
   emit: vi.fn(),
+  record: vi.fn(),
+  ports: vi.fn(),
+  remember: vi.fn(),
 }));
 vi.mock('@shared/app-identity', async (importOriginal) => ({
   ...(await importOriginal<typeof AppIdentity>()),
@@ -33,7 +36,18 @@ vi.mock('./checkout-build', () => ({
   isCheckoutBuildEnabled: vi.fn(),
   setCheckoutBuildEnabled: vi.fn(),
 }));
-vi.mock('./compose', () => ({ isStackRunning: m.running }));
+const images = vi.hoisted(() => vi.fn());
+vi.mock('./compose', () => ({
+  isStackRunning: m.running,
+  coreStartedAt: vi.fn(),
+  runningImages: images,
+}));
+vi.mock('./local-activity', () => ({
+  readLocalActivity: vi.fn(),
+  recordLocalActivity: m.record,
+}));
+vi.mock('./ports', () => ({ readPersistedPorts: m.ports, rememberPorts: m.remember }));
+vi.mock('./free-port', () => ({ findFreePort: async () => 51234 }));
 vi.mock('./deployed-version', () => ({ readVersionStatus: m.version }));
 vi.mock('./telemetry-consent', () => ({ readDeployedTelemetry: vi.fn() }));
 vi.mock('./managed-upgrade', async (importOriginal) => ({
@@ -264,4 +278,90 @@ it('resets the stack on this computer holding no lock, since nobody else shares 
   await service.reset();
 
   expect(resetStack).toHaveBeenCalledWith(expect.anything(), null);
+});
+
+it('says its state has been read once the boot check is done, whatever it found', async () => {
+  m.running.mockResolvedValue(false);
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  const service = new LocalServerService();
+  expect(service.getStatus().checked).toBe(false);
+  await boot(service);
+  expect(service.getStatus()).toMatchObject({ phase: 'stopped', checked: true });
+});
+
+it('records what happens to the stack: an update, a start, a stop, a failed start', async () => {
+  m.running.mockResolvedValue(false);
+  const service = new LocalServerService();
+  await boot(service);
+  await service.start();
+  expect(m.record.mock.calls).toEqual([
+    ['updated', '0.11.0'],
+    ['started', null],
+  ]);
+
+  m.record.mockClear();
+  await service.stop();
+  m.start.mockResolvedValue({ kind: 'error', message: 'bind: address already in use' });
+  await service.start();
+  expect(m.record.mock.calls).toEqual([
+    ['stopped', null],
+    ['start-failed', 'bind: address already in use'],
+  ]);
+});
+
+it('moves only the service on the port that was taken, then starts', async () => {
+  m.running.mockResolvedValue(false);
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  m.start.mockResolvedValue(started);
+  m.ports.mockResolvedValue({ gateway: 8000, api: 8001, mattermost: 8065, postgres: 5432 });
+  const service = new LocalServerService();
+  await boot(service);
+
+  await expect(service.useAnotherPort(8000)).resolves.toEqual(started);
+  expect(m.remember).toHaveBeenCalledWith(expect.anything(), {
+    gateway: 51234,
+    api: 8001,
+    mattermost: 8065,
+    postgres: 5432,
+  });
+  expect(m.start).toHaveBeenCalledOnce();
+});
+
+it('refuses to move a port the server does not use', async () => {
+  m.ports.mockResolvedValue({ gateway: 8000, api: 8001, mattermost: 8065, postgres: 5432 });
+  const service = new LocalServerService();
+  await expect(service.useAnotherPort(9999)).rejects.toThrow('port 9999');
+  expect(m.remember).not.toHaveBeenCalled();
+});
+
+it('reports a stop that errored but left the stack down as stopped', async () => {
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  const service = new LocalServerService();
+  await boot(service);
+  m.stop.mockRejectedValue(new Error('compose down failed: Container switch Stopping'));
+  images.mockResolvedValue(new Map());
+
+  await expect(service.stop()).resolves.toBeUndefined();
+  expect(service.getStatus()).toMatchObject({ phase: 'stopped', error: null, failedTo: null });
+  expect(m.record).toHaveBeenCalledWith('stopped', null);
+});
+
+it('reports a stop that errored with the stack still up, or unreadable, as a failed stop', async () => {
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  const service = new LocalServerService();
+  await boot(service);
+  m.stop.mockRejectedValue(new Error('compose down failed'));
+  images.mockRejectedValue(new Error('docker is gone'));
+
+  await expect(service.stop()).rejects.toThrow('compose down failed');
+  expect(service.getStatus()).toMatchObject({
+    phase: 'error',
+    failedTo: 'stop',
+    error: 'compose down failed',
+  });
+
+  // The next start says nothing about the stop any more.
+  m.start.mockResolvedValue({ kind: 'error', message: 'bind: address already in use' });
+  await service.start();
+  expect(service.getStatus()).toMatchObject({ phase: 'error', failedTo: null });
 });

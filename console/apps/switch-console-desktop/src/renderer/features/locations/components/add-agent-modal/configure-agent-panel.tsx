@@ -215,10 +215,13 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
 export function AgentIdentityFields({
   form,
   serverId,
+  nameTaken,
 }: {
   form: ConfigureAgentFormState;
   /** The Switch server whose generated icons are offered. */
   serverId: string | null;
+  /** Another agent on the server already has this name. */
+  nameTaken: boolean;
 }) {
   const nameId = useId();
   const descriptionId = useId();
@@ -250,7 +253,7 @@ export function AgentIdentityFields({
           placeholder="Name this agent"
           value={form.agentName}
           onChange={(e) => form.setAgentName(e.target.value)}
-          aria-invalid={form.nameIsRejected}
+          aria-invalid={form.nameIsRejected || nameTaken}
         />
         {form.nameIsRejected ? (
           <Alert
@@ -280,6 +283,17 @@ export function AgentIdentityFields({
                 </Button>
               </AlertAction>
             )}
+          </Alert>
+        ) : nameTaken ? (
+          <Alert
+            variant="destructive"
+            className="border-border-destructive bg-background-destructive"
+          >
+            <TriangleAlert />
+            <AlertDescription className="text-foreground-destructive">
+              An agent called <span className="font-mono">{form.agentName}</span> already exists on
+              this server. Pick another name.
+            </AlertDescription>
           </Alert>
         ) : form.agentName.length > 0 ? (
           // Once there is a name, show the handle it produces rather than

@@ -144,6 +144,25 @@ class MessageStore:
         )
         return max(int(result.scalar_one()), 0)
 
+    async def head_seqs(
+        self, session: AsyncSession, room_ids: list[str]
+    ) -> dict[str, int]:
+        """`head_seq` for many rooms in one query, 0 for a room with nothing sent.
+
+        For a client starting up in all its rooms at once: one round trip
+        rather than one per room, which at boot is several hundred at the same
+        moment.
+        """
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(Message.room_id, func.max(Message.seq))
+            .where(Message.room_id.in_(room_ids))
+            .group_by(Message.room_id)
+        )
+        heads = {room_id: max(int(seq or 0), 0) for room_id, seq in result.all()}
+        return {room_id: heads.get(room_id, 0) for room_id in room_ids}
+
     async def get_by_transport_event_id(
         self, session: AsyncSession, transport_event_id: str
     ) -> Message | None:

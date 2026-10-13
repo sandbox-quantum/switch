@@ -236,3 +236,92 @@ describe('bridgeInstallState', () => {
     await expect(bridgeInstallState(SERVER, 'b1')).rejects.toMatchObject({ status: 500 });
   });
 });
+
+describe('disconnecting a Telegram connection', () => {
+  const CHAT = { ...INSTALL, platform: 'telegram', external_workspace_id: '-1001' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(validJwt());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('disconnects every chat, then deletes the connection', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/messaging-apps/installs')) {
+        return response(200, {
+          installs: [
+            { ...CHAT, id: 'chat-1' },
+            { ...CHAT, id: 'chat-2', external_workspace_id: '-1002' },
+            { ...CHAT, id: 'chat-gone', ended_at: '2026-02-01T00:00:00Z' },
+          ],
+        });
+      }
+      if (url.includes('/messaging-apps/installs/') || url.includes('/collaborations/b1')) {
+        return response(200, {});
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+
+    await expect(disconnectBridgeOnServer(SERVER, 'b1')).resolves.toEqual({ kind: 'deleted' });
+
+    const urls = fetchMock.mock.calls.map((call) => call[0] as string);
+    expect(urls).toEqual([
+      'https://switch.example.com/gateway/messaging-apps/installs',
+      'https://switch.example.com/gateway/messaging-apps/installs/chat-1',
+      'https://switch.example.com/gateway/messaging-apps/installs/chat-2',
+      'https://switch.example.com/gateway/collaborations/b1',
+    ]);
+  });
+
+  it('carries on past a chat someone else already disconnected', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/messaging-apps/installs')) {
+        return response(200, {
+          installs: [
+            { ...CHAT, id: 'chat-1' },
+            { ...CHAT, id: 'chat-2' },
+          ],
+        });
+      }
+      if (url.endsWith('/messaging-apps/installs/chat-1')) {
+        return response(404, { detail: 'Install not found' });
+      }
+      if (url.includes('/messaging-apps/installs/') || url.includes('/collaborations/b1')) {
+        return response(200, {});
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+
+    await expect(disconnectBridgeOnServer(SERVER, 'b1')).resolves.toEqual({ kind: 'deleted' });
+  });
+
+  it('stops at a chat the bot cannot leave, leaving the connection in place', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/messaging-apps/installs')) {
+        return response(200, {
+          installs: [
+            { ...CHAT, id: 'chat-1' },
+            { ...CHAT, id: 'chat-2' },
+          ],
+        });
+      }
+      if (url.endsWith('/messaging-apps/installs/chat-1')) {
+        return response(502, { detail: 'Telegram refused to let the bot leave chat -1001.' });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+
+    await expect(disconnectBridgeOnServer(SERVER, 'b1')).resolves.toEqual({
+      kind: 'error',
+      message: 'Telegram refused to let the bot leave chat -1001.',
+    });
+
+    const urls = fetchMock.mock.calls.map((call) => call[0] as string);
+    expect(urls.some((u) => u.includes('chat-2') || u.includes('/collaborations/'))).toBe(false);
+  });
+});

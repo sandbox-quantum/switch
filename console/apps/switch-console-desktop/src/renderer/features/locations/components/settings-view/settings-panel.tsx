@@ -7,6 +7,7 @@ import { AgentAdvancedSettingsSection } from '@renderer/features/locations/compo
 import { AutoApproveSettingsSection } from '@renderer/features/locations/components/settings-view/sections/auto-approve-settings-section';
 import { CanManageAgentsSettingsSection } from '@renderer/features/locations/components/settings-view/sections/can-manage-agents-settings-section';
 import { ProviderSignInSettingsSection } from '@renderer/features/locations/components/settings-view/sections/provider-sign-in-settings-section';
+import { ServiceGrantsSettingsSection } from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
 import {
   asMounted,
   getLocationStore,
@@ -49,6 +50,7 @@ export const SettingsPanel = observer(function SettingsPanel() {
         <AutoApproveSettingsSection locationId={locationId} agentId={agentId} />
         <AddressingPolicySettingsSection locationId={locationId} agentId={agentId} />
         <CanManageAgentsSettingsSection locationId={locationId} agentId={agentId} />
+        <ServiceGrantsSettingsSection locationId={locationId} agentId={agentId} />
       </section>
       <AgentAdvancedSettingsSection locationId={locationId} agentId={agentId} />
     </div>

@@ -1,9 +1,0 @@
-{
-  "shared-owner.lock": {"pid": 4101, "token": "00000000-0000-4000-8000-0000000000c1"},
-  "supervisor/owner.json": {"pid": 4102, "token": "00000000-0000-4000-8000-0000000000c2", "build": "/opt/switch/agent-providers/shared-host-daemon.mjs"},
-  "ownership/4103-00000000-0000-4000-8000-0000000000c3.json": {"choosing": false, "ticket": 1},
-  "supervisor/ownership/4104-00000000-0000-4000-8000-0000000000c4.json": {"choosing": true, "ticket": 0},
-  "home/.local/state/switch/sdk-sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/shared-owner.lock": {"pid": 4105, "group": 4105, "token": "00000000-0000-4000-8000-0000000000c5"},
-  "home/.local/state/switch/sdk-sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/supervisor/owner.json": {"pid": 4106, "token": "00000000-0000-4000-8000-0000000000c6", "build": "/opt/switch/agent-providers/shared-host-daemon.mjs"},
-  "home/.local/state/switch/sdk-sessions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/launch/ownership/4107-00000000-0000-4000-8000-0000000000c7.json": {"choosing": false, "ticket": 2}
-}

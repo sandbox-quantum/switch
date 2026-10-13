@@ -4,7 +4,6 @@ import argparse
 import json
 import logging
 import os
-import re
 import signal
 import sys
 import threading
@@ -17,14 +16,13 @@ from typing import Any
 import boto3
 
 from .cloud import Ec2Cloud
-from .config import ConfigError, ControllerConfig, validate_slot_id
+from .config import ConfigError, ControllerConfig
 from .gateway import Gateway, GatewayConfig
 from .health import check_health
 from .lock import ControllerAlreadyRunning, ControllerLock
 from .model import DesiredState, Machine
 from .reconciler import Reconciler
 from .store import MachineStore, StoreError
-from .verification import VerificationWorkers
 
 
 def parser() -> argparse.ArgumentParser:
@@ -33,27 +31,25 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--gateway-config", type=Path)
     subparsers = result.add_subparsers(dest="command", required=True)
 
-    create = subparsers.add_parser("create", help="create a machine in one configured slot")
-    create.add_argument("slot_id")
+    create = subparsers.add_parser("create", help="create a machine")
     create.add_argument("--instance-type", required=True)
 
     for command in ("start", "stop", "status"):
         child = subparsers.add_parser(command)
-        child.add_argument("slot_id")
+        child.add_argument("machine_id")
 
     delete = subparsers.add_parser("delete")
-    delete.add_argument("slot_id")
-    delete.add_argument("--confirm-slot-id", required=True)
+    delete.add_argument("machine_id")
+    delete.add_argument("--confirm-machine-id", required=True)
     cleanup = delete.add_mutually_exclusive_group(required=True)
     cleanup.add_argument("--retain-volume", action="store_true")
     cleanup.add_argument("--delete-volume", action="store_true")
 
     upgrade = subparsers.add_parser(
-        "upgrade", help="use the configured image after the old worker is stopped and terminated"
+        "upgrade", help="use the configured image after the old instance is stopped and terminated"
     )
-    upgrade.add_argument("slot_id")
+    upgrade.add_argument("machine_id")
     upgrade.add_argument("--confirm-instance-id", required=True)
-    upgrade.add_argument("--previous-runtime-fingerprint", required=True)
 
     subparsers.add_parser("list")
     health = subparsers.add_parser("health")
@@ -82,19 +78,13 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
     store = MachineStore(config.state_db_path, config.fingerprint())
     try:
         if args.command == "create":
-            slot_id = validate_slot_id(args.slot_id)
             if args.instance_type not in config.allowed_instance_types:
                 raise ConfigError("instance type is not in allowed_instance_types")
-            slot = config.slot(slot_id)
             machine = store.insert(
                 machine_id=str(uuid.uuid4()),
-                slot_id=slot_id,
-                generation=store.next_generation(slot_id),
                 core_revision=0,
                 instance_type=args.instance_type,
                 image_id=config.image_id,
-                assignment_secret_arn=slot.assignment_secret_arn,
-                instance_profile_arn=slot.instance_profile_arn,
                 max_machines=config.max_machines,
             )
             _print_machine(machine)
@@ -104,8 +94,11 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
                 json.dumps([_machine_output(machine) for machine in store.list()], sort_keys=True)
             )
             return 0
-        slot_id = validate_slot_id(args.slot_id)
-        machine = store.latest(slot_id)
+        try:
+            machine_id = str(uuid.UUID(args.machine_id))
+        except ValueError:
+            raise ConfigError("machine_id must be a machine's UUID") from None
+        machine = store.get(machine_id)
         if args.command == "status":
             _print_machine(machine)
             return 0
@@ -116,8 +109,8 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
             _print_machine(store.set_desired(machine.machine_id, DesiredState.STOPPED, None))
             return 0
         if args.command == "delete":
-            if args.confirm_slot_id != slot_id:
-                raise StoreError("--confirm-slot-id must exactly match slot_id")
+            if args.confirm_machine_id != machine.machine_id:
+                raise StoreError("--confirm-machine-id must exactly match machine_id")
             desired = DesiredState.DELETED if args.delete_volume else DesiredState.RETAINED
             _print_machine(store.set_desired(machine.machine_id, desired, None))
             return 0
@@ -129,10 +122,6 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
             ):
                 raise StoreError(
                     "stop the machine and confirm its recorded instance before upgrading"
-                )
-            if not re.fullmatch(r"sha256:[0-9a-f]{64}", args.previous_runtime_fingerprint):
-                raise ConfigError(
-                    "previous runtime fingerprint must be the sha256:<64 hex> runtimeFingerprint from the trusted disk marker"
                 )
             cloud = Ec2Cloud(boto3.client("ec2", region_name=config.region), config)
             instance = cloud.get_instance(machine)
@@ -149,9 +138,7 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
                 )
             cloud.validate_image(replace(machine, image_id=config.image_id))
             claim = store.mark_instance_terminal_observed(machine.machine_id, machine.instance_id)
-            _print_machine(
-                store.upgrade_terminated(claim, config.image_id, args.previous_runtime_fingerprint)
-            )
+            _print_machine(store.upgrade_terminated(claim, config.image_id))
             return 0
         raise AssertionError(f"unhandled command {args.command}")
     finally:
@@ -165,16 +152,8 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
             ec2 = boto3.client("ec2", region_name=config.region)
             reconciler = Reconciler(store, Ec2Cloud(ec2, config))
             gateway = (
-                Gateway(
-                    GatewayConfig.load(gateway_path),
-                    config,
-                    store,
-                    boto3.client("secretsmanager", region_name=config.region),
-                )
-                if gateway_path
-                else None
+                Gateway(GatewayConfig.load(gateway_path), config, store) if gateway_path else None
             )
-            verification = VerificationWorkers(ec2, config, gateway) if gateway else None
             _touch_health()
             if command == "reconcile-once":
                 try:
@@ -190,13 +169,6 @@ def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Pat
             signal.signal(signal.SIGTERM, request_stop)
             signal.signal(signal.SIGINT, request_stop)
             while not stop.is_set():
-                if verification:
-                    try:
-                        verification.reconcile()
-                    except Exception as error:
-                        logging.error(
-                            "Provider verification reconciliation failed: %s", type(error).__name__
-                        )
                 listed = None
                 if gateway:
                     try:
@@ -245,8 +217,6 @@ def _print_machine(machine: Machine) -> None:
 def _machine_output(machine: Machine) -> dict[str, Any]:
     return {
         "machine_id": machine.machine_id,
-        "slot_id": machine.slot_id,
-        "generation": machine.generation,
         "instance_type": machine.instance_type,
         "desired_state": machine.desired_state.value,
         "desired_revision": machine.desired_revision,

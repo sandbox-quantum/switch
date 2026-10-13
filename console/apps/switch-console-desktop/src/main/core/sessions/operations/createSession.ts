@@ -6,6 +6,7 @@ import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
+import { providerNamesSentence } from '@shared/core/providers/agent-provider-registry';
 import type { SessionConfig } from '@shared/core/sessions/session-config';
 import type {
   CreateSessionError,
@@ -41,7 +42,7 @@ export async function createSession(
   if (!providerAdapterRegistry.supports(agent.providerId))
     return err({
       type: 'spawn-failed',
-      message: 'SDK sessions support Claude Code, Codex, OpenCode, Antigravity CLI and Cursor.',
+      message: `SDK sessions support ${providerNamesSentence()}.`,
     });
   if (!adopted && process.platform === 'win32' && location?.transport.kind !== 'ssh')
     return err({

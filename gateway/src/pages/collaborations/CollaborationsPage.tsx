@@ -11,7 +11,6 @@ import {
   Dialog,
   DialogActions,
   DialogContent,
-  DialogContentText,
   DialogTitle,
   IconButton,
   Stack,
@@ -25,7 +24,6 @@ import DataTable from "../../components/DataTable";
 import {
   type BridgeDetail,
   beginAppInstall,
-  deleteBridge,
   updateBridge,
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
@@ -33,6 +31,8 @@ import { useBridges, useInstallablePlatforms } from "../../data/hooks";
 import { formatDate, platformLabel, titleCase } from "../../theme/hootFormat";
 import AddToChatDialog from "./AddToChatDialog";
 import AttentionBanner from "./AttentionBanner";
+import DeleteConnectionText from "./DeleteConnectionText";
+import { deleteConnection, mayHoldChats } from "./deleteConnection";
 import InstalledAppsSection from "./InstalledAppsSection";
 import RegisterMessagingAppDialog from "./RegisterMessagingAppDialog";
 import TeamsPlacementDialog from "./TeamsPlacementDialog";
@@ -58,13 +58,16 @@ export default function CollaborationsPage() {
   const [teamsTarget, setTeamsTarget] = useState<BridgeDetail | null>(null);
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [approveError, setApproveError] = useState<string | null>(null);
+  // Bumped to reload the installed apps after deleting a connection
+  // disconnected its chats.
+  const [installsVersion, setInstallsVersion] = useState(0);
 
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
     setDeleting(true);
     setDeleteError(null);
     try {
-      await deleteBridge(deleteTarget.bridge_id);
+      await deleteConnection(deleteTarget);
       setDeleteTarget(null);
       refetch();
     } catch (e) {
@@ -74,6 +77,9 @@ export default function CollaborationsPage() {
       setDeleteError(e instanceof Error ? e.message : "Failed to delete");
     } finally {
       setDeleting(false);
+      // Its chats were disconnected on the way, however far it got, so the
+      // installed apps listed below are stale.
+      if (mayHoldChats(deleteTarget)) setInstallsVersion((v) => v + 1);
     }
   }, [deleteTarget, refetch]);
 
@@ -291,7 +297,11 @@ export default function CollaborationsPage() {
         <DataTable rows={rows} columns={columns} />
       )}
 
-      <InstalledAppsSection isAdmin={isAdmin} onConnectionsChanged={refetch} />
+      <InstalledAppsSection
+        key={installsVersion}
+        isAdmin={isAdmin}
+        onConnectionsChanged={refetch}
+      />
 
       <RegisterMessagingAppDialog
         open={registerOpen}
@@ -320,12 +330,7 @@ export default function CollaborationsPage() {
       >
         <DialogTitle>Delete collaboration bridge</DialogTitle>
         <DialogContent>
-          <DialogContentText>
-            Are you sure you want to delete &quot;{deleteTarget?.display_name}&quot; (
-            {deleteTarget?.bridge_type})? This will also delete all{" "}
-            {deleteTarget?.room_count ?? 0} associated room
-            {deleteTarget?.room_count === 1 ? "" : "s"} and external users.
-          </DialogContentText>
+          {deleteTarget && <DeleteConnectionText bridge={deleteTarget} />}
           {deleteError && (
             <Alert severity="error" sx={{ mt: 2 }}>
               {deleteError}

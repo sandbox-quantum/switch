@@ -15,6 +15,8 @@ const defaultWorkspace = vi.hoisted(() => vi.fn());
 const hostEnable = vi.hoisted(() => vi.fn());
 const modelCatalogue = vi.hoisted(() => vi.fn());
 const advancedConfigSchema = vi.hoisted(() => vi.fn());
+const giveMachineLogin = vi.hoisted(() => vi.fn());
+const machineLoginOutcome = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -30,7 +32,7 @@ vi.mock('@renderer/lib/ipc', () => ({
     embeddedController: { enable: embeddedEnable, defaultWorkspace },
     hostControllers: { enable: hostEnable },
     agents: { modelCatalogue },
-    managedAgents: { advancedConfigSchema },
+    managedAgents: { advancedConfigSchema, giveMachineLogin, machineLoginOutcome },
   },
 }));
 
@@ -121,18 +123,16 @@ describe('where a new agent runs', () => {
     expect(el.querySelector('button')).toBeNull();
   });
 
-  it('turns this computer on from the form, then looks again', async () => {
+  it('sets this computer up for managed agents as soon as it is chosen, without asking', async () => {
     const onEnabled = vi.fn();
-    const el = await render(
+    await render(
       notice(
         { management: true, target: null, blocker: 'Turn it on first.', canEnable: true },
         null,
         onEnabled
       )
     );
-    const button = el.querySelector('button')!;
-    expect(button.textContent).toBe('Run managed agents on this computer');
-    await act(async () => button.click());
+    expect(embeddedEnable).toHaveBeenCalledTimes(1);
     expect(embeddedEnable).toHaveBeenCalledWith({
       serverId: 'server-1',
       workspaceId: 'workspace-1',
@@ -141,19 +141,33 @@ describe('where a new agent runs', () => {
     expect(onEnabled).toHaveBeenCalled();
   });
 
-  it('makes an SSH host a machine from the form', async () => {
-    const el = await render(
+  it('sets an SSH host up as a machine as soon as it is chosen', async () => {
+    await render(
       notice(
         { management: true, target: null, blocker: 'Make it a machine.', canEnable: true },
         'box'
       )
     );
-    await act(async () => el.querySelector('button')!.click());
     expect(hostEnable).toHaveBeenCalledWith({
       sshHost: 'box',
       serverId: 'server-1',
       workspaceId: 'workspace-1',
     });
+  });
+
+  it('offers the button to try again when setting it up failed, and does not retry by itself', async () => {
+    embeddedEnable.mockRejectedValueOnce(new Error('no controller'));
+    const el = await render(
+      notice(
+        { management: true, target: null, blocker: 'Turn it on first.', canEnable: true },
+        null
+      )
+    );
+    expect(embeddedEnable).toHaveBeenCalledTimes(1);
+    const button = el.querySelector('button')!;
+    expect(button.textContent).toBe('Run managed agents on this computer');
+    await act(async () => button.click());
+    expect(embeddedEnable).toHaveBeenCalledTimes(2);
   });
 
   it('says Console runs the agent on a server without agent management', async () => {
@@ -294,12 +308,15 @@ describe('the directory a new managed agent runs in', () => {
 });
 
 const BOX: OwnedMachine = {
+  acceptsLogins: false,
+  cloud: false,
   id: 'controller-7',
   name: 'build-box',
   kind: 'daemon',
   state: 'online',
   local: null,
   workspacesDir: null,
+  os: null,
   providers: [
     { provider: 'claude', ready: true, problem: null },
     { provider: 'codex', ready: false, problem: 'not logged in' },
@@ -320,6 +337,7 @@ describe('the providers a server machine offers', () => {
     const onChange = vi.fn();
     const el = await render(
       <MachineProviderPicker
+        serverId="server-1"
         machine={BOX}
         value="claude"
         onChange={onChange}
@@ -341,6 +359,7 @@ describe('the providers a server machine offers', () => {
     const onChange = vi.fn();
     await render(
       <MachineProviderPicker
+        serverId="server-1"
         machine={BOX}
         value={null}
         onChange={onChange}
@@ -354,6 +373,7 @@ describe('the providers a server machine offers', () => {
     const onChange = vi.fn();
     const el = await render(
       <MachineProviderPicker
+        serverId="server-1"
         machine={{ ...BOX, providers: [] }}
         value={null}
         onChange={onChange}
@@ -363,5 +383,56 @@ describe('the providers a server machine offers', () => {
     expect(el.textContent).toMatch(/build-box has not reported its providers yet/);
     expect([...el.querySelectorAll('button')].every((button) => button.disabled)).toBe(true);
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('gives the machine a login for a provider installed there but not signed in', async () => {
+    giveMachineLogin.mockReset().mockResolvedValue({ operationId: 'op-1' });
+    machineLoginOutcome.mockReset().mockResolvedValue({ state: 'succeeded' });
+    const el = await render(
+      <MachineProviderPicker
+        serverId="server-1"
+        machine={{ ...BOX, acceptsLogins: true }}
+        value="claude"
+        onChange={vi.fn()}
+        defaultAgent="claude"
+      />
+    );
+    expect(el.textContent).toMatch(/Give build-box a login for/);
+    const offered = [...el.querySelectorAll('button')].filter((button) =>
+      ['Codex', 'Cursor', 'OpenCode'].includes(button.textContent ?? '')
+    );
+    // Not OpenCode: it is not installed there, and no login would change that.
+    expect(offered.map((button) => button.textContent)).toEqual(['Codex', 'Cursor']);
+    await act(async () => offered[0]!.click());
+    const input = el.querySelector<HTMLInputElement>('input[aria-label="API key"]')!;
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      setValue.call(input, 'sk-proj-placeholder');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const giveButton = [...el.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Give login'
+    )!;
+    await act(async () => giveButton.click());
+    await vi.waitFor(() => expect(el.textContent).toMatch(/Codex signs in on build-box/));
+    expect(giveMachineLogin).toHaveBeenCalledWith({
+      serverId: 'server-1',
+      machineId: 'controller-7',
+      provider: 'codex',
+      login: { source: 'typed', kind: 'api-key', credential: 'sk-proj-placeholder' },
+    });
+  });
+
+  it('offers no login to a machine that cannot take one', async () => {
+    const el = await render(
+      <MachineProviderPicker
+        serverId="server-1"
+        machine={BOX}
+        value="claude"
+        onChange={vi.fn()}
+        defaultAgent="claude"
+      />
+    );
+    expect(el.textContent).not.toMatch(/Give build-box a login/);
   });
 });

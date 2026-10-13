@@ -4,6 +4,8 @@ import { OnboardingFlow } from '@renderer/features/onboarding/onboarding-flow';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { LeftSidebar } from '@renderer/features/sidebar/left-sidebar';
 import { RoomEmbedLayer } from '@renderer/features/switch-rooms/room-embed-layer';
+import { FrozenBanner, frozenServer } from '@renderer/features/switch-servers/frozen-workspace';
+import { FROZEN } from '@renderer/features/switch-servers/managed-server-state';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { CommandShortcutBinder } from '@renderer/lib/commands/command-shortcut-binder';
 import { AppKeyboardShortcuts } from '@renderer/lib/components/app-keyboard-shortcuts';
@@ -15,6 +17,7 @@ import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Toaster } from '@renderer/lib/ui/toaster';
+import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import { shellShape } from './shell-shape';
 import { viewWorksWithoutServer } from './view-registry';
 
@@ -65,6 +68,7 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
     installIsEmpty: switchServersStore.installIsEmpty,
     viewWorksWithoutServer: viewWorksWithoutServer(currentViewId),
     onboardingInProgress: onboardingStore.inProgress,
+    onboardingEnabled: BUILD_FEATURE_FLAGS.onboarding,
   });
 
   switch (shape) {
@@ -82,14 +86,20 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
       );
     case 'onboarding':
       return <OnboardingFlow />;
-    case 'workspace':
+    case 'workspace': {
+      // A workspace whose server can't answer stays where it was, under a
+      // banner, rather than filling with errors from every call that fails.
+      const frozen = frozenServer(currentViewId);
       return (
         <WorkspaceLayout
           leftSidebar={<LeftSidebar />}
           mainContent={mainContent}
           persistentLayer={<RoomEmbedLayer />}
+          banner={frozen && <FrozenBanner server={frozen} />}
+          contentClassName={frozen ? FROZEN : undefined}
         />
       );
+    }
   }
 });
 

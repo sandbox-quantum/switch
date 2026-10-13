@@ -37,6 +37,7 @@ const secrets: LocalServerSecrets = {
   agentRegistrationToken: 'agent-token',
   jwtSecretKey: 'jwt-key',
   secretKeys: 'console:secret-keys-value',
+  controllerTokenSecret: 'controller-token-secret-value',
   gatewayAdminPassword: 'gw-admin',
   mattermostAdminPassword: 'mm-admin',
   mattermostUserPassword: 'mm-user',

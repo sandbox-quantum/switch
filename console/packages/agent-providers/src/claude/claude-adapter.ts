@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { accessSync, constants } from 'node:fs';
+import { accessSync, constants, existsSync } from 'node:fs';
 import { access, readdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -15,8 +15,14 @@ import type {
   SDKMessage,
   SDKResultMessage,
   SDKUserMessage,
+  SpawnedProcess,
+  SpawnOptions,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { ModelChoice } from '@switch-console/shared/session-v1';
+import {
+  getWindowsEnvValue,
+  resolveWindowsCommandPath,
+} from '@switch-console/shared/windows-spawn';
 import type {
   ModelSelection,
   ProviderAdapter,
@@ -42,6 +48,7 @@ import type {
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
+import { spawnProvider, stopProvider } from '../provider-process';
 import { CumulativeUsage, mergeUsage } from '../usage';
 import {
   approvalContent,
@@ -285,6 +292,14 @@ export function resolveClaudeExecutable(
   env: Record<string, string>
 ): string | undefined {
   if (configured !== undefined) return configured;
+  if (process.platform === 'win32') {
+    const onPath = resolveWindowsCommandPath({ command: 'claude', env, fileExists: existsSync });
+    if (onPath) return onPath;
+    // Where Claude Code's own installer puts it on Windows.
+    const profile = getWindowsEnvValue(env, 'USERPROFILE');
+    const installed = profile ? join(profile, '.local', 'bin', 'claude.exe') : null;
+    return installed && existsSync(installed) ? installed : undefined;
+  }
   const candidates: string[] = [];
   for (const dir of (env.PATH ?? '').split(delimiter)) {
     if (dir.length > 0) candidates.push(join(dir, 'claude'));
@@ -299,6 +314,26 @@ export function resolveClaudeExecutable(
     }
   }
   return undefined;
+}
+
+/**
+ * Starts Claude Code for the SDK on Windows through `spawnProvider`, which can
+ * start the `claude.cmd` an npm install leaves. The SDK aborts `signal` once
+ * its own graceful close (stdin closed, then a grace period) has run; the
+ * CLI's whole tree goes then, `cmd.exe` and all.
+ */
+function spawnClaudeOnWindows(
+  options: SpawnOptions,
+  onStderr: (data: string) => void
+): SpawnedProcess {
+  const child = spawnProvider(options.command, options.args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  child.stderr?.on('data', (chunk: Buffer) => onStderr(chunk.toString('utf8')));
+  options.signal.addEventListener('abort', () => stopProvider(child, 'SIGTERM'), { once: true });
+  return child as SpawnedProcess;
 }
 
 function effortFrom(model: ModelSelection | undefined): EffortLevel | undefined {
@@ -424,6 +459,15 @@ export class ClaudeAdapter implements ProviderAdapter {
       canUseTool: this.makeCanUseTool(input.sessionId),
       ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
+      // An npm install is `claude.cmd` on Windows, which the SDK cannot start itself.
+      ...(process.platform === 'win32'
+        ? {
+            spawnClaudeCodeProcess: (spawnOptions: SpawnOptions) =>
+              spawnClaudeOnWindows(spawnOptions, (data) =>
+                this.logger?.debug('claude stderr', { sessionId: input.sessionId, data })
+              ),
+          }
+        : {}),
       ...(input.agentName ? { agent: input.agentName } : {}),
       ...(input.agentName && input.agentDefinition
         ? { agents: { [input.agentName]: input.agentDefinition } }

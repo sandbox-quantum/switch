@@ -47,7 +47,10 @@ describe('buildWatcherTemplate', () => {
     expect(template.execution).toMatchObject({
       credentialsPath: '/data/agents/agent-1/credentials.json',
       binaryPath: `/usr/bin/${provider}`,
-      codexConfig: provider === 'codex' ? 'developer_instructions = "Review pull requests."\n' : '',
+      codexConfig:
+        provider === 'codex'
+          ? 'sandbox_mode = "workspace-write"\ndeveloper_instructions = "Review pull requests."\n'
+          : '',
     });
     expect(template.execution!.inheritEnv).toEqual(
       expect.arrayContaining(['PATH', 'HOME', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY'])
@@ -110,7 +113,9 @@ describe('buildWatcherTemplate', () => {
       ...advanced,
     });
     expect(template.start.input.model).toEqual({ id: 'gpt-5.5', options: { effort: 'high' } });
-    expect(template.execution!.codexConfig).toBe(console.codexConfig);
+    expect(template.execution!.codexConfig).toBe(
+      `sandbox_mode = "workspace-write"\n${console.codexConfig}`
+    );
     expect(template.execution!.codexConfig).toContain('model_verbosity = "low"');
     expect(template.execution!.codexConfig).toContain('web_search = true');
     expect(template.start.input).not.toHaveProperty('agentDefinition');
@@ -195,7 +200,7 @@ describe('buildWatcherTemplate', () => {
 });
 
 describe('advancedConfigDefinitionProblem', () => {
-  it('accepts the advanced configuration a provider offers', () => {
+  it('accepts the advanced configuration a provider applies', () => {
     expect(
       advancedConfigDefinitionProblem('opencode', {
         ...definition,
@@ -217,6 +222,24 @@ describe('advancedConfigDefinitionProblem', () => {
         advanced_config: { effort: 'high' },
       })
     ).toMatch(/'effort'/);
+  });
+
+  it('accepts an empty configuration for a provider that applies no settings', () => {
+    expect(
+      advancedConfigDefinitionProblem('antigravity', { ...definition, advanced_config: {} })
+    ).toBeNull();
+    expect(
+      advancedConfigDefinitionProblem('cursor', { ...definition, advanced_config: {} })
+    ).toBeNull();
+  });
+
+  it('names a value of a shape this controller cannot apply', () => {
+    expect(
+      advancedConfigDefinitionProblem('opencode', {
+        ...definition,
+        advanced_config: { temperature: 'warm' },
+      })
+    ).toMatch(/'temperature'.*number/);
   });
 
   it('names a Claude Code setting its session cannot start with', () => {

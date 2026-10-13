@@ -592,8 +592,9 @@ and durable command receipts across redeployment.
 - Access mounted locations through `asMounted(getLocationStore(id))`, not inline guards.
 - Session selectors live in `src/renderer/features/sessions/stores/session-selectors.ts`.
 - Location selectors live in `src/renderer/features/locations/stores/location-selectors.ts`.
-- For provider changes, update shared provider metadata, SDK host env passthrough if needed,
-  hook/plugin integrations, renderer assumptions, and tests for non-standard behavior.
+- For provider changes, follow [Add an agent provider](docs/add-an-agent-provider.md): the
+  plugin, the runtime registration (with its env passthrough), and tests for non-standard
+  behavior. Nothing else should need to name the provider.
 - For MCP changes, keep canonical data in shared types and adapt provider formats at edges.
 - Run the local merge gate before merging:
 
@@ -606,11 +607,13 @@ pnpm run test
 
 ## Extensibility Hooks
 
-- Agent providers are defined in `packages/plugins/src/agents/impl/<id>/index.ts`.
-  `src/shared/core/providers/agent-provider-registry.ts` holds the id list, per-provider
-  display metadata, and a mirror of each provider's argv shape. The mirror is
-  descriptive: nothing reads it at spawn time, so change the plugin first and update the
-  mirror to match. `provider-argv-parity.test.ts` pins Codex's.
+- An agent provider registers in two places, each with one line: its plugin in
+  `packages/plugins/src/agents/plugin-registry.ts` (display metadata, detection, install,
+  icon) and its runtime in `packages/agent-providers/src/providers/registry.ts` (adapter,
+  sign-in check, login command). An ACP CLI's runtime is made from its hooks on the generic
+  ACP adapter. `src/shared/core/providers/agent-provider-registry.ts` is the catalogue the
+  app builds from both at startup; nothing in the app lists provider ids. See
+  [Add an agent provider](docs/add-an-agent-provider.md).
 - **The Switch skill every session receives** lives in
   `packages/plugins/src/switch-skill/SKILL.md`, the one copy Console pushes to
   every host (system context for Claude Code, Cursor and Antigravity; a

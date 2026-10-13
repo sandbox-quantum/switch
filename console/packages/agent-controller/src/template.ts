@@ -2,15 +2,12 @@ import { randomUUID } from 'node:crypto';
 import {
   agentLaunchDefinitionSchema,
   controllerConnectionId,
-  createAntigravityAdapter,
-  createClaudeAdapter,
-  createCodexAdapter,
-  createCursorAdapter,
-  createOpencodeAdapter,
   EXECUTION_INHERIT_ENV,
+  providerRuntime,
   type ProviderCapabilities,
   type SharedHostConfig,
   sharedConfigSchema,
+  withManagedCodexSandbox,
 } from '@switch-console/agent-providers';
 import { advancedConfigProblem, sessionLaunchConfig } from '@switch-console/plugins/agents';
 import type { AgentDefinition, Provider } from './schemas';
@@ -21,16 +18,12 @@ const capabilityCache = new Map<Provider, ProviderCapabilities>();
 function adapterCapabilities(provider: Provider): ProviderCapabilities {
   const cached = capabilityCache.get(provider);
   if (cached) return cached;
-  const adapter =
-    provider === 'claude'
-      ? createClaudeAdapter()
-      : provider === 'codex'
-        ? createCodexAdapter()
-        : provider === 'opencode'
-          ? createOpencodeAdapter()
-          : provider === 'antigravity'
-            ? createAntigravityAdapter()
-            : createCursorAdapter();
+  const adapter = providerRuntime(provider).createAdapter({
+    binaryPath: undefined,
+    logger: undefined,
+    skill: '',
+    serviceSkills: [],
+  });
   capabilityCache.set(provider, adapter.capabilities);
   return adapter.capabilities;
 }
@@ -42,8 +35,10 @@ export function watcherSessionId(agentId: string): string {
 
 /**
  * What keeps an agent's advanced configuration from being applied as defined,
- * naming the field, or null when nothing does. A field this build does not
- * know is refused rather than ignored: a newer server may send one an older
+ * naming the field, or null when nothing does. The server checked the values
+ * against its fields when the definition was written; what is left to refuse
+ * here is a field this build's plugin does not apply, or a value of a shape it
+ * cannot apply, rather than ignore it: a newer server may send one an older
  * controller cannot apply.
  */
 export function advancedConfigDefinitionProblem(
@@ -148,7 +143,10 @@ export function buildWatcherTemplate(input: {
       credentialsPath: input.credentialsPath,
       inheritEnv: [...EXECUTION_INHERIT_ENV],
       ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}),
-      codexConfig: launch.codexConfig,
+      codexConfig:
+        provider === 'codex'
+          ? withManagedCodexSandbox(launch.codexConfig, input.definition.auto_approve)
+          : launch.codexConfig,
       skill: launch.skill,
       context: launch.context,
       instructions: launch.instructions,

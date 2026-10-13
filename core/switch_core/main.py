@@ -8,10 +8,11 @@ import signal
 import time
 from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
-from functools import partial
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
+import telegram
 import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
@@ -26,7 +27,6 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
-from switch_core.bridges.agent.hosted_mailbox import mailbox_upkeep
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
     AgentConnectionRegistry,
@@ -50,15 +50,18 @@ from switch_core.bridges.agent.server_connectors.opencode.connector import (
     OpenCodeConnectionConfig,
     OpenCodeConnector,
 )
-from switch_core.bridges.collaboration.adapter import SupportsSharedConnection
+from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
-    DiscordConnectionConfig,
 )
 from switch_core.bridges.collaboration.discord.connection import DiscordConnection
 from switch_core.bridges.collaboration.discord.gateway import DiscordGatewayClient
 from switch_core.bridges.collaboration.discord.install import DiscordAppInstaller
-from switch_core.bridges.collaboration.install import MessagingInstallerRegistry
+from switch_core.bridges.collaboration.install import (
+    MessagingInstallerRegistry,
+    events_path,
+    public_url,
+)
 from switch_core.bridges.collaboration.install_routes import (
     create_messaging_install_router,
 )
@@ -66,19 +69,8 @@ from switch_core.bridges.collaboration.install_service import MessagingInstallSe
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
-from switch_core.bridges.collaboration.mattermost.adapter import (
-    MattermostAdapter,
-    MattermostConnectionConfig,
-)
-from switch_core.bridges.collaboration.slack.adapter import (
-    SlackAdapter,
-    SlackConnectionConfig,
-)
+from switch_core.bridges.collaboration.platforms import register_platforms
 from switch_core.bridges.collaboration.slack.install import SlackAppInstaller
-from switch_core.bridges.collaboration.teams.adapter import (
-    TeamsAdapter,
-    TeamsConnectionConfig,
-)
 from switch_core.bridges.collaboration.teams.app_package import (
     build_distributed_app_package,
 )
@@ -86,7 +78,15 @@ from switch_core.bridges.collaboration.teams.install import TeamsAppInstaller
 from switch_core.bridges.collaboration.teams.shared_app import TeamsSharedApp
 from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
-    TelegramConnectionConfig,
+)
+from switch_core.bridges.collaboration.telegram.app_client import (
+    TelegramAppClient,
+    bot_resource,
+)
+from switch_core.bridges.collaboration.telegram.install import TelegramAppInstaller
+from switch_core.bridges.collaboration.webhooks import (
+    BridgeWebhookService,
+    create_bridge_webhook_router,
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
@@ -95,6 +95,14 @@ from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.config import SwitchConfig, deprecated_env_names
+from switch_core.connections.adapters.github import GitHubApp
+from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.github_move import move_github_connections
+from switch_core.connections.loader import CATALOG
+from switch_core.connections.maintenance import (
+    maintenance_loop as service_token_maintenance_loop,
+)
+from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.engine import (
@@ -125,7 +133,6 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
-from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.media_store import MediaStore
@@ -140,6 +147,7 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
@@ -165,6 +173,7 @@ from switch_core.observability.pool import (
 )
 from switch_core.observability.query import instrument_queries
 from switch_core.observability.runtime import EventLoopLag
+from switch_core.outbound import guarded_async_client
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
@@ -551,7 +560,7 @@ async def run(config: SwitchConfig) -> None:
     )
 
     # ── Switch Trust guardrails ──────────────────────────────────────────────
-    trust_client, trust_http = build_trust_client(config)
+    trust_client, trust_http = build_trust_client(session_factory, config)
 
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
@@ -583,6 +592,9 @@ async def run(config: SwitchConfig) -> None:
         async with tenant_session(session_factory, tenant_id) as session:
             await resource_service.log_builtin_shadowing(session)
     await reencrypt_stored_secrets(session_factory, config.keyring, tenant_ids)
+    # After rotation, which has opened every stored GitHub secret or stopped
+    # the boot: the move reads them, once per tenant.
+    await move_github_connections(session_factory, config.keyring, tenant_ids)
 
     # ── Provisioning ─────────────────────────────────────────────────────────
     provisioning: Provisioning = PostgresProvisioning(
@@ -639,7 +651,6 @@ async def run(config: SwitchConfig) -> None:
         agent_session_store=agent_session_store,
         room_role_store=room_role_store,
         external_user_store=external_user_store,
-        hosted_launch_store=HostedLaunchStore(),
         connections=connections,
         frontend_base_url=config.frontend_base_url,
         message_telemetry=message_telemetry,
@@ -714,7 +725,7 @@ async def run(config: SwitchConfig) -> None:
         frontend_base_url=config.frontend_base_url,
     )
 
-    # ── Agent management (off unless AGENT_MANAGEMENT_ENABLED) ───────────────
+    # ── Agent management (off unless the agent_management flag is on) ─────────
     # Built before the agent bridge app because its authenticator is the bearer
     # middleware's controller branch; its routes are installed once both apps
     # exist, below.
@@ -792,6 +803,45 @@ async def run(config: SwitchConfig) -> None:
 
     teams_app = _distributed_teams_app(config, installers, collab_lifecycle)
 
+    async def _attach_shared_telegram_bridges(client: TelegramAppClient) -> None:
+        # The bridges that started before the bot was up; each one starting
+        # after is attached as it starts, by `_attach_to_telegram_if_live`.
+        for adapter in collab_lifecycle.iter_adapters():
+            if isinstance(adapter, TelegramAdapter):
+                adapter.attach_shared_connection(client)
+
+    telegram_app: TelegramAppClient | None = None
+    if config.telegram_app_bot_token:
+        assert config.telegram_app_webhook_secret is not None
+        assert config.messaging_public_url is not None
+        telegram_app = TelegramAppClient(
+            bot=telegram.Bot(config.telegram_app_bot_token),
+            webhook_url=public_url(
+                config.messaging_public_url, events_path("telegram")
+            ),
+            webhook_secret=config.telegram_app_webhook_secret,
+            on_connected=_attach_shared_telegram_bridges,
+        )
+        collab_lifecycle.reserve_resource(
+            bot_resource(telegram_app.bot_id), "Telegram app bot"
+        )
+        shared_bot = telegram_app
+
+        def _attach_to_telegram_if_live(adapter: PlatformAdapter) -> None:
+            # Not before the bot is up, for the reason the Discord client
+            # gives: the bridge would start against a bot it cannot use, and
+            # the attach on connect would then be a no-op.
+            if shared_bot.is_live and isinstance(adapter, TelegramAdapter):
+                adapter.attach_shared_connection(shared_bot)
+
+        collab_lifecycle.add_bridge_starting_listener(_attach_to_telegram_if_live)
+        installers.register(
+            TelegramAppInstaller(
+                client=telegram_app,
+                webhook_secret=config.telegram_app_webhook_secret,
+            )
+        )
+
     install_service: MessagingInstallService | None = None
     if installers.platforms():
         assert config.messaging_public_url is not None
@@ -801,6 +851,8 @@ async def run(config: SwitchConfig) -> None:
             receipts=MessagingEventReceiptStore(),
             installers=installers,
             lifecycle=collab_lifecycle,
+            users=user_store,
+            rooms=room_service,
             public_origin=config.messaging_public_url,
             keyring=config.keyring,
         )
@@ -837,18 +889,7 @@ async def run(config: SwitchConfig) -> None:
         config=config,
     )
 
-    # Register collaboration bridge adapter types
-    collab_lifecycle.register_adapter(
-        "mattermost", MattermostAdapter, MattermostConnectionConfig
-    )
-    collab_lifecycle.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
-    collab_lifecycle.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
-    collab_lifecycle.register_adapter(
-        "discord", DiscordAdapter, DiscordConnectionConfig
-    )
-    collab_lifecycle.register_adapter(
-        "telegram", TelegramAdapter, TelegramConnectionConfig
-    )
+    register_platforms(collab_lifecycle)
 
     # Liveness, and cheap on purpose: the gateway Deployment and the setup Job
     # wait on it at boot, so anything it checked would become a boot-ordering
@@ -880,6 +921,16 @@ async def run(config: SwitchConfig) -> None:
             create_messaging_install_router(install_service),
             tags=["messaging-installs"],
         )
+    agent_bridge_app.include_router(
+        create_bridge_webhook_router(
+            BridgeWebhookService(
+                lifecycle=collab_lifecycle,
+                session_factory=session_factory,
+                receipts=MessagingEventReceiptStore(),
+            )
+        ),
+        tags=["bridge-webhooks"],
+    )
 
     if management is not None:
         management.install(
@@ -914,6 +965,33 @@ async def run(config: SwitchConfig) -> None:
     # ── Lifespan: start server-side connectors once HTTP is serving ────────
     original_lifespan = agent_bridge_app.router.lifespan_context
 
+    # A service is issued only where this server is set up for it, as its
+    # catalog entry's adapter says (`connections/registry.py`). Without any,
+    # the broker's upkeep still revokes and prunes whatever records exist.
+    github_app: GitHubApp | None = gateway_app.state.github_app
+    service_broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=config.keyring,
+        catalog=CATALOG,
+        adapters=build_adapters(
+            CATALOG,
+            github_app=github_app,
+            environ=os.environ,
+            http=guarded_async_client(config.outbound_policy, timeout=20),
+            registration=ClientRegistration(
+                session_factory=session_factory,
+                keyring=config.keyring,
+                public_url=config.gateway_public_url,
+                server_name=config.id_server_name,
+            ),
+        ),
+        disabled=config.disabled_services,
+        store=ServiceConnectionStore(),
+        token_retention=timedelta(days=config.service_token_retention_days),
+    )
+    agent_bridge_app.state.service_broker = service_broker
+    gateway_app.state.service_broker = service_broker
+
     snapshot_reporter = SnapshotReporter(
         telemetry=telemetry,
         session_factory=session_factory,
@@ -936,12 +1014,13 @@ async def run(config: SwitchConfig) -> None:
             asyncio.create_task(connector_lifecycle.start_all())
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
             session_activity_task = asyncio.create_task(
-                session_activity_maintenance_loop(
-                    session_factory, partial(mailbox_upkeep, protocol)
-                )
+                session_activity_maintenance_loop(session_factory)
             )
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol, observability.lag)
+            )
+            service_token_task = asyncio.create_task(
+                service_token_maintenance_loop(session_factory, service_broker)
             )
             management_task = (
                 asyncio.create_task(management.run())
@@ -963,6 +1042,7 @@ async def run(config: SwitchConfig) -> None:
                 sweep_task.cancel()
                 session_activity_task.cancel()
                 connection_sweep_task.cancel()
+                service_token_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 if management is not None:
@@ -976,8 +1056,7 @@ async def run(config: SwitchConfig) -> None:
                 # product event is the least valuable thing in it.
                 await protocol.sessions.aclose()
                 await _drain_telemetry(telemetry, message_telemetry, telemetry_http)
-                if trust_http is not None:
-                    await trust_http.aclose()
+                await trust_http.aclose()
                 await observability.aclose()
                 # So a probe during teardown gets a 503 rather than the last
                 # cached answer, which may still say ready.
@@ -1013,11 +1092,12 @@ async def run(config: SwitchConfig) -> None:
         async def _attach_shared_discord_bridges(
             connection: DiscordConnection,
         ) -> None:
-            # Runs once the socket is up: hand it to every already-running bridge
-            # that rides a shared connection. Platform-agnostic — narrowed by
-            # capability, not by knowing which platform that is.
+            # Runs once the socket is up: hand it to every already-running
+            # Discord bridge. Narrowed to Discord's adapter and not only to the
+            # capability, because Telegram's shared bridges have it too and
+            # must be handed Telegram's bot, not this socket.
             for adapter in collab_lifecycle.iter_adapters():
-                if isinstance(adapter, SupportsSharedConnection):
+                if isinstance(adapter, DiscordAdapter):
                     adapter.attach_shared_connection(connection)
 
         discord_gateway = DiscordGatewayClient(
@@ -1030,6 +1110,20 @@ async def run(config: SwitchConfig) -> None:
         collab_lifecycle.add_bridge_starting_listener(discord_gateway.attach_if_live)
         discord_gateway_task = asyncio.create_task(
             discord_gateway.start_with_retry(), name="discord-gateway-start"
+        )
+
+    # The shared Telegram bot: `getMe`, then `setWebhook`. In the background
+    # for the reason the Discord connection is — an unreachable Telegram must
+    # not hold up a boot serving everything else.
+    telegram_app_task: asyncio.Task[None] | None = None
+    if telegram_app is not None:
+
+        async def _run_telegram_app(client: TelegramAppClient) -> None:
+            await client.start_with_retry()
+            await client.watch_delivery()
+
+        telegram_app_task = asyncio.create_task(
+            _run_telegram_app(telegram_app), name="telegram-app"
         )
 
     # Backfill room membership: system clients (e.g. the admin client) added
@@ -1069,6 +1163,8 @@ async def run(config: SwitchConfig) -> None:
                     discord_gateway,
                     discord_gateway_task,
                     teams_app,
+                    telegram_app,
+                    telegram_app_task,
                 )
             ),
         )
@@ -1552,6 +1648,10 @@ async def _shutdown(
     discord_gateway: DiscordGatewayClient | None,
     discord_gateway_task: asyncio.Task[None] | None,
     teams_app: TeamsSharedApp | None,
+    # Defaulted so a caller with no Telegram app, as the shutdown-order tests
+    # are, need not name it; `run` always passes both.
+    telegram_app: TelegramAppClient | None = None,
+    telegram_app_task: asyncio.Task[None] | None = None,
 ) -> None:
     logger.info("Shutting down...")
     # Before uvicorn closes the sockets, so the controllers' are recorded as
@@ -1573,6 +1673,15 @@ async def _shutdown(
     # After the bridges, which borrow its HTTP client until they stop.
     if teams_app is not None:
         await teams_app.aclose()
+
+    if telegram_app_task is not None:
+        telegram_app_task.cancel()
+        try:
+            await telegram_app_task
+        except asyncio.CancelledError:
+            pass
+    if telegram_app is not None:
+        await telegram_app.stop()
     await client_lifecycle.stop_all()
     await provisioning.close()
 

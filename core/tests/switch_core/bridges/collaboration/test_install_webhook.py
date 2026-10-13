@@ -27,7 +27,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import urlencode
 
 import httpx
@@ -62,6 +62,7 @@ from switch_core.db.stores.messaging_event_store import (
     MessagingEventReceiptStore,
 )
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.keys import Keyring
 from switch_core.tenant_context import current_tenant_id
 from tests.conftest import RLSHarness
@@ -95,6 +96,8 @@ class _SocketOnlyAdapter(PlatformAdapter):
     from the base — the refusal — which is the behaviour one test below is
     about.
     """
+
+    display_name: ClassVar[str] = "Stub"
 
     def __init__(self) -> None: ...
 
@@ -155,6 +158,15 @@ class _GatedAdapter(_SocketOnlyAdapter):
         self.dispatched.append((envelope_type, payload))
         self.entered.set()
         await self.release.wait()
+
+
+class _NoRooms:
+    """A Slack bridge has one install, so an ending never detaches one room."""
+
+    async def unlink_bridge_channel(
+        self, bridge_id: str, external_channel_id: str
+    ) -> None:
+        raise AssertionError("a one-install bridge is removed, not detached")
 
 
 class _FakeLifecycle:
@@ -285,6 +297,8 @@ async def _fixture(harness: RLSHarness) -> _Fixture:
         receipts=MessagingEventReceiptStore(),
         installers=installers,
         lifecycle=fixture.lifecycle,  # type: ignore[arg-type]
+        users=UserStore(),
+        rooms=_NoRooms(),
         public_origin=_ORIGIN,
         keyring=_KEYRING,
     )

@@ -29,6 +29,8 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
   marks,
   status,
   actions,
+  showProviderMark = true,
+  title,
 }: {
   label: string;
   iconUrl: string | null;
@@ -46,12 +48,17 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
   status: ReactNode;
   /** The row's buttons, shown on hover. */
   actions: ReactNode;
+  /** Whether the provider's mark follows the name. Managed rows leave it to the hover text. */
+  showProviderMark?: boolean;
+  /** Hover text for the row. */
+  title?: string;
 }) {
   return (
     <SidebarMenuRow
-      className="group/row flex justify-between"
+      className="group/row flex h-[30px] justify-between py-0 text-[13px]"
       data-active={isActive || undefined}
       isActive={isActive}
+      title={title}
       onMouseDown={(e) => e.preventDefault()}
       onClick={onOpen}
     >
@@ -78,11 +85,12 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
           className="flex-initial truncate select-none"
         >
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className={cn('truncate', dimmed && 'text-foreground-muted')}>{label}</span>
+            <span className={cn('truncate font-medium', dimmed && 'opacity-60')}>{label}</span>
             {/* What the agent runs on. The avatar took the leading slot, so
                 without this the row no longer says. Hideable from the Sessions
                 menu for a reader who only cares about identity. */}
-            {!sidebarStore.hideProviderMark &&
+            {showProviderMark &&
+              !sidebarStore.hideProviderMark &&
               (providerId ? (
                 <AgentIcon id={providerId} size={12} className="h-3 w-3 shrink-0" />
               ) : (
@@ -105,11 +113,14 @@ export type AgentPresence = {
   label: string;
 };
 
+// Running reads green, on its way (starting, connecting) amber, stopped grey
+// and in trouble red: amber is for something still happening, not for an
+// agent at rest.
 const DOT_COLOR: Record<AgentPresence['tone'], string> = {
   running: 'bg-foreground-success',
-  stopped: 'bg-foreground-warning',
+  stopped: 'bg-[var(--fg-passive)]',
   problem: 'bg-foreground-destructive',
-  pending: 'bg-foreground-muted',
+  pending: 'bg-foreground-warning',
 };
 
 /**

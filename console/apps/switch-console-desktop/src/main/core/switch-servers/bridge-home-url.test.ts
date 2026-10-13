@@ -22,6 +22,9 @@ function bridge(overrides: Partial<RemoteBridge>): RemoteBridge {
     directorySearchSupported: true,
     attention: null,
     teamPlacementSupported: false,
+    channelIdsRefused: null,
+    receivesWebhooks: false,
+    webhookUrl: null,
     ...overrides,
   };
 }

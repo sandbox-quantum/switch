@@ -1,6 +1,5 @@
 import type { ComponentType, ReactNode } from 'react';
 import { homeView } from '@renderer/app/home-view';
-import { cloudSessionView } from '@renderer/features/cloud-agents/cloud-session-view';
 import { locationView } from '@renderer/features/locations/view';
 import { managedAgentView } from '@renderer/features/managed-agents/managed-agent-view';
 import { remoteHostView } from '@renderer/features/remote-hosts/views/remote-host-view';
@@ -10,6 +9,7 @@ import { templateImportView } from '@renderer/features/room-templates/room-templ
 import { sessionView } from '@renderer/features/sessions/view';
 import { settingsView } from '@renderer/features/settings/settings-view';
 import { roomView } from '@renderer/features/switch-rooms/view';
+import { managedServerView } from '@renderer/features/switch-servers/managed-server-view';
 import { serverAgentsView } from '@renderer/features/switch-servers/server-agents-view';
 import { serverRoomsView } from '@renderer/features/switch-servers/server-rooms-view';
 import { serverView } from '@renderer/features/switch-servers/view';
@@ -27,11 +27,11 @@ export const views = {
   home: homeView,
   location: locationView,
   session: sessionView,
-  cloudSession: cloudSessionView,
   managedAgent: managedAgentView,
   room: roomView,
   settings: settingsView,
   server: serverView,
+  managedServer: managedServerView,
   serverAgents: serverAgentsView,
   serverRooms: serverRoomsView,
   remoteHosts: remoteHostsView,

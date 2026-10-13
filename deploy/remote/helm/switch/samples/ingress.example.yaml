@@ -37,9 +37,6 @@ spec:
           - path: /agents
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
-          - path: /hosted
-            pathType: Prefix
-            backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
           # Session hosts report session starts, turn activity and approval
           # requests here, and poll for approval answers. Without it a
           # session fails on the HTML the gateway serves instead.

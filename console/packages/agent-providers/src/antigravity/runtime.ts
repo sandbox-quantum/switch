@@ -1,38 +1,67 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, isAbsolute } from 'node:path';
-import { StdioJsonRpcClient, type ProviderLogger } from '../transport/stdio-json-rpc';
+import type { AcpLaunch, AcpLaunchInput } from '../acp/hooks';
 
 export const ANTIGRAVITY_SIGN_IN =
   'Sign in to Antigravity ACP on the execution host with antigravity-acp --login. The ACP runtime has a separate login from agy.';
 
-export async function createAntigravityClient(input: {
-  binaryPath: string;
-  cwd: string;
-  env: Record<string, string>;
-  logger: ProviderLogger;
-  onExit: (reason: string) => void;
-}): Promise<StdioJsonRpcClient> {
+/** The Gemini home an Antigravity ACP server runs with: its sign-in and settings live under it. */
+export function antigravityProfile(env: Record<string, string>): string {
+  return (
+    env.GEMINI_HOME || join(env.HOME || homedir(), '.local', 'state', 'switch', 'antigravity-acp')
+  );
+}
+
+/**
+ * Whether the profile holds a consumer sign-in: the token file `--login`
+ * writes, with a refresh token in it. Antigravity ACP 1.3 lists every sign-in
+ * method in `initialize` whether or not one is in use, so the handshake no
+ * longer says; the token itself is checked when a session signs in with it.
+ */
+export async function antigravitySignedIn(profile: string): Promise<boolean> {
+  let text: string;
+  try {
+    text = await readFile(join(profile, 'antigravity-acp', 'acp_token.json'), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  try {
+    const token = JSON.parse(text) as Record<string, unknown> | null;
+    return typeof token?.refresh_token === 'string' && token.refresh_token.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * How `antigravity-acp` runs: in its own profile directory, set up for OAuth
+ * on first use, and killed when it prints a sign-in link instead of answering.
+ */
+export async function antigravityLaunch(input: AcpLaunchInput): Promise<AcpLaunch> {
   if (['agy', 'antigravity'].includes(basename(input.binaryPath)))
     throw new Error(
       'The selected executable is the old Antigravity CLI. Install and select antigravity-acp in provider setup.'
     );
-  const profile =
-    input.env.GEMINI_HOME ||
-    join(input.env.HOME || homedir(), '.local', 'state', 'switch', 'antigravity-acp');
-  await mkdir(profile, { recursive: true, mode: 0o700 });
-  await writeFile(
-    join(profile, 'settings.json'),
-    JSON.stringify({ auth: { type: 'oauth-personal' } }),
-    { mode: 0o600, flag: 'wx' }
-  ).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== 'EEXIST') throw error;
-  });
+  const profile = antigravityProfile(input.env);
+  // Antigravity ACP up to 1.1 reads its settings at the profile's root; 1.3
+  // reads them beside its token, in `antigravity-acp/`. Without the auth type
+  // recorded, a signed-in profile answers `initialize` as signed out.
+  for (const directory of [profile, join(profile, 'antigravity-acp')]) {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await writeFile(
+      join(directory, 'settings.json'),
+      JSON.stringify({ auth: { type: 'oauth-personal' } }),
+      { mode: 0o600, flag: 'wx' }
+    ).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EEXIST') throw error;
+    });
+  }
   const raw = basename(input.binaryPath).startsWith('agy_acp_server');
-  return new StdioJsonRpcClient({
+  return {
     command: input.binaryPath,
     args: raw && process.platform === 'linux' ? ['--uid='] : [],
-    cwd: input.cwd,
     env: {
       ...input.env,
       GEMINI_HOME: profile,
@@ -43,47 +72,9 @@ export async function createAntigravityClient(input: {
         ? { ANTIGRAVITY_HARNESS_PATH: join(dirname(input.binaryPath), 'localharness_external') }
         : {}),
     },
-    logger: input.logger,
-    onExit: input.onExit,
     rejectOutputLine: (line) =>
       line.includes('Open the following link to authenticate the ACP server:')
         ? ANTIGRAVITY_SIGN_IN
         : undefined,
-  });
-}
-
-/**
- * The ACP handshake, and nothing else.
- *
- * Deliberately does NOT sign in. The response's `authMethods` is the agent
- * saying which sign-ins are still outstanding, so this is the whole of what a
- * caller needs to ANSWER "is this signed in?" — and answering that question
- * must not change it. Signing in is {@link authenticateAntigravity}, called
- * only where the user has asked for work that needs it.
- */
-export async function initializeAntigravity(client: StdioJsonRpcClient) {
-  return await client.request<{
-    agentCapabilities?: {
-      sessionCapabilities?: { resume?: unknown };
-      mcpCapabilities?: { http?: boolean };
-    };
-    authMethods?: { id?: string }[];
-  }>('initialize', {
-    protocolVersion: 1,
-    clientInfo: { name: 'switch-console', version: '0.1.0' },
-    clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-  });
-}
-
-/**
- * Sign in to the ACP server.
- *
- * **This opens a browser** when the profile holds no usable token — the OAuth
- * consent page, launched by the agent itself. `BROWSER=false` in the spawn env
- * asks it not to, and it is not obliged to listen, which is why the call site
- * matters more than the mitigation: only call this for work the user asked
- * for, never to find out whether it would be needed.
- */
-export async function authenticateAntigravity(client: StdioJsonRpcClient) {
-  await client.request('authenticate', { methodId: 'oauth-personal' });
+  };
 }

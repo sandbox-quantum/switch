@@ -8,8 +8,8 @@ import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
 import { Label } from '@renderer/lib/ui/label';
 import type { SignupMachine, SwitchAuthConfig } from '@shared/core/switch-servers/switch-servers';
+import { loadSwitchCloudOrigin, managedCloudServerId } from './switch-cloud-origin';
 import { switchServersStore } from './switch-servers-store';
-import { loadSwitchCloudOrigin, managedCloudServerId } from './use-cloud-launches';
 
 /**
  * Signing in to a Switch server, wherever that is asked for.
@@ -82,11 +82,13 @@ export type ServerSignIn = {
  * Warm the signed-in user's cloud machine on Switch Cloud, so it
  * is starting while they set up their first agent. Not awaited: sign-in is
  * done whether or not the machine starts, so a refusal is a notice rather than
- * a failed sign-in.
+ * a failed sign-in. Skipped when the server does not turn cloud machines on.
  */
 function warmCloudMachine(serverId: string): void {
-  void loadSwitchCloudOrigin().then(() => {
+  void loadSwitchCloudOrigin().then(async () => {
     if (serverId !== managedCloudServerId()) return;
+    const flags = await rpc.featureFlags.current(serverId);
+    if (!flags.success || !flags.data.flags['hosted_agents']) return;
     rpc.switchServers.ensureCloudMachine(serverId).catch((cause: unknown) => {
       toast({
         title: 'Your cloud machine did not start',

@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProviderConversationUnavailableError } from '../adapter';
 import type { ProviderRuntimeEvent, ProviderRuntimeEventType } from '../events';
@@ -85,6 +88,34 @@ describe('CodexAdapter', () => {
       cwd: '/work',
       approvalPolicy: 'never',
     });
+  });
+
+  it('passes the sandbox its configuration names, on a resumed thread as on a new one', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'codex-home-'));
+    try {
+      await writeFile(join(home, 'config.toml'), 'sandbox_mode = "workspace-write"\n');
+      const adapter = createCodexAdapter();
+      const pending = adapter.startSession({
+        sessionId: 'resumed',
+        cwd: '/work',
+        runtimeMode: 'full-access',
+        env: { PATH: '/usr/bin', CODEX_HOME: home },
+        mcpServers: {},
+        resume: { nativeSessionId: THREAD },
+      });
+      const server = servers.at(-1)!;
+      server.replyAlways('thread/resume', () => ({ thread: { id: THREAD } }));
+      await pending;
+      const resumed = server.received.find((message) => message.method === 'thread/resume');
+      expect(resumed?.params).toMatchObject({
+        threadId: THREAD,
+        sandbox: 'workspace-write',
+        approvalPolicy: 'never',
+      });
+      await adapter.stopAll();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   it('fails resume without silently opening a fresh thread', async () => {

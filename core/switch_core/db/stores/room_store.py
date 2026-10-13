@@ -470,6 +470,20 @@ class RoomStore:
         )
         return list(result.scalars().all())
 
+    async def member_room_ids(
+        self, session: AsyncSession, client_id: str, room_ids: list[str]
+    ) -> set[str]:
+        """Which of `room_ids` the client is still a member of, in one query."""
+        if not room_ids:
+            return set()
+        result = await session.execute(
+            select(ClientRoom.room_id).where(
+                ClientRoom.client_id == client_id,
+                ClientRoom.room_id.in_(room_ids),
+            )
+        )
+        return set(result.scalars().all())
+
     async def get_client_ids(self, session: AsyncSession, room_id: str) -> list[str]:
         result = await session.execute(
             select(ClientRoom.client_id).where(ClientRoom.room_id == room_id)

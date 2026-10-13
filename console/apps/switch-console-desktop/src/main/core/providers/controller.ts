@@ -7,7 +7,11 @@ import type {
 } from '@switch-console/core/deps/runtime';
 import { reportedCliAction } from '@main/core/telemetry/cli-action';
 import type { ProviderCustomConfig } from '@shared/core/app-settings';
-import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import {
+  type AgentProviderDefinition,
+  type AgentProviderId,
+  agentProviders,
+} from '@shared/core/providers/agent-provider-registry';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { clearResolvedPathCache } from '../agent-runtime/impl/resolve-agent-executable';
 import { agentUpdateService } from '../dependencies/agent-update-service';
@@ -37,6 +41,9 @@ const TARGET = 'local';
 
 export const providersController = createRPCController({
   // ── Metadata ────────────────────────────────────────────────────────────────
+
+  /** The provider catalogue the renderer installs before its first render. */
+  catalogue: (): readonly AgentProviderDefinition[] => agentProviders(),
 
   list: async (connectionId?: string) => {
     const mgr = await getDependencyManager(connectionId);

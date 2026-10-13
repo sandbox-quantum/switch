@@ -22,6 +22,13 @@ import type {
  * bridge with no such install (every bridge registered with pasted-in
  * credentials) is deleted the ordinary way.
  *
+ * A Telegram connection is the exception: each chat connected through it is
+ * an install of its own, and ending one only takes that chat away — the
+ * connection outlives its chats. So every chat is ended in turn, and then the
+ * connection itself is deleted, which the server allows once no chat uses it.
+ * A chat that will not let go stops it there, with the connection and the
+ * chats not yet reached still in place; disconnecting again carries on.
+ *
  * The installs list is read with the same 404-tolerance as everywhere else a
  * server might predate a route: an older server has no installs to find, so
  * this falls back to the ordinary delete rather than failing.
@@ -31,8 +38,15 @@ export async function disconnectBridgeOnServer(
   bridgeId: string
 ): Promise<DeleteBridgeResult> {
   try {
-    const active = await activeInstallFor(server, bridgeId);
+    const installs = await activeInstallsFor(server, bridgeId);
+    const active = installs[0];
     if (!active) {
+      return await deleteBridge(server, bridgeId);
+    }
+    if (CHAT_PLATFORMS.has(active.platform)) {
+      for (const chat of installs) {
+        await endChat(server, chat.id);
+      }
       return await deleteBridge(server, bridgeId);
     }
     await deleteMessagingAppInstall(server, active.id);
@@ -54,16 +68,35 @@ export async function bridgeInstallState(
   bridgeId: string
 ): Promise<BridgeInstallState> {
   try {
-    return (await activeInstallFor(server, bridgeId)) ? 'installed' : 'not-installed';
+    return (await activeInstallsFor(server, bridgeId)).length > 0 ? 'installed' : 'not-installed';
   } catch (cause) {
     if (resultFor(cause)) return 'unknown';
     throw cause;
   }
 }
 
-async function activeInstallFor(server: SwitchServer, bridgeId: string) {
+/**
+ * Platforms whose installs are chats sharing one connection, rather than one
+ * install per connection. Only the Switch Telegram app's connection has
+ * installs at all; an organisation's own Telegram bot has none, and is
+ * deleted the ordinary way.
+ */
+const CHAT_PLATFORMS = new Set(['telegram']);
+
+async function activeInstallsFor(server: SwitchServer, bridgeId: string) {
   const installs = await fetchMessagingAppInstalls(server);
-  return installs.find((i) => i.bridgeId === bridgeId && i.endedAt === null) ?? null;
+  return installs.filter((i) => i.bridgeId === bridgeId && i.endedAt === null);
+}
+
+/** End one chat's install; one already ended, by someone else in the
+ *  meantime, is as good as ended here. */
+async function endChat(server: SwitchServer, installId: string): Promise<void> {
+  try {
+    await deleteMessagingAppInstall(server, installId);
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.kind === 'http' && cause.status === 404) return;
+    throw cause;
+  }
 }
 
 function resultFor(cause: unknown): DeleteBridgeResult | null {

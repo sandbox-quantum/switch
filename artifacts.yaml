@@ -60,13 +60,13 @@
 artifacts:
   switch-core:
     description: The backend service, and the gateway API it serves.
-    version: 0.29.0
+    version: 0.30.0
     declared_in: core/pyproject.toml
     published_as: switch-core
 
   switch-console:
     description: The desktop app.
-    version: 0.38.1
+    version: 0.39.0
     declared_in: console/apps/switch-console-desktop/package.json
     # Which switch-core release this app build bundles and pulls for
     # local-server mode. DELIBERATELY NOT switch-core's version above.
@@ -78,7 +78,14 @@ artifacts:
     # main. This moves only when Switch Console is ready to bundle that release —
     # in lockstep with the bundled compose.
     pins:
-      switch-core: 0.29.0
+      switch-core: 0.30.0
+    # What the canary build bundles instead, so a switch-core pre-release can be
+    # tried on canary without moving stable. Never older than the stable pin
+    # (`just artifacts` refuses it). When a stable switch-core release ships,
+    # move `pins` to it; drop the canary pin back to it too unless a newer
+    # pre-release is being tried.
+    canary_pins:
+      switch-core: 0.31.0-rc.1
 
   agent-runtime:
     description: >-
@@ -118,6 +125,20 @@ artifacts:
       the rest of Part 2, not papered over with a revision nobody compares.
     version_from: switch-core
     published_as: charts/switch
+
+  hosted-controller:
+    description: >-
+      The hosted controller image, which provisions Switch cloud machines for
+      switch-core.
+    version_from: switch-core
+    published_as: switch-hosted-controller
+
+  hosted-controller-chart:
+    description: >-
+      The hosted controller's Kubernetes chart, pinned to its image by digest
+      like the switch chart.
+    version_from: switch-core
+    published_as: charts/switch-hosted-controller
 
   compose:
     description: >-

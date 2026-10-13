@@ -1,10 +1,13 @@
-import { execFile } from 'node:child_process';
-import { constants } from 'node:fs';
-import { access, statfs } from 'node:fs/promises';
+import { mkdir, statfs } from 'node:fs/promises';
 import { arch, freemem, platform, release, totalmem } from 'node:os';
-import { delimiter, join } from 'node:path';
-import { promisify } from 'node:util';
-import type { ProviderReadiness } from '@switch-console/agent-providers';
+import { join } from 'node:path';
+import {
+  execProvider,
+  findOnPath,
+  type ProviderReadiness,
+  providerUnsupportedReason,
+  readCliToolStatuses,
+} from '@switch-console/agent-providers';
 import { pluginRegistry } from '@switch-console/plugins/agents';
 import { errorMessage, type Logger } from './log';
 import type { AgentObservation, AgentRuntime } from './runtime';
@@ -20,11 +23,14 @@ import {
   type ProviderStatus,
   type ReasonCode,
   type StatusReport,
+  type ToolStatus,
 } from './schemas';
+import type { GivenLogin, LoginProblem, SealedLogins } from './sealed-logins';
 import type { AgentRow, ControllerStore } from './store';
 
 export const PROVIDER_TTL_MS = 10 * 60 * 1000;
-const VERSION_TIMEOUT_MS = 10_000;
+// A first run may unpack the CLI's own runtime (OpenCode's Bun) before printing.
+const VERSION_TIMEOUT_MS = 30_000;
 const DETAIL_LIMIT = 1000;
 /** A launch this recent with nothing alive yet is still starting, not crashed. */
 export const LAUNCH_GRACE_MS = 15_000;
@@ -38,7 +44,46 @@ export function contractPlatform(): Platform {
   };
 }
 
-export type LocatedProvider = { path: string; version: string | null };
+/** A provider's CLI, its version, and why none was read when it was not. */
+export type LocatedProvider = {
+  path: string;
+  version: string | null;
+  versionProblem: string | null;
+};
+
+/**
+ * The tools Switch sets up for a session whose agent has a GitHub grant: `ok`
+ * when on PATH, `missing` when not. Its helpers do not run on Windows, so
+ * there both are `unsupported`, and such an agent uses the machine's own
+ * sign-in.
+ *
+ * Then each vendor command-line tool a session here has set up, from the
+ * machine's tool folder (`cliToolsBase`): `ok` once its pinned build is
+ * installed, `missing` when the last install failed, `unsupported` where the
+ * catalog has no build for this machine. A tool no session has needed yet is
+ * not named.
+ */
+export async function toolStatuses(
+  path: string | undefined,
+  os: NodeJS.Platform,
+  cliBase: string
+): Promise<ToolStatus[]> {
+  return [...(await gitHubToolStatuses(path, os)), ...(await readCliToolStatuses(cliBase))];
+}
+
+async function gitHubToolStatuses(
+  path: string | undefined,
+  os: NodeJS.Platform
+): Promise<ToolStatus[]> {
+  const tools = ['git', 'gh'];
+  if (os === 'win32') return tools.map((tool) => ({ tool, state: 'unsupported' }));
+  return Promise.all(
+    tools.map(
+      async (tool) =>
+        ({ tool, state: (await findOnPath(tool, path)) !== null ? 'ok' : 'missing' }) as const
+    )
+  );
+}
 
 /** Finds a provider's CLI on this machine. */
 export interface ProviderLocator {
@@ -50,41 +95,84 @@ export interface ProviderLocator {
  * as Console's dependency detection does, and asks it for its version.
  */
 export class PathProviderLocator implements ProviderLocator {
-  constructor(private readonly path: string | undefined) {}
+  /**
+   * `probeHome` is the home CLIs run with to print their version: some
+   * (OpenCode) write there before printing, and the controller's user may have
+   * none it can write in. Kept between probes, so a runtime a CLI unpacks on
+   * its first run is unpacked once.
+   */
+  constructor(
+    private readonly path: string | undefined,
+    private readonly probeHome: string
+  ) {}
 
   async locate(provider: Provider): Promise<LocatedProvider | null> {
     const plugin = pluginRegistry.get(provider);
     if (!plugin) throw new Error(`No provider plugin is registered for '${provider}'.`);
     const dependency = plugin.capabilities.hostDependency;
-    const directories = (this.path ?? '').split(delimiter).filter(Boolean);
-    for (const name of dependency.binaryNames)
-      for (const directory of directories) {
-        const candidate = join(directory, name);
-        try {
-          await access(candidate, constants.X_OK);
-        } catch {
-          continue;
-        }
-        return {
-          path: candidate,
-          version: dependency.skipVersionProbe
-            ? null
-            : await readVersion(candidate, dependency.versionArgs ?? ['--version']),
-        };
-      }
+    if (providerUnsupportedReason(provider, process.platform) !== null) return null;
+    for (const name of dependency.binaryNames) {
+      const candidate = await findOnPath(name, this.path);
+      if (candidate === null) continue;
+      if (dependency.skipVersionProbe)
+        return { path: candidate, version: null, versionProblem: null };
+      return {
+        path: candidate,
+        ...(await readVersion(candidate, dependency.versionArgs ?? ['--version'], this.probeHome)),
+      };
+    }
     return null;
   }
 }
 
-async function readVersion(binary: string, args: string[]): Promise<string | null> {
+/** The version a CLI prints, or why none could be read. */
+async function readVersion(
+  binary: string,
+  args: string[],
+  home: string
+): Promise<{ version: string | null; versionProblem: string | null }> {
   try {
-    const { stdout, stderr } = await promisify(execFile)(binary, args, {
+    await mkdir(home, { recursive: true, mode: 0o700 });
+    const { stdout, stderr } = await execProvider(binary, args, {
       timeout: VERSION_TIMEOUT_MS,
+      env: {
+        ...process.env,
+        HOME: home,
+        XDG_CONFIG_HOME: join(home, '.config'),
+        XDG_DATA_HOME: join(home, '.local', 'share'),
+        XDG_STATE_HOME: join(home, '.local', 'state'),
+        XDG_CACHE_HOME: join(home, '.cache'),
+      },
     });
-    return `${stdout}\n${stderr}`.match(/\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/)?.[0] ?? null;
-  } catch {
-    return null;
+    const output = `${stdout}\n${stderr}`;
+    const version = output.match(/\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/)?.[0] ?? null;
+    return version
+      ? { version, versionProblem: null }
+      : { version: null, versionProblem: `printed no version: ${lastLine(output)}` };
+  } catch (error) {
+    const failed = error as NodeJS.ErrnoException & {
+      killed?: boolean;
+      code?: number | string;
+      stderr?: string;
+      stdout?: string;
+    };
+    const versionProblem = failed.killed
+      ? `timed out after ${VERSION_TIMEOUT_MS / 1000} s`
+      : typeof failed.code === 'number'
+        ? `exited ${failed.code}: ${lastLine(`${failed.stdout ?? ''}\n${failed.stderr ?? ''}`)}`
+        : errorMessage(error);
+    return { version: null, versionProblem: versionProblem.slice(0, 300) };
   }
+}
+
+function lastLine(output: string): string {
+  return (
+    output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .at(-1) ?? '(nothing)'
+  );
 }
 
 export function providerStatusFrom(
@@ -103,7 +191,13 @@ export function providerStatusFrom(
       checked_at: checkedAt,
       reason: 'provider_not_installed',
     };
-  const base = { provider, installed: true, version: located.version, checked_at: checkedAt };
+  const base = {
+    provider,
+    installed: true,
+    version: located.version,
+    ...(located.versionProblem ? { version_problem: located.versionProblem } : {}),
+    checked_at: checkedAt,
+  };
   if (!readiness) return { ...base, auth: 'unknown', auth_source: null, reason: 'internal' };
   switch (readiness.status) {
     case 'authenticated':
@@ -117,21 +211,40 @@ export function providerStatusFrom(
 }
 
 /**
+ * A provider as last checked: its status, its CLI, the login Switch gave the
+ * machine when that is what agents use, and why a given login is not used.
+ */
+type ProviderEntry = {
+  status: ProviderStatus;
+  path: string | null;
+  at: number;
+  login: GivenLogin | null;
+  problem: LoginProblem | { code: 'provider_login_expired'; message: string } | null;
+  /** Which check this is, in the order they started. */
+  sequence: number;
+};
+
+/**
  * Each provider's installation and login, checked at most every ten minutes
  * unless a recheck is forced. A check that finds something different calls
  * `onChange`, so the next status report carries it.
+ *
+ * The machine's own login comes first: an agent uses a login Switch gave the
+ * machine (`sealed`) only for a provider it has none of its own for, and only
+ * once the provider signs in with it.
  */
 export class ProviderStatuses {
-  private readonly entries = new Map<
-    Provider,
-    { status: ProviderStatus; path: string | null; at: number }
-  >();
+  private readonly entries = new Map<Provider, ProviderEntry>();
   private refreshing: Promise<void> | null = null;
+  private givenDisabled = false;
+  private checks = 0;
 
   constructor(
     private readonly deps: {
       locator: ProviderLocator;
       runtime: Pick<AgentRuntime, 'probe'>;
+      /** The logins Switch gives this machine; null when it cannot open any. */
+      sealed: SealedLogins | null;
       probeCwd: string;
       now: () => number;
       log: Logger;
@@ -139,26 +252,138 @@ export class ProviderStatuses {
     }
   ) {}
 
-  /** Checks one provider now. */
+  /** Checks one provider now, its own login first, then one given to the machine. */
   async check(provider: Provider): Promise<ProviderStatus> {
+    const sequence = ++this.checks;
     const at = this.deps.now();
+    const checkedAt = new Date(at).toISOString();
     const located = await this.deps.locator.locate(provider);
-    let readiness: ProviderReadiness | null = null;
-    if (located)
-      try {
-        readiness = await this.deps.runtime.probe(provider, located.path, this.deps.probeCwd);
-      } catch (error) {
-        this.deps.log.warn('Could not check a provider’s login', {
-          provider,
-          error: errorMessage(error),
-        });
+    const readiness = located ? await this.probe(provider, located.path, null) : null;
+    let status = providerStatusFrom(provider, located, readiness, checkedAt);
+    let login: GivenLogin | null = null;
+    let problem: ProviderEntry['problem'] = null;
+    if (
+      located &&
+      readiness?.status !== 'authenticated' &&
+      this.deps.sealed &&
+      !this.givenDisabled
+    ) {
+      const given = await this.fetchGiven(provider);
+      if (given && 'login' in given) {
+        const signedIn = await this.probe(provider, located.path, given.login);
+        if (signedIn?.status === 'authenticated') {
+          login = given.login;
+          status = { ...status, auth: 'ok', auth_source: 'sealed', reason: undefined };
+        } else {
+          problem = {
+            code: 'provider_login_expired',
+            message: `The ${provider} login given to this machine does not sign in${signedIn?.message ? `: ${signedIn.message}` : '.'}`,
+          };
+          status = {
+            ...status,
+            auth: 'expired',
+            auth_source: 'sealed',
+            reason: 'provider_login_expired',
+            auth_problem: problem.message.slice(0, 300),
+          };
+        }
+      } else if (given) {
+        problem = given.problem;
+        if (problem) status = { ...status, auth_problem: problem.message.slice(0, 300) };
+      } else {
+        const held = this.entries.get(provider);
+        login = held?.login ?? null;
+        problem = held?.problem ?? null;
+        if (held?.status.auth_source === 'sealed')
+          status = {
+            ...status,
+            auth: held.status.auth,
+            auth_source: 'sealed',
+            reason: held.status.reason,
+            ...(held.status.auth_problem ? { auth_problem: held.status.auth_problem } : {}),
+          };
       }
-    const status = providerStatusFrom(provider, located, readiness, new Date(at).toISOString());
+    }
+    if (status.reason === undefined) delete status.reason;
     const previous = this.entries.get(provider);
-    this.entries.set(provider, { status, path: located?.path ?? null, at });
-    if (!previous || fingerprintProvider(previous.status) !== fingerprintProvider(status))
+    // A check that started before the one already recorded knows less.
+    if (previous && previous.sequence > sequence) return previous.status;
+    this.entries.set(provider, {
+      status,
+      path: located?.path ?? null,
+      at,
+      login,
+      problem,
+      sequence,
+    });
+    if (
+      !previous ||
+      fingerprintProvider(previous.status) !== fingerprintProvider(status) ||
+      previous.login?.revision !== login?.revision
+    )
       this.deps.onChange();
     return status;
+  }
+
+  /**
+   * The login Switch gave the machine for `provider`, when that is what its
+   * agents use: null when they use the machine's own, or there is none.
+   * Checks first when the provider never was, or the check is stale.
+   */
+  async givenLogin(provider: Provider): Promise<GivenLogin | null> {
+    const entry = this.entries.get(provider);
+    if (!entry || this.deps.now() - entry.at >= PROVIDER_TTL_MS) await this.check(provider);
+    return this.entries.get(provider)?.login ?? null;
+  }
+
+  /** Stops using logins given to the machine: Switch could not take this machine's key. */
+  disableGiven(): void {
+    this.givenDisabled = true;
+    for (const entry of this.entries.values()) entry.login = null;
+    this.deps.onChange();
+  }
+
+  /** Why the login given to the machine for `provider` is not used, as last checked. */
+  loginProblem(provider: Provider): ProviderEntry['problem'] {
+    return this.entries.get(provider)?.problem ?? null;
+  }
+
+  private async probe(
+    provider: Provider,
+    path: string,
+    login: GivenLogin | null
+  ): Promise<ProviderReadiness | null> {
+    try {
+      return await this.deps.runtime.probe(provider, path, this.deps.probeCwd, login);
+    } catch (error) {
+      this.deps.log.warn('Could not check a provider’s login', {
+        provider,
+        given: login !== null,
+        error: errorMessage(error),
+      });
+      return null;
+    }
+  }
+
+  /** The given login, or why there is none; null when Switch could not be asked, keeping what was held. */
+  private async fetchGiven(
+    provider: Provider
+  ): Promise<{ login: GivenLogin } | { problem: LoginProblem } | null> {
+    try {
+      const given = await this.deps.sealed!.fetch(provider);
+      if ('problem' in given && given.problem.code === 'internal')
+        this.deps.log.error('A login given to this machine cannot be opened', {
+          provider,
+          error: given.problem.message,
+        });
+      return given;
+    } catch (error) {
+      this.deps.log.warn('Could not fetch the login given to this machine; keeping the one held', {
+        provider,
+        error: errorMessage(error),
+      });
+      return null;
+    }
   }
 
   /** Checks every provider whose last check is older than the TTL, all at once. */
@@ -300,6 +525,8 @@ export class StatusCollector {
       store: ControllerStore;
       runtime: AgentRuntime;
       providers: ProviderStatuses;
+      /** The tools sessions are set up with (`toolStatuses`). */
+      tools: () => Promise<ToolStatus[]>;
       /** Whether the relay has the agent attached; see `mapAgentProcess`. */
       attached: (agentId: string) => boolean;
       dataDir: string;
@@ -369,7 +596,7 @@ export class StatusCollector {
         workspaces_dir: this.deps.workspacesDir,
       },
       providers: this.deps.providers.snapshot(),
-      tools: [],
+      tools: await this.deps.tools(),
       agents,
     };
   }
@@ -383,6 +610,7 @@ export function statusFingerprint(report: Omit<StatusReport, 'seq'>): string {
   return JSON.stringify({
     revision: report.controller.assignment_revision,
     providers: report.providers.map((p) => [p.provider, p.installed, p.version, p.auth, p.reason]),
+    tools: report.tools.map((t) => [t.tool, t.state, t.reason]),
     agents: report.agents.map((a) => [
       a.agent_id,
       a.applied_revision,

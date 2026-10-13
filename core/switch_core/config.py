@@ -13,6 +13,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from switch_core.feature_flags import (
+    AGENT_MANAGEMENT,
+    HOSTED_AGENTS,
+    KNOWN_FEATURE_FLAGS,
+    SERVICE_CONNECTIONS,
+)
 from switch_core.keys import Keyring
 from switch_core.outbound import OutboundPolicy
 
@@ -70,6 +76,10 @@ def _require_matching_keypair(
             f"{certificate_name} and {key_name} are not a pair: the key does "
             "not match the certificate's public key."
         )
+
+
+# A connection catalog slug (`connections/loader.py`, SLUG_PATTERN).
+_SERVICE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 
 class SwitchConfig(BaseSettings):
@@ -158,6 +168,12 @@ class SwitchConfig(BaseSettings):
     # See `outbound.py`.
     outbound_allowed_private_hosts: str = ""
 
+    # Feature flags that are on for this deployment: comma-separated keys from
+    # `feature_flags.KNOWN_FEATURE_FLAGS`. Every other flag is off. Fixed for
+    # the life of the process; an unknown key is a startup error rather than a
+    # silently ignored typo.
+    feature_flags_enabled: str = ""
+
     # Gateway admin seed
     gateway_admin_email: str
     gateway_admin_password: str
@@ -221,15 +237,31 @@ class SwitchConfig(BaseSettings):
     # OIDC first sign-in alike), read from the users table so it holds across
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    # How many cloud machines the bound tenant may have at once; 0 means this
+    # server cannot run them. The `hosted_agents` flag is what offers them.
+    # Cloud machines run the agents controller, so above 0 this needs the
+    # `agent_management` flag.
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
-    hosted_sessions_per_agent: int = Field(default=8, ge=1, le=100)
-    hosted_agents_per_owner: int = Field(default=3, ge=1, le=100)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
     hosted_disk_retention_days: int = Field(default=7, ge=1, le=90)
+    # How long a record of each service token Core issued is kept: which agent,
+    # on whose connection, through which controller, with what reach.
+    service_token_retention_days: int = Field(default=30, ge=1)
     hosted_controller_config_path: str | None = None
     hosted_github_config_path: str | None = None
-    hosted_provider_verification_enabled: bool = False
-    hosted_claude_verifier_path: str | None = None
+    # The GitHub App this deployment connects people's GitHub accounts through
+    # and issues repository tokens from: its JSON settings
+    # ({client_id, client_secret, slug, origin}) and the absolute path to its
+    # signing key. Both or neither. Unset, GitHub is shown as not set up here,
+    # unless the deprecated hosted settings above still name an App.
+    github_app_config_path: str | None = None
+    github_app_private_key_path: str | None = None
+    # Catalog services switched off on this server, each with the reason
+    # people are shown, as JSON: {"<slug>": "<reason>"}. An empty reason shows
+    # "Switched off on this server." A switched-off service is listed with its
+    # reason, and cannot be connected, granted or issued; disconnecting still
+    # works. Unknown slugs stop the server.
+    disabled_services: dict[str, str] = Field(default_factory=dict)
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
     # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
     # Only a local stack served over http:// should turn it off.
@@ -524,6 +556,16 @@ class SwitchConfig(BaseSettings):
     # them — would otherwise see several apps of the same name.
     teams_app_name: str = "Agent Switch"
 
+    # The distributed Telegram app (`TELEGRAM_DISTRIBUTED_APP.md`): one bot per
+    # deployment whose groups a customer claims with a link, as opposed to the
+    # self-registered bot whose token an operator pastes in. Two values: the
+    # bot's token, which like Discord's is deployment config rather than per
+    # install, and the secret Telegram echoes back on every webhook, which is
+    # the whole of what proves an update came from Telegram. Setting both is
+    # what enables it; setting one is a startup error.
+    telegram_app_bot_token: str | None = None
+    telegram_app_webhook_secret: str | None = None
+
     # Public origin (scheme + host, no path) that a messaging platform reaches
     # Switch on: the base of the OAuth redirect and of the three event URLs
     # under `/messaging`, and the one registered with the app.
@@ -538,25 +580,14 @@ class SwitchConfig(BaseSettings):
     # move every deeplink along with it.
     messaging_public_url: str | None = None
 
-    # Switch Trust: a guardrails service that checks a message against a
-    # policy before it is sent, blocking it on a BLOCKED verdict. Base URL,
-    # no path — `/guardrails/check` (the check-only route added in
-    # https://github.com/sandbox-quantum/hoot/pull/2397) is appended, the same
-    # convention `otlp_endpoint`/`telemetry_endpoint` follow. Defaults to the
-    # company API; override for a different deployment or a local stack.
-    switch_trust_endpoint: str = "https://api.flintai.dev"
-
-    # Authenticates with Switch Trust and names which policy to run. Both
-    # unset (the default) is what turns the whole feature off — see
-    # `trust_enabled` — and setting one without the other is a startup error,
-    # the same all-or-nothing shape as the distributed Slack/Discord app
-    # config above.
-    switch_trust_api_key: str | None = None
-    switch_trust_policy_id: str | None = None
-
-    # How long to wait on a check before giving up and letting the message
-    # through unchecked (fail open — see `trust/client.py`). Short, because
-    # this gates every message Switch sends.
+    # How long to wait on a Switch Trust check before giving up and letting the
+    # message through unchecked (fail open — see `trust/client.py`). Fixed at
+    # deploy time rather than DB-backed and admin-editable like the rest of
+    # Switch Trust's settings (`trust_settings` table,
+    # `gateway/trust_settings.py`): getting the endpoint, policy or key wrong
+    # locks guardrails out entirely, which an operator needs to fix without a
+    # restart, but a timeout is a tuning knob with a safe, short default that
+    # deserves one more step to change.
     switch_trust_timeout_seconds: float = 2.0
 
     # Upper bound on a single attachment an agent may post to a room (and that
@@ -607,11 +638,12 @@ class SwitchConfig(BaseSettings):
     # evicted past this, so a flood of tokens cannot grow the process.
     agent_auth_cache_max_entries: int = 4096
 
-    # Agent management: managed agent definitions, the agent controllers that
-    # run them, and the controller-facing routes under /v1/management and
-    # /v1/controllers. Off by default; with it off none of those routes are
-    # mounted and the bearer middleware never treats a token as a controller's.
-    agent_management_enabled: bool = False
+    # AGENT_MANAGEMENT_ENABLED, replaced by the `agent_management` feature flag.
+    # Read only to refuse a deployment that still turns it on, which would
+    # otherwise lose agent management without a word.
+    legacy_agent_management_enabled: bool | None = Field(
+        default=None, validation_alias="agent_management_enabled"
+    )
     # Signs controller access tokens. Required (at least 32 characters) when
     # agent management is on, and deliberately separate from SECRET_KEYS so
     # rotating one never invalidates the other.
@@ -711,12 +743,24 @@ class SwitchConfig(BaseSettings):
                 "CONTROLLER_STATUS_INTERVAL_SECONDS must be at least 1, got "
                 f"{self.controller_status_interval_seconds!r}."
             )
+        if self.legacy_agent_management_enabled:
+            raise ValueError(
+                "AGENT_MANAGEMENT_ENABLED has been replaced by a feature flag: "
+                f"remove it and add {AGENT_MANAGEMENT!r} to FEATURE_FLAGS_ENABLED."
+            )
         if not self.agent_management_enabled:
+            if self.hosted_launch_capacity > 0:
+                raise ValueError(
+                    "HOSTED_LAUNCH_CAPACITY needs the "
+                    f"{AGENT_MANAGEMENT!r} feature flag: cloud machines run the "
+                    "agents controller."
+                )
             return self
         if not self.controller_token_secret:
             raise ValueError(
-                "CONTROLLER_TOKEN_SECRET is required when AGENT_MANAGEMENT_ENABLED "
-                "is true: it signs the access tokens agent controllers use."
+                "CONTROLLER_TOKEN_SECRET is required when the "
+                f"{AGENT_MANAGEMENT!r} feature flag is on: it signs the access "
+                "tokens agent controllers use."
             )
         if len(self.controller_token_secret) < 32:
             raise ValueError(
@@ -962,6 +1006,15 @@ class SwitchConfig(BaseSettings):
         return Keyring.parse(self.secret_keys, legacy_secret=self.jwt_secret_key)
 
     @model_validator(mode="after")
+    def _validate_switch_trust_timeout(self) -> "SwitchConfig":
+        if self.switch_trust_timeout_seconds <= 0:
+            raise ValueError(
+                "SWITCH_TRUST_TIMEOUT_SECONDS must be positive, got "
+                f"{self.switch_trust_timeout_seconds!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_oauth_audience(self) -> "SwitchConfig":
         if self.oauth_issuer_url and not self.oauth_audience:
             raise ValueError(
@@ -980,6 +1033,39 @@ class SwitchConfig(BaseSettings):
                 "on a deployment that does not isolate them from each other."
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_feature_flags_enabled(self) -> "SwitchConfig":
+        unknown = sorted(self._enabled_feature_flags() - KNOWN_FEATURE_FLAGS)
+        if unknown:
+            raise ValueError(
+                f"FEATURE_FLAGS_ENABLED names unknown feature flag(s): {unknown}. "
+                f"Known flags: {sorted(KNOWN_FEATURE_FLAGS)}."
+            )
+        return self
+
+    def _enabled_feature_flags(self) -> set[str]:
+        return {
+            key.strip() for key in self.feature_flags_enabled.split(",") if key.strip()
+        }
+
+    @property
+    def feature_flags(self) -> dict[str, bool]:
+        """Every known flag and whether this deployment turned it on."""
+        enabled = self._enabled_feature_flags()
+        return {key: key in enabled for key in sorted(KNOWN_FEATURE_FLAGS)}
+
+    @property
+    def agent_management_enabled(self) -> bool:
+        return self.feature_flags[AGENT_MANAGEMENT]
+
+    @property
+    def hosted_agents_enabled(self) -> bool:
+        return self.feature_flags[HOSTED_AGENTS]
+
+    @property
+    def service_connections_enabled(self) -> bool:
+        return self.feature_flags[SERVICE_CONNECTIONS]
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":
@@ -1017,6 +1103,36 @@ class SwitchConfig(BaseSettings):
                 "interval such as '15s', '500ms' or a bare count of "
                 f"milliseconds, got {value!r}."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_github_app(self) -> "SwitchConfig":
+        if (self.github_app_config_path is None) != (
+            self.github_app_private_key_path is None
+        ):
+            raise ValueError(
+                "GITHUB_APP_CONFIG_PATH and GITHUB_APP_PRIVATE_KEY_PATH are set "
+                "together or not at all."
+            )
+        if (
+            self.github_app_private_key_path is not None
+            and not Path(self.github_app_private_key_path).is_absolute()
+        ):
+            raise ValueError("GITHUB_APP_PRIVATE_KEY_PATH must be an absolute path.")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_disabled_services(self) -> "SwitchConfig":
+        for slug, reason in self.disabled_services.items():
+            if not _SERVICE_SLUG_RE.fullmatch(slug):
+                raise ValueError(
+                    f"DISABLED_SERVICES names an invalid service: {slug!r}"
+                )
+            if len(reason) > 300 or "\n" in reason:
+                raise ValueError(
+                    f"DISABLED_SERVICES' reason for {slug} must be one line of at "
+                    "most 300 characters."
+                )
         return self
 
     @model_validator(mode="after")
@@ -1182,56 +1298,6 @@ class SwitchConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _validate_switch_trust(self) -> "SwitchConfig":
-        required = (self.switch_trust_api_key, self.switch_trust_policy_id)
-        set_count = sum(1 for value in required if value)
-        if 0 < set_count < len(required):
-            raise ValueError(
-                "Partial Switch Trust config: set both SWITCH_TRUST_API_KEY "
-                "and SWITCH_TRUST_POLICY_ID, or neither."
-            )
-        if self.switch_trust_endpoint != self.switch_trust_endpoint.strip():
-            raise ValueError(
-                "SWITCH_TRUST_ENDPOINT has leading or trailing whitespace: "
-                f"{self.switch_trust_endpoint!r}."
-            )
-        endpoint = urlsplit(self.switch_trust_endpoint)
-        if endpoint.scheme not in ("http", "https"):
-            raise ValueError(
-                "SWITCH_TRUST_ENDPOINT must be an http(s) URL, got "
-                f"{self.switch_trust_endpoint!r}."
-            )
-        if not endpoint.netloc:
-            raise ValueError(
-                "SWITCH_TRUST_ENDPOINT must include a host, got "
-                f"{self.switch_trust_endpoint!r}."
-            )
-        if endpoint.path.strip("/"):
-            raise ValueError(
-                "SWITCH_TRUST_ENDPOINT is the service's base URL and "
-                "/guardrails/check is appended to it, so it must have no path "
-                f"of its own. Got {self.switch_trust_endpoint!r} — drop the "
-                f"{endpoint.path!r}."
-            )
-        if endpoint.query or endpoint.fragment:
-            raise ValueError(
-                "SWITCH_TRUST_ENDPOINT must be a bare base URL: a query or "
-                "fragment is dropped when /guardrails/check is appended, so "
-                f"it would silently never be sent. Got "
-                f"{self.switch_trust_endpoint!r}."
-            )
-        if self.switch_trust_timeout_seconds <= 0:
-            raise ValueError(
-                "SWITCH_TRUST_TIMEOUT_SECONDS must be positive, got "
-                f"{self.switch_trust_timeout_seconds!r}."
-            )
-        return self
-
-    @property
-    def trust_enabled(self) -> bool:
-        return bool(self.switch_trust_api_key and self.switch_trust_policy_id)
-
-    @model_validator(mode="after")
     def _validate_teams_app(self) -> "SwitchConfig":
         settings = {
             "TEAMS_APP_CLIENT_ID": self.teams_app_client_id,
@@ -1374,6 +1440,55 @@ class SwitchConfig(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_telegram_app(self) -> "SwitchConfig":
+        required = (self.telegram_app_bot_token, self.telegram_app_webhook_secret)
+        set_count = sum(1 for value in required if value)
+        if 0 < set_count < len(required):
+            raise ValueError(
+                "Partial distributed Telegram app config: set both "
+                "TELEGRAM_APP_BOT_TOKEN and TELEGRAM_APP_WEBHOOK_SECRET, or "
+                "neither."
+            )
+        if not set_count:
+            return self
+        assert self.telegram_app_bot_token is not None
+        assert self.telegram_app_webhook_secret is not None
+        if not re.fullmatch(r"\d+:[A-Za-z0-9_-]+", self.telegram_app_bot_token):
+            raise ValueError(
+                "TELEGRAM_APP_BOT_TOKEN is not shaped like a Telegram bot token "
+                "(<bot id>:<secret>, as BotFather issues it)."
+            )
+        # Telegram's own rule for `secret_token`. Checked here because
+        # `setWebhook` would refuse it in a background task at boot, where the
+        # failure reads as Telegram being unreachable rather than as this.
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", self.telegram_app_webhook_secret):
+            raise ValueError(
+                "TELEGRAM_APP_WEBHOOK_SECRET must be at most 256 characters of "
+                "A-Z, a-z, 0-9, _ and -, which is all Telegram accepts."
+            )
+        # Ours: the same floor as every other secret this deployment chooses,
+        # since it is the whole of what proves an update came from Telegram.
+        if len(self.telegram_app_webhook_secret) < 32:
+            raise ValueError(
+                "TELEGRAM_APP_WEBHOOK_SECRET must be at least 32 characters, got "
+                f"{len(self.telegram_app_webhook_secret)}. `openssl rand -hex 32` "
+                "makes one."
+            )
+        if not self.messaging_public_url:
+            raise ValueError(
+                "A distributed Telegram app is configured but "
+                "MESSAGING_PUBLIC_URL is not. Telegram delivers every update "
+                "to a webhook built from it."
+            )
+        port = urlsplit(self.messaging_public_url).port
+        if port not in (None, 443, 80, 88, 8443):
+            raise ValueError(
+                "Telegram delivers webhooks only to ports 443, 80, 88 and 8443, "
+                f"and MESSAGING_PUBLIC_URL names port {port}."
+            )
+        return self
+
     @property
     def gateway_oidc_enabled(self) -> bool:
         return bool(
@@ -1448,14 +1563,6 @@ class SwitchConfig(BaseSettings):
         # additionally proves it was issued for the host we asked for.
         context.check_hostname = self.db_ssl_mode == "verify-full"
         return {"ssl": context}
-
-
-def hosted_configured(config: SwitchConfig) -> bool:
-    """Whether this server runs cloud agents: it has a hosted controller or launch capacity."""
-    return (
-        config.hosted_controller_config_path is not None
-        or config.hosted_launch_capacity > 0
-    )
 
 
 def deprecated_env_names() -> list[str]:

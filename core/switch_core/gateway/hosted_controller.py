@@ -9,41 +9,36 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.config import SwitchConfig
-from switch_core.db.models import (
-    HostedLaunch,
-    HostedMachine,
-    HostedOperation,
-    TenantMember,
-    require_tenant_id,
-)
-from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
+from switch_core.db.models import CloudMachine, TenantMember
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_CONNECT_TIMEOUT,
-    HostedMachineStore,
+    CloudMachineStore,
+    WorkspaceOnMachine,
     bump_revision,
+    ever_hosted,
     idle_sleeping,
-    lock_launch,
     retention_expired,
+    workspace_on,
+    workspaces_on,
 )
-from switch_core.gateway.dependencies import (
-    get_config,
-    get_protocol,
-    get_session_factory,
+from switch_core.gateway.cloud_controllers import (
+    CloudEnrollmentUnavailable,
+    controller_machine_idle,
+    controller_reports,
+    enrollment_code,
+    live_controller,
 )
-from switch_core.gateway.hosted_launches import controller_settings, finish_removal
-from switch_core.providers.github_revocations import revoke_pending
+from switch_core.gateway.dependencies import get_config, get_session_factory
+from switch_core.gateway.hosted_machines import controller_settings
 from switch_core.providers.hosted import HostedControllerSettings
-from switch_core.tenant_context import tenant_scope
+from switch_core.tenant_context import no_tenant, tenant_scope
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/hosted-controller")
 
 QUEUED_TIMEOUT = timedelta(minutes=10)
-DELETING_RESUME_AFTER = timedelta(minutes=5)
-AGENT_STOP_TIMEOUT = timedelta(minutes=10)
 
 
 async def controller_session(
@@ -51,26 +46,26 @@ async def controller_session(
     settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
     factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
 ) -> AsyncIterator[AsyncSession]:
-    """Authenticate the operator controller and bind its configured tenant.
+    """Authenticate the operator controller, on a session with no tenant bound.
 
-    The bearer credential can provision only this tenant's machines; it is
-    never accepted as a user or agent credential on other routes.
+    A cloud machine belongs to its owner rather than to a workspace, so this
+    session reads machines and nothing scoped; what a machine runs in each
+    workspace is read with that workspace bound (`workspaces_on`). The bearer
+    credential is never accepted as a user or agent credential on other routes.
     """
     supplied = request.headers.get("authorization", "")
     if not secrets.compare_digest(
         supplied, "Bearer " + settings.token.get_secret_value()
     ):
         raise HTTPException(401, "Invalid cloud controller credential.")
-    with tenant_scope(settings.tenant_id):
+    with no_tenant():
         async with factory() as session:
             yield session
 
 
-def machine_item(machine: HostedMachine) -> dict:
+def machine_item(machine: CloudMachine) -> dict:
     return {
         "machine_id": machine.id,
-        "slot_id": machine.slot_id,
-        "generation": machine.generation,
         "state": machine.state,
         "desired_state": machine.desired_state,
         "revision": machine.revision,
@@ -78,11 +73,17 @@ def machine_item(machine: HostedMachine) -> dict:
         "retain_until": machine.retain_until.isoformat()
         if machine.retain_until
         else None,
-        "bundle_revision": machine.machine_capability_revision,
+        "bundle_revision": machine.revision,
     }
 
 
-def _connect_timed_out(machine: HostedMachine, now: datetime) -> bool:
+def _idle_stops(machine: CloudMachine, idle_minutes: int) -> bool:
+    """Whether an idle machine is put to sleep: a message addressed to one of
+    its agents wakes it again."""
+    return idle_minutes > 0
+
+
+def _connect_timed_out(machine: CloudMachine, now: datetime) -> bool:
     return (
         machine.state == "provisioning"
         and machine.running_observed_at is not None
@@ -94,7 +95,7 @@ def _connect_timed_out(machine: HostedMachine, now: datetime) -> bool:
     )
 
 
-def _start_timed_out(machine: HostedMachine, now: datetime) -> bool:
+def _start_timed_out(machine: CloudMachine, now: datetime) -> bool:
     return (
         machine.state == "provisioning"
         and machine.running_observed_at is None
@@ -102,19 +103,7 @@ def _start_timed_out(machine: HostedMachine, now: datetime) -> bool:
     )
 
 
-def _stop_timed_out(
-    launch: HostedLaunch, machine: HostedMachine, now: datetime
-) -> bool:
-    return (
-        launch.state == "stopping"
-        and now - launch.updated_at > AGENT_STOP_TIMEOUT
-        and machine.state == "ready"
-    )
-
-
-def _errored_unclaimed(
-    machine: HostedMachine, now: datetime, idle_minutes: int
-) -> bool:
+def _errored_unclaimed(machine: CloudMachine, now: datetime, idle_minutes: int) -> bool:
     return (
         idle_minutes > 0
         and machine.state == "error"
@@ -123,7 +112,7 @@ def _errored_unclaimed(
     )
 
 
-def _needs_sweep(machine: HostedMachine, now: datetime, idle_minutes: int) -> bool:
+def _needs_sweep(machine: CloudMachine, now: datetime, idle_minutes: int) -> bool:
     return (
         (machine.state == "queued" and now - machine.updated_at > QUEUED_TIMEOUT)
         or _connect_timed_out(machine, now)
@@ -132,95 +121,22 @@ def _needs_sweep(machine: HostedMachine, now: datetime, idle_minutes: int) -> bo
         or _errored_unclaimed(machine, now, idle_minutes)
         or idle_sleeping(machine)
         or (
-            idle_minutes > 0
+            _idle_stops(machine, idle_minutes)
             and machine.state == "ready"
             and machine.desired_state == "running"
         )
     )
 
 
-async def _should_sleep(
-    session: AsyncSession,
-    machine: HostedMachine,
-    protocol: AgentCore,
-    idle_after: timedelta,
-    now: datetime,
-) -> bool:
-    """Whether every counted agent on the machine is provably idle.
-
-    Counted agents are the ones meant to run and not in error. A busy one
-    renews its own activity, so it keeps the machine awake for another window.
-    """
-    idle = True
-    for candidate in await HostedMachineStore().launches(session, machine.id):
-        await lock_launch(session, candidate.id)
-        launch = await session.get(
-            HostedLaunch, (require_tenant_id(), candidate.id), populate_existing=True
-        )
-        if (
-            launch is None
-            or launch.desired_state != "running"
-            or launch.state in {"error", "deleted"}
-        ):
-            continue
-        evidence = await HostedLaunchStore().idle_evidence(
-            session, launch, protocol.connections
-        )
-        if evidence.busy:
-            launch.active_at = now
-            idle = False
-        elif (
-            now - launch.active_at < idle_after
-            or evidence.report is None
-            or evidence.report.received_at <= launch.active_at
-        ):
-            idle = False
-    return idle and now - machine.active_at >= idle_after
-
-
-async def _resume_removals(
-    session: AsyncSession,
-    protocol: AgentCore,
-    config: SwitchConfig,
-    now: datetime,
-) -> None:
-    """Finish removals that were interrupted between their two commits."""
-    stalled = list(
-        await session.scalars(
-            select(HostedLaunch.id).where(
-                HostedLaunch.tenant_id == require_tenant_id(),
-                HostedLaunch.state == "deleting",
-                HostedLaunch.updated_at < now - DELETING_RESUME_AFTER,
-            )
-        )
-    )
-    for launch_id in stalled:
-        launch, machine = await HostedMachineStore().locked_launch(session, launch_id)
-        if launch is None or machine is None or launch.state != "deleting":
-            await session.commit()
-            continue
-        try:
-            await finish_removal(session, protocol, config, launch, machine, now)
-        except Exception:
-            logger.error(
-                "Cloud launch %s: finishing its interrupted removal failed",
-                launch_id,
-                exc_info=True,
-            )
-            await session.rollback()
-            continue
-        await session.commit()
-
-
 async def _sweep(
     session: AsyncSession,
-    machine: HostedMachine,
-    protocol: AgentCore,
+    machine: CloudMachine,
+    workspaces: list[WorkspaceOnMachine],
     idle_minutes: int,
     retention_days: int,
     now: datetime,
 ) -> None:
-    store = HostedMachineStore()
+    store = CloudMachineStore()
     if machine.state == "queued" and now - machine.updated_at > QUEUED_TIMEOUT:
         machine.state = "error"
         machine.error_code = "machine_connect_timeout"
@@ -239,100 +155,39 @@ async def _sweep(
     elif machine.state in {"retained", "error"} and retention_expired(machine, now):
         machine.desired_state = "deleted"
         bump_revision(machine, now)
-    elif _errored_unclaimed(machine, now, idle_minutes) and not await store.ever_hosted(
-        session, machine.id
-    ):
+    elif _errored_unclaimed(machine, now, idle_minutes) and not ever_hosted(workspaces):
         await store.release_if_empty(
-            session, machine, retention_days=retention_days, now=now
+            machine, workspaces, retention_days=retention_days, now=now
         )
     elif idle_sleeping(machine):
         await store.release_if_empty(
-            session, machine, retention_days=retention_days, now=now
+            machine, workspaces, retention_days=retention_days, now=now
         )
     elif (
-        idle_minutes > 0
+        _idle_stops(machine, idle_minutes)
         and machine.state == "ready"
         and machine.desired_state == "running"
-        and await _should_sleep(
-            session, machine, protocol, timedelta(minutes=idle_minutes), now
-        )
+        and controller_machine_idle(machine, timedelta(minutes=idle_minutes), now)
     ):
         if not await store.release_if_empty(
-            session, machine, retention_days=retention_days, now=now
+            machine, workspaces, retention_days=retention_days, now=now
         ):
             store.stop(machine, "idle", now)
-
-
-async def _expire_operations(session: AsyncSession) -> None:
-    launch_ids = list(
-        await session.scalars(
-            select(HostedOperation.launch_id)
-            .where(
-                HostedOperation.tenant_id == require_tenant_id(),
-                HostedOperation.state.in_(["queued", "claimed"]),
-            )
-            .distinct()
-        )
-    )
-    for launch_id in launch_ids:
-        launch, _ = await HostedMachineStore().locked_launch(session, launch_id)
-        if launch is not None:
-            await HostedLaunchStore().fail_stale_operations(
-                session, launch.id, launch.revision
-            )
-        await session.commit()
-
-
-async def _time_out_stopping_launches(session: AsyncSession, now: datetime) -> None:
-    launch_ids = list(
-        await session.scalars(
-            select(HostedLaunch.id)
-            .join(
-                HostedMachine,
-                (HostedMachine.tenant_id == HostedLaunch.tenant_id)
-                & (HostedMachine.id == HostedLaunch.machine_id),
-            )
-            .where(
-                HostedLaunch.tenant_id == require_tenant_id(),
-                HostedLaunch.state == "stopping",
-                HostedLaunch.updated_at < now - AGENT_STOP_TIMEOUT,
-                HostedMachine.state == "ready",
-            )
-        )
-    )
-    for launch_id in launch_ids:
-        launch, machine = await HostedMachineStore().locked_launch(session, launch_id)
-        if (
-            launch is not None
-            and machine is not None
-            and _stop_timed_out(launch, machine, now)
-        ):
-            launch.state = "error"
-            launch.error_code = "agent_stop_timeout"
-            launch.error = (
-                "The agent did not stop within 10 minutes. Retry it in Switch Console."
-            )
-            launch.updated_at = now
-        await session.commit()
 
 
 @router.get("/machines")
 async def machines(
     session: Annotated[AsyncSession, Depends(controller_session)],
+    factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
     config: Annotated[SwitchConfig, Depends(get_config)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> dict:
-    store = HostedMachineStore()
+    store = CloudMachineStore()
     now = datetime.now(UTC)
-    await _resume_removals(session, protocol, config, now)
     candidates = list(
         await session.scalars(
-            select(HostedMachine)
-            .where(
-                HostedMachine.tenant_id == require_tenant_id(),
-                HostedMachine.state != "deleted",
-            )
-            .order_by(HostedMachine.created_at)
+            select(CloudMachine)
+            .where(CloudMachine.state != "deleted")
+            .order_by(CloudMachine.created_at)
         )
     )
     for candidate in candidates:
@@ -343,31 +198,25 @@ async def machines(
             await _sweep(
                 session,
                 machine,
-                protocol,
+                await workspaces_on(factory, machine.id),
                 config.hosted_idle_stop_minutes,
                 config.hosted_disk_retention_days,
                 now,
             )
         await session.commit()
-    await _expire_operations(session)
-    await _time_out_stopping_launches(session, now)
     rows = await session.scalars(
-        select(HostedMachine)
-        .where(
-            HostedMachine.tenant_id == require_tenant_id(),
-            HostedMachine.state != "deleted",
-        )
-        .order_by(HostedMachine.created_at)
+        select(CloudMachine)
+        .where(CloudMachine.state != "deleted")
+        .order_by(CloudMachine.created_at)
         .execution_options(populate_existing=True)
     )
     response = {"machines": [machine_item(machine) for machine in rows]}
     await session.commit()
-    await revoke_pending(session, config, ())
     return response
 
 
-async def _locked_machine(session: AsyncSession, machine_id: str) -> HostedMachine:
-    machine = await HostedMachineStore().locked(session, machine_id)
+async def _locked_machine(session: AsyncSession, machine_id: str) -> CloudMachine:
+    machine = await CloudMachineStore().locked(session, machine_id)
     if machine is None:
         raise HTTPException(404, "Cloud machine not found.")
     return machine
@@ -378,34 +227,82 @@ async def prepare(
     machine_id: str,
     response: Response,
     session: Annotated[AsyncSession, Depends(controller_session)],
+    factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
     settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict:
+    """What the machine boots from at its current revision: per workspace it
+    serves, the controller it enrolled as there, or, until it has one that is
+    not revoked, a one-time code to enroll with. Never a long-lived credential:
+    the machine keeps the ones it enrolls with on its own disk."""
     response.headers["Cache-Control"] = "no-store"
     machine = await _locked_machine(session, machine_id)
     if machine.state == "deleted" or machine.desired_state == "deleted":
         raise HTTPException(409, "machine is deleted")
     now = datetime.now(UTC)
-    if await session.get(TenantMember, (require_tenant_id(), machine.owner_id)) is None:
+    controllers = []
+    for workspace in await workspaces_on(factory, machine.id):
+        with tenant_scope(workspace.tenant_id):
+            async with factory() as scoped:
+                if (
+                    await scoped.get(
+                        TenantMember, (workspace.tenant_id, machine.owner_id)
+                    )
+                    is None
+                ):
+                    logger.warning(
+                        "Cloud machine %s: its owner left workspace %s, so it runs no controller there.",
+                        machine.id,
+                        workspace.tenant_id,
+                    )
+                    continue
+                row = await workspace_on(scoped, machine.id)
+                assert row is not None
+                controller = await live_controller(scoped, row)
+                try:
+                    code = (
+                        None
+                        if controller is not None
+                        else await enrollment_code(
+                            scoped, row, machine.revision, config.keyring, now
+                        )
+                    )
+                except CloudEnrollmentUnavailable as error:
+                    raise HTTPException(409, str(error)) from None
+                await scoped.commit()
+                controllers.append(
+                    {
+                        "key": row.id,
+                        "id": controller.id if controller is not None else None,
+                        "enrollment_code": code,
+                    }
+                )
+    served = {entry["key"] for entry in controllers}
+    reports = controller_reports(machine)
+    if set(reports) - served:
+        # A workspace the machine no longer runs a controller for must not keep
+        # it awake with a report that will never be fresh again.
+        machine.heartbeat = {
+            **(machine.heartbeat or {}),
+            "controllers": {
+                key: report for key, report in reports.items() if key in served
+            },
+        }
+    if not controllers:
         machine.state = "error"
-        machine.error = "The cloud machine's owner is no longer a workspace member."
+        machine.error = "The cloud machine's owner is no longer a member of any workspace it serves."
         machine.updated_at = now
         await session.commit()
-        raise HTTPException(
-            409, "The cloud machine's owner is no longer a workspace member."
-        )
-    capability = HostedMachineStore().issue_capability(machine, config.keyring)
+        raise HTTPException(409, machine.error)
     if machine.state == "queued":
         machine.state = "provisioning"
         machine.updated_at = now
     result = {
         "machine_id": machine.id,
-        "slot_id": machine.slot_id,
-        "generation": machine.generation,
         "revision": machine.revision,
-        "bundle_revision": machine.machine_capability_revision,
-        "machine_capability": capability,
+        "bundle_revision": machine.revision,
         "api_endpoint": settings.agent_api_endpoint,
+        "controllers": controllers,
     }
     await session.commit()
     return result
@@ -487,14 +384,6 @@ async def observe(
         machine.state = body.state
         machine.error = None
         machine.error_code = None
-    if body.state == "deleted":
-        for launch in await HostedMachineStore().launches(session, machine.id):
-            logger.error(
-                "Cloud machine %s was deleted while launch %s (state %s) was still on it.",
-                machine.id,
-                launch.id,
-                launch.state,
-            )
     if machine.state != previous:
         machine.updated_at = now
     await session.commit()

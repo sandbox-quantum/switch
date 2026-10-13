@@ -11,6 +11,7 @@ const secrets: LocalServerSecrets = {
   agentRegistrationToken: 'agent-token',
   jwtSecretKey: 'jwt-key',
   secretKeys: 'console:secret-keys-value',
+  controllerTokenSecret: 'controller-token-secret-value',
   gatewayAdminPassword: 'gw-admin',
   mattermostAdminPassword: 'mm-admin',
   mattermostUserPassword: 'mm-user',
@@ -68,9 +69,14 @@ describe('buildEnvFile', () => {
     expect(vars.AGENT_REGISTRATION_TOKEN).toBe('agent-token');
     expect(vars.JWT_SECRET_KEY).toBe('jwt-key');
     expect(vars.SECRET_KEYS).toBe('console:secret-keys-value');
+    expect(vars.CONTROLLER_TOKEN_SECRET).toBe('controller-token-secret-value');
     expect(vars.GATEWAY_ADMIN_PASSWORD).toBe('gw-admin');
     expect(vars.MATTERMOST_ADMIN_PASSWORD).toBe('mm-admin');
     expect(vars.MATTERMOST_USER_PASSWORD).toBe('mm-user');
+  });
+
+  it('starts a managed stack with no feature flags (agent management off)', () => {
+    expect(vars.FEATURE_FLAGS_ENABLED).toBe('');
   });
 
   it('runs switch-core as the restricted runtime role, not the schema owner', () => {
@@ -122,12 +128,14 @@ describe('buildEnvFile', () => {
       'DISCORD_APP_CLIENT_SECRET',
       'DISCORD_APP_BOT_TOKEN',
       'DISCORD_APP_APPLICATION_ID',
-      // Agent management is off unless a server opts in, and the compose file
-      // defaults it off. A managed stack does not opt in yet: the pinned
-      // switch-core release predates it, and turning it on also needs a
-      // controller token secret generated for the stack.
+      // Telegram's distributed bot is deployment config too, and Telegram
+      // delivers its updates to a webhook on MESSAGING_PUBLIC_URL, which a
+      // loopback stack cannot offer (see above).
+      'TELEGRAM_APP_BOT_TOKEN',
+      'TELEGRAM_APP_WEBHOOK_SECRET',
+      // The variable the agent_management feature flag replaced. switch-core
+      // refuses to start with it on, so it is left to the compose default.
       'AGENT_MANAGEMENT_ENABLED',
-      'CONTROLLER_TOKEN_SECRET',
       // Private hosts Switch may reach at a tenant- or agent-supplied URL. The
       // compose file always allows the bundled Mattermost; a managed stack
       // allows nothing more until its operator says so.
@@ -147,6 +155,9 @@ describe('buildEnvFile', () => {
       'TEAMS_APP_PRIVACY_URL',
       'TEAMS_APP_TERMS_URL',
       'TEAMS_APP_NAME',
+      // Written, but empty on purpose: a managed stack starts with no feature
+      // flag on (MANAGED_SERVER_FEATURE_FLAGS).
+      'FEATURE_FLAGS_ENABLED',
     ]);
 
     const missing = [...interpolated]

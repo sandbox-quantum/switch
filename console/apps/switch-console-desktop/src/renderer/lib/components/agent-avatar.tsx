@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { cn } from '@renderer/utils/utils';
 import { agentAvatarUrlForName, agentInitials } from '@shared/core/agents/agent-avatar';
 
@@ -17,6 +17,10 @@ import { agentAvatarUrlForName, agentInitials } from '@shared/core/agents/agent-
  *    machine is offline — its initials. Deliberately visible rather than a
  *    blank square or a broken-image glyph: a missing avatar should read as a
  *    missing avatar.
+ *
+ * A failed load is tried again a few times, further apart each time, before
+ * the initials stay: the avatar service refuses a burst of requests (a sidebar
+ * of twenty agents asks for twenty at once), and those refusals pass.
  */
 export function AgentAvatar({
   name,
@@ -33,6 +37,19 @@ export function AgentAvatar({
 }) {
   const src = iconUrl ?? agentAvatarUrlForName(name);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState({ src, count: 0 });
+  const tries = attempt.src === src ? attempt.count : 0;
+
+  // After a failed load, try again later; the initials show in the meantime.
+  useEffect(() => {
+    if (failedSrc !== src || tries >= RETRY_DELAYS_MS.length) return;
+    const delay = RETRY_DELAYS_MS[tries] * (0.75 + Math.random() * 0.5);
+    const timer = setTimeout(() => {
+      setAttempt({ src, count: tries + 1 });
+      setFailedSrc(null);
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [failedSrc, src, tries]);
 
   const shape = cn('inline-flex shrink-0 items-center justify-center rounded-full', className);
 
@@ -51,6 +68,7 @@ export function AgentAvatar({
   return (
     <span className={shape} style={{ width: size, height: size }}>
       <img
+        key={tries}
         src={src}
         alt=""
         width={size}
@@ -61,3 +79,6 @@ export function AgentAvatar({
     </span>
   );
 }
+
+/** How long to wait before each new try of an avatar that did not load. */
+const RETRY_DELAYS_MS = [1_500, 5_000, 15_000];

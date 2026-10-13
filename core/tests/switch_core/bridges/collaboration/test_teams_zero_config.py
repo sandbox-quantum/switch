@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -251,6 +251,8 @@ async def test_verify_credentials_reports_an_unreachable_microsoft(
 
 class _RecordingAdapter(PlatformAdapter):
     """Records the order register() drives the two hooks in."""
+
+    display_name: ClassVar[str] = "Stub"
 
     events: list[str] = []
     seen_config: dict[str, object] = {}

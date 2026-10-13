@@ -10,8 +10,9 @@ export const plugin = definePlugin(
     id: 'cursor',
     name: 'Cursor',
     description:
-      "Cursor's agent CLI; provides editor-style, project-aware assistance from the shell.",
+      "Cursor's agent CLI; provides editor-style, location-aware assistance from the shell.",
     websiteUrl: 'https://cursor.com/docs/cli/overview',
+    cliLabel: 'Cursor CLI',
   },
   {
     autoApprove: {
@@ -81,19 +82,7 @@ export const provider = registerPluginBehavior(plugin, {
   },
   mcp: {
     ...cursorMcpAdapter(),
-    launchProfileFields: () => [
-      {
-        key: 'model',
-        label: 'Model',
-        type: 'text',
-        help: 'Blank uses the Cursor default on the execution machine.',
-      },
-      {
-        key: 'instructions',
-        label: 'Instructions',
-        type: 'textarea',
-        help: 'Additional instructions for SDK sessions.',
-      },
-    ],
+    // Read at session start, and only the model and the instructions.
+    launchProfileSettings: () => ({}),
   },
 });

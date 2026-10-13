@@ -14,13 +14,18 @@ import { randomBytes } from 'node:crypto';
  *
  * `secretKeys` is switch-core's `SECRET_KEYS`: what it signs sessions and
  * encrypts stored credentials with. `jwtSecretKey` is the key that did both
- * before it, still passed so the server can read what it wrote back then. */
+ * before it, still passed so the server can read what it wrote back then.
+ *
+ * `controllerTokenSecret` is switch-core's `CONTROLLER_TOKEN_SECRET`: what it
+ * signs agents controllers' hour-long access tokens with. Agent management
+ * refuses to start without one. */
 export type LocalServerSecrets = {
   dbPassword: string;
   dbRuntimePassword: string;
   agentRegistrationToken: string;
   jwtSecretKey: string;
   secretKeys: string;
+  controllerTokenSecret: string;
   gatewayAdminPassword: string;
   mattermostAdminPassword: string;
   mattermostUserPassword: string;
@@ -39,6 +44,7 @@ export function generateSecrets(): LocalServerSecrets {
     agentRegistrationToken: token(),
     jwtSecretKey: token(32),
     secretKeys: `console:${randomBytes(32).toString('hex')}`,
+    controllerTokenSecret: randomBytes(32).toString('hex'),
     gatewayAdminPassword: token(),
     mattermostAdminPassword: token(),
     mattermostUserPassword: token(),
@@ -56,6 +62,9 @@ export function generateSecrets(): LocalServerSecrets {
  *   still reads what it stored through `jwtSecretKey`, and moves it onto the
  *   new key on its first start. Once a server has started with one it must
  *   never be replaced, which is why only an empty value is filled.
+ * - `controllerTokenSecret`, from before agent management: it signs only
+ *   access tokens that expire within the hour and that controllers mint again
+ *   from their own credential, so a new one costs nothing.
  */
 export function withNewerSecrets(secrets: LocalServerSecrets): {
   secrets: LocalServerSecrets;
@@ -64,6 +73,8 @@ export function withNewerSecrets(secrets: LocalServerSecrets): {
   const missing: Partial<LocalServerSecrets> = {};
   if (!secrets.dbRuntimePassword) missing.dbRuntimePassword = generateSecrets().dbRuntimePassword;
   if (!secrets.secretKeys) missing.secretKeys = generateSecrets().secretKeys;
+  if (!secrets.controllerTokenSecret)
+    missing.controllerTokenSecret = generateSecrets().controllerTokenSecret;
   if (Object.keys(missing).length === 0) return { secrets, migrated: false };
   return { secrets: { ...secrets, ...missing }, migrated: true };
 }

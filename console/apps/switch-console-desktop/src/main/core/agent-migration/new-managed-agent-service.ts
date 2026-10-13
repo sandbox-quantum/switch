@@ -1,4 +1,4 @@
-import { type AdvancedConfig, advancedConfigProblem } from '@switch-console/plugins/agents';
+import type { AdvancedConfig } from '@switch-console/plugins/agents';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
@@ -25,6 +25,8 @@ export type AddManagedAgentParams = {
   model: string | null;
   /** The provider's advanced configuration, keyed by its field keys; unset fields are absent. */
   advancedConfig: AdvancedConfig;
+  /** In the machine's controller, or in a process of its own. */
+  isolation: 'shared' | 'isolated';
   entryPoint: UiEntryPoint;
 };
 
@@ -54,7 +56,7 @@ export type NewManagedAgentDeps = {
       icon_url: string | null;
       controller_id: string;
       desired_state: 'running' | 'stopped';
-      definition: ManagedDefinition;
+      definition: ManagedDefinition & { isolation: 'shared' | 'isolated' };
     }
   ): Promise<ManagedCreateOutcome>;
   log: MigrationLog;
@@ -93,8 +95,6 @@ export class NewManagedAgentService {
   async add(input: AddManagedAgentParams): Promise<AddManagedAgentResult> {
     const workspaceId = await this.deps.workspaceFor(input.serverId);
 
-    const problem = advancedConfigProblem(input.providerId, input.advancedConfig);
-    if (problem) return { kind: 'error', message: problem };
     try {
       assertInstructionsFit(input.instructions);
     } catch (error) {
@@ -116,7 +116,7 @@ export class NewManagedAgentService {
       icon_url: input.iconUrl,
       controller_id: input.machineId,
       desired_state: 'running',
-      definition,
+      definition: { ...definition, isolation: input.isolation },
     });
     if (created.kind === 'name-conflict') return { kind: 'name-conflict' };
     if (created.kind === 'refused') return { kind: 'error', message: created.message };

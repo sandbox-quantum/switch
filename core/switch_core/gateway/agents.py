@@ -22,14 +22,12 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     build_agent_summary,
     list_agent_summaries,
 )
-from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     TaskProtocolConfig,
 )
-from switch_core.db.models import Agent, User
+from switch_core.db.models import User
 from switch_core.db.stores.agent_store import AgentStore
-from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
@@ -40,7 +38,7 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_user_store,
 )
-from switch_core.gateway.known_agents import KNOWN_AGENTS
+from switch_core.gateway.known_agents import known_agent, known_agents
 from switch_core.gateway.schemas import (
     AgentDetail,
     AgentSummary,
@@ -63,17 +61,6 @@ from switch_core.gateway.subagent_registration import derive_subagent_registrati
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-CLOUD_AGENT_DELETE_REFUSED = (
-    "This is a cloud agent. Remove it from Switch Console's cloud agents instead."
-)
-
-
-async def _sync_hosted_spec(session: AsyncSession, agent: Agent, changes: dict) -> None:
-    """Keep a cloud agent's launch spec, which registers it again, on the agent's values."""
-    launch_id = hosted_launch_of(agent.metadata_)
-    if launch_id is not None:
-        await HostedLaunchStore().merge_spec(session, launch_id, changes)
 
 
 @router.get("")
@@ -108,8 +95,6 @@ async def delete_agent_by_name(
             status_code=403,
             detail="Only the agent's owner or an admin can delete it.",
         )
-    if hosted_launch_of(agent.metadata_) is not None:
-        raise HTTPException(status_code=409, detail=CLOUD_AGENT_DELETE_REFUSED)
     # Not held across the delete, which opens its own sessions and calls every bridge.
     await session.commit()
     try:
@@ -143,8 +128,6 @@ async def delete_agent(
             status_code=403,
             detail="Only the agent's owner or an admin can delete it.",
         )
-    if hosted_launch_of(agent.metadata_) is not None:
-        raise HTTPException(status_code=409, detail=CLOUD_AGENT_DELETE_REFUSED)
     # Not held across the delete, which opens its own sessions and calls every bridge.
     await session.commit()
     try:
@@ -165,7 +148,7 @@ async def list_known_agent_types() -> list[KnownAgentType]:
             tool_count=len(spec.tools),
             options_schema=spec.options_schema.model_json_schema(),
         )
-        for key, spec in KNOWN_AGENTS.items()
+        for key, spec in known_agents().items()
     ]
 
 
@@ -186,7 +169,7 @@ async def register_known_agent(
     user: Annotated[User, Depends(get_current_user)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> RegisterAgentResponse:
-    spec = KNOWN_AGENTS.get(req.agent_type)
+    spec = known_agent(req.agent_type)
     if spec is None:
         raise HTTPException(
             status_code=400,
@@ -250,7 +233,7 @@ async def register_known_subagents(
     inherit the parent's `channels_enabled` / `repo_dir` unless overridden in
     `options`.
     """
-    spec = KNOWN_AGENTS.get(req.agent_type)
+    spec = known_agent(req.agent_type)
     if spec is None:
         raise HTTPException(
             status_code=400, detail=f"Unknown agent type: {req.agent_type}"
@@ -444,7 +427,6 @@ async def update_agent_icon(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     await agent_store.update(session, agent_id, icon_url=icon_url)
-    await _sync_hosted_spec(session, agent, {"icon_url": icon_url})
     await session.commit()
     await session.refresh(agent)
 
@@ -499,7 +481,6 @@ async def update_agent_display_name(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     await agent_store.update(session, agent_id, display_name=display_name)
-    await _sync_hosted_spec(session, agent, {"display_name": display_name})
     await session.commit()
     await session.refresh(agent)
 
@@ -542,7 +523,6 @@ async def update_agent_description(
         raise HTTPException(status_code=400, detail="description must not be blank")
 
     await agent_store.update(session, agent_id, description=description)
-    await _sync_hosted_spec(session, agent, {"description": description})
     await session.commit()
     await session.refresh(agent)
 
@@ -628,7 +608,6 @@ async def update_addressing_policy(
 
     stored = req.policy.model_dump() if req.policy is not None else None
     await agent_store.update(session, agent_id, addressing_policy=stored)
-    await _sync_hosted_spec(session, agent, {"addressing_policy": stored})
     await session.commit()
 
     logger.info(

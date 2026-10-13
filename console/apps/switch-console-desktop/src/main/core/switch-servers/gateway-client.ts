@@ -1,3 +1,4 @@
+import type { SealedLogin } from '@switch-console/agent-providers';
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 import { z } from 'zod';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
@@ -6,38 +7,50 @@ import {
   managedServerStoppedPhase,
   noteManagedServerUnanswered,
 } from '@main/core/managed-switch-server/managed-server-status';
+import { rememberBridgePlatforms } from '@main/core/telemetry/bridge-platform';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
-import { cloudLaunchSchema, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
+import { type CloudMachine, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
+import type { RemoteFeatureFlag } from '@shared/core/feature-flags/feature-flags';
 import type {
   AdvancedConfigField,
   ManagedMachine,
 } from '@shared/core/managed-agents/managed-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
-import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
-import type {
-  ClaudeCredentialKind,
-  ClaudeConnection,
-} from '@shared/core/switch-servers/claude-credential';
-import type {
-  CloudLaunchConfiguration,
-  CloudLaunchInput,
-} from '@shared/core/switch-servers/cloud-launch';
-import { connectionCatalogSchema } from '@shared/core/switch-servers/connection-catalog';
+import {
+  type ConnectionCatalogEntry,
+  connectionCatalogSchema,
+  serviceConnectionsSchema,
+} from '@shared/core/switch-servers/connection-catalog';
 import {
   gitHubConnectionSchema,
   gitHubFlowSchema,
 } from '@shared/core/switch-servers/github-connection';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
-import { cloudProviderConnectionSchema } from '@shared/core/switch-servers/provider-credential';
+import {
+  SERVICE_CALLBACK_PATH,
+  type ServiceFlowStart,
+  type ServiceKeyConnected,
+  serviceFlowSchema,
+  serviceFlowStartSchema,
+  serviceKeyConnectedSchema,
+} from '@shared/core/switch-servers/service-connection';
+import {
+  type ServiceGrants,
+  serviceGrantWarningSchema,
+  serviceGrantsSchema,
+} from '@shared/core/switch-servers/service-grants';
 import type {
   AddressingPolicy,
   AddTeamsTeamResult,
   BridgeConfigField,
   BridgeDirectoryUser,
+  ChatClaim,
+  ConnectedChat,
   DeleteBridgeResult,
   LinkedIdentity,
   MessagingAppInstall,
+  MessagingApps,
   RemoteAgentRoom,
   RemoteAgentSummary,
   RemoteBridge,
@@ -54,6 +67,8 @@ import type {
   SwitchUser,
   TeamsTeam,
   TeamsTeamsResult,
+  TrustSettings,
+  UpdateTrustSettingsParams,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
   Invitation,
@@ -160,12 +175,15 @@ export class GatewayError extends Error {
      * the raw status line, which reads as noise in a form. */
     readonly detail?: string,
     /** The refusal's machine-readable name, from a body such as
-     * `{"detail": …, "code": "worker_waking"}`. Present only when the body
+     * `{"detail": …, "code": "machine_stopped"}`. Present only when the body
      * carried one. */
     readonly code?: string,
     /** The response body as it came, for a caller that reads an envelope other
      * than FastAPI's (agent management answers `{"error": {...}}`). */
-    readonly body?: string
+    readonly body?: string,
+    /** Whether the refusal says a retry can succeed, from a body such as
+     * `{"detail": …, "code": …, "retryable": true}`. Absent when it does not say. */
+    readonly retryable?: boolean
   ) {
     super(message);
     this.name = 'GatewayError';
@@ -328,6 +346,17 @@ export async function gatewayRequest(
   return response;
 }
 
+/** The `retryable` beside `detail` in a coded refusal, or undefined without one. */
+function parseErrorRetryable(body: string): boolean | undefined {
+  if (!body) return undefined;
+  try {
+    const parsed = JSON.parse(body) as { retryable?: unknown };
+    return typeof parsed.retryable === 'boolean' ? parsed.retryable : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function gatewayFetch(
   server: SwitchServer,
   path: string,
@@ -345,7 +374,8 @@ export async function gatewayFetch(
       response.status,
       parseErrorDetail(body),
       parseErrorCode(body),
-      body
+      body,
+      parseErrorRetryable(body)
     );
   }
   return response;
@@ -365,6 +395,59 @@ export async function fetchAuthConfig(server: SwitchServer): Promise<SwitchAuthC
     oidcProviderLabel: json.oidc_provider_label,
     signupEnabled: json.signup_enabled === true,
   };
+}
+
+type TrustSettingsJson = {
+  endpoint: string;
+  policy_id: string | null;
+  has_api_key: boolean;
+  api_key_last4: string | null;
+  enabled: boolean;
+};
+
+function mapTrustSettings(json: TrustSettingsJson): TrustSettings {
+  return {
+    endpoint: json.endpoint,
+    policyId: json.policy_id,
+    hasApiKey: json.has_api_key,
+    apiKeyLast4: json.api_key_last4,
+    enabled: json.enabled,
+  };
+}
+
+/** Switch Trust's one server-global settings row, admin-only
+ * (`GET /trust-settings`). */
+export async function fetchTrustSettings(server: SwitchServer): Promise<TrustSettings> {
+  const res = await gatewayFetch(server, '/trust-settings', { authenticated: true });
+  return mapTrustSettings((await res.json()) as TrustSettingsJson);
+}
+
+/** Save Switch Trust's settings, admin-only (`PUT /trust-settings`).
+ * `params.apiKey` left unset leaves whatever key is already stored
+ * untouched — see {@link UpdateTrustSettingsParams}. */
+export async function updateTrustSettings(
+  server: SwitchServer,
+  params: Omit<UpdateTrustSettingsParams, 'serverId'>
+): Promise<TrustSettings> {
+  const res = await gatewayFetch(server, '/trust-settings', {
+    authenticated: true,
+    method: 'PUT',
+    body: {
+      endpoint: params.endpoint,
+      policy_id: params.policyId,
+      ...(params.apiKey !== undefined ? { api_key: params.apiKey } : {}),
+    },
+  });
+  return mapTrustSettings((await res.json()) as TrustSettingsJson);
+}
+
+/** Turn Switch Trust off, admin-only (`DELETE /trust-settings`). */
+export async function clearTrustSettings(server: SwitchServer): Promise<TrustSettings> {
+  const res = await gatewayFetch(server, '/trust-settings', {
+    authenticated: true,
+    method: 'DELETE',
+  });
+  return mapTrustSettings((await res.json()) as TrustSettingsJson);
 }
 
 type ServerDeclarationJson = {
@@ -403,6 +486,16 @@ function mapUser(json: UserResponseJson): SwitchUser {
     role: json.role,
     server: mapServerDeclaration(json.server ?? null),
   };
+}
+
+const featureFlagsResponseSchema = z.object({
+  flags: z.array(z.object({ key: z.string(), enabled: z.boolean() })),
+});
+
+/** The server's feature flags, which its deployment sets and nothing can change. */
+export async function fetchFeatureFlags(server: SwitchServer): Promise<RemoteFeatureFlag[]> {
+  const res = await gatewayFetch(server, '/feature-flags', { authenticated: true });
+  return featureFlagsResponseSchema.parse(await res.json()).flags;
 }
 
 export async function fetchMe(server: SwitchServer): Promise<SwitchUser> {
@@ -800,6 +893,33 @@ export async function fetchInviteEmailEnabled(server: SwitchServer): Promise<boo
   return json.invite_email_enabled;
 }
 
+/**
+ * Whether the signed-in account may create a workspace on this server: the
+ * server's own answer, which covers its sign-up mode, the per-person cap, and
+ * a deployment that keeps to one workspace because it is not isolating them.
+ *
+ * True on a server older than the answer (no session route, or no field): it
+ * refused nothing up front either.
+ */
+export async function fetchCanCreateWorkspace(server: SwitchServer): Promise<boolean> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/auth/session', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return true;
+    throw cause;
+  }
+  const json = (await res.json()) as { can_create_workspace?: unknown };
+  if (json.can_create_workspace === undefined) return true;
+  if (typeof json.can_create_workspace !== 'boolean') {
+    throw new GatewayError(
+      'http',
+      `${server.name} reported an unreadable can_create_workspace: ${String(json.can_create_workspace)}`
+    );
+  }
+  return json.can_create_workspace;
+}
+
 /** Options for `registerKnownAgent`, matching the gateway's
  * `RegisterKnownAgentRequest.options`. The gateway validates these against the
  * options schema of the `agent_type` being registered and ignores keys that type
@@ -1163,6 +1283,10 @@ type BridgeJson = {
   // bridge behaved before either existed.
   attention?: string | null;
   team_placement_supported?: boolean;
+  channel_ids_refused?: string | null;
+  // Absent on a server predating per-connection webhooks, where none had one.
+  receives_webhooks?: boolean;
+  webhook_url?: string | null;
 };
 
 function mapBridge(b: BridgeJson): RemoteBridge {
@@ -1180,6 +1304,9 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     directorySearchSupported: b.directory_search_supported ?? true,
     attention: b.attention ?? null,
     teamPlacementSupported: b.team_placement_supported ?? false,
+    channelIdsRefused: b.channel_ids_refused ?? null,
+    receivesWebhooks: b.receives_webhooks ?? false,
+    webhookUrl: b.webhook_url ?? null,
   };
 }
 
@@ -1196,24 +1323,94 @@ export async function fetchBridges(server: SwitchServer): Promise<RemoteBridge[]
 }
 
 /**
- * The messaging platforms this deployment has its own app for, which a
- * workspace can install with the platform's OAuth consent screen instead of
- * registering an app and pasting its tokens. Empty on a deployment that
- * registered none.
+ * What this deployment's own messaging apps offer the signed-in user: the
+ * platforms a workspace admin can install with the platform's OAuth consent
+ * screen instead of registering an app and pasting its tokens, and the ones
+ * whose chats are connected one at a time with a link or code. Both empty on
+ * a deployment that registered no app.
  *
- * A 404 is a server from before the route existed; it has no app to install
- * either, so it answers empty rather than failing the connect dialog.
+ * A 404 is a server from before the route existed, and a missing `claimable`
+ * one from before claim-based apps; either has nothing of that kind to offer,
+ * so it answers empty rather than failing the connect dialog.
  */
-export async function fetchInstallablePlatforms(server: SwitchServer): Promise<string[]> {
+export async function fetchMessagingApps(server: SwitchServer): Promise<MessagingApps> {
   let res: Response;
   try {
     res = await gatewayFetch(server, '/messaging-apps', { authenticated: true });
   } catch (cause) {
-    if (cause instanceof GatewayError && cause.status === 404) return [];
+    if (cause instanceof GatewayError && cause.status === 404) {
+      return { installable: [], claimable: [] };
+    }
     throw cause;
   }
-  const json = (await res.json()) as { platforms: string[] };
-  return json.platforms;
+  const json = (await res.json()) as {
+    platforms: string[];
+    claimable?: { platform: string; connected: boolean; can_add_chat: boolean }[];
+  };
+  return {
+    installable: json.platforms,
+    claimable: (json.claimable ?? []).map((c) => ({
+      platform: c.platform,
+      connected: c.connected,
+      canAddChat: c.can_add_chat,
+    })),
+  };
+}
+
+/**
+ * Start connecting a chat to the deployment's claim-based app for `platform`,
+ * in the workspace the session is bound to. Nothing comes back when the chat
+ * connects: the claim lands in the chat, and the server creates its room.
+ */
+export async function beginChatClaim(server: SwitchServer, platform: string): Promise<ChatClaim> {
+  const res = await gatewayFetch(server, `/messaging-apps/${encodeURIComponent(platform)}/claim`, {
+    authenticated: true,
+    method: 'POST',
+  });
+  const json = (await res.json()) as { url: string; code: string; bot_handle: string };
+  return { url: json.url, code: json.code, botHandle: json.bot_handle };
+}
+
+/**
+ * The chats connected to a claim-based connection, from the server's list of
+ * this workspace's installs. Ended ones are left out: they are history, and
+ * nothing here can be done to them.
+ */
+export async function fetchConnectedChats(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<ConnectedChat[]> {
+  const res = await gatewayFetch(server, '/messaging-apps/installs', { authenticated: true });
+  const json = (await res.json()) as {
+    installs: {
+      id: string;
+      bridge_id: string | null;
+      external_workspace_id: string;
+      name: string | null;
+      status: string;
+      installed_at: string;
+    }[];
+  };
+  return json.installs
+    .filter((i) => i.bridge_id === bridgeId && i.status === 'active')
+    .map((i) => ({
+      id: i.id,
+      name: i.name,
+      externalId: i.external_workspace_id,
+      connectedAt: i.installed_at,
+    }));
+}
+
+/**
+ * Disconnect one chat: the bot leaves it and its room stays, bridged to
+ * nothing. Raises with the server's reason when it refuses, including when
+ * the platform would not let the bot leave, which changes nothing.
+ */
+export async function disconnectChat(server: SwitchServer, installId: string): Promise<void> {
+  await gatewayFetch(server, `/messaging-apps/installs/${encodeURIComponent(installId)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
 }
 
 /**
@@ -1308,12 +1505,23 @@ export async function fetchBridgeTypes(server: SwitchServer): Promise<RemoteBrid
   const res = await gatewayFetch(server, '/collaborations/types', { authenticated: true });
   const json = (await res.json()) as Array<{
     key: string;
+    display_name?: string;
+    docs_slug?: string | null;
+    icon_svg?: string | null;
+    receives_webhooks?: boolean;
     config_schema: BridgeConfigSchema;
     channel_creation_supported?: boolean;
     directory_search_supported?: boolean;
   }>;
+  rememberBridgePlatforms(json.map((t) => t.key));
   return json.map((t) => ({
     key: t.key,
+    // The four below are absent on a server predating platform metadata; the
+    // renderer falls back to the names and icons it bundles for that case.
+    displayName: t.display_name ?? null,
+    docsSlug: t.docs_slug ?? null,
+    iconSvg: t.icon_svg ?? null,
+    receivesWebhooks: t.receives_webhooks ?? false,
     fields: toConfigFields(t.config_schema ?? {}),
     // Absent on a server predating the capability — every platform could be
     // registered to create channels before it existed, so default true.
@@ -2497,101 +2705,23 @@ export async function createRoom(
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
 }
 
-async function readClaudeConnection(response: Response): Promise<ClaudeConnection> {
-  const value: unknown = await response.json();
-  if (typeof value === 'object' && value !== null && 'status' in value) {
-    if (value.status === 'not_connected') return { status: 'not_connected' };
-    if (
-      value.status === 'connected' &&
-      'kind' in value &&
-      (value.kind === 'api-key' || value.kind === 'setup-token') &&
-      'verified_at' in value &&
-      typeof value.verified_at === 'string' &&
-      Number.isFinite(Date.parse(value.verified_at))
-    ) {
-      return { status: 'connected', kind: value.kind, verified_at: value.verified_at };
-    }
+/**
+ * The caller's cloud machines, or null when the server offers none: it says
+ * this workspace cannot claim one (`available: false`), or, from before it
+ * said so, answers the route with 404.
+ */
+export async function listCloudMachines(server: SwitchServer): Promise<CloudMachine[] | null> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, '/hosted-machines', { authenticated: true });
+  } catch (error) {
+    if (error instanceof GatewayError && error.kind === 'http' && error.status === 404) return null;
+    throw error;
   }
-  throw new GatewayError('http', 'The server returned an invalid Claude connection status.');
-}
-
-export async function getClaudeConnection(server: SwitchServer): Promise<ClaudeConnection> {
-  const response = await gatewayFetch(server, '/provider-connections/claude', {
-    authenticated: true,
-  });
-  return readClaudeConnection(response);
-}
-
-export async function createCloudLaunch(
-  server: SwitchServer,
-  input: CloudLaunchInput & { definition: string }
-) {
-  if (new URL(server.gatewayUrl).protocol !== 'https:')
-    throw new Error('Cloud agents require an HTTPS Switch server.');
-  return cloudLaunchSchema.parse(
-    await (
-      await gatewayFetch(server, '/hosted-launches', {
-        authenticated: true,
-        method: 'POST',
-        body: input,
-      })
-    ).json()
-  );
-}
-
-const cloudConfigurationSchema = z.object({
-  description: z.string(),
-  instructions: z.string(),
-  definition_attributes: z.record(z.string(), z.unknown()),
-});
-
-export async function getCloudLaunchConfiguration(
-  server: SwitchServer,
-  requestId: string
-): Promise<CloudLaunchConfiguration> {
-  return cloudConfigurationSchema.parse(
-    await (
-      await gatewayFetch(
-        server,
-        `/hosted-launches/${encodeURIComponent(requestId)}/configuration`,
-        { authenticated: true }
-      )
-    ).json()
-  ) as CloudLaunchConfiguration;
-}
-
-/** Replace a launch's instructions and definition; Core applies them at the agent's next start. */
-export async function updateCloudLaunchConfiguration(
-  server: SwitchServer,
-  requestId: string,
-  body: Omit<CloudLaunchConfiguration, 'description'> & { definition: string }
-): Promise<CloudLaunchConfiguration> {
-  return cloudConfigurationSchema.parse(
-    await (
-      await gatewayFetch(
-        server,
-        `/hosted-launches/${encodeURIComponent(requestId)}/configuration`,
-        { authenticated: true, method: 'PUT', body }
-      )
-    ).json()
-  ) as CloudLaunchConfiguration;
-}
-
-export async function cloudLifecycle(
-  server: SwitchServer,
-  requestId: string,
-  action: 'stop' | 'start' | 'restart' | 'remove' | 'retry',
-  revision: number
-) {
-  return cloudLaunchSchema.extend({ access_warning: z.string().nullable().optional() }).parse(
-    await (
-      await gatewayFetch(server, `/hosted-launches/${encodeURIComponent(requestId)}/lifecycle`, {
-        authenticated: true,
-        method: 'POST',
-        body: { action, revision },
-      })
-    ).json()
-  );
+  const listed = z
+    .object({ available: z.boolean().optional(), machines: z.array(cloudMachineSchema) })
+    .parse(await response.json());
+  return listed.available === false ? null : listed.machines;
 }
 
 export async function cloudMachineLifecycle(
@@ -2630,35 +2760,109 @@ export async function ensureCloudMachine(server: SwitchServer) {
   return cloudMachineSchema.parse(await response.json());
 }
 
-export async function connectClaude(
-  server: SwitchServer,
-  kind: ClaudeCredentialKind,
-  credential: string
-): Promise<ClaudeConnection> {
-  if (new URL(server.gatewayUrl).protocol !== 'https:') {
-    throw new GatewayError('http', 'Claude credentials require an HTTPS Switch server.');
+/**
+ * The services the signed-in person can connect, and their connection to
+ * each: from `/service-connections`, or the older catalog a server from
+ * before service connections answers instead.
+ */
+export async function getConnectionCatalog(
+  server: SwitchServer
+): Promise<ConnectionCatalogEntry[]> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, '/service-connections', { authenticated: true });
+  } catch (error) {
+    if (error instanceof GatewayError && error.status === 404) return getOlderCatalog(server);
+    throw error;
   }
-  const response = await gatewayFetch(server, '/provider-connections/claude', {
-    authenticated: true,
-    method: 'PUT',
-    body: { kind, credential },
-  });
-  return readClaudeConnection(response);
+  return serviceConnectionsSchema.parse(await response.json()).connections.map((entry) => ({
+    slug: entry.slug,
+    name: entry.name,
+    category: entry.category,
+    description: entry.description,
+    enabled: entry.enabled,
+    auth_type: entry.auth_type,
+    connectable: entry.connectable,
+    status: !entry.enabled ? 'coming_soon' : entry.status === 'active' ? 'connected' : entry.status,
+    unavailable_reason: entry.enabled ? entry.unavailable_reason : null,
+    pass_through: entry.pass_through,
+    token_lifetime: entry.token_lifetime,
+    loopback_ports: entry.loopback_ports,
+    key: entry.key,
+    external_identity: entry.external_identity,
+  }));
 }
 
-export async function disconnectClaude(server: SwitchServer): Promise<void> {
-  await gatewayFetch(server, '/provider-connections/claude', {
+async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogEntry[]> {
+  const response = await gatewayFetch(server, '/provider-connections/catalog', {
     authenticated: true,
-    method: 'DELETE',
   });
+  return (
+    connectionCatalogSchema
+      .parse(await response.json())
+      // GitHub was the one service such a server could connect.
+      .connections.map((entry) => ({
+        ...entry,
+        connectable: entry.enabled && entry.slug === 'github',
+        unavailable_reason: null,
+        pass_through: false,
+        token_lifetime: null,
+        loopback_ports: null,
+        key: null,
+        external_identity: null,
+      }))
+  );
 }
 
-export async function getConnectionCatalog(server: SwitchServer) {
-  return connectionCatalogSchema.parse(
-    await (
-      await gatewayFetch(server, '/provider-connections/catalog', { authenticated: true })
-    ).json()
-  ).connections;
+/**
+ * An agent's service grants, or null when the gateway answers that it is not
+ * the signed-in person's agent (a 404): only its owner sees them. Any other
+ * failure is thrown, for the caller to show.
+ */
+export async function fetchServiceGrants(
+  server: SwitchServer,
+  agentId: string
+): Promise<ServiceGrants | null> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/service-grants`, {
+      authenticated: true,
+    });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
+  return serviceGrantsSchema.parse(await response.json());
+}
+
+/** Create or replace an agent's grant; the warning names access that stays usable a while. */
+export async function setServiceGrant(
+  server: SwitchServer,
+  agentId: string,
+  service: string,
+  grant: { access: 'read' | 'write' | null; resources: Record<string, unknown> }
+): Promise<string | null> {
+  // An on/off grant names no level: Switch gives it the connection's.
+  const body = grant.access === null ? { resources: grant.resources } : grant;
+  const response = await gatewayFetch(
+    server,
+    `/agents/${encodeURIComponent(agentId)}/service-grants/${encodeURIComponent(service)}`,
+    { authenticated: true, method: 'PUT', body }
+  );
+  return serviceGrantWarningSchema.parse(await response.json()).warning;
+}
+
+export async function removeServiceGrant(
+  server: SwitchServer,
+  agentId: string,
+  service: string
+): Promise<string | null> {
+  const response = await gatewayFetch(
+    server,
+    `/agents/${encodeURIComponent(agentId)}/service-grants/${encodeURIComponent(service)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
+  return serviceGrantWarningSchema.parse(await response.json()).warning;
 }
 export async function getGitHubConnection(server: SwitchServer) {
   return gitHubConnectionSchema.parse(
@@ -2750,48 +2954,126 @@ export async function disconnectGitHub(server: SwitchServer) {
   return z.object({ warning: z.string().nullable() }).parse(await response.json());
 }
 
-export async function getCloudProviderConnection(server: SwitchServer, provider: AgentProviderId) {
-  return cloudProviderConnectionSchema.parse(
-    await (
-      await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
-        authenticated: true,
-      })
-    ).json()
-  );
-}
-export async function connectCloudProvider(
+const serviceFlows = (service: string) =>
+  `/service-connections/${encodeURIComponent(service)}/flows`;
+
+/**
+ * Begin signing in to `service` through Switch's generic OAuth flow. The URL
+ * the browser is sent to is checked: Core's own authorize step on this server,
+ * or the vendor's page returning to this Console's listener with this state.
+ *
+ * Core's authorize step is at its public address (`GATEWAY_PUBLIC_URL`), the
+ * host the vendor returns the browser to and whose cookie ties that return to
+ * the browser. A server that serves its gateway and its API on two hosts has it
+ * on the API's, so either of the server's own origins is accepted, over HTTPS.
+ */
+export async function startServiceConnection(
   server: SwitchServer,
-  provider: Exclude<AgentProviderId, 'claude'>,
-  kind: 'api-key' | 'auth-json',
-  credential: string
-) {
+  service: string,
+  input: { port: number; state: string; completion_secret: string }
+): Promise<ServiceFlowStart> {
   if (new URL(server.gatewayUrl).protocol !== 'https:')
-    throw new Error('Provider credentials require HTTPS.');
-  return cloudProviderConnectionSchema.parse(
+    throw new Error('Service connections require HTTPS.');
+  const value = serviceFlowStartSchema.parse(
     await (
-      await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
+      await gatewayFetch(server, serviceFlows(service), {
         authenticated: true,
-        method: 'PUT',
-        body: { kind, credential },
+        method: 'POST',
+        body: input,
+      })
+    ).json()
+  );
+  const url = new URL(value.url);
+  const valid =
+    value.id === input.state &&
+    !url.username &&
+    !url.password &&
+    (value.mode === 'core'
+      ? url.protocol === 'https:' &&
+        [server.gatewayUrl, server.apiUrl].some((own) => new URL(own).origin === url.origin) &&
+        url.pathname === `/gateway${serviceFlows(service)}/authorize` &&
+        url.searchParams.get('state') === value.id
+      : url.protocol === 'https:' &&
+        url.searchParams.get('state') === value.id &&
+        url.searchParams.get('redirect_uri') ===
+          `http://127.0.0.1:${input.port}${SERVICE_CALLBACK_PATH}`);
+  if (!valid) throw new Error('The server returned an invalid sign-in URL.');
+  return value;
+}
+export async function getServiceFlow(server: SwitchServer, service: string, id: string) {
+  return serviceFlowSchema.parse(
+    await (
+      await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}`, {
+        authenticated: true,
       })
     ).json()
   );
 }
-export async function disconnectCloudProvider(
+export async function completeServiceConnection(
   server: SwitchServer,
-  provider: Exclude<AgentProviderId, 'claude'>
+  service: string,
+  id: string,
+  code: string,
+  completionSecret: string
 ) {
-  await gatewayFetch(server, `/provider-connections/${encodeURIComponent(provider)}`, {
+  await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}/complete`, {
+    authenticated: true,
+    method: 'POST',
+    body: { code, completion_secret: completionSecret },
+  });
+}
+export async function confirmServiceConnection(
+  server: SwitchServer,
+  service: string,
+  id: string,
+  completionSecret: string
+) {
+  const response = await gatewayFetch(
+    server,
+    `${serviceFlows(service)}/${encodeURIComponent(id)}/confirm`,
+    { authenticated: true, method: 'POST', body: { completion_secret: completionSecret } }
+  );
+  return z.object({ warning: z.string().nullable() }).parse(await response.json());
+}
+export async function cancelServiceConnection(server: SwitchServer, service: string, id: string) {
+  await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}`, {
     authenticated: true,
     method: 'DELETE',
   });
+}
+/**
+ * Connect `service` with a pasted key: Switch checks it with the vendor before
+ * keeping it, and never sends it back. A refusal (the vendor refused the key,
+ * a field is malformed, the account is linked to someone else) is thrown, its
+ * `detail` written for the person.
+ */
+export async function connectServiceWithKey(
+  server: SwitchServer,
+  service: string,
+  fields: Record<string, string>
+): Promise<ServiceKeyConnected> {
+  const response = await gatewayFetch(
+    server,
+    `/service-connections/${encodeURIComponent(service)}/key`,
+    { authenticated: true, method: 'PUT', body: { fields } }
+  );
+  return serviceKeyConnectedSchema.parse(await response.json());
+}
+/** Disconnect `service`: its grants go with it, and what was issued is revoked. */
+export async function disconnectService(server: SwitchServer, service: string) {
+  const response = await gatewayFetch(
+    server,
+    `/service-connections/${encodeURIComponent(service)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
+  return z.object({ warning: z.string().nullable() }).parse(await response.json());
 }
 
 // ── Agent management: controllers and the agents placed on them ─────────────
 
 /**
  * The server does not run agent management: its `/gateway/management` routes
- * are not mounted (`AGENT_MANAGEMENT_ENABLED` is off), so they answer a bare
+ * are not mounted (its `agent_management` flag is off), so they answer a bare
  * 404 rather than one in the management error envelope.
  */
 export class AgentManagementUnavailableError extends Error {
@@ -2867,6 +3149,13 @@ export type ManagementController = {
    * last reported; null before it has, or when it or the server predates it.
    */
   workspacesDir: string | null;
+  /** Its operating system as it enrolled (`macos`, `linux`, `windows`); null when not known. */
+  os: string | null;
+  /**
+   * The key provider logins given to this machine are sealed to; null when
+   * its controller has none (it keeps no key, or predates sealed logins).
+   */
+  sealingKey: { key: string; keyId: string } | null;
 };
 
 /** A provider as a controller reports it: installed, and whether its login works. */
@@ -2925,6 +3214,8 @@ type ManagementControllerJson = {
   revoked_at: string | null;
   status?: unknown;
   workspaces_dir?: string | null;
+  platform?: { os: string } | null;
+  public_key?: { alg: string; key: string; key_id: string } | null;
 };
 
 type ManagedAgentJson = {
@@ -3004,7 +3295,79 @@ export async function fetchManagementControllers(
     revokedAt: json.revoked_at,
     providers: providerReports(json.status),
     workspacesDir: json.workspaces_dir ?? null,
+    os: json.platform?.os ?? null,
+    sealingKey:
+      json.public_key?.alg === 'X25519'
+        ? { key: json.public_key.key, keyId: json.public_key.key_id }
+        : null,
   }));
+}
+
+/**
+ * Gives a machine a provider login sealed to its key
+ * (`PUT /controllers/{id}/provider-logins/{provider}`): the server keeps only
+ * the ciphertext. Answers the `provider.login` operation whose result says
+ * whether the provider signs in with it on the machine.
+ */
+export async function giveMachineLogin(
+  server: SwitchServer,
+  controllerId: string,
+  provider: string,
+  sealed: SealedLogin
+): Promise<{ operationId: string; revision: number }> {
+  // The login is sealed, but the key it was sealed to came from this server:
+  // over plain HTTP anyone in between could have handed over their own.
+  const gateway = new URL(server.gatewayUrl);
+  if (
+    gateway.protocol !== 'https:' &&
+    !['localhost', '127.0.0.1', '[::1]'].includes(gateway.hostname)
+  )
+    throw new Error('Giving a machine a provider login requires HTTPS.');
+  const res = await managementFetch(
+    server,
+    `/controllers/${encodeURIComponent(controllerId)}/provider-logins/${encodeURIComponent(provider)}`,
+    { method: 'PUT', authenticated: true, body: { sealed } }
+  );
+  const body = (await res.json()) as { login: { revision: number }; operation: { id: string } };
+  return { operationId: body.operation.id, revision: body.login.revision };
+}
+
+/** Takes back the provider login given to a machine. */
+export async function withdrawMachineLogin(
+  server: SwitchServer,
+  controllerId: string,
+  provider: string
+): Promise<void> {
+  await managementFetch(
+    server,
+    `/controllers/${encodeURIComponent(controllerId)}/provider-logins/${encodeURIComponent(provider)}`,
+    { method: 'DELETE', authenticated: true }
+  );
+}
+
+/** One of a machine's operations as its owner sees it, by id; null when the server lists none by it. */
+export async function fetchMachineOperation(
+  server: SwitchServer,
+  controllerId: string,
+  operationId: string
+): Promise<{ state: string; error: { code: string; message: string } | null } | null> {
+  const res = await managementFetch(
+    server,
+    `/operations?controller_id=${encodeURIComponent(controllerId)}`,
+    { authenticated: true }
+  );
+  const listed = (await res.json()) as unknown;
+  if (!Array.isArray(listed))
+    throw new Error("The server's list of the machine's operations is not a list.");
+  const found = (
+    listed as {
+      id: string;
+      state: string;
+      result?: { outcome?: string; error?: { code: string; message: string } } | null;
+    }[]
+  ).find((operation) => operation.id === operationId);
+  if (!found) return null;
+  return { state: found.state, error: found.result?.error ?? null };
 }
 
 const PROVIDER_AUTH_STATES: readonly ControllerProviderReport['auth'][] = [
@@ -3170,12 +3533,24 @@ const advancedConfigSchemaResponse = z.object({
 /**
  * Each provider's advanced configuration fields, keyed by provider
  * (`GET /gateway/management/advanced-config`): what a managed agent's
- * `advanced_config` is checked against.
+ * `advanced_config` is checked against, and what every agent's advanced
+ * configuration form is built from. A server serves them whether or not it
+ * runs agent management, so one that answers 404 is older than the fields.
  */
 export async function fetchAdvancedConfigSchema(
   server: SwitchServer
 ): Promise<Record<string, AdvancedConfigField[]>> {
-  const res = await managementFetch(server, '/advanced-config', { authenticated: true });
+  let res: Response;
+  try {
+    res = await managementFetch(server, '/advanced-config', { authenticated: true });
+  } catch (error) {
+    if (error instanceof AgentManagementUnavailableError)
+      throw new Error(
+        `${server.name} does not serve the advanced configuration fields Console builds its form from. Update the server to set an agent's advanced configuration.`,
+        { cause: error }
+      );
+    throw error;
+  }
   const { providers } = advancedConfigSchemaResponse.parse(await res.json());
   return Object.fromEntries(
     Object.entries(providers).map(([provider, { fields }]) => [
@@ -3246,7 +3621,7 @@ export async function createManagedAgent(
     icon_url: string | null;
     controller_id: string;
     desired_state: 'running' | 'stopped';
-    definition: ManagedAgentDefinitionBody;
+    definition: ManagedAgentDefinitionBody & { isolation: 'shared' | 'isolated' };
   }
 ): Promise<string> {
   const res = await managementFetch(server, '/agents', {

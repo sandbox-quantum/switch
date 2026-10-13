@@ -65,6 +65,7 @@ function deps(overrides: Partial<OperationDeps> = {}) {
       rechecked.push(provider);
       return claudeStatus;
     },
+    takeUpLogin: async () => ({ status: claudeStatus, problem: null }),
     log: silentLogger,
     ...overrides,
   };
@@ -119,6 +120,34 @@ describe('executeOperation', () => {
         d
       )
     ).toMatchObject({ outcome: 'failed', error: { code: 'validation_error' } });
+  });
+
+  it('takes up a login given to the machine, and says why when it cannot', async () => {
+    const login = (params: Record<string, unknown>) =>
+      operation({ kind: 'provider.login', agent_id: null, params });
+    const sealedStatus = { ...claudeStatus, auth_source: 'sealed' as const };
+    const ok = deps({ takeUpLogin: async () => ({ status: sealedStatus, problem: null }) });
+    expect(
+      await executeOperation(login({ provider: 'claude', method: 'sealed', revision: 2 }), ok.deps)
+    ).toEqual({ outcome: 'succeeded', output: { provider: sealedStatus } });
+    const expired = deps({
+      takeUpLogin: async () => ({
+        status: { ...claudeStatus, auth: 'expired', auth_source: 'sealed' },
+        problem: { code: 'provider_login_expired', message: 'It does not sign in.' },
+      }),
+    });
+    expect(
+      await executeOperation(login({ provider: 'claude', method: 'sealed' }), expired.deps)
+    ).toEqual({
+      outcome: 'failed',
+      error: { code: 'provider_login_expired', message: 'It does not sign in.' },
+    });
+    expect(
+      await executeOperation(login({ provider: 'claude', method: 'device_code' }), ok.deps)
+    ).toMatchObject({ error: { code: 'operation_unsupported' } });
+    expect(await executeOperation(login({ method: 'sealed' }), ok.deps)).toMatchObject({
+      error: { code: 'validation_error' },
+    });
   });
 
   it('answers any other kind with operation_unsupported', async () => {

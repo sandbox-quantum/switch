@@ -1,12 +1,10 @@
-import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmod, lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { openCodeConsoleCredentialSchema } from '../opencode/console-credential';
+import { execProvider } from '../provider-process';
 
-const exec = promisify(execFile);
 interface Database {
   prepare(sql: string): {
     run(...values: unknown[]): unknown;
@@ -48,7 +46,7 @@ export async function importOpenCodeConsole(
   }
   await mkdir(directory, { recursive: true, mode: 0o700 });
   try {
-    await exec(binaryPath, ['db', 'SELECT 1', '--format', 'json'], {
+    await execProvider(binaryPath, ['db', 'SELECT 1', '--format', 'json'], {
       env,
       timeout: 60000,
       maxBuffer: 1024 * 1024,

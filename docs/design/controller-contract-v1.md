@@ -106,6 +106,8 @@ type AgentDefinition = {
 type Skill = { name: string; content: string }   // installed into the provider's skills dir
 ```
 
+`repo` and `skills` are not sent in v1. An agent's service grants and their skills are read by its agent host from `GET /agents/{agent_id}/service-grants` (§5) when a session starts, so a grant change bumps no revision.
+
 ---
 
 ## 3. Status (Management)
@@ -145,8 +147,12 @@ type ProviderStatus = {
   reason?: ReasonCode
 }
 
-type ToolStatus = { tool: string; state: "ok" | "missing" | "unauthenticated" | "unknown"; reason?: ReasonCode }
-                                            // e.g. "gh", "git", "mcp:jira"
+type ToolStatus = { tool: string; state: "ok" | "missing" | "unauthenticated" | "unsupported" | "unknown"; reason?: ReasonCode }
+                                       // `git` and `gh`, then each vendor command-line tool (`cli_tools`) a session
+                                       // on the machine has set up: `missing` when its install failed,
+                                       // `unsupported` where its release has no build for the machine
+                                            // e.g. "gh", "git", "mcp:jira". unsupported: this machine cannot run
+                                            // Switch's helper for the tool (GitHub's on Windows)
 
 type AgentStatus = {
   agent_id: string
@@ -201,22 +207,101 @@ Claim leases last 5 minutes and are renewed by `progress`. Every operation reach
 
 ---
 
-## 5. Tokens and secrets (Management)
+## 5. Tokens and secrets
+
+### Service tokens (Core)
+
+Service tokens are issued on agent routes (§7), so one route serves a controller acting as an agent and a directly connected agent using its own key. Implementation: `service-connections-v1.md`, and `service-connections-v2.md` for services beyond GitHub.
 
 ```
-POST /v1/management/controllers/{id}/connector-token
-  { agent_id: string, service: "github" | "jira" | "confluence" | "gdrive" | string, scope?: string[] }
-  → 200 { token: string, expires_at: Time }          // ≤ 1h. Every issuance is audited
-  → 403 not_assigned | 404 connector_not_connected
+GET /agents/{agent_id}/service-grants                auth: controller token acting as the agent (§7), or the agent's own key
+  → 200 { grants: ServiceGrant[] }
 
+POST /agents/{agent_id}/service-tokens/{service}     auth: as above. No body
+  → 200 { token: string, expires_at: Time, expires_in: number, use_until: Time, resources: ServiceResources, grant_revision: number }
+                                                     // Cache-Control: no-store. Every issuance is recorded
+  → 403 grant_missing | not_assigned | forbidden     // forbidden also: the service is switched off on this server
+  → 404 connector_not_connected | not_found          // not_found: no such service
+  → 409 connector_revoked | grant_account_changed | managed_by_controller
+  → 500 internal                                     // the vendor's token outlived its catalog lifetime; not retryable
+  → 503 internal                                     // the vendor or the connection is unavailable
+```
+
+- **`expires_in`** is the token's remaining life in seconds, as Core counts it. Time the token from when the answer arrived, not by comparing `expires_at` with your own clock.
+- **`use_until`** is when to ask again: `expires_at`, or an hour after the issue if that is sooner. A token may outlive it (a service whose tokens live longer than an hour), but it is not used past it, so Core's checks run at least hourly. Both fields are additive; a holder that predates them keeps using `expires_at`.
+- **Minted and pass-through tokens.** GitHub's token is minted for the one request and lives at most an hour. A pass-through service hands out its owner's own access token, shared by every agent they grant; it cannot be revoked per agent, and Core renews it while at least 15 minutes remain.
+
+```ts
+type ServiceGrant = {
+  service: string                     // catalog slug: "github", "atlassian"; later "google-workspace", …
+  access: "read" | "write"
+  tool_mode: "allow" | "deny"         // allow: only `tools`; deny: every tool of the level except `tools`
+  tools: string[]
+  resources: ServiceResources
+  revision: number                    // moves on every change to the grant; a token answer names the one it was issued under
+  skill: { name: string; content: string } | null   // the service's SKILL.md
+  mcp_servers: { name: string; url: string; headers: Record<string, string> }[]
+                                      // the vendor's MCP servers a session calls; [] for GitHub. Additive.
+                                      // `url` and `headers` are templates (below); absent headers mean
+                                      // { Authorization: "Bearer {token}" }
+  cli_tools: ServiceCliTool[]                         // the vendor's command-line tool a session's host runs; [] for most. Additive
+}
+
+type ServiceCliTool = {               // as the catalog entry's `cli` block has it
+  name: string                        // the tool's name in the session, beside `switch` and any MCP server's
+  binary: string                      // the executable, run without a shell
+  token_env: string | null            // the only place the token goes: this variable, in the run's own environment
+  env: Record<string, string> | null  // instead, for a key service: each variable set from its template (below)
+  config_env: string | null           // where the tool has one: a configuration folder made for the session
+  allow: string[]                     // a command's first argument is one of these
+  deny: string[]                      // first arguments, and flags refused anywhere in a command
+  path_flags: Record<string, "read" | "write">   // flags whose value is a local file, kept inside the session's folder
+  path_args: { after: string; direction: "read" | "write" }[]
+                                      // positional local files: the argument right after the word `after`
+  output_cap_bytes: number            // more output goes to a file, whose path is returned
+  timeout_s: number
+  token_refused: { exit_code: number; json_path: string; value: number | string }
+                                      // a run that ends so asks for the token again, once
+  release: {                          // the pinned build every session runs
+    version: string
+    targets: Record<string, { url: string; sha256: string; path: string }>
+                                      // by "<platform>-<arch>" as Node names them: the archive (HTTPS),
+                                      // its SHA-256, which must match, and the binary's path inside it
+  }
+}
+
+type ServiceResources =
+  | { installation_id: number; repository_ids: number[] }   // GitHub
+  | Record<string, never>                                    // a service whose token cannot be narrowed
+```
+
+- **Who gets a token.** Core issues only for an agent that holds a grant to its owner's own connection. A controller must belong to that owner and be bound to the agent (§7); an agent's own key works only while it has no binding.
+- **When grants are read.** The agent's host reads its grants when a session starts, and a change of skills applies from the next session. No stream frame announces a change. While it holds a token, the host reads the grants again at most every 30 seconds, when a token is asked for, and drops the token once its grant's `revision` is not the token's `grant_revision`, so a widened, narrowed or removed grant reaches running sessions within that. A removed grant also fails the next fetch, and a GitHub token already issued is revoked at once. A pass-through service's token is its owner's own and cannot be revoked alone: a token already handed out stays valid at the vendor until it expires, and while the host cannot read the grants a removed grant stops a running session by `use_until`, within the hour.
+- **`credential.revoked` is not used for grants.** It revokes the controller itself.
+- **Templates and key tokens.** A template's `{token}` is the token as handed out; any other `{name}` is a field of a key service's token. A key service (catalog `adapter: api_key`) hands out its token as compact JSON, `{"public": {...}, "secret": {...}}`: the fields the owner pasted (`secret`) and picked (`public`, the only ones a URL may name). The host renders each server's `url` and `headers`, or a tool's `env`, from it, and redacts every `secret` value on its own as well as the whole token.
+- **Where tokens go.** The controller keeps tokens in memory and serves them to a session's tools and helpers. It never writes one to disk, a CLI's arguments or its environment, except GitHub's, which `git` receives from its credential helper and `gh` from its wrapper. A service with `mcp_servers` never reaches the CLI at all: the session's host serves each of them to the CLI on loopback, behind a key made for the run, asks for the token on each call and calls the vendor itself. A service with `cli_tools` is the same: the host serves each tool on loopback, checks every command against `allow`, `deny` and `path_flags`, asks for the token on each run, and runs `binary` itself with the token only in `token_env` of that run's environment.
+
+### Provider logins (Management)
+
+```
 GET /v1/management/controllers/{id}/provider-credentials/{provider}
-  → 200 { revision: string, sealed: { alg: "X25519-XChaCha20Poly1305", key_id: string, ciphertext: base64 } }
+  → 200 { provider: string, revision: int, sealed: SealedLogin }   // Cache-Control: no-store
   → 404 provider_login_missing
+
+type SealedLogin = {
+  alg: "X25519-HKDF-SHA256-A256GCM",
+  key_id: string,          // first 16 hex digits of SHA-256(controller public key)
+  ephemeral_key: base64,   // 32 bytes
+  nonce: base64,           // 12 bytes
+  ciphertext: base64,      // AES-256-GCM, tag appended
+}
 ```
 
-- The Console seals a provider login to the controller's `public_key`, and the server stores only the ciphertext.
-- On Switch EC2, the blob is sealed with a KMS key that only that VM's role can decrypt.
-- The controller **prefers a local login** (`auth_source: "local"`) and fetches a sealed one only when none exists.
+- **The key.** The controller makes an X25519 keypair at enrollment and sends `public_key`. A controller enrolled before then registers it once with `PATCH /v1/management/controllers/{id}` `{ public_key }`. A different key afterwards is refused (409): the machine is enrolled again. A controller that keeps no secrets across starts (its credential handed over by a parent) registers none, and uses only the machine's own logins.
+- **Sealing.** The owner's client (Console) seals `{ kind: "api-key" | "setup-token" | "auth-json" | "vertex", credential }` to that key (a `vertex` login, Claude only, holds `{"v": 1, "project", "region", "credentials"}` as JSON, `credentials` being a Google service account key or `authorized_user` sign-in): an ephemeral X25519 key, `HKDF-SHA256(shared, salt = ephemeral public ‖ controller public, info = "switch provider login v1")`, and AES-256-GCM with `aad = "switch-provider-login-v1\n<controller id>\n<provider>"`. The server checks the envelope's shape and that `key_id` names the machine's current key, stores only the ciphertext, and can never open it. The same construction is in `core/switch_core/management/sealed_logins.py` (checks) and `@switch-console/agent-providers` `sealed-login.ts` (seal and open).
+- **On demand.** The owner gives a machine a login with `PUT /gateway/management/controllers/{id}/provider-logins/{provider}` `{ sealed }`, which answers `{ login: { provider, revision, key_id, updated_at }, operation }`. The operation is `provider.login` `{ provider, method: "sealed", revision }`: the controller fetches the login, opens it, checks the provider signs in with it, and reports `succeeded` with its provider status, or `failed` with `provider_login_missing`, `provider_login_expired` or `internal`. `GET …/provider-logins` lists what was given (never the ciphertext). `DELETE …/provider-logins/{provider}` takes it back and queues `provider.recheck`. Revoking the machine deletes its logins.
+- The controller **prefers a local login** (`auth_source: "local"`). It uses a sealed one (`auth_source: "sealed"`) only for a provider it has no local login for, and only once the provider signs in with it. An agent using one gets it with its relay credentials, and is restarted when the login changes or is withdrawn.
+- On Switch EC2, the same sealed logins apply: no KMS is involved.
 - When a CLI refreshes and rotates a login on the machine, the controller doesn't upload it back.
 
 ---
@@ -356,6 +441,9 @@ The personal agent relays that reason to the user as is.
 | `provider_not_installed` / `provider_version_unsupported` | status, placement | CLI missing, or too old |
 | `provider_login_missing` / `provider_login_expired` | status, placement | No usable login |
 | `connector_not_connected` / `connector_revoked` | tokens | User hasn't connected the service, or revoked it |
+| `grant_missing` | tokens | The agent has no grant for that service |
+| `grant_account_changed` | tokens | The owner re-linked a different account at the vendor; the grant must be made again |
+| `forbidden` | any | Authenticated, but not allowed this action, and `message` says why |
 | `definition_invalid` | status | The definition can't be applied, and `detail` says why |
 | `repo_clone_failed` | status | Clone or worktree failed |
 | `crash_loop` | status | 5 restarts in 10 minutes, stopped retrying |
@@ -374,6 +462,6 @@ The personal agent relays that reason to the user as is.
 | §2 assignment | #556 `GET /hosted/machines/{id}/agents` | Generalise, and add revisions per agent |
 | §3 status | #556 `/heartbeat`, `process_state`, OOM and restart counts, `/provider-status` | Merge into one snapshot |
 | §4 operations | #556 `HostedOperation`, `/operations/{id}/claim` and `/result` | Generalise the kinds |
-| §5 tokens | #556 `/github-credential` | Generalise to connectors. Sealed provider logins are new |
+| §5 tokens | #556 `/github-credential` | Generalise to services, on the agent route `/agents/{id}/service-tokens/{service}`. Sealed provider logins are new |
 | §6 stream | Per-agent `GET /agents/{id}/events` with connection, generation, beat and takeover | One stream per controller, as a read-side merge of the per-agent buffers |
 | §7 act as | Per-agent API keys on `/agents/{id}/...` | Add the controller principal and the binding check |

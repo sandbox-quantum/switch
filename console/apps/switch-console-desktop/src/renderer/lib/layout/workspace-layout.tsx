@@ -23,12 +23,19 @@ interface WorkspaceLayoutProps {
    * whole client whenever it is unmounted or re-parented.
    */
   persistentLayer?: ReactNode;
+  /** Across the top of the main panel, above the view, when the workspace has
+   * something to say about itself — such as its server not running. */
+  banner: ReactNode;
+  /** Classes for the view and the persistent layer under the banner. */
+  contentClassName: string | undefined;
 }
 
 export function WorkspaceLayout({
   leftSidebar,
   mainContent,
   persistentLayer = null,
+  banner,
+  contentClassName,
 }: WorkspaceLayoutProps) {
   const { leftPanelRef, syncLeftOpenFromPanel, isLeftOpen } = useWorkspaceLayoutContext();
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
@@ -85,9 +92,12 @@ export function WorkspaceLayout({
             !isLeftOpen && (isMac ? 'pt-9' : 'pt-2')
           )}
         >
-          <div className="relative h-full w-full overflow-hidden rounded-[var(--panel-radius)] shadow-[0_0_0_0.5px_var(--hair)]">
-            {mainContent}
-            {persistentLayer}
+          <div className="relative flex h-full w-full flex-col overflow-hidden rounded-[var(--panel-radius)] shadow-[0_0_0_0.5px_var(--hair)]">
+            {banner}
+            <div className={cn('relative min-h-0 w-full flex-1', contentClassName)}>
+              {mainContent}
+              {persistentLayer}
+            </div>
           </div>
         </div>
       </ResizablePanel>

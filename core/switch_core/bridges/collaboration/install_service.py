@@ -56,16 +56,26 @@ workspace it has already been thrown out of.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.adapter import PlatformAdapter
+from switch_core.bridges.collaboration.adapter import (
+    PlatformAdapter,
+    SupportsSharedConnection,
+)
 from switch_core.bridges.collaboration.install import (
+    ClaimAnswer,
+    ClaimProposal,
     InboundWebhook,
+    InstallClaim,
     InstallGrant,
     MessagingAppInstaller,
     MessagingInstallerRegistry,
@@ -83,7 +93,9 @@ from switch_core.bridges.collaboration.install_confirmation import (
 from switch_core.bridges.collaboration.install_state import (
     InstallState,
     mint,
+    mint_compact,
     verify,
+    verify_compact,
 )
 from switch_core.bridges.collaboration.lifecycle_service import (
     BridgeClaimConflict,
@@ -94,7 +106,13 @@ from switch_core.bridges.collaboration.models import (
     BridgeStartRefused,
 )
 from switch_core.db.audit import AuditAction, record_audit_event
-from switch_core.db.models import MessagingInstall, Tenant, User
+from switch_core.db.models import (
+    MessagingInstall,
+    MessagingInstallState,
+    Room,
+    Tenant,
+    User,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import (
@@ -102,8 +120,10 @@ from switch_core.db.stores.messaging_install_store import (
     INSTALL_DISCONNECTED,
     INSTALL_REVOKED,
     MessagingInstallClaimedError,
+    MessagingInstallStateError,
     MessagingInstallStore,
 )
+from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_messaging_install
 from switch_core.keys import Keyring
 from switch_core.tenant_context import no_tenant, tenant_scope
@@ -123,6 +143,41 @@ class WebhookWorkspaceUnknown(RuntimeError):
     """
 
 
+class WebhookWorkspaceUnowned(WebhookWorkspaceUnknown):
+    """No tenant holds the workspace at all — the routine case of the two.
+
+    Split from the scoped re-read missing, which is a lookup disagreeing with
+    itself and always worth a warning. This one is an app sitting in a
+    workspace nobody installed it into, which on some platforms is most of
+    what it hears.
+    """
+
+    def __init__(self, message: str, *, workspace_id: str) -> None:
+        super().__init__(message)
+        self.workspace_id = workspace_id
+
+
+class RoomDetacher(Protocol):
+    """Detaches the one room a bridge holds for a workspace that is leaving it."""
+
+    async def unlink_bridge_channel(
+        self, bridge_id: str, external_channel_id: str
+    ) -> None: ...
+
+
+#: How long an unowned workspace's drops are remembered, and how many
+#: workspaces at most. Long enough to span a migration's two notices; bounded
+#: because an app sitting in unclaimed chats sees an open-ended set of them.
+_RECENT_DROP_TTL = 300.0
+_RECENT_DROPS_MAX = 1000
+
+#: How long an event carrying a claim waits for its bridge to start before the
+#: platform is told to retry. The claim is the event that provisions the chat's
+#: room, and a bridge still starting has nothing to provision it with.
+_BRIDGE_START_WAIT = 2.0
+_BRIDGE_START_POLL = 0.05
+
+
 class WebhookBridgeUnavailable(RuntimeError):
     """The workspace resolves to a tenant, and nothing is running to take it.
 
@@ -138,6 +193,21 @@ class Revocation:
 
     workspace_id: str
     reason: str
+
+
+@dataclass(frozen=True)
+class ClaimLink:
+    """What a person needs to claim a chat: the link, and the bare code.
+
+    The link adds the bot to a group and claims it in one step. A channel has
+    no such link — Telegram carries no state when a bot is added to one — so
+    the code is posted there by hand, as `/connect <code>`, after adding the
+    bot by its handle.
+    """
+
+    url: str
+    code: str
+    bot_handle: str
 
 
 @dataclass(frozen=True)
@@ -182,6 +252,27 @@ class InstallPlatformMismatch(RuntimeError):
     """
 
 
+class InstallClaimNotPermitted(RuntimeError):
+    """The person who minted a claim may not make the install it would make.
+
+    Connecting a further chat to a tenant's existing connection is a member's
+    action — a chat is a room, and rooms are members' — but the first claim
+    creates the connection itself, which is an admin's. Checked when the claim
+    is redeemed and not only when it was minted, because whether a connection
+    exists can change in the ten minutes between the two.
+    """
+
+
+class InstallClaimRepeated(RuntimeError):
+    """A claim arrived again after it had already connected its workspace.
+
+    The platform re-sends an event it thinks went unanswered, and the retried
+    claim finds its state burnt. Told apart from a claim that genuinely came
+    too late, because answering a retry with "that link has expired" in a chat
+    it has just connected would be telling the person something false.
+    """
+
+
 class MessagingInstallService:
     def __init__(
         self,
@@ -191,16 +282,32 @@ class MessagingInstallService:
         receipts: MessagingEventReceiptStore,
         installers: MessagingInstallerRegistry,
         lifecycle: CollaborationBridgeLifecycleService,
+        # Defaulted because only a claim-based platform asks either: who may
+        # turn it on, and which room a chat that leaves takes with it. A
+        # deployment, or a test, with none of those platforms passes neither.
+        users: UserStore = UserStore(),
+        rooms: RoomDetacher | None = None,
         public_origin: str,
         keyring: Keyring,
     ) -> None:
         self._session_factory = session_factory
         self._store = store
+        self._users = users
+        self._rooms = rooms
+        # (platform, workspace id) -> (events dropped, when the last was), in
+        # order of that last drop. Ids and counts only: nothing an unowned
+        # workspace said is kept.
+        self._recent_drops: OrderedDict[tuple[str, str], tuple[int, float]] = (
+            OrderedDict()
+        )
         self._receipts = receipts
         self._installers = installers
         self._lifecycle = lifecycle
         self._public_origin = public_origin
         self._keyring = keyring
+        # Burnt claim states awaiting an answer: state id -> (chat, when). See
+        # `propose`.
+        self._proposals: dict[str, tuple[str, float]] = {}
 
     def _redirect_uri(self, platform: str) -> str:
         """Where the platform sends the browser back to.
@@ -227,18 +334,54 @@ class MessagingInstallService:
         which they could name another.
         """
         installer = self._installers.get(platform)
-        state = await self._store.start_install(
-            session, platform=platform, user_id=user_id
-        )
-        token = mint(
-            InstallState(
-                tenant_id=state.tenant_id, state_id=state.id, platform=platform
-            ),
-            keyring=self._keyring,
-        )
+        token = await self._mint_state(session, platform=platform, user_id=user_id)
         return installer.authorize_url(
             state=token, redirect_uri=self._redirect_uri(platform)
         )
+
+    async def begin_claim(
+        self, session: AsyncSession, *, platform: str, user_id: str
+    ) -> ClaimLink:
+        """`begin`, for a platform installed by claim: the link and its code."""
+        installer = self._installers.get(platform)
+        token = await self._mint_state(session, platform=platform, user_id=user_id)
+        return ClaimLink(
+            url=installer.authorize_url(
+                state=token, redirect_uri=self._redirect_uri(platform)
+            ),
+            code=token,
+            bot_handle=installer.bot_handle(),
+        )
+
+    async def _mint_state(
+        self, session: AsyncSession, *, platform: str, user_id: str
+    ) -> str:
+        installer = self._installers.get(platform)
+        state = await self._store.start_install(
+            session, platform=platform, user_id=user_id
+        )
+        signed = InstallState(
+            tenant_id=state.tenant_id, state_id=state.id, platform=platform
+        )
+        if installer.state_format == "compact":
+            return mint_compact(signed, keyring=self._keyring)
+        return mint(signed, keyring=self._keyring)
+
+    async def platform_connected(self, session: AsyncSession, *, platform: str) -> bool:
+        """Whether the bound tenant already has a bridge for a claim-based platform.
+
+        The line between an admin's action and a member's: connecting a chat
+        while there is none creates the tenant's connection; every other chat
+        is a room.
+        """
+        return (
+            await self._store.bridge_for_platform(session, platform=platform)
+            is not None
+        )
+
+    async def install_platform(self, session: AsyncSession, *, install_id: str) -> str:
+        """Which platform one of the bound tenant's installs belongs to, or raise."""
+        return (await self._store.get(session, install_id=install_id)).platform
 
     async def complete(
         self, *, platform: str, code: str, state_token: str
@@ -258,13 +401,7 @@ class MessagingInstallService:
             )
 
         with tenant_scope(state.tenant_id):
-            async with tenant_session(
-                self._session_factory, state.tenant_id
-            ) as session:
-                burnt = await self._store.redeem_state(
-                    session, state_id=state.state_id, platform=platform
-                )
-                await session.commit()
+            burnt = await self._burn(state)
 
             grant = await installer.redeem(
                 code=code, redirect_uri=self._redirect_uri(platform)
@@ -359,14 +496,7 @@ class MessagingInstallService:
                     session,
                     platform=platform,
                     external_workspace_id=grant.external_workspace_id,
-                    # A grant with no token is a platform whose credential is
-                    # deployment-level (Discord), not per-install; there is
-                    # nothing to encrypt and the column is nullable for it.
-                    encrypted_bot_token=(
-                        self._keyring.encrypt(grant.bot_token)
-                        if grant.bot_token is not None
-                        else None
-                    ),
+                    encrypted_bot_token=self._encrypted_token(grant),
                     scopes=grant.scopes,
                     platform_data=grant.platform_data,
                     user_id=decided.created_by_user_id,
@@ -613,6 +743,318 @@ class MessagingInstallService:
                 "only what it was installed into."
             )
 
+    async def propose(self, *, platform: str, claim: InstallClaim) -> ClaimProposal:
+        """Spend a claim's state on asking its chat, and say what it would connect.
+
+        The claim-based counterpart of `complete`: verify, then burn the state
+        and commit before anything else, so a code seen in the chat — in the
+        claim itself, or behind the proposal's buttons — is dead from here on.
+        The burnt state is then held for this one chat, and only an answer from
+        it can decide it (see `connect`). Held in memory: the app runs on one
+        pod, and a restart costs an unanswered proposal, whose answer is then
+        refused as expired.
+
+        Everything `connect` would refuse is refused here first, so a chat is
+        only asked about a claim that can still succeed.
+        """
+        installer = self._installers.get(platform)
+        state = verify_compact(claim.token, platform=platform, keyring=self._keyring)
+        await installer.require_claimant_may_connect(claim)
+        chat_id = claim.grant.external_workspace_id
+
+        with tenant_scope(state.tenant_id):
+            holder = await tenant_of_messaging_install(
+                self._session_factory, platform, chat_id
+            )
+            if holder == state.tenant_id:
+                raise InstallClaimRepeated(
+                    f"the {platform} workspace {chat_id} is already connected to "
+                    "this organisation"
+                )
+            if holder is not None:
+                raise MessagingInstallClaimedError(
+                    f"the {platform} workspace {chat_id} is already connected to Switch"
+                )
+            try:
+                burnt = await self._burn(state)
+            except MessagingInstallStateError:
+                if self._proposed_chat(state.state_id) == chat_id:
+                    raise InstallClaimRepeated(
+                        f"the {platform} workspace {chat_id} was already asked "
+                        "about this claim"
+                    ) from None
+                raise
+            self._proposals[state.state_id] = (chat_id, time.monotonic())
+
+            async with tenant_session(
+                self._session_factory, state.tenant_id
+            ) as session:
+                if (
+                    await self._store.bridge_for_platform(session, platform=platform)
+                    is None
+                ):
+                    await self._require_admin(session, burnt, platform)
+                tenant = await session.get(Tenant, state.tenant_id)
+                requester = await session.get(User, burnt.created_by_user_id)
+                if tenant is None or requester is None:
+                    raise RuntimeError(
+                        f"install state {state.state_id} names a tenant or user "
+                        "that no longer exists"
+                    )
+                return ClaimProposal(
+                    organisation=tenant.name, requested_by=requester.name
+                )
+
+    async def decline(self, *, platform: str, claim: InstallClaim) -> None:
+        """An admin of the chat chose Cancel: decide the state, connect nothing."""
+        installer = self._installers.get(platform)
+        state = verify_compact(claim.token, platform=platform, keyring=self._keyring)
+        with tenant_scope(state.tenant_id):
+            await self._decide(installer, state, claim)
+        logger.info(
+            "Declined a %s claim of workspace %s for tenant %s",
+            platform,
+            claim.grant.external_workspace_id,
+            state.tenant_id,
+        )
+
+    async def connect(self, *, platform: str, claim: InstallClaim) -> MessagingInstall:
+        """An admin of the chat chose Connect: install the workspace it names.
+
+        The counterpart of `confirm`. There is no code to exchange — the event
+        is the grant — and what differs after that is the bridge.
+
+        **A claim-based platform shares one bridge per tenant.** Identities are
+        held per bridge, so a bridge per chat would have every person link
+        themselves again in every chat. The first chat registers the bridge
+        and each later one attaches to it.
+
+        That makes the first connection a race: two landing together would each
+        find no bridge and each register one. So the lookup, the insert, the
+        registration and the attachment happen inside one transaction holding
+        an advisory lock on the tenant and platform, and a second one waits
+        and then finds the bridge the first one made. Holding the transaction
+        across registration has a second benefit: a registration that fails
+        rolls the install back with it, rather than leaving a workspace claimed
+        by a tenant with no bridge to deliver its events to.
+        """
+        installer = self._installers.get(platform)
+        state = verify_compact(claim.token, platform=platform, keyring=self._keyring)
+        chat_id = claim.grant.external_workspace_id
+
+        with tenant_scope(state.tenant_id):
+            if (
+                await tenant_of_messaging_install(
+                    self._session_factory, platform, chat_id
+                )
+                == state.tenant_id
+            ):
+                raise InstallClaimRepeated(
+                    f"the {platform} workspace {chat_id} was already connected by "
+                    "this claim"
+                )
+            decided = await self._decide(installer, state, claim)
+
+            async with tenant_session(
+                self._session_factory, state.tenant_id
+            ) as session:
+                await self._lock_platform(session, state.tenant_id, platform)
+                bridge_id = await self._store.bridge_for_platform(
+                    session, platform=platform
+                )
+                if bridge_id is None:
+                    await self._require_admin(session, decided, platform)
+
+                install = await self._store.record_install(
+                    session,
+                    platform=platform,
+                    external_workspace_id=chat_id,
+                    encrypted_bot_token=self._encrypted_token(claim.grant),
+                    scopes=claim.grant.scopes,
+                    platform_data=claim.grant.platform_data,
+                    user_id=decided.created_by_user_id,
+                )
+
+                if bridge_id is None:
+                    bridge = await self._lifecycle.register(
+                        bridge_type=platform,
+                        display_name=claim.grant.workspace_name,
+                        connection_config=installer.connection_config(claim.grant),
+                        channel_creation_enabled=False,
+                        # Someone here connected a chat, as with an OAuth install.
+                        preconfigured=False,
+                    )
+                    bridge_id = bridge.id
+
+                attached = await self._store.attach_bridge(
+                    session, install_id=install.id, bridge_id=bridge_id
+                )
+                await record_audit_event(
+                    session,
+                    tenant_id=state.tenant_id,
+                    actor_user_id=decided.created_by_user_id,
+                    action=AuditAction.MESSAGING_INSTALL_CONNECTED,
+                    target_type="messaging_install",
+                    target_id=install.id,
+                    details={
+                        "platform": platform,
+                        "external_workspace_id": chat_id,
+                        "workspace_name": claim.grant.workspace_name,
+                        "bridge_id": bridge_id,
+                        "scopes": claim.grant.scopes,
+                        "claimed_by": claim.claimant,
+                    },
+                )
+                await session.commit()
+
+            logger.info(
+                "Connected %s workspace %s for tenant %s on bridge %s",
+                platform,
+                chat_id,
+                state.tenant_id,
+                bridge_id,
+            )
+            return attached
+
+    def _proposed_chat(self, state_id: str) -> str | None:
+        """The chat a burnt state was proposed in, while it can be answered."""
+        held = self._proposals.get(state_id)
+        if held is None:
+            return None
+        chat_id, proposed_at = held
+        if time.monotonic() - proposed_at > CONFIRM_TTL.total_seconds():
+            del self._proposals[state_id]
+            return None
+        return chat_id
+
+    async def _decide(
+        self,
+        installer: MessagingAppInstaller,
+        state: InstallState,
+        claim: InstallClaim,
+    ) -> MessagingInstallState:
+        """Take an answer to a proposal, once, from an admin of its own chat.
+
+        Refused as expired when the state was proposed in another chat, or not
+        proposed at all here: a code copied out of one chat cannot be answered
+        from another. Who answered is checked before the state is decided, so
+        a refused press leaves the proposal for an admin to answer.
+        """
+        if self._proposed_chat(state.state_id) != claim.grant.external_workspace_id:
+            raise MessagingInstallStateError(
+                "this claim was not proposed in this chat, or its proposal has "
+                "expired. Start again from Switch."
+            )
+        await installer.require_claimant_may_connect(claim)
+        async with tenant_session(self._session_factory, state.tenant_id) as session:
+            decided = await self._store.decide_state(
+                session,
+                state_id=state.state_id,
+                platform=state.platform,
+                window=CONFIRM_TTL,
+            )
+            await session.commit()
+        self._proposals.pop(state.state_id, None)
+        return decided
+
+    @staticmethod
+    async def _lock_platform(
+        session: AsyncSession, tenant_id: str, platform: str
+    ) -> None:
+        """Serialise the changes to which installs share a tenant's bridge.
+
+        Held by a first claim across looking up and registering the bridge.
+        """
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": f"messaging-install-claim:{tenant_id}:{platform}"},
+        )
+
+    async def _release_bridge(
+        self, *, platform: str, bridge_id: str, workspace_id: str
+    ) -> None:
+        """Remove the bridge an install built, or detach one chat's room.
+
+        A bridge built for one install goes with it, which is every OAuth
+        install. A claim-based platform's bridge is the tenant's connection
+        rather than any chat's, and outlives the last of them until an admin
+        deletes it: a chat ending detaches only its own room, whoever ended it.
+        """
+        if self._installers.get(platform).installs_by_claim:
+            if self._rooms is None:
+                raise RuntimeError(
+                    f"{platform} is installed by claim, so ending one of its "
+                    "installs detaches a room, and this install service was "
+                    "built with nothing to detach it with"
+                )
+            await self._rooms.unlink_bridge_channel(bridge_id, workspace_id)
+            return
+        await self._lifecycle.remove(bridge_id)
+
+    async def resolve_started(
+        self, *, platform: str, workspace_id: str
+    ) -> WebhookTarget:
+        """`resolve_by_workspace`, waiting for a bridge still starting.
+
+        For a connecting answer. The admin's Connect is the event that
+        provisions its chat's room, and a bridge is launched before it is
+        started: its adapter is given the callbacks that provision anything in
+        the bridge's own task, a few reads after launch, and until then it is
+        refused as unavailable. That gap is open when the press has just
+        registered the bridge, when Telegram retries it while the bridge is
+        still coming up, and when it lands on a bridge that is restarting.
+
+        Only a connecting answer waits; every other event is refused straight
+        away. Past the wait the platform is told to retry, and the retry — a
+        repeated answer, since the install is committed — waits again.
+        """
+        deadline = time.monotonic() + _BRIDGE_START_WAIT
+        while True:
+            try:
+                return await self.resolve_by_workspace(
+                    platform=platform, workspace_id=workspace_id
+                )
+            except WebhookBridgeUnavailable:
+                if time.monotonic() >= deadline:
+                    raise
+            await asyncio.sleep(_BRIDGE_START_POLL)
+
+    async def _burn(self, state: InstallState) -> MessagingInstallState:
+        """Redeem a verified state, and commit, before anything else happens.
+
+        Shared by both ways an install completes, and in its own transaction
+        for the reason the module docstring gives: a replay must fail even if
+        everything after this does.
+        """
+        async with tenant_session(self._session_factory, state.tenant_id) as session:
+            burnt = await self._store.redeem_state(
+                session, state_id=state.state_id, platform=state.platform
+            )
+            await session.commit()
+        return burnt
+
+    def _encrypted_token(self, grant: InstallGrant) -> str | None:
+        """The grant's credential as stored, or `None` if it carries none.
+
+        A grant with no token is a platform whose credential is
+        deployment-level (Discord, Telegram), not per-install; there is nothing
+        to encrypt and the column is nullable for it.
+        """
+        if grant.bot_token is None:
+            return None
+        return self._keyring.encrypt(grant.bot_token)
+
+    async def _require_admin(
+        self, session: AsyncSession, burnt: MessagingInstallState, platform: str
+    ) -> None:
+        user = await session.get(User, burnt.created_by_user_id)
+        if user is None or not await self._users.administers(session, user):
+            raise InstallClaimNotPermitted(
+                f"connecting the first {platform} chat turns {platform} on for "
+                "this organisation, which only an admin can do. Ask an admin to "
+                "connect it, or to connect any chat first."
+            )
+
     async def list_installs(self, session: AsyncSession) -> list[MessagingInstall]:
         """The bound tenant's installs, for the operator's own list.
 
@@ -620,6 +1062,34 @@ class MessagingInstallService:
         tenant argument because there is no tenant to choose.
         """
         return await self._store.list_for_tenant(session)
+
+    async def install_names(self, session: AsyncSession) -> dict[str, str]:
+        """What a person calls each of the bound tenant's installs that still
+        has a name, by install id.
+
+        A claimed chat is a room, so it is called what its room is called. An
+        OAuth install is its own bridge, named for the workspace it came from.
+        An ended install has let go of both and is left to be shown by its id.
+        """
+        names: dict[str, str] = {}
+        for install_id, platform, room, bridge in await self._store.names_for_tenant(
+            session
+        ):
+            name = room if self._installs_by_claim(platform) else bridge
+            if name:
+                names[install_id] = name
+        return names
+
+    async def chat_rooms(self, session: AsyncSession) -> dict[str, Room]:
+        """The room each of the bound tenant's claimed chats still has, by
+        install id. An ended chat has let go of its room and is absent."""
+        return await self._store.rooms_for_tenant(session)
+
+    def _installs_by_claim(self, platform: str) -> bool:
+        try:
+            return self._installers.get(platform).installs_by_claim
+        except MessagingInstallError:
+            return False
 
     # ── Ending an install ────────────────────────────────────────────────────
 
@@ -631,8 +1101,8 @@ class MessagingInstallService:
         `app_uninstalled` ended a second earlier, and that is not an error to
         show them.
 
-        **Removing the bridge detaches every room that used it**, which become
-        internal-only. That is the honest consequence of disconnecting a
+        **Removing an OAuth install's bridge detaches every room that used
+        it**, which become internal-only; a claimed chat detaches only its own. That is the honest consequence of disconnecting a
         messaging app and it is not softened here — but it is the reason this
         is an explicit action with a confirmation in front of it rather than
         something inferred.
@@ -659,11 +1129,16 @@ class MessagingInstallService:
             installer = self._installers.get(platform)
             if token is not None:
                 await installer.revoke(bot_token=self._keyring.decrypt(token))
-            elif bridge_id is None or not self._lifecycle.is_connected(bridge_id):
+            elif (
+                installer.installs_by_claim
+                or bridge_id is None
+                or not self._lifecycle.is_connected(bridge_id)
+            ):
                 # A tokenless install has nothing to revoke, and a connected
                 # bridge lets go of the platform itself as it is removed. One
                 # that is not running, or still starting, cannot, so the
-                # installer does it.
+                # installer does it. So does a claimed chat, whose bridge is
+                # the tenant's and is not removed with it.
                 await installer.release(external_workspace_id=workspace_id)
 
             async with tenant_session(self._session_factory, tenant_id) as session:
@@ -673,7 +1148,9 @@ class MessagingInstallService:
                 await session.commit()
 
             if bridge_id is not None:
-                await self._lifecycle.remove(bridge_id)
+                await self._release_bridge(
+                    platform=platform, bridge_id=bridge_id, workspace_id=workspace_id
+                )
 
         logger.info(
             "Disconnected %s workspace %s for tenant %s",
@@ -737,7 +1214,9 @@ class MessagingInstallService:
                 await session.commit()
 
             if bridge_id is not None:
-                await self._lifecycle.remove(bridge_id)
+                await self._release_bridge(
+                    platform=platform, bridge_id=bridge_id, workspace_id=workspace_id
+                )
 
         logger.warning(
             "Ended the install of %s workspace %s for tenant %s: %s",
@@ -837,6 +1316,19 @@ class MessagingInstallService:
             workspace_id=installer.workspace_of_event(event.payload), reason=reason
         )
 
+    def claim_of(self, *, platform: str, event: InboundWebhook) -> InstallClaim | None:
+        """Whether this event asks for its workspace to be installed.
+
+        Asked before `resolve` for the mirror of the reason `revocation` is:
+        the workspace a claim names is not installed yet, so resolving it first
+        would drop the one event that could install it.
+        """
+        return self._installers.get(platform).claim_of_event(event.payload)
+
+    def answer_of(self, *, platform: str, event: InboundWebhook) -> ClaimAnswer | None:
+        """Whether this event answers a proposal; asked before `resolve` too."""
+        return self._installers.get(platform).answer_of_event(event.payload)
+
     async def resolve(self, *, platform: str, event: InboundWebhook) -> WebhookTarget:
         """Turn a webhook event's workspace into the bridge entitled to it."""
         return await self.resolve_by_workspace(
@@ -873,9 +1365,10 @@ class MessagingInstallService:
             self._session_factory, platform, workspace_id
         )
         if tenant_id is None:
-            raise WebhookWorkspaceUnknown(
+            raise WebhookWorkspaceUnowned(
                 f"no tenant has installed Switch into {platform} workspace "
-                f"{workspace_id}"
+                f"{workspace_id}",
+                workspace_id=workspace_id,
             )
 
         async with tenant_session(self._session_factory, tenant_id) as session:
@@ -899,11 +1392,107 @@ class MessagingInstallService:
                 f"bridge {install.bridge_id}, which serves {platform} workspace "
                 f"{workspace_id}, is not running"
             )
+        # Normally attached already, as it started. This covers one that
+        # started before the platform's shared connection was up and that the
+        # walk on connect did not reach. Here rather than at dispatch so a
+        # connection that is not ready is refused while the platform can still
+        # be told to retry.
+        connection = self._installers.get(platform).shared_connection()
+        if connection is not None and isinstance(adapter, SupportsSharedConnection):
+            adapter.attach_shared_connection(connection)
         return WebhookTarget(
             tenant_id=tenant_id,
             platform=platform,
             bridge_id=install.bridge_id,
             adapter=adapter,
+        )
+
+    async def follow_migration(
+        self, *, platform: str, event: InboundWebhook, target: WebhookTarget
+    ) -> None:
+        """Move the install to its workspace's new id, if the event says so.
+
+        After `resolve`, which found the tenant by the old id, and before the
+        event is delivered, whose handler moves the room the same way. Awaited
+        rather than deferred: until the row moves, every event from the new id
+        resolves to nobody and is dropped.
+
+        Messages from the new id that were dropped before this ran are lost;
+        the recently-dropped list is how that is said rather than guessed.
+        """
+        migration = self._installers.get(platform).migration_of_event(event.payload)
+        if migration is None:
+            return
+        old_id, new_id = migration
+        with tenant_scope(target.tenant_id):
+            async with tenant_session(
+                self._session_factory, target.tenant_id
+            ) as session:
+                moved = await self._store.move_workspace(
+                    session,
+                    platform=platform,
+                    from_workspace_id=old_id,
+                    to_workspace_id=new_id,
+                )
+                await session.commit()
+        if moved is None:
+            return
+        logger.info(
+            "The %s install of workspace %s followed it to %s (tenant %s)",
+            platform,
+            old_id,
+            new_id,
+            target.tenant_id,
+        )
+        dropped = self._recent_drops.pop((platform, new_id), None)
+        if dropped is not None:
+            logger.error(
+                "%d %s event(s) from workspace %s were dropped as unowned before "
+                "its install followed it from %s; they are lost",
+                dropped[0],
+                platform,
+                new_id,
+                old_id,
+            )
+
+    def note_unowned(self, *, platform: str, workspace_id: str) -> bool:
+        """Remember an unowned drop, and say whether it is routine here.
+
+        Remembered as an id and a count for a few minutes, so a migration can
+        tell whether it lost anything; see `follow_migration`. Routine or not
+        is the installer's `expects_unowned_events`, and decides whether the
+        route warns or only counts.
+        """
+        now = time.monotonic()
+        while self._recent_drops:
+            _, (_, last_seen) = next(iter(self._recent_drops.items()))
+            if now - last_seen < _RECENT_DROP_TTL:
+                break
+            self._recent_drops.popitem(last=False)
+        key = (platform, workspace_id)
+        count, _ = self._recent_drops.pop(key, (0, now))
+        self._recent_drops[key] = (count + 1, now)
+        if len(self._recent_drops) > _RECENT_DROPS_MAX:
+            self._recent_drops.popitem(last=False)
+        return self._installers.get(platform).expects_unowned_events
+
+    async def unowned(
+        self, *, platform: str, workspace_id: str, event: InboundWebhook
+    ) -> None:
+        """Let the installer answer an unowned event, after the platform has been."""
+
+        async def still_unowned() -> bool:
+            return (
+                await tenant_of_messaging_install(
+                    self._session_factory, platform, workspace_id
+                )
+                is None
+            )
+
+        await self._installers.get(platform).on_unowned_event(
+            workspace_id=workspace_id,
+            payload=event.payload,
+            still_unowned=still_unowned,
         )
 
     async def deliver(self, target: WebhookTarget, event: InboundWebhook) -> None:

@@ -67,6 +67,8 @@ describe('placedOn', () => {
             revokedAt: null,
             providers: [],
             workspacesDir: null,
+            os: null,
+            sealingKey: null,
           },
         ],
         [

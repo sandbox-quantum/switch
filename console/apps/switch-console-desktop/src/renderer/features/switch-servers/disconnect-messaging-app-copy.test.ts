@@ -41,4 +41,17 @@ describe('disconnectMessagingAppParagraphs', () => {
       expect(text).toContain('deletes every Switch room');
     }
   });
+
+  it('says every Telegram chat goes, keeping its room, and then the connection', () => {
+    const text = disconnectMessagingAppParagraphs({
+      bridgeDisplayName: 'Telegram',
+      bridgeType: 'telegram',
+      installState: 'installed',
+    }).join(' ');
+
+    expect(text).toContain('Every chat connected through Telegram is disconnected');
+    expect(text).toContain('internal-only');
+    expect(text).toContain('connection itself is removed');
+    expect(text).not.toContain('deletes every Switch room');
+  });
 });

@@ -1,12 +1,13 @@
-import { Server, ServerOff } from 'lucide-react';
+import { Cloud, CloudOff, Server, ServerOff } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
+import { isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
-import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
-import { isValidProviderId } from '@shared/core/providers/agent-provider-registry';
+import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import { getProvider, isValidProviderId } from '@shared/core/providers/agent-provider-registry';
 import { type AgentPresence, SidebarAgentRow } from '../sidebar/agent-row';
 import {
   type ManagedAgentState,
@@ -24,7 +25,9 @@ export const ManagedAgentList = observer(function ManagedAgentList() {
   const serverId = switchServersStore.activeServerId;
   const agents = useManagedAgents(serverId);
   if (serverId === null) return null;
-  if (agents.error)
+  // A frozen workspace's banner already says why nothing can be listed.
+  const server = switchServersStore.serverById(serverId);
+  if (agents.error && !(server && isFrozenServer(server)))
     return (
       <div role="alert" className="px-3 py-2 text-xs text-foreground-destructive">
         {failureText(agents.error, 'Managed agents could not be listed.')}
@@ -33,12 +36,23 @@ export const ManagedAgentList = observer(function ManagedAgentList() {
   if (!agents.data?.length) return null;
   return (
     <div className="flex flex-col gap-[2px]" aria-label="Managed agents">
-      {agents.data.map((agent) => (
+      {disconnectedLast(agents.data).map((agent) => (
         <ManagedAgentRow key={agent.agentId} agent={agent} />
       ))}
     </div>
   );
 });
+
+/**
+ * The agents in the order the server listed them, with the ones that cannot
+ * run right now — no machine, or a machine that is offline or removed — at the
+ * bottom, where they stay out of the way of the agents that can.
+ */
+export function disconnectedLast(agents: ManagedAgentView[]): ManagedAgentView[] {
+  const disconnected = (agent: ManagedAgentView) =>
+    agent.machine === null || agent.machine.state !== 'online';
+  return [...agents.filter((agent) => !disconnected(agent)), ...agents.filter(disconnected)];
+}
 
 const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: ManagedAgentView }) {
   const { navigate } = useNavigate();
@@ -52,6 +66,7 @@ const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: Ma
     machines.data?.find((machine) => machine.id === agent.machine?.id)?.local?.kind ===
     'this-computer';
   const machineDown = agent.machine !== null && agent.machine.state !== 'online';
+  const providerName = isValidProviderId(provider) ? getProvider(provider)?.name : null;
   return (
     <SidebarAgentRow
       label={label}
@@ -66,12 +81,20 @@ const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: Ma
         tone: PRESENCE_TONE[state.tone],
         label: state.detail ? `${state.label}: ${state.detail}` : state.label,
       }}
-      dimmed={machineDown}
+      dimmed={machineDown || state.tone === 'idle'}
+      showProviderMark={false}
+      title={providerName ? `${label} · ${providerName}` : label}
       marks={
         !thisComputer && (
           <Tooltip>
             <TooltipTrigger>
-              {machineDown || !agent.machine ? (
+              {agent.machine && isCloudMachine(agent.machine) ? (
+                machineDown ? (
+                  <CloudOff className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
+                ) : (
+                  <Cloud className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />
+                )
+              ) : machineDown || !agent.machine ? (
                 <ServerOff className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
               ) : (
                 <Server className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />

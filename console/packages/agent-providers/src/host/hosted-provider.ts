@@ -1,96 +1,54 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, readFile, rename } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { z } from 'zod';
 import { refreshCodexAuthentication } from '../codex/home';
+import { parseVertexLogin, VERTEX_CREDENTIALS_FILE } from '../vertex-login';
 import { importOpenCodeConsole } from './opencode-console';
-import { readSharedCredentials, type SharedHostConfig } from './shared-config';
+import type { HostedCredential } from './provider-login';
+import { replaceFile } from './replace-file';
 
-const credentialSchema = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('revoked') }),
-  z.object({
-    status: z.literal('connected'),
-    revision: z.string(),
-    provider: z.enum(['claude', 'codex', 'cursor', 'opencode', 'antigravity']),
-    kind: z.enum(['api-key', 'setup-token', 'auth-json']),
-    credential: z.string().min(1).max(16384),
-  }),
-]);
-export type HostedCredential = z.infer<typeof credentialSchema>;
+export type { HostedCredential } from './provider-login';
 
-async function hostedOrigin(config: SharedHostConfig): Promise<{ origin: string; token: string }> {
-  const credentials = await readSharedCredentials(config);
-  const url = new URL(credentials.SWITCH_API_ENDPOINT);
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash)
-    throw new Error('Cloud control requires an HTTPS server origin.');
-  return { origin: url.href.replace(/\/$/, ''), token: credentials.SWITCH_API_TOKEN };
-}
+const VERTEX_VARIABLES = [
+  'CLAUDE_CODE_USE_VERTEX',
+  'ANTHROPIC_VERTEX_PROJECT_ID',
+  'CLOUD_ML_REGION',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+];
 
-/** A POST to the agent's `/hosted` routes, authenticated as the agent. */
-export async function hostedRequest(
-  config: SharedHostConfig,
-  path: string,
-  body: unknown
-): Promise<unknown> {
-  const { origin, token } = await hostedOrigin(config);
-  const response = await fetch(`${origin}/hosted${path}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    redirect: 'error',
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new Error(`Cloud control request failed (HTTP ${response.status}).`);
-  }
-  return response.json();
-}
-
-export async function fetchHostedProvider(config: SharedHostConfig): Promise<HostedCredential> {
-  const { origin, token } = await hostedOrigin(config);
-  let response: Response;
-  try {
-    response = await fetch(`${origin}/hosted/provider-credential`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      redirect: 'error',
-      signal: AbortSignal.timeout(30000),
-    });
-  } catch {
-    throw new Error('Cloud provider access could not be checked.');
-  }
-  if (response.status === 403) {
-    await response.body?.cancel();
-    return { status: 'revoked' };
-  }
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new Error(`Cloud provider access check failed (HTTP ${response.status}).`);
-  }
-  const result = credentialSchema.parse(await response.json());
-  if (result.status === 'connected' && result.provider !== config.start.provider)
-    throw new Error('Cloud provider credentials do not match this session.');
-  return result;
-}
-
+/**
+ * Sets the variables `credential` signs in with in `env`, removing the others
+ * a provider could sign in with. For a `vertex` login, `root` is where its
+ * Google credential is written (`materializeHostedProvider`).
+ */
 export function applyHostedProvider(
   env: Record<string, string>,
-  credential: HostedCredential
+  credential: HostedCredential,
+  root: string
 ): void {
   for (const key of [
     'ANTHROPIC_API_KEY',
     'CLAUDE_CODE_OAUTH_TOKEN',
     'OPENAI_API_KEY',
     'CURSOR_API_KEY',
-    'SWITCH_HOSTED_AUTH_JSON',
   ])
     delete env[key];
   if (credential.status === 'revoked')
     throw new Error(
       'The provider was disconnected. Reconnect it in Console before resuming this session.'
     );
+  if (credential.provider === 'claude') for (const key of VERTEX_VARIABLES) delete env[key];
+  if (credential.kind === 'vertex') {
+    if (credential.provider !== 'claude')
+      throw new Error('Only Claude signs in through Vertex AI.');
+    const login = parseVertexLogin(credential.credential);
+    env.CLAUDE_CODE_USE_VERTEX = '1';
+    env.ANTHROPIC_VERTEX_PROJECT_ID = login.project;
+    env.CLOUD_ML_REGION = login.region;
+    env.GOOGLE_APPLICATION_CREDENTIALS = join(root, VERTEX_CREDENTIALS_FILE);
+    return;
+  }
   if (credential.kind === 'auth-json') return;
   if (!/^[\x21-\x7e]+$/.test(credential.credential))
     throw new Error('Provider credential format is invalid.');
@@ -136,7 +94,7 @@ async function writeAuthentication(root: string, relative: string, content: stri
   } finally {
     await file.close();
   }
-  await rename(temporary, path);
+  await replaceFile(temporary, path);
   const record = await open(
     marker,
     constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
@@ -156,8 +114,16 @@ export async function materializeHostedProvider(
   credential: HostedCredential,
   binaryPath: string
 ): Promise<void> {
-  applyHostedProvider(env, credential);
+  applyHostedProvider(env, credential, root);
   if (credential.status !== 'connected') return;
+  if (credential.kind === 'vertex') {
+    await writeAuthentication(
+      root,
+      VERTEX_CREDENTIALS_FILE,
+      JSON.stringify(parseVertexLogin(credential.credential).credentials)
+    );
+    return;
+  }
   if (credential.kind === 'auth-json') {
     try {
       const value = JSON.parse(credential.credential);

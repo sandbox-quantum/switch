@@ -15,6 +15,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from switch_core import messaging_platforms
 from switch_core.sessions.contract import (
     TURN_ENDED,
     ApprovalContent,
@@ -120,17 +121,22 @@ CLOSED = {
     "provider-error": "The provider failed before it was answered.",
 }
 
-# Where the person who answered was, in the words a reader of that platform
-# would use for it.
-SURFACES: dict[Surface, str] = {
+# Where the person who answered was, for the two surfaces that are Switch's
+# own. Every other surface is a messaging platform and is named the way that
+# platform's adapter names itself.
+_SWITCH_SURFACES: dict[str, str] = {
     "console": "the console",
     "switch-web": "Switch",
-    "slack": "Slack",
-    "mattermost": "Mattermost",
-    "discord": "Discord",
-    "teams": "Teams",
-    "telegram": "Telegram",
 }
+
+
+def surface_label(surface: Surface) -> str:
+    """Where the person who answered was, in the words a reader would use."""
+    own = _SWITCH_SURFACES.get(surface)
+    if own is not None:
+        return own
+    return messaging_platforms.display_name(surface)
+
 
 # An approval with nothing to choose from. The same defect as a form with no
 # questions in it (see `unanswerable`) and refused the same way: there is no

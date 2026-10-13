@@ -62,6 +62,11 @@
   },
   "assignment_revision": 0,
   "workspaces_dir": "/home/user/.local/state/switch/agent-controller/workspaces",
+  "public_key": {
+    "alg": "X25519",
+    "key": "bWFjaGluZS1wdWJsaWMta2V5LTMyLWJ5dGVzLi4uLi4=",
+    "key_id": "0123456789abcdef"
+  },
   "created_at": "2026-10-01T12:00:00Z",
   "revoked_at": null
 }

@@ -2,6 +2,7 @@ import { onboardingStore } from '@renderer/features/onboarding/onboarding-store'
 import { showDevTools } from '@renderer/lib/dev-tools';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { Button } from '@renderer/lib/ui/button';
+import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import { SettingRow } from './SettingRow';
 
 /**
@@ -13,7 +14,7 @@ import { SettingRow } from './SettingRow';
  */
 export function ReplayOnboardingRow() {
   const { navigate } = useNavigate();
-  if (!showDevTools()) return null;
+  if (!showDevTools() || !BUILD_FEATURE_FLAGS.onboarding) return null;
   return (
     <SettingRow
       title="Replay first-run pages"

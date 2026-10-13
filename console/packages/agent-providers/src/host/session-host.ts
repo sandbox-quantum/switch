@@ -21,11 +21,13 @@ import type {
 import { z } from 'zod';
 import { ProviderConversationUnavailableError } from '../adapter';
 import type { ProviderAdapter, ProviderSessionStartInput, TurnAttachment } from '../adapter';
-import type { TokenUsage, UserInputAnswers } from '../events';
+import type { TokenUsage, TurnOutcome, UserInputAnswers } from '../events';
 import type { ProviderRuntimeEvent } from '../events';
 import { ChatProjector } from '../session-v1/chat-projector';
 import { ATTACHMENT_MIME_TYPES } from './attachments';
 import { Journal } from './journal';
+import { fitModelCatalog } from './model-catalog';
+import type { Redactions } from './redaction';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
@@ -52,6 +54,8 @@ export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('reset-started') }),
   z.object({ type: z.literal('reset-completed') }),
   z.object({ type: z.literal('model'), id: z.string(), options: z.record(z.string(), z.string()) }),
+  /** The host posts this turn's reply to its room itself: decided once, before posting. */
+  z.object({ type: z.literal('room-reply'), commandId: z.string() }),
 ]);
 type RecordEntry = z.infer<typeof hostInboxRecordSchema>;
 export type HostSessionStart = {
@@ -62,7 +66,16 @@ export type HostSessionStart = {
   epochAuthority?: 'server';
   resetEpoch?: () => Promise<string>;
   stageAttachments?: (attachments: Attachment[]) => Promise<TurnAttachment[]>;
+  /**
+   * Posts to a room as the agent, raising when the post did not land. Absent
+   * where the host has no way to reach the agent's rooms.
+   */
+  replyToRoom?: (reply: RoomReply) => Promise<void>;
+  /** Service tokens to scrub from every event before it is recorded; none when absent. */
+  redactions?: Redactions;
 };
+/** What the host posts for a turn a room message started that ended without the agent posting. */
+export type RoomReply = { roomId: string; threadId: string | null; body: string };
 type PendingQuestion = { request: Request; options: Map<string, string> };
 /**
  * What Switch recorded for a request: for an approval, `answer` is the chosen
@@ -85,6 +98,8 @@ export class HostedSession {
   private readonly commands = new Map<string, Command>();
   private readonly dispatched = new Set<string>();
   private readonly finished = new Set<string>();
+  private readonly roomReplies = new Set<string>();
+  private readonly postedTurns = new Set<string>();
   private readonly usage = new Map<string, TokenUsage[]>();
   private readonly resumeOperations = new Set<string>();
   private readonly queue: Command[] = [];
@@ -158,8 +173,9 @@ export class HostedSession {
       }
       if (record.type === 'reset-completed') this.resetPending = false;
       if (record.type === 'model') config.input.model = { id: record.id, options: record.options };
+      if (record.type === 'room-reply') this.roomReplies.add(record.commandId);
     }
-    this.projector = new ChatProjector(config.session);
+    this.projector = new ChatProjector(config.session, config.redactions ?? null);
     this.unsubscribe = adapter.subscribe((event) => {
       if (event.sessionId !== config.session.sessionId) return;
       // Process cleanup leaves this conversation available for recovery.
@@ -256,7 +272,9 @@ export class HostedSession {
           );
           return host;
         }
-        if (!host.nativeId)
+        // A session whose provider never opened a conversation (its first
+        // start failed) has nothing to resume: it starts one below.
+        if (!host.nativeId && host.providerAnswered())
           throw new Error('Cannot recover a session without its native provider ID.');
         if (config.epochAuthority !== 'server') config.session.epoch = randomUUID();
         const next = host.replica.snapshot();
@@ -406,13 +424,26 @@ export class HostedSession {
           'The provider did not return a model catalog on resume. Showing the last known choices; the provider will validate each change.',
       });
     }
-    this.config.session.models = models;
-    this.config.session.model = this.config.input.model
+    const selected = this.config.input.model
       ? { id: this.config.input.model.id, options: this.config.input.model.options ?? {} }
       : null;
-    this.config.session.capabilities.modelChange = Boolean(models.length && this.adapter.setModel);
+    const fitted = fitModelCatalog(models, selected?.id ?? null);
+    this.config.session.models = fitted.models;
+    this.config.session.model = selected;
+    this.config.session.capabilities.modelChange = Boolean(
+      fitted.models.length && this.adapter.setModel
+    );
     this.updateAttachmentCapabilities();
     await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
+    if (fitted.omitted || fitted.optionsDropped)
+      await this.publish({
+        type: 'notice',
+        level: 'warning',
+        code: 'MODEL_CATALOG_TRUNCATED',
+        message: fitted.omitted
+          ? `The provider offers ${models.length} models, more than a session can list: only ${fitted.models.length} are offered here, without their options. Narrow the providers it is signed in to, or pick a model in its own settings.`
+          : `The provider offers ${models.length} models: they are listed without their options, which would not fit. The selected model keeps its own.`,
+      });
   }
 
   private updateAttachmentCapabilities(): void {
@@ -427,6 +458,11 @@ export class HostedSession {
 
   notice(message: string): Promise<void> {
     return this.publish({ type: 'notice', level: 'error', code: 'ROOM_DELIVERY_FAILED', message });
+  }
+
+  /** A service the session reaches some other way than through Switch: said, not silent. */
+  serviceFallback(message: string): Promise<void> {
+    return this.publish({ type: 'notice', level: 'warning', code: 'SERVICE_FALLBACK', message });
   }
 
   roomDeliveryResumed(): Promise<void> {
@@ -485,6 +521,14 @@ export class HostedSession {
   /** What `turnId` spent, as its provider reported when it ended. */
   usageOf(turnId: string): TokenUsage[] {
     return this.usage.get(turnId) ?? [];
+  }
+
+  /**
+   * The agent posted to a room, through one of the Switch tools: the running
+   * turn has answered, so the host has nothing to post for it.
+   */
+  agentPostedToRoom(): void {
+    if (this.activeTurn) this.postedTurns.add(this.activeTurn);
   }
 
   /** Where the command that started `turnId` came from, if a command started it. */
@@ -942,9 +986,63 @@ export class HostedSession {
         code: 'TURN_FAILED',
         message: String(error),
       });
+      await this.replyIfUnposted(command.commandId, 'error', String(error));
       this.activeTurn = null;
       void this.runNext().catch((error: unknown) => this.fail(error));
     }
+  }
+
+  /**
+   * Answers the room itself when a turn a room message started ended without
+   * the agent posting anywhere — a provider that ended on a quota or sign-in
+   * error, or a model that replied in plain text — since the room would
+   * otherwise hear nothing at all. A turn the host cut short on purpose
+   * (stopping, parking, a reset) is left alone.
+   *
+   * Decided once per turn and recorded before the post, so a restart never
+   * posts it twice. The post runs beside the session; one that fails is
+   * logged and noted in the transcript, and nothing else.
+   */
+  private async replyIfUnposted(
+    turnId: string,
+    outcome: TurnOutcome,
+    detail: string | null
+  ): Promise<void> {
+    const posted = this.postedTurns.delete(turnId);
+    const reply = this.config.replyToRoom;
+    if (!reply || posted || this.shuttingDown || this.stopped || this.resetting) return;
+    if (this.roomReplies.has(turnId)) return;
+    const origin = this.commands.get(turnId)?.origin;
+    if (!origin?.roomId || !origin.messageId) return;
+    const roomId = origin.roomId;
+    const body = unpostedReply(lastAssistantText(this.replica.snapshot(), turnId), outcome, detail);
+    await this.inbox.append({ type: 'room-reply', commandId: turnId });
+    this.roomReplies.add(turnId);
+    void reply({ roomId, threadId: origin.threadId, body })
+      .then(
+        () =>
+          this.publish({
+            type: 'notice',
+            level: 'info',
+            code: 'ROOM_REPLY_POSTED',
+            message: `The turn ended without the agent posting to room ${roomId}, so the host posted there for it.`,
+          }),
+        async (error: unknown) => {
+          const reason = error instanceof Error ? error.message : String(error);
+          console.warn(
+            `Could not tell room ${roomId} that turn ${turnId} ended without a reply: ${reason}`
+          );
+          await this.publish({
+            type: 'notice',
+            level: 'warning',
+            code: 'ROOM_REPLY_FAILED',
+            message: `The turn ended without the agent posting to room ${roomId}, and the host could not post there for it: ${reason}`,
+          });
+        }
+      )
+      .catch((error: unknown) =>
+        console.warn(`Could not record the room reply for turn ${turnId}: ${String(error)}`)
+      );
   }
 
   private async providerEvent(event: ProviderRuntimeEvent): Promise<void> {
@@ -1060,6 +1158,7 @@ export class HostedSession {
     }
     await this.publishAll(this.projector.ingest(event, Date.now()));
     if (event.type === 'turn.completed') {
+      await this.replyIfUnposted(event.turnId, event.outcome, event.message ?? null);
       this.activeTurn = null;
       void this.runNext().catch((error: unknown) => this.fail(error));
     }
@@ -1135,7 +1234,9 @@ export class HostedSession {
         sessionId: this.config.session.sessionId,
         sequence: this.events.records.length + 1,
         occurredAt: new Date().toISOString(),
-        body,
+        // Scrubbed here, once: the journal, Console's view and the activity
+        // rows Switch shows on the bridges are all made from what is recorded.
+        body: this.config.redactions ? this.config.redactions.value(body) : body,
       };
       if (eventBytes(event) > 64 * 1024)
         throw new Error('PAYLOAD_TOO_LARGE: event exceeds 64 KiB.');
@@ -1153,7 +1254,18 @@ export class HostedSession {
     this.fault = error instanceof Error ? error : new Error(String(error));
     this.config.session.status = 'error';
     try {
-      await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
+      try {
+        await this.publish({
+          type: 'session.upsert',
+          session: structuredClone(this.config.session),
+        });
+      } catch (upsertError) {
+        // The failure is recorded even when the session record is what could
+        // not be: without its model catalog it is a few hundred bytes.
+        console.error('SDK host could not record its session:', String(upsertError));
+        const { models: _models, ...session } = structuredClone(this.config.session);
+        await this.publish({ type: 'session.upsert', session });
+      }
       await this.publish({
         type: 'notice',
         level: 'error',
@@ -1175,6 +1287,53 @@ export class HostedSession {
     await this.publishing;
     this.unsubscribe();
   }
+}
+
+/** How much of the agent's last words a room reply carries. */
+const ROOM_REPLY_LIMIT = 4000;
+
+/** The text of the last thing the agent said in `turnId`, trimmed; empty when it said nothing. */
+export function lastAssistantText(snapshot: Snapshot, turnId: string): string {
+  // A long message is published in parts, `<itemId>:part:<n>` after the first.
+  const messages = new Map<string, string[]>();
+  for (const item of snapshot.items) {
+    if (item.turnId !== turnId || item.kind !== 'assistant-message') continue;
+    const part = /^(.*):part:(\d+)$/.exec(item.itemId);
+    const id = part ? part[1]! : item.itemId;
+    const parts = messages.get(id) ?? [];
+    parts[part ? Number(part[2]) : 0] = item.text;
+    messages.set(id, parts);
+  }
+  for (const parts of [...messages.values()].reverse()) {
+    const text = parts.join('').trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+/** What the host posts for a turn that ended without the agent posting. */
+export function unpostedReply(text: string, outcome: TurnOutcome, detail: string | null): string {
+  const reason = detail?.trim() ? `: ${cap(detail.trim(), 1000)}` : '.';
+  const failure =
+    outcome === 'error'
+      ? `The turn failed${reason}`
+      : outcome === 'interrupted'
+        ? `The turn was interrupted${reason}`
+        : null;
+  if (!text)
+    return failure ? `I finished without replying. ${failure}` : 'I finished without replying.';
+  const said = `I finished without posting a reply. My last words were:\n\n${cap(text, ROOM_REPLY_LIMIT)}`;
+  return failure && !(detail && text.includes(detail.trim())) ? `${said}\n\n(${failure})` : said;
+}
+
+function cap(text: string, limit: number): string {
+  const characters = Array.from(text);
+  return characters.length <= limit
+    ? text
+    : `${characters
+        .slice(0, limit - 1)
+        .join('')
+        .trimEnd()}…`;
 }
 
 type QuestionsContent = Extract<Request['content'], { kind: 'questions' }>;

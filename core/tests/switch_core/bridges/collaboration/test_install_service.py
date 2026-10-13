@@ -64,6 +64,7 @@ from switch_core.db.stores.messaging_install_store import (
     MessagingInstallStateError,
     MessagingInstallStore,
 )
+from switch_core.db.stores.user_store import UserStore
 from switch_core.keys import Keyring
 from tests.conftest import RLSHarness
 
@@ -156,6 +157,15 @@ class _FakeInstaller(MessagingAppInstaller):
 
     def connection_config(self, grant: InstallGrant) -> dict[str, object]:
         return {"bot_token": grant.bot_token, "workspace_id": grant.workspace_name}
+
+
+class _NoRooms:
+    """A Slack bridge has one install, so an ending never detaches one room."""
+
+    async def unlink_bridge_channel(
+        self, bridge_id: str, external_channel_id: str
+    ) -> None:
+        raise AssertionError("a one-install bridge is removed, not detached")
 
 
 class _FakeLifecycle:
@@ -286,6 +296,8 @@ async def _fixture(harness: RLSHarness, *, tokenless: bool = False) -> _Fixture:
         receipts=MessagingEventReceiptStore(),
         installers=installers,
         lifecycle=fixture.lifecycle,  # type: ignore[arg-type]
+        users=UserStore(),
+        rooms=_NoRooms(),
         public_origin=_ORIGIN,
         keyring=_KEYRING,
     )

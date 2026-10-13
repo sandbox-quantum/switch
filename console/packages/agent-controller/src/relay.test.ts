@@ -157,7 +157,6 @@ function host(overrides: Partial<SwitchEventStreamDeps> = {}, as = token) {
   const stream: AgentEventStream = openHubStream(relay.hubUrl)({
     creds: { agentId: AGENT, apiEndpoint: relay.endpoint, token: as },
     connectionId: 'host-connection',
-    worker: null,
     scope: 'all',
     filter: 'addressed',
     rooms: [],
@@ -518,7 +517,6 @@ describe('forwarding to Switch', () => {
       .open('agent-2', {
         creds: { agentId: 'agent-2', apiEndpoint: '', token: '' },
         connectionId: 'in-process',
-        worker: null,
         scope: 'all',
         filter: 'addressed',
         rooms: [],

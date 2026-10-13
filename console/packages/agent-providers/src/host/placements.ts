@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { open, readFile, rename, unlink } from 'node:fs/promises';
+import { open, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { replaceFile } from './replace-file';
 
 export const PLACEMENTS_FILE = 'placements.json';
 
@@ -169,7 +170,7 @@ export class SessionPlacements {
         await file.close();
       }
       try {
-        await rename(temporary, this.path);
+        await replaceFile(temporary, this.path);
       } catch (error) {
         await unlink(temporary).catch(() => {});
         throw error;

@@ -1,8 +1,23 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, copyFile, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse, stringify } from 'smol-toml';
 import { linkHomeAsset, linkSkills, optionalText } from '../host/provider-home';
+import { replaceFile } from '../host/replace-file';
+
+/**
+ * A managed agent's Codex configuration with the sandbox its sessions run
+ * in: Codex's default is read-only, which on a machine with no Codex
+ * configuration of its own leaves an agent unable to write in its own
+ * directory. An agent that bypasses permissions gets full access, any other
+ * may write in its workspace; a `sandbox_mode` the configuration already
+ * names is kept.
+ */
+export function withManagedCodexSandbox(config: string, autoApprove: boolean): string {
+  if ('sandbox_mode' in parse(config)) return config;
+  const mode = autoApprove ? 'danger-full-access' : 'workspace-write';
+  return `sandbox_mode = "${mode}"\n${config}`;
+}
 
 /** Native rollouts remain in the persistent session directory on the execution host. */
 export async function prepareCodexSessionHome(input: {
@@ -10,19 +25,12 @@ export async function prepareCodexSessionHome(input: {
   sessionId: string;
   sourceHome: string;
   config: string;
-  /**
-   * `refresh` replaces the session's login whenever the source login changes
-   * (a hosted worker, whose owner can reconnect the provider); `copy-once`
-   * keeps whatever the session refreshed after its first copy.
-   */
-  auth: 'copy-once' | 'refresh';
 }): Promise<string> {
   const key = createHash('sha256').update(input.sessionId).digest('hex');
   const home = join(input.root, key);
   await mkdir(home, { recursive: true, mode: 0o700 });
   await chmod(home, 0o700);
-  if (input.auth === 'refresh') await refreshCodexAuthentication(home, input.sourceHome);
-  else await copyCodexAuthenticationOnce(home, input.sourceHome);
+  await copyCodexAuthenticationOnce(home, input.sourceHome);
   const sourceConfig = await optionalText(join(input.sourceHome, 'config.toml'));
   const config = { ...(sourceConfig ? parse(sourceConfig) : {}), ...parse(input.config) };
   // The session host registers its own `switch` server; an entry of that name
@@ -64,7 +72,7 @@ async function replacePrivateFile(path: string, value: string): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, value, { mode: 0o600, flag: 'wx' });
-    await rename(temporary, path);
+    await replaceFile(temporary, path);
   } finally {
     await rm(temporary, { force: true });
   }

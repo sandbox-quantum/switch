@@ -13,10 +13,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { type OpenAgentStream, readSharedCredentials } from '@switch-console/agent-providers';
+import {
+  SERVICE_ACCOUNT_KEY_FIXTURE,
+  vertexCredentialFixture,
+} from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { dataLayout } from './paths';
-import { InProcessRuntime, isInside, observeOnDisk } from './runtime';
+import { InProcessRuntime, isInside, loginProbeEnvironment, observeOnDisk } from './runtime';
 import { buildWatcherTemplate } from './template';
 
 /** Stands in for the shared-host bundle: answers `--probe`. Sessions are never started here. */
@@ -32,6 +36,7 @@ const RELAY = {
   endpoint: 'http://127.0.0.1:43210',
   token: 'swlr_relay-token-placeholder',
   hub: 'ws://127.0.0.1:43210/hub',
+  providerLogin: null,
 };
 const LAUNCH = {
   isolation: 'shared' as const,
@@ -63,7 +68,6 @@ function openStream(agentId: string): OpenAgentStream {
       start: () => {},
       setSpawnCapable: () => {},
       replacePlacements: async () => {},
-      workerCall: () => Promise.reject(new Error('not a worker')),
     };
   };
 }
@@ -122,9 +126,11 @@ function template(cwd = '/work/scout', provider: 'claude' | 'codex' = 'claude') 
 
 /** A process whose command line names the watcher root, as a detached watcher's does. */
 async function fakeWatcher(root: string): Promise<ChildProcess> {
-  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', root], {
-    stdio: 'ignore',
-  });
+  // Stops as an agent host does: on SIGTERM, or on Windows when its stop file appears.
+  const script = `const { existsSync } = require('node:fs');
+    const stop = require('node:path').join(process.argv[1], '.stop-' + process.pid);
+    setInterval(() => { if (existsSync(stop)) process.exit(0); }, 100);`;
+  const child = spawn(process.execPath, ['-e', script, root], { stdio: 'ignore' });
   children.push(child);
   await once(child, 'spawn');
   return child;
@@ -135,8 +141,9 @@ describe('InProcessRuntime', () => {
     await runtime.writeCredentials('agent-1', RELAY);
     const path = runtime.credentialsPath('agent-1');
     expect(path).toBe(join(dir, 'data', 'agents', 'agent-1', 'credentials.json'));
-    expect(statSync(path).mode & 0o777).toBe(0o600);
-    expect(statSync(join(dir, 'data', 'agents', 'agent-1')).mode & 0o777).toBe(0o700);
+    if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32')
+      expect(statSync(join(dir, 'data', 'agents', 'agent-1')).mode & 0o777).toBe(0o700);
     expect(await readSharedCredentials(template())).toEqual({
       SWITCH_API_ENDPOINT: 'http://127.0.0.1:43210',
       SWITCH_API_TOKEN: 'swlr_relay-token-placeholder',
@@ -256,7 +263,7 @@ describe('InProcessRuntime', () => {
   });
 
   it('probes a provider through the bundle', async () => {
-    const readiness = await runtime.probe('claude', '/usr/bin/claude', '/tmp');
+    const readiness = await runtime.probe('claude', '/usr/bin/claude', '/tmp', null);
     expect(readiness).toEqual({
       status: 'authenticated',
       message: '--probe claude /tmp /usr/bin/claude',
@@ -264,35 +271,63 @@ describe('InProcessRuntime', () => {
     });
   });
 
+  it('probes a Vertex AI login with its Google credential written in a directory of its own', async () => {
+    const checkDir = join(dir, 'login-check', 'claude');
+    const env = await loginProbeEnvironment(
+      checkDir,
+      {
+        status: 'connected',
+        provider: 'claude',
+        revision: '1',
+        kind: 'vertex',
+        credential: vertexCredentialFixture(),
+      },
+      '/usr/bin/claude'
+    );
+    const path = join(checkDir, 'provider-home', 'google-credentials.json');
+    expect(env).toEqual({
+      CLAUDE_CODE_USE_VERTEX: '1',
+      ANTHROPIC_VERTEX_PROJECT_ID: 'cg-vertexai',
+      CLOUD_ML_REGION: 'global',
+      GOOGLE_APPLICATION_CREDENTIALS: path,
+    });
+    if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(SERVICE_ACCOUNT_KEY_FIXTURE);
+  });
+
   it('resolves working directories', async () => {
-    expect(await runtime.workingDirectory('scout', null)).toBe(
+    expect(await runtime.workingDirectory('agent-1', 'scout', null)).toBe(
       join(dir, 'data', 'workspaces', 'scout')
     );
     expect(statSync(join(dir, 'data', 'workspaces', 'scout')).isDirectory()).toBe(true);
-    expect(await runtime.workingDirectory('scout', dir)).toBe(dir);
-    await expect(runtime.workingDirectory('scout', 'relative/dir')).rejects.toMatchObject({
+    expect(await runtime.workingDirectory('agent-1', 'scout', dir)).toBe(dir);
+    await expect(
+      runtime.workingDirectory('agent-1', 'scout', 'relative/dir')
+    ).rejects.toMatchObject({
       reason: 'definition_invalid',
     });
-    await expect(runtime.workingDirectory('scout', join(dir, 'missing'))).rejects.toMatchObject({
+    await expect(
+      runtime.workingDirectory('agent-1', 'scout', join(dir, 'missing'))
+    ).rejects.toMatchObject({
       reason: 'definition_invalid',
     });
-    await expect(runtime.workingDirectory('scout', bundle)).rejects.toMatchObject({
+    await expect(runtime.workingDirectory('agent-1', 'scout', bundle)).rejects.toMatchObject({
       reason: 'definition_invalid',
     });
   });
 
   it('makes a missing directory inside the workspaces directory, and only there', async () => {
     const named = join(dir, 'data', 'workspaces', 'chosen', 'nested');
-    expect(await runtime.workingDirectory('scout', named)).toBe(named);
+    expect(await runtime.workingDirectory('agent-1', 'scout', named)).toBe(named);
     expect(statSync(named).isDirectory()).toBe(true);
     const escaping = join(dir, 'data', 'workspaces', '..', 'outside');
-    await expect(runtime.workingDirectory('scout', escaping)).rejects.toMatchObject({
+    await expect(runtime.workingDirectory('agent-1', 'scout', escaping)).rejects.toMatchObject({
       reason: 'definition_invalid',
     });
     expect(existsSync(join(dir, 'data', 'outside'))).toBe(false);
-    await expect(runtime.workingDirectory('scout', join(dir, 'data', 'workspaces'))).resolves.toBe(
-      join(dir, 'data', 'workspaces')
-    );
+    await expect(
+      runtime.workingDirectory('agent-1', 'scout', join(dir, 'data', 'workspaces'))
+    ).resolves.toBe(join(dir, 'data', 'workspaces'));
   });
 });
 

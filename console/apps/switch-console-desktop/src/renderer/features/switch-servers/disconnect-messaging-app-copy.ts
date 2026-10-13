@@ -15,6 +15,10 @@ import type { BridgeInstallState } from '@shared/core/switch-servers/switch-serv
  * organisation and leaves its teams, while removing the app from the
  * organisation entirely stays a Microsoft admin's job.
  *
+ * A Switch Telegram app connection holds many chats, each an install of its
+ * own; disconnecting it ends every chat, keeping each chat's room, and then
+ * removes the connection.
+ *
  * Until the install state is known, the strongest warning is shown: saying
  * rooms are kept when they are about to be deleted is the mistake that cannot
  * be taken back.
@@ -27,6 +31,12 @@ export function disconnectMessagingAppParagraphs(params: {
   const { bridgeDisplayName, bridgeType, installState } = params;
   if (installState === 'installed') {
     const kept = `The Switch rooms bridged to ${bridgeDisplayName} are not deleted — they become internal-only, reachable only from inside Switch.`;
+    if (bridgeType === 'telegram') {
+      return [
+        `Every chat connected through ${bridgeDisplayName} is disconnected: the bot leaves each one, and each chat’s Switch room is kept as an internal-only room, reachable only from inside Switch. Then the connection itself is removed, which turns Telegram off for this workspace.`,
+        'To stop a single chat instead, disconnect it from the list of chats under this connection.',
+      ];
+    }
     if (bridgeType === 'teams') {
       return [
         `Switch stops listening in this Microsoft organisation and leaves every team it was added to. ${kept}`,

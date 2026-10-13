@@ -26,9 +26,14 @@ import {
   type EmbeddedControllerDeps,
   EmbeddedControllerService,
   type ManagementPort,
-  WINDOWS_UNSUPPORTED,
+  unsupportedPlatformReason,
 } from './embedded-controller-service';
-import { fakeSpawn, type SpawnCall, waitFor } from './test-helpers/fake-controller-child';
+import {
+  fakeSpawn,
+  type SpawnCall,
+  STOP_REQUEST,
+  waitFor,
+} from './test-helpers/fake-controller-child';
 
 const CREDENTIAL = 'swcc_credential-placeholder-value';
 const SERVER = 'server-1';
@@ -346,7 +351,7 @@ describe('EmbeddedControllerService', () => {
     const running = await enabled();
     leaveControllerState();
     await running.disable(SERVER);
-    expect(calls[0]!.child.signals).toEqual(['SIGTERM']);
+    expect(calls[0]!.child.signals).toEqual([STOP_REQUEST]);
     expect(readFileSync(join(dataDir(), 'watchers', 'agent-1', 'watch.json'), 'utf8')).toBe(
       '{"enabled":false,"spawn":false}'
     );
@@ -442,11 +447,20 @@ describe('EmbeddedControllerService', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('refuses on Windows, where the controller cannot run', async () => {
-    const windows = service({ platform: 'win32' });
-    await expect(windows.enable(SERVER, WORKSPACE)).rejects.toThrow(WINDOWS_UNSUPPORTED);
-    expect((await windows.overview(SERVER, WORKSPACE)).unsupportedReason).toBe(WINDOWS_UNSUPPORTED);
+  it('refuses on a platform the controller does not run on', async () => {
+    const reason = unsupportedPlatformReason('freebsd');
+    expect(reason).toContain('freebsd');
+    const other = service({ platform: 'freebsd' });
+    await expect(other.enable(SERVER, WORKSPACE)).rejects.toThrow(reason!);
+    expect((await other.overview(SERVER, WORKSPACE)).unsupportedReason).toBe(reason);
     expect(management.enroll).not.toHaveBeenCalled();
+  });
+
+  it('runs on Windows', async () => {
+    expect(unsupportedPlatformReason('win32')).toBeNull();
+    expect(
+      (await service({ platform: 'win32' }).overview(SERVER, WORKSPACE)).unsupportedReason
+    ).toBeNull();
   });
 
   it('starts the enrolled controllers at launch, and reports a credential it cannot find', async () => {
@@ -471,7 +485,7 @@ describe('EmbeddedControllerService', () => {
   it('stops its controllers at quit with SIGTERM and does not start them again', async () => {
     const running = await enabled();
     await running.dispose();
-    expect(calls[0]!.child.signals).toEqual(['SIGTERM']);
+    expect(calls[0]!.child.signals).toEqual([STOP_REQUEST]);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(calls).toHaveLength(1);
   });
@@ -511,7 +525,7 @@ describe('EmbeddedControllerService', () => {
     const running = await enabled();
     management.revoke.mockRejectedValue(new Error('Not signed in to this Switch server.'));
     await running.forgetServer(SERVER);
-    expect(calls[0]!.child.signals).toEqual(['SIGTERM']);
+    expect(calls[0]!.child.signals).toEqual([STOP_REQUEST]);
     expect(secrets.size).toBe(0);
     expect((await running.overview(SERVER, null)).enrollment).toBeNull();
   });
@@ -519,7 +533,7 @@ describe('EmbeddedControllerService', () => {
     const running = await enabled();
     apiUrl = 'https://moved.example.com';
     await running.followServerApiUrl(SERVER);
-    expect(calls[0]!.child.signals).toEqual(['SIGTERM']);
+    expect(calls[0]!.child.signals).toEqual([STOP_REQUEST]);
     await waitFor(() => calls.length === 2, 'the restart at the new URL');
     expect(serverArg(calls[1]!)).toBe('https://moved.example.com');
     await waitFor(() => calls[1]!.child.received === CREDENTIAL, 'the credential again');

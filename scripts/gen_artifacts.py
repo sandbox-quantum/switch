@@ -74,6 +74,8 @@ class Artifact:
     #: Where it lands on the registry, for anything we publish.
     published_as: str | None
     pins: dict[str, str]
+    #: What a canary build pins instead, where it differs. Never older than `pins`.
+    canary_pins: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -110,11 +112,24 @@ def load_registry() -> Registry:
     artifacts = _resolve_inherited_versions(artifacts)
     known = {artifact.name for artifact in artifacts}
     for artifact in artifacts:
-        for pinned in artifact.pins:
+        for pinned in [*artifact.pins, *artifact.canary_pins]:
             if pinned not in known:
                 raise ValueError(
                     f"artifact {artifact.name!r} pins {pinned!r}, which is not "
                     "an artifact in this registry"
+                )
+        for pinned, canary in artifact.canary_pins.items():
+            stable = artifact.pins.get(pinned)
+            if stable is None:
+                raise ValueError(
+                    f"artifact {artifact.name!r} has a canary pin of {pinned!r} "
+                    "but no stable one to fall back to"
+                )
+            if _semver_key(canary) < _semver_key(stable):
+                raise ValueError(
+                    f"artifact {artifact.name!r}: canary pin of {pinned!r} ({canary}) "
+                    f"is older than its stable pin ({stable}); a canary must never "
+                    "run an older release than stable"
                 )
 
     contracts = [_parse_contract(name, body) for name, body in raw["contracts"].items()]
@@ -201,17 +216,8 @@ def _parse_artifact(name: str, body: object) -> Artifact:
     if published_as is not None and not isinstance(published_as, str):
         raise ValueError(f"artifact {name!r}: published_as must be a string")
 
-    pins_raw = body.get("pins") or {}
-    if not isinstance(pins_raw, dict):
-        raise ValueError(f"artifact {name!r}: pins must be a mapping")
-    pins: dict[str, str] = {}
-    for pinned, pinned_version in pins_raw.items():
-        if not isinstance(pinned_version, str) or not SEMVER.fullmatch(pinned_version):
-            raise ValueError(
-                f"artifact {name!r}: pin of {pinned!r} must be three-part semver, "
-                f"got {pinned_version!r}"
-            )
-        pins[pinned] = pinned_version
+    pins = _parse_pins(name, body, "pins")
+    canary_pins = _parse_pins(name, body, "canary_pins")
 
     return Artifact(
         name=name,
@@ -221,7 +227,38 @@ def _parse_artifact(name: str, body: object) -> Artifact:
         version_from=version_from,
         published_as=published_as,
         pins=pins,
+        canary_pins=canary_pins,
     )
+
+
+def _parse_pins(name: str, body: dict[str, Any], key: str) -> dict[str, str]:
+    raw = body.get(key) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"artifact {name!r}: {key} must be a mapping")
+    pins: dict[str, str] = {}
+    for pinned, pinned_version in raw.items():
+        if not isinstance(pinned_version, str) or not SEMVER.fullmatch(pinned_version):
+            raise ValueError(
+                f"artifact {name!r}: {key} entry for {pinned!r} must be three-part "
+                f"semver, got {pinned_version!r}"
+            )
+        pins[pinned] = pinned_version
+    return pins
+
+
+def _semver_key(
+    version: str,
+) -> tuple[int, int, int, int, tuple[tuple[int, int | str], ...]]:
+    """Orders versions as semver does: a pre-release sorts before its release,
+    and numeric pre-release identifiers compare as numbers."""
+    core, _, rest = version.partition("+")[0].partition("-")
+    major, minor, patch = (int(part) for part in core.split("."))
+    if not rest:
+        return (major, minor, patch, 1, ())
+    identifiers = tuple(
+        (0, int(part)) if part.isdigit() else (1, part) for part in rest.split(".")
+    )
+    return (major, minor, patch, 0, identifiers)
 
 
 def _parse_contract(name: str, body: object) -> Contract:
@@ -282,13 +319,18 @@ def read_declared_version(relative_path: str) -> str:
 LITERAL_CHECKS: list[tuple[str, str, str]] = [
     (
         "console/apps/switch-console-desktop/src/shared/app-identity.ts",
-        "COMPATIBLE_SWITCH_VERSION",
+        "STABLE_SWITCH_VERSION",
         "switch-console.pins.switch-core",
+    ),
+    (
+        "console/apps/switch-console-desktop/src/shared/app-identity.ts",
+        "CANARY_SWITCH_VERSION",
+        "switch-console.canary_pins.switch-core",
     ),
     (
         "console/apps/switch-console-desktop/src/shared/app-identity.canary.ts",
         "COMPATIBLE_SWITCH_VERSION",
-        "switch-console.pins.switch-core",
+        "switch-console.canary_pins.switch-core",
     ),
 ]
 
@@ -497,8 +539,11 @@ def check_declared_versions(registry: Registry) -> list[str]:
 
     by_name = {artifact.name: artifact for artifact in registry.artifacts}
     for relative_path, constant, source in LITERAL_CHECKS:
-        owner, _, pinned = source.partition(".pins.")
-        expected = by_name[owner].pins[pinned]
+        owner, kind, pinned = source.split(".")
+        artifact = by_name[owner]
+        expected = (artifact.canary_pins if kind == "canary_pins" else artifact.pins)[
+            pinned
+        ]
         try:
             actual = read_ts_literal(relative_path, constant)
         except ValueError as exc:

@@ -71,6 +71,9 @@ function bridge(patch: Partial<RemoteBridge> = {}): RemoteBridge {
     directorySearchSupported: true,
     attention: null,
     teamPlacementSupported: false,
+    channelIdsRefused: null,
+    receivesWebhooks: false,
+    webhookUrl: null,
     ...patch,
   };
 }
@@ -90,6 +93,7 @@ function row(
     bridge?: RemoteBridge;
     identities?: LinkedIdentity[] | null;
     isAdmin?: boolean;
+    onConnectChat?: (() => void) | null;
     onDisconnect?: () => void;
   } = {}
 ) {
@@ -105,6 +109,7 @@ function row(
       isAdmin={overrides.isAdmin ?? false}
       savingChannelCreation={false}
       onToggleChannelCreation={() => {}}
+      onConnectChat={overrides.onConnectChat ?? null}
       onDisconnect={overrides.onDisconnect ?? (() => {})}
     />
   );
@@ -191,6 +196,32 @@ describe('the app name and its badges', () => {
 });
 
 describe('the row menu', () => {
+  it('offers the webhook address of a connection that receives events on one', async () => {
+    const el = await render(
+      row({
+        bridge: bridge({
+          receivesWebhooks: true,
+          webhookUrl: 'https://switch.example/messaging/bridges/b-1/events',
+        }),
+      })
+    );
+
+    expect(await openMenu(el)).toContain('Copy webhook address');
+  });
+
+  it('says what is missing when the server has no public address to give', async () => {
+    const el = await render(row({ bridge: bridge({ receivesWebhooks: true, webhookUrl: null }) }));
+
+    await openMenu(el);
+    expect(document.body.textContent).toContain('MESSAGING_PUBLIC_URL');
+  });
+
+  it('offers no webhook address for a connection that dials out', async () => {
+    const el = await render(row());
+
+    expect(await openMenu(el)).not.toContain('Copy webhook address');
+  });
+
   it('is where unlinking lives, and only when there is a link to undo', async () => {
     const el = await render(row({ identities: [IDENTITY] }));
 
@@ -241,6 +272,26 @@ describe('the row menu', () => {
     await act(async () => item!.click());
 
     expect(onDisconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers connecting a chat, to a member too, where the card allows it', async () => {
+    const onConnectChat = vi.fn();
+    const telegram = bridge({ id: 'b-tg', type: 'telegram', displayName: 'Telegram' });
+    const el = await render(row({ bridge: telegram, isAdmin: false, onConnectChat }));
+    expect(await openMenu(el)).toContain('Add to Telegram…');
+
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (i) => i.textContent?.trim() === 'Add to Telegram…'
+    );
+    await act(async () => item!.click());
+
+    expect(onConnectChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers no chat to connect otherwise', async () => {
+    const el = await render(row({ isAdmin: true }));
+
+    expect(await openMenu(el)).not.toContain('Add to Slack…');
   });
 });
 

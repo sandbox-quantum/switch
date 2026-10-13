@@ -14,29 +14,27 @@ function gatewayError(status: number, detail: string): RpcError {
 const FALLBACK = 'Local dev could not create it.';
 
 describe('creating a workspace, when it fails', () => {
-  /**
-   * The gateway's own words are `Slug already taken: acme-robotics` — no
-   * terminal punctuation, so the shared description does not read it as a
-   * sentence and shows it as diagnostics instead. What reached the user was a
-   * status code and a slug they never typed, for the one refusal that is
-   * entirely about what they did type.
-   */
-  it('blames the name for a name conflict, and says nothing about slugs', () => {
+  // A conflict is a deployment that keeps to one workspace, or a create racing
+  // another — never the name, which may repeat. Telling the user to rename sent
+  // them round in circles on a server that would refuse every name.
+  it('says what the server said for a conflict, not that the name is taken', () => {
     const text = createWorkspaceFailureText(
-      gatewayError(409, 'Slug already taken: acme-robotics'),
+      gatewayError(
+        409,
+        'This server is not isolating tenants: it runs only because DB_REQUIRE_RESTRICTED_ROLE is false, which allows a single workspace.'
+      ),
       'Local dev',
       FALLBACK
     );
 
-    expect(text).toContain('already goes by that name');
-    expect(text).toContain('Local dev');
-    expect(text).not.toContain('acme-robotics');
+    expect(text).toContain('Local dev could not create it');
+    expect(text).toContain('allows a single workspace');
+    expect(text).not.toContain('already goes by that name');
     expect(text).not.toContain('409');
   });
 
-  // The whole point of the rewrite is that the name is at fault. Saying so over
-  // an expired session sends the user to rename a workspace when what they have
-  // to do is sign in.
+  // Only the conflict is the server's own sentence; an expired session still
+  // says to sign in again.
   it('leaves every other gateway refusal to the shared description', () => {
     const expired = new RpcError({
       __switchConsoleRpcError: true,

@@ -228,6 +228,7 @@ export type ServiceState = 'running' | 'stopped' | 'not-installed';
 
 /** Whether the service for this data directory is installed, and running. */
 export async function serviceState(dataDir: string, run: CommandRunner): Promise<ServiceState> {
+  if (process.platform === 'win32') return 'not-installed';
   const identity = serviceIdentity(dataDir);
   const paths = servicePaths(identity, dataDir);
   try {

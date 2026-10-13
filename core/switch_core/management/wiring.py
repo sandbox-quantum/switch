@@ -1,6 +1,6 @@
 """Building the management module and attaching it to the two apps.
 
-`create_management` returns None when `AGENT_MANAGEMENT_ENABLED` is off, and
+`create_management` returns None when the `agent_management` feature flag is off, and
 with None nothing is mounted and the bearer middleware has no controller
 branch. When it is on, the authenticator goes to the middleware as the agent
 bridge app is built, `install` adds the routes once both apps exist, and
@@ -43,6 +43,7 @@ from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
+from switch_core.gateway.cloud_controllers import set_cloud_enrollment
 from switch_core.management.agent_operations import ManagementAgentOperations
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.bindings import load_bindings
@@ -159,6 +160,8 @@ def build_management(
         presence=presence,
         clock=clock,
     )
+    # Switch cloud machines that run the controller enroll with codes it mints.
+    set_cloud_enrollment(service)
     authenticator = ManagementAuthenticator(
         session_factory=session_factory,
         controllers=controllers,
@@ -191,7 +194,7 @@ def create_management(
         return None
     if config.controller_token_secret is None:
         raise RuntimeError(
-            "AGENT_MANAGEMENT_ENABLED is set without CONTROLLER_TOKEN_SECRET; the "
+            "The agent_management feature flag is on without CONTROLLER_TOKEN_SECRET; the "
             "config validator should have refused this"
         )
     return build_management(

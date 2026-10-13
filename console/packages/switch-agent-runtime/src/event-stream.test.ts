@@ -1,10 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EVICTION_CREDENTIALS_REJECTED,
-  EVICTION_LAUNCH_SUPERSEDED,
   EVICTION_TAKEN_OVER,
   SwitchEventStream,
-  WORKER_CAPABILITY_OBSOLETE,
   type Eviction,
   type SwitchEventStreamDeps,
 } from './event-stream';
@@ -214,7 +212,6 @@ function makeStream(
     onEvent: () => {},
     onGap: () => {},
     onEvicted: () => {},
-    worker: null,
     log,
     signal: abort.signal,
     ...deps,
@@ -1291,104 +1288,6 @@ describe('placements', () => {
     try {
       await expect(stream.replacePlacements({ session: 'room' })).rejects.toThrow('409');
       expect(evicted.map((eviction) => eviction.code)).toEqual([EVICTION_TAKEN_OVER]);
-    } finally {
-      abort.abort();
-    }
-  });
-});
-
-describe('a hosted worker over the socket', () => {
-  const worker = { capability: 'cap-1', bootId: 'boot-1', instanceId: 'i-1', stateVersion: 1 };
-
-  it('states its capability and host on the socket it opens', async () => {
-    const { abort } = makeStream({ rooms: [], worker });
-    await flush();
-    expect(server.sockets[0]?.headers).toEqual({
-      Authorization: 'Bearer tok',
-      'X-Switch-Worker-Capability': 'cap-1',
-      'X-Switch-Host-Boot-Id': 'boot-1',
-      'X-Switch-Host-Instance-Id': 'i-1',
-      'X-Switch-Worker-State-Version': '1',
-    });
-    abort.abort();
-  });
-
-  it('sends no worker headers when it is not a worker', async () => {
-    const { abort } = makeStream({ rooms: [] });
-    await flush();
-    expect(server.sockets[0]?.headers).toEqual({ Authorization: 'Bearer tok' });
-    abort.abort();
-  });
-
-  it.each([
-    [403, WORKER_CAPABILITY_OBSOLETE],
-    [403, 'worker_capability_required'],
-    [426, 'upgrade_required'],
-    [403, 'hosted_worker_only'],
-  ])('stops for good on a %i %s refusal, and does not try the stream', async (status, code) => {
-    vi.useFakeTimers();
-    serve((socket) => socket.refuse(status, { code, message: code }));
-    const evicted: Eviction[] = [];
-    const { abort, fetchMock } = makeStream({
-      rooms: [],
-      worker,
-      onEvicted: (e) => evicted.push(e),
-    });
-    await vi.advanceTimersByTimeAsync(5 * 60_000);
-    expect(server.sockets).toHaveLength(1);
-    expect(postsTo(fetchMock, '/events')).toEqual([]);
-    expect(evicted.map((e) => e.code)).toEqual([code]);
-    abort.abort();
-  });
-
-  it('backs off and retries while another worker is attached', async () => {
-    vi.useFakeTimers();
-    serve((socket) => socket.refuse(409, { code: 'worker_already_attached', message: 'attached' }));
-    const evicted: Eviction[] = [];
-    const { abort } = makeStream({ rooms: [], worker, onEvicted: (e) => evicted.push(e) });
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(server.sockets.length).toBeGreaterThan(1);
-    expect(server.sockets.length).toBeLessThan(6);
-    expect(evicted).toEqual([]);
-    abort.abort();
-  });
-
-  it('halts on a launch_superseded eviction', async () => {
-    vi.useFakeTimers();
-    serve((socket) => {
-      attach(socket, 0);
-      socket.frame('evicted', { code: 'launch_superseded', reason: 'bumped', room_id: null });
-      socket.drop();
-    });
-    const evicted: Eviction[] = [];
-    const { abort } = makeStream({ rooms: [], worker, onEvicted: (e) => evicted.push(e) });
-    await vi.advanceTimersByTimeAsync(5 * 60_000);
-    expect(server.sockets).toHaveLength(1);
-    expect(evicted.map((e) => e.code)).toEqual([EVICTION_LAUNCH_SUPERSEDED]);
-    abort.abort();
-  });
-
-  it('hands worker frames over in order and not as room events', async () => {
-    serve((socket) => {
-      attach(socket, 0);
-      socket.frame('worker_attached', { launch_revision: 3 });
-      socket.frame('operation', { id: 'op-1' });
-    });
-    const frames: [string, unknown][] = [];
-    const onEvent = vi.fn();
-    const { abort } = makeStream({
-      rooms: [],
-      worker,
-      onEvent,
-      onWorkerFrame: (name, data) => void frames.push([name, data]),
-    });
-    try {
-      await vi.waitFor(() => expect(frames).toHaveLength(2));
-      expect(frames).toEqual([
-        ['worker_attached', { launch_revision: 3 }],
-        ['operation', { id: 'op-1' }],
-      ]);
-      expect(onEvent).not.toHaveBeenCalled();
     } finally {
       abort.abort();
     }

@@ -57,7 +57,7 @@ from switch_core.gateway.auth import (
 )
 from switch_core.gateway.auth_routes import router as auth_router
 from switch_core.gateway.collaborations import router as bridges_router
-from switch_core.gateway.hosted_launches import hosted_settings
+from switch_core.gateway.hosted_machines import hosted_settings
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.keys import Keyring
 from switch_core.room_service import RoomService
@@ -147,6 +147,9 @@ class _Adapter:
         self._calls.record("platform channel deeplink")
         return None
 
+    def channel_ids_refused(self) -> str | None:
+        return None
+
 
 class _CollabLifecycle:
     def __init__(self, calls: _Calls) -> None:
@@ -169,6 +172,12 @@ class _CollabLifecycle:
 
     def supports_directory_search(self, bridge_type: str) -> bool:
         return True
+
+    def receives_webhooks(self, bridge_type: str) -> bool:
+        return False
+
+    def webhook_url(self, bridge_id: str, bridge_type: str) -> str | None:
+        return None
 
     async def check_edited_connection_config(self, **_: Any) -> None:
         self._calls.record("platform credential check")

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { WATCH_FLAGS_FILE, watchFlagsSchema } from '@switch-console/agent-providers';
+import { replaceFile, WATCH_FLAGS_FILE, watchFlagsSchema } from '@switch-console/agent-providers';
 import { z } from 'zod';
 
 /**
@@ -89,7 +89,7 @@ async function writeAtomic(path: string, body: string): Promise<void> {
   } finally {
     await file.close();
   }
-  await rename(temporary, path);
+  await replaceFile(temporary, path);
 }
 
 /** `state.json`, read whole and written whole; every change goes through one queue. */

@@ -49,6 +49,12 @@ spec:
         checksum/config: {{ $config | mustToJson | sha256sum }}
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name | quote }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 60
       securityContext:

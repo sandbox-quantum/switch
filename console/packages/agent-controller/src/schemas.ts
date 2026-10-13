@@ -1,4 +1,6 @@
+import { sealedLoginSchema } from '@switch-console/agent-providers';
 import { z } from 'zod';
+import { PROVIDERS } from './providers';
 
 /**
  * The wire messages between this controller and Management, as v1 uses them.
@@ -13,11 +15,12 @@ import { z } from 'zod';
 
 export const PROTOCOL_VERSION = 2;
 
-export const PROVIDERS = ['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const;
-export type Provider = (typeof PROVIDERS)[number];
+export { PROVIDERS };
+/** A provider id this controller has both a plugin and a runtime for. */
+export type Provider = string;
 
 export function isProvider(value: string): value is Provider {
-  return (PROVIDERS as readonly string[]).includes(value);
+  return PROVIDERS.includes(value);
 }
 
 /** The contract's reason codes, plus the ones v1 adds. */
@@ -97,6 +100,8 @@ export const enrollRequestSchema = z.object({
     platform: platformSchema,
     version: z.string().min(1),
   }),
+  /** The key the provider logins its owner gives this machine are sealed to. */
+  public_key: z.object({ alg: z.literal('X25519'), key: z.string().min(1) }).optional(),
 });
 export type EnrollRequest = z.infer<typeof enrollRequestSchema>;
 
@@ -114,6 +119,8 @@ export const credentialRotateResponseSchema = z.object({ credential: id });
 export const controllerInfoRequestSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   description: z.string().max(500).nullable().optional(),
+  /** Registered once, by a controller enrolled before it made a key. */
+  public_key: z.object({ alg: z.literal('X25519'), key: z.string().min(1) }).optional(),
 });
 export type ControllerInfoChange = z.infer<typeof controllerInfoRequestSchema>;
 
@@ -124,6 +131,14 @@ export const controllerInfoResponseSchema = z.object({
   description: z.string().nullable(),
 });
 export type ControllerInfo = z.infer<typeof controllerInfoResponseSchema>;
+
+/** `GET .../provider-credentials/{provider}`: the login given to this machine, sealed to its key. */
+export const sealedLoginResponseSchema = z.object({
+  provider: z.string(),
+  revision: z.number().int().positive(),
+  sealed: sealedLoginSchema,
+});
+export type SealedLoginResponse = z.infer<typeof sealedLoginResponseSchema>;
 
 // §2 Assignment (v1 definition)
 
@@ -183,21 +198,28 @@ export type ProcessState = (typeof PROCESS_STATES)[number];
 const reasonCode = z.enum(REASON_CODES);
 
 export const providerStatusSchema = z.object({
-  provider: z.enum(PROVIDERS),
+  provider: z.string().refine(isProvider, { message: 'Not a provider this controller runs.' }),
   installed: z.boolean(),
   version: z.string().nullable(),
   auth: z.enum(['ok', 'expired', 'missing', 'unknown']),
   auth_source: z.enum(['local', 'sealed']).nullable(),
   checked_at: time,
   reason: reasonCode.optional(),
+  /** Why no version was read from an installed CLI. */
+  version_problem: z.string().max(300).optional(),
+  /** Why a login given to the machine is not used, in the controller's words. */
+  auth_problem: z.string().max(300).optional(),
 });
 export type ProviderStatus = z.infer<typeof providerStatusSchema>;
 
 export const toolStatusSchema = z.object({
   tool: z.string().min(1),
-  state: z.enum(['ok', 'missing', 'unauthenticated', 'unknown']),
+  /** `unsupported`: Switch's helper for the tool does not run on this machine (GitHub's on Windows). */
+  state: z.enum(['ok', 'missing', 'unauthenticated', 'unsupported', 'unknown']),
   reason: reasonCode.optional(),
 });
+
+export type ToolStatus = z.infer<typeof toolStatusSchema>;
 
 export const agentStatusSchema = z
   .object({

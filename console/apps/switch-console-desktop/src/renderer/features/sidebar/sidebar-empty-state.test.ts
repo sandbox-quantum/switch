@@ -15,7 +15,7 @@ it('says a server with nothing on it is empty', () => {
   expect(sidebarEmptyState(empty)).toBe('empty');
 });
 
-it('does not call a server empty while it lists cloud agents', () => {
+it('does not call a server empty while it lists managed agents', () => {
   expect(sidebarEmptyState({ ...empty, serverListedAgentCount: 1 })).toBeNull();
 });
 

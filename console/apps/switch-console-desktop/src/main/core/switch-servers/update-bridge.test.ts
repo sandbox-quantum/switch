@@ -91,6 +91,9 @@ describe('updateBridgeOnServer', () => {
         directorySearchSupported: true,
         attention: null,
         teamPlacementSupported: false,
+        channelIdsRefused: null,
+        receivesWebhooks: false,
+        webhookUrl: null,
       },
     });
   });

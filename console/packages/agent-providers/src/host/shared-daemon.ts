@@ -5,28 +5,36 @@ import { join, resolve } from 'node:path';
 import { openSwitchStream, runAgentHost } from './agent-host';
 import { AttachmentTransfers } from './attachment-transfers';
 import { type ControlContext, ensureSessions, serveControl } from './control';
-import { OBSOLETE_BUNDLE_EXIT_CODE, WorkerObsoleteError } from './exit-codes';
-import { hostedWorker } from './hosted-watcher';
+import { dirMode } from './host-permissions';
+import { materializeHostedProvider } from './hosted-provider';
 import { openHubStream } from './hub-stream';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
+import { grantedSkills } from './service-access';
+import { runGitCredentialHelper, runGitHubCli } from './service-github';
 import { HOST_EXIT_GRACE_MS, SessionLinks } from './session-channel';
-import { readSharedCredentials, sharedConfigSchema } from './shared-config';
+import {
+  readProviderLogin,
+  readSharedCredentials,
+  sessionServiceGrants,
+  sharedConfigSchema,
+} from './shared-config';
 import { hostSessionProcess } from './shared-host';
+import { onStopRequest } from './stop-request';
 import { superviseSharedHost } from './supervisor';
 import { recordWatcherHealth } from './watcher-health-file';
 import { WatcherControl } from './watcher-tools';
 
 const [root, configPath, mode] = process.argv.slice(2);
-if (!root || !configPath)
-  throw new Error('Shared SDK host requires a state directory and configuration file.');
 async function main(): Promise<void> {
+  if (!root || !configPath)
+    throw new Error('Shared SDK host requires a state directory and configuration file.');
   if (root === '--models') {
     const provider = sharedConfigSchema.shape.start.shape.provider.parse(configPath);
-    const adapter = adapterFor(provider, process.argv[5], '');
+    const adapter = adapterFor(provider, process.argv[5], '', []);
     const sessionId = randomUUID();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -98,8 +106,7 @@ async function main(): Promise<void> {
     );
   } else if (mode === '--supervise' || mode === '--watch-supervise') {
     const stop = new AbortController();
-    process.on('SIGTERM', () => stop.abort());
-    process.on('SIGINT', () => stop.abort());
+    onStopRequest(() => stop.abort(), resolve(root));
     await superviseSharedHost({
       root: resolve(root),
       executable: process.execPath,
@@ -113,12 +120,10 @@ async function main(): Promise<void> {
       signal: stop.signal,
       build: process.argv[1]!,
       links: null,
-      logRedactions: [],
     });
   } else if (mode === '--watch-worker') {
     const stop = new AbortController();
-    process.on('SIGTERM', () => stop.abort());
-    process.on('SIGINT', () => stop.abort());
+    onStopRequest(() => stop.abort(), resolve(root));
     // The sidecar is the parent of the sessions it runs: it talks to each over
     // IPC, and Console reaches them through its control port.
     const links = new SessionLinks();
@@ -135,7 +140,17 @@ async function main(): Promise<void> {
       watcher: control,
       transfers,
     };
-    const hosted = await hostedWorker(config, resolve(root), context);
+    // A login Switch gave the machine for this agent's provider: its files
+    // are written here, as this agent's own; its environment is already in
+    // the configuration the controller wrote.
+    const login = await readProviderLogin(config);
+    if (login?.status === 'connected')
+      await materializeHostedProvider(
+        resolve(root),
+        {},
+        login,
+        config.execution?.binaryPath ?? config.start.provider
+      );
     // An agents controller running this agent host in a process of its own
     // names its hub: the agent's events come from there, not from Switch.
     const hub = config.execution
@@ -156,7 +171,6 @@ async function main(): Promise<void> {
           stop.signal,
           supervision,
           control,
-          hosted,
           hub ? openHubStream(hub) : openSwitchStream
         ).finally(() => stop.abort()),
         serveControl(resolve(root), context, stop.signal),
@@ -168,6 +182,7 @@ async function main(): Promise<void> {
   } else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
     const child = spawn(process.execPath, process.argv.slice(1), {
       detached: true,
+      windowsHide: true,
       stdio: 'inherit',
       env: process.env,
     });
@@ -185,19 +200,22 @@ async function main(): Promise<void> {
         'A session host is started by Console or the agent sidecar, which answer its Switch tools; run on its own it has nothing to answer them.'
       );
     const stop = new AbortController();
-    process.on('SIGTERM', () => stop.abort());
-    process.on('SIGINT', () => stop.abort());
+    onStopRequest(() => stop.abort(), resolve(root));
     // Started by a parent that talks to it: it goes when the parent goes.
     process.on('disconnect', () => stop.abort());
     try {
+      const services = await sessionServiceGrants(config);
       await hostSessionProcess({
         root,
         config,
         adapter: adapterFor(
           config.start.provider,
           config.execution?.binaryPath,
-          config.execution?.skill ?? ''
+          config.execution?.skill ?? '',
+          grantedSkills(services.grants)
         ),
+        services,
+        entrypoint: process.argv[1]!,
         port: process,
         authenticate:
           config.start.provider === 'claude'
@@ -231,21 +249,41 @@ async function main(): Promise<void> {
     }
   }
 }
-try {
-  await main();
-} catch (error) {
-  if (error instanceof WorkerObsoleteError) {
-    // Not a failure of this bundle's to record: the worker service waits for a current one.
-    console.error(error.message);
-    process.exitCode = OBSOLETE_BUNDLE_EXIT_CODE;
-  } else {
+
+/**
+ * Git's credential helper and the `gh` wrapper a session with a GitHub grant
+ * runs (`service-github.ts`): short-lived, run by the CLI, and never a host,
+ * so a failure is told on stderr and recorded nowhere.
+ */
+async function helper(): Promise<void> {
+  try {
+    if (root === '--git-credential')
+      await runGitCredentialHelper(configPath, {
+        stdin: process.stdin,
+        stdout: process.stdout,
+        env: process.env,
+      });
+    else
+      process.exitCode = await runGitHubCli(configPath ?? '', process.argv.slice(4), process.env);
+  } catch (error) {
+    process.stderr.write(`switch: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }
+}
+
+if (root === '--git-credential' || root === '--github-cli') await helper();
+else
+  try {
+    await main();
+  } catch (error) {
     if (
+      root !== undefined &&
       root !== '--probe' &&
       root !== '--models' &&
       mode !== '--supervise' &&
       mode !== '--watch-supervise'
     ) {
-      await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
+      await mkdir(join(root, 'supervisor'), { recursive: true, mode: dirMode(0o700) });
       await replaceOwner(join(root, 'supervisor', 'failure.json'), {
         message: error instanceof Error ? error.message : String(error),
       });
@@ -253,4 +291,3 @@ try {
     console.error(error);
     process.exitCode = 1;
   }
-}

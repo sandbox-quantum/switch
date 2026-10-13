@@ -20,6 +20,10 @@
     "./session-v1": {
       "types": "./dist/session-v1.d.mts",
       "default": "./dist/session-v1.mjs"
+    },
+    "./windows-spawn": {
+      "types": "./dist/windows-spawn.d.mts",
+      "default": "./dist/windows-spawn.mjs"
     }
   },
   "scripts": {

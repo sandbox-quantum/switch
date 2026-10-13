@@ -13,6 +13,18 @@ import {
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { GitHubConnection, GitHubFlow } from '@shared/core/switch-servers/github-connection';
 
+const SSO_HIDDEN =
+  'An organization’s single sign-on hides its installation of the app from this GitHub connection. Disconnect and connect GitHub again, and authorize the organization when GitHub asks.';
+const NO_NEW_ACCESS =
+  'No new repository access appeared. If you installed the app on an organization, an owner may still need to approve it, or its single sign-on may hide it from this connection: disconnect and connect GitHub again, authorizing the organization when GitHub asks.';
+
+/** Whether an organization's single sign-on hides installations from this connection. */
+function ssoHidden(connection: GitHubConnection | null): boolean {
+  return (
+    connection?.status === 'connected' && (connection.sso_hidden_organizations?.length ?? 0) > 0
+  );
+}
+
 export function ManagedGitHubStep({
   serverId,
   onBack,
@@ -84,7 +96,7 @@ export function ManagedGitHubStep({
       clearTimeout(timer);
       if (Date.now() >= watching.expiresAt) {
         setWatching(null);
-        setError('Repository selection timed out. Choose repositories again to continue.');
+        setError(NO_NEW_ACCESS);
         return;
       }
       checking = true;
@@ -92,7 +104,7 @@ export function ManagedGitHubStep({
         const result = await rpc.switchServers.getGitHubConnection(serverId);
         if (!alive) return;
         setConnection(result);
-        if (JSON.stringify(result) !== watching.baseline) setWatching(null);
+        if (JSON.stringify(result) !== watching.baseline || ssoHidden(result)) setWatching(null);
         else timer = setTimeout(() => void check(), 5000);
       } catch (cause) {
         if (alive) {
@@ -200,6 +212,11 @@ export function ManagedGitHubStep({
                 Choose repositories <ExternalLink className="size-4" />
               </Button>
             </div>
+            {ssoHidden(connection) && (
+              <p role="alert" className="text-sm text-foreground-warning">
+                {SSO_HIDDEN}
+              </p>
+            )}
             {watching && (
               <p role="status" className="flex items-center gap-2 text-xs text-foreground-muted">
                 <Spinner /> Choose repositories in GitHub. Access will update here automatically.
