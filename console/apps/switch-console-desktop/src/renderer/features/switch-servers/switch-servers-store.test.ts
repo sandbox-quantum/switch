@@ -11,6 +11,7 @@ const selection = vi.hoisted(() => ({ serverId: null as string | null }));
 const removeServer = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
 const connectToSwitchCloud = vi.hoisted(() => vi.fn());
+const oidcLogin = vi.hoisted(() => vi.fn());
 /** SSH hosts the reachability manager currently considers down. */
 const blockedHosts = vi.hoisted(() => new Set<string>());
 
@@ -25,6 +26,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       removeServer,
       addServer,
       connectToSwitchCloud,
+      oidcLogin,
     },
     onboarding: { installIsEmpty },
   },
@@ -402,6 +404,18 @@ describe('adding the first server', () => {
     await store.connectToSwitchCloud();
 
     expect(store.installIsEmpty).toBe(false);
+  });
+});
+
+describe('signing in through the browser', () => {
+  it('reads the list again, for a dashboard address the sign-in found', async () => {
+    const store = newStore([server('a', { dashboardUrl: null })]);
+    oidcLogin.mockResolvedValue({ success: true, data: true });
+    listServers.mockResolvedValue([server('a', { dashboardUrl: 'https://a.example.com' })]);
+
+    expect(await store.oidcLogin('a')).toBe(true);
+
+    expect(store.servers[0]?.dashboardUrl).toBe('https://a.example.com');
   });
 });
 

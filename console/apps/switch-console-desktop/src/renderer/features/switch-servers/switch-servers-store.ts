@@ -687,7 +687,16 @@ export class SwitchServersStore {
       }
       return false;
     }
-    await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
+    // Signing in may also have taught Console where an older server keeps its
+    // dashboard, which the links built here read from the list.
+    const [servers] = await Promise.all([
+      rpc.switchServers.listServers(),
+      this.refreshStatus(serverId),
+      workspacesStore.refresh(),
+    ]);
+    runInAction(() => {
+      this.servers = servers;
+    });
     return true;
   }
 

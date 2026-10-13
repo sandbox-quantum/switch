@@ -49,6 +49,7 @@ const {
   removeServer,
   renameServer,
   setActiveServerId,
+  setDashboardUrl,
   updateServer,
 } = await import('./servers-store');
 const { getActiveWorkspaceId } = await import('@main/core/workspaces/workspaces-store');
@@ -783,6 +784,32 @@ describe('servers-store: one address per server', () => {
       await clearDashboardUrl('a', 'https://switch-api.example.com');
 
       expect((await getServer('a'))?.dashboardUrl).toBe('https://switch-gateway.example.com');
+    });
+  });
+
+  describe('setDashboardUrl', () => {
+    it('keeps a separate dashboard address for the address that was checked', async () => {
+      await insertServer({ id: 'a', url: 'https://switch-api.example.com' });
+
+      await setDashboardUrl(
+        'a',
+        'https://switch-api.example.com',
+        'https://Switch-Gateway.example.com/'
+      );
+
+      expect((await getServer('a'))?.dashboardUrl).toBe('https://switch-gateway.example.com');
+    });
+
+    it('leaves it alone when the server has moved since the check', async () => {
+      await insertServer({ id: 'a', url: 'https://moved.example.com' });
+
+      await setDashboardUrl(
+        'a',
+        'https://switch-api.example.com',
+        'https://switch-gateway.example.com'
+      );
+
+      expect((await getServer('a'))?.dashboardUrl).toBeNull();
     });
   });
 

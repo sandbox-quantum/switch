@@ -1666,6 +1666,12 @@ version of their own to them without also giving them a release of their own.
   server that serves none says so rather than opening on a refusal; and a
   server whose address does not route `/gateway` to switch-core is reported as
   that, rather than as a failed request.
+- **Older servers with their dashboard on a host of its own.** Added by its
+  address, such a server's browser sign-in is followed to the host its
+  identity provider returns to, and Console keeps that host for its dashboard
+  pages and invite links. A server that offers only password sign-in gets them
+  from an invite link to its dashboard, or once it is upgraded to serve the
+  dashboard itself.
 - **Upgrading: Console reaches the management API at the server's own
   address.** Every `/gateway` call now goes to the address agents use. The
   chart's single-host ingress needs nothing. A setup whose API host routes

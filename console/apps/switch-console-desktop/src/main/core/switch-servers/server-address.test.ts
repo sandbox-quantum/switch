@@ -3,15 +3,17 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
 const listServers = vi.hoisted(() => vi.fn());
 const clearDashboardUrl = vi.hoisted(() => vi.fn(async () => {}));
+const setDashboardUrl = vi.hoisted(() => vi.fn(async () => {}));
 const logWarn = vi.hoisted(() => vi.fn());
 const logInfo = vi.hoisted(() => vi.fn());
 
-vi.mock('./servers-store', () => ({ listServers, clearDashboardUrl }));
+vi.mock('./servers-store', () => ({ listServers, clearDashboardUrl, setDashboardUrl }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: logWarn, info: logInfo, error: vi.fn() } }));
 
 const {
   assertServerAddress,
   assertServesDashboard,
+  keepSeparateDashboard,
   NoDashboardError,
   NotTheServerAddressError,
   retireDashboardFallback,
@@ -300,6 +302,46 @@ describe('separateDashboard', () => {
 
     expect(await separateDashboard(url, candidate)).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('keepSeparateDashboard', () => {
+  const OLDER = server({ dashboardUrl: null });
+
+  it('keeps the host a sign-in returned to, when it serves the dashboard', async () => {
+    roots({
+      'https://switch-api.example.com': UNAUTHORIZED,
+      'https://switch-gateway.example.com': PAGE,
+    });
+
+    await keepSeparateDashboard(OLDER, 'https://switch-gateway.example.com');
+
+    expect(setDashboardUrl).toHaveBeenCalledExactlyOnceWith(
+      'srv',
+      'https://switch-api.example.com',
+      'https://switch-gateway.example.com'
+    );
+  });
+
+  it('keeps nothing the dashboard checks refuse', async () => {
+    roots({
+      'https://switch-api.example.com': PAGE,
+      'https://switch-gateway.example.com': PAGE,
+    });
+
+    await keepSeparateDashboard(OLDER, 'https://switch-gateway.example.com');
+
+    expect(setDashboardUrl).not.toHaveBeenCalled();
+  });
+
+  it('leaves a managed server’s addresses to its stack', async () => {
+    await keepSeparateDashboard(
+      server({ managed: true, dashboardUrl: null }),
+      'https://switch-gateway.example.com'
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setDashboardUrl).not.toHaveBeenCalled();
   });
 });
 

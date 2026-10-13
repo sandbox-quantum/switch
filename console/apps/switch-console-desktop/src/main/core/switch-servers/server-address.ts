@@ -5,7 +5,7 @@ import {
   type SwitchServer,
   urlOrigin,
 } from '@shared/core/switch-servers/switch-servers';
-import { clearDashboardUrl, listServers } from './servers-store';
+import { clearDashboardUrl, listServers, setDashboardUrl } from './servers-store';
 
 const PROBE_TIMEOUT_MS = 5000;
 
@@ -158,6 +158,27 @@ export async function separateDashboard(url: string, candidate: string): Promise
   }
   const [own, other] = await Promise.all([servesDashboard(url), servesDashboard(candidate)]);
   return own !== true && other === true ? candidate : null;
+}
+
+/**
+ * Keep `candidate` as a server's separate dashboard address, when
+ * {@link separateDashboard} accepts it: the host an older server's browser
+ * sign-in was found to return to. Managed servers are left alone, as in
+ * {@link retireDashboardFallback}.
+ */
+export async function keepSeparateDashboard(
+  server: SwitchServer,
+  candidate: string
+): Promise<void> {
+  if (server.managed) return;
+  const kept = await separateDashboard(server.url, candidate);
+  if (kept === null) return;
+  await setDashboardUrl(server.id, server.url, kept);
+  log.info('switch-servers: kept the host the server’s sign-in returns to as its dashboard', {
+    server: server.id,
+    url: server.url,
+    dashboardUrl: kept,
+  });
 }
 
 /**

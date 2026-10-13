@@ -4,6 +4,7 @@ const readSecrets = vi.hoisted(() => vi.fn());
 const getSessionCookie = vi.hoisted(() => vi.fn());
 const setSessionCookie = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const logWarn = vi.hoisted(() => vi.fn());
+const keepSeparateDashboard = vi.hoisted(() => vi.fn(async () => {}));
 
 vi.mock('electron', () => ({ BrowserWindow: vi.fn(), session: { fromPartition: vi.fn() } }));
 vi.mock('@main/core/managed-switch-server/secrets', () => ({ readSecrets }));
@@ -14,13 +15,15 @@ vi.mock('@main/core/managed-switch-server/host/host-for-server', () => ({
       : 'local-switch-server:secrets',
 }));
 vi.mock('./servers-store', () => ({ getSessionCookie, setSessionCookie }));
+vi.mock('./server-address', () => ({ keepSeparateDashboard }));
 const consoleIdentityHeaders = vi.hoisted(() =>
   vi.fn(async (): Promise<Record<string, string>> => ({}))
 );
 vi.mock('./console-identity', () => ({ consoleIdentityHeaders }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: logWarn, error: vi.fn(), info: vi.fn() } }));
 
-const { oidcLogin, reauthenticateManagedServer, refreshSession, signup } = await import('./auth');
+const { callbackHostHop, oidcLogin, reauthenticateManagedServer, refreshSession, signup } =
+  await import('./auth');
 const electron = await import('electron');
 
 const REMOTE = {
@@ -337,5 +340,159 @@ describe('oidcLogin', () => {
         managed: false,
       })
     ).toBe('https://switch.example.org/gateway/auth/oidc/login');
+  });
+});
+
+describe('callbackHostHop', () => {
+  const start = 'https://switch-api.example.com/gateway/auth/oidc/login';
+  const idp = (redirectUri: string) =>
+    `https://idp.example/authorize?${new URLSearchParams({ redirect_uri: redirectUri, state: 's' })}`;
+
+  it('names the host the provider will return to, when it is another', () => {
+    expect(
+      callbackHostHop(start, idp('https://switch-gateway.example.com/gateway/auth/oidc/callback'))
+    ).toBe('https://switch-gateway.example.com');
+  });
+
+  it.each([
+    ['the host it started on', idp('https://switch-api.example.com/gateway/auth/oidc/callback')],
+    ['the same host on another port', idp('https://switch-api.example.com:8443/cb')],
+    ['no return address', 'https://idp.example/authorize?state=s'],
+    ['a return address that is not a web address', idp('javascript:alert(1)')],
+    ['a return address that does not parse', idp('not a url')],
+  ])('leaves a sign-in alone that returns to %s', (_case, redirect) => {
+    expect(callbackHostHop(start, redirect)).toBeNull();
+  });
+});
+
+describe('oidcLogin following an older server to its callback host', () => {
+  const ONE_ADDRESS = {
+    id: 'srv-old',
+    name: 'Older server',
+    url: 'https://switch-api.example.com',
+    dashboardUrl: null,
+    managed: false,
+  } as never;
+  const CALLBACK = 'https://switch-gateway.example.com/gateway/auth/oidc/callback';
+  const idp = (redirectUri: string) =>
+    `https://idp.example/authorize?${new URLSearchParams({ redirect_uri: redirectUri, state: 's' })}`;
+
+  /** Opens the sign-in window with handles on what it would see and do. */
+  function signInWindow(firstLoad: Promise<void> = Promise.resolve()) {
+    const listeners = new Map<string, ((...args: unknown[]) => void)[]>();
+    const loadURL = vi.fn(async (_url: string) => {});
+    loadURL.mockImplementationOnce(() => firstLoad);
+    let cookie: string | null = null;
+    vi.mocked(electron.session.fromPartition).mockReturnValue({
+      cookies: { get: vi.fn(async () => (cookie === null ? [] : [{ value: cookie }])) },
+    } as never);
+    vi.mocked(electron.BrowserWindow).mockImplementation(function () {
+      return {
+        loadURL,
+        webContents: {
+          on: (event: string, listener: (...args: unknown[]) => void) => {
+            listeners.set(event, [...(listeners.get(event) ?? []), listener]);
+          },
+        },
+        on: vi.fn(),
+        isDestroyed: () => false,
+        destroy: vi.fn(),
+      } as never;
+    });
+    const emit = (event: string, ...args: unknown[]) =>
+      (listeners.get(event) ?? []).forEach((listener) => listener(...args));
+    return {
+      loadURL,
+      /** A server-side redirect of the window's main frame, or of a subframe. */
+      redirect(url: string, isMainFrame = true) {
+        const preventDefault = vi.fn();
+        emit('will-redirect', { url, isMainFrame, preventDefault });
+        return preventDefault;
+      },
+      /** The server sets the session cookie, and the window lands. */
+      signedIn() {
+        cookie = 'jwt';
+        emit('did-navigate');
+      },
+    };
+  }
+
+  it('restarts on the host the provider returns to, and keeps it as the dashboard', async () => {
+    const win = signInWindow();
+    const result = oidcLogin(ONE_ADDRESS);
+
+    expect(win.redirect(idp(CALLBACK))).toHaveBeenCalledOnce();
+    expect(win.loadURL.mock.calls.map(([url]) => url)).toEqual([
+      'https://switch-api.example.com/gateway/auth/oidc/login',
+      'https://switch-gateway.example.com/gateway/auth/oidc/login',
+    ]);
+
+    win.signedIn();
+    expect(await result).toEqual({ success: true, data: true });
+    expect(keepSeparateDashboard).toHaveBeenCalledExactlyOnceWith(
+      ONE_ADDRESS,
+      'https://switch-gateway.example.com'
+    );
+  });
+
+  it('leaves a sign-in alone that returns to the host it started on', async () => {
+    const win = signInWindow();
+    const result = oidcLogin(ONE_ADDRESS);
+
+    expect(
+      win.redirect(idp('https://switch-api.example.com/gateway/auth/oidc/callback'))
+    ).not.toHaveBeenCalled();
+
+    win.signedIn();
+    expect(await result).toMatchObject({ success: true });
+    expect(win.loadURL).toHaveBeenCalledOnce();
+    expect(keepSeparateDashboard).not.toHaveBeenCalled();
+  });
+
+  it('asks only the first redirect that leaves the starting host', async () => {
+    const win = signInWindow();
+    const result = oidcLogin(ONE_ADDRESS);
+
+    // The same host again (an upgrade to HTTPS, say) is not the decision.
+    expect(
+      win.redirect('https://switch-api.example.com/gateway/auth/oidc/login?again=1')
+    ).not.toHaveBeenCalled();
+    // A subframe is not the sign-in.
+    expect(win.redirect(idp(CALLBACK), false)).not.toHaveBeenCalled();
+    expect(win.redirect(idp(CALLBACK))).toHaveBeenCalledOnce();
+    // From here on the provider's pages cannot send it anywhere else.
+    expect(win.redirect(idp('https://elsewhere.example.net/cb'))).not.toHaveBeenCalled();
+
+    win.signedIn();
+    await result;
+    expect(win.loadURL).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not take the first load, cancelled by the hop, for a failure', async () => {
+    let cancel!: (cause: Error) => void;
+    const win = signInWindow(new Promise((_resolve, reject) => (cancel = reject)));
+    const result = oidcLogin(ONE_ADDRESS);
+
+    win.redirect(idp(CALLBACK));
+    cancel(new Error('ERR_ABORTED (-3)'));
+    await Promise.resolve();
+    win.signedIn();
+
+    expect(await result).toMatchObject({ success: true });
+  });
+
+  it('is signed in even when the host cannot be kept', async () => {
+    keepSeparateDashboard.mockRejectedValueOnce(new Error('database is locked'));
+    const win = signInWindow();
+    const result = oidcLogin(ONE_ADDRESS);
+
+    win.redirect(idp(CALLBACK));
+    win.signedIn();
+
+    expect(await result).toMatchObject({ success: true });
+    expect(logWarn).toHaveBeenCalledWith(
+      'switch-servers: could not keep the host the sign-in returned to',
+      expect.objectContaining({ error: 'Error: database is locked' })
+    );
   });
 });

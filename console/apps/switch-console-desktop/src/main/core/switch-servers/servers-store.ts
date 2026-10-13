@@ -351,16 +351,29 @@ export async function updateServer(params: UpdateServerParams): Promise<SwitchSe
 }
 
 /**
- * Forget a server's separate dashboard address, once its own address has been
- * seen serving the dashboard. Leaves the row alone when the address it was
- * checked against is no longer the server's, so a check that raced an edit
- * cannot clear the fallback of the address that replaced it.
+ * Record a server's separate dashboard address, or forget it with null. Leaves
+ * the row alone when the address it was checked against is no longer the
+ * server's, so a check that raced an edit cannot write the dashboard of the
+ * address that replaced it.
  */
-export async function clearDashboardUrl(id: string, checkedUrl: string): Promise<void> {
+export async function setDashboardUrl(
+  id: string,
+  checkedUrl: string,
+  dashboardUrl: string | null
+): Promise<void> {
   await db
     .update(switchServers)
-    .set({ dashboardUrl: null, updatedAt: sql`CURRENT_TIMESTAMP` })
+    .set({
+      dashboardUrl: dashboardUrl === null ? null : normaliseUrl(dashboardUrl),
+      updatedAt: sql`CURRENT_TIMESTAMP`,
+    })
     .where(and(eq(switchServers.id, id), eq(switchServers.url, checkedUrl)));
+}
+
+/** Forget a server's separate dashboard address, once its own address has been
+ * seen serving the dashboard; see {@link setDashboardUrl}. */
+export async function clearDashboardUrl(id: string, checkedUrl: string): Promise<void> {
+  await setDashboardUrl(id, checkedUrl, null);
 }
 
 export async function renameServer(params: RenameServerParams): Promise<SwitchServer> {
