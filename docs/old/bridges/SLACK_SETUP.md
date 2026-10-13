@@ -75,7 +75,6 @@ You need one Slack app for the whole bridge. There are two ways to create it —
             { "command": "/set-alias", "description": "Give an agent a room alias", "usage_hint": "@agent-name @alias", "should_escape": true },
             { "command": "/remove-alias", "description": "Remove a room alias", "usage_hint": "@alias (or @agent-name)", "should_escape": true },
             { "command": "/invite-agent", "description": "Add an existing agent to this room", "usage_hint": "@agent-name", "should_escape": true },
-            { "command": "/run-cmd", "description": "Show the terminal command to start a session for an agent", "usage_hint": "@agent-name [@role]", "should_escape": true },
             { "command": "/agents-greet", "description": "Have agents in the room introduce themselves", "should_escape": false },
             { "command": "/room-url", "description": "Show the frontend URL for this room", "should_escape": false }
         ]

@@ -131,7 +131,7 @@ is the name; keep it a plain identifier.
 | `bridge` | The display name of a messaging app set up on the server. | The server checks it exists. |
 | `room` | The name of a room on the server. | The server checks it exists. |
 | `user` | A username on the room's messaging app. | The server looks it up on the app. |
-| `provider` | A coding agent id: `claude`, `codex` or `opencode`. | Switch Console; never sent to the server. |
+| `provider` | A coding agent id: `claude`, `codex`, `opencode`, `antigravity` or `cursor`. | Switch Console; never sent to the server. |
 | `location` | Where an agent runs: `local`, or an SSH host name the Console knows. | Switch Console; never sent to the server. |
 | `directory` | An agent's working directory, on the machine it runs on. | Switch Console; never sent to the server. |
 
@@ -241,7 +241,7 @@ agent:
   display_name:  text
   description:   text
   instructions:  text
-  provider:      claude | codex | opencode | "{param}"
+  provider:      claude | codex | opencode | antigravity | cursor | "{param}"
   location:      local | ssh host | "{param}"
   directory:     path | "{param}"
   repo:          URL

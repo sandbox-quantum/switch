@@ -155,7 +155,7 @@ class AgentSessionStore:
         session-close signal, so the binding lingers after a session ends.
         Paired with a liveness check by the caller: a binding present while the
         agent is not live means a session_addressable session is connected but
-        not reporting in (e.g. launched without the dev-channels flag).
+        not reporting in.
         """
         result = await session.execute(
             select(AgentSession.agent_id)

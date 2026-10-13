@@ -120,7 +120,7 @@ class TestPrefixCollision:
         assert _is_mentioned("cc-bug-fixing-2", "@cc-bug-fixing-2 please run") is True
 
     async def test_command_does_not_address_prefix_name(self) -> None:
-        # `!run-cmd @cc-bug-fixing-2` must not trigger cc-bug-fixing.
+        # `!reset @cc-bug-fixing-2` must not trigger cc-bug-fixing.
         assert await _command_addresses("cc-bug-fixing", "@cc-bug-fixing-2") is False
 
     async def test_command_addresses_exact_name(self) -> None:
@@ -342,7 +342,7 @@ class TestAliasMentionRouting:
 
 
 class TestCommandRoleTargeting:
-    """`!run-cmd @<role>` / `!reset @<role>` target the role's holder.
+    """`!reset @<role>` / `!interrupt @<role>` target the role's holder.
 
     on_command lets an agent through when the command args tag a role it
     holds; that gate is `_text_tags_my_role(args, room_id)`.

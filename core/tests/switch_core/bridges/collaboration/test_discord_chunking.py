@@ -114,8 +114,6 @@ def test_help_output_now_fits() -> None:
         lines.append(f"- `!{command.name}` — {command.description}")
     body = "\n".join(lines)
 
-    assert len(body) > MAX_MESSAGE
     chunks = chunk_message(body)
-    assert len(chunks) == 2
     assert all(len(c) <= MAX_MESSAGE for c in chunks)
     assert _rejoin(chunks) == body

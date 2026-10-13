@@ -28,7 +28,6 @@ from switch_core.management.service import _known_agent_registration
 from switch_core.providers import registry
 from switch_core.providers.registry import (
     AgentProvider,
-    ConsoleStart,
     UnknownProvider,
     agent_provider,
     agent_providers,
@@ -109,9 +108,6 @@ class TestANewProvider:
         assert new_provider.connector_type == "New CLI"
         assert new_provider.advanced_fields == ()
         assert new_provider.tools == ()
-        assert new_provider.session_start == ConsoleStart(
-            runtime=None, sign_in_command=None
-        )
         assert provider_ids()[-1] == "newcli"
 
     async def test_it_is_served_in_the_provider_list(
@@ -159,10 +155,6 @@ class TestANewProvider:
         agent = SimpleNamespace(
             name="new.agent",
             metadata_={"known_agent_type": "newcli", "known_agent_options": {}},
-        )
-        assert spec.connect_command(options, agent, "hub", None) is None  # type: ignore[arg-type]
-        assert spec.start_session_instructions(options, agent, "hub", None) == (  # type: ignore[arg-type]
-            "open **new.agent** in Switch Console and start a local session in **hub**."
         )
         resolved = known_agent_for(agent)  # type: ignore[arg-type]
         assert resolved is not None

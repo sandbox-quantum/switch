@@ -5,8 +5,8 @@ repository** (`sandbox-quantum/switch`). The repo is public, so the downloads
 need no account, token or sign-up. No need to build from source.
 
 > Builds are currently **macOS arm64 (Apple Silicon) and x64 (Intel)**, **Linux
-> x64 and arm64** and **Windows x64**. Windows builds are not code signed — see
-> [Install (Windows x64)](#install-windows-x64).
+> x64 and arm64** and **Windows x64**. On Windows, agents run on an SSH host
+> rather than on the PC itself — see [Install (Windows x64)](#install-windows-x64).
 
 ## Download
 
@@ -137,12 +137,18 @@ Two caveats:
 The `.msi` supports the usual `msiexec` flow if you would rather not run the
 installer interactively.
 
-### Docker-backed features are not available on Windows
+### Agents run on an SSH host, not on the PC
 
-Switch Console can manage a local or remote Switch server through Docker. That
-path is **macOS/Linux only** — Docker CLI discovery does not resolve
-`docker.exe` on Windows. Connecting to a Switch server that is already running
-elsewhere is unaffected.
+Agent sessions need a POSIX execution host, so Windows Console cannot run an
+agent on the PC itself. It asks you to pick an SSH host instead: a Linux or
+macOS machine you can reach over SSH, set up from **Settings → Remote hosts**.
+Connecting to a Switch server and working in rooms are unaffected.
+
+### Running a server through Docker
+
+Switch Console looks for Docker Desktop and Rancher Desktop on Windows, so it can
+find `docker.exe` for a local server. Running a local server from Windows Console
+has not been exercised end to end yet; please report what happens if you try it.
 
 Windows support is new and less exercised than the other platforms; please report
 anything that misbehaves.

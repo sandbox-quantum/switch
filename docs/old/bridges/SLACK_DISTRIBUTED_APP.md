@@ -126,7 +126,6 @@ the same job once installed — the differences are all in `settings` and
             { "command": "/set-alias", "url": "https://HOST/messaging/slack/commands", "description": "Give an agent a room alias", "usage_hint": "@agent-name @alias", "should_escape": true },
             { "command": "/remove-alias", "url": "https://HOST/messaging/slack/commands", "description": "Remove a room alias", "usage_hint": "@alias (or @agent-name)", "should_escape": true },
             { "command": "/invite-agent", "url": "https://HOST/messaging/slack/commands", "description": "Add an existing agent to this room", "usage_hint": "@agent-name", "should_escape": true },
-            { "command": "/run-cmd", "url": "https://HOST/messaging/slack/commands", "description": "Show the terminal command to start a session for an agent", "usage_hint": "@agent-name [@role]", "should_escape": true },
             { "command": "/agents-greet", "url": "https://HOST/messaging/slack/commands", "description": "Have agents in the room introduce themselves", "should_escape": false },
             { "command": "/room-url", "url": "https://HOST/messaging/slack/commands", "description": "Show the frontend URL for this room", "should_escape": false }
         ]

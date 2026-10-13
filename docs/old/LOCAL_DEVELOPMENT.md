@@ -235,7 +235,7 @@ just local-cloud-console # the Console, with Switch Cloud at http://localhost:80
 | --- | --- |
 | `just local-cloud` / `just local-cloud-console` | Run switch-core as a stand-in for Switch Cloud, and the Console pointed at it (see above) |
 | `just format` / `just check` | Format with ruff / lint-check in CI mode (no changes) |
-| `just typecheck` | mypy over `core/switch_core/` and `connectors/` |
+| `just typecheck` | mypy over `core/switch_core/` |
 | `just test` / `just test -k name` | Run the test suite / a single test |
 | `just test-integration` | Integration tests against a real Postgres via testcontainers |
 | `just migration "message"` | Autogenerate a new Alembic migration |

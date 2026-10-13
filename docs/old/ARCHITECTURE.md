@@ -1,5 +1,11 @@
 # Switch — Architecture & Design
 
+> **Out of date.** This document describes an earlier design of Switch, when it
+> ran on a Matrix homeserver. Matrix was removed in switch-core 0.25.0, and many
+> sections no longer match the code. For how Switch works today, read
+> [`docs/official/internals/`](../official/internals/index.md) and the code;
+> [`CLAUDE.md`](../../CLAUDE.md) lists where to start. It is kept for history.
+
 This document describes how Switch is built: its components, how they fit
 together, and what each part is responsible for. It is meant as a map — a
 reviewer or new contributor should be able to read it and know **where in the

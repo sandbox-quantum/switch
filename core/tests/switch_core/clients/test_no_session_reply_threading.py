@@ -169,7 +169,8 @@ async def test_no_session_reply_does_not_double_tag_the_asker() -> None:
     room = RoomRef(room_id="!matrix:server")
     await AgentConsumer.on_message(
         _fake_self(
-            send_message, unavailable_reply="@louisa\n\nmy operator should run …"
+            send_message,
+            unavailable_reply="@louisa — I'm not online in this room. Open Switch Console …",
         ),
         room,
         _event(thread_id=None),
@@ -189,7 +190,8 @@ async def test_no_session_reply_tags_distinct_asker_and_operator() -> None:
     room = RoomRef(room_id="!matrix:server")
     await AgentConsumer.on_message(
         _fake_self(
-            send_message, unavailable_reply="@operator\n\nmy operator should run …"
+            send_message,
+            unavailable_reply="@operator — I'm not online in this room. Open Switch Console …",
         ),
         room,
         _event(thread_id=None),

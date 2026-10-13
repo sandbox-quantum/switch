@@ -222,9 +222,9 @@ and add it again in the new place.
 
 What makes this confusing is that a **"Repo dir" field does exist and is editable** — on the
 agent's page in the web dashboard, and through the agent-update tool. It is not the same
-thing. It only feeds the copy-and-paste command the dashboard offers for starting a session
-by hand. Change it and the agent carries on exactly where it was, with the dashboard now
-telling you something untrue.
+thing. Switch Console only uses it as a hint when looking for agents it can load from a
+remote host. Change it and the agent carries on exactly where it was, with the dashboard
+now telling you something untrue.
 
 So: pick the directory carefully at creation, and treat that field as a display detail.
 

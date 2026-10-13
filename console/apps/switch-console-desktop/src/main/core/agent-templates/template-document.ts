@@ -41,7 +41,7 @@ export type ParsedAgentEntry = {
   addressing: AgentTemplateAddressing | null;
   /**
    * Which coding agent runs it. Either a provider id (`claude`, `codex`,
-   * `opencode`) or a `{param}` whose value is one. Null when the template
+   * `opencode`, `antigravity`, `cursor`) or a `{param}` whose value is one. Null when the template
    * has no `provider` field; the Use page asks for one.
    */
   provider: string | null;
