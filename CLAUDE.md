@@ -124,13 +124,17 @@ wire shapes, not as a sign that Matrix is in use.
 
 ## The Switch skill
 
-Every agent session is started by Switch Console or its sidecar; there are no
-connector plugins and no standalone runtime. Each session gets the Switch MCP
-tools from its own session host, and the room-workflow skill from Console:
-`console/packages/plugins/src/switch-skill/SKILL.md` is the single copy,
-exported as `@switch-console/plugins/switch-skill`. Codex and OpenCode load it
-as a skill file; Claude Code, Cursor and Antigravity get it (without its
+Every agent session is started by Switch Console or its sidecar; sessions use
+no connector plugins and there is no standalone runtime. Each session gets the
+Switch MCP tools from its own session host, and the room-workflow skill from
+Console: `console/packages/plugins/src/switch-skill/SKILL.md` is the single copy,
+exported as `@switch-console/plugins/switch-skill`. OpenCode loads it as a skill
+file; Claude Code, Codex, Cursor and Antigravity get it (without its
 frontmatter) as system context.
+
+`connectors/` still holds the old Claude Code and Codex plugins, frozen, for
+Consoles 0.35 and older, which install them from the default branch. Do not
+edit or delete them — `connectors/DEPRECATED.md` says why and when they go.
 
 When you change how agents interact with Switch — new/changed MCP tools, in-room
 commands, room workflow, event delivery, or anything an agent needs to know —
