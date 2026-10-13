@@ -10,7 +10,14 @@ function entry(name: string, category: string): ConnectionCatalogEntry {
     description: `${name} access.`,
     enabled: false,
     auth_type: 'oauth',
+    connectable: false,
     status: 'coming_soon',
+    unavailable_reason: null,
+    pass_through: false,
+    token_lifetime: null,
+    loopback_ports: null,
+    key: null,
+    external_identity: null,
   };
 }
 

@@ -60,7 +60,10 @@ SECRET_KEYS: {{ required "secrets.secretKeys is required (\"<id>:<secret>\", see
 JWT_SECRET_KEY: {{ . | b64enc | quote }}
 {{- end }}
 {{- if .Values.switchCore.agentManagement.enabled }}
-{{- $controllerSecret := required "secrets.controllerTokenSecret is required when switchCore.agentManagement.enabled" .Values.secrets.controllerTokenSecret }}
+{{- fail "switchCore.agentManagement.enabled has been replaced by a feature flag: remove it and add \"agent_management\" to switchCore.featureFlags.enabled." }}
+{{- end }}
+{{- if has "agent_management" .Values.switchCore.featureFlags.enabled }}
+{{- $controllerSecret := required "secrets.controllerTokenSecret is required with the agent_management feature flag on" .Values.secrets.controllerTokenSecret }}
 {{- if lt (len $controllerSecret) 32 }}
 {{- fail "secrets.controllerTokenSecret must be at least 32 characters; switch-core refuses to start with a shorter one." }}
 {{- end }}
@@ -432,14 +435,56 @@ than something you discover hours later at Graph subscription time.
 {{- end }}
 
 {{/*
-Prepend the global image registry if set.
+preStop drain for a pod that rolls with a surge (a new pod is Ready before the
+old one stops): hold the old pod for a few seconds after it is marked
+terminating, so endpoint and load-balancer deregistration land before the
+process gets SIGTERM. Not for a Recreate Deployment, where nothing else is
+serving and the wait only lengthens the outage. The native `sleep` action needs
+no shell (the images are distroless) but needs Kubernetes 1.30+, so nothing
+renders on an older cluster.
+Usage: {{- include "switch.preStopDrain" . | nindent 10 }}
+*/}}
+{{- define "switch.preStopDrain" -}}
+{{- if and .Values.global.preStopSleepSeconds (semverCompare ">=1.30-0" .Capabilities.KubeVersion.Version) -}}
+lifecycle:
+  preStop:
+    sleep:
+      seconds: {{ .Values.global.preStopSleepSeconds }}
+{{- end }}
+{{- end }}
+
+{{/*
+Prepend the global image registry if set, unless the reference already names
+a registry: a first path component with a "." or ":" in it, or "localhost",
+which is how a container runtime tells a registry host from a repository
+namespace. So `ghcr.io/acme/switch-core:1.0` is used as written whatever
+global.imageRegistry says.
 Usage: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
 */}}
 {{- define "switch.image" -}}
-{{- if .global.imageRegistry -}}
+{{- $parts := splitList "/" .image -}}
+{{- $host := first $parts -}}
+{{- $hasRegistry := and (gt (len $parts) 1) (or (contains "." $host) (contains ":" $host) (eq $host "localhost")) -}}
+{{- if and .global.imageRegistry (not $hasRegistry) -}}
 {{- printf "%s/%s" .global.imageRegistry .image }}
 {{- else -}}
 {{- .image }}
+{{- end -}}
+{{- end }}
+
+{{/*
+Pull policy for a first-party image. An explicit policy wins. Otherwise a
+digest-pinned reference cannot change, so IfNotPresent; anything else may be a
+mutable tag, so Always, or nodes would keep running a stale cached image.
+Usage: {{ include "switch.imagePullPolicy" (dict "policy" .Values.switchCore.imagePullPolicy "image" .Values.switchCore.image) }}
+*/}}
+{{- define "switch.imagePullPolicy" -}}
+{{- if .policy -}}
+{{- .policy -}}
+{{- else if contains "@sha256:" .image -}}
+IfNotPresent
+{{- else -}}
+Always
 {{- end -}}
 {{- end }}
 
@@ -661,18 +706,14 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
       name: {{ include "switch.secretName" . }}
       key: JWT_SECRET_KEY
       optional: true
-{{- with .Values.switchCore.agentManagement }}
-{{- if .enabled }}
-- name: AGENT_MANAGEMENT_ENABLED
-  value: "true"
+{{- if has "agent_management" .Values.switchCore.featureFlags.enabled }}
 - name: CONTROLLER_TOKEN_SECRET
   valueFrom:
     secretKeyRef:
-      name: {{ include "switch.secretName" $ }}
+      name: {{ include "switch.secretName" . }}
       key: CONTROLLER_TOKEN_SECRET
 - name: CONTROLLER_STATUS_INTERVAL_SECONDS
-  value: {{ .statusIntervalSeconds | quote }}
-{{- end }}
+  value: {{ .Values.switchCore.agentManagement.statusIntervalSeconds | quote }}
 {{- end }}
 - name: GATEWAY_ADMIN_EMAIL
   valueFrom:
@@ -736,6 +777,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 {{- if $outboundHosts }}
 - name: OUTBOUND_ALLOWED_PRIVATE_HOSTS
   value: {{ join "," $outboundHosts | quote }}
+{{- end }}
+{{- with .Values.switchCore.featureFlags.enabled }}
+- name: FEATURE_FLAGS_ENABLED
+  value: {{ join "," . | quote }}
 {{- end }}
 {{- with .Values.switchCore.smtp }}
 {{- if .enabled }}

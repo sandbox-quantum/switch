@@ -7,13 +7,13 @@ export {
   getWindowsPathDirs,
   getWindowsPathExts,
   getWindowsShellExecutable,
-  quoteForCmdExe,
+  escapeCmdExeArgument,
+  escapeCmdExeCommand,
   resolveExecFileSpawn,
   resolveWindowsCommandPath,
-  wrapCmdExeCommandLine,
   type ExecFileSpawn,
   type FileExists,
-} from './windows-spawn';
+} from '@switch-console/shared/windows-spawn';
 export {
   ExecError,
   type BoundExec,

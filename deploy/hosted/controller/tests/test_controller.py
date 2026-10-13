@@ -73,15 +73,19 @@ def insert_machine(store: MachineStore, cfg: ControllerConfig, machine_id: str) 
     )
 
 
+SEAT_A = "5e1c2b4a-0000-4000-8000-0000000000a1"
+SEAT_B = "5e1c2b4a-0000-4000-8000-0000000000b1"
+
+
 def bundle_json(machine_id: str, enrollment_code: str) -> str:
     return json.dumps(
         {
-            "version": 4,
+            "version": 5,
             "installationId": "test-installation",
             "machineId": machine_id,
             "dataVolumeId": "vol-0123456789abcdef0",
             "apiEndpoint": "https://switch.example.test/agent-api",
-            "controller": {"id": None, "enrollmentCode": enrollment_code},
+            "controllers": [{"key": SEAT_A, "id": None, "enrollmentCode": enrollment_code}],
         },
         separators=(",", ":"),
     )
@@ -441,9 +445,32 @@ def test_starting_an_instance_with_the_current_bundle_only_starts_it(tmp_path: P
     store.close()
 
 
-def _with_controller(bundle: str, controller_id: str | None, enrollment_code: str | None) -> str:
+def _with_controller(
+    bundle: str, controller_id: str | None, enrollment_code: str | None, key: str = SEAT_A
+) -> str:
     value = json.loads(bundle)
-    value["controller"] = {"id": controller_id, "enrollmentCode": enrollment_code}
+    entry = {"key": key, "id": controller_id, "enrollmentCode": enrollment_code}
+    controllers = [item for item in value["controllers"] if item["key"] != key]
+    if len(controllers) == len(value["controllers"]):
+        value["controllers"] = [*controllers, entry]
+    else:
+        value["controllers"] = [
+            entry if item["key"] == key else item for item in value["controllers"]
+        ]
+    return json.dumps(value, separators=(",", ":"))
+
+
+def _without_seat(bundle: str, key: str) -> str:
+    value = json.loads(bundle)
+    value["controllers"] = [item for item in value["controllers"] if item["key"] != key]
+    return json.dumps(value, separators=(",", ":"))
+
+
+def _as_version_4(bundle: str) -> str:
+    value = json.loads(bundle)
+    [entry] = value.pop("controllers")
+    value["version"] = 4
+    value["controller"] = {"id": entry["id"], "enrollmentCode": entry["enrollmentCode"]}
     return json.dumps(value, separators=(",", ":"))
 
 
@@ -486,6 +513,76 @@ CONTROLLER_B = "9a1c2b4a-0000-4000-8000-0000000000bb"
     ],
 )
 def test_user_data_is_replaced_only_when_the_boot_would_need_it(current, wanted, replaced):
+    assert needs_new_user_data(current, wanted) is replaced
+
+
+TWO_SEATS = _with_controller(REVISION_1_BUNDLE, None, "swce_SyntheticSeatBRevision0001", SEAT_B)
+TWO_SEATS_ENROLLED_A = _with_controller(TWO_SEATS, CONTROLLER_A, None)
+
+
+@pytest.mark.parametrize(
+    ("current", "wanted", "replaced"),
+    [
+        (REVISION_1_BUNDLE, TWO_SEATS, True),
+        (TWO_SEATS, REVISION_1_BUNDLE, True),
+        (TWO_SEATS, _without_seat(TWO_SEATS, SEAT_A), True),
+        (TWO_SEATS, TWO_SEATS, False),
+        (TWO_SEATS, TWO_SEATS_ENROLLED_A, False),
+        (
+            TWO_SEATS,
+            _with_controller(TWO_SEATS_ENROLLED_A, CONTROLLER_B, None, SEAT_B),
+            False,
+        ),
+        (
+            TWO_SEATS,
+            _with_controller(TWO_SEATS_ENROLLED_A, None, "swce_SyntheticSeatBRevision0002", SEAT_B),
+            True,
+        ),
+        (TWO_SEATS_ENROLLED_A, TWO_SEATS_ENROLLED_A, False),
+        (TWO_SEATS_ENROLLED_A, _with_controller(TWO_SEATS, CONTROLLER_B, None), True),
+        (TWO_SEATS_ENROLLED_A, TWO_SEATS, True),
+        (
+            TWO_SEATS_ENROLLED_A,
+            _with_controller(TWO_SEATS, None, "swce_SyntheticCodeRevision0002"),
+            True,
+        ),
+        (
+            _with_controller(REVISION_1_BUNDLE, CONTROLLER_A, None),
+            _with_controller(TWO_SEATS_ENROLLED_A, None, "swce_SyntheticSeatCRevision0001", SEAT_B),
+            True,
+        ),
+        (
+            TWO_SEATS,
+            json.dumps(
+                {
+                    **json.loads(TWO_SEATS),
+                    "controllers": json.loads(TWO_SEATS)["controllers"][::-1],
+                },
+                separators=(",", ":"),
+            ),
+            False,
+        ),
+    ],
+)
+def test_user_data_is_replaced_per_workspace_seat(current, wanted, replaced):
+    assert needs_new_user_data(current, wanted) is replaced
+
+
+@pytest.mark.parametrize(
+    ("current", "wanted", "replaced"),
+    [
+        (_as_version_4(REVISION_1_BUNDLE), REVISION_1_BUNDLE, True),
+        (_as_version_4(REVISION_1_BUNDLE), _as_version_4(REVISION_1_BUNDLE), False),
+        (
+            _as_version_4(REVISION_1_BUNDLE),
+            _as_version_4(_with_controller(REVISION_1_BUNDLE, CONTROLLER_A, None)),
+            False,
+        ),
+        (_as_version_4(REVISION_1_BUNDLE), _as_version_4(REVISION_2_BUNDLE), True),
+        (json.dumps({"version": 3}), REVISION_1_BUNDLE, True),
+    ],
+)
+def test_user_data_of_another_bundle_version_is_replaced(current, wanted, replaced):
     assert needs_new_user_data(current, wanted) is replaced
 
 

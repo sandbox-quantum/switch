@@ -9,12 +9,13 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.db.models import TENANT_ZERO_ID, User
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.hosted_machine_store import (
-    HostedMachineConflict,
+    CloudMachineConflict,
     claim_conflict,
     owner_stopped,
 )
@@ -33,6 +34,7 @@ from switch_core.gateway.auth import (
 )
 from switch_core.gateway.dependencies import (
     get_bridge_store,
+    get_client_lifecycle,
     get_config,
     get_external_user_store,
     get_session,
@@ -147,13 +149,16 @@ async def login(
 
 async def _prewarm(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
     user_id: str,
     config: SwitchConfig,
     settings: HostedControllerSettings | None,
 ) -> SignupMachine:
     try:
-        machine = await ensure_machine(session, user_id, config, settings)
-    except (MachineUnavailable, HostedMachineConflict) as error:
+        machine, _workspace = await ensure_machine(
+            session, factory, user_id, config, settings
+        )
+    except (MachineUnavailable, CloudMachineConflict) as error:
         await session.rollback()
         logger.warning(
             "Signed-up user %s has no cloud machine warming: %s", user_id, error
@@ -196,6 +201,9 @@ async def signup(
     req: SignupRequest,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_system_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     settings: Annotated[HostedControllerSettings | None, Depends(hosted_settings)],
@@ -249,7 +257,7 @@ async def signup(
             TENANT_ZERO_ID,
         )
         signed_in = _session_response(user)
-        machine = await _prewarm(session, user.id, config, settings)
+        machine = await _prewarm(session, session_factory, user.id, config, settings)
     return SignupResponse(**signed_in.model_dump(), machine=machine)
 
 
@@ -310,6 +318,7 @@ async def session_state(
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
 ) -> SessionStateResponse:
     """Who is signed in, which workspace this session is in, and — when it
     is in none — what would get it into one.
@@ -326,7 +335,9 @@ async def session_state(
     # One connection at a time: release this one before the lookup opens its own.
     await session.commit()
     tenants = await list_tenant_memberships(session_factory, user_store, user.id)
-    return describe_session_state(config, user, auth.tenant_claim, tenants)
+    return describe_session_state(
+        config, user, auth.tenant_claim, tenants, client_lifecycle.tenants_isolated
+    )
 
 
 @router.get("/auth/me")

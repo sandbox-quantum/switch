@@ -5,8 +5,7 @@ import type { AgentVerifyResult } from '@shared/core/switch-servers/switch-serve
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { addAgent, type AddAgentParams } from './add-agent';
 import {
-  getAgentAdvancedFields,
-  getAgentAdvancedSurface,
+  getAgentAdvancedSettings,
   readAgentAdvancedConfig,
   updateAgentAdvancedConfig,
 } from './agent-advanced-config';
@@ -21,7 +20,6 @@ import {
   attachConfiguredAgents,
   type AttachConfiguredAgentsParams,
 } from './attach-configured-agents';
-import { getAgentDefinitionFields } from './definition-fields';
 import { deleteAgent, type DeleteAgentOptions } from './deleteAgent';
 import {
   discoverLoadableAgentsInDir,
@@ -38,17 +36,14 @@ import { setAgentAutoApprove, type AgentAutoApproveParams } from './setAgentAuto
 
 export const agentsController = createRPCController({
   addAgent: (params: AddAgentParams) => addAgent(params),
-  definitionFields: (params: { providerId: AgentProviderId }) =>
-    Promise.resolve(getAgentDefinitionFields(params.providerId)),
   /**
-   * The per-agent advanced configuration, wherever the provider keeps it —
-   * a repo-agent definition (Claude) or a launch profile (Codex). One form,
-   * one editor; see `agent-advanced-config.ts`.
+   * Where the provider keeps the per-agent advanced configuration — a
+   * repo-agent definition (Claude) or a launch profile (Codex) — and which of
+   * the server's fields it applies. One form, one editor; see
+   * `agent-advanced-config.ts`.
    */
-  advancedFields: (params: { providerId: AgentProviderId }) =>
-    Promise.resolve(getAgentAdvancedFields(params.providerId)),
-  advancedSurface: (params: { providerId: AgentProviderId }) =>
-    Promise.resolve(getAgentAdvancedSurface(params.providerId)),
+  advancedSettings: (params: { providerId: AgentProviderId }) =>
+    Promise.resolve(getAgentAdvancedSettings(params.providerId)),
   /**
    * The models the agent's own host offers, for the advanced-configuration
    * fields that declare a catalogue binding. Reports why it could not be read

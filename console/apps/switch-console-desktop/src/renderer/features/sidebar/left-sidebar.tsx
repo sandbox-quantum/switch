@@ -9,11 +9,13 @@ import { SwitchConsoleMark } from '@renderer/lib/switch-console-mark';
 import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { cn } from '@renderer/utils/utils';
 import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
+import { FROZEN, isFrozenServer } from '../switch-servers/managed-server-state';
+import { switchServersStore } from '../switch-servers/switch-servers-store';
 import { WorkspaceSwitcher } from '../switch-servers/workspace-switcher';
 import { SidebarPinnedSessionList } from './pinned-session-list';
 import { SessionDiscoveryStatus } from './session-discovery-status';
 import { SessionsSectionHeader } from './sessions-section-header';
-import { SidebarGroupedList } from './sidebar-grouped-list';
+import { SidebarGroupedList, useAgentManagementMode } from './sidebar-grouped-list';
 import {
   SidebarContainer,
   SidebarContent,
@@ -34,6 +36,9 @@ export const LeftSidebar: React.FC = observer(function LeftSidebar() {
   const { currentView } = useWorkspaceSlots();
 
   const { isDragOver, onDragOver, onDragEnter, onDragLeave, onDrop } = useSidebarDrop();
+  const managementMode = useAgentManagementMode();
+  const activeServer = switchServersStore.activeServer;
+  const frozen = activeServer !== null && isFrozenServer(activeServer);
 
   return (
     <div
@@ -55,7 +60,9 @@ export const LeftSidebar: React.FC = observer(function LeftSidebar() {
       <SidebarSpace />
       <SidebarContainer className="min-h-0 w-full flex-1 border-r-0">
         <SidebarContent className="flex flex-col">
-          <SidebarPinnedSessionList />
+          <div className={cn(frozen && FROZEN)}>
+            <SidebarPinnedSessionList />
+          </div>
           {/* The sidebar reads as three blocks — which server, that server's
               pages, then its sessions. The switcher and the nav under it are
               one block, 8px apart, which the nav owns as its own top padding;
@@ -64,9 +71,11 @@ export const LeftSidebar: React.FC = observer(function LeftSidebar() {
             <WorkspaceSwitcher />
             <WorkspaceNav />
           </div>
-          <SidebarGroup className="mt-0 mb-0 flex min-h-0 flex-1 flex-col">
-            <SessionsSectionHeader />
-            <SessionDiscoveryStatus />
+          <SidebarGroup className={cn('mt-0 mb-0 flex min-h-0 flex-1 flex-col', frozen && FROZEN)}>
+            {/* With agent management the sections draw their own headings,
+                inside the list, so they scroll with it. */}
+            {!managementMode && <SessionsSectionHeader />}
+            {!managementMode && <SessionDiscoveryStatus />}
             <SidebarGroupContent className="flex min-h-0 flex-1 flex-col">
               <SidebarMenu className="flex min-h-0 flex-1 flex-col">
                 <SidebarGroupedList />

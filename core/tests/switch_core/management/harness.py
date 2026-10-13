@@ -45,6 +45,7 @@ from switch_core.bridges.agent.protocol.controller_presence import (
 )
 from switch_core.bridges.agent.protocol.controller_stream import IDLE
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.connections.broker import ServiceBroker
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Client,
@@ -61,10 +62,13 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
+from switch_core.gateway.providers import router as providers_router
 from switch_core.keys import Keyring
 from switch_core.management import controller_routes
 from switch_core.management.errors import ManagementError
 from switch_core.management.wiring import Management, build_management
+from tests.switch_core.connections.fake_vendor import FakeVendor
+from tests.switch_core.connections.github_seed import github_broker
 
 TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 
@@ -151,12 +155,16 @@ def protocol_service(
 @dataclass
 class Harness:
     app: FastAPI
+    # Mounted at `/gateway` on `app`, for a test to add routes to.
+    gateway_app: FastAPI
     management: Management
     protocol: AgentCore
     cache: ApiKeyCache
     controller_auth_cache: ControllerAuthCache
     clock: Clock
     session_factory: async_sessionmaker[AsyncSession]
+    broker: ServiceBroker
+    vendor: FakeVendor
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -208,6 +216,11 @@ def build_harness(
 
     agent_app = FastAPI()
     gateway_app = FastAPI()
+    gateway_app.include_router(providers_router)
+    vendor = FakeVendor()
+    broker = github_broker(session_factory, TEST_KEYRING, vendor)
+    agent_app.state.service_broker = broker
+    gateway_app.state.service_broker = broker
     management.install(
         agent_bridge_app=agent_app, gateway_app=gateway_app, protocol=protocol
     )
@@ -241,12 +254,15 @@ def build_harness(
     )
     return Harness(
         app=agent_app,
+        gateway_app=gateway_app,
         management=management,
         protocol=protocol,
         cache=cache,
         controller_auth_cache=controller_auth_cache,
         clock=clock,
         session_factory=session_factory,
+        broker=broker,
+        vendor=vendor,
     )
 
 

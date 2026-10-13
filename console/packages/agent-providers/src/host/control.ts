@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { rename, rm, writeFile } from 'node:fs/promises';
+import { rm, writeFile } from 'node:fs/promises';
 import { createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import type { Duplex } from 'node:stream';
@@ -12,6 +12,7 @@ import {
 } from './attachment-transfers';
 import { readJournalSnapshot } from './journal-snapshot';
 import { ensureSharedProcess, liveSupervisor, sharedSessionRoot, type Supervision } from './launch';
+import { replaceFile } from './replace-file';
 import {
   SessionHostFailedError,
   sessionRequestSchema,
@@ -296,7 +297,7 @@ export async function serveControl(
   const path = join(root, CONTROL_FILE);
   const temporary = `${path}.${token.slice(0, 8)}.tmp`;
   await writeFile(temporary, JSON.stringify({ port: address.port, token }), { mode: 0o600 });
-  await rename(temporary, path);
+  await replaceFile(temporary, path);
   try {
     await new Promise<void>((resolve) => {
       if (signal.aborted) resolve();

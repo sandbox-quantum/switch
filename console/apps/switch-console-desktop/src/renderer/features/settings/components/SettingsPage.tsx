@@ -3,6 +3,7 @@ import { MigrationSettingsPage } from '@renderer/features/agent-migration/migrat
 import { RemoteHostsSettingsPage } from '@renderer/features/remote-hosts/views/remote-hosts-view';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { PageContent, PageLayout, PageSidebarMenu } from '@renderer/lib/components/page-layout';
+import { useAnyServerFeatureFlag } from '@renderer/lib/hooks/useFeatureFlags';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
 import { AgentsSettingsPage } from '../agents-page/AgentsSettingsPage';
@@ -100,15 +101,19 @@ export function SettingsPage({
   tab: SettingsPageTab;
   onTabChange: (tab: SettingsPageTab) => void;
 }) {
+  // Only offered while some server runs agent management: elsewhere there is
+  // nothing to move to managed and nothing managed to look after.
+  const agentManagement = useAnyServerFeatureFlag('agent_management');
   const handleDocsClick = useCallback(() => {
     void openExternalUrl(SWITCH_CONSOLE_DOCS_URL, 'Could not open the documentation');
   }, []);
 
-  const tabs: Array<{
+  type Tab = {
     id: SettingsPageTab;
     label: string;
     isExternal?: boolean;
-  }> = [
+  };
+  const allTabs: Tab[] = [
     // Switch Console v0 hides Account, Integrations, Connections (SSH), and Browser tabs.
     { id: 'general', label: 'General' },
     { id: 'clis-models', label: 'Agent providers' },
@@ -117,8 +122,10 @@ export function SettingsPage({
     { id: 'interface', label: 'Interface' },
     { id: 'docs', label: 'Docs', isExternal: true },
   ];
+  const tabs = allTabs.filter((tab) => agentManagement || tab.id !== 'managed-agents');
 
-  const currentContent = TAB_CONTENT[activeTab]?.();
+  const shownTab = !agentManagement && activeTab === 'managed-agents' ? 'general' : activeTab;
+  const currentContent = TAB_CONTENT[shownTab]?.();
 
   return (
     <PageLayout
@@ -126,7 +133,7 @@ export function SettingsPage({
       sidebar={
         <PageSidebarMenu
           items={tabs}
-          activeId={activeTab}
+          activeId={shownTab}
           onSelect={(item) => {
             if (item.isExternal) {
               handleDocsClick();

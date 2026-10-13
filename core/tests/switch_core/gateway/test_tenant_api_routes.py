@@ -31,12 +31,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+from switch_core.connections.adapters.github import GitHubAdapter
+from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.loader import CATALOG
 from switch_core.db.models import (
     Agent,
     ApiKey,
     Client,
     Invitation,
-    ProviderConnection,
+    ServiceTokenIssuance,
     Tenant,
     TenantMember,
     UsageMetric,
@@ -48,6 +51,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
@@ -144,6 +148,15 @@ def _app(
     app.dependency_overrides[gw_deps.get_invite_mailer] = lambda: mailer
     app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: (
         client_lifecycle or _FakeClientLifecycle(session_factory)
+    )
+    app.state.service_broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=_KEYRING,
+        catalog=CATALOG,
+        adapters={},
+        disabled={},
+        store=ServiceConnectionStore(),
+        token_retention=timedelta(days=30),
     )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=_KEYRING,
@@ -1461,15 +1474,33 @@ class TestMemberRoutes:
         )
         token = _token(owner_id, "remover@example.invalid", TENANT_A)
         async with tenant_session(session_factory, TENANT_A) as session:
+            await ServiceConnectionStore().save_connection(
+                session,
+                user_id=target_id,
+                service="github",
+                consent="write",
+                granted_scopes=[],
+                account_id="1001",
+                external_identity="removed-user",
+                encrypted_secret=_KEYRING.encrypt(
+                    json.dumps({"access_token": "SYNTHETIC-USER-TOKEN"})
+                ),
+            )
             session.add(
-                ProviderConnection(
-                    user_id=target_id,
-                    provider="github",
-                    kind="oauth",
-                    encrypted_credential=_KEYRING.encrypt(
-                        json.dumps({"access_token": "SYNTHETIC-USER-TOKEN"})
-                    ),
-                    verified_at=datetime.now(UTC),
+                ServiceTokenIssuance(
+                    grant_id="grant",
+                    agent_id="agent",
+                    owner_id=target_id,
+                    service="github",
+                    principal="agent_key",
+                    controller_id=None,
+                    permissions={},
+                    resources={},
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                    token_sha256="0" * 64,
+                    encrypted_token=_KEYRING.encrypt("SYNTHETIC-REPOSITORY"),
+                    revoke_requested=False,
+                    attempts=0,
                 )
             )
             await session.commit()
@@ -1483,6 +1514,15 @@ class TestMemberRoutes:
             revoke=AsyncMock(),
         )
         app.state.github_connections = github
+        app.state.service_broker = ServiceBroker(
+            session_factory=session_factory,
+            keyring=_KEYRING,
+            catalog=CATALOG,
+            adapters={"github": GitHubAdapter(github, AsyncMock())},  # type: ignore[arg-type]
+            disabled={},
+            store=ServiceConnectionStore(),
+            token_retention=timedelta(days=30),
+        )
         async with _client(app, token) as client:
             response = await client.delete(f"/tenants/{TENANT_A}/members/{target_id}")
 
@@ -1491,14 +1531,12 @@ class TestMemberRoutes:
         assert set(github.flows) == {"other"}
         async with session_factory() as session:
             assert await session.get(TenantMember, (TENANT_A, target_id)) is None
-            assert (
-                await session.scalar(
-                    select(ProviderConnection).where(
-                        ProviderConnection.user_id == target_id
-                    )
+            issued = await session.scalar(
+                select(ServiceTokenIssuance).where(
+                    ServiceTokenIssuance.owner_id == target_id
                 )
-                is None
             )
+            assert issued is not None and issued.encrypted_token is None
 
     async def test_removing_a_member_stops_their_api_key_working(
         self, session_factory: async_sessionmaker[AsyncSession]

@@ -75,6 +75,20 @@ module structure and the key request flows.
 setting up bring-your-own OIDC sign-in for the gateway, including the WorkOS
 setup path.
 
+## Adding an agent CLI
+
+Start with [Adding support for a new agent CLI](console/docs/new-agent-cli.md):
+the steps in order, and what your pull request has to show (a real-CLI test
+summary and a short video). The technical details are in
+[Add an agent provider](console/docs/add-an-agent-provider.md).
+
+## Adding a messaging platform
+
+Start with [Adding support for a new messaging platform](docs/contributing/new-messaging-platform.md):
+the steps in order, and what your pull request has to show (your adapter's
+test summary and a short video). The technical details are in
+[Add a messaging platform](docs/contributing/add-a-messaging-platform.md).
+
 ## Testing
 
 Tests live in `core/tests/switch_core/` and mirror the module structure. The

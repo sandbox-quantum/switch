@@ -39,7 +39,7 @@ spec:
         # finds nothing pending.
         - name: migrate
           image: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
-          imagePullPolicy: {{ .Values.switchCore.imagePullPolicy }}
+          imagePullPolicy: {{ include "switch.imagePullPolicy" (dict "policy" .Values.switchCore.imagePullPolicy "image" .Values.switchCore.image) }}
           command: ["switch-migrate"]
           env:
             {{- include "switch.coreEnv" . | nindent 12 }}
@@ -52,7 +52,7 @@ spec:
       containers:
         - name: switch-core
           image: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
-          imagePullPolicy: {{ .Values.switchCore.imagePullPolicy }}
+          imagePullPolicy: {{ include "switch.imagePullPolicy" (dict "policy" .Values.switchCore.imagePullPolicy "image" .Values.switchCore.image) }}
           ports:
             - containerPort: 8000
               protocol: TCP
@@ -77,9 +77,18 @@ spec:
             - name: HOSTED_IDLE_STOP_MINUTES
               value: {{ .Values.switchCore.hostedIdleStopMinutes | quote }}
             {{- end }}
-            {{- if .Values.switchCore.githubConnectionsSecret }}
+            {{- if and .Values.switchCore.githubConnectionsSecret .Values.switchCore.githubAppPrivateKeyPath }}
+            - name: GITHUB_APP_CONFIG_PATH
+              value: /etc/switch-github/github.json
+            - name: GITHUB_APP_PRIVATE_KEY_PATH
+              value: {{ .Values.switchCore.githubAppPrivateKeyPath | quote }}
+            {{- else if .Values.switchCore.githubConnectionsSecret }}
             - name: HOSTED_GITHUB_CONFIG_PATH
               value: /etc/switch-github/github.json
+            {{- end }}
+            {{- if .Values.switchCore.googleWorkspaceClientSecret }}
+            - name: GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH
+              value: /etc/switch-google-workspace/client.json
             {{- end }}
             {{- include "switch.coreEnv" (merge (dict "omitOwnerCredentials" true) .) | nindent 12 }}
           # Readiness checks the database; liveness deliberately does not.
@@ -105,7 +114,7 @@ spec:
             periodSeconds: 30
           resources:
             {{- toYaml .Values.switchCore.resources | nindent 12 }}
-          {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.hostedControllerSecret (include "switch.teamsAppFederated" .) }}
+          {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.googleWorkspaceClientSecret .Values.switchCore.hostedControllerSecret (include "switch.teamsAppFederated" .) }}
           volumeMounts:
             {{- if .Values.switchCore.hostedControllerSecret }}
             - name: hosted-controller
@@ -117,6 +126,11 @@ spec:
               mountPath: /etc/switch-github
               readOnly: true
             {{- end }}
+            {{- if .Values.switchCore.googleWorkspaceClientSecret }}
+            - name: google-workspace-client
+              mountPath: /etc/switch-google-workspace
+              readOnly: true
+            {{- end }}
             {{- if include "switch.dbCaBundleConfigMap" . }}
             {{- include "switch.dbCaBundleVolumeMount" . | nindent 12 }}
             {{- end }}
@@ -126,7 +140,7 @@ spec:
               readOnly: true
             {{- end }}
           {{- end }}
-      {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.hostedControllerSecret (include "switch.teamsAppFederated" .) }}
+      {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.googleWorkspaceClientSecret .Values.switchCore.hostedControllerSecret (include "switch.teamsAppFederated" .) }}
       volumes:
         {{- if .Values.switchCore.hostedControllerSecret }}
         - name: hosted-controller
@@ -138,6 +152,12 @@ spec:
         - name: github-connections
           secret:
             secretName: {{ .Values.switchCore.githubConnectionsSecret | quote }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if .Values.switchCore.googleWorkspaceClientSecret }}
+        - name: google-workspace-client
+          secret:
+            secretName: {{ .Values.switchCore.googleWorkspaceClientSecret | quote }}
             defaultMode: 0400
         {{- end }}
         {{- if include "switch.dbCaBundleConfigMap" . }}

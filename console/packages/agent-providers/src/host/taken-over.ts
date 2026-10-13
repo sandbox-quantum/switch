@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { open, readFile, rename, unlink } from 'node:fs/promises';
+import { open, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { fileMode } from './host-permissions';
+import { replaceFile } from './replace-file';
 
 /**
  * The record a watcher leaves behind when something else took its connection.
@@ -39,7 +40,7 @@ export async function recordTakenOver(root: string, info: TakenOver): Promise<vo
     await file.close();
   }
   try {
-    await rename(temporary, path);
+    await replaceFile(temporary, path);
   } finally {
     await unlink(temporary).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'ENOENT') throw error;

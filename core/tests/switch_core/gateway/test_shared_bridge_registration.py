@@ -67,6 +67,12 @@ class _Lifecycle:
     def supports_directory_search(self, bridge_type: str) -> bool:
         return False
 
+    def receives_webhooks(self, bridge_type: str) -> bool:
+        return False
+
+    def webhook_url(self, bridge_id: str, bridge_type: str) -> str | None:
+        return None
+
     async def register(self, **kwargs: object) -> None:
         self.registered.append(kwargs)
 

@@ -1,6 +1,6 @@
 """Building the management module and attaching it to the two apps.
 
-`create_management` returns None when `AGENT_MANAGEMENT_ENABLED` is off, and
+`create_management` returns None when the `agent_management` feature flag is off, and
 with None nothing is mounted and the bearer middleware has no controller
 branch. When it is on, the authenticator goes to the middleware as the agent
 bridge app is built, `install` adds the routes once both apps exist, and
@@ -194,7 +194,7 @@ def create_management(
         return None
     if config.controller_token_secret is None:
         raise RuntimeError(
-            "AGENT_MANAGEMENT_ENABLED is set without CONTROLLER_TOKEN_SECRET; the "
+            "The agent_management feature flag is on without CONTROLLER_TOKEN_SECRET; the "
             "config validator should have refused this"
         )
     return build_management(

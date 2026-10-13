@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { basename } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
+import { parse } from 'smol-toml';
 import { z } from 'zod';
 import {
   type ModelSelection,
@@ -39,6 +41,7 @@ import {
   CODEX_SERVER_NOTIFICATIONS,
   CODEX_SERVER_REQUESTS,
   type CodexAskForApproval,
+  type CodexSandboxMode,
   type CodexThreadTokenUsageUpdatedNotification,
   type CodexTokenUsageBreakdown,
   type CodexCommandExecutionApprovalParams,
@@ -132,6 +135,33 @@ function threadModeConfig(mode: RuntimeMode): ThreadModeConfig {
     case 'full-access':
       return { approvalPolicy: 'never' };
   }
+}
+
+const SANDBOX_MODES = new Set<CodexSandboxMode>([
+  'read-only',
+  'workspace-write',
+  'danger-full-access',
+]);
+
+/**
+ * The `sandbox_mode` the session's Codex configuration names, passed with the
+ * thread as well: a resumed thread otherwise keeps the sandbox it started
+ * with, whatever the configuration says now. Null when it names none, so Codex
+ * applies its own default.
+ */
+async function configuredSandbox(codexHome: string | undefined): Promise<CodexSandboxMode | null> {
+  if (!codexHome) return null;
+  let text: string;
+  try {
+    text = await readFile(join(codexHome, 'config.toml'), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  const mode = parse(text).sandbox_mode;
+  return typeof mode === 'string' && SANDBOX_MODES.has(mode as CodexSandboxMode)
+    ? (mode as CodexSandboxMode)
+    : null;
 }
 
 function sessionStatusOf(status: CodexThreadStatusChangedNotification['status']): SessionStatus {
@@ -294,9 +324,11 @@ export class CodexAdapter implements ProviderAdapter {
         throw new Error('Sign in on the execution machine with codex login.');
 
       const mode = threadModeConfig(input.runtimeMode);
+      const sandbox = await configuredSandbox(input.env.CODEX_HOME);
       const config = {
         cwd: input.cwd,
         approvalPolicy: mode.approvalPolicy,
+        ...(sandbox ? { sandbox } : {}),
         approvalsReviewer: 'user' as const,
         ...(input.model?.id ? { model: input.model.id } : {}),
         ...(input.systemContext ? { developerInstructions: input.systemContext } : {}),

@@ -2,20 +2,24 @@ from __future__ import annotations
 
 import logging
 import math
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, ClassVar, Literal, Protocol, final, runtime_checkable
 
 from switch_core.agent_display_name import defuse_label_markup
 from switch_core.agent_icon import generated_icon_url, initials_icon_url
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint
+from switch_core.bridges.collaboration.install import InboundWebhook, WebhookRequest
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelCreationUnsupported,
     ChannelType,
     DirectoryUser,
+    FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -34,6 +38,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     request_summary,
     turn_summary,
 )
+from switch_core.messaging_platforms import MessagingPlatform
 from switch_core.outbound import OutboundPolicy
 from switch_core.room_wide_mention import (
     ROOM_WIDE_TARGET,
@@ -343,6 +348,31 @@ class SupportsSharedConnection(Protocol):
 
 
 class PlatformAdapter(ABC):
+    #: The platform as a person names it — "Microsoft Teams", not "teams".
+    #:
+    #: Required: registration refuses an adapter without one. It is what
+    #: Console labels the platform with, what a card says an answer came
+    #: "from", and what the adapter's own messages call the platform.
+    display_name: ClassVar[str]
+
+    #: The page under the messaging-apps docs that explains how to connect
+    #: this platform (`docs/.../messaging-apps/<docs_slug>`), or None where
+    #: there is none yet. Console links "how do I set this up?" to it.
+    docs_slug: ClassVar[str | None] = None
+
+    #: The name of the logo file shipped in the adapter's own folder. Served to
+    #: Console as the platform's icon; a platform without one is drawn with a
+    #: generic icon. SVG only, because Console draws it at every size.
+    icon_file: ClassVar[str] = "icon.svg"
+
+    #: Whether this platform delivers its events by calling Switch over HTTP,
+    #: on an address of each connection's own (`/messaging/bridges/<id>/events`).
+    #:
+    #: Set by an adapter that implements `verify_webhook` and `parse_webhook`.
+    #: Most adapters dial out to their platform and are handed events on a
+    #: connection they opened; they leave this False.
+    receives_webhooks: ClassVar[bool] = False
+
     #: Whether this platform draws agents' session activity: each turn step by
     #: step, and the approval and question cards a session waits on.
     draws_session_activity: ClassVar[bool] = False
@@ -541,9 +571,56 @@ class PlatformAdapter(ABC):
         # size against this before downloading so an oversize file is rejected
         # loudly instead of being pulled down and discarded.
         self._max_attachment_bytes = 20 * 1024 * 1024
+        # Set by `set_webhook_url` for an adapter that receives webhooks.
+        self.webhook_url: str | None = None
 
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
+
+    @classmethod
+    def describe(cls, key: str) -> MessagingPlatform:
+        """What this adapter declares about its platform, registered as `key`."""
+        display_name = getattr(cls, "display_name", None)
+        if not isinstance(display_name, str) or not display_name.strip():
+            raise ValueError(
+                f"{cls.__name__} declares no display_name. Every adapter names "
+                "its platform the way a person would "
+                '(e.g. display_name = "Microsoft Teams").'
+            )
+        return MessagingPlatform(
+            key=key,
+            display_name=display_name,
+            docs_slug=cls.docs_slug,
+            icon_svg=cls.icon_svg(),
+        )
+
+    @classmethod
+    def icon_svg(cls) -> str | None:
+        """The logo shipped beside this adapter's module, or None if it has none."""
+        module = sys.modules.get(cls.__module__)
+        module_file = getattr(module, "__file__", None)
+        if module_file is None:
+            return None
+        path = Path(module_file).parent / cls.icon_file
+        if not path.is_file():
+            return None
+        return path.read_text(encoding="utf-8")
+
+    @classmethod
+    def classify_failure(cls, exc: BaseException) -> FailureReason | None:
+        """Name why this platform's own SDK failed, or None to leave it to Switch.
+
+        The lifecycle asks this first when a bridge fails, so the knowledge of
+        what this platform's exceptions mean lives with the adapter that raises
+        them. Answer only for exceptions of this platform's SDK; return None
+        for anything else, and the shared classifier decides —
+        `BridgeCredentialError` is `auth_failed`, a transport failure is
+        `network`, `BridgeOperationError` is `platform_error`.
+
+        An adapter that raises only `BridgeCredentialError` and
+        `BridgeOperationError` for platform refusals needs no override.
+        """
+        return None
 
     @classmethod
     async def prepare_config(
@@ -690,7 +767,47 @@ class PlatformAdapter(ABC):
         raise WebhookDeliveryUnsupported(
             f"{type(self).__name__} does not receive events over HTTP, so the "
             "event posted for this bridge cannot be delivered. A bridge reached "
-            "this way was installed as a distributed app; this one was not."
+            "this way was installed as a distributed app, or its adapter sets "
+            "`receives_webhooks`; this one is neither."
+        )
+
+    async def verify_webhook(self, request: WebhookRequest) -> None:
+        """Prove a request to this bridge's own webhook address is the platform's.
+
+        For an adapter that sets `receives_webhooks`. Check the request against
+        this connection's own secret — a signature header over `request.body`,
+        a token in the query — and raise `WebhookAuthenticityError` if it does
+        not prove itself. Nothing reads the request before this passes: it is a
+        stranger's bytes until then, so do not log it either.
+
+        Async because some platforms prove a request with a token whose keys
+        have to be fetched (a signed JWT). Called inside the request the
+        platform is waiting on, so keep it fast.
+        """
+        raise WebhookDeliveryUnsupported(
+            f"{type(self).__name__} does not receive events on a webhook address "
+            "of its own."
+        )
+
+    def parse_webhook(self, request: WebhookRequest) -> InboundWebhook:
+        """Read a verified request into the event `dispatch_event` will be handed.
+
+        Called only after `verify_webhook` passed. Raise `WebhookPayloadError`
+        for a body this adapter cannot read. Set `handshake` instead of an event
+        for a request that is the platform checking the address is ours (a
+        challenge to echo back): it is answered with that text and nothing is
+        dispatched. Set `external_event_id` to the platform's id for the
+        delivery wherever it has one — that is what makes a retried delivery
+        recognisable, so it is handled once. Set `answers_inline` False: a
+        connection's own webhook address acknowledges first and handles after,
+        and refuses an event that expects its answer in the response.
+
+        Pure: no I/O. The platform is waiting for this request to be answered,
+        and the work belongs in `dispatch_event`, which runs after it has been.
+        """
+        raise WebhookDeliveryUnsupported(
+            f"{type(self).__name__} does not receive events on a webhook address "
+            "of its own."
         )
 
     @abstractmethod
@@ -1207,9 +1324,10 @@ class PlatformAdapter(ABC):
     @property
     def platform_name(self) -> str:
         """The platform as a person would name it, for messages that reach a
-        user. The class name is the fallback rather than the source: "Telegram"
-        belongs in a dialog, "TelegramAdapter" does not."""
-        return type(self).__name__.removesuffix("Adapter")
+        user. The class name stands in only for an adapter that was never
+        registered, which declares no `display_name`."""
+        declared = getattr(type(self), "display_name", None)
+        return declared or type(self).__name__.removesuffix("Adapter")
 
     async def search_directory_users(self, query: str) -> list[DirectoryUser]:
         """Search the platform's own user directory (CHOO-2137).
@@ -1509,6 +1627,20 @@ class PlatformAdapter(ABC):
         which is what stops it addressing another bridge's callbacks even by
         mistake."""
         return None
+
+    def set_webhook_url(self, url: str | None) -> None:
+        """Hand a `receives_webhooks` adapter the public address its platform
+        should deliver this connection's events to, before it starts.
+
+        For a platform whose address is registered through its API rather than
+        pasted into a settings page (Telegram's `setWebhook`): the adapter
+        registers it in `start`. None where the deployment has no
+        `MESSAGING_PUBLIC_URL`; an adapter that has to register its address
+        should then fail to start with a `BridgeOperationError` saying so,
+        since no event could ever reach it. Called only for adapters that set
+        `receives_webhooks`; the default stores it on `self.webhook_url`.
+        """
+        self.webhook_url = url
 
     def set_channel_migration_handler(
         self, handler: Callable[[str, str], Awaitable[None]]

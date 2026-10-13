@@ -15,6 +15,7 @@ export const VIEW_IDS = [
   'room',
   'settings',
   'server',
+  'managedServer',
   'serverAgents',
   'serverRooms',
   'remoteHosts',

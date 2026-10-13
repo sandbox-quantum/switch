@@ -306,11 +306,15 @@ async function adoptSettings(
   // A `.env` from before the database role split has no runtime password; one
   // is made here, and the next start gives the role it. One from before
   // SECRET_KEYS takes this desktop's, if it has one — a server may already
-  // have stored credentials under it — and a fresh one otherwise.
+  // have stored credentials under it — and a fresh one otherwise. One from
+  // before agent management gets a controller token secret the same way.
+  const desktop = await readSecrets(host);
   const { secrets } = withNewerSecrets({
     ...stack.env.secrets,
     dbRuntimePassword: stack.env.secrets.dbRuntimePassword ?? '',
-    secretKeys: stack.env.secrets.secretKeys ?? (await readSecrets(host))?.secretKeys ?? '',
+    secretKeys: stack.env.secrets.secretKeys ?? desktop?.secretKeys ?? '',
+    controllerTokenSecret:
+      stack.env.secrets.controllerTokenSecret ?? desktop?.controllerTokenSecret ?? '',
   });
   await storeSecrets(host, secrets);
   await rememberPorts(host, stack.env.ports);

@@ -5,9 +5,36 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
+import { killProcessTree } from './process-fence';
 import { SessionLinks } from './session-channel';
 import { owedSessionStart, type HostStartSource } from './session-start';
 import type { SharedHostConfig } from './shared-config';
+
+if (process.platform === 'win32') vi.setConfig({ testTimeout: 60_000 });
+
+/**
+ * Script for a stand-in host that runs `then` when asked to stop, as a real
+ * one does: on SIGTERM, or on Windows when its stop file appears in `root`.
+ */
+function onStop(root: string, then: string): string {
+  return `{
+    const stop = () => { ${then} };
+    process.on('SIGTERM', stop);
+    const file = require('node:path').join(${JSON.stringify(root)}, '.stop-' + process.pid);
+    const poll = setInterval(() => {
+      if (require('node:fs').existsSync(file)) { clearInterval(poll); stop(); }
+    }, 50);
+  }`;
+}
+
+/** Ends what a test started, the process and what it started. */
+async function cleanUp(pid: number | undefined): Promise<void> {
+  if (!pid) return;
+  try {
+    if (process.platform === 'win32') await killProcessTree(pid);
+    else process.kill(-pid, 'SIGKILL');
+  } catch {}
+}
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -63,40 +90,37 @@ async function fixture() {
 it('refuses to replace missing conversation state with a fresh session', async () => {
   await expect(ensureSharedProcess(await fixture())).rejects.toThrow('no saved SDK conversation');
 });
-it.skipIf(process.platform === 'win32')(
-  'waits for the old owner to exit before starting its replacement',
-  async () => {
-    const input = await fixture();
-    await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
-    await writeFile(
-      input.entrypoint,
-      `const fs=require('node:fs');fs.appendFileSync(process.argv[2]+'/trace','new\\n');`
+it('waits for the old owner to exit before starting its replacement', async () => {
+  const input = await fixture();
+  await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
+  await writeFile(
+    input.entrypoint,
+    `const fs=require('node:fs');fs.appendFileSync(process.argv[2]+'/trace','new\\n');`
+  );
+  const old = spawn(
+    process.execPath,
+    [
+      '-e',
+      `const fs=require('node:fs');const root=process.argv[1];fs.writeFileSync(root+'/shared-owner.lock',JSON.stringify({pid:process.pid}));${onStop(input.root, "setTimeout(()=>{fs.appendFileSync(root+'/trace','old-stopped\\n');process.exit(0)},200)")};console.log('ready');setInterval(()=>{},1000);`,
+      input.root,
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe'] }
+  );
+  try {
+    await once(old.stdout!, 'data');
+    const exit = once(old, 'exit');
+    await ensureSharedProcess(input);
+    await exit;
+    await expect
+      .poll(async () => readFile(join(input.root, 'trace'), 'utf8'))
+      .toBe('old-stopped\nnew\n');
+    expect(JSON.parse(await readFile(join(input.root, 'config.json'), 'utf8')).session).toEqual(
+      input.config.session
     );
-    const old = spawn(
-      process.execPath,
-      [
-        '-e',
-        `const fs=require('node:fs');const root=process.argv[1];fs.writeFileSync(root+'/shared-owner.lock',JSON.stringify({pid:process.pid}));process.on('SIGTERM',()=>{setTimeout(()=>{fs.appendFileSync(root+'/trace','old-stopped\\n');process.exit(0)},200)});console.log('ready');setInterval(()=>{},1000);`,
-        input.root,
-      ],
-      { stdio: ['ignore', 'pipe', 'pipe'] }
-    );
-    try {
-      await once(old.stdout!, 'data');
-      const exit = once(old, 'exit');
-      await ensureSharedProcess(input);
-      await exit;
-      await expect
-        .poll(async () => readFile(join(input.root, 'trace'), 'utf8'))
-        .toBe('old-stopped\nnew\n');
-      expect(JSON.parse(await readFile(join(input.root, 'config.json'), 'utf8')).session).toEqual(
-        input.config.session
-      );
-    } finally {
-      if (old.exitCode === null) old.kill('SIGKILL');
-    }
+  } finally {
+    if (old.exitCode === null) old.kill('SIGKILL');
   }
-);
+});
 
 it('refreshes renamed agent configuration without changing the saved session', async () => {
   const input = await fixture();
@@ -138,79 +162,78 @@ it('gives a controller the connection it was asked for rather than the one on di
   expect(saved.roomConnection).toEqual({ connectionId: 'derived-from-the-agent' });
 });
 
-it.skipIf(process.platform === 'win32')(
-  'replaces a supervisor an earlier deployment left running',
-  async () => {
-    const input = await fixture();
-    input.restart = false;
-    await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
+it('replaces a supervisor an earlier deployment left running', async () => {
+  const input = await fixture();
+  input.restart = false;
+  await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
+  await writeFile(
+    input.entrypoint,
+    `const fs=require('node:fs');fs.appendFileSync(process.argv[2]+'/trace','new\\n');`
+  );
+  await mkdir(join(input.root, 'supervisor'));
+  const old = spawn(
+    process.execPath,
+    [
+      '-e',
+      `${onStop(input.root, 'process.exit(0)')};console.log('ready');setInterval(()=>{},1000);`,
+      input.root,
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe'] }
+  );
+  try {
+    await once(old.stdout!, 'data');
     await writeFile(
-      input.entrypoint,
-      `const fs=require('node:fs');fs.appendFileSync(process.argv[2]+'/trace','new\\n');`
+      join(input.root, 'supervisor', 'owner.json'),
+      JSON.stringify({
+        pid: old.pid,
+        build: join(input.root, 'superseded.cjs'),
+      })
     );
-    await mkdir(join(input.root, 'supervisor'));
-    const old = spawn(
-      process.execPath,
-      ['-e', `console.log('ready');setInterval(()=>{},1000);`, input.root],
-      { stdio: ['ignore', 'pipe', 'pipe'] }
-    );
-    try {
-      await once(old.stdout!, 'data');
-      await writeFile(
-        join(input.root, 'supervisor', 'owner.json'),
-        JSON.stringify({
-          pid: old.pid,
-          build: join(input.root, 'superseded.cjs'),
-        })
-      );
-      const exit = once(old, 'exit');
-      expect(await ensureSharedProcess(input)).toEqual({ created: false });
-      await exit;
-      await expect.poll(async () => readFile(join(input.root, 'trace'), 'utf8')).toBe('new\n');
-    } finally {
-      if (old.exitCode === null) old.kill('SIGKILL');
-    }
+    const exit = once(old, 'exit');
+    expect(await ensureSharedProcess(input)).toEqual({ created: false });
+    await exit;
+    await expect.poll(async () => readFile(join(input.root, 'trace'), 'utf8')).toBe('new\n');
+  } finally {
+    if (old.exitCode === null) old.kill('SIGKILL');
   }
-);
+});
 
-it.skipIf(process.platform === 'win32')(
-  'leaves a supervisor running the deployed build alone',
-  async () => {
-    const input = await fixture();
-    input.restart = false;
-    await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
+it('leaves a supervisor running the deployed build alone', async () => {
+  const input = await fixture();
+  input.restart = false;
+  await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
+  await writeFile(
+    input.entrypoint,
+    `const fs=require('node:fs');fs.appendFileSync(process.argv[2]+'/trace','new\\n');`
+  );
+  await mkdir(join(input.root, 'supervisor'));
+  const running = spawn(
+    process.execPath,
+    ['-e', `console.log('ready');setInterval(()=>{},1000);`, input.root],
+    { stdio: ['ignore', 'pipe', 'pipe'] }
+  );
+  try {
+    await once(running.stdout!, 'data');
     await writeFile(
-      input.entrypoint,
-      `const fs=require('node:fs');fs.appendFileSync(process.argv[2]+'/trace','new\\n');`
+      join(input.root, 'supervisor', 'owner.json'),
+      JSON.stringify({ pid: running.pid, build: input.supervision.build })
     );
-    await mkdir(join(input.root, 'supervisor'));
-    const running = spawn(
-      process.execPath,
-      ['-e', `console.log('ready');setInterval(()=>{},1000);`, input.root],
-      { stdio: ['ignore', 'pipe', 'pipe'] }
-    );
-    try {
-      await once(running.stdout!, 'data');
-      await writeFile(
-        join(input.root, 'supervisor', 'owner.json'),
-        JSON.stringify({ pid: running.pid, build: input.supervision.build })
-      );
-      expect(await ensureSharedProcess(input)).toEqual({ created: false });
-      expect(running.exitCode).toBeNull();
-      await expect(readFile(join(input.root, 'trace'))).rejects.toMatchObject({
-        code: 'ENOENT',
-      });
-    } finally {
-      if (running.exitCode === null) running.kill('SIGKILL');
-    }
+    expect(await ensureSharedProcess(input)).toEqual({ created: false });
+    expect(running.exitCode).toBeNull();
+    await expect(readFile(join(input.root, 'trace'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  } finally {
+    if (running.exitCode === null) running.kill('SIGKILL');
   }
-);
+});
 
 it('stops the hosts it supervises in-process when closed, and starts no more', async () => {
   const { root, entrypoint } = await fixture();
   await writeFile(
     entrypoint,
     `require('node:fs').writeFileSync(process.argv[2] + '/pid', String(process.pid));
+     process.on('message', (m) => { if (m && m.kind === 'switch-stop') process.exit(0); });
      setInterval(() => {}, 1000);`
   );
   const supervision = inProcessSupervision(entrypoint, new SessionLinks());
@@ -307,47 +330,41 @@ it('starts the session anyway when its start cannot be recorded', async () => {
   warn.mockRestore();
 });
 
-it.skipIf(process.platform === 'win32')(
-  'kills a host that will not stop for its replacement, with the session hosts under it',
-  async () => {
-    // The case that blocked an update: an old watcher waiting forever on a
-    // session host that had hung up, so SIGTERM never finished and every
-    // replacement gave up with "has not stopped".
-    const root = await mkdtemp(join(tmpdir(), 'stop-owned-'));
-    const grandchildPid = join(root, 'grandchild.pid');
-    const stubborn = spawn(
-      process.execPath,
-      [
-        '-e',
-        `process.on('SIGTERM', () => {});
+it('kills a host that will not stop for its replacement, with the session hosts under it', async () => {
+  // The case that blocked an update: an old watcher waiting forever on a
+  // session host that had hung up, so SIGTERM never finished and every
+  // replacement gave up with "has not stopped".
+  const root = await mkdtemp(join(tmpdir(), 'stop-owned-'));
+  const grandchildPid = join(root, 'grandchild.pid');
+  const stubborn = spawn(
+    process.execPath,
+    [
+      '-e',
+      `process.on('SIGTERM', () => {});
          const child = require('node:child_process').spawn(process.execPath,
            ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'],
            { detached: true, stdio: 'ignore' });
          require('node:fs').writeFileSync(process.argv[1] + '/grandchild.pid', String(child.pid));
          setInterval(() => {}, 1000);`,
-        // On its command line, which is how the stop confirms the pid is still its host.
-        root,
-      ],
-      { detached: true, stdio: 'ignore' }
-    );
-    try {
-      let pid = 0;
-      for (let attempt = 0; attempt < 100 && !pid; attempt++) {
-        pid = Number(await readFile(grandchildPid, 'utf8').catch(() => '0'));
-        if (!pid) await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      await writeFile(join(root, 'shared-owner.lock'), JSON.stringify({ pid: stubborn.pid }));
-
-      await detachedSupervision('bundle.mjs').stop(root);
-
-      expect(() => process.kill(stubborn.pid!, 0)).toThrow();
-      expect(() => process.kill(pid, 0)).toThrow();
-    } finally {
-      try {
-        process.kill(-stubborn.pid!, 'SIGKILL');
-      } catch {}
-      await rm(root, { recursive: true, force: true });
+      // On its command line, which is how the stop confirms the pid is still its host.
+      root,
+    ],
+    { detached: true, stdio: 'ignore' }
+  );
+  try {
+    let pid = 0;
+    for (let attempt = 0; attempt < 100 && !pid; attempt++) {
+      pid = Number(await readFile(grandchildPid, 'utf8').catch(() => '0'));
+      if (!pid) await new Promise((resolve) => setTimeout(resolve, 50));
     }
-  },
-  40_000
-);
+    await writeFile(join(root, 'shared-owner.lock'), JSON.stringify({ pid: stubborn.pid }));
+
+    await detachedSupervision('bundle.mjs').stop(root);
+
+    expect(() => process.kill(stubborn.pid!, 0)).toThrow();
+    expect(() => process.kill(pid, 0)).toThrow();
+  } finally {
+    await cleanUp(stubborn.pid);
+    await rm(root, { recursive: true, force: true });
+  }
+}, 60_000);

@@ -2,9 +2,10 @@
 over the real transport (docs/design/switch-trust-guardrails-v1.md).
 
 Drives the genuine path: `AgentCore.send_message` → `_enforce_trust` →
-(blocked: `SystemActor.send_admin` / allowed-or-degraded: the real send) — and
-reads the outcome back out of the `messages` table, so nothing is inferred
-from in-process state.
+(blocked: `SystemActor.send_admin` in place of the reply / alerted or errored:
+the real send plus a separate `SystemActor.send_admin` notice / allowed: the
+real send alone) — and reads the outcome back out of the `messages` table, so
+nothing is inferred from in-process state.
 """
 
 from __future__ import annotations
@@ -234,18 +235,60 @@ async def test_redacted_agent_message_is_sent_with_content_swapped(
     assert not any("agent@example.com" in row.content.get("body", "") for row in rows)
 
 
-async def test_trust_check_failure_fails_open_and_annotates_instead_of_blocking(
+async def test_alerted_agent_message_is_sent_with_a_separate_notice(
     harness: Harness, session_env: SessionEnv
 ) -> None:
     agent_id, room_id = await _setup_room(
-        harness, session_env, "e2e-trust-failopen", with_admin=False
+        harness, session_env, "e2e-trust-alerted", with_admin=True
+    )
+    harness.protocol.trust_client = _FixedTrustClient(
+        TrustCheckResult(
+            outcome="alerted",
+            policy_id="policy-1",
+            policy_name="default",
+            findings=(
+                TrustFinding(
+                    category="pii/email", detector_name="email", severity="low"
+                ),
+            ),
+        )
+    )
+
+    await harness.protocol.send_message(
+        agent_id, room_id, "my email is agent@example.com"
+    )
+
+    rows = await _timeline_messages(harness, session_env, room_id)
+    sent = [
+        row
+        for row in rows
+        if row.content.get("body") == "my email is agent@example.com"
+    ]
+    assert len(sent) == 1
+    admin_rows = [row for row in rows if "com.switch.admin" in row.content]
+    assert len(admin_rows) == 1
+    assert admin_rows[0].content["com.switch.admin"]["type"] == "trust_alerted"
+    assert "Switch Trust flagged this message" in admin_rows[0].content["body"]
+    # Threaded under the flagged reply itself, not under whatever thread (if
+    # any) the agent happened to be posting in.
+    assert admin_rows[0].thread_root_event_id == sent[0].transport_event_id
+
+
+async def test_trust_check_failure_fails_open_and_notifies_instead_of_blocking(
+    harness: Harness, session_env: SessionEnv
+) -> None:
+    agent_id, room_id = await _setup_room(
+        harness, session_env, "e2e-trust-failopen", with_admin=True
     )
     harness.protocol.trust_client = _FailingTrustClient()
 
     await harness.protocol.send_message(agent_id, room_id, "hello there")
 
     rows = await _timeline_messages(harness, session_env, room_id)
-    sent = [row for row in rows if "hello there" in row.content.get("body", "")]
+    sent = [row for row in rows if row.content.get("body") == "hello there"]
     assert len(sent) == 1
-    assert "Switch Trust could not fully check" in sent[0].content["body"]
-    assert not any("com.switch.admin" in row.content for row in rows)
+    admin_rows = [row for row in rows if "com.switch.admin" in row.content]
+    assert len(admin_rows) == 1
+    assert admin_rows[0].content["com.switch.admin"]["type"] == "trust_errored"
+    assert "Switch Trust could not check" in admin_rows[0].content["body"]
+    assert admin_rows[0].thread_root_event_id == sent[0].transport_event_id

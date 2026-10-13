@@ -29,6 +29,11 @@ class Ec2Cloud:
     def availability_zone(self) -> str:
         return self._config.availability_zone
 
+    @property
+    def image_id(self) -> str:
+        """The image a new instance launches with."""
+        return self._config.image_id
+
     def validate_image(self, machine: Machine) -> None:
         images = self._ec2.describe_images(ImageIds=[machine.image_id]).get("Images", [])
         if len(images) != 1:

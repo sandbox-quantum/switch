@@ -2154,3 +2154,134 @@ export async function deleteBudget(tenantId: string, budgetId: string): Promise<
     throw new Error(errorText(detail?.detail, `${res.status} ${res.statusText}`));
   }
 }
+
+// ── Service connections and grants ───────────────────────────────────────────
+
+/** A grant giving an agent access to its owner's connection to a service. */
+export interface ServiceGrant {
+  service: string;
+  name: string;
+  access: "read" | "write";
+  tool_mode: "allow" | "deny";
+  tools: string[];
+  effective_tools: string[];
+  resources: Record<string, unknown>;
+  /** What the grant lets the agent do, in a sentence. */
+  summary: string;
+}
+
+export interface ServiceGrants {
+  grants: ServiceGrant[];
+  /** Whether anyone can address the agent, and so use its grants. */
+  addressing_open: boolean;
+}
+
+/** The agent's grants; only its owner may read them. */
+export async function fetchServiceGrants(agentId: string): Promise<ServiceGrants> {
+  return jsonRequest<ServiceGrants>(`/agents/${agentId}/service-grants`, "GET");
+}
+
+/**
+ * Create or replace the agent's grant on a service. `warning` is set when
+ * what the old grant gave out stays usable for a while.
+ */
+export async function setServiceGrant(
+  agentId: string,
+  service: string,
+  grant: { access: "read" | "write" | null; resources: Record<string, unknown> },
+): Promise<{ grant: ServiceGrant; warning: string | null }> {
+  // An on/off grant names no level: Switch gives it the connection's.
+  const body = grant.access === null ? { resources: grant.resources } : grant;
+  return jsonRequest(`/agents/${agentId}/service-grants/${service}`, "PUT", body);
+}
+
+/** A catalog service, with the signed-in person's connection to it. */
+export interface ServiceConnection {
+  slug: string;
+  name: string;
+  category: string;
+  description: string;
+  enabled: boolean;
+  connectable: boolean;
+  /** Why the service cannot be granted to agents on this server; null when it can. */
+  unavailable_reason: string | null;
+  status: "not_connected" | "active" | "needs_reauthorization" | "error";
+  /** Whether a grant hands the agent the owner's own token: on or off, at the connection's level. */
+  pass_through: boolean;
+  /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
+  token_lifetime: number | null;
+  /**
+   * What a person pastes to connect a service connected with a key, and where
+   * they make one; null for any other. A key is connected from Switch Console.
+   */
+  key: ServiceKeyForm | null;
+}
+
+/** One value a person pastes (a key: secret) or picks (a site, among `choices`) to connect. */
+export interface ServiceKeyField {
+  name: string;
+  label: string;
+  secret: boolean;
+  help: string | null;
+  choices: string[] | null;
+}
+
+export interface ServiceKeyForm {
+  fields: ServiceKeyField[];
+  help_url: string | null;
+}
+
+/** Every catalog service and the signed-in person's connection to it. */
+export async function fetchServiceConnections(): Promise<ServiceConnection[]> {
+  return (await jsonRequest<{ connections: ServiceConnection[] }>("/service-connections", "GET"))
+    .connections;
+}
+
+export async function removeServiceGrant(
+  agentId: string,
+  service: string,
+): Promise<{ warning: string | null }> {
+  return jsonRequest(`/agents/${agentId}/service-grants/${service}`, "DELETE");
+}
+
+export interface GitHubRepository {
+  id: number;
+  name: string;
+}
+
+export interface GitHubInstallation {
+  id: number;
+  account: string;
+  repositories: GitHubRepository[];
+}
+
+/** The signed-in person's GitHub connection, and the repositories the App lets them reach. */
+export type GitHubConnection =
+  | { status: "not_connected"; install_url: string }
+  | {
+      status: "connected";
+      login: string;
+      install_url: string;
+      installations: GitHubInstallation[];
+    };
+
+export async function fetchGitHubConnection(): Promise<GitHubConnection> {
+  return jsonRequest<GitHubConnection>("/provider-connections/github", "GET");
+}
+
+/**
+ * Owner-only addressing: the owner, and agents the owner runs. What the grant
+ * screens offer when anyone can address an agent with grants.
+ */
+export const OWNER_ONLY_POLICY: AddressingPolicy = {
+  rules: [
+    {
+      rooms: "*",
+      room_groups: "*",
+      users: [],
+      agents: [],
+      owner: true,
+      owner_agents: true,
+    },
+  ],
+};

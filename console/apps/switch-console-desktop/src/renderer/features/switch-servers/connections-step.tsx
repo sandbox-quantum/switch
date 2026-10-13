@@ -15,10 +15,14 @@ import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connect
 import { ConnectionIcon } from './connection-icon';
 import { filterConnections } from './connections-filter';
 import { ManagedGitHubStep } from './managed-github-step';
+import { ServiceConnectStep } from './service-connect-step';
+import { ServiceKeyStep } from './service-key-step';
 
 const STATUS_LABEL: Record<ConnectionCatalogEntry['status'], string> = {
   connected: 'Connected',
   not_connected: 'Not connected',
+  needs_reauthorization: 'Reconnect needed',
+  error: 'Connection failed',
   coming_soon: 'Coming soon',
 };
 
@@ -65,7 +69,8 @@ export function ConnectionsGrid({
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
         <p className="text-sm text-foreground-muted">
-          Connect the services your cloud agents can work with.
+          Connect the services your agents can work with. Each agent uses a service only once you
+          grant it, from the agent's settings.
         </p>
         <SearchInput
           aria-label="Search connections"
@@ -95,7 +100,7 @@ export function ConnectionsGrid({
             className="grid max-h-96 grid-cols-2 gap-2 overflow-auto"
           >
             {visible.map((connection) => {
-              const available = connection.enabled && connection.slug === 'github';
+              const available = connection.connectable;
               return (
                 <button
                   key={connection.slug}
@@ -115,10 +120,22 @@ export function ConnectionsGrid({
                     </span>
                     <Badge
                       className="mt-1.5"
-                      variant={connection.status === 'connected' ? 'outline' : 'secondary'}
+                      variant={
+                        connection.status === 'connected'
+                          ? 'outline'
+                          : connection.status === 'needs_reauthorization' ||
+                              connection.status === 'error'
+                            ? 'destructive'
+                            : 'secondary'
+                      }
                     >
                       {STATUS_LABEL[connection.status]}
                     </Badge>
+                    {connection.unavailable_reason && (
+                      <span className="mt-1 block text-xs text-foreground-muted">
+                        {connection.unavailable_reason}
+                      </span>
+                    )}
                   </span>
                 </button>
               );
@@ -147,19 +164,26 @@ export function ConnectionsStep({
   const catalog = useConnectionCatalog(serverId);
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState<string | null>(null);
+  const back = () => {
+    setOpen(null);
+    void catalog.reload();
+  };
 
   if (open === 'github')
     return (
       <ManagedGitHubStep
         serverId={serverId}
-        onBack={() => {
-          setOpen(null);
-          void catalog.reload();
-        }}
+        onBack={back}
         onSkip={onSkip}
         onContinue={onContinue}
       />
     );
+  const opened = catalog.connections?.find((connection) => connection.slug === open);
+  if (opened?.key)
+    return (
+      <ServiceKeyStep serverId={serverId} connection={opened} form={opened.key} onBack={back} />
+    );
+  if (opened) return <ServiceConnectStep serverId={serverId} connection={opened} onBack={back} />;
 
   const githubConnected = catalog.connections?.some(
     (connection) => connection.slug === 'github' && connection.status === 'connected'

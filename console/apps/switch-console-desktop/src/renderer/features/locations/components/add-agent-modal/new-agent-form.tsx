@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Cloud, Monitor, Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCloudMachines } from '@renderer/features/cloud-agents/use-cloud-agents';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
@@ -14,12 +15,12 @@ import {
 } from '@renderer/features/remote-hosts/host-readiness-notice';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
-import { isSwitchCloudServer } from '@renderer/features/switch-servers/switch-cloud-origin';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useModalContext, useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -48,6 +49,7 @@ import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-con
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 import {
   describeRemoteDirRefusal,
+  isAbsoluteMachineDir,
   isAbsoluteRemoteDir,
 } from '@shared/core/remote-hosts/remote-dir';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
@@ -93,7 +95,9 @@ const NO_ATTRIBUTES: RepoAgentAttributes = {};
  * detection, discovery, and location keying — the flow must not care (CHOO-1440). */
 function canonicalDir(dir: string): string {
   const trimmed = dir.trim();
-  const stripped = trimmed.replace(/\/+$/, '');
+  // A Windows drive root keeps its separator: `C:` alone is a relative path.
+  if (/^[A-Za-z]:[\\/]+$/.test(trimmed)) return `${trimmed.slice(0, 2)}\\`;
+  const stripped = trimmed.replace(/[\\/]+$/, '');
   return stripped || (trimmed.startsWith('/') ? '/' : '');
 }
 
@@ -133,16 +137,29 @@ export const NewAgentForm = observer(function NewAgentForm({
   const selectedServer = switchServersStore.servers.find(
     (server) => server.id === selectedServerId
   );
-  // Switch Cloud offers everything any server does, and running in the cloud besides.
-  const cloudAvailable = !!selectedServer && isSwitchCloudServer(selectedServer);
+  // Running in the cloud is offered where the server's flag offers it, and can
+  // be chosen only where the server says this workspace can claim a machine:
+  // its cloud machine list is null where it cannot, and undefined until read.
+  const serverFlags = useFeatureFlags(selectedServerId);
+  const cloudOffered = !!selectedServer && serverFlags['hosted_agents'];
+  const cloudMachines = useCloudMachines(cloudOffered ? selectedServerId : null);
+  const cloudAvailable = cloudOffered && Array.isArray(cloudMachines.data);
+  const cloudNotSetUp = cloudOffered && cloudMachines.data === null;
   const isCloudRun = runHost === 'cloud';
+  // Why the form moved off Switch cloud by itself, said under the picker.
+  const [cloudFallback, setCloudFallback] = useState<string | null>(null);
 
   // On a server with agent management the server lists where agents can run:
   // every machine the user owns there. Null when it does not run management.
   const askForMachines =
     !!selectedServerId && !!workspacesStore.idOnServerInScope(selectedServerId);
   const machinesQuery = useQuery({
-    queryKey: [MANAGED_AGENTS_KEY, selectedServerId, 'machines'],
+    queryKey: [
+      MANAGED_AGENTS_KEY,
+      selectedServerId,
+      'machines',
+      workspacesStore.idOnServerInScope(selectedServerId),
+    ],
     queryFn: () => rpc.managedAgents.machines(selectedServerId!),
     enabled: askForMachines,
     refetchInterval: (query) => (query.state.data ? 5000 : false),
@@ -245,6 +262,17 @@ export const NewAgentForm = observer(function NewAgentForm({
       setRunHost(LOCAL_RUN_LOCATION);
     }
   }, [allowedHosts, runHost]);
+
+  // Switch cloud was chosen (or preset) on a server that turns out not to run
+  // cloud machines: run here instead, and say why rather than leave the form
+  // unable to add the agent.
+  useEffect(() => {
+    if (runHost !== 'cloud' || !cloudNotSetUp) return;
+    setRunHost(LOCAL_RUN_LOCATION);
+    setCloudFallback(
+      'Cloud agents are not set up on this server, so this agent will run on this computer.'
+    );
+  }, [cloudNotSetUp, runHost]);
 
   // The cloud machine's controller is online: the agent goes on it, as on any machine.
   useEffect(() => {
@@ -400,7 +428,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   // session starts in. Caught here so it greys the button out with a reason.
   // On a server machine the directory may be unknown: the machine makes a fresh workspace.
   const remoteDirIsAbsolute = isMachineRun
-    ? trimmedRemoteDir === '' || isAbsoluteRemoteDir(trimmedRemoteDir)
+    ? trimmedRemoteDir === '' || isAbsoluteMachineDir(trimmedRemoteDir, serverMachine?.os ?? null)
     : !isRemoteRun || isAbsoluteRemoteDir(trimmedRemoteDir);
 
   const canSubmit =
@@ -451,7 +479,9 @@ export const NewAgentForm = observer(function NewAgentForm({
                                   ? 'Enter the agent’s working directory on the host.'
                                   : 'Choose the agent’s working directory.'
                                 : !remoteDirIsAbsolute
-                                  ? `Give the full path on ${runLocationLabel}, starting with “/”.`
+                                  ? serverMachine?.os === 'windows'
+                                    ? `Give the full path on ${runLocationLabel}, starting with a drive, like C:\\.`
+                                    : `Give the full path on ${runLocationLabel}, starting with “/”.`
                                   : policyHasDeadRule(form.addressingPolicy)
                                     ? 'One addressing rule can never match — fix it under Settings.'
                                     : null;
@@ -759,11 +789,17 @@ export const NewAgentForm = observer(function NewAgentForm({
                   <span className="text-xs text-foreground-muted">local</span>
                 </SelectItem>
               )}
-              {cloudAvailable && !cloudMachineListed && (
-                <SelectItem value="cloud">
+              {cloudOffered && !cloudMachineListed && (
+                <SelectItem value="cloud" disabled={!cloudAvailable}>
                   <Cloud className="size-4 text-foreground-muted" />
                   <span className="flex-1">Switch cloud</span>
-                  <span className="text-xs text-foreground-muted">preview</span>
+                  <span className="text-xs text-foreground-muted">
+                    {cloudAvailable
+                      ? 'preview'
+                      : cloudNotSetUp
+                        ? 'not set up on this server'
+                        : 'checking…'}
+                  </span>
                 </SelectItem>
               )}
               {allowedHosts
@@ -779,6 +815,12 @@ export const NewAgentForm = observer(function NewAgentForm({
                 ))}
             </SelectContent>
           </Select>
+          {cloudFallback && !isCloudRun && (
+            <p className="flex items-start gap-1.5 text-xs text-foreground-muted" role="status">
+              <Cloud className="mt-0.5 size-3.5 shrink-0" />
+              <span>{cloudFallback}</span>
+            </p>
+          )}
           {!isCloudRun && !management && runLocationConstrained && (
             <p className="text-xs text-foreground-muted">
               {targetServer?.managementKind === 'remote'
@@ -927,6 +969,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         {canConfigureAgent && !!pickState.providerId && !managedRun && !isCloudRun && (
           <>
             <AgentAdvancedConfig
+              serverId={pickState.serverId}
               providerId={pickState.providerId}
               sshHost={isRemoteRun ? runHost : null}
               dir={dir}
@@ -934,6 +977,7 @@ export const NewAgentForm = observer(function NewAgentForm({
               onChange={onAdvancedChange}
             />
             <LaunchProfileConfig
+              serverId={pickState.serverId}
               providerId={pickState.providerId}
               sshHost={isRemoteRun ? runHost : null}
               dir={dir}
@@ -981,6 +1025,6 @@ function cloudStartingText(machine: CloudMachine): string {
   if (machine.desired_state === 'stopped')
     return 'Your cloud machine is stopped. Start it from Your Agents, then add the agent.';
   return machine.controller_id === null
-    ? 'Starting your cloud machine. Its first start takes a few minutes…'
+    ? 'Starting your cloud machine for this workspace. If it already runs agents in another workspace, it restarts once to join this one. This takes a few minutes…'
     : 'Waiting for your cloud machine to come online…';
 }

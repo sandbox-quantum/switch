@@ -20,7 +20,6 @@ import type { TelemetryHostSetupAction, TelemetryOutcome } from '@main/core/tele
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { AGENT_PROVIDER_IDS } from '@shared/core/providers/agent-provider-registry';
 import {
   agentIdForStep,
   hostSetupActivityEventChannel,
@@ -54,11 +53,7 @@ const runners = new Map<string, HostSetupRunner>();
  */
 function plannableAgentTypes() {
   return listPlugins()
-    .filter(
-      (plugin) =>
-        AGENT_PROVIDER_IDS.some((id) => id === plugin.metadata.id) &&
-        plugin.capabilities.hostDependency.binaryNames.length > 0
-    )
+    .filter((plugin) => plugin.capabilities.hostDependency.binaryNames.length > 0)
     .map((plugin) => ({
       agentId: plugin.metadata.id,
       name: remoteDependencyDescriptor(plugin.metadata.id)?.name ?? plugin.metadata.id,

@@ -11,7 +11,6 @@ import {
   exitCodeFor,
 } from './exit-codes';
 import { defaultDataDir } from './paths';
-import { assertSupportedPlatform } from './runtime';
 
 function thrown(run: () => unknown): unknown {
   try {
@@ -59,10 +58,7 @@ describe('exitCodeFor', () => {
     expect(exitCodeFor(null)).toBe(EXIT_FAILURE);
   });
 
-  it('answers an unsupported platform and an unresolvable data directory with 2', () => {
-    expect(exitCodeFor(thrown(() => assertSupportedPlatform('win32')))).toBe(EXIT_CONFIGURATION);
-    expect(() => assertSupportedPlatform('linux')).not.toThrow();
-    expect(() => assertSupportedPlatform('darwin')).not.toThrow();
+  it('answers an unresolvable data directory with 2', () => {
     expect(
       exitCodeFor(thrown(() => defaultDataDir({ platform: 'win32', env: {}, home: 'C:\\a' })))
     ).toBe(EXIT_CONFIGURATION);

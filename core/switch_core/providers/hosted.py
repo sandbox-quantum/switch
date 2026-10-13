@@ -1,3 +1,4 @@
+from typing import Annotated
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -12,7 +13,8 @@ from pydantic import (
 class HostedControllerSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    tenant_id: str = Field(min_length=1)
+    # The workspaces whose members may use cloud machines; null for every one.
+    allowed_tenant_ids: list[Annotated[str, Field(min_length=1)]] | None
     token: SecretStr = Field(min_length=32)
     agent_api_endpoint: str
 

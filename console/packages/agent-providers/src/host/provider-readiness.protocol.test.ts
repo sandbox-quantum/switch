@@ -2,7 +2,12 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import type * as Protocol from '../transport/stdio-json-rpc';
 import { JsonRpcError } from '../transport/stdio-json-rpc';
 import { checkProviderReadiness } from './provider-readiness';
-const mock = vi.hoisted(() => ({ request: vi.fn(), dispose: vi.fn(), notify: vi.fn() }));
+const mock = vi.hoisted(() => ({
+  request: vi.fn(),
+  dispose: vi.fn(),
+  notify: vi.fn(),
+  token: null as string | null,
+}));
 vi.mock('../transport/stdio-json-rpc', async (original) => ({
   ...(await original<typeof Protocol>()),
   StdioJsonRpcClient: class {
@@ -14,10 +19,15 @@ vi.mock('../transport/stdio-json-rpc', async (original) => ({
 beforeEach(() => {
   vi.resetAllMocks();
   mock.dispose.mockResolvedValue(undefined);
+  mock.token = null;
 });
 vi.mock('node:fs/promises', () => ({
   mkdir: vi.fn(async () => {}),
   writeFile: vi.fn(async () => {}),
+  readFile: vi.fn(async () => {
+    if (mock.token === null) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    return mock.token;
+  }),
 }));
 const input = { binaryPath: 'provider', cwd: '/tmp', env: {} };
 it('blocks missing Codex credentials only when the backend requires authentication', async () => {
@@ -72,6 +82,19 @@ it('reports an outstanding Antigravity sign-in as unauthenticated', async () => 
   expect(result.status).toBe('unauthenticated');
   expect(result.message).toContain('antigravity-acp --login');
   expect(mock.dispose).toHaveBeenCalledOnce();
+});
+// Antigravity ACP 1.3 lists every sign-in method in its handshake, signed in or
+// not: the token --login wrote is what says.
+it('counts the token --login wrote as signed in when the handshake lists methods', async () => {
+  mock.request.mockResolvedValueOnce({ authMethods: [{ id: 'oauth-personal' }] });
+  mock.token = '{"access_token":"a","refresh_token":"r"}';
+  const result = await checkProviderReadiness({
+    ...input,
+    provider: 'antigravity',
+    env: { GEMINI_HOME: '/profile' },
+  });
+  expect(result.status).toBe('authenticated');
+  expect(mock.request.mock.calls.map((call) => call[0])).toEqual(['initialize']);
 });
 // An agent that says nothing about auth is not an agent asking to be signed in.
 it('treats a handshake with no authMethods as nothing outstanding', async () => {

@@ -8,6 +8,7 @@ import type {
   DockerAvailability,
   LocalServerStatus,
   ManagedServerUpgrade,
+  StartLocalServerResult,
   SwitchVersionDrift,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
@@ -172,6 +173,21 @@ export class LocalServerStore {
   }
 
   async start(): Promise<void> {
+    await this.runStart(() => rpc.localSwitchServer.start(), 'Could not start the server.');
+  }
+
+  /** Move whatever publishes on `port` to a free port, then start. */
+  async useAnotherPort(port: number): Promise<void> {
+    await this.runStart(
+      () => rpc.localSwitchServer.useAnotherPort(port),
+      'Could not move the server to another port.'
+    );
+  }
+
+  private async runStart(
+    call: () => Promise<StartLocalServerResult>,
+    fallback: string
+  ): Promise<void> {
     this.pendingLines = [];
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);
@@ -184,7 +200,7 @@ export class LocalServerStore {
       this.logs = [];
     });
     try {
-      const result = await rpc.localSwitchServer.start();
+      const result = await call();
       if (result.kind === 'docker-unavailable') {
         runInAction(() => {
           this.docker = { available: false, reason: result.reason, detail: result.detail };
@@ -202,7 +218,7 @@ export class LocalServerStore {
         await switchServersStore.init();
       }
     } catch (cause) {
-      this.setError(cause, 'Could not start the server.');
+      this.setError(cause, fallback);
     } finally {
       // The command has finished, so nothing more will arrive to trigger a
       // flush — the tail's last lines are the ones that say how it went.

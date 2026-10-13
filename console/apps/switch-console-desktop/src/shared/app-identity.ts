@@ -44,6 +44,7 @@ export const USER_DATA_DIR_NAME = isDev ? 'switchdash-dev' : 'switchdash';
 export const UPDATE_CHANNEL = isCanary ? 'v1-canary' : 'v1-stable';
 export const ARTIFACT_PREFIX = isCanary ? 'switch-console-canary' : 'switch-console';
 export const IS_CANARY = isCanary;
+export const IS_DEV = isDev;
 export const IS_RELEASE_BUILD = isRelease;
 
 // GitHub repo the desktop app publishes releases to / reads auto-updates from.
@@ -62,14 +63,20 @@ export const RELEASE_REPO_NAME = 'switch';
 // against it by `just artifacts` (CHOO-1865). A literal rather than an import
 // because electron-builder loads this module under bare Node, where
 // extensionless ESM specifiers do not resolve — so it cannot import anything.
-// The check is what makes the literal safe; it is also mirrored in
+// The check is what makes the literal safe; the canary pin is also mirrored in
 // app-identity.canary.ts, which is checked the same way.
 //
 // Deliberately NOT switch-core's own version from that file: bumping
 // core/pyproject.toml is the first step of cutting a switch-core release, and a
 // derived pin would immediately point local-server mode at images that are not
 // on the registry yet.
-export const COMPATIBLE_SWITCH_VERSION = '0.29.0';
+//
+// Two pins: a canary build can run a switch-core pre-release while stable
+// stays on the last release. `switch-console.pins.switch-core` and
+// `switch-console.canary_pins.switch-core` respectively, each checked.
+export const STABLE_SWITCH_VERSION = '0.30.0';
+export const CANARY_SWITCH_VERSION = '0.31.0-rc.1';
+export const COMPATIBLE_SWITCH_VERSION = isCanary ? CANARY_SWITCH_VERSION : STABLE_SWITCH_VERSION;
 
 // The last switch-core release that can still read a Matrix homeserver.
 //

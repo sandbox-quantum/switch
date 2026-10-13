@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process';
 import { chmod, mkdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { ConfigurationError } from './errors';
 
 export const DATA_DIR_ENV = 'SWITCH_CONTROLLER_DATA_DIR';
@@ -42,13 +44,57 @@ export function resolveDataDir(flag: string | undefined): string {
 /**
  * Creates the data directory owner-only (0700), and tightens one that already
  * exists with looser permissions: it holds the controller credential and every
- * agent's relay token.
+ * agent's relay token. Windows has no mode bits, so there its access list is
+ * replaced with one that lets in this user and the system alone, inherited by
+ * everything written under it.
  */
 export async function ensureDataDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  if (process.platform === 'win32') return;
+  if (process.platform === 'win32') {
+    await restrictToCurrentUser(dir);
+    return;
+  }
   const mode = (await stat(dir)).mode & 0o777;
   if (mode !== 0o700) await chmod(dir, 0o700);
+}
+
+/** The well-known SID of the operating system's own account. */
+const LOCAL_SYSTEM_SID = 'S-1-5-18';
+
+/**
+ * A Windows tool by its full path: a PATH with Git for Windows on it has GNU
+ * tools of the same names ahead of the system's.
+ */
+function system32(tool: string): string {
+  return join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', tool);
+}
+
+async function restrictToCurrentUser(dir: string): Promise<void> {
+  const execute = promisify(execFile);
+  try {
+    const { stdout } = await execute(system32('whoami.exe'), ['/user', '/fo', 'csv', '/nh'], {
+      timeout: 15_000,
+      windowsHide: true,
+    });
+    const sid = stdout.trim().split(',').at(-1)?.replaceAll('"', '');
+    if (!sid?.startsWith('S-1-')) throw new Error(`whoami printed no SID: ${stdout.trim()}`);
+    await execute(
+      system32('icacls.exe'),
+      [
+        dir,
+        '/inheritance:r',
+        '/grant:r',
+        `*${sid}:(OI)(CI)F`,
+        '/grant:r',
+        `*${LOCAL_SYSTEM_SID}:(OI)(CI)F`,
+      ],
+      { timeout: 15_000, windowsHide: true }
+    );
+  } catch (error) {
+    throw new ConfigurationError(
+      `Could not make ${dir} readable by this user only, and it holds the controller's credentials: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 }
 
 export type DataLayout = {

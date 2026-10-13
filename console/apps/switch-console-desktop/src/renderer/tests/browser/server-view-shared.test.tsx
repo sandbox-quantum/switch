@@ -100,17 +100,6 @@ vi.mock('@renderer/features/locations/stores/agents-store', () => ({
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
   switchRoomsStore: { refreshRoomState: () => Promise.resolve() },
 }));
-vi.mock('@renderer/features/switch-servers/RemoteServerControls', () => ({
-  RemoteServerControls: () => <div>remote controls</div>,
-}));
-vi.mock('@renderer/features/switch-servers/LocalServerControls', () => ({
-  LocalServerControls: () => <div>local controls</div>,
-}));
-vi.mock('@renderer/features/switch-servers/shared-consoles-section', () => ({
-  SharedConsolesSection: ({ sshHost }: { sshHost: string }) => (
-    <div>{`consoles using ${sshHost}`}</div>
-  ),
-}));
 vi.mock('@renderer/features/switch-servers/MessagingAppsCard', () => ({
   MessagingAppsCard: () => null,
 }));
@@ -147,7 +136,6 @@ const BOB = {
 };
 
 const SHARED = { self: 'me', consoles: [BOB], activity: [] };
-const ALONE = { self: 'me', consoles: [], activity: [] };
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -190,10 +178,6 @@ function button(label: RegExp): HTMLElement {
   return found as HTMLElement;
 }
 
-function dialogText(): string {
-  return [...document.querySelectorAll('[role="dialog"]')].map((d) => d.textContent).join(' ');
-}
-
 function menuTrigger(): HTMLElement {
   return document.querySelector('[aria-label="Server actions"]') as HTMLElement;
 }
@@ -229,131 +213,5 @@ describe('the server menu', () => {
     await click(menuTrigger());
 
     expect(button(/^Disconnect from server…$/)).toBeDefined();
-  });
-});
-
-describe('restarting from a notice', () => {
-  it('asks before a retried update restarts a server others use, naming them', async () => {
-    state.upgrade = { state: 'failed', from: '0.27.0', to: '0.28.0', error: 'pull failed' };
-    await render();
-
-    await click(button(/^Retry$/));
-
-    expect(state.start).not.toHaveBeenCalled();
-    expect(dialogText()).toMatch(/Restart the server on vm-1 for everyone\?/);
-    expect(dialogText()).toContain('bob@desk (as bob)');
-    await click(button(/^Restart for everyone$/));
-    expect(state.start).toHaveBeenCalledWith('vm-1', 'Team Server');
-  });
-
-  it('updates at once from a held update, whose own button names who it reaches', async () => {
-    state.upgrade = { state: 'held', from: '0.27.0', to: '0.28.0' };
-    await render();
-
-    expect(document.body.textContent).toContain('bob@desk (as bob)');
-    await click(button(/^Update for everyone$/));
-
-    expect(dialogText()).toBe('');
-    expect(state.start).toHaveBeenCalledWith('vm-1', 'Team Server');
-  });
-
-  it('starts a stopped server that owes an update without asking: it reaches nobody', async () => {
-    state.running = false;
-    state.upgrade = { state: 'pending', from: '0.27.0', to: '0.28.0' };
-    await render();
-
-    await click(button(/^Start and update$/));
-
-    expect(dialogText()).toBe('');
-    expect(state.start).toHaveBeenCalledWith('vm-1', 'Team Server');
-  });
-
-  it('restarts at once when nobody else uses the server', async () => {
-    state.register = ALONE;
-    state.upgrade = { state: 'failed', from: '0.27.0', to: '0.28.0', error: 'pull failed' };
-    await render();
-
-    await click(button(/^Retry$/));
-
-    expect(dialogText()).toBe('');
-    expect(state.start).toHaveBeenCalledWith('vm-1', 'Team Server');
-  });
-
-  it('asks before restarting to apply a usage-data “no” to a server others use', async () => {
-    state.consent = false;
-    state.deployedTelemetry = { known: true, enabled: true };
-    await render();
-
-    await click(button(/^Restart to apply$/));
-
-    expect(state.start).not.toHaveBeenCalled();
-    expect(dialogText()).toMatch(/Restart the server on vm-1 for everyone\?/);
-  });
-
-  it('offers no restart for a “yes” a shared server would not apply over the others', async () => {
-    state.consent = true;
-    state.deployedTelemetry = { known: true, enabled: false };
-    await render();
-
-    expect(() => button(/^Restart to apply$/)).toThrow();
-  });
-
-  it('offers that restart when nobody else uses the server', async () => {
-    state.register = ALONE;
-    state.consent = true;
-    state.deployedTelemetry = { known: true, enabled: false };
-    await render();
-
-    await click(button(/^Restart to apply$/));
-
-    expect(state.start).toHaveBeenCalledWith('vm-1', 'Team Server');
-  });
-
-  it('restarts a server on this computer without asking anyone', async () => {
-    state.server = { ...REMOTE, managementKind: 'local', sshHost: null };
-    state.register = null;
-    state.localDrift = { deployed: 'dev-checkout', expected: '0.28.0', direction: 'unknown' };
-    await render();
-
-    await click(button(/^Restart to update$/));
-
-    expect(dialogText()).toBe('');
-    expect(state.localStart).toHaveBeenCalled();
-  });
-
-  it('asks before restarting a remote server others use to fix a version mismatch', async () => {
-    state.drift = { deployed: 'dev-checkout', expected: '0.28.0', direction: 'unknown' };
-    await render();
-
-    await click(button(/^Restart to update$/));
-
-    expect(state.start).not.toHaveBeenCalled();
-    expect(dialogText()).toMatch(/Restart the server on vm-1 for everyone\?/);
-  });
-});
-
-describe('the rest of a shared server’s page', () => {
-  it('lists the Consoles using a remote server', async () => {
-    await render();
-
-    expect(document.body.textContent).toContain('consoles using vm-1');
-  });
-
-  it('lists none for a server on this computer', async () => {
-    state.server = { ...REMOTE, managementKind: 'local', sshHost: null };
-    await render();
-
-    expect(document.body.textContent).not.toContain('consoles using');
-  });
-
-  it('says a reset deletes it for everyone, naming them, and resets that host', async () => {
-    await render();
-
-    await click(button(/^Reset…$/));
-
-    expect(dialogText()).toContain('everyone who uses it');
-    expect(dialogText()).toContain('bob@desk (as bob)');
-    await click(button(/^Reset and delete all agents$/));
-    expect(state.reset).toHaveBeenCalledWith('vm-1');
   });
 });

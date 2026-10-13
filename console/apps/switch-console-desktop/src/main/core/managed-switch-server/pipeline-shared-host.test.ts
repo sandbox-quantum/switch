@@ -117,6 +117,7 @@ const hostSecrets: LocalServerSecrets = {
   agentRegistrationToken: 'host-agent-token',
   jwtSecretKey: 'host-jwt',
   secretKeys: 'console:host-secret-keys',
+  controllerTokenSecret: 'controller-token-secret-value',
   gatewayAdminPassword: 'host-admin-pw',
   mattermostAdminPassword: 'host-mm-admin',
   mattermostUserPassword: 'host-mm-user',
@@ -424,6 +425,31 @@ describe('starting a shared stack', () => {
 
     const [{ secrets }] = buildEnvFileMock.mock.calls[0] as [{ secrets: LocalServerSecrets }];
     expect(secrets.secretKeys).toMatch(/^console:[0-9a-f]{64}$/);
+  });
+
+  it('keeps the host’s controller token secret so every Console signs with one', async () => {
+    inspectStackMock.mockResolvedValue(
+      present({}, { secrets: { ...hostSecrets, controllerTokenSecret: 'host-controller-secret' } })
+    );
+    readSecretsMock.mockResolvedValue({ ...hostSecrets, controllerTokenSecret: 'desktop-secret' });
+    const { host } = sharedHost();
+
+    await startStack(startOptions(host));
+
+    const [{ secrets }] = buildEnvFileMock.mock.calls[0] as [{ secrets: LocalServerSecrets }];
+    expect(secrets.controllerTokenSecret).toBe('host-controller-secret');
+  });
+
+  it('makes a controller token secret for a stack whose .env predates agent management', async () => {
+    inspectStackMock.mockResolvedValue(
+      present({}, { secrets: { ...hostSecrets, controllerTokenSecret: null } })
+    );
+    const { host } = sharedHost();
+
+    await startStack(startOptions(host));
+
+    const [{ secrets }] = buildEnvFileMock.mock.calls[0] as [{ secrets: LocalServerSecrets }];
+    expect(secrets.controllerTokenSecret).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('makes new credentials only on a host with nothing of the stack', async () => {

@@ -80,6 +80,7 @@ def _config() -> Any:
         oauth_audience = None
         oauth_verify_issuer = True
         id_server_name = "test"
+        service_connections_enabled = True
 
     return _Config()
 

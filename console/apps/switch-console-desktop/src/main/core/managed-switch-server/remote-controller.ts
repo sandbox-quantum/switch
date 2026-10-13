@@ -20,6 +20,9 @@ export const remoteSwitchServerController = createRPCController({
 
   register: (sshHost: string): Promise<StackRegister> => remoteServerService.register(sshHost),
 
+  /** When the stack on the host started, or null when it is not running. */
+  startedAt: (sshHost: string): Promise<string | null> => remoteServerService.startedAt(sshHost),
+
   start: (params: { sshHost: string; name: string }): Promise<StartRemoteServerResult> =>
     remoteServerService.start(params.sshHost, params.name),
 

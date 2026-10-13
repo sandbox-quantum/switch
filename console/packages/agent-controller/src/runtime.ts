@@ -1,22 +1,27 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, rm, stat, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile, rm, stat, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import {
   clearTakenOver,
+  commandLineNames,
   ensureSharedProcess,
   hostedCredentialSchema,
   inProcessSupervision,
+  killProcessTree,
   materializeHostedProvider,
   type OpenAgentStream,
   type ProviderReadiness,
+  processCommandLine,
   providerReadinessSchema,
   readTakenOver,
   readWatchFlags,
   recordWatcherHealth,
+  replaceFile,
+  requestStop,
   runAgentHost,
   SessionLinks,
   sharedConfigSchema,
@@ -31,7 +36,7 @@ import {
   watcherHealthFileSchema,
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
-import { ConfigurationError, ReasonedError } from './errors';
+import { ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { agentWorkspace, type DataLayout } from './paths';
 import type { Isolation, Provider } from './schemas';
@@ -166,7 +171,7 @@ export async function probeProvider(
   const { stdout } = await execute(
     process.execPath,
     [bundlePath, '--probe', provider, cwd, binaryPath],
-    { timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, env }
+    { timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, env, windowsHide: true }
   );
   const line = stdout.trim().split('\n').at(-1) ?? '';
   return providerReadinessSchema.parse(JSON.parse(line));
@@ -224,7 +229,7 @@ export async function writeAtomic(path: string, body: string): Promise<void> {
   } finally {
     await file.close();
   }
-  await rename(temporary, path);
+  await replaceFile(temporary, path);
 }
 
 export async function readOptional(path: string): Promise<string | null> {
@@ -261,13 +266,8 @@ export function alive(pid: number): boolean {
 /** A saved PID counts only while it still names a process started for this root. */
 export async function ownsRoot(pid: number, root: string): Promise<boolean> {
   if (!alive(pid)) return false;
-  try {
-    const { stdout } = await execute('ps', ['-p', String(pid), '-o', 'command=']);
-    return stdout.includes(root);
-  } catch (error) {
-    if ((error as { code?: number }).code === 1) return false;
-    throw error;
-  }
+  const commandLine = await processCommandLine(pid);
+  return commandLine !== null && commandLineNames(commandLine, root);
 }
 
 export async function recordedPid(path: string): Promise<number | null> {
@@ -279,14 +279,6 @@ export async function recordedPid(path: string): Promise<number | null> {
 
 /** The owner records an agent host writes under its root: the worker's, then a detached one's supervisor's. */
 export const OWNER_RECORDS = ['shared-owner.lock', join('supervisor', 'owner.json')];
-
-/** The shared host needs POSIX process control: macOS or Linux. */
-export function assertSupportedPlatform(platform: NodeJS.Platform): void {
-  if (platform === 'win32')
-    throw new ConfigurationError(
-      'The agents controller runs agents through the shared host, which needs a macOS or Linux machine.'
-    );
-}
 
 /** What is on disk for one agent's agent host, read by a process that does not run it (`status`). */
 export async function observeOnDisk(
@@ -364,9 +356,7 @@ export class InProcessRuntime implements AgentRuntime {
       /** How long a failed agent host waits before it is started again. */
       crashBackoffMs: number;
     }
-  ) {
-    assertSupportedPlatform(process.platform);
-  }
+  ) {}
 
   credentialsPath(agentId: string): string {
     return this.deps.layout.agentCredentials(agentId);
@@ -397,7 +387,9 @@ export class InProcessRuntime implements AgentRuntime {
       return path;
     }
     const expanded =
-      directory === '~' || directory.startsWith('~/')
+      directory === '~' ||
+      directory.startsWith('~/') ||
+      (process.platform === 'win32' && directory.startsWith('~\\'))
         ? join(homedir(), directory.slice(1))
         : directory;
     if (!isAbsolute(expanded))
@@ -586,11 +578,11 @@ export class InProcessRuntime implements AgentRuntime {
         root,
         pid,
       });
-      process.kill(pid, 'SIGTERM');
+      await requestStop(root, pid);
       const deadline = Date.now() + STOP_TIMEOUT_MS;
       while (alive(pid)) {
         if (Date.now() > deadline) {
-          process.kill(pid, 'SIGKILL');
+          await killProcessTree(pid);
           break;
         }
         await delay(200);

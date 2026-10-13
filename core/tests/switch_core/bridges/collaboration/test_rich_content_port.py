@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -36,6 +36,8 @@ class _BareAdapter(PlatformAdapter):
     adapters — some return `None` on failure, some raise (Teams does), and
     this base has to turn either into `RichContentFailed`.
     """
+
+    display_name: ClassVar[str] = "Stub"
 
     def __init__(
         self,

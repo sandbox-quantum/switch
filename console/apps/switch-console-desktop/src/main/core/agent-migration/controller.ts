@@ -20,8 +20,11 @@ export const agentMigrationController = createRPCController({
   /** Where the automatic move stands, per machine and server, from what its passes found. */
   getOverview: (): Promise<MigrationOverview> => agentMigrationService.overview(),
 
-  /** Runs a pass of the automatic move now rather than at the next minute. */
-  runNow: (): Promise<void> => agentMigrationService.migrateEverything(),
+  /** Runs a pass of the automatic move now, asking Switch afresh about every agent. */
+  runNow: (): Promise<void> => {
+    agentMigrationService.recheckAll();
+    return agentMigrationService.migrateEverything();
+  },
 
   /** Runs the automatic move again now, asking Switch afresh about the agent. */
   retry: (agentId: string): Promise<void> => {

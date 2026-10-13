@@ -7,7 +7,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { fenceDeadOwner, killProcessTree } from './process-fence';
+import { pipeRedactedLogs } from './redaction';
 import type { SessionLinks } from './session-channel';
+import { requestChildStop } from './stop-request';
 
 function alive(pid: number): boolean {
   try {
@@ -32,6 +34,16 @@ async function ownerPid(path: string): Promise<number | null> {
 }
 
 /**
+ * A Windows process that died of an exception — an access violation, a stack
+ * overflow, a fatal error — exits with its NTSTATUS code, 0xC0000000 and up:
+ * what a signal is elsewhere, so it is recovered rather than taken as the
+ * host refusing to run.
+ */
+function crashedOnWindows(code: number): boolean {
+  return process.platform === 'win32' && code >>> 0 >= 0xc0000000;
+}
+
+/**
  * How long a supervised host asked to stop is given before it and what it
  * started are killed. Shorter than the launcher's `STOP_GRACE_MS`, so a chain
  * — a watcher's supervisor, the watcher, its session hosts — comes down inside
@@ -50,7 +62,9 @@ export async function superviseSharedHost(input: {
   /**
    * Handed each host as it is spawned, with an IPC channel open to it, for a
    * parent that talks to its sessions directly. Null where nothing in this
-   * process does, and the host is then started without one.
+   * process does, and the host is then started without one. The service
+   * tokens `links` answers to its hosts are scrubbed from what they write to
+   * worker.log.
    */
   links: SessionLinks | null;
 }): Promise<void> {
@@ -73,21 +87,36 @@ export async function superviseSharedHost(input: {
         continue;
       }
       const log = await open(join(directory, 'worker.log'), 'a', 0o600);
+      const spawnedAt = Date.now();
+      // A host linked to this process may be handed service tokens at any
+      // time, so its output always passes through here.
+      const linked = input.links;
       const child = spawn(input.executable, input.args, {
         detached: true,
+        windowsHide: true,
         env: input.env,
-        stdio: input.links ? ['ignore', log.fd, log.fd, 'ipc'] : ['ignore', log.fd, log.fd],
+        stdio: linked ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', log.fd, log.fd],
       });
       input.links?.attach(input.root, child);
       const exited = once(child, 'exit');
-      log.close().catch(() => {});
+      const logged = linked
+        ? pipeRedactedLogs([child.stdout!, child.stderr!], log, () =>
+            linked.redactions.list()
+          ).catch((error: unknown) => {
+            child.kill('SIGKILL');
+            throw error;
+          })
+        : log.close();
+      logged.catch(() => {});
       // Asked first. A host that has not gone `CHILD_STOP_GRACE_MS` later is
       // waiting on something that will not finish — a session host that hung
       // up and stayed alive, say — and is killed with everything it started,
       // so that stopping this supervisor cannot hang on it.
       let escalation: ReturnType<typeof setTimeout> | null = null;
       const stop = () => {
-        child.kill('SIGTERM');
+        requestChildStop(child, input.root).catch((error: unknown) =>
+          console.error(`Could not ask the shared host at ${input.root} to stop: ${String(error)}`)
+        );
         escalation ??= setTimeout(() => {
           if (child.exitCode !== null || child.signalCode !== null || !child.pid) return;
           console.warn(
@@ -110,7 +139,7 @@ export async function superviseSharedHost(input: {
         if (escalation) clearTimeout(escalation);
       }
       if (child.pid) {
-        await fenceDeadOwner(child.pid, child.pid);
+        await fenceDeadOwner(child.pid, child.pid, spawnedAt);
         const workerPath = join(input.root, 'shared-owner.lock');
         try {
           const owner = JSON.parse(await readFile(workerPath, 'utf8'));
@@ -119,9 +148,15 @@ export async function superviseSharedHost(input: {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         }
       }
+      if (linked)
+        try {
+          await logged;
+        } finally {
+          await log.close();
+        }
       if (input.signal.aborted) return;
       if (code === 0) return;
-      if (code !== null) {
+      if (code !== null && !crashedOnWindows(code)) {
         try {
           await readFile(join(directory, 'failure.json'));
         } catch (error) {
@@ -132,7 +167,9 @@ export async function superviseSharedHost(input: {
         }
         throw new Error(`Shared SDK host failed with exit code ${code}.`);
       }
-      console.warn(`Shared SDK host exited on ${signal}; recovering its saved state.`);
+      console.warn(
+        `Shared SDK host exited on ${signal ?? `exception 0x${((code ?? 0) >>> 0).toString(16)}`}; recovering its saved state.`
+      );
       await delay(1000, undefined, { signal: input.signal });
     }
   } catch (error) {

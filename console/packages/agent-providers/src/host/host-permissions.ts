@@ -15,6 +15,15 @@ export function sharedGroupEnabled(): boolean {
   return process.env[SHARED_GROUP_ENV] === '1';
 }
 
+/**
+ * Whether this agent runs as a Linux user of its own, as on every cloud
+ * machine: its sessions have no sign-in of the owner's (a GitHub login, say)
+ * to fall back to, and none of the machine's own credential helpers.
+ */
+export function agentHasOwnUser(): boolean {
+  return sharedGroupEnabled();
+}
+
 /** `privateMode`, or with the owner's read given to the group under the shared group (0o600 → 0o640). */
 export function fileMode(privateMode: number): number {
   if (!sharedGroupEnabled()) return privateMode;

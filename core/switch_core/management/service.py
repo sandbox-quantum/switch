@@ -49,7 +49,7 @@ from switch_core.db.models import (
     AgentController,
     AgentControllerOperation,
     ApiKey,
-    HostedMachine,
+    MachineWorkspace,
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.db.stores.agent_controller_operation_store import (
@@ -59,13 +59,14 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
-from switch_core.db.stores.hosted_machine_store import HostedMachineStore
+from switch_core.db.stores.hosted_machine_store import CloudMachineStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.gateway.cloud_controllers import (
+    enroll_revoked_again,
     record_controller_status,
     wake_controller_machine,
 )
-from switch_core.gateway.known_agents import KNOWN_AGENTS, KnownAgent
+from switch_core.gateway.known_agents import KnownAgent, provider_known_agent
 from switch_core.management import reason_codes, tokens
 from switch_core.management.errors import ManagementError, not_found
 from switch_core.management.notifier import ControllerNotifier
@@ -77,7 +78,6 @@ from switch_core.management.placement import (
 )
 from switch_core.management.process_lease import ProcessLeases, read_leases
 from switch_core.management.schemas import (
-    PROVIDER_KNOWN_AGENT_TYPES,
     ControllerDescription,
     CreateManagedAgentRequest,
     DefinitionV1,
@@ -91,6 +91,7 @@ from switch_core.management.schemas import (
     workspaces_dir_of,
 )
 from switch_core.management.sealed_logins import PublicKey, SealedLogin, key_id
+from switch_core.providers.registry import provider_ids
 
 logger = logging.getLogger(__name__)
 
@@ -231,29 +232,30 @@ class ManagementService:
             owner_id=owner_id,
             api_key_id=key.id,
             expires_at=expires_at,
-            hosted_machine_id=None,
+            machine_workspace_id=None,
         )
         await session.commit()
         return code, expires_at
 
     async def machine_enrollment_code(
-        self, session: AsyncSession, machine: HostedMachine, now: datetime
+        self, session: AsyncSession, workspace: MachineWorkspace, now: datetime
     ) -> str:
-        """A code for a Switch cloud machine's controller to enroll with: the
-        owner's, valid long enough for the machine to boot, and binding what
-        enrolls with it to the machine. The caller commits."""
+        """A code for a Switch cloud machine's controller in the bound workspace
+        to enroll with: the owner's, valid long enough for the machine to boot,
+        and binding what enrolls with it to the workspace's row on the machine.
+        The caller commits."""
         key, code = await self._new_hash_only_key(
             session,
-            owner_id=machine.owner_id,
+            owner_id=workspace.owner_id,
             key_type=CONTROLLER_ENROLLMENT_KEY_TYPE,
             label="cloud machine enrollment code",
         )
         await self.controllers.create_enrollment_code(
             session,
-            owner_id=machine.owner_id,
+            owner_id=workspace.owner_id,
             api_key_id=key.id,
             expires_at=now + tokens.MACHINE_ENROLLMENT_CODE_LIFETIME,
-            hosted_machine_id=machine.id,
+            machine_workspace_id=workspace.id,
         )
         return code
 
@@ -281,13 +283,20 @@ class ManagementService:
         )
         if consumed is None:
             raise invalid
+        workspace = (
+            None
+            if consumed.machine_workspace_id is None
+            else await session.get(
+                MachineWorkspace, (tenant_id, consumed.machine_workspace_id)
+            )
+        )
         machine = (
             None
-            if consumed.hosted_machine_id is None
-            else await HostedMachineStore().locked(session, consumed.hosted_machine_id)
+            if workspace is None
+            else await CloudMachineStore().locked(session, workspace.machine_id)
         )
-        if consumed.hosted_machine_id is not None and (
-            machine is None or machine.state == "deleted"
+        if consumed.machine_workspace_id is not None and (
+            workspace is None or machine is None or machine.state == "deleted"
         ):
             raise invalid
         controller_key, credential = await self._new_hash_only_key(
@@ -316,9 +325,9 @@ class ManagementService:
         replaced: str | None = None
         moved: list[AgentDefinitionRow] = []
         revisions: dict[str, int] = {}
-        if machine is not None:
-            replaced = machine.controller_id
-            machine.controller_id = controller.id
+        if workspace is not None:
+            replaced = workspace.controller_id
+            workspace.controller_id = controller.id
             if replaced is not None and replaced != controller.id:
                 await self._revoke(session, tenant_id, replaced)
                 moved = await self._move_placed(
@@ -336,7 +345,7 @@ class ManagementService:
             logger.info(
                 "Cloud machine %s enrolled again; revoked its previous controller %s "
                 "and moved its %d agent(s) to %s",
-                consumed.hosted_machine_id,
+                workspace.machine_id if workspace is not None else None,
                 replaced,
                 len(moved),
                 controller.id,
@@ -719,8 +728,20 @@ class ManagementService:
         if controller.revoked_at is not None:
             return
         await self._revoke(session, tenant_id, controller_id)
+        machine = (
+            await enroll_revoked_again(session, controller_id, self.now())
+            if controller.kind == "ec2"
+            else None
+        )
         await session.commit()
         logger.info("Revoked agent controller %s", controller_id)
+        if machine is not None:
+            logger.info(
+                "Cloud machine %s enrolls a new controller for workspace %s at revision %s",
+                machine.id,
+                tenant_id,
+                machine.revision,
+            )
         self._announce_revoked(controller_id)
 
     async def _revoke(
@@ -886,12 +907,12 @@ class ManagementService:
         controller_id: str,
         provider: str,
     ) -> AgentController:
-        if provider not in PROVIDER_KNOWN_AGENT_TYPES:
+        if provider not in provider_ids():
             raise ManagementError(
                 422,
                 reason_codes.VALIDATION_ERROR,
                 f"Unknown provider {provider!r}; one of "
-                f"{', '.join(sorted(PROVIDER_KNOWN_AGENT_TYPES))}.",
+                f"{', '.join(sorted(provider_ids()))}.",
             )
         controller = await self.owned_controller(
             session, tenant_id, owner_id, controller_id
@@ -1368,14 +1389,14 @@ class ManagementService:
             provider = params.get("provider")
             if (
                 agent_id is not None
-                or provider not in PROVIDER_KNOWN_AGENT_TYPES
+                or provider not in provider_ids()
                 or set(params) != {"provider"}
             ):
                 raise ManagementError(
                     422,
                     reason_codes.VALIDATION_ERROR,
                     "provider.recheck takes no agent_id and params.provider naming "
-                    f"one of {', '.join(sorted(PROVIDER_KNOWN_AGENT_TYPES))}.",
+                    f"one of {', '.join(sorted(provider_ids()))}.",
                 )
         operation = await self.operations.create(
             session,
@@ -1469,14 +1490,15 @@ def with_directory(
 
 def _known_agent_registration(
     definition: DefinitionV1, existing_metadata: dict[str, Any] | None
-) -> tuple[type[KnownAgent], Any, dict[str, Any]]:
+) -> tuple[KnownAgent, Any, dict[str, Any]]:
     """The known-agent spec, options and metadata a definition registers with.
 
     Options the definition does not speak to (Claude Code's `channels_enabled`,
     say) keep whatever the agent already had. An agent already registered as
     a different known type is refused rather than silently converted.
     """
-    known_type = PROVIDER_KNOWN_AGENT_TYPES[definition.provider]
+    spec = provider_known_agent(definition.provider)
+    known_type = spec.provider.known_agent_type
     metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
     current_type = metadata.get("known_agent_type")
     if current_type is not None and current_type != known_type:
@@ -1486,7 +1508,6 @@ def _known_agent_registration(
             f"This agent is registered as {current_type!r}, which does not run "
             f"provider {definition.provider!r}.",
         )
-    spec = KNOWN_AGENTS[known_type]
     current_options = metadata.get("known_agent_options")
     raw_options = dict(current_options) if isinstance(current_options, dict) else {}
     raw_options["auto_session"] = True

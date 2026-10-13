@@ -26,6 +26,7 @@
         }
       }
     },
+    "imagePullSecrets": { "type": "array", "items": { "type": "string", "minLength": 1 } },
     "serviceAccount": {
       "type": "object",
       "required": [

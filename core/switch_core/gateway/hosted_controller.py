@@ -10,28 +10,29 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.config import SwitchConfig
-from switch_core.db.models import (
-    HostedMachine,
-    TenantMember,
-    require_tenant_id,
-)
+from switch_core.db.models import CloudMachine, TenantMember
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_CONNECT_TIMEOUT,
-    HostedMachineStore,
+    CloudMachineStore,
+    WorkspaceOnMachine,
     bump_revision,
+    ever_hosted,
     idle_sleeping,
     retention_expired,
+    workspace_on,
+    workspaces_on,
 )
 from switch_core.gateway.cloud_controllers import (
     CloudEnrollmentUnavailable,
     controller_machine_idle,
+    controller_reports,
     enrollment_code,
     live_controller,
 )
 from switch_core.gateway.dependencies import get_config, get_session_factory
 from switch_core.gateway.hosted_machines import controller_settings
 from switch_core.providers.hosted import HostedControllerSettings
-from switch_core.tenant_context import tenant_scope
+from switch_core.tenant_context import no_tenant, tenant_scope
 
 logger = logging.getLogger(__name__)
 
@@ -45,22 +46,24 @@ async def controller_session(
     settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
     factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
 ) -> AsyncIterator[AsyncSession]:
-    """Authenticate the operator controller and bind its configured tenant.
+    """Authenticate the operator controller, on a session with no tenant bound.
 
-    The bearer credential can provision only this tenant's machines; it is
-    never accepted as a user or agent credential on other routes.
+    A cloud machine belongs to its owner rather than to a workspace, so this
+    session reads machines and nothing scoped; what a machine runs in each
+    workspace is read with that workspace bound (`workspaces_on`). The bearer
+    credential is never accepted as a user or agent credential on other routes.
     """
     supplied = request.headers.get("authorization", "")
     if not secrets.compare_digest(
         supplied, "Bearer " + settings.token.get_secret_value()
     ):
         raise HTTPException(401, "Invalid cloud controller credential.")
-    with tenant_scope(settings.tenant_id):
+    with no_tenant():
         async with factory() as session:
             yield session
 
 
-def machine_item(machine: HostedMachine) -> dict:
+def machine_item(machine: CloudMachine) -> dict:
     return {
         "machine_id": machine.id,
         "state": machine.state,
@@ -70,17 +73,17 @@ def machine_item(machine: HostedMachine) -> dict:
         "retain_until": machine.retain_until.isoformat()
         if machine.retain_until
         else None,
-        "bundle_revision": machine.enrollment_code_revision,
+        "bundle_revision": machine.revision,
     }
 
 
-def _idle_stops(machine: HostedMachine, idle_minutes: int) -> bool:
+def _idle_stops(machine: CloudMachine, idle_minutes: int) -> bool:
     """Whether an idle machine is put to sleep: a message addressed to one of
     its agents wakes it again."""
     return idle_minutes > 0
 
 
-def _connect_timed_out(machine: HostedMachine, now: datetime) -> bool:
+def _connect_timed_out(machine: CloudMachine, now: datetime) -> bool:
     return (
         machine.state == "provisioning"
         and machine.running_observed_at is not None
@@ -92,7 +95,7 @@ def _connect_timed_out(machine: HostedMachine, now: datetime) -> bool:
     )
 
 
-def _start_timed_out(machine: HostedMachine, now: datetime) -> bool:
+def _start_timed_out(machine: CloudMachine, now: datetime) -> bool:
     return (
         machine.state == "provisioning"
         and machine.running_observed_at is None
@@ -100,9 +103,7 @@ def _start_timed_out(machine: HostedMachine, now: datetime) -> bool:
     )
 
 
-def _errored_unclaimed(
-    machine: HostedMachine, now: datetime, idle_minutes: int
-) -> bool:
+def _errored_unclaimed(machine: CloudMachine, now: datetime, idle_minutes: int) -> bool:
     return (
         idle_minutes > 0
         and machine.state == "error"
@@ -111,7 +112,7 @@ def _errored_unclaimed(
     )
 
 
-def _needs_sweep(machine: HostedMachine, now: datetime, idle_minutes: int) -> bool:
+def _needs_sweep(machine: CloudMachine, now: datetime, idle_minutes: int) -> bool:
     return (
         (machine.state == "queued" and now - machine.updated_at > QUEUED_TIMEOUT)
         or _connect_timed_out(machine, now)
@@ -129,12 +130,13 @@ def _needs_sweep(machine: HostedMachine, now: datetime, idle_minutes: int) -> bo
 
 async def _sweep(
     session: AsyncSession,
-    machine: HostedMachine,
+    machine: CloudMachine,
+    workspaces: list[WorkspaceOnMachine],
     idle_minutes: int,
     retention_days: int,
     now: datetime,
 ) -> None:
-    store = HostedMachineStore()
+    store = CloudMachineStore()
     if machine.state == "queued" and now - machine.updated_at > QUEUED_TIMEOUT:
         machine.state = "error"
         machine.error_code = "machine_connect_timeout"
@@ -153,15 +155,13 @@ async def _sweep(
     elif machine.state in {"retained", "error"} and retention_expired(machine, now):
         machine.desired_state = "deleted"
         bump_revision(machine, now)
-    elif _errored_unclaimed(machine, now, idle_minutes) and not await store.ever_hosted(
-        session, machine
-    ):
+    elif _errored_unclaimed(machine, now, idle_minutes) and not ever_hosted(workspaces):
         await store.release_if_empty(
-            session, machine, retention_days=retention_days, now=now
+            machine, workspaces, retention_days=retention_days, now=now
         )
     elif idle_sleeping(machine):
         await store.release_if_empty(
-            session, machine, retention_days=retention_days, now=now
+            machine, workspaces, retention_days=retention_days, now=now
         )
     elif (
         _idle_stops(machine, idle_minutes)
@@ -170,7 +170,7 @@ async def _sweep(
         and controller_machine_idle(machine, timedelta(minutes=idle_minutes), now)
     ):
         if not await store.release_if_empty(
-            session, machine, retention_days=retention_days, now=now
+            machine, workspaces, retention_days=retention_days, now=now
         ):
             store.stop(machine, "idle", now)
 
@@ -178,18 +178,16 @@ async def _sweep(
 @router.get("/machines")
 async def machines(
     session: Annotated[AsyncSession, Depends(controller_session)],
+    factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict:
-    store = HostedMachineStore()
+    store = CloudMachineStore()
     now = datetime.now(UTC)
     candidates = list(
         await session.scalars(
-            select(HostedMachine)
-            .where(
-                HostedMachine.tenant_id == require_tenant_id(),
-                HostedMachine.state != "deleted",
-            )
-            .order_by(HostedMachine.created_at)
+            select(CloudMachine)
+            .where(CloudMachine.state != "deleted")
+            .order_by(CloudMachine.created_at)
         )
     )
     for candidate in candidates:
@@ -200,18 +198,16 @@ async def machines(
             await _sweep(
                 session,
                 machine,
+                await workspaces_on(factory, machine.id),
                 config.hosted_idle_stop_minutes,
                 config.hosted_disk_retention_days,
                 now,
             )
         await session.commit()
     rows = await session.scalars(
-        select(HostedMachine)
-        .where(
-            HostedMachine.tenant_id == require_tenant_id(),
-            HostedMachine.state != "deleted",
-        )
-        .order_by(HostedMachine.created_at)
+        select(CloudMachine)
+        .where(CloudMachine.state != "deleted")
+        .order_by(CloudMachine.created_at)
         .execution_options(populate_existing=True)
     )
     response = {"machines": [machine_item(machine) for machine in rows]}
@@ -219,8 +215,8 @@ async def machines(
     return response
 
 
-async def _locked_machine(session: AsyncSession, machine_id: str) -> HostedMachine:
-    machine = await HostedMachineStore().locked(session, machine_id)
+async def _locked_machine(session: AsyncSession, machine_id: str) -> CloudMachine:
+    machine = await CloudMachineStore().locked(session, machine_id)
     if machine is None:
         raise HTTPException(404, "Cloud machine not found.")
     return machine
@@ -231,35 +227,73 @@ async def prepare(
     machine_id: str,
     response: Response,
     session: Annotated[AsyncSession, Depends(controller_session)],
+    factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
     settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict:
+    """What the machine boots from at its current revision: per workspace it
+    serves, the controller it enrolled as there, or, until it has one that is
+    not revoked, a one-time code to enroll with. Never a long-lived credential:
+    the machine keeps the ones it enrolls with on its own disk."""
     response.headers["Cache-Control"] = "no-store"
     machine = await _locked_machine(session, machine_id)
     if machine.state == "deleted" or machine.desired_state == "deleted":
         raise HTTPException(409, "machine is deleted")
     now = datetime.now(UTC)
-    if await session.get(TenantMember, (require_tenant_id(), machine.owner_id)) is None:
+    controllers = []
+    for workspace in await workspaces_on(factory, machine.id):
+        with tenant_scope(workspace.tenant_id):
+            async with factory() as scoped:
+                if (
+                    await scoped.get(
+                        TenantMember, (workspace.tenant_id, machine.owner_id)
+                    )
+                    is None
+                ):
+                    logger.warning(
+                        "Cloud machine %s: its owner left workspace %s, so it runs no controller there.",
+                        machine.id,
+                        workspace.tenant_id,
+                    )
+                    continue
+                row = await workspace_on(scoped, machine.id)
+                assert row is not None
+                controller = await live_controller(scoped, row)
+                try:
+                    code = (
+                        None
+                        if controller is not None
+                        else await enrollment_code(
+                            scoped, row, machine.revision, config.keyring, now
+                        )
+                    )
+                except CloudEnrollmentUnavailable as error:
+                    raise HTTPException(409, str(error)) from None
+                await scoped.commit()
+                controllers.append(
+                    {
+                        "key": row.id,
+                        "id": controller.id if controller is not None else None,
+                        "enrollment_code": code,
+                    }
+                )
+    served = {entry["key"] for entry in controllers}
+    reports = controller_reports(machine)
+    if set(reports) - served:
+        # A workspace the machine no longer runs a controller for must not keep
+        # it awake with a report that will never be fresh again.
+        machine.heartbeat = {
+            **(machine.heartbeat or {}),
+            "controllers": {
+                key: report for key, report in reports.items() if key in served
+            },
+        }
+    if not controllers:
         machine.state = "error"
-        machine.error = "The cloud machine's owner is no longer a workspace member."
+        machine.error = "The cloud machine's owner is no longer a member of any workspace it serves."
         machine.updated_at = now
         await session.commit()
-        raise HTTPException(
-            409, "The cloud machine's owner is no longer a workspace member."
-        )
-    # What the machine boots from at its current revision: the controller it
-    # enrolled as, or, until it has one that is not revoked, a one-time code to
-    # enroll with. Never a long-lived credential: the machine keeps the one it
-    # enrolls with on its own disk.
-    controller = await live_controller(session, machine)
-    try:
-        code = (
-            None
-            if controller is not None
-            else await enrollment_code(session, machine, config.keyring, now)
-        )
-    except CloudEnrollmentUnavailable as error:
-        raise HTTPException(409, str(error)) from None
+        raise HTTPException(409, machine.error)
     if machine.state == "queued":
         machine.state = "provisioning"
         machine.updated_at = now
@@ -268,10 +302,7 @@ async def prepare(
         "revision": machine.revision,
         "bundle_revision": machine.revision,
         "api_endpoint": settings.agent_api_endpoint,
-        "controller": {
-            "id": controller.id if controller is not None else None,
-            "enrollment_code": code,
-        },
+        "controllers": controllers,
     }
     await session.commit()
     return result

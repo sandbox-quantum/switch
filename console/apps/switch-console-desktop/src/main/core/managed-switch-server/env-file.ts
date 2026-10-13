@@ -33,6 +33,10 @@ export type LocalServerEnvParams = {
   telemetryInternal: boolean;
 };
 
+/** The feature flags every managed stack is started with. Empty: a managed
+ * stack starts with no feature flags on (agent management included). */
+export const MANAGED_SERVER_FEATURE_FLAGS = [] as const;
+
 /** The variable the server reads its telemetry gate from. Named here because
  * reading the choice back off a host has to look for the same key. */
 export const TELEMETRY_ENABLED_KEY = 'TELEMETRY_ENABLED';
@@ -85,6 +89,11 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     `AGENT_REGISTRATION_TOKEN=${secrets.agentRegistrationToken}`,
     `JWT_SECRET_KEY=${secrets.jwtSecretKey}`,
     `SECRET_KEYS=${secrets.secretKeys}`,
+    // The flags a managed stack runs with (MANAGED_SERVER_FEATURE_FLAGS).
+    // Currently none: a managed stack starts with agent management off. The
+    // variable is still written (empty) so the stack's flag set is explicit.
+    `FEATURE_FLAGS_ENABLED=${MANAGED_SERVER_FEATURE_FLAGS.join(',')}`,
+    `CONTROLLER_TOKEN_SECRET=${secrets.controllerTokenSecret}`,
     `GATEWAY_ADMIN_EMAIL=${LOCAL_SERVER_ADMIN_EMAIL}`,
     `GATEWAY_ADMIN_PASSWORD=${secrets.gatewayAdminPassword}`,
     `FRONTEND_BASE_URL=${gatewayUrlFor(ports)}`,
@@ -139,15 +148,20 @@ export function readEnvValue(env: string, key: string): string | null {
 
 /**
  * What another Console needs to run the same stack. `dbRuntimePassword` is
- * null for a `.env` from before switch-core split its database roles, and
- * `secretKeys` for one from before `SECRET_KEYS`; the caller fills them in
+ * null for a `.env` from before switch-core split its database roles,
+ * `secretKeys` for one from before `SECRET_KEYS`, and `controllerTokenSecret`
+ * for one from before agent management; the caller fills them in
  * (see `withNewerSecrets` in `secret-values.ts`).
  */
 export type StackEnv = {
   ports: LocalServerPorts;
-  secrets: Omit<LocalServerSecrets, 'dbRuntimePassword' | 'secretKeys'> & {
+  secrets: Omit<
+    LocalServerSecrets,
+    'dbRuntimePassword' | 'secretKeys' | 'controllerTokenSecret'
+  > & {
     dbRuntimePassword: string | null;
     secretKeys: string | null;
+    controllerTokenSecret: string | null;
   };
   version: string | null;
 };
@@ -226,6 +240,7 @@ export function keysDisagreeing(
   for (const [field, key] of PORT_KEYS) expected.set(key, String(copy.ports[field]));
   for (const [field, key] of SECRET_KEYS) expected.set(key, copy.secrets[field]);
   expected.set('SECRET_KEYS', copy.secrets.secretKeys);
+  expected.set('CONTROLLER_TOKEN_SECRET', copy.secrets.controllerTokenSecret);
   // Which password `DB_PASSWORD` is depends on the layout that wrote the file.
   if (readEnvValue(env, 'DB_OWNER_PASSWORD') !== null) {
     expected.set('DB_OWNER_PASSWORD', copy.secrets.dbPassword);
@@ -276,6 +291,7 @@ export function readStackEnv(env: string): StackEnvReading {
         ...(plain as Record<PlainSecret, string>),
         ...database,
         secretKeys: readEnvValue(env, 'SECRET_KEYS'),
+        controllerTokenSecret: readEnvValue(env, 'CONTROLLER_TOKEN_SECRET'),
       },
       version: readEnvValue(env, 'SWITCH_VERSION'),
     },

@@ -27,7 +27,7 @@ spec:
       containers:
         - name: setup
           image: {{ include "switch.image" (dict "global" .Values.global "image" .Values.setup.image) }}
-          imagePullPolicy: {{ .Values.setup.imagePullPolicy }}
+          imagePullPolicy: {{ include "switch.imagePullPolicy" (dict "policy" .Values.setup.imagePullPolicy "image" .Values.setup.image) }}
           env:
             - name: SWITCH_URL
               value: "http://{{ include "switch.switchCoreHost" . }}:{{ .Values.switchCore.service.port }}"

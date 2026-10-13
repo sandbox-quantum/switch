@@ -314,6 +314,12 @@ class _NoRunningBridges:
         """Read from the adapter class for the same reason."""
         return True
 
+    def receives_webhooks(self, bridge_type: str) -> bool:
+        return False
+
+    def webhook_url(self, bridge_id: str, bridge_type: str) -> str | None:
+        return None
+
 
 async def test_set_default_promotes_and_demotes(
     session_factory: async_sessionmaker[AsyncSession],

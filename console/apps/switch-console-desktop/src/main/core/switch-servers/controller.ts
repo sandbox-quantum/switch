@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
 import { appService } from '@main/core/app/service';
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
+import { featureFlagsService } from '@main/core/feature-flags/feature-flags';
 import { isManagedServerRunning } from '@main/core/managed-switch-server/managed-server-status';
 import type { TelemetryAuthMethod, TelemetrySignInFailure } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
@@ -22,6 +23,8 @@ import {
   normaliseServerUrl,
   type AddServerParams,
   type BundledChatSignIn,
+  type ClearTrustSettingsResult,
+  type FetchTrustSettingsResult,
   type PasswordLoginParams,
   type RenameServerParams,
   type ServerConnectionStatus,
@@ -31,6 +34,8 @@ import {
   type SwitchServer,
   type UpdateServerParams,
   type UpdateServerResult,
+  type UpdateTrustSettingsParams,
+  type UpdateTrustSettingsResult,
 } from '@shared/core/switch-servers/switch-servers';
 import type { JoinableWorkspaces, PendingInvitations } from '@shared/core/workspaces/invitations';
 import { isWithdrawnWorkspace, type Workspace } from '@shared/core/workspaces/workspaces';
@@ -45,11 +50,14 @@ import {
   ensureCloudMachine,
   listCloudMachines,
   disconnectGitHub,
+  connectServiceWithKey,
+  disconnectService,
   acceptInvitation,
   acceptPendingInvitation,
   joinWorkspaceByDomain,
   createTenant,
   fetchAuthConfig,
+  fetchCanCreateWorkspace,
   fetchMe,
   fetchJoinableWorkspaces,
   fetchPendingInvitations,
@@ -79,7 +87,18 @@ import {
   setActiveServerId,
   updateServer,
 } from './servers-store';
+import {
+  cancelServiceBrowserFlow,
+  confirmServiceBrowserFlow,
+  getServiceBrowserFlow,
+  startServiceBrowserFlow,
+} from './service-browser-flow';
 import { requireSwitchCloudEndpoint, switchCloudEndpoint } from './switch-cloud';
+import {
+  clearTrustSettingsOnServer,
+  fetchTrustSettingsFromServer,
+  updateTrustSettingsOnServer,
+} from './trust-settings';
 
 /** A sign-in's own error union, as a reportable code. Never its message. */
 const SIGN_IN_FAILURE: Record<LoginError['kind'], TelemetrySignInFailure> = {
@@ -182,15 +201,25 @@ async function registerSwitchCloud({ url }: SwitchCloudEndpoint): Promise<Switch
   return server;
 }
 
+/** Whether the server turns cloud machines on (its `hosted_agents` flag). */
+async function hostedAgentsOn(server: SwitchServer): Promise<boolean> {
+  return (await featureFlagsService.current(server)).flags['hosted_agents'];
+}
+
 export const switchServersController = createRPCController({
   /** The icons the server generates for an agent called `name`, one page at a time. */
   agentIconChoices: (params: { serverId: string; name: string; page: number }) =>
     withReachableServerWorkspaceSession(params.serverId, (server) =>
       fetchAgentIconChoices(server, params.name, params.page)
     ),
+  /** Whether the signed-in account may create a workspace on the server. */
+  canCreateWorkspace: (serverId: string) =>
+    withServerWorkspaceSession(serverId, (server) => fetchCanCreateWorkspace(server)),
   /** The caller's cloud machines, or null when the server offers none. */
   cloudMachines: (serverId: string) =>
-    withServerWorkspaceSession(serverId, (server) => listCloudMachines(server)),
+    withServerWorkspaceSession(serverId, async (server) =>
+      (await hostedAgentsOn(server)) ? listCloudMachines(server) : null
+    ),
   cloudMachineLifecycle: (
     serverId: string,
     machineId: string,
@@ -299,6 +328,28 @@ export const switchServersController = createRPCController({
     withReachableServerWorkspaceSession(serverId, (server) => cancelGitHubBrowserFlow(server, id)),
   disconnectGitHub: (serverId: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => disconnectGitHub(server)),
+  startServiceConnection: (serverId: string, service: string) =>
+    withReachableServerWorkspaceSession(serverId, (server) =>
+      startServiceBrowserFlow(server, service, (url) => appService.openExternal(url))
+    ),
+  getServiceFlow: (serverId: string, service: string, id: string) =>
+    withReachableServerWorkspaceSession(serverId, (server) =>
+      getServiceBrowserFlow(server, service, id)
+    ),
+  confirmServiceConnection: (serverId: string, service: string, id: string) =>
+    withReachableServerWorkspaceSession(serverId, (server) =>
+      confirmServiceBrowserFlow(server, service, id)
+    ),
+  cancelServiceConnection: (serverId: string, service: string, id: string) =>
+    withReachableServerWorkspaceSession(serverId, (server) =>
+      cancelServiceBrowserFlow(server, service, id)
+    ),
+  connectServiceWithKey: (serverId: string, service: string, fields: Record<string, string>) =>
+    withReachableServerWorkspaceSession(serverId, (server) =>
+      connectServiceWithKey(server, service, fields)
+    ),
+  disconnectService: (serverId: string, service: string) =>
+    withReachableServerWorkspaceSession(serverId, (server) => disconnectService(server, service)),
   openGitHubInstallation: async (serverId: string) => {
     const connection = await withReachableServerWorkspaceSession(serverId, (server) =>
       getGitHubConnection(server)
@@ -420,6 +471,20 @@ export const switchServersController = createRPCController({
   getAuthConfig: async (serverId: string): Promise<SwitchAuthConfig> =>
     fetchAuthConfig(await requireReachableServer(serverId)),
 
+  /** Switch Trust's one server-global guardrails settings row. Admin-only
+   * (a deployment operator) — not scoped to a workspace, since one policy
+   * covers the whole deployment. */
+  getTrustSettings: async (serverId: string): Promise<FetchTrustSettingsResult> =>
+    fetchTrustSettingsFromServer(await requireReachableServer(serverId)),
+
+  updateTrustSettings: async (
+    params: UpdateTrustSettingsParams
+  ): Promise<UpdateTrustSettingsResult> =>
+    updateTrustSettingsOnServer(await requireReachableServer(params.serverId), params),
+
+  clearTrustSettings: async (serverId: string): Promise<ClearTrustSettingsResult> =>
+    clearTrustSettingsOnServer(await requireReachableServer(serverId)),
+
   // Reported here rather than in `auth.ts`: the same functions are used to
   // re-authenticate a managed server on its own and to log in while starting a
   // stack, and neither of those is a person signing in.
@@ -467,7 +532,12 @@ export const switchServersController = createRPCController({
   },
 
   ensureCloudMachine: (serverId: string) =>
-    withReachableServerWorkspaceSession(serverId, (server) => ensureCloudMachine(server)),
+    withReachableServerWorkspaceSession(serverId, async (server) => {
+      if (!(await hostedAgentsOn(server))) {
+        throw new Error(`${server.name} does not have cloud machines turned on.`);
+      }
+      return ensureCloudMachine(server);
+    }),
 
   logout: async (serverId: string): Promise<void> => {
     // Read before the cookie goes, so the kind of server is still knowable — and

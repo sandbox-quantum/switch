@@ -60,7 +60,7 @@ vi.mock('@main/core/providers/plugin-registry', () => ({
     behavior:
       id === 'claude'
         ? { repoAgents: { launchDefinition: () => ({}) } }
-        : { mcp: { launchProfileFields: () => [] } },
+        : { mcp: { launchProfileSettings: () => ({}) } },
   }),
 }));
 

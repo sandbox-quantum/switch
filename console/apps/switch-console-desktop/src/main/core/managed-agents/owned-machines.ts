@@ -46,6 +46,7 @@ export function ownedMachines(
         acceptsLogins: controller.sealingKey !== null,
         cloud: isCloudMachine(controller),
         workspacesDir: controller.workspacesDir,
+        os: controller.os,
         local:
           controller.id === local.thisComputer
             ? { kind: 'this-computer' }

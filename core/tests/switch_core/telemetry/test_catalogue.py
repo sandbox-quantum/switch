@@ -15,6 +15,7 @@ from switch_core.telemetry.catalogue import (
     CATALOGUE,
     EVENT_NAME_PREFIX,
     TelemetryCatalogueError,
+    event_spec,
     validate,
     wire_name,
 )
@@ -56,7 +57,7 @@ def _one_valid_value(spec: object) -> object:
 
 
 def _valid_payload(event: str) -> dict[str, object]:
-    return {name: _one_valid_value(spec) for name, spec in CATALOGUE[event].items()}
+    return {name: _one_valid_value(spec) for name, spec in event_spec(event).items()}
 
 
 class TestNothingIdentifyingCanBeSent:
@@ -69,7 +70,7 @@ class TestNothingIdentifyingCanBeSent:
         """
         offenders = {
             f"{event}.{name}"
-            for event, spec in CATALOGUE.items()
+            for event, spec in ((e, event_spec(e)) for e in CATALOGUE)
             for name in spec
             if name in FORBIDDEN_PROPERTIES
         }
@@ -166,7 +167,7 @@ class TestNaming:
     def test_every_property_is_snake_case(self) -> None:
         offenders = [
             f"{event}.{name}"
-            for event, spec in CATALOGUE.items()
+            for event, spec in ((e, event_spec(e)) for e in CATALOGUE)
             for name in spec
             if not name.replace("_", "").isalnum() or name != name.lower()
         ]

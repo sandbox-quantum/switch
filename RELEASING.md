@@ -1,8 +1,8 @@
 # Releasing Switch
 
 This describes how to cut a release of the **Switch core stack** — the
-`switch-core`, `gateway`, and `setup` container images, the Helm chart, and the
-standalone Docker Compose file. The Switch Console desktop app releases separately
+`switch-core`, `gateway`, `setup` and `switch-hosted-controller` container
+images, the Helm charts, and the standalone Docker Compose file. The Switch Console desktop app releases separately
 (see `.github/workflows/switch-console-release.yml` and `console/docs/INSTALL.md`).
 
 ## Versioning
@@ -10,7 +10,7 @@ standalone Docker Compose file. The Switch Console desktop app releases separate
 - Switch follows [Semantic Versioning](https://semver.org): `MAJOR.MINOR.PATCH`.
   Every artifact carries three parts and a changelog, without exception.
 - The canonical `switch-core` version is `version` in `core/pyproject.toml`.
-- The Helm chart, the three images, and the standalone compose artifact are
+- The Helm chart, the four images, and the standalone compose artifact are
   published under the **same** version as the git tag, so a single tag pins the
   whole stack.
 
@@ -22,8 +22,9 @@ Never derive one from the other.
 
 ### What is, and is not, separately versioned
 
-The **operator dashboard** (`gateway/`), the **setup image**, the **Helm chart**,
-and the **standalone compose artifact** have no version of their own. They ship
+The **operator dashboard** (`gateway/`), the **setup image**, the
+**switch-hosted-controller image**, the **Helm charts**, and the **standalone
+compose artifact** have no version of their own. They ship
 inside the switch-core release and are stamped with its version at package time,
 which is what lets a single tag pin the whole stack. They appear in
 `artifacts.yaml` with `version_from: switch-core` — listed, because a registry
@@ -76,9 +77,12 @@ peer still on it, and it can never be raised past what is running in the field.
    - builds multi-arch (`linux/amd64`, `linux/arm64`) images for `switch-core`,
      `gateway`, and `setup` and pushes them to the container registry tagged
      `<version>` and `latest`;
-   - packages the Helm chart at the same version and pushes it as an OCI
-     artifact to the same registry.
-   `workflow_dispatch` runs the build without pushing, for verification.
+   - once the images are pushed, writes each image's digest into the chart's
+     `values.yaml`, packages the chart at the same version, checks the packaged
+     chart renders every first-party image by digest, and pushes it as an OCI
+     artifact to the same registry (see [Pinned by digest](#pinned-by-digest)).
+   `workflow_dispatch` runs the build without pushing, for verification. It
+   pins placeholder digests, so the pin and the check run too.
 
 You can also trigger `workflow_dispatch` manually from the Actions tab to test a
 build without creating a release.
@@ -102,6 +106,84 @@ git push origin switch-v0.30.0-rc.1
 - **The server reports the RC.** The workflow stamps `0.30.0rc1` (the PEP 440 form)
   into `core/pyproject.toml` on the runner, so the running server's version says
   which candidate it is. Nothing is committed.
+
+### Dev builds
+
+Every push to `main` publishes the images and chart as a dev build, so the dev
+environment runs main from published, digest-pinned artifacts instead of
+building from source at deploy time.
+
+- **Separate packages.** Dev builds go to `ghcr.io/<owner>/dev/` (`dev/switch-core`,
+  `dev/gateway`, `dev/setup`, `dev/switch-hosted-controller`, `dev/charts/switch`,
+  `dev/charts/switch-hosted-controller`), so the release packages' tag lists
+  hold releases and RCs only. Nothing is ever tagged `latest`.
+- **The dev charts carry a moving `main` tag.** Once both charts are pushed,
+  the run moves their `main` tag to its build, but only while the commit it
+  built is still the tip of main, so a slower run cannot move it backwards. An
+  environment that follows main (development, through ArgoCD) tracks that tag
+  and resolves it to a digest; every other environment pins a version. The
+  cleanup never deletes the build `main` points at.
+- **Version** `<next patch>-dev.<run number>.g<short sha>`, e.g.
+  `0.29.1-dev.512.g7f0c803` after `switch-v0.29.0`: one patch above the newest
+  release tag on main, so a dev build sorts after the release it contains and
+  before the next release or RC. The server reports `0.29.1.dev512` (PEP 440),
+  stamped on the runner like an RC. A semver pre-release, so `helm install`
+  skips it unless given that exact `--version`. No compose artifact.
+- **The newest push wins.** Pushes to main share a concurrency group, so a dev
+  build still running when the next merge lands is cancelled.
+- **Pruned.** `switch-dev-cleanup.yml` runs daily and deletes dev builds older
+  than 30 days that are not among the 20 newest (`scripts/prune_dev_packages.py`;
+  dispatch it with `dry_run` to see what it would delete).
+- **Not gated on PR CI.** It builds whatever reached main; what an environment
+  runs is decided by its pin, not by the build existing.
+
+### Pinned by digest
+
+The chart and the images are built together and published as one unit. The
+release writes each image's registry digest into the chart before packaging:
+
+```yaml
+global:
+  imageRegistry: "ghcr.io/<owner>"
+switchCore:
+  image: switch-core:<version>@sha256:…
+  imagePullPolicy: IfNotPresent
+```
+
+and the same for `gateway` and `setup`. The hosted controller chart
+(`charts/switch-hosted-controller`) is pinned through `image.repository` and
+`image.digest` instead, so its image renders as
+`ghcr.io/<owner>/switch-hosted-controller@sha256:…`, by digest with no tag.
+So pinning a chart pins the exact
+images: a deployment sets no image values, and what runs is reproducible from
+the chart pin alone. The tag in front of the digest is for people; the runtime
+pulls by digest, and the chart pulls a digest-pinned image `IfNotPresent` (any
+other reference `Always`). Setting an image value on install opts out of the
+pin. A mirror set with `global.imageRegistry` keeps the pin as long as it copies
+images byte for byte, which registry-to-registry copies do.
+
+**A version is published once.** Before building, the release asks the registry
+whether any chart already has the version and fails if one does. Builds are not
+bit-for-bit reproducible, so a re-run of the whole release would point the same
+version at different digests. Cut a new version instead. If only a chart push
+failed, re-run just the failed chart job: it reuses the run's image digests,
+checks every chart before pushing any, keeps a chart already pushed with those
+same images, and pushes the rest. A chart already published with any other
+images fails it. `scripts/release_charts.sh` does the packaging, checks and
+push, and PR CI runs its build step with placeholder digests.
+
+Every publishing run lists every digest (the charts' own included) in its
+run summary, and uploads them as a `release-pins` artifact (`release-pins.json`)
+for whatever promotes the build next. `scripts/pin_chart_images.py` holds the one
+list of charts and first-party images (the build matrix comes from it), does
+the pinning, and checks each rendered chart: every image of that chart,
+recognised by repository name whatever registry it names, must render from the
+pinning registry and by digest, and no first-party image of another chart may
+appear. PR CI runs the pin with placeholder digests and the check on each
+chart's renders (for the switch chart, defaults and the optional workloads
+on), so an image the pinner does not know about fails a pull request rather
+than shipping by tag. To add an image, add it to `IMAGES` there; to add a
+chart, to `CHARTS`.
 
 ## Switch Console desktop app release (separate)
 
@@ -212,8 +294,13 @@ Consuming the published artifacts:
 # images
 docker pull ghcr.io/<owner>/switch-core:<version>
 
-# chart
+# chart (its images are pinned inside it by digest); the hosted controller's
+# chart is charts/switch-hosted-controller
 helm install switch oci://ghcr.io/<owner>/charts/switch --version <version> \
+  -f my-values.yaml
+
+# or pin the chart itself by digest, from the run summary
+helm install switch oci://ghcr.io/<owner>/charts/switch@sha256:<chart digest> \
   -f my-values.yaml
 
 # standalone compose (OCI artifact) — pull the file, then run it

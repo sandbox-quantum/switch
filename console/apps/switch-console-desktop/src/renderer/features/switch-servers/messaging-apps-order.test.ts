@@ -16,6 +16,8 @@ function bridge(id: string, displayName: string): RemoteBridge {
     attention: null,
     teamPlacementSupported: false,
     channelIdsRefused: null,
+    receivesWebhooks: false,
+    webhookUrl: null,
   };
 }
 

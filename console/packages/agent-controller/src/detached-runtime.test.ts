@@ -102,7 +102,8 @@ describe('DetachedRuntime', () => {
       '--ensure-watch',
       'false',
     ]);
-    expect(statSync(join(root, 'template.json')).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32')
+      expect(statSync(join(root, 'template.json')).mode & 0o777).toBe(0o600);
     expect(await runtime.observe('agent-1')).toMatchObject({
       alive: false,
       configured: { provider: 'claude', cwd: '/work/scout' },

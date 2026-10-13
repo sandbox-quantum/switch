@@ -31,11 +31,11 @@ it.skipIf(process.platform === 'win32')(
     let fenced = false;
     try {
       await once(owner.stdout!, 'data');
-      await expect(fenceDeadOwner(pid, pid)).rejects.toThrow('still alive');
+      await expect(fenceDeadOwner(pid, pid, null)).rejects.toThrow('still alive');
       const exited = once(owner, 'exit');
       owner.kill('SIGKILL');
       await exited;
-      await fenceDeadOwner(pid, pid);
+      await fenceDeadOwner(pid, pid, null);
       fenced = true;
       expect(() => process.kill(-pid, 0)).toThrow();
     } finally {
@@ -58,7 +58,7 @@ it.skipIf(process.platform === 'win32')(
         throw gone;
       });
     try {
-      await expect(fenceDeadOwner(12345, 12345)).resolves.toBeUndefined();
+      await expect(fenceDeadOwner(12345, 12345, null)).resolves.toBeUndefined();
       expect(kill).toHaveBeenLastCalledWith(-12345, 'SIGKILL');
     } finally {
       kill.mockRestore();
@@ -66,29 +66,32 @@ it.skipIf(process.platform === 'win32')(
   }
 );
 
-it('waits for confirmed exit after a transient permission error during group teardown', async () => {
-  const gone = Object.assign(new Error('Process exited'), { code: 'ESRCH' });
-  const denied = Object.assign(new Error('Permission denied'), { code: 'EPERM' });
-  const kill = vi
-    .spyOn(process, 'kill')
-    .mockImplementationOnce(() => {
-      throw gone;
-    })
-    .mockReturnValueOnce(true)
-    .mockReturnValueOnce(true)
-    .mockImplementationOnce(() => {
-      throw denied;
-    })
-    .mockImplementationOnce(() => {
-      throw gone;
-    });
-  try {
-    await expect(fenceDeadOwner(12345, 12345)).resolves.toBeUndefined();
-    expect(kill).toHaveBeenCalledTimes(5);
-  } finally {
-    kill.mockRestore();
+it.skipIf(process.platform === 'win32')(
+  'waits for confirmed exit after a transient permission error during group teardown',
+  async () => {
+    const gone = Object.assign(new Error('Process exited'), { code: 'ESRCH' });
+    const denied = Object.assign(new Error('Permission denied'), { code: 'EPERM' });
+    const kill = vi
+      .spyOn(process, 'kill')
+      .mockImplementationOnce(() => {
+        throw gone;
+      })
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(true)
+      .mockImplementationOnce(() => {
+        throw denied;
+      })
+      .mockImplementationOnce(() => {
+        throw gone;
+      });
+    try {
+      await expect(fenceDeadOwner(12345, 12345, null)).resolves.toBeUndefined();
+      expect(kill).toHaveBeenCalledTimes(5);
+    } finally {
+      kill.mockRestore();
+    }
   }
-});
+);
 
 const throws = (code: string) => () => {
   throw Object.assign(new Error(code), { code });
@@ -96,7 +99,7 @@ const throws = (code: string) => () => {
 
 // macOS answers EPERM for a group left with only unreaped members, as it can
 // be the moment a host exits.
-it.each([
+it.skipIf(process.platform === 'win32').each([
   ['checking it', [throws('EPERM')]],
   ['killing it', [(): true => true, throws('EPERM')]],
 ])('waits out a group that answers EPERM when %s', async (_when, answers) => {
@@ -104,30 +107,34 @@ it.each([
   for (const answer of [throws('ESRCH'), ...answers, throws('ESRCH')])
     kill.mockImplementationOnce(answer);
   try {
-    await expect(fenceDeadOwner(12345, 12345)).resolves.toBeUndefined();
+    await expect(fenceDeadOwner(12345, 12345, null)).resolves.toBeUndefined();
     expect(kill).toHaveBeenLastCalledWith(-12345, 0);
   } finally {
     kill.mockRestore();
   }
 });
 
-it('does not assume a group is gone when permission stays denied', async () => {
-  const gone = Object.assign(new Error('Process exited'), { code: 'ESRCH' });
-  const denied = Object.assign(new Error('Permission denied'), { code: 'EPERM' });
-  const kill = vi
-    .spyOn(process, 'kill')
-    .mockImplementationOnce(() => {
-      throw gone;
-    })
-    .mockReturnValueOnce(true)
-    .mockReturnValueOnce(true)
-    .mockImplementation(() => {
-      throw denied;
-    });
-  try {
-    const result = expect(fenceDeadOwner(12345, 12345)).rejects.toThrow('has not exited');
-    await result;
-  } finally {
-    kill.mockRestore();
-  }
-}, 10000);
+it.skipIf(process.platform === 'win32')(
+  'does not assume a group is gone when permission stays denied',
+  async () => {
+    const gone = Object.assign(new Error('Process exited'), { code: 'ESRCH' });
+    const denied = Object.assign(new Error('Permission denied'), { code: 'EPERM' });
+    const kill = vi
+      .spyOn(process, 'kill')
+      .mockImplementationOnce(() => {
+        throw gone;
+      })
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(true)
+      .mockImplementation(() => {
+        throw denied;
+      });
+    try {
+      const result = expect(fenceDeadOwner(12345, 12345, null)).rejects.toThrow('has not exited');
+      await result;
+    } finally {
+      kill.mockRestore();
+    }
+  },
+  10000
+);

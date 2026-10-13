@@ -197,6 +197,27 @@ class AddressingPolicy(BaseModel):
             for rule in self.rules
         )
 
+    def admits_others(
+        self, *, owner_identity_ids: set[str], owner_agent_ids: set[str]
+    ) -> bool:
+        """Whether anyone but the owner and the owner's own agents may address
+        the agent, and so have it act on what its owner granted it.
+
+        An open policy does; so does any rule that admits every human or
+        agent (``"*"``, whatever its rooms), a human by an identity the owner
+        has not claimed, or another person's agent. `owner_identity_ids` are
+        the platform identities the owner has claimed; `owner_agent_ids` the
+        agents they own. A platform rule is not counted: the platform acting
+        for a person is judged as that person (`allows_on_behalf_of`).
+        """
+        if self.is_open():
+            return True
+        return any(
+            _admits_beyond(rule.users, owner_identity_ids)
+            or _admits_beyond(rule.agents, owner_agent_ids)
+            for rule in self.rules
+        )
+
     def requires_owner_identity(self) -> bool:
         """Whether any rule depends on resolving the owner's platform identity.
 
@@ -216,6 +237,11 @@ def _dim_contains(dimension: Dimension, value: str | None) -> bool:
     if value is None:
         return False
     return value in dimension
+
+
+def _admits_beyond(dimension: Dimension, own: set[str]) -> bool:
+    """Whether a sender dimension admits anyone outside `own`."""
+    return dimension == ANY or any(value not in own for value in dimension)
 
 
 def parse_policy(raw: dict | None) -> AddressingPolicy:

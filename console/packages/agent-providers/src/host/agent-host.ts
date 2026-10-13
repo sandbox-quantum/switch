@@ -278,9 +278,9 @@ export async function stopSupersededSessions(
  * `config` with what its agent's definition decides — the model, the approval
  * mode, the instructions and skill the provider is given, and what the
  * agent's advanced configuration becomes: the agent definition Claude Code
- * runs as and the Codex profile — and the credentials and provider binary of
- * whoever runs the watcher, taken from the watcher's `template` as it stands
- * now. Everything else stays the session's own: its identity,
+ * runs as and the Codex profile — and the credentials, provider binary and
+ * environment (where a provider login given since lives) of whoever runs the
+ * watcher, taken from the watcher's `template` as it stands now. Everything else stays the session's own: its identity,
  * directory and native conversation, so a session started after its agent was
  * edited resumes its conversation under the edit instead of under what the
  * agent was when the session was first created.
@@ -298,6 +298,13 @@ export function withDefinitionOf(
   if (model) next.start.input.model = structuredClone(model);
   else delete next.start.input.model;
   next.start.input.runtimeMode = template.start.input.runtimeMode;
+  // The environment carries the provider login the agent signs in with: a
+  // session created before a login was given, changed or withdrawn takes the
+  // current one. Only the session's own id stays its own.
+  const sessionId = next.start.input.env.SWITCHDASH_SESSION_ID;
+  next.start.input.env = structuredClone(template.start.input.env);
+  if (next.start.input.env.SWITCHDASH_SESSION_ID !== undefined && sessionId !== undefined)
+    next.start.input.env.SWITCHDASH_SESSION_ID = sessionId;
   if (!next.execution?.agentDefinition) {
     const { agentName, agentDefinition } = template.start.input;
     if (agentName) next.start.input.agentName = agentName;
@@ -739,7 +746,16 @@ export async function runAgentHost(
     // Before any session is started below: a host asks for its tools as soon
     // as its provider comes up.
     unbind.push(
-      links.answer(agentId, sessionToolAnswerer({ identity, connectionId, placements, publish }))
+      links.answer(
+        agentId,
+        sessionToolAnswerer({
+          identity,
+          connectionId,
+          placements,
+          publish,
+          redactions: links.redactions,
+        })
+      )
     );
     // A host coming up — started from Console after it failed, say — takes
     // the messages that waited for it.
@@ -1334,11 +1350,20 @@ export async function runAgentHost(
         }
       }
     };
+    // A turn ending while the definition is being applied is not lost: the
+    // pass is run again once the one under way is done.
+    let again = false;
     const redefine = () => {
-      if (redefining) return;
+      if (redefining) {
+        again = true;
+        return;
+      }
       redefining = true;
       pending = pending.then(applyDefinition).finally(() => {
         redefining = false;
+        if (!again) return;
+        again = false;
+        redefine();
       });
       void pending.catch((error: Error) => fail(error));
     };

@@ -84,6 +84,12 @@ services:
       # unclickable text. Kept in step with the standalone compose.
       MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
       MM_DISPLAYSETTINGS_CUSTOMURLSCHEMES: switchdash
+      MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
+      MM_LOGSETTINGS_ENABLESENTRY: "false"
+      MM_SERVICESETTINGS_ENABLESECURITYFIXALERT: "false"
+      MM_ANNOUNCEMENTSETTINGS_ADMINNOTICESENABLED: "false"
+      MM_ANNOUNCEMENTSETTINGS_USERNOTICESENABLED: "false"
+      MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE: "false"
     depends_on:
       init-db:
         condition: service_completed_successfully

@@ -20,8 +20,8 @@ import {
   type Isolation,
   type DesiredState,
   type ManagedAgent,
-  PROVIDERS,
   type Provider,
+  type ProviderInfo,
   updateManagedAgent,
 } from "../../data/management";
 
@@ -42,7 +42,11 @@ interface Form {
   running: boolean;
 }
 
-function initialForm(agent: ManagedAgent | null, controllers: Controller[]): Form {
+function initialForm(
+  agent: ManagedAgent | null,
+  controllers: Controller[],
+  providers: ProviderInfo[],
+): Form {
   if (agent)
     return {
       name: agent.name,
@@ -62,7 +66,7 @@ function initialForm(agent: ManagedAgent | null, controllers: Controller[]): For
     name: "",
     description: "",
     controllerId: online?.id ?? "",
-    provider: "claude",
+    provider: providers[0]?.id ?? "",
     model: "",
     instructions: "",
     directory: "",
@@ -95,6 +99,7 @@ export default function ManagedAgentDialog({
   open,
   agent,
   controllers,
+  providers,
   onClose,
   onSaved,
 }: {
@@ -102,16 +107,18 @@ export default function ManagedAgentDialog({
   /** The agent to edit, or null to create one. */
   agent: ManagedAgent | null;
   controllers: Controller[];
+  /** The providers the server runs; empty until they have loaded. */
+  providers: ProviderInfo[];
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [form, setForm] = useState<Form>(() => initialForm(agent, controllers));
+  const [form, setForm] = useState<Form>(() => initialForm(agent, controllers, providers));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
-    setForm(initialForm(agent, controllers));
+    setForm(initialForm(agent, controllers, providers));
     setError(null);
     // Reset only when the dialog opens or switches agent, not on every status refresh.
   }, [open, agent?.agent_id]);
@@ -124,7 +131,15 @@ export default function ManagedAgentDialog({
   );
   const nameValid = agent !== null || NAME_PATTERN.test(form.name);
   const canSave =
-    nameValid && (agent !== null || form.description.trim() !== "") && !saving;
+    nameValid &&
+    (agent !== null || form.description.trim() !== "") &&
+    form.provider !== "" &&
+    !saving;
+  // An agent keeps its provider even if the server no longer lists it.
+  const providerChoices =
+    form.provider === "" || providers.some((p) => p.id === form.provider)
+      ? providers
+      : [...providers, { id: form.provider, label: form.provider, advanced_fields: [] }];
 
   const save = async () => {
     setSaving(true);
@@ -206,9 +221,10 @@ export default function ManagedAgentDialog({
             label="Provider"
             value={form.provider}
             onChange={(e) => set("provider", e.target.value as Provider)}
+            helperText={providers.length === 0 ? "Loading the providers this server runs…" : undefined}
           >
-            {PROVIDERS.map((p) => (
-              <MenuItem key={p.value} value={p.value}>
+            {providerChoices.map((p) => (
+              <MenuItem key={p.id} value={p.id}>
                 {p.label}
               </MenuItem>
             ))}

@@ -37,11 +37,19 @@ export { createOpencodeAdapter, OpencodeAdapter } from './opencode/opencode-adap
 export type { OpencodeSkill } from './opencode/server';
 export type { CodexAdapterOptions } from './codex/codex-adapter';
 export { CodexAdapter, createCodexAdapter } from './codex/codex-adapter';
-export { AntigravityAdapter, createAntigravityAdapter } from './antigravity/antigravity-adapter';
-export type { AntigravityAdapterOptions } from './antigravity/antigravity-adapter';
-
-export { CursorAdapter, createCursorAdapter } from './cursor/cursor-adapter';
-export type { CursorAdapterOptions } from './cursor/cursor-adapter';
+export { AcpAdapter, createAcpAdapter } from './acp/acp-adapter';
+export type {
+  AcpAdapterOptions,
+  AcpExtensionRegistrar,
+  AcpLaunch,
+  AcpLaunchInput,
+  AcpProviderHooks,
+  AcpSelectedAnswer,
+  AcpSessionContext,
+  AcpSignInInput,
+} from './acp/hooks';
+export { antigravityAcp, createAntigravityAdapter } from './antigravity/antigravity-adapter';
+export { cursorAcp, createCursorAdapter } from './cursor/cursor-adapter';
 export { ChatProjector } from './session-v1/chat-projector';
 export { EventOutbox } from './session-v1/event-outbox';
 export { HostConnection } from './host/client';
@@ -58,6 +66,16 @@ export {
   sharedSessionRoot,
 } from './host/launch';
 export type { Supervision } from './host/launch';
+export { commandLineNames, killProcessTree, processCommandLine } from './host/process-fence';
+export { execProvider, findOnPath, spawnProvider, stopProvider } from './provider-process';
+export { replaceFile } from './host/replace-file';
+export {
+  isStopMessage,
+  onStopRequest,
+  requestChildStop,
+  requestStop,
+  STOP_MESSAGE,
+} from './host/stop-request';
 export { hostStartSources, type HostStartSource } from './host/session-start';
 export {
   type AgentEventStream,
@@ -110,6 +128,17 @@ export {
   type SealingKeyPair,
 } from './sealed-login';
 export {
+  type GoogleCredentials,
+  googleCredentialsSchema,
+  parseGoogleCredentials,
+  parseVertexLogin,
+  VERTEX_CREDENTIALS_FILE,
+  type VertexLogin,
+  vertexLoginCredential,
+  vertexLoginSchema,
+} from './vertex-login';
+export { cliToolsBase, readCliToolStatuses } from './host/cli-binaries';
+export {
   SessionHostFailedError,
   SessionLinks,
   SessionUnavailableError,
@@ -123,12 +152,21 @@ export {
   watcherHealthSchema,
 } from './host/watcher-tools';
 
-export { prepareCodexSessionHome } from './codex/home';
+export { prepareCodexSessionHome, withManagedCodexSandbox } from './codex/home';
 export { readSharedCredentials, sharedConfigSchema } from './host/shared-config';
 export type { SharedHostConfig } from './host/shared-config';
 
-export { providerReadinessSchema } from './host/provider-readiness';
-export type { ProviderReadiness } from './host/provider-readiness';
+export { providerReadinessSchema } from './readiness';
+export type { ProviderReadiness, SignInCheckInput } from './readiness';
+export {
+  acpProviderRuntime,
+  isProviderRuntime,
+  PROVIDER_RUNTIMES,
+  providerRuntime,
+  providerRuntimeIds,
+  providerUnsupportedReason,
+} from './providers/registry';
+export type { ProviderRuntime, ProviderRuntimeOptions } from './providers/registry';
 export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './host/control';
 export { hostSessions, hostSessionsByAgent, LIST_SCRIPT } from './host/session-list';
 export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';

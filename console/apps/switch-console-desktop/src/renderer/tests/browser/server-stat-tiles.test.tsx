@@ -20,8 +20,19 @@ vi.mock('@renderer/lib/ipc', () => ({
   rpc: { workspaces: { listBridges: async () => [] } },
 }));
 
+const managed = vi.hoisted(() => ({ data: undefined as unknown[] | undefined }));
+
 vi.mock('@renderer/features/locations/stores/agents-store', () => ({
-  agentsStore: { loaded: true, load: async () => {}, agentsOnServer: () => [{}, {}] },
+  agentsStore: {
+    loaded: true,
+    load: async () => {},
+    agentsOnServer: () => [{ switchAgentId: 'a' }, { switchAgentId: 'b' }],
+  },
+}));
+
+vi.mock('@renderer/features/managed-agents/use-managed-agents', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useManagedAgents: () => ({ data: managed.data, isLoading: false }),
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
@@ -44,6 +55,7 @@ let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 beforeEach(() => {
+  managed.data = undefined;
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
 });
 
@@ -80,4 +92,10 @@ function agentsTile(el: HTMLElement): HTMLElement {
 it('counts the agents onboarded on the server', async () => {
   const tile = agentsTile(await render());
   expect(tile.querySelectorAll('p')[1].textContent).toBe('2');
+});
+
+it('counts the agents the server runs too, once each, as the Your Agents page lists them', async () => {
+  managed.data = [{ agentId: 'b' }, { agentId: 'c' }, { agentId: 'd' }];
+  const tile = agentsTile(await render());
+  expect(tile.querySelectorAll('p')[1].textContent).toBe('4');
 });

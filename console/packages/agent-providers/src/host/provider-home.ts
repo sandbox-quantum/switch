@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, readdir, symlink } from 'node:fs/promises';
+import { copyFile, link, lstat, mkdir, readFile, readdir, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export async function optionalText(path: string): Promise<string | null> {
@@ -24,7 +24,35 @@ export async function linkHomeAsset(source: string, destination: string): Promis
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;
   }
-  await symlink(source, destination, (await lstat(source)).isDirectory() ? 'junction' : 'file');
+  const directory = (await lstat(source)).isDirectory();
+  try {
+    await symlink(source, destination, directory ? 'junction' : 'file');
+  } catch (error) {
+    if (
+      process.platform !== 'win32' ||
+      directory ||
+      (error as NodeJS.ErrnoException).code !== 'EPERM'
+    )
+      throw error;
+    await linkFileWithoutSymlink(source, destination);
+  }
+}
+
+/**
+ * Windows lets an account make a file symlink only with Developer Mode on or
+ * as an administrator. A hard link stands in for it on the same volume; on
+ * another, the file is copied, and the copy does not follow later edits.
+ */
+async function linkFileWithoutSymlink(source: string, destination: string): Promise<void> {
+  try {
+    await link(source, destination);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error;
+    await copyFile(source, destination);
+    console.warn(
+      `Copied ${source} to ${destination}: Windows refused a symlink, and a hard link cannot cross volumes. Edits to ${source} reach the agent only after ${destination} is deleted.`
+    );
+  }
 }
 
 /**

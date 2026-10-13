@@ -158,10 +158,7 @@ export async function resolveChannelEmbed(params: {
     if (externalChannelUrl) {
       return { kind: 'external', url: externalChannelUrl, platform: bridgeType };
     }
-    return {
-      kind: 'unavailable',
-      reason: `This room is bridged to ${bridgeType}, which cannot be shown inside Switch Console.`,
-    };
+    return { kind: 'unlinked', platform: bridgeType };
   }
 
   const origin = await mattermostOriginFor(serverId);

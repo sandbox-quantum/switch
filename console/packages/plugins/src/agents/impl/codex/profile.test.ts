@@ -3,11 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCodexProfileToml,
   CODEX_PROFILE_SETTING_KEYS,
-  CODEX_REASONING_EFFORTS,
-  CODEX_REASONING_SUMMARIES,
-  CODEX_VERBOSITY_LEVELS,
   codexLaunchProfile,
-  codexLaunchProfileFields,
+  codexLaunchProfileSettings,
   codexProfileName,
   codexProfileRelativePath,
 } from './profile';
@@ -155,10 +152,6 @@ describe('codexLaunchProfile', () => {
     // put `--profile <name>` on the command line, pointing at nothing.
     expect(codexLaunchProfile({ slug: 'a', workingDir: WD, values: {} })).toBeNull();
   });
-
-  it('exposes the stable reasoning-effort levels', () => {
-    expect(CODEX_REASONING_EFFORTS).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
-  });
 });
 
 describe('codexProfileName', () => {
@@ -197,32 +190,23 @@ describe('codexProfileName', () => {
   });
 });
 
-describe('codexLaunchProfileFields', () => {
+describe('codexLaunchProfileSettings', () => {
   it('declares exactly the advanced keys the profile builder consumes', () => {
-    expect(codexLaunchProfileFields().map((field) => field.key)).toEqual([
-      'model',
-      'effort',
-      'verbosity',
-      'reasoningSummary',
-      'webSearch',
-    ]);
+    expect(codexLaunchProfileSettings()).toEqual({
+      effort: 'text',
+      verbosity: 'text',
+      reasoningSummary: 'text',
+      webSearch: 'text',
+    });
   });
 
-  it('does not offer instructions as an advanced setting', () => {
-    // Instructions are a main attribute of the agent, collected once for every
-    // provider. Offering them here too would be two boxes for one value.
-    expect(codexLaunchProfileFields().map((field) => field.key)).not.toContain('instructions');
+  it('does not claim the model or instructions as advanced settings', () => {
+    // Main attributes of the agent, collected once for every provider.
+    expect(codexLaunchProfileSettings()).not.toHaveProperty('model');
+    expect(codexLaunchProfileSettings()).not.toHaveProperty('instructions');
     // Still written into the profile, since Codex reads only its own file.
+    expect(CODEX_PROFILE_SETTING_KEYS).toContain('model');
     expect(CODEX_PROFILE_SETTING_KEYS).toContain('instructions');
-  });
-
-  it('offers every reasoning effort the profile accepts, plus an unset default', () => {
-    const effort = codexLaunchProfileFields().find((field) => field.key === 'effort');
-
-    expect(effort?.options?.map((option) => option.value)).toEqual([
-      '',
-      ...CODEX_REASONING_EFFORTS,
-    ]);
   });
 
   it('writes every declared setting, so one cannot be collected and then dropped', () => {
@@ -241,16 +225,6 @@ describe('codexLaunchProfileFields', () => {
       'tools',
     ]);
     expect((toml.tools as Record<string, unknown>).web_search).toBe(true);
-  });
-
-  it('offers only the verbosity and summary values Codex accepts', () => {
-    const optionsFor = (key: string) =>
-      codexLaunchProfileFields()
-        .find((field) => field.key === key)
-        ?.options?.map((option) => option.value);
-
-    expect(optionsFor('verbosity')).toEqual(['', ...CODEX_VERBOSITY_LEVELS]);
-    expect(optionsFor('reasoningSummary')).toEqual(['', ...CODEX_REASONING_SUMMARIES]);
   });
 
   it('turns web search off explicitly, which is not the same as leaving it unset', () => {

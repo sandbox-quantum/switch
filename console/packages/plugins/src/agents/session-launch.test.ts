@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { SWITCH_SKILL_CONTEXT, SWITCH_SKILL_FILE } from '../switch-skill';
 import {
-  advancedConfigFields,
   advancedConfigProblem,
+  advancedSettings,
   agentLaunchSources,
   sessionLaunchConfig,
 } from './session-launch';
@@ -158,40 +158,40 @@ describe('agentLaunchSources', () => {
   });
 });
 
-describe('advancedConfigFields', () => {
-  it('offers each provider’s own fields without the agent’s main attributes', () => {
-    expect(advancedConfigFields('claude').map((field) => field.key)).toEqual([
-      'tools',
-      'disallowedTools',
-      'permissionMode',
-      'color',
-      'maxTurns',
-      'background',
-      'isolation',
-      'effort',
-      'memory',
-    ]);
-    expect(advancedConfigFields('codex').map((field) => field.key)).toEqual([
-      'effort',
-      'verbosity',
-      'reasoningSummary',
-      'webSearch',
-    ]);
-    expect(advancedConfigFields('opencode').map((field) => field.key)).toEqual([
-      'variant',
-      'temperature',
-      'topP',
-      'maxSteps',
-      'webSearch',
-      'smallModel',
-    ]);
-    expect(advancedConfigFields('cursor')).toEqual([]);
-    expect(advancedConfigFields('antigravity')).toEqual([]);
+describe('advancedSettings', () => {
+  it('lists the settings each provider applies, without the agent’s main attributes', () => {
+    expect(advancedSettings('claude')).toEqual({
+      tools: 'list',
+      disallowedTools: 'list',
+      permissionMode: 'text',
+      color: 'text',
+      maxTurns: 'number',
+      background: 'boolean',
+      isolation: 'text',
+      effort: 'text',
+      memory: 'text',
+    });
+    expect(advancedSettings('codex')).toEqual({
+      effort: 'text',
+      verbosity: 'text',
+      reasoningSummary: 'text',
+      webSearch: 'text',
+    });
+    expect(advancedSettings('opencode')).toEqual({
+      variant: 'text',
+      temperature: 'number',
+      topP: 'number',
+      maxSteps: 'number',
+      webSearch: 'text',
+      smallModel: 'text',
+    });
+    expect(advancedSettings('cursor')).toEqual({});
+    expect(advancedSettings('antigravity')).toEqual({});
   });
 });
 
 describe('advancedConfigProblem', () => {
-  it('accepts values of each field’s type', () => {
+  it('accepts values of the shape each setting is applied as', () => {
     expect(
       advancedConfigProblem('claude', {
         tools: ['Read'],
@@ -202,17 +202,27 @@ describe('advancedConfigProblem', () => {
     ).toBeNull();
   });
 
-  it('names a field the provider does not offer', () => {
-    expect(advancedConfigProblem('codex', { sandbox: 'workspace-write' })).toBe(
-      "The advanced configuration field 'sandbox' is not one codex offers."
-    );
-    expect(advancedConfigProblem('cursor', { effort: 'high' })).toMatch(/'effort'/);
+  it('accepts an empty configuration for a provider that applies no settings', () => {
+    expect(advancedConfigProblem('antigravity', {})).toBeNull();
+    expect(advancedConfigProblem('cursor', {})).toBeNull();
   });
 
-  it('names a field whose value is not of its type', () => {
+  it('names a field the provider does not apply', () => {
+    expect(advancedConfigProblem('codex', { sandbox: 'workspace-write' })).toBe(
+      "The advanced configuration field 'sandbox' is not one this build applies for codex."
+    );
+    expect(advancedConfigProblem('cursor', { effort: 'high' })).toMatch(/'effort'/);
+    expect(advancedConfigProblem('antigravity', { effort: 'high' })).toMatch(/'effort'/);
+  });
+
+  it('names a field whose value is not of the shape it is applied as', () => {
     expect(advancedConfigProblem('claude', { tools: 'Read' })).toMatch(/'tools'.*list/);
+    expect(advancedConfigProblem('claude', { background: 'true' })).toMatch(/'background'/);
     expect(advancedConfigProblem('opencode', { temperature: '0.2' })).toMatch(/'temperature'/);
-    expect(advancedConfigProblem('codex', { effort: 'extreme' })).toMatch(/'effort'.*select/);
-    expect(advancedConfigProblem('codex', { effort: '' })).toMatch(/'effort'/);
+    expect(advancedConfigProblem('codex', { effort: 3 })).toMatch(/'effort'.*text/);
+  });
+
+  it('leaves which values a field accepts to the server', () => {
+    expect(advancedConfigProblem('codex', { effort: 'extreme' })).toBeNull();
   });
 });

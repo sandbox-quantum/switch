@@ -1,16 +1,31 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, readFile, rename } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { refreshCodexAuthentication } from '../codex/home';
+import { parseVertexLogin, VERTEX_CREDENTIALS_FILE } from '../vertex-login';
 import { importOpenCodeConsole } from './opencode-console';
 import type { HostedCredential } from './provider-login';
+import { replaceFile } from './replace-file';
 
 export type { HostedCredential } from './provider-login';
 
+const VERTEX_VARIABLES = [
+  'CLAUDE_CODE_USE_VERTEX',
+  'ANTHROPIC_VERTEX_PROJECT_ID',
+  'CLOUD_ML_REGION',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+];
+
+/**
+ * Sets the variables `credential` signs in with in `env`, removing the others
+ * a provider could sign in with. For a `vertex` login, `root` is where its
+ * Google credential is written (`materializeHostedProvider`).
+ */
 export function applyHostedProvider(
   env: Record<string, string>,
-  credential: HostedCredential
+  credential: HostedCredential,
+  root: string
 ): void {
   for (const key of [
     'ANTHROPIC_API_KEY',
@@ -23,6 +38,17 @@ export function applyHostedProvider(
     throw new Error(
       'The provider was disconnected. Reconnect it in Console before resuming this session.'
     );
+  if (credential.provider === 'claude') for (const key of VERTEX_VARIABLES) delete env[key];
+  if (credential.kind === 'vertex') {
+    if (credential.provider !== 'claude')
+      throw new Error('Only Claude signs in through Vertex AI.');
+    const login = parseVertexLogin(credential.credential);
+    env.CLAUDE_CODE_USE_VERTEX = '1';
+    env.ANTHROPIC_VERTEX_PROJECT_ID = login.project;
+    env.CLOUD_ML_REGION = login.region;
+    env.GOOGLE_APPLICATION_CREDENTIALS = join(root, VERTEX_CREDENTIALS_FILE);
+    return;
+  }
   if (credential.kind === 'auth-json') return;
   if (!/^[\x21-\x7e]+$/.test(credential.credential))
     throw new Error('Provider credential format is invalid.');
@@ -68,7 +94,7 @@ async function writeAuthentication(root: string, relative: string, content: stri
   } finally {
     await file.close();
   }
-  await rename(temporary, path);
+  await replaceFile(temporary, path);
   const record = await open(
     marker,
     constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
@@ -88,8 +114,16 @@ export async function materializeHostedProvider(
   credential: HostedCredential,
   binaryPath: string
 ): Promise<void> {
-  applyHostedProvider(env, credential);
+  applyHostedProvider(env, credential, root);
   if (credential.status !== 'connected') return;
+  if (credential.kind === 'vertex') {
+    await writeAuthentication(
+      root,
+      VERTEX_CREDENTIALS_FILE,
+      JSON.stringify(parseVertexLogin(credential.credential).credentials)
+    );
+    return;
+  }
   if (credential.kind === 'auth-json') {
     try {
       const value = JSON.parse(credential.credential);

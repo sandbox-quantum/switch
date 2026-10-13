@@ -16,7 +16,12 @@ const navigate = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { switchServers },
+  rpc: {
+    switchServers,
+    featureFlags: {
+      get: async () => ({ success: true, data: { flags: { service_connections: true } } }),
+    },
+  },
 }));
 
 vi.mock('@renderer/features/locations/stores/agents-store', () => ({

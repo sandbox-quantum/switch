@@ -49,7 +49,7 @@ def test_run_request_boots_from_the_stored_bundle_with_the_shared_profile(tmp_pa
         assert cloud.run_instance(machine) == "i-0123456789abcdef0"
 
     bundle = json.loads(machine.bundle)
-    assert bundle["version"] == 4
+    assert bundle["version"] == 5
     assert bundle["machineId"] == MACHINE_ID
     assert not {"slotId", "generation", "assignment", "assignmentSecretId"} & set(bundle)
     store.close()

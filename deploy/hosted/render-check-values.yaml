@@ -1,0 +1,19 @@
+# Placeholder values that let `helm template` render the hosted controller chart
+# in CI, where the only question is which image it references (see
+# scripts/pin_chart_images.py). Never deploy with these.
+serviceAccount:
+  roleArn: arn:aws:iam::000000000000:role/render-check
+controllerConfig:
+  installation_id: render-check
+  region: eu-west-3
+  availability_zone: eu-west-3a
+  subnet_id: subnet-00000000
+  security_group_ids: [sg-00000000]
+  image_id: ami-00000000
+  root_device_name: /dev/xvda
+  allowed_instance_types: [t3.large]
+  max_machines: 1
+  root_volume_gib: 30
+  data_volume_gib: 30
+  instance_profile_arn: arn:aws:iam::000000000000:instance-profile/render-check
+  poll_interval_seconds: 30

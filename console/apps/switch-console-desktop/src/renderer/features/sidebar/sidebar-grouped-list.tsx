@@ -6,15 +6,21 @@ import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agen
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
+import { isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
 import { AgentTree } from './agent-tree';
+import { SidebarMainSection } from './main-section';
 import { RoomTree } from './room-tree';
+import { SessionDiscoveryStatus } from './session-discovery-status';
+import { SessionsSectionHeader } from './sessions-section-header';
 import { useScrollSelectionIntoView } from './sidebar-auto-scroll';
 import { sidebarEmptyState } from './sidebar-empty-state';
-import { refreshSidebarRoomState } from './sidebar-tree-data';
+import { agentsInActiveScope, refreshSidebarRoomState } from './sidebar-tree-data';
 
 /**
  * How often the room state is reconciled against the servers while the window
@@ -56,11 +62,12 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
 
     // Two things make the loaded state wrong without any mutation here:
     // signing in to a server (its rooms were skipped while disconnected, and
-    // nothing re-ran the load), and switching which server is active — only the
-    // server on screen is loaded, so the one you switch to may never have been.
+    // nothing re-ran the load), and switching which workspace is active — only
+    // the workspace on screen is loaded, so the one you switch to may never have
+    // been, even on the same server.
     const stopWatchingServers = reaction(
       () => ({
-        active: switchServersStore.activeServerId,
+        active: workspacesStore.activeId,
         connected: switchServersStore.servers
           .filter((s) => switchServersStore.isConnected(s.id))
           .map((s) => s.id)
@@ -89,6 +96,7 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
 
   const managedAgents = useManagedAgents(switchServersStore.activeServerId);
   const activeServerId = switchServersStore.activeServerId;
+  const managementMode = useAgentManagementMode();
   const managedAgentCount = activeServerId && managedAgents.data ? managedAgents.data.length : 0;
   const emptyState = sidebarEmptyState({
     grouping: sidebarStore.grouping,
@@ -99,6 +107,32 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
     roomCount: switchRoomsStore.listedRoomsInActiveScope.length,
     serverListedAgentCount: managedAgentCount,
   });
+
+  if (managementMode) {
+    const managedIds = new Set((managedAgents.data ?? []).map((agent) => agent.agentId));
+    const legacyCount = agentsInActiveScope().filter(
+      (entry) => entry.agent.switchAgentId === null || !managedIds.has(entry.agent.switchAgentId)
+    ).length;
+    return (
+      <div
+        ref={scrollerRef}
+        className="flex min-h-0 flex-1 flex-col gap-[2px] overflow-y-auto px-2.5 pt-0 pb-3"
+      >
+        <RoomStateDisclosure />
+        {/* Agents / Rooms once anything is managed, or on an install with no
+            agents yet, where there is nothing legacy to show. Sessions only
+            while some agent still runs the old way, and gone once none does. */}
+        {(managedAgentCount > 0 || legacyCount === 0) && <SidebarMainSection />}
+        {legacyCount > 0 && (
+          <>
+            <SessionsSectionHeader legacy />
+            <SessionDiscoveryStatus />
+            <AgentTree />
+          </>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -123,6 +157,15 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
 });
 
 /**
+ * Whether the server on screen runs agent management, which is what turns the
+ * sidebar into Agents / Rooms with the old Sessions list below as legacy. A
+ * server without it keeps the sidebar it always had.
+ */
+export function useAgentManagementMode(): boolean {
+  return useFeatureFlags(switchServersStore.activeServerId).agent_management;
+}
+
+/**
  * Says so when the room state on screen is known to be incomplete.
  *
  * The tree renders last-known rooms and memberships when a refresh fails, which
@@ -132,6 +175,9 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
  */
 const RoomStateDisclosure = observer(function RoomStateDisclosure() {
   const { navigate } = useNavigate();
+  // The banner over a frozen workspace is the whole explanation.
+  const active = switchServersStore.activeServer;
+  if (active && isFrozenServer(active)) return null;
   const signedOut = switchRoomsStore.workspacesNotSignedIn;
   const failed = switchRoomsStore.workspacesThatFailedToLoad;
 

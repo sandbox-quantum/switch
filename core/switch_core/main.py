@@ -8,6 +8,7 @@ import signal
 import time
 from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -52,7 +53,6 @@ from switch_core.bridges.agent.server_connectors.opencode.connector import (
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
-    DiscordConnectionConfig,
 )
 from switch_core.bridges.collaboration.discord.connection import DiscordConnection
 from switch_core.bridges.collaboration.discord.gateway import DiscordGatewayClient
@@ -69,19 +69,8 @@ from switch_core.bridges.collaboration.install_service import MessagingInstallSe
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
-from switch_core.bridges.collaboration.mattermost.adapter import (
-    MattermostAdapter,
-    MattermostConnectionConfig,
-)
-from switch_core.bridges.collaboration.slack.adapter import (
-    SlackAdapter,
-    SlackConnectionConfig,
-)
+from switch_core.bridges.collaboration.platforms import register_platforms
 from switch_core.bridges.collaboration.slack.install import SlackAppInstaller
-from switch_core.bridges.collaboration.teams.adapter import (
-    TeamsAdapter,
-    TeamsConnectionConfig,
-)
 from switch_core.bridges.collaboration.teams.app_package import (
     build_distributed_app_package,
 )
@@ -89,13 +78,16 @@ from switch_core.bridges.collaboration.teams.install import TeamsAppInstaller
 from switch_core.bridges.collaboration.teams.shared_app import TeamsSharedApp
 from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
-    TelegramConnectionConfig,
 )
 from switch_core.bridges.collaboration.telegram.app_client import (
     TelegramAppClient,
     bot_resource,
 )
 from switch_core.bridges.collaboration.telegram.install import TelegramAppInstaller
+from switch_core.bridges.collaboration.webhooks import (
+    BridgeWebhookService,
+    create_bridge_webhook_router,
+)
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
 from switch_core.clients.agent_consumer import AgentConsumer
@@ -103,6 +95,14 @@ from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.config import SwitchConfig, deprecated_env_names
+from switch_core.connections.adapters.github import GitHubApp
+from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.github_move import move_github_connections
+from switch_core.connections.loader import CATALOG
+from switch_core.connections.maintenance import (
+    maintenance_loop as service_token_maintenance_loop,
+)
+from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.engine import (
@@ -147,6 +147,7 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
@@ -173,6 +174,7 @@ from switch_core.observability.pool import (
 )
 from switch_core.observability.query import instrument_queries
 from switch_core.observability.runtime import EventLoopLag
+from switch_core.outbound import guarded_async_client
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
@@ -559,7 +561,7 @@ async def run(config: SwitchConfig) -> None:
     )
 
     # ── Switch Trust guardrails ──────────────────────────────────────────────
-    trust_client, trust_http = build_trust_client(config)
+    trust_client, trust_http = build_trust_client(session_factory, config)
 
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
@@ -591,6 +593,9 @@ async def run(config: SwitchConfig) -> None:
         async with tenant_session(session_factory, tenant_id) as session:
             await resource_service.log_builtin_shadowing(session)
     await reencrypt_stored_secrets(session_factory, config.keyring, tenant_ids)
+    # After rotation, which has opened every stored GitHub secret or stopped
+    # the boot: the move reads them, once per tenant.
+    await move_github_connections(session_factory, config.keyring, tenant_ids)
 
     # ── Provisioning ─────────────────────────────────────────────────────────
     provisioning: Provisioning = PostgresProvisioning(
@@ -721,7 +726,7 @@ async def run(config: SwitchConfig) -> None:
         frontend_base_url=config.frontend_base_url,
     )
 
-    # ── Agent management (off unless AGENT_MANAGEMENT_ENABLED) ───────────────
+    # ── Agent management (off unless the agent_management flag is on) ─────────
     # Built before the agent bridge app because its authenticator is the bearer
     # middleware's controller branch; its routes are installed once both apps
     # exist, below.
@@ -890,18 +895,7 @@ async def run(config: SwitchConfig) -> None:
         config=config,
     )
 
-    # Register collaboration bridge adapter types
-    collab_lifecycle.register_adapter(
-        "mattermost", MattermostAdapter, MattermostConnectionConfig
-    )
-    collab_lifecycle.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
-    collab_lifecycle.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
-    collab_lifecycle.register_adapter(
-        "discord", DiscordAdapter, DiscordConnectionConfig
-    )
-    collab_lifecycle.register_adapter(
-        "telegram", TelegramAdapter, TelegramConnectionConfig
-    )
+    register_platforms(collab_lifecycle)
 
     # Liveness, and cheap on purpose: the gateway Deployment and the setup Job
     # wait on it at boot, so anything it checked would become a boot-ordering
@@ -933,6 +927,16 @@ async def run(config: SwitchConfig) -> None:
             create_messaging_install_router(install_service),
             tags=["messaging-installs"],
         )
+    agent_bridge_app.include_router(
+        create_bridge_webhook_router(
+            BridgeWebhookService(
+                lifecycle=collab_lifecycle,
+                session_factory=session_factory,
+                receipts=MessagingEventReceiptStore(),
+            )
+        ),
+        tags=["bridge-webhooks"],
+    )
 
     if management is not None:
         management.install(
@@ -967,6 +971,33 @@ async def run(config: SwitchConfig) -> None:
     # ── Lifespan: start server-side connectors once HTTP is serving ────────
     original_lifespan = agent_bridge_app.router.lifespan_context
 
+    # A service is issued only where this server is set up for it, as its
+    # catalog entry's adapter says (`connections/registry.py`). Without any,
+    # the broker's upkeep still revokes and prunes whatever records exist.
+    github_app: GitHubApp | None = gateway_app.state.github_app
+    service_broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=config.keyring,
+        catalog=CATALOG,
+        adapters=build_adapters(
+            CATALOG,
+            github_app=github_app,
+            environ=os.environ,
+            http=guarded_async_client(config.outbound_policy, timeout=20),
+            registration=ClientRegistration(
+                session_factory=session_factory,
+                keyring=config.keyring,
+                public_url=config.gateway_public_url,
+                server_name=config.id_server_name,
+            ),
+        ),
+        disabled=config.disabled_services,
+        store=ServiceConnectionStore(),
+        token_retention=timedelta(days=config.service_token_retention_days),
+    )
+    agent_bridge_app.state.service_broker = service_broker
+    gateway_app.state.service_broker = service_broker
+
     snapshot_reporter = SnapshotReporter(
         telemetry=telemetry,
         session_factory=session_factory,
@@ -994,6 +1025,9 @@ async def run(config: SwitchConfig) -> None:
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol, observability.lag)
             )
+            service_token_task = asyncio.create_task(
+                service_token_maintenance_loop(session_factory, service_broker)
+            )
             management_task = (
                 asyncio.create_task(management.run())
                 if management is not None
@@ -1014,6 +1048,7 @@ async def run(config: SwitchConfig) -> None:
                 sweep_task.cancel()
                 session_activity_task.cancel()
                 connection_sweep_task.cancel()
+                service_token_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 if management is not None:
@@ -1027,8 +1062,7 @@ async def run(config: SwitchConfig) -> None:
                 # product event is the least valuable thing in it.
                 await protocol.sessions.aclose()
                 await _drain_telemetry(telemetry, message_telemetry, telemetry_http)
-                if trust_http is not None:
-                    await trust_http.aclose()
+                await trust_http.aclose()
                 await observability.aclose()
                 # So a probe during teardown gets a 503 rather than the last
                 # cached answer, which may still say ready.

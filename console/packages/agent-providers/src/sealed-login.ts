@@ -11,6 +11,7 @@ import {
   randomBytes,
 } from 'node:crypto';
 import { z } from 'zod';
+import { parseVertexLogin } from './vertex-login';
 
 /**
  * Provider logins sealed to an agents controller's own key, so Switch stores
@@ -41,11 +42,16 @@ export const sealedLoginSchema = z.strictObject({
 });
 export type SealedLogin = z.infer<typeof sealedLoginSchema>;
 
-/** What is sealed: a login as Switch's provider connections hold one. */
-export const providerLoginSchema = z.strictObject({
-  kind: z.enum(['api-key', 'setup-token', 'auth-json']),
-  credential: z.string().min(1).max(16384),
-});
+/**
+ * What is sealed: a login as Switch's provider connections hold one. A
+ * `vertex` login (Claude only) holds a `VertexLogin` as JSON.
+ */
+export const providerLoginSchema = z
+  .strictObject({
+    kind: z.enum(['api-key', 'setup-token', 'auth-json', 'vertex']),
+    credential: z.string().min(1).max(16384),
+  })
+  .superRefine(refineVertexCredential);
 export type ProviderLogin = z.infer<typeof providerLoginSchema>;
 
 /** A controller's keypair, each half the raw 32 bytes in base64. */
@@ -134,6 +140,23 @@ export function openProviderLogin(input: {
     );
   }
   return providerLoginSchema.parse(JSON.parse(plaintext.toString('utf8')));
+}
+
+/** Adds why a `vertex` login's credential is not one, as an issue on `credential`. */
+export function refineVertexCredential(
+  login: { kind: string; credential: string },
+  context: z.core.$RefinementCtx
+): void {
+  if (login.kind !== 'vertex') return;
+  try {
+    parseVertexLogin(login.credential);
+  } catch (error) {
+    context.addIssue({
+      code: 'custom',
+      path: ['credential'],
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 function aad(controllerId: string, provider: string): Buffer {

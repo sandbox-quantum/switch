@@ -2,6 +2,7 @@ import asyncio
 import json
 import secrets
 import time
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
@@ -9,18 +10,24 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import select, text
+from sqlalchemy import select
 
+from switch_core.connections.adapters.github import GitHubAdapter
+from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.loader import CATALOG
 from switch_core.db.models import (
-    ProviderConnection,
+    ServiceConnection,
+    ServiceTokenIssuance,
     User,
     require_tenant_id,
 )
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_session
 from switch_core.gateway.github_connections import router
 from switch_core.keys import Keyring
-from switch_core.providers.github import GitHubConnections, GitHubError
+from switch_core.providers.github import GitHubConnections, GitHubError, GitHubReach
+from switch_core.providers.github_installation import GitHubInstallationCredentials
 from switch_core.tenant_context import tenant_scope
 
 TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
@@ -51,19 +58,22 @@ async def github_app(tmp_path, session_factory):
     github.revoke = AsyncMock()
     github.request = AsyncMock(return_value={"id": 123, "login": "example-user"})
     github.repositories = AsyncMock(
-        return_value=[
-            {
-                "id": 456,
-                "account": "example-user",
-                "repositories": [
-                    {
-                        "id": 789,
-                        "name": "example/project",
-                        "permissions": {"push": True},
-                    }
-                ],
-            }
-        ]
+        return_value=GitHubReach(
+            installations=[
+                {
+                    "id": 456,
+                    "account": "example-user",
+                    "repositories": [
+                        {
+                            "id": 789,
+                            "name": "example/project",
+                            "permissions": {"push": True},
+                        }
+                    ],
+                }
+            ],
+            sso_hidden=[],
+        )
     )
     async with session_factory() as session:
         user = User(
@@ -83,6 +93,15 @@ async def github_app(tmp_path, session_factory):
 
     app = FastAPI()
     app.state.github_connections = github
+    app.state.service_broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=TEST_KEYRING,
+        catalog=CATALOG,
+        adapters={"github": GitHubAdapter(github, AsyncMock())},
+        disabled={},
+        store=ServiceConnectionStore(),
+        token_retention=timedelta(days=30),
+    )
     app.include_router(router, prefix="/gateway")
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
     app.dependency_overrides[get_session] = sessions
@@ -170,14 +189,15 @@ async def test_browser_handoff_requires_console_completion_and_saves_encrypted(
         status.json()["installations"][0]["repositories"][0]["name"]
         == "example/project"
     )
+    assert status.json()["sso_hidden_organizations"] == []
     assert "SYNTHETIC-ACCESS" not in status.text
     async with factory() as session:
         row = await session.scalar(
-            select(ProviderConnection).where(ProviderConnection.provider == "github")
+            select(ServiceConnection).where(ServiceConnection.service == "github")
         )
-        assert "SYNTHETIC-ACCESS" not in row.encrypted_credential
+        assert "SYNTHETIC-ACCESS" not in row.encrypted_secret
         assert (
-            json.loads(TEST_KEYRING.decrypt(row.encrypted_credential))["access_token"]
+            json.loads(TEST_KEYRING.decrypt(row.encrypted_secret))["access_token"]
             == "SYNTHETIC-ACCESS"
         )
     assert (await confirm(client, flow_id)).status_code == 410
@@ -255,9 +275,9 @@ async def test_refresh_saved_before_repository_failure(github_app):
     assert (await client.get(BASE)).status_code == 502
     async with factory() as session:
         row = await session.scalar(
-            select(ProviderConnection).where(ProviderConnection.provider == "github")
+            select(ServiceConnection).where(ServiceConnection.service == "github")
         )
-        saved = json.loads(TEST_KEYRING.decrypt(row.encrypted_credential))
+        saved = json.loads(TEST_KEYRING.decrypt(row.encrypted_secret))
         assert saved["refresh_token"] == "NEW-SYNTHETIC-REFRESH"
 
 
@@ -316,8 +336,10 @@ async def test_github_identity_cannot_link_to_another_workspace_user(github_app)
     response = await confirm(client, second)
     assert response.status_code == 409
     assert "already linked" in response.json()["detail"]
+    assert response.json()["code"] == "account_linked_elsewhere"
+    assert response.json()["retryable"] is False
     async with factory() as session:
-        rows = (await session.scalars(select(ProviderConnection))).all()
+        rows = (await session.scalars(select(ServiceConnection))).all()
         assert len(rows) == 1
         assert rows[0].user_id == "github-user"
 
@@ -361,22 +383,11 @@ async def test_concurrent_refresh_exchanges_once_and_saves_on_cancel(github_app)
     github.exchange.side_effect = refresh
     first = asyncio.create_task(client.get(BASE))
     await asyncio.wait_for(entered.wait(), 5)
+    # The second shares the fetch under way rather than starting its own; the
+    # cancelled first must not take that fetch, or its new sign-in, with it.
     second = asyncio.create_task(client.get(BASE))
-    deadline = asyncio.get_running_loop().time() + 5
-    while True:
-        async with factory() as session:
-            waiting = await session.scalar(
-                text(
-                    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid::bigint = (hashtextextended(:key, 0) & 4294967295))"
-                ),
-                {"key": f"github-connection:{require_tenant_id()}:github-user"},
-            )
-        if waiting:
-            break
-        assert asyncio.get_running_loop().time() < deadline, (
-            "Second refresh never waited for the GitHub lock"
-        )
-        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.2)
+    assert not second.done()
     first.cancel()
     await asyncio.sleep(0)
     first.cancel()
@@ -387,9 +398,9 @@ async def test_concurrent_refresh_exchanges_once_and_saves_on_cancel(github_app)
     github.exchange.assert_awaited_once()
     async with factory() as session:
         row = await session.scalar(
-            select(ProviderConnection).where(ProviderConnection.provider == "github")
+            select(ServiceConnection).where(ServiceConnection.service == "github")
         )
-        saved = json.loads(TEST_KEYRING.decrypt(row.encrypted_credential))
+        saved = json.loads(TEST_KEYRING.decrypt(row.encrypted_secret))
         assert saved["refresh_token"] == "NEW-SYNTHETIC-REFRESH"
 
 
@@ -406,9 +417,7 @@ async def test_disconnect_finishes_and_warns_when_github_revoke_fails(github_app
     async with factory() as session:
         assert (
             await session.scalar(
-                select(ProviderConnection).where(
-                    ProviderConnection.provider == "github"
-                )
+                select(ServiceConnection).where(ServiceConnection.service == "github")
             )
             is None
         )
@@ -429,12 +438,35 @@ async def test_oauth_revocation_deletes_only_the_selected_token(
     assert request.call_args.kwargs["json"] == {"access_token": "SYNTHETIC-OLD-ACCESS"}
 
 
-async def test_relink_revokes_the_previous_sign_in(github_app):
-    client, github, _, _ = github_app
+async def test_relink_queues_existing_installation_tokens(github_app, monkeypatch):
+    client, github, identity, factory = github_app
     first = await authorize(client)
     await relay(client, first)
     assert (await complete(client, first)).status_code == 204
     assert (await confirm(client, first)).status_code == 200
+    async with factory() as session:
+        issued = ServiceTokenIssuance(
+            grant_id="grant",
+            agent_id="agent",
+            owner_id=identity["user"].id,
+            service="github",
+            principal="agent_key",
+            controller_id=None,
+            permissions={},
+            resources={},
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            token_sha256="0" * 64,
+            encrypted_token=TEST_KEYRING.encrypt("SYNTHETIC-INSTALLATION"),
+            revoke_requested=False,
+            attempts=0,
+        )
+        session.add(issued)
+        await session.commit()
+    monkeypatch.setattr(
+        GitHubInstallationCredentials,
+        "revoke",
+        AsyncMock(side_effect=GitHubError("Synthetic outage")),
+    )
     github.exchange.return_value = {
         **github.exchange.return_value,
         "access_token": "SYNTHETIC-RELINKED-ACCESS",
@@ -444,5 +476,8 @@ async def test_relink_revokes_the_previous_sign_in(github_app):
     assert (await complete(client, second)).status_code == 204
     response = await confirm(client, second)
     assert response.status_code == 200
-    assert response.json()["warning"] is None
+    assert response.json()["warning"]
     github.revoke.assert_awaited_once_with("SYNTHETIC-ACCESS")
+    async with factory() as session:
+        row = await session.get(ServiceTokenIssuance, (require_tenant_id(), issued.id))
+        assert row.revoke_requested and row.encrypted_token is not None

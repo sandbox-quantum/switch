@@ -122,6 +122,7 @@ from switch_core.trust.client import (
     GuardrailBlockedError,
     NullTrustClient,
     TrustClient,
+    TrustOutcome,
     check_message,
     trust_annotation,
 )
@@ -1211,10 +1212,15 @@ class AgentCore:
         content: str,
         thread_root_id: str | None,
         client: AgentActor,
-    ) -> str:
+    ) -> tuple[str, tuple[str, TrustOutcome] | None]:
         """Check agent-authored content against Switch Trust before it is
-        sent. Returns the content to actually send — unchanged, redacted, or
-        carrying a short non-blocking annotation. Raises
+        sent. Returns the content to actually send — unchanged or redacted —
+        and, on an ALERTED/ERRORED verdict, an (annotation, outcome) pair for
+        the caller to post as a notice once the real content has actually been
+        sent (`_post_trust_alert_notice`, threaded under that send's own
+        event_id rather than under this call's pre-send `thread_root_id`, so
+        the notice reads as a reply to the flagged message, not to whatever
+        thread the agent happened to be posting in). Raises
         `GuardrailBlockedError` on a BLOCKED verdict, or on a REDACTED verdict
         Switch Trust gave us nothing to redact with — sending the original
         content then would be indistinguishable from not checking at all —
@@ -1234,9 +1240,8 @@ class AgentCore:
         if check.redacted_content is not None:
             content = check.redacted_content
         annotation = trust_annotation(check)
-        if annotation is not None:
-            content = f"{content}\n\n{annotation}"
-        return content
+        pending_alert = (annotation, check.outcome) if annotation is not None else None
+        return content, pending_alert
 
     async def _post_trust_blocked_notice(
         self, room: RoomDescriptor, thread_root_id: str | None, client: AgentActor
@@ -1263,6 +1268,54 @@ class AgentCore:
         except Exception:
             logger.warning(
                 "Could not post a Switch Trust blocked notice in %s",
+                room.id,
+                exc_info=True,
+            )
+
+    async def _post_trust_alert_notice(
+        self,
+        room: RoomDescriptor,
+        reply_to_event_id: str,
+        annotation: str,
+        outcome: TrustOutcome,
+    ) -> None:
+        """Tell the room a response was flagged (or could not be fully
+        checked), as its own notice threaded under the flagged reply's own
+        event id — not the pre-send thread the agent happened to be posting
+        in — rather than appended to the reply itself. Mirrors how
+        `CollaborationCore._post_trust_notice` threads an ALERTED/ERRORED
+        human-authored message under the message that triggered it."""
+        admin = next(
+            (
+                c
+                for c in self.client_lifecycle.get_by_type("admin", require_tenant_id())
+                if isinstance(c, SystemActor)
+            ),
+            None,
+        )
+        if admin is None:
+            logger.warning(
+                "No admin client running for %s; dropping a Switch Trust %s "
+                "notice that would have been posted there",
+                room.id,
+                outcome,
+            )
+            return
+        message_type = (
+            AdminMessageType.TRUST_ALERTED
+            if outcome == "alerted"
+            else AdminMessageType.TRUST_ERRORED
+        )
+        try:
+            await admin.send_admin(
+                room.transport_room_id,
+                annotation,
+                message_type=message_type,
+                thread_root_id=reply_to_event_id,
+            )
+        except Exception:
+            logger.warning(
+                "Could not post a Switch Trust alert notice in %s",
                 room.id,
                 exc_info=True,
             )
@@ -1328,7 +1381,9 @@ class AgentCore:
             thread_root_id = await self._resolve_thread_root(
                 client, room.transport_room_id, thread_id
             )
-        content = await self._enforce_trust(room, content, thread_root_id, client)
+        content, pending_alert = await self._enforce_trust(
+            room, content, thread_root_id, client
+        )
         event_id = await client.send_message(
             room.transport_room_id,
             content,
@@ -1343,6 +1398,9 @@ class AgentCore:
             event_id,
             room.transport_room_id,
         )
+        if pending_alert is not None:
+            annotation, outcome = pending_alert
+            await self._post_trust_alert_notice(room, event_id, annotation, outcome)
         # The agent has replied, so clear any typing indicator raised when the
         # inbound message arrived. The message itself is already delivered, so a
         # failure here is degraded-but-functional, not a reason to fail the send.
@@ -1797,10 +1855,21 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        detail = await self._enforce_trust(room, detail, None, client)
-        await client.send_message(
+        detail, pending_alert = await self._enforce_trust(room, detail, None, client)
+        event_id = await client.send_message(
             room.transport_room_id, f"*{detail}*", format="markdown", metered=True
         )
+        if pending_alert is not None:
+            if event_id is None:
+                logger.warning(
+                    "Status update to %s failed to send; dropping its pending "
+                    "Switch Trust %s notice along with it",
+                    room.id,
+                    pending_alert[1],
+                )
+            else:
+                annotation, outcome = pending_alert
+                await self._post_trust_alert_notice(room, event_id, annotation, outcome)
 
     async def set_runtime_state(
         self,
@@ -2526,7 +2595,9 @@ class AgentCore:
 
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
-            outcome = await self._enforce_trust(room, outcome, None, client)
+            outcome, pending_alert = await self._enforce_trust(
+                room, outcome, None, client
+            )
             await client.send_event(
                 room.transport_room_id,
                 "com.switch.task.finalise",
@@ -2537,9 +2608,22 @@ class AgentCore:
                     "outcome": outcome,
                 },
             )
-            await client.send_message(
+            event_id = await client.send_message(
                 room.transport_room_id, outcome, format="markdown", metered=True
             )
+            if pending_alert is not None:
+                if event_id is None:
+                    logger.warning(
+                        "Finalise message for task %s failed to send; dropping "
+                        "its pending Switch Trust %s notice along with it",
+                        task_id,
+                        pending_alert[1],
+                    )
+                else:
+                    annotation, trust_outcome = pending_alert
+                    await self._post_trust_alert_notice(
+                        room, event_id, annotation, trust_outcome
+                    )
 
     async def cancel_task(self, agent_id: str, task_id: str, reason: str) -> None:
         """Cancel a task (requester only)."""

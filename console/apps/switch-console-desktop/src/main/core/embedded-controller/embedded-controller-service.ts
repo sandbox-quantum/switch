@@ -90,8 +90,14 @@ export type EmbeddedControllerDeps = {
   movedAgents: (serverId: string) => Promise<string[]>;
 };
 
-export const WINDOWS_UNSUPPORTED =
-  'Managed agents run through the shared host, which needs macOS or Linux. This computer runs Windows.';
+const SUPPORTED_PLATFORMS: readonly NodeJS.Platform[] = ['darwin', 'linux', 'win32'];
+
+/** Why managed agents cannot run on `platform`, or null when they can. */
+export function unsupportedPlatformReason(platform: NodeJS.Platform): string | null {
+  return SUPPORTED_PLATFORMS.includes(platform)
+    ? null
+    : `Managed agents run on macOS, Linux and Windows. This computer runs ${platform}.`;
+}
 
 type Runner = { supervisor: ControllerSupervisor; phase: EmbeddedControllerPhase };
 
@@ -115,7 +121,7 @@ export class EmbeddedControllerService {
   constructor(private readonly deps: EmbeddedControllerDeps) {}
 
   get unsupportedReason(): string | null {
-    return this.deps.platform === 'win32' ? WINDOWS_UNSUPPORTED : null;
+    return unsupportedPlatformReason(this.deps.platform);
   }
 
   /** Starts the controller of every server this Console is enrolled with. */

@@ -1380,7 +1380,7 @@ it('starts the session serving a room again when its host has gone, instead of a
   expect((await AgentHostAssignments.open(root)).sessions()).toHaveLength(1);
 });
 
-it('takes the model, approval mode, instructions and advanced configuration from the template, and nothing else', () => {
+it('takes the model, approval mode, instructions and advanced configuration from the template', () => {
   const root = '/state';
   const edited = watchable(root);
   edited.start.input.model = { id: 'claude-sonnet-4-6', options: { effort: 'high' } };
@@ -1427,6 +1427,31 @@ it('takes the model, approval mode, instructions and advanced configuration from
   expect(cleared.start.input.model).toBeUndefined();
   expect(cleared.start.input).not.toHaveProperty('agentName');
   expect(cleared.start.input).not.toHaveProperty('agentDefinition');
+});
+
+it('gives a session the provider login its agent signs in with now, keeping its own id', () => {
+  const root = '/state';
+  const controller = watchable(root);
+  controller.start.input.env = { CURSOR_API_KEY: 'crsr_given', SWITCHDASH_SESSION_ID: 'watcher' };
+  const saved = watchable(root);
+  saved.session = {
+    ...saved.session,
+    agentId: controller.session.agentId,
+    sessionId: 'room-session',
+  };
+  saved.start.input.env = { SWITCHDASH_SESSION_ID: 'room-session', CURSOR_API_KEY: 'crsr_old' };
+
+  const refreshed = withDefinitionOf(saved, controller);
+
+  expect(definitionChanged(saved, controller)).toBe(true);
+  expect(refreshed.start.input.env).toEqual({
+    CURSOR_API_KEY: 'crsr_given',
+    SWITCHDASH_SESSION_ID: 'room-session',
+  });
+  delete controller.start.input.env.CURSOR_API_KEY;
+  expect(withDefinitionOf(refreshed, controller).start.input.env).toEqual({
+    SWITCHDASH_SESSION_ID: 'room-session',
+  });
 });
 
 it('gives a session the credentials and binary of whoever runs its watcher now', () => {

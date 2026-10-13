@@ -292,6 +292,7 @@ class TestTheFlagOff:
             oauth_audience = None
             oauth_verify_issuer = True
             id_server_name = "test"
+            service_connections_enabled = False
 
         app, _ = create_agent_bridge_app(
             agent_store=object(),  # type: ignore[arg-type]
