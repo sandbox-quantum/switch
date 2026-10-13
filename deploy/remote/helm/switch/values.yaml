@@ -102,7 +102,9 @@ ingress:
 #      JWT_SECRET_KEY (optional, legacy — see secrets.jwtSecretKey),
 #      CONTROLLER_TOKEN_SECRET (if switchCore.agentManagement.enabled),
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
-#      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled).
+#      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled),
+#      GATEWAY_SMTP_PASSWORD + GATEWAY_SMTP_USERNAME (if switchCore.smtp.enabled
+#        and secrets.smtpUsername is set — see that value for why).
 secrets:
   # Name of a pre-existing Secret to read all of the above from. Empty = the
   # chart manages its own Secret from the values below.
@@ -141,6 +143,14 @@ secrets:
   # SMTP relay password for invitation e-mails (required when
   # switchCore.smtp.enabled and switchCore.smtp.username is set).
   gatewaySmtpPassword: ""
+  # Alternative to switchCore.smtp.username, for a username that is itself
+  # credential-shaped (e.g. an SES SMTP username, which AWS issues as an
+  # access-key ID) and so does not belong in a plain values file. Set this to
+  # any non-empty value to source GATEWAY_SMTP_USERNAME from the Secret
+  # instead — gatewaySmtpPassword above, or secrets.existingSecret's
+  # GATEWAY_SMTP_USERNAME key. Leave switchCore.smtp.username empty when using
+  # this; set at most one of the two.
+  smtpUsername: ""
   # `key=value` pairs, comma-separated, sent on every OTLP request. Here rather
   # than beside the other observability settings because the documented use for
   # it is a collector's API key, and every other credential in this chart comes

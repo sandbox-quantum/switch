@@ -78,8 +78,11 @@ MATTERMOST_USER_PASSWORD: {{ .Values.secrets.mattermostUserPassword | default .V
 {{- if .Values.switchCore.oidc.enabled }}
 GATEWAY_OIDC_CLIENT_SECRET: {{ required "secrets.gatewayOidcClientSecret is required when switchCore.oidc.enabled" .Values.secrets.gatewayOidcClientSecret | b64enc | quote }}
 {{- end }}
-{{- if and .Values.switchCore.smtp.enabled .Values.switchCore.smtp.username }}
-GATEWAY_SMTP_PASSWORD: {{ required "secrets.gatewaySmtpPassword is required when switchCore.smtp.username is set" .Values.secrets.gatewaySmtpPassword | b64enc | quote }}
+{{- if and .Values.switchCore.smtp.enabled (or .Values.switchCore.smtp.username .Values.secrets.smtpUsername) }}
+GATEWAY_SMTP_PASSWORD: {{ required "secrets.gatewaySmtpPassword is required when switchCore.smtp has a username" .Values.secrets.gatewaySmtpPassword | b64enc | quote }}
+{{- end }}
+{{- if and .Values.switchCore.smtp.enabled .Values.secrets.smtpUsername }}
+GATEWAY_SMTP_USERNAME: {{ .Values.secrets.smtpUsername | b64enc | quote }}
 {{- end }}
 {{- if .Values.secrets.otlpHeaders }}
 OTLP_HEADERS: {{ .Values.secrets.otlpHeaders | b64enc | quote }}
@@ -803,6 +806,17 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 {{- if .username }}
 - name: GATEWAY_SMTP_USERNAME
   value: {{ .username | quote }}
+- name: GATEWAY_SMTP_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" $ }}
+      key: GATEWAY_SMTP_PASSWORD
+{{- else if $.Values.secrets.smtpUsername }}
+- name: GATEWAY_SMTP_USERNAME
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" $ }}
+      key: GATEWAY_SMTP_USERNAME
 - name: GATEWAY_SMTP_PASSWORD
   valueFrom:
     secretKeyRef:
