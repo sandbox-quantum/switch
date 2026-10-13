@@ -266,6 +266,20 @@ describe('separateDashboard', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('keeps a host deeper in the server’s own domain', async () => {
+    roots({
+      'https://switch-api.acme.example.com': UNAUTHORIZED,
+      'https://switch-gateway.example.com': PAGE,
+    });
+
+    expect(
+      await separateDashboard(
+        'https://switch-api.acme.example.com',
+        'https://switch-gateway.example.com'
+      )
+    ).toBe('https://switch-gateway.example.com');
+  });
+
   it('keeps another port on the server’s own host', async () => {
     roots({ 'http://10.0.0.5:8000': UNAUTHORIZED, 'http://10.0.0.5:3000': PAGE });
 
@@ -277,6 +291,10 @@ describe('separateDashboard', () => {
   it.each([
     ['another domain', 'https://switch-api.example.com', 'https://dashboard.example.net'],
     ['another address', 'http://10.0.0.5:8000', 'http://10.0.0.6:3000'],
+    ['a shared tunnel domain', 'https://acme.ngrok.app', 'https://evil.ngrok.app'],
+    ['a shared hosting domain', 'https://acme.herokuapp.com', 'https://evil.herokuapp.com'],
+    ['a shared pages domain', 'https://acme.github.io', 'https://evil.github.io'],
+    ['a two-part public suffix', 'https://acme.co.uk', 'https://evil.co.uk'],
   ])('takes no link’s word for a host on %s, and asks nothing', async (_case, url, candidate) => {
     roots({ [url]: UNAUTHORIZED, [candidate]: PAGE });
 

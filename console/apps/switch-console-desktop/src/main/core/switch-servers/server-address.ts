@@ -1,3 +1,4 @@
+import { getDomain } from 'tldts';
 import { log } from '@main/lib/logger';
 import {
   dashboardOrigin,
@@ -116,23 +117,23 @@ export async function assertServesDashboard(server: SwitchServer): Promise<void>
   if ((await servesDashboard(origin)) === false) throw new NoDashboardError(server.name, origin);
 }
 
-/** The domain a hostname sits in: the hostname without its first label, when
- * that still has a dot in it. Null for a single-label name or an IP address. */
-function parentDomain(hostname: string): string | null {
-  if (hostname.startsWith('[') || /^[\d.]+$/.test(hostname)) return null;
-  const parent = hostname.slice(hostname.indexOf('.') + 1);
-  return hostname.includes('.') && parent.includes('.') ? parent : null;
+/** The domain a hostname is registered under, by the public-suffix list with
+ * its private section: `example.com` for `switch-api.example.com`, but
+ * `acme.ngrok.app` for itself, since anyone can take a name beside it. Null for
+ * an IP address, `localhost` or a single-label name. */
+function registrableDomain(hostname: string): string | null {
+  return getDomain(hostname, { allowPrivateDomains: true });
 }
 
-/** Whether two addresses are on one host, or on sibling hosts of one domain:
- * `switch-gateway.example.com` beside `switch-api.example.com`. With no
- * public-suffix list to hand, a server whose host sits directly under a
- * two-part suffix (`acme.co.uk`) counts every other site there as a sibling. */
+/** Whether two addresses are on one host, or on hosts of one registered domain:
+ * `switch-gateway.example.com` beside `switch-api.example.com`, but not
+ * `evil.ngrok.app` beside `acme.ngrok.app`, nor `evil.co.uk` beside
+ * `acme.co.uk`. */
 function onTheSameDomain(a: string, b: string): boolean {
   const [hostA, hostB] = [new URL(a).hostname, new URL(b).hostname];
   if (hostA === hostB) return true;
-  const parent = parentDomain(hostA);
-  return parent !== null && parent === parentDomain(hostB);
+  const domain = registrableDomain(hostA);
+  return domain !== null && domain === registrableDomain(hostB);
 }
 
 /**
@@ -179,6 +180,12 @@ export async function retireDashboardFallback(server: SwitchServer): Promise<boo
     servesDashboard(server.url),
     servesDashboard(server.dashboardUrl),
   ]);
+  // An old address that cannot be reached counts as gone, on purpose. A host
+  // whose DNS record was removed answers nothing forever, so waiting for a
+  // definite "no dashboard here" would keep it for good. And dropping one that
+  // was only briefly down costs nothing: `own` serving the dashboard means the
+  // server also sends a sign-in started on its own address on to the host its
+  // identity provider returns to, as Console's sign-in window does.
   if (own !== true || separate === true) return false;
   await clearDashboardUrl(server.id, server.url);
   log.info('switch-servers: the server now serves its own dashboard; dropped the old address', {

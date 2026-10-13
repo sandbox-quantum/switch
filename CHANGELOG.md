@@ -1666,6 +1666,11 @@ version of their own to them without also giving them a release of their own.
   server that serves none says so rather than opening on a refusal; and a
   server whose address does not route `/gateway` to switch-core is reported as
   that, rather than as a failed request.
+- **Upgrading: Console reaches the management API at the server's own
+  address.** Every `/gateway` call now goes to the address agents use. The
+  chart's single-host ingress needs nothing. A setup whose API host routes
+  only the agent paths has to route `/gateway` there to switch-core before
+  Console is upgraded; until then Console reports which address to fix.
 
 ### [0.39.0] - 2026-10-12
 
