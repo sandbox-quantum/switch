@@ -254,12 +254,33 @@ Two limits are stated in the app rather than left to be discovered.
 - **A server reached by URL is not covered.** It is somebody else's deployment
   with its own answer, and the toggle neither reaches it nor claims to.
 
-A third limit is not yet stated in the app. **On a host other people's Consoles
-also use, a "yes" does not override them.** A "no" always applies. A "yes"
-applies only if the server is already sharing, or nobody else has used it
-recently; if the Console cannot read who else uses it, it assumes someone does.
-The server's page does not report this case as out of step, because a restart
-would not change it.
+A third limit is not yet stated in the app. **On a server other people's
+Consoles also use, a "yes" does not turn sharing on over them, but a "yes"
+can keep it on.** This concerns a server on an SSH host, which several people
+can run from their own Consoles; the server on the user's own machine has no
+other users, and the answer is applied there as given.
+
+- **A "no" applies to everyone on the server**, but only when the Console that
+  holds it starts the server. Until then the server keeps the setting it
+  started with, and that person's server page says it is still sharing and
+  offers the restart.
+- **A "yes" applies only if the server's saved configuration already asks to
+  share, or no other Console has been seen on it in the last 14 days.** Each
+  Console records itself in a list kept on the host when it starts, stops,
+  connects to or resets the server, and once a day while it is open on a
+  running one. The list holds nobody's answer, so holding a "yes" back is a
+  precaution, not a check that someone said no.
+- **So an earlier "yes" can outlast a later "no".** If sharing was turned on
+  while one Console was alone, later starts under a "yes" keep it on with
+  others present. A co-user's "no" stops it only when their own Console
+  restarts the server.
+- **Failing to read the list holds a "yes" back** for that start. A host with
+  no list yet counts as nobody else, entries that cannot be parsed are
+  skipped, and a Console too old to write to the list is not counted.
+
+When a "yes" is held back, the Console says so only in its log. The server's
+page does not report the server as out of step, because a restart from that
+Console would hold it back again.
 
 ---
 

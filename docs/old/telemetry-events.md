@@ -163,8 +163,10 @@ Specifically never sent, in addition to any identifier:
 - error messages and stack traces — an enumerated reason code instead
 
 Free text never reaches the wire at all: every property is a number, a boolean,
-or a value from a closed set fixed in the catalogue. A property carrying an
-unexpected value is a bug to be raised, not a string to be passed through.
+or a value from a closed set fixed in code. Almost every set is written out in
+the catalogue; `bridge_platform` is the platforms this build registers, which
+are code too. A property carrying an unexpected value is a bug to be raised,
+not a string to be passed through.
 
 ## Deployment identity and the install clock
 
@@ -550,9 +552,9 @@ a slow average.
 (tri-state: `true` | `false` | `unknown` — `unknown` when the activity count
 itself could not be run, which is not evidence the room was never used).
 
-**`room_agents_added`** — `agent_count` (number), `added_by_kind`.
+**`room_agents_added`** — `agent_count` (number), `added_by_kind` (`user` | `agent` | `system`).
 
-**`room_agents_removed`** — `agent_count` (number), `removed_by_kind`.
+**`room_agents_removed`** — `agent_count` (number), `removed_by_kind` (as above).
 
 ### Removals
 
@@ -776,15 +778,20 @@ This is what each carries.
 
 ### Closed value sets
 
-`bridge_platform`: `slack` | `mattermost` | `discord` | `teams` | `telegram` |
-`none` | `unknown`. `none` is "no bridge" (an internal-only room); `unknown` is
-"there is one and the lookup that would have named it failed" — the two are
-kept apart because collapsing them would misreport a Slack-bridged room as
-internal-only whenever that lookup has a transient error.
+`bridge_platform`: a platform this build registers — today `slack` |
+`mattermost` | `discord` | `teams` | `telegram` — or `none` | `unknown`. The
+set is read from the platform registry when an event is checked, so a new
+platform adds its own value; a platform key is code, a short lowercase name,
+never anything an operator typed. `none` is "no bridge" (an internal-only
+room); `unknown` is "there is one and it could not be named", because the
+lookup failed or its platform is no longer registered. The two are kept apart
+because collapsing them would misreport a Slack-bridged room as internal-only
+whenever that lookup has a transient error.
 
 `channel_type`: `channel_public` | `channel_private` | `direct` | `none` |
-`unknown`, with `unknown` meaning what it does for `bridge_platform`. Only the
-message events can carry it.
+`unknown`, with `unknown` meaning what it does for `bridge_platform`. Every
+event with a `channel_type` accepts `unknown`, but only the message events send
+it today; the room events read the type from a row they already hold.
 
 `reference_type`: `google_drive` | `confluence` | `github` | `jira` | `other`. The
 four built-in types; a user-defined type's slug is free text, so it reports as
@@ -796,10 +803,13 @@ itself speaking; `unknown` a sender whose client could not be looked up.
 `outcome`: `success` | `failure`. `failure_reason` is an enumerated code per
 event, `none` on success — never an exception message.
 
-`bridge_connected.failure_reason` and `bridge_disconnected.reason` share one
-set, because one classifier feeds both. A value that classifier can produce and
-only one of the two declares is an event that fails validation at the moment a
-bridge drops — which is precisely the event worth not losing.
+`bridge_connected.failure_reason` is `none` | `auth_failed` | `network` |
+`platform_error` | `config_invalid` | `unknown`. `bridge_disconnected.reason`
+takes the same failure codes without `none`, plus `shutdown` and `restart`. The
+failure codes are shared because one classifier feeds both: a value that
+classifier can produce and only one of the two declares is an event that fails
+validation at the moment a bridge drops — which is precisely the event worth
+not losing.
 
 **Tri-state facts**: `true` | `false` | `unknown`, for a yes/no property the
 server can fail to establish (`room_archived`/`room_deleted`.`was_ever_active`,

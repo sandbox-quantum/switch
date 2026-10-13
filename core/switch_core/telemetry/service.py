@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # `deployment.environment` from `ENVIRONMENT` either: both are free text an
 # operator chose for their own log pipeline, and might name their company. What
 # goes to the relay is a closed value or nothing.
-SERVICE_NAME = "switch-core"
+RELAY_SERVICE_NAME = "switch-core"
 
 
 class TelemetryService:
@@ -59,7 +59,7 @@ class TelemetryService:
         self._session_factory = session_factory
         self._installed_at = installed_at
         self._resource = {
-            "service.name": SERVICE_NAME,
+            "service.name": RELAY_SERVICE_NAME,
             "flint.client_id": client_id,
             # The relay picks the Amplitude project from this. Sent even as
             # `prod`, so an event says where it belongs rather than relying on
