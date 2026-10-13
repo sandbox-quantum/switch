@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 /**
  * What the icon picker offers once it knows whether its server allows
  * third-party avatars (THIRD_PARTY_AVATARS_ENABLED).
@@ -12,6 +12,20 @@ import { afterEach, describe, expect, it } from 'vitest';
  */
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { avatarSettingsQueryKey } from '@renderer/lib/stores/use-avatar-settings';
+
+// An answer the server never gives, so an unseeded setting stays "not known
+// yet" rather than failing; a seeded one is fresh and never asked for.
+vi.mock('@renderer/lib/ipc', () => ({
+  events: { on: vi.fn() },
+  rpc: {
+    switchServers: {
+      avatarSettings: vi.fn(() => new Promise<never>(() => {})),
+      agentIconChoices: vi.fn(() =>
+        Promise.resolve({ choices: [], thirdPartyAvatarsEnabled: true })
+      ),
+    },
+  },
+}));
 
 const SERVER_ID = 'srv-1';
 

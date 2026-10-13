@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useThirdPartyAvatarsEnabled } from '@renderer/lib/stores/use-avatar-settings';
+import { useAvatarSettings } from '@renderer/lib/stores/use-avatar-settings';
 import { cn } from '@renderer/utils/utils';
 import { agentInitials, resolveAgentAvatarSrc } from '@shared/core/agents/agent-avatar';
 
@@ -48,9 +48,9 @@ export function AgentAvatar({
   size?: number;
   className?: string;
 }) {
-  const thirdPartyAvatarsEnabled = useThirdPartyAvatarsEnabled(serverId);
+  const avatarSettings = useAvatarSettings(serverId);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
-  const src = resolveAgentAvatarSrc(iconUrl, name, thirdPartyAvatarsEnabled);
+  const src = resolveAgentAvatarSrc(iconUrl, name, avatarSettings.thirdPartyAvatarsEnabled);
   const [attempt, setAttempt] = useState({ src, count: 0 });
   const tries = attempt.src === src ? attempt.count : 0;
 
@@ -72,7 +72,11 @@ export function AgentAvatar({
       <span
         className={cn(shape, 'bg-background-tertiary font-medium text-foreground-muted')}
         style={{ width: size, height: size, fontSize: Math.max(8, Math.round(size * 0.4)) }}
-        title={name}
+        title={
+          src === null && avatarSettings.error !== null
+            ? `${name} — couldn't read this server's avatar setting`
+            : name
+        }
       >
         {agentInitials(name)}
       </span>

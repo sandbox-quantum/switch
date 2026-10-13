@@ -1654,7 +1654,9 @@ version of their own to them without also giving them a release of their own.
   no longer writes generated icons onto existing agents. Until it has heard
   from a server, Console shows initials rather than send a name, and it reads
   the setting again every few minutes, so a server restarted with it changed
-  needs no Console restart. Agents on servers that leave the setting on look as
+  needs no Console restart. A setting it cannot read counts as off: the icon
+  picker says so and offers to ask again, and a new agent is still created,
+  without a generated icon. Agents on servers that leave the setting on look as
   before. Older versions of Console load those images whatever the server says.
 
 #### Fixed

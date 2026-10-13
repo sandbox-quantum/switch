@@ -300,6 +300,29 @@ describe('addAgent', () => {
     });
   });
 
+  describe('a server whose avatar setting cannot be read', () => {
+    beforeEach(() => {
+      h.fetchAvatarSettings.mockRejectedValue(new Error('avatar settings unavailable'));
+    });
+
+    it('still creates the agent, with no generated icon', async () => {
+      const result = await addAgent(params({ iconUrl: null }));
+      expect(result.kind).toBe('created');
+      expect(h.registerAgentIdentity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ iconUrl: null })
+      );
+    });
+
+    it('keeps a custom, non-third-party icon', async () => {
+      await addAgent(params({ iconUrl: 'https://example.com/avatar.png' }));
+      expect(h.registerAgentIdentity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ iconUrl: 'https://example.com/avatar.png' })
+      );
+    });
+  });
+
   it('falls back to the name-generated avatar when nothing was chosen and the server allows it', async () => {
     await addAgent(params({ iconUrl: null }));
     expect(h.registerAgentIdentity).toHaveBeenCalledWith(

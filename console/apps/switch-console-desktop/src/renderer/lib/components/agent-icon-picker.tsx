@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import { useThirdPartyAvatarsEnabled } from '@renderer/lib/stores/use-avatar-settings';
+import { useAvatarSettings } from '@renderer/lib/stores/use-avatar-settings';
 import { Input } from '@renderer/lib/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
@@ -38,7 +38,8 @@ const URL_ONLY_TAB: readonly { value: PickerTab; label: string }[] = [
  * the reader's own, with a line saying why the other option is missing rather
  * than just not there. While the server's setting is still unknown, the
  * Generated tab stays to avoid the layout jumping, but nothing is fetched for
- * it yet.
+ * it yet; if the setting cannot be read, the tab says so and offers to ask
+ * again.
  */
 export function AgentIconPicker({
   serverId,
@@ -64,7 +65,11 @@ export function AgentIconPicker({
   const [urlDraft, setUrlDraft] = useState('');
   const [urlError, setUrlError] = useState<string | null>(null);
 
-  const thirdPartyAvatarsEnabled = useThirdPartyAvatarsEnabled(serverId);
+  const {
+    thirdPartyAvatarsEnabled,
+    error: settingsError,
+    retry: retrySettings,
+  } = useAvatarSettings(serverId);
   // Hidden only once the server has actually said no — while it is still
   // unknown this stays up so the popover does not reflow a moment later, it
   // just offers nothing in it yet (see the query below).
@@ -176,21 +181,23 @@ export function AgentIconPicker({
             <p className="text-xs text-foreground-muted">
               {serverId === null
                 ? 'Choose a Switch server to see the icons it offers.'
-                : thirdPartyAvatarsEnabled === null
-                  ? 'Checking what this server allows…'
-                  : choicesError
-                    ? `The server's icons could not be loaded: ${failureText(choicesError, 'try again')}`
-                    : round === 0
-                      ? "First is generated from the agent's name."
-                      : 'Shuffled — keep going for more.'}
+                : settingsError
+                  ? `Couldn't read whether this server allows generated icons: ${failureText(settingsError, 'try again')}`
+                  : thirdPartyAvatarsEnabled === null
+                    ? 'Checking what this server allows…'
+                    : choicesError
+                      ? `The server's icons could not be loaded: ${failureText(choicesError, 'try again')}`
+                      : round === 0
+                        ? "First is generated from the agent's name."
+                        : 'Shuffled — keep going for more.'}
             </p>
             <button
               type="button"
-              onClick={() => setRound((current) => current + 1)}
+              onClick={settingsError ? retrySettings : () => setRound((current) => current + 1)}
               className="flex cursor-pointer items-center justify-center gap-1.5 rounded-md border border-border py-1.5 text-xs hover:bg-background-tertiary"
             >
               <RotateCw className="size-3.5" />
-              Show 9 more
+              {settingsError ? 'Try again' : 'Show 9 more'}
             </button>
           </div>
         ) : (

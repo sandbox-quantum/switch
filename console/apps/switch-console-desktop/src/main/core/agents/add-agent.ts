@@ -16,6 +16,7 @@ import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { db } from '@main/db/client';
 import { agents as agentsTable } from '@main/db/schema';
+import { log } from '@main/lib/logger';
 import { agentAvatarUrlForName, isThirdPartyAvatarUrl } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
@@ -330,13 +331,28 @@ function resolveNewAgentIconUrl(
     : null;
 }
 
+/** The server's avatar setting for a new agent's icon. One that cannot be read
+ * counts as off: the agent is still created, with no generated icon, rather
+ * than an avatar endpoint deciding whether an agent can be created at all. */
+async function avatarSettingsForNewAgent(server: SwitchServer): Promise<AvatarSettings> {
+  try {
+    return await fetchAvatarSettings(server);
+  } catch (error) {
+    log.warn(
+      'addAgent: could not read the server avatar setting; registering without a generated icon',
+      { serverId: server.id, error: String(error) }
+    );
+    return { thirdPartyAvatarsEnabled: false };
+  }
+}
+
 async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
   const checked = await checkNewAgent(params);
   if (checked.kind !== 'ok') return reportFailedCreate(params, checked);
   const { server, workspace: targetWorkspace, slotAgentId } = checked;
 
   const registered = await withWorkspaceSession(targetWorkspace.id, async (target) => {
-    const avatarSettings = await fetchAvatarSettings(target);
+    const avatarSettings = await avatarSettingsForNewAgent(target);
     return registerAgentIdentity(target, {
       name: params.name,
       description: params.description,
