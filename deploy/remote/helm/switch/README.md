@@ -201,9 +201,10 @@ switchCore:
 
 Each platform then shows its own default icon (Slack the app's icon, Discord its
 default avatar, Teams no image), icons already stored on those services are
-withheld too, and new agents get no generated icon. Switch Console asks the
-server and stops drawing them for its agents. An icon an owner set on any other
-host is unaffected.
+withheld too, and new agents get no generated icon. Setting an icon on one of
+those services is refused with the reason. Switch Console asks the server and
+stops drawing them for its agents. An icon an owner set on any other host is
+unaffected.
 
 ## Agent management
 

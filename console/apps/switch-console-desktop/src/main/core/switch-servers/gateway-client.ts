@@ -1187,13 +1187,17 @@ export async function updateCanManageAgents(
  * has turned that off (`THIRD_PARTY_AVATARS_ENABLED` on the server). */
 export type AvatarSettings = { thirdPartyAvatarsEnabled: boolean };
 
-/** `GET /agents/avatar-settings` only changes when the Switch server's own
- * process restarts, so each server's answer is reused for the rest of this
- * app session rather than asked again on every caller — the picker, the new
- * agent default and the icon backfill all end up asking within the same few
- * seconds of a workspace loading. Evicted on failure so a transient network
- * error does not poison the session with a wrong answer forever. */
-const avatarSettingsCache = new Map<string, Promise<AvatarSettings>>();
+/** How long a server's answer to `GET /agents/avatar-settings` is reused. The
+ * avatars, the picker, the new-agent default and the icon backfill all ask
+ * within a few seconds of a workspace loading, and this answers them with one
+ * request. It is not kept for the session: the setting changes when the
+ * server restarts, which a running Console outlives, and an operator who
+ * turns it off should not wait for every Console to restart. */
+const AVATAR_SETTINGS_TTL_MS = 60_000;
+
+/** Evicted on failure, so a transient network error is asked again rather
+ * than answered from the cache. */
+const avatarSettingsCache = new Map<string, { at: number; request: Promise<AvatarSettings> }>();
 
 /**
  * Whether `server` allows a third-party avatar URL to be generated or sent
@@ -1206,12 +1210,14 @@ const avatarSettingsCache = new Map<string, Promise<AvatarSettings>>();
  */
 export function fetchAvatarSettings(server: SwitchServer): Promise<AvatarSettings> {
   const cached = avatarSettingsCache.get(server.id);
-  if (cached) return cached;
-  const request = requestAvatarSettings(server).catch((cause) => {
-    avatarSettingsCache.delete(server.id);
+  if (cached && Date.now() - cached.at < AVATAR_SETTINGS_TTL_MS) return cached.request;
+  const request: Promise<AvatarSettings> = requestAvatarSettings(server).catch((cause) => {
+    if (avatarSettingsCache.get(server.id)?.request === request) {
+      avatarSettingsCache.delete(server.id);
+    }
     throw cause;
   });
-  avatarSettingsCache.set(server.id, request);
+  avatarSettingsCache.set(server.id, { at: Date.now(), request });
   return request;
 }
 

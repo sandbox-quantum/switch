@@ -9,6 +9,7 @@ import { Input } from '@renderer/lib/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { cn } from '@renderer/utils/utils';
+import { isThirdPartyAvatarUrl } from '@shared/core/agents/agent-avatar';
 
 type PickerTab = 'generated' | 'url';
 
@@ -103,6 +104,13 @@ export function AgentIconPicker({
     }
     if (!/^https:\/\/\S+$/i.test(trimmed)) {
       setUrlError('Must be a link starting with https://');
+      return;
+    }
+    // The server refuses it too; saying so here keeps the draft to fix.
+    if (thirdPartyAvatarsEnabled === false && isThirdPartyAvatarUrl(trimmed)) {
+      setUrlError(
+        "This server doesn't show icons from DiceBear or ui-avatars.com. Link an image on another host."
+      );
       return;
     }
     setUrlError(null);

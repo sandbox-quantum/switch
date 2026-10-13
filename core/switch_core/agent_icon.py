@@ -48,6 +48,10 @@ _BLOCKED_HOSTNAMES = frozenset(
 )
 
 
+# A host part that clients and `urlsplit` read differently.
+_AMBIGUOUS_HOST = re.compile(r"[\\%]|[^\x00-\x7f]")
+
+
 class InvalidIconUrl(ValueError):
     """Raised when an icon URL is missing, malformed, or points somewhere unsafe."""
 
@@ -97,10 +101,24 @@ def validate_icon_url(url: str) -> str:
     if any(character.isspace() or ord(character) < 0x20 for character in candidate):
         _reject("must not contain whitespace or control characters")
 
+    # Browsers and chat clients read `\` as `/`, so for them the host ends
+    # where `urlsplit` sees it continue, and every host check here would be
+    # made against a host nobody loads.
+    if "\\" in candidate:
+        _reject("must not contain a backslash")
+
     try:
         parts = urlsplit(candidate)
     except ValueError as exc:
         _reject(f"could not be parsed ({exc})")
+
+    # Clients decode a percent-encoded host and map non-ASCII look-alikes
+    # (`。` for `.`) before connecting; `urlsplit` does neither.
+    if _AMBIGUOUS_HOST.search(parts.netloc):
+        _reject(
+            "must spell its host plainly, without percent-encoding or non-ASCII "
+            "characters (an international name goes in its xn-- form)"
+        )
 
     if parts.scheme != "https":
         _reject(f"must use https, got {parts.scheme or 'no scheme'!r}")
@@ -211,17 +229,57 @@ def is_third_party_avatar(url: str) -> bool:
     URL from leaving the server, whoever chose it.
     """
     try:
-        host = urlsplit(url).hostname
+        parts = urlsplit(url)
+        host = parts.hostname
     except ValueError:
         return False
     if not host:
         return False
+    # Which service such a host names depends on the client reading it, so it
+    # counts as one. `validate_icon_url` refuses to store such a host; only an
+    # older row can carry one.
+    if _AMBIGUOUS_HOST.search(parts.netloc):
+        return True
     # A trailing dot names the same host, and `hostname` is already lowercase.
     host = host.rstrip(".")
     return any(
         host == service or host.endswith(f".{service}")
         for service in _THIRD_PARTY_AVATAR_SERVICES
     )
+
+
+def refuse_third_party_avatar(
+    url: str | None, *, third_party_avatars: bool
+) -> str | None:
+    """`url`, or `InvalidIconUrl` when this server would withhold it.
+
+    For a request that sets an icon. With third-party avatars off every bridge
+    withholds an icon on one of the avatar services, so storing one would
+    leave the agent drawn with each platform's default and nothing to say why.
+    """
+    if url is not None and not third_party_avatars and is_third_party_avatar(url):
+        _reject(
+            "this server has third-party avatars turned off, so an icon from "
+            "dicebear.com or ui-avatars.com would never be shown; link an image "
+            "on another host"
+        )
+    return url
+
+
+def drop_third_party_avatar(
+    url: str | None, *, third_party_avatars: bool
+) -> str | None:
+    """`url`, or None when this server would withhold it.
+
+    For creating or registering an agent, where a client sends an icon of its
+    own when nobody chose one: Switch Console releases from before the setting
+    send a DiceBear face every time. Refusing those would stop them creating
+    agents at all, so the agent is created with no icon instead, as the
+    response shows.
+    """
+    if url is not None and not third_party_avatars and is_third_party_avatar(url):
+        return None
+    return url
 
 
 def generated_icon_choices(agent_name: str, page: int) -> list[str]:

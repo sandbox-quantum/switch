@@ -12,6 +12,7 @@ from switch_core.agent_icon import (
     InvalidIconUrl,
     generated_icon_choices,
     normalise_icon_url,
+    refuse_third_party_avatar,
 )
 from switch_core.authz import Principal, require_manage
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
@@ -415,6 +416,7 @@ async def update_agent_icon(
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> AgentSummary:
     """Set, change, or clear an agent's icon (CHOO-2171).
 
@@ -427,7 +429,9 @@ async def update_agent_icon(
     a private network — Switch dereferences it when a bridge needs the image
     as bytes, so an unconstrained URL would be a request made on the caller's
     behalf from inside our network. A rejected URL returns 400 rather than
-    being stored and failing later at render time.
+    being stored and failing later at render time. So is an icon on an avatar
+    service while the server has third-party avatars off, which no bridge
+    would show.
     """
     agent = await agent_store.get(session, agent_id)
     if agent is None:
@@ -445,7 +449,10 @@ async def update_agent_icon(
         )
 
     try:
-        icon_url = normalise_icon_url(req.icon_url)
+        icon_url = refuse_third_party_avatar(
+            normalise_icon_url(req.icon_url),
+            third_party_avatars=config.third_party_avatars_enabled,
+        )
     except InvalidIconUrl as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

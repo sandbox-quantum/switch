@@ -313,9 +313,9 @@ export async function writeNewAgentConfigFile(
  * disables third-party avatars gets `null` instead, even when
  * `requestedIconUrl` already carries a third-party URL: the new-agent form
  * opens on a random DiceBear avatar before anything is known about where the
- * agent will land, and this is the one place every create path passes through
- * on the way to the gateway, so it is the backstop regardless of what the
- * form's own privacy check already caught.
+ * agent will land, and may be submitted before the server has answered. The
+ * server drops such an icon on registration as well; this keeps the request
+ * itself from carrying one.
  */
 function resolveNewAgentIconUrl(
   requestedIconUrl: string | null,

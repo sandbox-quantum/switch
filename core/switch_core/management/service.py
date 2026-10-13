@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_icon import (
     InvalidIconUrl,
+    drop_third_party_avatar,
     generated_icon_url,
     normalise_icon_url,
 )
@@ -1100,7 +1101,10 @@ class ManagementService:
         )
         definition = with_directory(request.definition, controller, request.name)
         try:
-            icon_url = normalise_icon_url(request.icon_url)
+            icon_url = drop_third_party_avatar(
+                normalise_icon_url(request.icon_url),
+                third_party_avatars=self.settings.third_party_avatars,
+            )
             if icon_url is None and self.settings.third_party_avatars:
                 icon_url = generated_icon_url(request.name)
         except InvalidIconUrl as exc:

@@ -63,9 +63,17 @@ version of their own to them without also giving them a release of their own.
   default: Slack the app's icon, Discord its default avatar, Teams no image,
   while a Mattermost bot keeps the image it already has. People and agents
   without an icon of their own then share that default. New managed agents get
-  no generated icon, `GET /agents/icon-choices` offers none and says why, and
+  no generated icon, and an agent created or registered with an icon on those
+  services gets none. Setting one later is refused with the reason, rather than
+  stored to never show. `GET /agents/icon-choices` offers none and says why, and
   `GET /agents/avatar-settings` tells Switch Console the setting. The default is
   unchanged. A server Switch Console runs for you always uses the default.
+
+#### Security
+- **An agent icon URL must spell its host plainly.** A link with a backslash,
+  or a host with percent-encoding or non-ASCII characters, is refused: browsers
+  and chat clients read such a host differently from Switch, so its checks
+  could not tell where the image would be loaded from.
 
 ### [0.30.0] - 2026-10-12
 
@@ -1641,10 +1649,12 @@ version of their own to them without also giving them a release of their own.
 - **Console follows a server that keeps names away from avatar services.** On a
   server with `THIRD_PARTY_AVATARS_ENABLED=false`, Console no longer loads
   DiceBear or ui-avatars.com images for that server's agents and shows their
-  initials instead. Its icon picker offers only an image link, new agents are
-  created without a generated icon, and it no longer writes generated icons
-  onto existing agents. Until it has heard from a server, Console shows initials
-  rather than send a name. Agents on servers that leave the setting on look as
+  initials instead. Its icon picker offers only an image link and refuses one
+  to either service, new agents are created without a generated icon, and it
+  no longer writes generated icons onto existing agents. Until it has heard
+  from a server, Console shows initials rather than send a name, and it reads
+  the setting again every few minutes, so a server restarted with it changed
+  needs no Console restart. Agents on servers that leave the setting on look as
   before. Older versions of Console load those images whatever the server says.
 
 #### Fixed

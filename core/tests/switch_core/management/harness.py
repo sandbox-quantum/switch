@@ -140,7 +140,9 @@ def protocol_service(
     svc.api_key_cache = cache
     svc.client_lifecycle = _FakeClientLifecycle(session_factory)  # type: ignore[assignment]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[assignment]
-    svc.config = SimpleNamespace(keyring=TEST_KEYRING)  # type: ignore[assignment]
+    svc.config = SimpleNamespace(  # type: ignore[assignment]
+        keyring=TEST_KEYRING, third_party_avatars_enabled=True
+    )
     svc.telemetry = None
     svc.event_buffer = EventBuffer(sequence_base=0)
     svc.connections = AgentConnectionRegistry()

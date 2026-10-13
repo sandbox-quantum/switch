@@ -27,7 +27,10 @@ afterEach(async () => {
 
 /** Renders the picker and opens it, seeding the server's avatar setting —
  * `null` leaves it unseeded, exercising "not known yet". */
-async function openPicker(thirdPartyAvatarsEnabled: boolean | null): Promise<void> {
+async function openPicker(
+  thirdPartyAvatarsEnabled: boolean | null,
+  onChange: (iconUrl: string | null) => void = () => {}
+): Promise<void> {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: Infinity } },
   });
@@ -41,7 +44,7 @@ async function openPicker(thirdPartyAvatarsEnabled: boolean | null): Promise<voi
   await act(async () =>
     root!.render(
       <QueryClientProvider client={client}>
-        <AgentIconPicker serverId={SERVER_ID} name="worker" iconUrl={null} onChange={() => {}} />
+        <AgentIconPicker serverId={SERVER_ID} name="worker" iconUrl={null} onChange={onChange} />
       </QueryClientProvider>
     )
   );
@@ -67,6 +70,26 @@ describe('the icon picker on a server that disables third-party avatars', () => 
   it('explains why, rather than leaving the missing tab a mystery', async () => {
     await openPicker(false);
     expect(document.body.textContent).toContain("doesn't generate icons from a name");
+  });
+
+  it('refuses a link to an avatar service, saying why, rather than saving it', async () => {
+    const chosen: (string | null)[] = [];
+    await openPicker(false, (iconUrl) => chosen.push(iconUrl));
+    const input = document.querySelector<HTMLInputElement>(
+      'input[placeholder="https://example.com/avatar.png"]'
+    )!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+        input,
+        'https://api.dicebear.com/10.x/gaze/png?seed=worker'
+      );
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () =>
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    );
+    expect(chosen).toEqual([]);
+    expect(document.body.textContent).toContain("doesn't show icons from DiceBear");
   });
 
   it('still offers the Image URL field directly', async () => {

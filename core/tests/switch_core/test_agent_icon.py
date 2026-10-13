@@ -11,11 +11,13 @@ from switch_core.agent_icon import (
     GENERATED_ICON_CHOICES,
     MAX_ICON_URL_LENGTH,
     InvalidIconUrl,
+    drop_third_party_avatar,
     generated_icon_choices,
     generated_icon_url,
     initials_icon_url,
     is_third_party_avatar,
     normalise_icon_url,
+    refuse_third_party_avatar,
     upgrade_legacy_icon_url,
     validate_icon_url,
 )
@@ -290,3 +292,50 @@ def test_recognises_every_spelling_of_the_avatar_services(url: str) -> None:
 )
 def test_leaves_every_other_host_alone(url: str) -> None:
     assert not is_third_party_avatar(url)
+
+
+# Hosts that browsers and chat clients read differently from `urlsplit`: a
+# backslash ends the host for them, `%2e` decodes to a dot, and `。` maps to one.
+_AMBIGUOUS_HOSTS = [
+    "https://api.dicebear.com\\x.png",
+    "https://api.dicebear.com%2e/x.png",
+    "https://api。dicebear。com/x.png",
+]
+
+
+@pytest.mark.parametrize("url", _AMBIGUOUS_HOSTS)
+def test_a_host_clients_read_differently_is_refused(url: str) -> None:
+    with pytest.raises(InvalidIconUrl):
+        validate_icon_url(url)
+
+
+def test_percent_encoding_outside_the_host_is_still_accepted() -> None:
+    url = "https://cdn.example.com/icons/a%20b.png?label=x%2Cy"
+    assert validate_icon_url(url) == url
+
+
+@pytest.mark.parametrize("url", _AMBIGUOUS_HOSTS)
+def test_a_stored_host_clients_read_differently_counts_as_an_avatar_service(
+    url: str,
+) -> None:
+    # Stored before `validate_icon_url` refused them; which service the
+    # client loads cannot be told from here, so it is withheld.
+    assert is_third_party_avatar(url)
+
+
+def test_setting_an_avatar_service_icon_is_refused_only_with_them_off() -> None:
+    dicebear = generated_icon_url("pm-agent")
+    with pytest.raises(InvalidIconUrl, match="third-party avatars turned off"):
+        refuse_third_party_avatar(dicebear, third_party_avatars=False)
+    assert refuse_third_party_avatar(dicebear, third_party_avatars=True) == dicebear
+    other = "https://cdn.example.com/a.png"
+    assert refuse_third_party_avatar(other, third_party_avatars=False) == other
+    assert refuse_third_party_avatar(None, third_party_avatars=False) is None
+
+
+def test_creating_with_an_avatar_service_icon_drops_it_only_with_them_off() -> None:
+    dicebear = generated_icon_url("pm-agent")
+    assert drop_third_party_avatar(dicebear, third_party_avatars=False) is None
+    assert drop_third_party_avatar(dicebear, third_party_avatars=True) == dicebear
+    other = "https://cdn.example.com/a.png"
+    assert drop_third_party_avatar(other, third_party_avatars=False) == other

@@ -2927,12 +2927,34 @@ describe('fetchAvatarSettings', () => {
     await expect(fetchAvatarSettings(server)).rejects.toThrow();
   });
 
-  it('asks once per server for the rest of the session', async () => {
+  it('answers a burst of callers with one request', async () => {
     fetchMock.mockImplementation(async () => jsonResponse({ third_party_avatars_enabled: true }));
     const server = serverWithId('avatar-cached');
     await fetchAvatarSettings(server);
     await fetchAvatarSettings(server);
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('asks again after a minute, so a server restarted with it off is heard', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const server = serverWithId('avatar-expiry');
+      fetchMock.mockImplementation(async () => jsonResponse({ third_party_avatars_enabled: true }));
+      await expect(fetchAvatarSettings(server)).resolves.toEqual({
+        thirdPartyAvatarsEnabled: true,
+      });
+
+      fetchMock.mockImplementation(async () =>
+        jsonResponse({ third_party_avatars_enabled: false })
+      );
+      vi.setSystemTime(Date.now() + 61_000);
+      await expect(fetchAvatarSettings(server)).resolves.toEqual({
+        thirdPartyAvatarsEnabled: false,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('asks again after a failure, rather than caching it', async () => {

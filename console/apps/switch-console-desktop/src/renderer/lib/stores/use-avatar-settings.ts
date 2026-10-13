@@ -1,9 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
 import { rpc } from '@renderer/lib/ipc';
 
+/** How often a server's setting is read again while something shows it. */
+const AVATAR_SETTINGS_REFRESH_MS = 5 * 60_000;
+
 /** Query key for a server's third-party-avatar setting, shared so every
  * surface that asks (the agent avatar, the icon picker, the new-agent form)
- * agrees on one cached answer per server for the session. */
+ * agrees on one cached answer per server. */
 export function avatarSettingsQueryKey(serverId: string | null) {
   return ['avatar-settings', serverId] as const;
 }
@@ -18,16 +21,17 @@ export function avatarSettingsQueryKey(serverId: string | null) {
  * send a name off the machine — see `AgentAvatar`, which is the one place that
  * matters most.
  *
- * `staleTime: Infinity` because the setting only changes when the Switch
- * server's own process restarts: re-asking on every render would cost a round
- * trip for an answer that cannot change under a running session.
+ * Asked again every few minutes: the setting changes when the server
+ * restarts, which a running Console outlives, so an operator who turns it off
+ * reaches this app without anyone restarting it.
  */
 export function useThirdPartyAvatarsEnabled(serverId: string | null): boolean | null {
   const { data } = useQuery({
     queryKey: avatarSettingsQueryKey(serverId),
     queryFn: () => rpc.switchServers.avatarSettings(serverId as string),
     enabled: serverId !== null,
-    staleTime: Infinity,
+    staleTime: AVATAR_SETTINGS_REFRESH_MS,
+    refetchInterval: AVATAR_SETTINGS_REFRESH_MS,
   });
   return data?.thirdPartyAvatarsEnabled ?? null;
 }

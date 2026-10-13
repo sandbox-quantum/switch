@@ -443,8 +443,9 @@ class SwitchConfig(BaseSettings):
     # Teams clients load those URLs, so the services see the name and each
     # reader's address; the Mattermost adapter loads them from this server.
     # False sends no such URL anywhere, stored ones included: each platform
-    # shows its own default icon, new agents get no generated icon, and Switch
-    # Console stops drawing them for this server's agents.
+    # shows its own default icon, new agents get no generated icon, setting an
+    # icon on one of those services is refused, and Switch Console stops
+    # drawing them for this server's agents.
     third_party_avatars_enabled: bool = True
 
     server_host: str = "0.0.0.0"

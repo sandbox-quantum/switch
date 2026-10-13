@@ -71,7 +71,8 @@ def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
     svc.client_lifecycle = _FakeClientLifecycle(session_factory)  # type: ignore[attr-defined]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[attr-defined]
     svc.config = SimpleNamespace(
-        keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None)
+        keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None),
+        third_party_avatars_enabled=True,
     )  # type: ignore[attr-defined]
     return svc
 

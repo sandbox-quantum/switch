@@ -362,6 +362,31 @@ class TestManagedAgents:
             scout = await AgentStore().get(session, created.json()["agent_id"])
         assert scout is not None and scout.icon_url is None
 
+    async def test_create_drops_a_sent_avatar_service_icon_when_third_party_avatars_are_off(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Older Console builds send a DiceBear face when nobody picked one.
+        Refused, they could create no agent at all; the agent gets none."""
+        harness = build_harness(session_factory, third_party_avatars=False)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            created = await client.post(
+                "/gateway/management/agents",
+                json={
+                    "name": "painter",
+                    "description": "Paints",
+                    "icon_url": generated_icon_url("painter"),
+                    "controller_id": None,
+                    "desired_state": "stopped",
+                    "definition": definition(),
+                },
+                cookies=cookies_for(owner),
+            )
+        assert created.status_code == 201, created.text
+        async with harness.session_factory() as session:
+            painter = await AgentStore().get(session, created.json()["agent_id"])
+        assert painter is not None and painter.icon_url is None
+
     async def test_a_name_clash_is_refused(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:
