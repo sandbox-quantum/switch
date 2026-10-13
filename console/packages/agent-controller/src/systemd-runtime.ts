@@ -213,7 +213,13 @@ export class SystemdRuntime implements AgentRuntime {
         message: `${binaryPath} is under ${home}, which agents running as users of their own cannot reach. Install the ${provider} CLI system-wide.`,
         models: [],
       };
-    const probeHome = join(this.deps.config.dataDir, 'probe-home');
+    // A login given to the machine is checked in a home of its own: a CLI may
+    // keep what it signed in with there (Cursor does), and a check of the
+    // machine's own login in the same home would then pass although no agent,
+    // each a user of its own, can use it.
+    const probeHome = login
+      ? join(this.deps.config.dataDir, 'login-check', provider, 'home')
+      : join(this.deps.config.dataDir, 'probe-home-local');
     await mkdir(probeHome, { recursive: true, mode: 0o700 });
     const given = login
       ? await loginProbeEnvironment(

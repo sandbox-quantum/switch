@@ -33,7 +33,7 @@ beforeEach(() => {
   servers.length = 0;
   acp.http = true;
 });
-async function setup(resume = false) {
+async function setup(resume = false, env: Record<string, string> = {}) {
   const adapter = createCursorAdapter();
   const events: ProviderRuntimeEvent[] = [];
   adapter.subscribe((e) => events.push(e));
@@ -41,7 +41,7 @@ async function setup(resume = false) {
     sessionId: 's',
     cwd: '/work',
     runtimeMode: 'approval-required',
-    env: {},
+    env,
     mcpServers: {
       switch: { transport: 'stdio', command: 'node', args: ['server.js'], env: { MODE: 'test' } },
     },
@@ -51,6 +51,14 @@ async function setup(resume = false) {
   return { adapter, events, server, session };
 }
 const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+it('signs in with cursor_login only when it was given no API key', async () => {
+  const signedIn = await setup();
+  expect(signedIn.server.received.some((m) => m.method === 'authenticate')).toBe(true);
+  const withKey = await setup(false, { CURSOR_API_KEY: 'crsr_synthetic' });
+  expect(withKey.server.received.some((m) => m.method === 'authenticate')).toBe(false);
+  expect(withKey.session.nativeSessionId).toBe('native');
+});
 
 it('registers session MCP servers and resumes the exact native session', async () => {
   const { server, session } = await setup(true);

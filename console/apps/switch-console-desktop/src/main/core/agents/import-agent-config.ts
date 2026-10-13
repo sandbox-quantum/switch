@@ -1,8 +1,8 @@
 import type {
+  AdvancedSettings,
   IRepoAgentsBehavior,
   PluginFs,
   RepoAgentAttributes,
-  RepoAgentField,
 } from '@switch-console/core/agents/plugins';
 import { log } from '@main/lib/logger';
 import {
@@ -33,8 +33,10 @@ import { agentConfigRelativePath } from './switch-settings-paths';
  * - the description comes from there, since that is the only place it was kept;
  * - a definition with no frontmatter (empty, or cut off mid-write) is not
  *   taken over, since there is nothing in it to tell an edit from damage;
- * - a setting whose value this app would not offer (a hand-typed `effort:
- *   High`) is left out rather than carried into every launch.
+ * - a count that is not a positive whole number (a hand-typed `maxTurns:
+ *   2.5`) is left out rather than carried into every launch. Which values a
+ *   choice takes is the Switch server's to say, so a hand-typed choice is
+ *   carried as written and the form says when it is not one of them.
  *
  * The definition file is left where it is, and recorded as accounted for (see
  * {@link acknowledgeDefinition}).
@@ -137,30 +139,26 @@ async function importDefinition(params: {
   return acknowledge({
     ...withDescription,
     instructions: typeof instructions === 'string' ? instructions : '',
-    settings: offeredSettings(name, settings, repoAgents.attributeFields()),
+    settings: offeredSettings(name, settings, repoAgents.advancedSettings()),
   });
 }
 
 /**
- * The settings this app would let someone choose: a choice-list value that is
- * one of its choices, a count that is a positive whole number. Anything else in
- * a hand-edited definition is dropped, and said so.
+ * The settings this app would let someone set: a count that is a positive
+ * whole number. Anything else in a hand-edited definition is dropped, and said
+ * so.
  */
 function offeredSettings(
   name: string,
   settings: RepoAgentAttributes,
-  fields: RepoAgentField[]
+  advanced: AdvancedSettings
 ): RepoAgentAttributes {
-  const byKey = new Map(fields.map((field) => [field.key, field]));
   const kept: RepoAgentAttributes = {};
   for (const [key, value] of Object.entries(settings)) {
-    const field = byKey.get(key);
     const offered =
-      field?.type === 'select'
-        ? value === '' || (field.options ?? []).some((option) => option.value === value)
-        : field?.type === 'number'
-          ? value === null || (typeof value === 'number' && Number.isInteger(value) && value > 0)
-          : true;
+      advanced[key] === 'number'
+        ? value === null || (typeof value === 'number' && Number.isInteger(value) && value > 0)
+        : true;
     if (offered) {
       kept[key] = value;
     } else {

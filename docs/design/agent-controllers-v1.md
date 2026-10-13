@@ -8,8 +8,8 @@ where it deliberately stops short.
 
 ## Shape
 
-- **Management** (Core package `switch_core/management/`, off unless
-  `AGENT_MANAGEMENT_ENABLED=true`): the source of truth for managed agents. It holds agent
+- **Management** (Core package `switch_core/management/`, off unless the
+  `agent_management` feature flag is on): the source of truth for managed agents. It holds agent
   definitions, which controller each one runs on, controller enrollment and credentials,
   controller status, and operations.
 - **Agents controller** (`console/packages/agent-controller`, a Node CLI): one per
@@ -25,7 +25,7 @@ where it deliberately stops short.
 |---|---|---|
 | Controllers act as agents on `/agents/{id}/...` with a controller token | **Not in v1.** The controller fetches a per-agent API key from Management for each bound agent. Every fetch **rotates** the key, which invalidates any earlier holder | The agent host and session hosts read the agent token once, from the credentials file, and cannot refresh a short-lived token. Moving to scoped tokens needs a runtime change first |
 | One SSE stream per controller carrying agent events | **The controller stream carries only nudges** (`assignment.changed`, `operation.pending`, `credential.revoked`). Agent events stay on per-agent agent host streams | Avoids touching message delivery. That is roadmap step 7 |
-| Connector tokens, sealed provider logins | Not in v1 | Later steps |
+| Connector tokens, sealed provider logins | Not in v1. Service tokens are specified in `service-connections-v1.md` | Later steps |
 | Enrollment by EC2 machine secret | Not in v1. Supported: Console sign-in (gateway) and one-time code (headless) | |
 | Operations | `agent.restart` and `provider.recheck` only. Core rejects other kinds with `400 operation_unsupported` | |
 | Per-tenant flag | Deployment-wide env flag | No per-tenant flag mechanism exists yet |
@@ -33,7 +33,9 @@ where it deliberately stops short.
 ## Core
 
 ### Config (`config.py`)
-- `agent_management_enabled: bool = False` (`AGENT_MANAGEMENT_ENABLED`).
+- `agent_management_enabled`: whether the `agent_management` feature flag is on
+  (`FEATURE_FLAGS_ENABLED`). `AGENT_MANAGEMENT_ENABLED=true`, the setting it replaced,
+  stops startup.
 - `controller_token_secret: str | None = None` (`CONTROLLER_TOKEN_SECRET`). **Required
   when the flag is on**: a model validator raises if it is missing or shorter than 32 chars. It is
   separate from `jwt_secret_key` on purpose.
@@ -169,7 +171,10 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
 - `POST   /gateway/management/operations` and `GET /gateway/management/operations?controller_id=`.
 - `GET    /gateway/management/advanced-config` returns each provider's advanced-configuration
   schema, `{"providers": {"claude": {"fields": [...]}, "codex": ..., "opencode": ...,
-  "cursor": {"fields": []}, "antigravity": {"fields": []}}}` (see Advanced configuration below).
+  "cursor": {"fields": []}, "antigravity": {"fields": []}}}` (see Advanced configuration below),
+  and `GET /gateway/management/providers` the providers in order, each with its label and the
+  same fields. These two are served whether or not agent management is on: Switch Console
+  builds the advanced-configuration form of the agents it runs itself from them too.
 
 **Placement checks** run on create, adopt and move, and on a change to `running`. Each failure returns `409` with a reason:
 - `controller_revoked`
@@ -203,8 +208,11 @@ Any change that affects a controller bumps its `assignment_revision` and nudges 
 Switch Console offers for its own agents. The server owns one fixed schema per provider
 (`management/advanced_config.py`), checks every create and update against it whatever
 machine runs the agent, and serves it at `GET /gateway/management/advanced-config` and
-through the `get_advanced_config(provider)` agent operation. Controllers report nothing
-about settings; they apply what they are given.
+through the `get_advanced_config(provider)` agent operation. Switch Console and the
+controller hold no copy of the fields; their provider plugins only apply values, by key.
+Controllers report nothing about settings; they apply what they are given, and report
+`definition_invalid` for a key their build does not apply or a value of a shape it cannot
+apply, rather than starting the agent without it.
 
 - Each served field is `{key, label, type, help, placeholder, options, catalogue}`. `type`
   is `text` or `textarea` (a string), `number` (finite), `boolean`, `list` (strings) or

@@ -265,7 +265,9 @@ def parse_bundle(raw: str) -> Bundle:
         raise BootError("The machine bundle's server is not an HTTPS URL.")
     entries = value["controllers"]
     if not isinstance(entries, list) or not 1 <= len(entries) <= MAX_CONTROLLERS:
-        raise BootError(f"The machine bundle must list 1 to {MAX_CONTROLLERS} controllers.")
+        raise BootError(
+            f"The machine bundle must list 1 to {MAX_CONTROLLERS} controllers."
+        )
     controllers = tuple(_bundle_controller(entry) for entry in entries)
     if len({controller.key for controller in controllers}) != len(controllers):
         raise BootError("The machine bundle lists a controller key twice.")
@@ -282,7 +284,9 @@ def parse_bundle(raw: str) -> Bundle:
 
 
 def _bundle_controller(entry: Any) -> BundleController:
-    controller = _strict(entry, {"key", "id", "enrollmentCode"}, "machine bundle's controller")
+    controller = _strict(
+        entry, {"key", "id", "enrollmentCode"}, "machine bundle's controller"
+    )
     key = controller["key"]
     if not isinstance(key, str) or not UUID_RE.fullmatch(key):
         raise BootError("The machine bundle's controller key is invalid.")
@@ -295,7 +299,9 @@ def _bundle_controller(entry: Any) -> BundleController:
         ):
             raise BootError("The machine bundle's controller is invalid.")
     elif not isinstance(code, str) or not ENROLLMENT_CODE_RE.fullmatch(code):
-        raise BootError("The machine bundle holds neither a controller nor an enrollment code.")
+        raise BootError(
+            "The machine bundle holds neither a controller nor an enrollment code."
+        )
     return BundleController(key=key, controller_id=controller_id, enrollment_code=code)
 
 
@@ -307,7 +313,9 @@ def _user_data(opener: OpenerDirector) -> str:
     )
     with opener.open(token_request, timeout=5) as response:
         token = response.read().decode()
-    request = Request(f"{METADATA_URL}/user-data", headers={"X-aws-ec2-metadata-token": token})
+    request = Request(
+        f"{METADATA_URL}/user-data", headers={"X-aws-ec2-metadata-token": token}
+    )
     try:
         with opener.open(request, timeout=5) as response:
             raw = response.read(MAX_JSON_BYTES + 1)
@@ -341,7 +349,9 @@ def read_bundle(
             raise
         except Exception as error:
             if time.monotonic() > deadline:
-                raise BootError(f"The instance's user data cannot be read: {error}") from None
+                raise BootError(
+                    f"The instance's user data cannot be read: {error}"
+                ) from None
             logger.warning("Waiting for instance metadata: %s", error)
             sleep(5)
     return parse_bundle(raw)
@@ -428,13 +438,17 @@ def prepare_storage(
         if signatures or device.get("uuid"):
             raise BootError("The data volume is not blank, but holds no filesystem.")
         logger.info("Formatting the blank data volume %s", volume_id)
-        commands.run(["/usr/sbin/mkfs.ext4", "-q", "-m", "0", "-L", "switch-data", path])
+        commands.run(
+            ["/usr/sbin/mkfs.ext4", "-q", "-m", "0", "-L", "switch-data", path]
+        )
         commands.run(["/usr/bin/udevadm", "settle", "--timeout=30"])
         device = _data_device(commands, volume_id)
         if device is None:
             raise BootError("The data volume went away while it was formatted.")
     if device.get("fstype") != "ext4":
-        raise BootError("The data volume's filesystem is not ext4; refusing to mount it.")
+        raise BootError(
+            "The data volume's filesystem is not ext4; refusing to mount it."
+        )
     DATA_MOUNT.mkdir(mode=0o755, exist_ok=True)
     mounted = commands.result(
         [
@@ -450,7 +464,9 @@ def prepare_storage(
         if os.path.realpath(mounted.stdout.strip()) != os.path.realpath(path):
             raise BootError("/data is another device's mountpoint.")
         return
-    commands.run([SYSTEMD_MOUNT, "--type=ext4", "--options=nodev,nosuid", path, str(DATA_MOUNT)])
+    commands.run(
+        [SYSTEMD_MOUNT, "--type=ext4", "--options=nodev,nosuid", path, str(DATA_MOUNT)]
+    )
 
 
 def reconcile_marker(data: Path, bundle: Bundle) -> None:
@@ -467,7 +483,9 @@ def reconcile_marker(data: Path, bundle: Bundle) -> None:
         if marker.is_symlink():
             raise BootError("The data volume's marker is a link.")
         if json.loads(marker.read_text()) != wanted:
-            raise BootError("The data volume belongs to another machine; refusing to use it.")
+            raise BootError(
+                "The data volume belongs to another machine; refusing to use it."
+            )
         return
     _write_atomically(marker, json.dumps(wanted), 0o600)
 
@@ -476,7 +494,9 @@ def _write_atomically(path: Path, text: str, mode: int) -> None:
     """Writes `path` through a fresh file renamed over it, never through a link."""
     temporary = path.with_name(f"{path.name}.new")
     temporary.unlink(missing_ok=True)
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    descriptor = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode
+    )
     with os.fdopen(descriptor, "w") as file:
         os.fchmod(file.fileno(), mode)
         file.write(text)
@@ -501,12 +521,16 @@ def load_indexes(data: Path) -> dict[str, int] | None:
         or not isinstance(indexes, dict)
         or not all(isinstance(key, str) and UUID_RE.fullmatch(key) for key in indexes)
         or not all(
-            isinstance(index, int) and not isinstance(index, bool) and 0 <= index < MAX_CONTROLLERS
+            isinstance(index, int)
+            and not isinstance(index, bool)
+            and 0 <= index < MAX_CONTROLLERS
             for index in indexes.values()
         )
         or len(set(indexes.values())) != len(indexes)
     ):
-        raise BootError(f"The controllers' indexes at {path} are not ones this image reads.")
+        raise BootError(
+            f"The controllers' indexes at {path} are not ones this image reads."
+        )
     return dict(indexes)
 
 
@@ -587,7 +611,14 @@ def ensure_identities(commands: Commands, config: MachineConfig, seat: Seat) -> 
     seat's fixed ids, as install.sh does for index 0, so that install-service
     finds them all and creates none with ids of its own choosing."""
     _ensure_group(commands, seat.user, seat.gid)
-    _ensure_user(commands, seat.user, seat.uid, str(seat.gid), seat.gid, "Switch agents controller")
+    _ensure_user(
+        commands,
+        seat.user,
+        seat.uid,
+        str(seat.gid),
+        seat.gid,
+        "Switch agents controller",
+    )
     _ensure_group(commands, seat.agents_group, seat.agents_gid)
     for slot in range(1, config.agent_users + 1):
         _ensure_user(
@@ -615,7 +646,9 @@ def stop_controller(commands: Commands, seat: Seat) -> None:
     its agents still running. Its data stays on the volume."""
     stopped = commands.result(["/usr/bin/systemctl", "disable", "--now", seat.unit])
     output = f"{stopped.stdout}\n{stopped.stderr}"
-    if stopped.returncode != 0 and not ("not loaded" in output or "does not exist" in output):
+    if stopped.returncode != 0 and not (
+        "not loaded" in output or "does not exist" in output
+    ):
         raise BootError(f"{seat.unit} cannot be stopped: {output.strip()}")
     commands.run(["/usr/bin/systemctl", "stop", f"switch-agent-{seat.uid}@*.service"])
 
@@ -635,7 +668,9 @@ def _ensure_root_directories(path: Path) -> None:
 def enrolled(commands: Commands, config: MachineConfig, seat: Seat) -> bool:
     """Whether the seat's data directory holds an enrollment that was not revoked."""
     status = commands.result(
-        _as_controller(seat, [*_cli(config), "status", "--data-dir", str(seat.data_dir)]),
+        _as_controller(
+            seat, [*_cli(config), "status", "--data-dir", str(seat.data_dir)]
+        ),
         env=_environment(config),
     )
     if status.returncode != 0:
@@ -793,7 +828,9 @@ def boot_controllers(
         if seat.index:
             write_drop_in(seat)
     commands.run(["/usr/bin/systemctl", "daemon-reload"])
-    failures.update(start_controllers(commands, config, bundle, indexes, set(keys), now))
+    failures.update(
+        start_controllers(commands, config, bundle, indexes, set(keys), now)
+    )
     return failures
 
 
@@ -821,7 +858,9 @@ def start_controllers(
         try:
             if seat.index:
                 ensure_identities(commands, config, seat)
-            start_controller(commands, config, bundle.api_endpoint, seat, controller, now)
+            start_controller(
+                commands, config, bundle.api_endpoint, seat, controller, now
+            )
         except (BootError, OSError) as error:
             failures[controller.key] = (
                 f"The controller {seat.user} (seat {controller.key}): {error}"
@@ -862,7 +901,9 @@ def main(argv: list[str] | None = None) -> int:
                 for failure in failures.values():
                     logger.warning("%s; trying again", failure)
                 time.sleep(CONTROLLER_RETRY_SECONDS)
-                failures = start_controllers(commands, config, bundle, indexes, set(failures))
+                failures = start_controllers(
+                    commands, config, bundle, indexes, set(failures)
+                )
     except NoBundle as error:
         logger.error("%s", error)
         return NO_BUNDLE_EXIT

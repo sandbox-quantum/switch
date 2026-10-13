@@ -1,4 +1,7 @@
-import { providerLoginEnvironment } from '@switch-console/agent-providers';
+import {
+  providerLoginEnvironment,
+  providerUnsupportedReason,
+} from '@switch-console/agent-providers';
 import { ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { isSafeSegment } from './paths';
@@ -242,7 +245,8 @@ export async function startAgent(
     if (!binaryPath)
       throw new ReasonedError(
         'provider_not_installed',
-        `The ${provider} CLI was not found on this machine's PATH.`
+        providerUnsupportedReason(provider, process.platform) ??
+          `The ${provider} CLI was not found on this machine's PATH.`
       );
     const template = buildWatcherTemplate({
       agentId,

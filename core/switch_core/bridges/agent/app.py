@@ -10,6 +10,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from switch_core.bridges.agent.api.activity_routes import router as activity_router
 from switch_core.bridges.agent.api.handlers import router as api_router
 from switch_core.bridges.agent.api.operations import router as operations_router
+from switch_core.bridges.agent.api.service_routes import router as service_router
 from switch_core.bridges.agent.api.version_routes import router as version_router
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import (
@@ -147,6 +148,10 @@ def create_agent_bridge_app(
     app.add_exception_handler(SessionError, session_error_response)
     app.include_router(activity_router, tags=["session activity"])
     app.include_router(api_router, prefix="/agents", tags=["api"])
+    if config.service_connections_enabled:
+        app.include_router(
+            service_router, prefix="/agents", tags=["service connections"]
+        )
     app.include_router(operations_router)
     app.include_router(deeplink_router, tags=["deeplink"])
     app.include_router(version_router, tags=["version"])

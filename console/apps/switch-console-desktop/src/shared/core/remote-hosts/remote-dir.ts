@@ -41,6 +41,16 @@ export function isAbsoluteRemoteDir(dir: string): boolean {
 }
 
 /**
+ * Whether `dir` is an absolute path on a machine running `os`: rooted at `/`,
+ * or on Windows at a drive (`C:\`, `C:/`) or a network share (`\\server\share`).
+ * A machine whose system is not known is taken to be POSIX.
+ */
+export function isAbsoluteMachineDir(dir: string, os: string | null): boolean {
+  if (os === 'windows') return /^[A-Za-z]:[\\/]/.test(dir) || dir.startsWith('\\\\');
+  return isAbsoluteRemoteDir(dir);
+}
+
+/**
  * The one spelling of an absolute remote path: `.`/`..` resolved, repeated and
  * trailing slashes gone. The location row, the gateway's `repo_dir` and the
  * credential-slot lookup are all keyed by this, so two spellings of one

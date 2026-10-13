@@ -26,6 +26,40 @@ class GitHubAuthorizationError(GitHubError):
     pass
 
 
+class GitHubNotFoundError(GitHubError):
+    pass
+
+
+# How far a check of one installation pages before it gives up: 10,000
+# repositories, against the 1,000 the picker lists across them all.
+INSTALLATION_PAGES = 100
+
+
+def _repository(repo: object) -> dict:
+    if (
+        not isinstance(repo, dict)
+        or type(repo.get("id")) is not int
+        or not isinstance(repo.get("full_name"), str)
+    ):
+        raise GitHubError("GitHub returned an invalid repository.")
+    permissions = repo.get("permissions", {})
+    return {
+        "id": repo["id"],
+        "name": repo["full_name"],
+        "permissions": {
+            key: isinstance(permissions, dict) and permissions.get(key) is True
+            for key in ("push", "maintain", "admin")
+        },
+    }
+
+
+def repository_writable(repository: dict) -> bool:
+    permissions = repository.get("permissions")
+    return isinstance(permissions, dict) and any(
+        permissions.get(key) is True for key in ("push", "maintain", "admin")
+    )
+
+
 def rate_limited(response: httpx.Response) -> bool:
     return response.status_code == 429 or (
         response.status_code == 403
@@ -35,6 +69,32 @@ def rate_limited(response: httpx.Response) -> bool:
             or "secondary rate limit" in response.text.lower()
         )
     )
+
+
+def sso_hidden_organizations(header: str | None) -> list[int]:
+    """The organization ids an `X-GitHub-SSO: partial-results` header names:
+    those whose single sign-on this token is not authorized for, so a list
+    GitHub answered leaves out what they hold."""
+    if not header:
+        return []
+    kind, _, rest = header.partition(";")
+    if kind.strip() != "partial-results":
+        return []
+    for part in rest.split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == "organizations":
+            return [int(v) for v in value.split(",") if v.strip().isdigit()]
+    return []
+
+
+@dataclass(frozen=True)
+class GitHubReach:
+    """The App's installations a person reaches, and the organizations whose
+    single sign-on hid installations from their sign-in (`sso_hidden`), which
+    a new sign-in that authorizes them shows."""
+
+    installations: list[dict]
+    sso_hidden: list[int]
 
 
 @dataclass
@@ -159,6 +219,12 @@ class GitHubConnections:
     async def request(
         self, method: str, url: str, *, token: str, data: dict | None
     ) -> dict:
+        result, _ = await self.request_with_headers(method, url, token=token, data=data)
+        return result
+
+    async def request_with_headers(
+        self, method: str, url: str, *, token: str, data: dict | None
+    ) -> tuple[dict, httpx.Headers]:
         headers = {"Accept": "application/json", "X-GitHub-Api-Version": "2022-11-28"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -177,6 +243,10 @@ class GitHubConnections:
                 raise GitHubError(
                     "GitHub access was refused. Check repository permissions, organization sign-in, and the App installation."
                 )
+            if response.status_code == 404:
+                raise GitHubNotFoundError(
+                    "GitHub could not complete the request. Check access and try again."
+                )
             if not response.is_success:
                 raise GitHubError(
                     "GitHub could not complete the request. Check access and try again."
@@ -194,7 +264,7 @@ class GitHubConnections:
                 raise GitHubError(
                     "GitHub authorization was not completed. Connect again."
                 )
-            return result
+            return result, response.headers
         except (httpx.HTTPError, ValueError):
             raise GitHubUnavailableError(
                 "Could not reach GitHub or read its response. Please try again."
@@ -287,8 +357,32 @@ class GitHubConnections:
             "Too many GitHub results to display. Limit the app's repository access and try again."
         )
 
-    async def repositories(self, token: str) -> list[dict]:
-        installations = await self.pages("/user/installations", "installations", token)
+    async def _installations(self, token: str) -> tuple[list[dict], list[int]]:
+        """The App's installations the person reaches, and the organizations
+        whose single sign-on hid theirs from this token (GitHub's
+        `X-GitHub-SSO: partial-results; organizations=…`)."""
+        values: list[dict] = []
+        hidden: set[int] = set()
+        for page in range(1, 11):
+            result, headers = await self.request_with_headers(
+                "GET",
+                f"https://api.github.com/user/installations?per_page=100&page={page}",
+                token=token,
+                data=None,
+            )
+            hidden.update(sso_hidden_organizations(headers.get("x-github-sso")))
+            batch = result.get("installations")
+            if not isinstance(batch, list):
+                raise GitHubError("GitHub returned an invalid installation list.")
+            values.extend(batch)
+            if len(batch) < 100:
+                return values, sorted(hidden)
+        raise GitHubError(
+            "Too many GitHub results to display. Limit the app's repository access and try again."
+        )
+
+    async def repositories(self, token: str) -> GitHubReach:
+        installations, sso_hidden = await self._installations(token)
         result = []
         for installation in installations:
             if not isinstance(installation, dict):
@@ -309,26 +403,7 @@ class GitHubConnections:
                 "repositories",
                 token,
             )
-            selected = []
-            for repo in repositories:
-                if (
-                    not isinstance(repo, dict)
-                    or type(repo.get("id")) is not int
-                    or not isinstance(repo.get("full_name"), str)
-                ):
-                    raise GitHubError("GitHub returned an invalid repository.")
-                permissions = repo.get("permissions", {})
-                selected.append(
-                    {
-                        "id": repo["id"],
-                        "name": repo["full_name"],
-                        "permissions": {
-                            key: isinstance(permissions, dict)
-                            and permissions.get(key) is True
-                            for key in ("push", "maintain", "admin")
-                        },
-                    }
-                )
+            selected = [_repository(repo) for repo in repositories]
             result.append(
                 {
                     "id": installation_id,
@@ -336,4 +411,64 @@ class GitHubConnections:
                     "repositories": selected,
                 }
             )
-        return result
+        return GitHubReach(installations=result, sso_hidden=sso_hidden)
+
+    async def installation_repositories(
+        self, token: str, installation_id: int, wanted: set[int]
+    ) -> list[dict] | None:
+        """Those of `wanted` the person reaches through one installation of
+        the App, or None when they no longer reach the installation.
+
+        Pages only that installation, and stops once every one of `wanted` is
+        found, so a large installation elsewhere costs nothing. A suspended
+        installation is refused with its own reason, as the full listing
+        passes over one.
+        """
+        installation = next(
+            (
+                item
+                for item in await self.pages(
+                    "/user/installations", "installations", token
+                )
+                if isinstance(item, dict) and item.get("id") == installation_id
+            ),
+            None,
+        )
+        if installation is None:
+            return None
+        if installation.get("suspended_at"):
+            account = installation.get("account")
+            login = account.get("login") if isinstance(account, dict) else None
+            raise GitHubError(
+                f"The GitHub App's installation on {login or 'this account'} is "
+                "suspended. Unsuspend it in GitHub's settings to use it."
+            )
+        missing = set(wanted)
+        found: list[dict] = []
+        for page in range(1, INSTALLATION_PAGES + 1):
+            if not missing:
+                return found
+            try:
+                result = await self.request(
+                    "GET",
+                    f"https://api.github.com/user/installations/{installation_id}"
+                    f"/repositories?per_page=100&page={page}",
+                    token=token,
+                    data=None,
+                )
+            except GitHubNotFoundError:
+                return None
+            batch = result.get("repositories")
+            if not isinstance(batch, list):
+                raise GitHubError("GitHub returned an invalid repository list.")
+            for repo in map(_repository, batch):
+                if repo["id"] in missing:
+                    missing.discard(repo["id"])
+                    found.append(repo)
+            if len(batch) < 100:
+                return found
+        raise GitHubError(
+            "This GitHub App installation reaches more than "
+            f"{INSTALLATION_PAGES * 100} repositories. Limit the app's repository "
+            "access and try again."
+        )

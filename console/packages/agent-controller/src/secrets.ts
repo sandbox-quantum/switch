@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { replaceFile } from '@switch-console/agent-providers';
 
 /** The one secret v1 keeps: the long-lived controller credential (`swcc_…`). */
 export const CONTROLLER_CREDENTIAL = 'controller-credential';
@@ -41,7 +42,7 @@ export class FileSecretStore implements SecretStore {
   readonly description: string;
 
   constructor(private readonly dir: string) {
-    this.description = `plaintext files in ${dir} (mode 0600)`;
+    this.description = `plaintext files in ${dir} (${process.platform === 'win32' ? 'readable by this user only' : 'mode 0600'})`;
   }
 
   startupWarning(): string {
@@ -79,7 +80,7 @@ export class FileSecretStore implements SecretStore {
     } finally {
       await file.close();
     }
-    await rename(temporary, path);
+    await replaceFile(temporary, path);
   }
 
   async delete(name: string): Promise<void> {

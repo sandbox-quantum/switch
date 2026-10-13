@@ -13,10 +13,10 @@ from switch_core.gateway.app import create_gateway_app
 from tests.switch_core.test_config_teams_app import _config
 
 
-def _app() -> object:
+def _app(**overrides: object) -> object:
     # A real config rather than a mock: the app reads whatever settings it
     # needs, and a mock answers every one with a truthy stand-in.
-    config = _config()
+    config = _config(**overrides)
     return create_gateway_app(
         agent_store=MagicMock(),
         room_store=MagicMock(),
@@ -62,3 +62,24 @@ def test_it_shares_the_prefix_with_the_ordinary_collaborations_routes() -> None:
 
     assert "/collaborations/{bridge_id}" in paths  # the ordinary update route
     assert "/collaborations/{bridge_id}/teams" in paths  # the placement route
+
+
+SERVICE_ROUTES = {
+    "/service-connections",
+    "/service-connections/{service}/key",
+    "/agents/{agent_id}/service-grants",
+    "/service-connections/{service}/flows",
+}
+
+
+def test_service_connections_are_mounted_only_with_their_flag() -> None:
+    off = {route.path for route in _app().routes}  # type: ignore[attr-defined]
+    on = {
+        route.path
+        for route in _app(feature_flags_enabled="service_connections").routes  # type: ignore[attr-defined]
+    }
+
+    assert not SERVICE_ROUTES & off
+    assert SERVICE_ROUTES <= on
+    # GitHub's own link was there before service connections, and stays.
+    assert "/provider-connections/github" in off

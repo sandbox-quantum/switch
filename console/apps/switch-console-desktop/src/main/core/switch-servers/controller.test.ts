@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as WorkspaceSession from '@main/core/workspaces/workspace-session';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 
 const fetchMe = vi.hoisted(() => vi.fn());
@@ -21,6 +22,9 @@ const serverKindOf = vi.hoisted(() => vi.fn(() => 'remote_managed'));
 const updateServer = vi.hoisted(() => vi.fn());
 const propagateServerApiUrl = vi.hoisted(() => vi.fn());
 const followServerApiUrl = vi.hoisted(() => vi.fn());
+const listCloudMachines = vi.hoisted(() => vi.fn());
+const ensureCloudMachine = vi.hoisted(() => vi.fn());
+const serverFlags = vi.hoisted(() => ({ hosted_agents: true }));
 
 // Stub the modules the controller imports that would otherwise pull electron /
 // ssh / agent side effects at load.
@@ -59,8 +63,20 @@ vi.mock('./backfill-agent-icons', () => ({ backfillAgentIcons: vi.fn() }));
 vi.mock('./bundled-chat-sign-in', () => ({ bundledChatSignInFor: vi.fn() }));
 vi.mock('./managed-claude-credential', () => ({ deleteManagedClaudeCredential: vi.fn() }));
 vi.mock('./gateway-web', () => ({ openAuthenticatedGatewayPage: vi.fn() }));
+vi.mock('@main/core/feature-flags/feature-flags', () => ({
+  featureFlagsService: { current: vi.fn(async () => ({ flags: serverFlags })) },
+}));
+vi.mock('@main/core/workspaces/workspace-session', async (importOriginal) => ({
+  ...(await importOriginal<typeof WorkspaceSession>()),
+  withServerWorkspaceSession: async (serverId: string, fn: (s: unknown) => unknown) =>
+    fn({ id: serverId, name: 'S' }),
+  withReachableServerWorkspaceSession: async (serverId: string, fn: (s: unknown) => unknown) =>
+    fn({ id: serverId, name: 'S' }),
+}));
 vi.mock('./gateway-client', () => ({
   fetchMe,
+  listCloudMachines,
+  ensureCloudMachine,
   agentExistsOnServer: vi.fn(),
   fetchAgentDetail: vi.fn(),
   fetchAgentRooms: vi.fn(),
@@ -730,5 +746,33 @@ describe('finding the server an invite link is for', () => {
     await expect(
       switchServersController.serverForInvite('https://cloud.example.com')
     ).resolves.toEqual({ kind: 'unknown', origin: 'https://cloud.example.com' });
+  });
+});
+
+describe('cloud machines', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    serverFlags['hosted_agents'] = true;
+  });
+
+  it('lists and claims them on a server that turns them on', async () => {
+    listCloudMachines.mockResolvedValue([]);
+    ensureCloudMachine.mockResolvedValue({ machine_id: 'm' });
+    expect(await switchServersController.cloudMachines('srv')).toEqual([]);
+    expect(await switchServersController.ensureCloudMachine('srv')).toEqual({ machine_id: 'm' });
+  });
+
+  it('answers that there are none, without asking, when the server turns them off', async () => {
+    serverFlags['hosted_agents'] = false;
+    expect(await switchServersController.cloudMachines('srv')).toBeNull();
+    expect(listCloudMachines).not.toHaveBeenCalled();
+  });
+
+  it('refuses to claim one when the server turns them off', async () => {
+    serverFlags['hosted_agents'] = false;
+    await expect(switchServersController.ensureCloudMachine('srv')).rejects.toThrow(
+      'does not have cloud machines turned on'
+    );
+    expect(ensureCloudMachine).not.toHaveBeenCalled();
   });
 });

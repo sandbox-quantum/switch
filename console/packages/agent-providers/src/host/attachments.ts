@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, open, realpath, unlink, lstat } from 'node:fs/promises';
+import { mkdir, readFile, open, realpath, unlink, lstat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Attachment } from '@switch-console/shared/session-v1';
 import type { TurnAttachment } from '../adapter';
+import { replaceFile } from './replace-file';
 
 export const ATTACHMENT_MIME_TYPES = [
   'image/png',
@@ -95,16 +96,19 @@ export async function stageAttachment(
       await file.close();
     }
     try {
-      await rename(temporary, path);
+      await replaceFile(temporary, path);
     } catch (error) {
       await unlink(temporary);
       throw error;
     }
-    const parent = await open(directory, 'r');
-    try {
-      await parent.sync();
-    } finally {
-      await parent.close();
+    // Windows cannot open a directory to flush it, and records the rename itself.
+    if (process.platform !== 'win32') {
+      const parent = await open(directory, 'r');
+      try {
+        await parent.sync();
+      } finally {
+        await parent.close();
+      }
     }
   }
   return { path, mimeType: attachment.mimeType };

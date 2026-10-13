@@ -36,7 +36,7 @@ router = APIRouter(prefix="/hosted-machines")
 
 RETIRED_STATES = frozenset({"retained", "deleting", "deleted"})
 
-MACHINES_DISABLED = "Switch cloud machines are not enabled on this server."
+MACHINES_DISABLED = "This server does not support cloud agents."
 
 
 def hosted_settings(request: Request) -> HostedControllerSettings | None:
@@ -54,9 +54,13 @@ def controller_settings(request: Request) -> HostedControllerSettings:
 
 def machines_enabled(config: SwitchConfig, settings: HostedControllerSettings) -> bool:
     """Whether the bound tenant may use cloud machines on this server."""
-    return config.hosted_launch_capacity > 0 and (
-        settings.allowed_tenant_ids is None
-        or require_tenant_id() in settings.allowed_tenant_ids
+    return (
+        config.hosted_agents_enabled
+        and config.hosted_launch_capacity > 0
+        and (
+            settings.allowed_tenant_ids is None
+            or require_tenant_id() in settings.allowed_tenant_ids
+        )
     )
 
 
@@ -191,14 +195,22 @@ async def _owned(
 async def owned_machines(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    settings: Annotated[HostedControllerSettings | None, Depends(hosted_settings)],
 ) -> dict:
     """The owner's machine, when it serves the bound workspace: in another
-    workspace it is the same machine, joined from there."""
+    workspace it is the same machine, joined from there. `available` says
+    whether the bound workspace may claim one here at all, so a client can
+    offer cloud agents only where claiming one can work."""
+    available = settings is not None and machines_enabled(config, settings)
     machine = await CloudMachineStore().live_for_owner(session, user.id)
     workspace = None if machine is None else await workspace_on(session, machine.id)
     if machine is None or workspace is None:
-        return {"machines": []}
-    return {"machines": [await machine_summary(session, machine, workspace)]}
+        return {"available": available, "machines": []}
+    return {
+        "available": available,
+        "machines": [await machine_summary(session, machine, workspace)],
+    }
 
 
 @router.post("/ensure")

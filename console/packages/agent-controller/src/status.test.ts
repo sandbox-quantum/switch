@@ -1,7 +1,8 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { generateSealingKeyPair, sealProviderLogin } from '@switch-console/agent-providers';
+import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { type AgentObservation, emptyObservation } from './runtime';
@@ -15,6 +16,7 @@ import {
   ProviderStatuses,
   StatusCollector,
   statusFingerprint,
+  toolStatuses,
 } from './status';
 import { type AgentRow, ControllerStore } from './store';
 import { FakeLocator, FakeRuntime } from './testing/fake-runtime';
@@ -185,7 +187,7 @@ describe('mapAgentProcess', () => {
 
 describe('providerStatusFrom', () => {
   const at = '2026-01-01T00:00:00Z';
-  const located = { path: '/usr/bin/claude', version: '2.0.0' };
+  const located = { path: '/usr/bin/claude', version: '2.0.0', versionProblem: null };
   const readiness = (status: 'authenticated' | 'unauthenticated' | 'unconfigured' | 'unknown') => ({
     status,
     message: '',
@@ -264,15 +266,20 @@ describe('ProviderStatuses with logins given to the machine', () => {
   let answer: SealedLoginResponse | null;
   let reachable: boolean;
 
-  function sealedAnswer(credential: string, revision = 1): SealedLoginResponse {
+  function sealedAnswer(
+    credential: string,
+    revision = 1,
+    kind: 'setup-token' | 'vertex' = 'setup-token',
+    provider: 'claude' | 'codex' = 'claude'
+  ): SealedLoginResponse {
     return {
-      provider: 'claude',
+      provider,
       revision,
       sealed: sealProviderLogin({
         publicKey: keys.publicKey,
         controllerId: 'controller-1',
-        provider: 'claude',
-        login: { kind: 'setup-token', credential },
+        provider,
+        login: { kind, credential },
       }),
     };
   }
@@ -328,6 +335,35 @@ describe('ProviderStatuses with logins given to the machine', () => {
     expect(runtime.loginProbes.map((login) => login.credential)).toEqual(['sk-ant-oat-given']);
   });
 
+  it('uses a given Vertex AI login once Claude signs in with it', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+    answer = sealedAnswer(vertexCredentialFixture(), 4, 'vertex');
+    const statuses = build(runtime);
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    expect(await statuses.givenLogin('claude')).toEqual({
+      status: 'connected',
+      provider: 'claude',
+      revision: '4',
+      kind: 'vertex',
+      credential: vertexCredentialFixture(),
+    });
+    expect(runtime.loginProbes.map((login) => login.kind)).toEqual(['vertex']);
+  });
+
+  it('refuses a Vertex AI login given for another provider than Claude', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    answer = sealedAnswer(vertexCredentialFixture(), 1, 'vertex', 'codex');
+    const statuses = build(runtime);
+    expect(await statuses.check('codex')).toMatchObject({ auth: 'missing' });
+    expect(statuses.loginProblem('codex')).toEqual({
+      code: 'internal',
+      message: expect.stringContaining('Only Claude signs in through Vertex AI.'),
+    });
+    expect(runtime.loginProbes).toEqual([]);
+  });
+
   it('says why a given login is not used', async () => {
     const runtime = new FakeRuntime();
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
@@ -340,11 +376,13 @@ describe('ProviderStatuses with logins given to the machine', () => {
 
     answer = sealedAnswer('sk-ant-oat-expired');
     runtime.loginReadiness = { status: 'unauthenticated', message: 'Token expired.', models: [] };
-    expect(await statuses.check('claude')).toMatchObject({
+    const expired = await statuses.check('claude');
+    expect(expired).toMatchObject({
       auth: 'expired',
       auth_source: 'sealed',
       reason: 'provider_login_expired',
     });
+    expect(expired.auth_problem).toContain('Token expired.');
     expect(statuses.loginProblem('claude')?.message).toContain('Token expired.');
     expect(await statuses.givenLogin('claude')).toBeNull();
 
@@ -370,6 +408,11 @@ describe('ProviderStatuses with logins given to the machine', () => {
   });
 });
 
+/** `path` as a pattern: Windows names a CLI with PATHEXT's casing, `.CMD`. */
+function escape(path: string): string {
+  return path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 describe('PathProviderLocator', () => {
   let dir: string;
   beforeEach(() => {
@@ -378,14 +421,120 @@ describe('PathProviderLocator', () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it('finds a CLI by the plugin’s binary names, and reads its version', async () => {
-    const script = join(dir, 'cursor-agent');
-    writeFileSync(script, '#!/bin/sh\necho "2026.01.15-abc"\n');
-    chmodSync(script, 0o755);
+    const script = await writeNodeCli(dir, 'cursor-agent', 'console.log("2026.01.15-abc")');
     writeFileSync(join(dir, 'claude'), 'not executable');
-    const locator = new PathProviderLocator(`/nonexistent:${dir}`);
-    expect(await locator.locate('cursor')).toEqual({ path: script, version: '2026.01.15-abc' });
+    const locator = new PathProviderLocator(
+      ['/nonexistent', dir].join(delimiter),
+      join(dir, 'probe-home')
+    );
+    expect(await locator.locate('cursor')).toEqual({
+      path: expect.stringMatching(new RegExp(`^${escape(script)}$`, 'i')),
+      version: '2026.01.15-abc',
+      versionProblem: null,
+    });
     expect(await locator.locate('claude')).toBeNull();
     expect(await locator.locate('codex')).toBeNull();
+  });
+
+  it('reads the version of a CLI that writes in its home first, with a home of its own', async () => {
+    const script = await writeNodeCli(
+      dir,
+      'opencode',
+      `const { mkdirSync } = require('node:fs');
+       const { join } = require('node:path');
+       mkdirSync(join(process.env.XDG_DATA_HOME, 'opencode'), { recursive: true });
+       mkdirSync(join(process.env.HOME, '.cache'), { recursive: true });
+       console.log('1.18.35');`
+    );
+    const previous = process.env.HOME;
+    process.env.HOME = '/nonexistent';
+    try {
+      const located = await new PathProviderLocator(dir, join(dir, 'probe-home')).locate(
+        'opencode'
+      );
+      expect(located).toEqual({
+        path: expect.stringMatching(new RegExp(`^${escape(script)}$`, 'i')),
+        version: '1.18.35',
+        versionProblem: null,
+      });
+    } finally {
+      process.env.HOME = previous;
+    }
+  });
+});
+
+describe('a CLI whose version cannot be read', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'controller-version-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('says why, so the report can carry it', async () => {
+    const script = await writeNodeCli(
+      dir,
+      'opencode',
+      'console.error("EROFS: read-only file system"); process.exit(1);'
+    );
+    const located = await new PathProviderLocator(dir, join(dir, 'probe-home')).locate('opencode');
+    expect(located).toEqual({
+      path: expect.stringMatching(new RegExp(`^${escape(script)}$`, 'i')),
+      version: null,
+      versionProblem: 'exited 1: EROFS: read-only file system',
+    });
+    expect(
+      providerStatusFrom('opencode', located, null, '2026-01-01T00:00:00Z').version_problem
+    ).toBe('exited 1: EROFS: read-only file system');
+  });
+});
+
+describe('toolStatuses', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'controller-tools-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  // PATH is looked up as this machine does, so the POSIX case runs off Windows.
+  it.skipIf(process.platform === 'win32')('reports git and gh as found on PATH', async () => {
+    writeFileSync(join(dir, 'git'), '#!/bin/sh\n');
+    chmodSync(join(dir, 'git'), 0o755);
+    writeFileSync(join(dir, 'gh'), 'not executable');
+    expect(await toolStatuses(`/nonexistent:${dir}`, 'linux', join(dir, 'tools'))).toEqual([
+      { tool: 'git', state: 'ok' },
+      { tool: 'gh', state: 'missing' },
+    ]);
+  });
+
+  it('reports git and gh as unsupported on Windows', async () => {
+    const noVendorTools = join(dir, 'tools');
+    expect(await toolStatuses(dir, 'win32', noVendorTools)).toEqual([
+      { tool: 'git', state: 'unsupported' },
+      { tool: 'gh', state: 'unsupported' },
+    ]);
+  });
+
+  it('reports each vendor tool a session here has set up', async () => {
+    const tools = join(dir, 'tools');
+    mkdirSync(tools);
+    const entry = (state: string) => ({
+      version: '1.2.3',
+      target: 'linux-x64',
+      state,
+      detail: null,
+      checked_at: '2026-10-08T00:00:00Z',
+    });
+    writeFileSync(
+      join(tools, 'status.json'),
+      JSON.stringify({ zcli: entry('failed'), excli: entry('ok'), wincli: entry('unsupported') })
+    );
+    expect(await toolStatuses('/nonexistent', 'linux', tools)).toEqual([
+      { tool: 'git', state: 'missing' },
+      { tool: 'gh', state: 'missing' },
+      { tool: 'excli', state: 'ok' },
+      { tool: 'wincli', state: 'unsupported' },
+      { tool: 'zcli', state: 'missing' },
+    ]);
   });
 });
 
@@ -418,6 +567,10 @@ describe('StatusCollector', () => {
       store,
       runtime,
       providers,
+      tools: async () => [
+        { tool: 'git', state: 'ok' },
+        { tool: 'gh', state: 'missing' },
+      ],
       attached: () => true,
       dataDir: dir,
       workspacesDir: join(dir, 'workspaces'),
@@ -432,6 +585,10 @@ describe('StatusCollector', () => {
     expect(statusReportSchema.safeParse({ ...first, seq: 1 }).success).toBe(true);
     expect(first.controller).toEqual({ version: '0.1.0', protocol: 2, assignment_revision: 7 });
     expect(first.providers.map((p) => p.provider)).toEqual(['claude']);
+    expect(first.tools).toEqual([
+      { tool: 'git', state: 'ok' },
+      { tool: 'gh', state: 'missing' },
+    ]);
     expect(first.agents[0]).toMatchObject({
       agent_id: 'agent-1',
       applied_revision: 2,

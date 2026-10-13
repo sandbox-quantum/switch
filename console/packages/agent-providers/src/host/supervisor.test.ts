@@ -1,8 +1,11 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { CHILD_STOP_GRACE_MS, superviseSharedHost } from './supervisor';
+
+// Each worker exit is fenced on Windows through PowerShell, which takes seconds to start.
+if (process.platform === 'win32') vi.setConfig({ testTimeout: 60_000 });
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -23,6 +26,8 @@ it('restarts a crashed isolated worker and exits after a clean stop', async () =
     if (!fs.existsSync(marker)) {
       fs.writeFileSync(marker, '1');
       fs.writeFileSync(root + '/shared-owner.lock', JSON.stringify({pid: process.pid}));
+      // A crash: a signal, or on Windows an exception's NTSTATUS exit code.
+      if (process.platform === 'win32') process.exit(0xc0000005);
       process.kill(process.pid, 'SIGKILL');
     }
     fs.writeFileSync(marker, '2');

@@ -384,6 +384,12 @@ export type RemoteBridge = {
    * Null on a server predating the field.
    */
   channelIdsRefused: string | null;
+  /** Whether this connection receives its platform's events on an address of
+   * its own, which the operator has to give the platform. */
+  receivesWebhooks: boolean;
+  /** That address, or null where the connection takes none or the server has
+   * no public origin configured (`MESSAGING_PUBLIC_URL`) to build it from. */
+  webhookUrl: string | null;
 };
 
 /**
@@ -485,6 +491,18 @@ export type BridgeConfigField = {
 export type RemoteBridgeType = {
   /** Platform key (`slack`, `mattermost`, …). */
   key: string;
+  /** How a person names the platform ("Microsoft Teams"), as its adapter
+   * declares it. Null from a server predating the field. */
+  displayName: string | null;
+  /** The platform's page under the messaging-apps docs, or null where the
+   * server has none (or predates the field). */
+  docsSlug: string | null;
+  /** The platform's logo as SVG markup, or null where the server ships none.
+   * It comes from the server, so it is drawn as an image, never inlined. */
+  iconSvg: string | null;
+  /** Whether connections of this type receive events on an address of their
+   * own, which the operator has to give the platform. */
+  receivesWebhooks: boolean;
   fields: BridgeConfigField[];
   /** Whether this platform can create channels at all — read from the
    * adapter class, so it is answerable before any connection of this type
@@ -584,6 +602,64 @@ export type DeleteBridgeResult =
   | { kind: 'unauthenticated' }
   | { kind: 'forbidden' }
   | { kind: 'not-found' }
+  | { kind: 'error'; message: string };
+
+/**
+ * Switch Trust's one server-global guardrails settings row
+ * (`GET /trust-settings`). One policy covers the whole deployment, not a
+ * workspace, so this has no `workspaceId` the way bridge-shaped types do.
+ *
+ * The API key is never returned by the gateway — `hasApiKey`/`apiKeyLast4`
+ * only confirm one is stored, so a form can show "configured" without ever
+ * holding the real value.
+ */
+export type TrustSettings = {
+  endpoint: string;
+  /** Null until a policy id has been saved — the check is off until then. */
+  policyId: string | null;
+  hasApiKey: boolean;
+  apiKeyLast4: string | null;
+  /** `policyId` and an API key are both set. */
+  enabled: boolean;
+};
+
+/** Outcome of loading Switch Trust's settings (`GET /trust-settings`).
+ * Admin-only (a deployment operator, not a workspace admin), so a signed-in
+ * non-operator gets `forbidden` rather than an empty form. */
+export type FetchTrustSettingsResult =
+  | { kind: 'loaded'; settings: TrustSettings }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
+/**
+ * Parameters for saving Switch Trust's settings (`PUT /trust-settings`).
+ * `apiKey` left unset leaves whatever key is already stored untouched, so
+ * resaving the endpoint or policy id doesn't force re-entering the secret.
+ */
+export type UpdateTrustSettingsParams = {
+  serverId: string;
+  endpoint: string;
+  policyId: string | null;
+  apiKey?: string;
+};
+
+/** Outcome of saving Switch Trust's settings. Mirrors {@link
+ * UpdateBridgeResult}'s recoverable cases. */
+export type UpdateTrustSettingsResult =
+  | { kind: 'saved'; settings: TrustSettings }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'invalid'; message: string }
+  | { kind: 'error'; message: string };
+
+/** Outcome of turning Switch Trust off (`DELETE /trust-settings`). Not
+ * `deleted`, since the row's absence is itself a valid, steady state (a
+ * deployment that has never configured it) rather than something removed. */
+export type ClearTrustSettingsResult =
+  | { kind: 'cleared'; settings: TrustSettings }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
   | { kind: 'error'; message: string };
 
 /** A bridged (external) human identity on a server. The `users` dimension of an

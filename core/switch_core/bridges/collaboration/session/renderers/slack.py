@@ -57,9 +57,9 @@ from . import (
     INTERRUPT_LABEL,
     INTERRUPT_QUEUED_NOTE,
     NO_OPTIONS,
-    SURFACES,
     RequestReference,
     example_value,
+    surface_label,
     turn_state,
     unanswerable,
 )
@@ -624,9 +624,7 @@ def _answered(request: SnapshotRequest, content: ApprovalContent) -> str:
 
 
 def _actor(decided_by: DecidedBy) -> str:
-    return (
-        f"{_fit(decided_by.actor_id, _MAX_ACTOR)} from {SURFACES[decided_by.surface]}"
-    )
+    return f"{_fit(decided_by.actor_id, _MAX_ACTOR)} from {surface_label(decided_by.surface)}"
 
 
 def _button(option: ApprovalOption, reference: RequestReference) -> dict[str, Any]:

@@ -11,7 +11,7 @@ import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { AGENT_PROVIDER_IDS } from '@shared/core/providers/agent-provider-registry';
+import { isValidProviderId } from '@shared/core/providers/agent-provider-registry';
 import { makeHookSessionId } from '@shared/core/providers/hook-session-id';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import { sessionStatusUpdatedChannel } from '@shared/core/sessions/sessionEvents';
@@ -98,7 +98,7 @@ class RemoteSessionReconciler {
           if (value && typeof value === 'object' && 'discoveryError' in value)
             throw new Error(String(value.discoveryError));
           const session = sessionSchema.parse(value);
-          if (!AGENT_PROVIDER_IDS.some((provider) => provider === session.provider))
+          if (!isValidProviderId(session.provider))
             throw new Error(
               `Session ${session.sessionId} uses unsupported provider "${session.provider}". Update Console to open it.`
             );

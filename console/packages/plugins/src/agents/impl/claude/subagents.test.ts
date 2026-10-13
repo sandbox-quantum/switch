@@ -274,12 +274,22 @@ describe('claudeRepoAgentsBehavior.writeDefinition / readDefinition', () => {
   });
 });
 
-describe('claudeRepoAgentsBehavior.attributeFields', () => {
-  it('declares name and description first, both required', () => {
-    const fields = claudeRepoAgentsBehavior.attributeFields();
-    expect(fields[0]).toMatchObject({ key: 'name', required: true, immutableOnEdit: true });
-    expect(fields[1]).toMatchObject({ key: 'description', required: true });
-    expect(fields.map((f) => f.key)).toContain('tools');
+describe('claudeRepoAgentsBehavior.advancedSettings', () => {
+  it('names the frontmatter it writes, without the main attributes', () => {
+    const settings = claudeRepoAgentsBehavior.advancedSettings();
+    expect(Object.keys(settings)).toEqual([
+      'tools',
+      'disallowedTools',
+      'permissionMode',
+      'color',
+      'maxTurns',
+      'background',
+      'isolation',
+      'effort',
+      'memory',
+    ]);
+    for (const main of ['name', 'description', 'model', 'instructions'])
+      expect(settings).not.toHaveProperty(main);
   });
 });
 

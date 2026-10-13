@@ -17,6 +17,7 @@ function machine(patch: Partial<OwnedMachine> & { id: string }): OwnedMachine {
     providers: [],
     local: null,
     workspacesDir: null,
+    os: null,
     acceptsLogins: false,
     cloud: false,
     ...patch,

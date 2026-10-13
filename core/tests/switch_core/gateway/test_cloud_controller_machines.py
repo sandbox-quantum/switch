@@ -103,6 +103,7 @@ def _hosted_app(
         hosted_idle_stop_minutes=30,
         hosted_disk_retention_days=7,
         hosted_launch_capacity=1,
+        hosted_agents_enabled=True,
     )
 
     async def session():
@@ -435,12 +436,15 @@ class TestControllerMachines:
                     client, owner, name="reviewer", controller_id=first["controller_id"]
                 )
                 assert created.status_code == 201, created.text
+                before = (await _machine(harness.session_factory, machine.id)).revision
                 revoked = await client.delete(
                     f"/gateway/management/controllers/{first['controller_id']}",
                     cookies=cookies_for(owner),
                 )
                 assert revoked.status_code == 200, revoked.text
-                await _new_revision(harness.session_factory, machine.id)
+                assert (
+                    await _machine(harness.session_factory, machine.id)
+                ).revision == before + 1
                 [prepared] = (await _prepare(hosted, machine.id))["controllers"]
                 assert prepared["id"] is None
                 second_code = prepared["enrollment_code"]
@@ -633,7 +637,7 @@ async def test_a_controller_machine_needs_agent_management(
             f"/hosted-controller/machines/{machine.id}/prepare", headers=HEADERS
         )
     assert response.status_code == 409, response.text
-    assert "AGENT_MANAGEMENT_ENABLED" in response.json()["detail"]
+    assert "agent_management feature flag" in response.json()["detail"]
 
 
 def test_a_waking_machine_is_judged_by_its_last_report() -> None:

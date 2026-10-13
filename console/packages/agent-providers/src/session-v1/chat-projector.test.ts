@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { Session } from '@switch-console/shared/session-v1';
 import { describe, expect, it } from 'vitest';
 import type { ProviderRuntimeEvent } from '../events';
+import { Redactions } from '../host/redaction';
 import { ChatProjector } from './chat-projector';
 import { EventOutbox } from './event-outbox';
 
@@ -42,7 +43,7 @@ describe('chat projection', () => {
   it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
     'projects %s text with bounded full replacements and immediate final state',
     (provider) => {
-      const projector = new ChatProjector(session(provider));
+      const projector = new ChatProjector(session(provider), null);
       projector.bindTurn('turn', context);
       const base = {
         provider,
@@ -100,7 +101,7 @@ describe('chat projection', () => {
     }
   );
   it('excludes reasoning and tool payload/output while preserving verified user origin', () => {
-    const projector = new ChatProjector(session('claude'));
+    const projector = new ChatProjector(session('claude'), null);
     projector.bindTurn('turn', context);
     const base = {
       provider: 'claude',
@@ -184,7 +185,7 @@ it('persists host sequences and acknowledgements across reloads', async () => {
 });
 
 it('preserves a long Unicode response in bounded wire items', () => {
-  const projector = new ChatProjector(session('claude'));
+  const projector = new ChatProjector(session('claude'), null);
   projector.bindTurn('turn', context);
   const text = '😀\n"'.repeat(20000);
   const events = projector.ingest(
@@ -204,4 +205,79 @@ it('preserves a long Unicode response in bounded wire items', () => {
   ).toBe(text);
   for (const event of events)
     expect(Buffer.byteLength(JSON.stringify(event))).toBeLessThan(60 * 1024);
+});
+
+describe('service tokens in streamed text', () => {
+  const TOKEN = 'synthetic-installation-token-0123456789';
+  const base = {
+    provider: 'claude' as const,
+    sessionId: 'session',
+    eventId: 'native-event',
+    createdAt: '2026-09-07T12:00:00Z',
+    turnId: 'turn',
+  };
+  const texts = (bodies: ReturnType<ChatProjector['ingest']>) =>
+    bodies.flatMap((body) => (body.type === 'item.upsert' ? [body.item.text] : []));
+
+  function projector() {
+    const redactions = new Redactions();
+    redactions.add(TOKEN);
+    const projected = new ChatProjector(session('claude'), redactions);
+    projected.bindTurn('turn', context);
+    return projected;
+  }
+
+  it('never publishes part of a token that arrives over several chunks', () => {
+    const p = projector();
+    const published = texts(
+      p.ingest(
+        {
+          ...base,
+          type: 'item.started',
+          item: {
+            id: 'answer',
+            type: 'assistant_message',
+            status: 'in_progress',
+            title: '',
+            text: '',
+          },
+        },
+        0
+      )
+    );
+    const chunks = [
+      'The token is ',
+      TOKEN.slice(0, 12),
+      TOKEN.slice(12, 25),
+      TOKEN.slice(25),
+      ' ok',
+    ];
+    chunks.forEach((delta, index) =>
+      published.push(
+        ...texts(
+          p.ingest({ ...base, type: 'content.delta', itemId: 'answer', delta }, (index + 1) * 300)
+        )
+      )
+    );
+    published.push(...texts(p.flush(10_000, true)));
+    expect(published.at(-1)).toBe('The token is [REDACTED] ok');
+    for (const text of published) expect(text).not.toContain(TOKEN.slice(0, 8));
+  });
+
+  it('scrubs a token before a long message is split into parts', () => {
+    const p = projector();
+    const text = `${'a'.repeat(4096 - 10)}${TOKEN} done`;
+    const parts = texts(
+      p.ingest(
+        {
+          ...base,
+          type: 'item.completed',
+          item: { id: 'answer', type: 'assistant_message', status: 'completed', title: '', text },
+        },
+        0
+      )
+    );
+    expect(parts.join('')).toBe(`${'a'.repeat(4096 - 10)}[REDACTED] done`);
+    for (const part of parts) expect(part).not.toContain(TOKEN.slice(-8));
+  });
 });

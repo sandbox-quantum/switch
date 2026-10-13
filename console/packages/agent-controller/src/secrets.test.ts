@@ -29,8 +29,10 @@ describe('FileSecretStore', () => {
     expect(await store.get(CONTROLLER_CREDENTIAL)).toBeNull();
     await store.set(CONTROLLER_CREDENTIAL, 'credential-placeholder');
     expect(await store.get(CONTROLLER_CREDENTIAL)).toBe('credential-placeholder');
-    expect(statSync(join(dir, 'secrets', CONTROLLER_CREDENTIAL)).mode & 0o777).toBe(0o600);
-    expect(statSync(join(dir, 'secrets')).mode & 0o777).toBe(0o700);
+    if (process.platform !== 'win32')
+      expect(statSync(join(dir, 'secrets', CONTROLLER_CREDENTIAL)).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32')
+      expect(statSync(join(dir, 'secrets')).mode & 0o777).toBe(0o700);
     await store.set(CONTROLLER_CREDENTIAL, 'replaced');
     expect(await store.get(CONTROLLER_CREDENTIAL)).toBe('replaced');
     await store.delete(CONTROLLER_CREDENTIAL);
@@ -38,12 +40,16 @@ describe('FileSecretStore', () => {
     expect(await store.get(CONTROLLER_CREDENTIAL)).toBeNull();
   });
 
-  it('refuses a secret file other users can read', async () => {
-    const store = new FileSecretStore(join(dir, 'secrets'));
-    await store.set(CONTROLLER_CREDENTIAL, 'credential-placeholder');
-    chmodSync(join(dir, 'secrets', CONTROLLER_CREDENTIAL), 0o644);
-    await expect(store.get(CONTROLLER_CREDENTIAL)).rejects.toThrow(/readable by other users/);
-  });
+  // Windows has no mode bits; the data directory's access list does this there.
+  it.skipIf(process.platform === 'win32')(
+    'refuses a secret file other users can read',
+    async () => {
+      const store = new FileSecretStore(join(dir, 'secrets'));
+      await store.set(CONTROLLER_CREDENTIAL, 'credential-placeholder');
+      chmodSync(join(dir, 'secrets', CONTROLLER_CREDENTIAL), 0o644);
+      await expect(store.get(CONTROLLER_CREDENTIAL)).rejects.toThrow(/readable by other users/);
+    }
+  );
 
   it('says at startup that no keychain protects the credential', () => {
     expect(new FileSecretStore(join(dir, 'secrets')).startupWarning()).toMatch(/No OS keychain/);

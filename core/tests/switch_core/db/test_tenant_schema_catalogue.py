@@ -91,9 +91,7 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
         """Hardcoded on purpose, and hardcoded twice on purpose.
 
         `users` is a person rather than a tenant member, `oidc_identities`
-        records how that person proves who they are, and `feature_flags` is a
-        deployment switch — a flag that has to vary per customer is a new
-        scoped table, not a nullable column there. `cloud_machines` is a
+        records how that person proves who they are. `cloud_machines` is a
         person's VM, one per person whatever workspaces it serves; what it
         runs in each is the scoped `machine_workspaces`. `alembic_version` is
         global too but is not in this metadata: Alembic owns it.
@@ -102,7 +100,6 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             "cloud_machines",
             "users",
             "oidc_identities",
-            "feature_flags",
             # Facts about the installation, not about anything in it: which
             # deployment this is to the analytics relay and when it was
             # installed, which once-ever milestones it has reported, and when
@@ -115,6 +112,13 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             # sockets for every tenant at once, and the row says only that it
             # is alive.
             "switch_core_processes",
+            # Switch Trust's one guardrails policy for the whole deployment.
+            # A policy that varied per tenant would be a new scoped table.
+            "trust_settings",
+            # The OAuth client Core registered for itself at a vendor: the
+            # vendor sees one Switch, so one client per deployment and
+            # service, holding no person's account.
+            "service_oauth_clients",
         }
 
     async def test_scoped_is_everything_else(self) -> None:
@@ -162,7 +166,12 @@ class TestScopedTableCatalogue:
         columns for a composite foreign key to exist at all, but this asserts
         it is exactly the `(id, tenant_id)` shape the design calls for,
         derived from who actually references whom rather than a hand-kept
-        list of "the ~13 referenced tables"."""
+        list of "the ~13 referenced tables".
+
+        A key that names a table's natural composite key instead of its `id`
+        is not that shape and is not checked here: `service_grants` names its
+        connection by `(tenant_id, owner_id, service)`, the connection's whole
+        primary key, which already carries `tenant_id` (the test above)."""
         scoped = _scoped_tables()
         async with session_factory() as session:
             conn = await session.connection()
@@ -174,7 +183,11 @@ class TestScopedTableCatalogue:
                         continue
                     local_cols = fk["constrained_columns"]
                     ref_cols = fk["referred_columns"]
-                    if "tenant_id" in local_cols and "tenant_id" in ref_cols:
+                    if (
+                        "tenant_id" in local_cols
+                        and "tenant_id" in ref_cols
+                        and "id" in ref_cols
+                    ):
                         referenced.add(ref_table)
 
             missing: list[str] = []

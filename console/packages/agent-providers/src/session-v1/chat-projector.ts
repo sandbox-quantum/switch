@@ -1,5 +1,6 @@
 import type { HostBody, Item, Origin, Session } from '@switch-console/shared/session-v1';
 import type { ProviderRuntimeEvent } from '../events';
+import type { Redactions } from '../host/redaction';
 
 type TurnContext = { commandId: string | null; origin: Origin | null };
 type BufferedItem = { item: Item; emittedAt: number; dirty: boolean; parts: number };
@@ -10,7 +11,16 @@ export class ChatProjector {
   private readonly items = new Map<string, BufferedItem>();
   private readonly hidden = new Set<string>();
 
-  constructor(private readonly session: Session) {}
+  /**
+   * `redactions`, the service tokens the session was handed, are scrubbed
+   * from an assistant message's whole text before it is split into parts,
+   * and text still streaming in holds back what could be the start of one,
+   * so no published revision or part carries a token in pieces.
+   */
+  constructor(
+    private readonly session: Session,
+    private readonly redactions: Redactions | null
+  ) {}
 
   bindTurn(turnId: string, context: TurnContext): void {
     if (this.turns.has(turnId)) throw new Error('Turn is already bound.');
@@ -113,7 +123,7 @@ export class ChatProjector {
     buffer.item.revision += 1;
     buffer.emittedAt = now;
     buffer.dirty = false;
-    const characters = Array.from(buffer.item.text);
+    const characters = Array.from(this.visible(buffer.item.text, final));
     const count = Math.max(1, Math.ceil(characters.length / 4096), buffer.parts);
     buffer.parts = count;
     return Array.from({ length: count }, (_, index) => ({
@@ -124,6 +134,12 @@ export class ChatProjector {
         text: characters.slice(index * 4096, (index + 1) * 4096).join(''),
       },
     }));
+  }
+
+  private visible(text: string, final: boolean): string {
+    if (!this.redactions) return text;
+    const held = final ? 0 : this.redactions.unfinished(text);
+    return this.redactions.text(text.slice(0, text.length - held));
   }
 
   private context(turnId: string): TurnContext {

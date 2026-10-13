@@ -45,7 +45,8 @@ describe('EnrollmentFile', () => {
       file.set('server-2', { kind: 'removed', controllerId: 'c-2', at: '2026-01-02T00:00:00Z' }),
     ]);
     expect(Object.keys(await file.all()).sort()).toEqual(['server-1', 'server-2']);
-    expect(statSync(join(dir, 'nested', 'state.json')).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32')
+      expect(statSync(join(dir, 'nested', 'state.json')).mode & 0o777).toBe(0o600);
     await file.delete('server-1');
     expect(await file.get('server-1')).toBeNull();
     expect((await file.get('server-2'))?.kind).toBe('removed');
@@ -59,14 +60,14 @@ describe('EnrollmentFile', () => {
 
 describe('controller data directory', () => {
   it('is one directory per server, and refuses an id that could leave it', () => {
-    expect(controllerDataDir('/base', 'server-1')).toBe('/base/servers/server-1');
+    expect(controllerDataDir('/base', 'server-1')).toBe(join('/base', 'servers', 'server-1'));
     expect(() => controllerDataDir('/base', '../escape')).toThrow(/cannot name a directory/);
     expect(defaultWorkspacePath('/home/me/.switch/agents', 'pm-agent')).toBe(
-      '/home/me/.switch/agents/pm-agent'
+      join('/home/me/.switch/agents', 'pm-agent')
     );
     expect(defaultWorkspacePath('/home/me/.switch/agents', '../escape')).toBeNull();
     expect(serverWorkspacesDir('/home/me', 'http://localhost:8000')).toBe(
-      '/home/me/.switch/agents/localhost-8000'
+      join('/home/me', '.switch', 'agents', 'localhost-8000')
     );
     expect(defaultWorkspacePath('/home/me/.switch/agents', '')).toBeNull();
   });

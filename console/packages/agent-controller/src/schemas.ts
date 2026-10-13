@@ -1,5 +1,6 @@
 import { sealedLoginSchema } from '@switch-console/agent-providers';
 import { z } from 'zod';
+import { PROVIDERS } from './providers';
 
 /**
  * The wire messages between this controller and Management, as v1 uses them.
@@ -14,11 +15,12 @@ import { z } from 'zod';
 
 export const PROTOCOL_VERSION = 2;
 
-export const PROVIDERS = ['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const;
-export type Provider = (typeof PROVIDERS)[number];
+export { PROVIDERS };
+/** A provider id this controller has both a plugin and a runtime for. */
+export type Provider = string;
 
 export function isProvider(value: string): value is Provider {
-  return (PROVIDERS as readonly string[]).includes(value);
+  return PROVIDERS.includes(value);
 }
 
 /** The contract's reason codes, plus the ones v1 adds. */
@@ -196,21 +198,28 @@ export type ProcessState = (typeof PROCESS_STATES)[number];
 const reasonCode = z.enum(REASON_CODES);
 
 export const providerStatusSchema = z.object({
-  provider: z.enum(PROVIDERS),
+  provider: z.string().refine(isProvider, { message: 'Not a provider this controller runs.' }),
   installed: z.boolean(),
   version: z.string().nullable(),
   auth: z.enum(['ok', 'expired', 'missing', 'unknown']),
   auth_source: z.enum(['local', 'sealed']).nullable(),
   checked_at: time,
   reason: reasonCode.optional(),
+  /** Why no version was read from an installed CLI. */
+  version_problem: z.string().max(300).optional(),
+  /** Why a login given to the machine is not used, in the controller's words. */
+  auth_problem: z.string().max(300).optional(),
 });
 export type ProviderStatus = z.infer<typeof providerStatusSchema>;
 
 export const toolStatusSchema = z.object({
   tool: z.string().min(1),
-  state: z.enum(['ok', 'missing', 'unauthenticated', 'unknown']),
+  /** `unsupported`: Switch's helper for the tool does not run on this machine (GitHub's on Windows). */
+  state: z.enum(['ok', 'missing', 'unauthenticated', 'unsupported', 'unknown']),
   reason: reasonCode.optional(),
 });
+
+export type ToolStatus = z.infer<typeof toolStatusSchema>;
 
 export const agentStatusSchema = z
   .object({

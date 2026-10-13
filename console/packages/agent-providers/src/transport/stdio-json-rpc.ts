@@ -1,6 +1,7 @@
-import { type ChildProcess, spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { Transform } from 'node:stream';
+import { spawnProvider, stopProvider } from '../provider-process';
 
 export interface ProviderLogger {
   debug(message: string, context?: Record<string, unknown>): void;
@@ -77,7 +78,7 @@ export class StdioJsonRpcClient {
   constructor(options: StdioJsonRpcClientOptions) {
     this.logger = options.logger;
     this.onExit = options.onExit;
-    this.child = spawn(options.command, options.args, {
+    this.child = spawnProvider(options.command, options.args, {
       cwd: options.cwd,
       env: options.env,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -103,7 +104,7 @@ export class StdioJsonRpcClient {
       },
     });
     bounded.on('error', (error) => {
-      this.child.kill('SIGKILL');
+      stopProvider(this.child, 'SIGKILL');
       this.handleExit(error.message);
     });
     stdout.pipe(bounded);
@@ -112,7 +113,7 @@ export class StdioJsonRpcClient {
         const error = options.rejectOutputLine?.(line);
         if (error) {
           this.handleExit(error);
-          this.child.kill('SIGTERM');
+          stopProvider(this.child, 'SIGTERM');
         } else this.handleLine(line);
       })
       .on('error', (error) => this.handleExit(error.message));
@@ -122,7 +123,7 @@ export class StdioJsonRpcClient {
       if (error) {
         this.stderrTail = error;
         this.handleExit(error);
-        this.child.kill('SIGTERM');
+        stopProvider(this.child, 'SIGTERM');
       }
     });
 
@@ -196,7 +197,7 @@ export class StdioJsonRpcClient {
   async dispose(): Promise<void> {
     if (this.processExited) return;
     await new Promise<void>((resolve, reject) => {
-      const kill = setTimeout(() => this.child.kill('SIGKILL'), 2000);
+      const kill = setTimeout(() => stopProvider(this.child, 'SIGKILL'), 2000);
       const timeout = setTimeout(() => {
         cleanup();
         reject(new Error('Provider process did not exit after termination.'));
@@ -212,7 +213,9 @@ export class StdioJsonRpcClient {
       };
       this.child.once('exit', exited);
       this.child.stdin?.end();
-      this.child.kill('SIGTERM');
+      // On Windows any kill is immediate: the closed stdin is the request to
+      // stop, and the kill above is what follows it.
+      if (process.platform !== 'win32') this.child.kill('SIGTERM');
     });
   }
 

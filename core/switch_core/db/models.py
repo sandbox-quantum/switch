@@ -2141,22 +2141,25 @@ class SwitchCoreProcess(Base):
     )
 
 
-# ── Feature flags ────────────────────────────────────────────────────────────
+# ── Trust settings ───────────────────────────────────────────────────────────
 
 
-class FeatureFlag(Base):
-    """Server-global on/off switch keyed by a well-known flag name.
+class TrustSettings(Base):
+    """Server-global Switch Trust guardrails configuration — one row.
 
-    A row exists only once a flag has been written; an absent row means the
-    flag is OFF (its default). Which keys are writable is enforced in the
-    application layer (see ``switch_core.feature_flags``), not by the table.
+    No row, or one with ``policy_id``/``api_key_encrypted`` unset, means the
+    check is off (see ``switch_core.trust.client.DynamicTrustClient``). ``id``
+    is a fixed constant (``db/stores/trust_settings_store.py``) rather than a
+    generated key, since there is exactly one row by construction.
     """
 
-    __tablename__ = "feature_flags"
+    __tablename__ = "trust_settings"
 
-    key: Mapped[str] = mapped_column(Text, primary_key=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    updated_at: Mapped[str] = mapped_column(
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         onupdate=func.now(),
@@ -3101,6 +3104,224 @@ class SealedProviderLogin(TenantScoped, Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+# ── Service connections ──────────────────────────────────────────────────────
+
+
+class ServiceConnection(TenantScoped, Base):
+    """One person's sign-in to an outside service, in one workspace.
+
+    `service` is a catalog slug (`connections/catalog/`), checked in code
+    rather than by the database, so a new service needs no migration.
+    `encrypted_secret` is keyring-encrypted JSON: the refresh token and the
+    cached access token, each with its expiry. Only the credential broker
+    (`connections/broker.py`) decrypts it, and `secret_revision` bumps on every
+    write of it. `account_id` is the vendor's stable id for the account, so a
+    grant made for one account is not used for another after a re-link.
+    """
+
+    __tablename__ = "service_connections"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "user_id", "service"),
+        # One Switch user per vendor account in a workspace.
+        UniqueConstraint(
+            "tenant_id", "service", "account_id", name="uq_service_connections_account"
+        ),
+        CheckConstraint(
+            "status IN ('active', 'needs_reauthorization', 'error')",
+            name="ck_service_connections_status",
+        ),
+        CheckConstraint(
+            "consent IN ('read', 'write')", name="ck_service_connections_consent"
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    service: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    consent: Mapped[str] = mapped_column(Text, nullable=False)
+    granted_scopes: Mapped[list] = mapped_column(JSONB, nullable=False)
+    account_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_identity: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_secret: Mapped[str] = mapped_column(Text, nullable=False)
+    secret_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class ServiceOAuthClient(Base):
+    """The OAuth client Core registered for itself at a service's vendor.
+
+    Dynamic client registration (RFC 7591), for a vendor that offers no other
+    way to have a client: one row per deployment and service, written on the
+    first connect. Deployment-wide, because the vendor sees one Switch, and
+    every workspace's connections sign in through it. `encrypted_secret` is
+    keyring-encrypted JSON of the vendor's registration answer, its
+    `client_secret` included where the vendor issued one;
+    `registration_endpoint` is where it was registered, so a vendor that moves
+    it gets a new registration rather than an unknown client.
+    """
+
+    __tablename__ = "service_oauth_clients"
+
+    service: Mapped[str] = mapped_column(Text, primary_key=True)
+    registration_endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    oauth_client_id: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_secret: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ServiceGrant(TenantScoped, Base):
+    """An agent may use its owner's connection to a service.
+
+    The connection is named by (`owner_id`, `service`), so a grant can only
+    ever point at its owner's own connection, and disconnecting removes the
+    grants with it; re-linking updates the connection in place and keeps
+    them. `account_id` is the connection's account when the grant was made.
+    `tool_mode` `allow` means only `tools`; `deny` means every tool of the
+    access level except `tools`. `revision` moves on every change to the grant,
+    so a token being issued as it moves is taken back rather than recorded.
+    """
+
+    __tablename__ = "service_grants"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        UniqueConstraint(
+            "tenant_id", "agent_id", "service", name="uq_service_grants_agent_service"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_service_grants_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "owner_id", "service"],
+            [
+                "service_connections.tenant_id",
+                "service_connections.user_id",
+                "service_connections.service",
+            ],
+            name="fk_service_grants_connection",
+            ondelete="CASCADE",
+        ),
+        # The cascade from a disconnect, and every grant lookup by connection.
+        Index("ix_service_grants_connection", "tenant_id", "owner_id", "service"),
+        CheckConstraint("access IN ('read', 'write')", name="ck_service_grants_access"),
+        CheckConstraint(
+            "tool_mode IN ('allow', 'deny')", name="ck_service_grants_tool_mode"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, nullable=False, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[str] = mapped_column(Text, nullable=False)
+    service: Mapped[str] = mapped_column(Text, nullable=False)
+    access: Mapped[str] = mapped_column(Text, nullable=False)
+    tool_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    tools: Mapped[list] = mapped_column(JSONB, nullable=False)
+    resources: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    account_id: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
+    )
+    created_by: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class ServiceTokenIssuance(TenantScoped, Base):
+    """A record of one token Core issued to an agent for a service.
+
+    No foreign keys, so the record outlives the grant, the agent and the
+    person. `encrypted_token` is held only where the vendor can revoke a single
+    token (GitHub), and only while the token is live: it is cleared once the
+    token has expired or been revoked. `token_sha256` stays, so a leaked token
+    can be traced to the agent it was issued to. Records are pruned after
+    `service_token_retention_days`.
+    """
+
+    __tablename__ = "service_token_issuances"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        CheckConstraint(
+            "principal IN ('controller', 'agent_key')",
+            name="ck_service_token_issuances_principal",
+        ),
+        Index("ix_service_token_issuances_created_at", "tenant_id", "created_at"),
+        # The tokens that can still be revoked: every revocation queue and
+        # claim reads only these, a few hours' worth at most.
+        Index(
+            "ix_service_token_issuances_live",
+            "tenant_id",
+            "expires_at",
+            postgresql_where=text("encrypted_token IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, nullable=False, default=_uuid)
+    grant_id: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[str] = mapped_column(Text, nullable=False)
+    service: Mapped[str] = mapped_column(Text, nullable=False)
+    principal: Mapped[str] = mapped_column(Text, nullable=False)
+    controller_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    permissions: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    resources: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    token_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revoke_requested: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    claim_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TenantDataMove(TenantScoped, Base):
+    """A one-time data move that has been carried out in this tenant.
+
+    Written in the same transaction as the move itself, and read before it, so
+    a move runs once per tenant: never again on a later boot, where it would
+    undo what people changed since. `details` counts what was moved and what
+    was skipped.
+    """
+
+    __tablename__ = "tenant_data_moves"
+    __table_args__ = (PrimaryKeyConstraint("tenant_id", "name"),)
+
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 

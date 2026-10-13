@@ -1099,6 +1099,25 @@
         "width": 6,
         "height": 4
       }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Service tokens per second, by connector and outcome (issued, or the refusal's reason code)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.service_tokens.requests{$env,$service} by {connector,outcome}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 97,
+        "width": 12,
+        "height": 4
+      }
     }
   ]
 }

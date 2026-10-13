@@ -101,7 +101,7 @@ describe('LocalExecutionContext', () => {
 
     expect(execFileMock).toHaveBeenCalledWith(
       'C:\\Windows\\System32\\cmd.exe',
-      ['/d', '/s', '/c', 'D:\\tools\\npm.cmd root -g'],
+      ['/d', '/s', '/c', '"D:\\tools\\npm.cmd ^^^"root^^^" ^^^"-g^^^""'],
       expect.objectContaining({ windowsVerbatimArguments: true }),
       expect.any(Function)
     );

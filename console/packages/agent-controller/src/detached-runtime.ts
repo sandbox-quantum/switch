@@ -15,7 +15,6 @@ import type { DataLayout } from './paths';
 import {
   type AgentObservation,
   type AgentRunner,
-  assertSupportedPlatform,
   type LaunchOptions,
   ownsRoot,
   OWNER_RECORDS,
@@ -50,9 +49,7 @@ export class DetachedRuntime implements AgentRunner {
       /** The `shared-host-daemon.mjs` bundle from agent-providers. */
       bundlePath: string;
     }
-  ) {
-    assertSupportedPlatform(process.platform);
-  }
+  ) {}
 
   async observe(agentId: string): Promise<AgentObservation> {
     const root = this.deps.layout.watcherRoot(agentId);

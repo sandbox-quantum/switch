@@ -11,5 +11,9 @@ describeConformance('antigravity', {
   // `invoke_subagent` runs a whole nested conversation, which can outlast the
   // default deadline on a slow day.
   timeoutMs: 300_000,
+  skip: {
+    subagent:
+      'antigravity-acp 1.1.1 runs invoke_subagent past the 300 s deadline, on main and on the generic ACP adapter alike (2026-10-11).',
+  },
   mcpServers: { echo: echoMcpServerSpec() },
 });

@@ -12,7 +12,7 @@ import { workspacesStore } from '@renderer/features/workspaces/workspaces-store'
 import type { Snapshottable } from '@renderer/lib/stores/snapshottable';
 import type { AgentConnectionKind } from '@shared/core/agents/agent-connection';
 import {
-  AGENT_PROVIDER_IDS,
+  agentProviderIds,
   isValidProviderId,
   type AgentProviderId,
 } from '@shared/core/providers/agent-provider-registry';
@@ -371,7 +371,7 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
       const providerId = this.locationProviderId(location.id);
       if (providerId) present.add(providerId);
     }
-    return AGENT_PROVIDER_IDS.filter((id) => present.has(id));
+    return agentProviderIds().filter((id) => present.has(id));
   }
 
   get sidebarRows(): SidebarRow[] {

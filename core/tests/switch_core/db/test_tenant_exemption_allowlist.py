@@ -28,8 +28,8 @@ module, never directly through a store any endpoint could declare for itself.
 **A raw `session_factory()` call** is the other surface. It inherits whatever
 is ambient, which in background code is nothing at all, since the long-lived
 tasks deliberately unbind (see `tenant_context.no_tenant`). Such a session can
-now only read the tables that carry no policy — `users`, `oidc_identities`,
-`feature_flags` — so it is no longer a way to cross a tenant boundary, but it
+now only read the tables that carry no policy — `users`, `oidc_identities`
+and the installation's telemetry records — so it is no longer a way to cross a tenant boundary, but it
 is still a session whose call site did not say what it was for.
 
 A module failing either check is not a bug in the test. It means someone
@@ -61,6 +61,11 @@ _ALLOWED_MODULES = {
     # old activity lines in every tenant: enumerate, then bind each tenant and
     # work under its own policy, the same shape as the runtime-state sweep.
     "switch_core.session_activity.maintenance",
+    # Service-token upkeep revokes tokens whose grant or owner is gone and
+    # prunes issuance records past retention, in every tenant: enumerate,
+    # then bind each tenant and work under its own policy, the same shape as
+    # session-activity upkeep above.
+    "switch_core.connections.maintenance",
     # The runtime-state sweep reads every tenant's stale rows, one tenant at a
     # time; `register_agent_with_token` resolves a registration credential by
     # its globally unique hash, which is the read that produces a tenant.
@@ -184,6 +189,26 @@ _RAW_SESSION_FACTORY_MODULES = {
     # and no policy (`rls_ddl.GLOBAL_TABLES`): a process serves every tenant,
     # so its lease belongs to none. It touches only that table.
     "switch_core.management.process_lease",
+    # The boot-time re-encryption sweep's per-tenant pass binds a tenant
+    # (`tenant_session`); this raw call is its separate pass over
+    # the global tables' encrypted values (`trust_settings`'s key,
+    # `service_oauth_clients`' secrets), tables with no tenant and no policy
+    # (`rls_ddl.GLOBAL_TABLES`) that a per-tenant loop would otherwise sweep
+    # once per tenant for no reason.
+    "switch_core.db.key_rotation",
+    # `DynamicTrustClient` reads `trust_settings` on every check, including
+    # from agent- and bridge-originated sends that have no request to inherit
+    # a tenant from. A table with no tenant and no policy
+    # (`rls_ddl.GLOBAL_TABLES`): one guardrails policy covers the whole
+    # deployment, so there is no tenant for a policy to narrow on.
+    "switch_core.trust.client",
+    #
+    # ── The OAuth client Core registers for itself at a vendor that offers
+    # no other (`service_oauth_clients`, in `rls_ddl.GLOBAL_TABLES`). The
+    # vendor sees one Switch, so the client is the deployment's, not a
+    # tenant's: read and written in a session bound to none, and re-encrypted
+    # once at boot by the global pass above.
+    "switch_core.connections.oauth_clients",
 }
 
 # Calls that end in `session_factory` but hand one back rather than open a

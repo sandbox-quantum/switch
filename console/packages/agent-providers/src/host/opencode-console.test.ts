@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
+import { writeNodeCli } from '../testing/node-cli';
 import { exportOpenCodeConsole, importOpenCodeConsole } from './opencode-console';
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
@@ -24,15 +25,13 @@ const value = {
 };
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'opencode-console-'));
-  cli = join(root, 'fixture-cli');
-  await writeFile(
-    cli,
-    `#!${process.execPath}
-const { DatabaseSync } = require('node:sqlite');
+  cli = await writeNodeCli(
+    root,
+    'fixture-cli',
+    `const { DatabaseSync } = require('node:sqlite');
 const db = new DatabaseSync(require('node:path').join(process.env.XDG_DATA_HOME, 'opencode/opencode.db'));
 db.exec('CREATE TABLE IF NOT EXISTS account (id TEXT PRIMARY KEY,email TEXT,url TEXT,access_token TEXT,refresh_token TEXT,token_expiry INTEGER,time_created INTEGER,time_updated INTEGER); CREATE TABLE IF NOT EXISTS account_state (id INTEGER PRIMARY KEY,active_account_id TEXT,active_org_id TEXT)');
-db.close();`,
-    { mode: 0o700 }
+db.close();`
   );
 });
 afterEach(async () => {

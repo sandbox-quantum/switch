@@ -195,9 +195,13 @@ are the only session runtime. Lifecycle scripts use noninteractive commands.
 
 Recovery requires the saved provider conversation and host state on the same
 execution host. Moving that state between machines is not an automatic recovery
-operation. Process-group fencing and automatic host replacement require POSIX;
-unsupported Windows recovery fails explicitly. The supervisor survives Console
-closure and worker crashes, but it is not an operating-system boot service.
+operation. Fencing after a crash and automatic host replacement use process
+groups on macOS and Linux. Windows has none, so there a crashed owner's
+leftovers are found by parent process and creation time (PowerShell's CIM
+cmdlets), and a host is asked to stop over its IPC channel or a stop file in
+its state root rather than by SIGTERM, which Windows cannot deliver to be
+caught. The supervisor survives Console closure and worker crashes, but it is
+not an operating-system boot service.
 
 A remote host needs Node 20.3 or newer, the selected provider, its own provider authentication,
 and network access to Switch and the provider. Local SSH fixture coverage does
@@ -237,6 +241,18 @@ Console controls. Addressed messages, subscribed join notifications, and task ev
 retain durable delivery identities. Room attachments are copied from authenticated
 server media into session-owned storage; missing media is reported alongside the
 message instead of silently dropping the text.
+
+A turn a room message started that ends without the agent posting to a room — a
+provider quota or sign-in error, or a model that answered in plain text — is
+answered by the host itself, as the agent, in the message's thread: the agent's
+last words (up to 4,000 characters), or that it finished without replying and why
+the turn failed. A post is a successful call to one of the Switch tools that
+write into a room (`ROOM_POSTING_TOOLS` in `shared-host.ts`), seen as it passes
+through the session's own MCP server, so it is recognised the same way for every
+provider. The decision is recorded in the session's `inbox.jsonl` before the post,
+so a turn is answered at most once, across restarts too. A turn the host stops
+itself (a stop, parking, a reset) is not answered, and a post that fails is logged
+and noted in the transcript without affecting the session.
 
 Attachment hashes are stored at upload and checked during download and staging.
 Deleting the SDK session also removes its attachment blobs. Older uploads without

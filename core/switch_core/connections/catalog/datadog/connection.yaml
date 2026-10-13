@@ -1,7 +1,51 @@
 slug: datadog
 name: Datadog
 category: Observability
-description: Query Datadog metrics, logs and monitors.
-enabled: false
+description: Query Datadog metrics, logs, traces, monitors and incidents, with your keys.
+enabled: true
+adapter: api_key
 auth:
   type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: api_key
+        label: API key
+        secret: true
+        help: Organization Settings, API Keys.
+      - name: application_key
+        label: Application key
+        secret: true
+        help: Personal Settings, Application Keys. Give it the mcp_read scope, and mcp_write only if agents should change things.
+      - name: site
+        label: Datadog site
+        secret: false
+        help: The address you open Datadog at, without app.
+        choices:
+          - datadoghq.com
+          - us3.datadoghq.com
+          - us5.datadoghq.com
+          - datadoghq.eu
+          - ap1.datadoghq.com
+          - ap2.datadoghq.com
+    # Checks the API key, the one whose refusal is least clear later. The
+    # application key is checked by the MCP server on the first call.
+    identity:
+      method: GET
+      url: "https://api.{site}/api/v1/validate"
+      headers: { DD-API-KEY: "{api_key}" }
+    help_url: https://docs.datadoghq.com/account_management/api-app-keys/
+# A key does not expire; each issue hands it out for an hour, so the grant is
+# checked again at least hourly.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # Datadog's remote MCP server takes the keys in headers named with
+    # underscores, unlike its REST API. MCP access is turned on per
+    # organization, under Organization Settings, Preferences.
+    - name: datadog
+      url: "https://mcp.{site}/api/unstable/mcp-server/mcp"
+      headers:
+        DD_API_KEY: "{api_key}"
+        DD_APPLICATION_KEY: "{application_key}"
+tools: { mode: pass_through }

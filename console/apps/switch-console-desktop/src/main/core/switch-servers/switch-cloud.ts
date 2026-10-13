@@ -1,3 +1,4 @@
+import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import type { SwitchCloudEndpoint } from '@shared/core/switch-servers/switch-cloud';
 
 /** Read at run time, so a dev run can be pointed at a deployment without a rebuild. */
@@ -6,7 +7,8 @@ const RUNTIME_VARIABLE = 'SWITCH_CLOUD_URL';
 const BUILD_VARIABLE = 'MAIN_VITE_SWITCH_CLOUD_URL';
 
 /**
- * Where Switch Cloud is, or null when neither this run nor this build names it.
+ * Where Switch Cloud is, or null when this build does not offer it: its
+ * `switch_cloud` flag is off, or neither this run nor this build names it.
  *
  * Supplied from outside rather than written here, because this repository is
  * public and which deployment a build treats as the Cloud is a choice made per
@@ -17,6 +19,7 @@ const BUILD_VARIABLE = 'MAIN_VITE_SWITCH_CLOUD_URL';
  * stand in for the Cloud while testing (`just local-cloud`).
  */
 export function switchCloudEndpoint(): SwitchCloudEndpoint | null {
+  if (!BUILD_FEATURE_FLAGS.switch_cloud) return null;
   const fromRun = process.env[RUNTIME_VARIABLE]?.trim();
   if (fromRun) return { url: parseCloudUrl(fromRun, RUNTIME_VARIABLE) };
   const fromBuild = import.meta.env.MAIN_VITE_SWITCH_CLOUD_URL?.trim();
@@ -28,7 +31,9 @@ export function requireSwitchCloudEndpoint(): SwitchCloudEndpoint {
   const endpoint = switchCloudEndpoint();
   if (!endpoint) {
     throw new Error(
-      `Switch Cloud is not configured for this build. Set ${RUNTIME_VARIABLE} to its https URL.`
+      BUILD_FEATURE_FLAGS.switch_cloud
+        ? `Switch Cloud is not configured for this build. Set ${RUNTIME_VARIABLE} to its https URL.`
+        : 'Switch Cloud is not offered by this build: its switch_cloud flag is off.'
     );
   }
   return endpoint;

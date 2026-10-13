@@ -1,5 +1,6 @@
+import type { RepoAgentField } from '@switch-console/core/agents/plugins';
 import { useQuery } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
@@ -20,6 +21,8 @@ import {
   fieldWithCatalogue,
   type ModelCatalogueResult,
 } from '../agent-model-catalogue';
+import { useLocalAdvancedFields } from '../use-local-advanced-fields';
+import { AdvancedConfigProblem } from './agent-advanced-config';
 
 /**
  * Collapsed "Advanced configuration" section for a provider that keeps its
@@ -27,17 +30,22 @@ import {
  * per-agent provider config (or null when nothing is set) so the modal can pass
  * it to `addAgent`, which persists it on the agent and folds it into the profile.
  *
- * The fields are the same ones the agent's Settings tab edits after creation —
- * fetched over RPC from the provider's own plugin, so the two forms cannot drift,
- * and the section renders nothing for a provider that declares none. That empty
- * field list is the gate: no caller needs to know which providers have one.
+ * The fields are the same ones the agent's Settings tab edits after creation:
+ * the model and the agent's Switch server's fields for the provider, so the two
+ * forms cannot drift. Only one of the two surfaces — this or the agent
+ * definition `AgentAdvancedConfig` renders — exists per provider, and this one
+ * renders nothing for the other; for a provider with neither it renders only
+ * a problem with the server's fields, if there is one.
  */
 export function LaunchProfileConfig({
+  serverId,
   providerId,
   sshHost,
   dir,
   onChange,
 }: {
+  /** The Switch server the agent belongs to, whose fields the form shows; null when none is chosen. */
+  serverId: string | null;
   providerId: AgentProviderId | null;
   /** The host the agent will run on: its SSH alias, or null for this machine. */
   sshHost: string | null;
@@ -46,27 +54,8 @@ export function LaunchProfileConfig({
 }) {
   const [open, setOpen] = useState(false);
 
-  // Which surface this provider actually keeps its settings in. `advancedFields`
-  // below answers "the fields, from wherever they live" and falls back to the
-  // definition fields for a provider that has those — which is the same list
-  // `AgentAdvancedConfig` renders beside this, so Claude Code showed two
-  // identical "Advanced configuration" sections. Only one of the two surfaces
-  // exists per provider; this is how the agent's Settings tab picks, and the
-  // creation form has to pick the same way or the two disagree about what an
-  // agent even has.
-  const { data: surface } = useQuery({
-    queryKey: ['agentAdvancedSurface', providerId],
-    queryFn: () =>
-      providerId ? rpc.agents.advancedSurface({ providerId }) : Promise.resolve('none' as const),
-    enabled: !!providerId,
-  });
-
-  const { data } = useQuery({
-    queryKey: ['agentAdvancedFields', providerId],
-    queryFn: () => (providerId ? rpc.agents.advancedFields({ providerId }) : Promise.resolve([])),
-    enabled: !!providerId,
-  });
-  const fields = useMemo(() => (surface === 'launch-profile' ? (data ?? []) : []), [data, surface]);
+  const local = useLocalAdvancedFields(serverId, providerId);
+  const fields = local.surface === 'launch-profile' ? local.fields : NO_FIELDS;
 
   // The models that host offers, for the fields bound to it. Asked of the host
   // the agent will run on, since that is what decides the answer — and only once
@@ -98,12 +87,14 @@ export function LaunchProfileConfig({
     setState((prev) => ({ ...prev, [key]: value }));
   }, []);
 
-  if (!providerId) return null;
+  // Also rendered for a provider that keeps no per-agent settings, so a
+  // problem with the server's fields for it is still shown.
+  if (!providerId || local.surface === undefined || local.surface === 'definition') return null;
 
   const providerLabel = getProvider(providerId)?.name ?? providerId;
 
   return (
-    <div>
+    <div className="flex flex-col gap-2">
       {fields.length > 0 && (
         <DisclosureRow
           open={open}
@@ -148,6 +139,9 @@ export function LaunchProfileConfig({
           })}
         </div>
       )}
+      <AdvancedConfigProblem problem={local.problem} />
     </div>
   );
 }
+
+const NO_FIELDS: RepoAgentField[] = [];

@@ -24,6 +24,7 @@ import {
   isProvider,
   type StatusReport,
   statusReportSchema,
+  type ToolStatus,
 } from './schemas';
 import { type GivenLogin, registerSealingKey, SealedLogins, sealingKeys } from './sealed-logins';
 import { CONTROLLER_CREDENTIAL, type SecretStore } from './secrets';
@@ -77,6 +78,8 @@ export type ControllerDeps = {
    */
   runtime: (openStream: (agentId: string) => OpenAgentStream, workspaces: string) => AgentRuntime;
   locator: ProviderLocator;
+  /** `git`, `gh` and vendor tools, as sessions here would be set up with them (`toolStatuses`). */
+  tools: () => Promise<ToolStatus[]>;
   fetch: Fetch;
   /** Opens the controller's connection to Switch. */
   openWebSocket: OpenWebSocket;
@@ -379,6 +382,7 @@ export async function runController(
     store,
     runtime,
     providers,
+    tools: deps.tools,
     attached: (agentId) => hub.attached(agentId),
     dataDir: deps.dataDir,
     workspacesDir: workspaces,

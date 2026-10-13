@@ -93,7 +93,7 @@ id, no IP field, no Switch identity.
 | `agent_type` | the AI provider, from a fixed registry: `claude`, `codex`, `gemini`, `cursor`, `copilot`, `opencode`, `grok`, `devin`, `qwen`, `droid`, `amp`, `goose`, `cline`, `continue`, `mistral`, `kiro`, `junie`, … and `unknown`. **Never an agent's name.** |
 | `location` | `local`, `remote`, `unknown`. **Never a path, directory or project name.** |
 | `server_kind` | `local`, `remote_managed`, `external`. **Never a server name or URL.** |
-| `bridge_platform` | `slack`, `mattermost`, `discord`, `teams`, `telegram`, `other`, `unknown`. **Never a workspace or channel name.** |
+| `bridge_platform` | A platform key the server lists as one of its registered platforms (`slack`, `mattermost`, `discord`, `teams`, `telegram`, and any platform added since), else `other`, or `unknown` when it cannot be read. Always a short lowercase key. **Never a workspace or channel name.** |
 | `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `unknown` |
 | `target` | `local`, `remote`, `unknown` |
 
@@ -116,7 +116,7 @@ id, no IP field, no Switch identity.
 
 | Event | Fields, with example values |
 |---|---|
-| `view_opened` | `view_id`, one of exactly 16: `home`, `location`, `session`, `managedAgent`, `room`, `settings`, `server`, `serverAgents`, `serverRooms`, `remoteHosts`, `remoteHost`, `templateImport`, `templates`, `templateDetail`, `templateUse`, `templateCapture` |
+| `view_opened` | `view_id`, one of exactly 17: `home`, `location`, `session`, `managedAgent`, `room`, `settings`, `server`, `managedServer`, `serverAgents`, `serverRooms`, `remoteHosts`, `remoteHost`, `templateImport`, `templates`, `templateDetail`, `templateUse`, `templateCapture` |
 | `command_executed` | `command_id`, one of exactly 9: `app.settings`, `app.newLocation`, `app.addServer`, `app.toggleTheme`, `app.navigateBack`, `app.navigateForward`, `session.pin`, `session.nextSession`, `session.prevSession` · `invoked_by`: `palette` / `shortcut` |
 | `deeplink_opened` | `resolved`: `true` / `false` · `cold_start`: `true` / `false`. **The URL is never sent.** |
 | `onboarding_step_started` | `step_id`, one of exactly 4: `addServer`, `agentProviders`, `onboardAgents`, `createRoom` |

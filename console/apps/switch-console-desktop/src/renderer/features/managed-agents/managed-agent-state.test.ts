@@ -85,6 +85,7 @@ const LAPTOP: OwnedMachine = {
   acceptsLogins: false,
   cloud: false,
   workspacesDir: null,
+  os: null,
 };
 
 describe('machineWorkspaceFor', () => {

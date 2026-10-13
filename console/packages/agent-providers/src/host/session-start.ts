@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { open, readFile, rename, unlink } from 'node:fs/promises';
+import { open, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { replaceFile } from './replace-file';
 
 /**
  * How a session came to start, as whatever launched it knows: a person in
@@ -49,7 +50,7 @@ export async function recordSessionStart(
     await file.close();
   }
   try {
-    await rename(temporary, path);
+    await replaceFile(temporary, path);
   } catch (error) {
     await unlink(temporary).catch(() => {});
     throw error;

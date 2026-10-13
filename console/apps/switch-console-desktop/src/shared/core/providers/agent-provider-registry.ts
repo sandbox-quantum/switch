@@ -1,6 +1,88 @@
-export const AGENT_PROVIDER_IDS = ['codex', 'claude', 'antigravity', 'cursor', 'opencode'] as const;
+/**
+ * A provider id: the id of a plugin in `packages/plugins/src/agents/impl/<id>/`.
+ * Open rather than a union so that adding a provider changes no desktop code;
+ * a value from storage is checked against the catalogue with
+ * {@link isValidProviderId} or {@link asAgentProviderId}.
+ */
+export type AgentProviderId = string;
 
-export type AgentProviderId = (typeof AGENT_PROVIDER_IDS)[number];
+/**
+ * What the desktop app shows and needs for one provider, built in the main
+ * process from the provider's plugin metadata and its runtime entry in
+ * `@switch-console/agent-providers`.
+ */
+export type AgentProviderDefinition = {
+  id: AgentProviderId;
+  name: string;
+  /** Short one-liner shown in the agent info card. */
+  description: string;
+  docUrl: string;
+  /** What to tell someone to install, where the product name alone would be ambiguous. */
+  cliLabel: string;
+  /** The command a person runs on the execution machine to sign the CLI in. */
+  loginCommand: string;
+  /** The Switch gateway's known-agent type, sent when an agent registers. */
+  knownAgentType: string;
+};
+
+type Catalogue = {
+  providers: readonly AgentProviderDefinition[];
+  byId: ReadonlyMap<string, AgentProviderDefinition>;
+};
+
+let catalogue: Catalogue | null = null;
+
+/**
+ * Install the provider catalogue. The main process builds it from the plugin
+ * and runtime registries before anything else loads; the renderer fetches it
+ * over RPC before its first render.
+ */
+export function setAgentProviderCatalogue(providers: readonly AgentProviderDefinition[]): void {
+  const byId = new Map(providers.map((provider) => [provider.id, provider]));
+  if (byId.size !== providers.length)
+    throw new Error(
+      `The agent provider catalogue names a provider twice: ${providers.map((p) => p.id).join(', ')}`
+    );
+  catalogue = { providers, byId };
+}
+
+function loaded(): Catalogue {
+  if (!catalogue)
+    throw new Error(
+      'The agent provider catalogue was read before it was loaded. The main process sets it when its plugin registry loads, and the renderer before its first render.'
+    );
+  return catalogue;
+}
+
+/** Every provider, in the order the interface lists them. */
+export function agentProviders(): readonly AgentProviderDefinition[] {
+  return loaded().providers;
+}
+
+export function agentProviderIds(): AgentProviderId[] {
+  return loaded().providers.map((provider) => provider.id);
+}
+
+/** Every provider's name as a sentence fragment: "Codex, Claude Code and OpenCode". */
+export function providerNamesSentence(): string {
+  const names = loaded().providers.map((provider) => provider.name);
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names.join('');
+}
+
+export function getProvider(id: string): AgentProviderDefinition | undefined {
+  return loaded().byId.get(id);
+}
+
+/** A registered provider's definition; throws for an id the catalogue does not have. */
+export function requireProvider(id: string): AgentProviderDefinition {
+  const provider = getProvider(id);
+  if (!provider) throw new Error(`unknown agent provider '${id}'`);
+  return provider;
+}
+
+export function isValidProviderId(value: unknown): value is AgentProviderId {
+  return typeof value === 'string' && loaded().byId.has(value);
+}
 
 /**
  * Narrow a provider id that arrived as an opaque string — from a database row
@@ -10,175 +92,8 @@ export type AgentProviderId = (typeof AGENT_PROVIDER_IDS)[number];
  * value, so an unregistered id silently selects no behaviour at all.
  */
 export function asAgentProviderId(value: string): AgentProviderId {
-  if ((AGENT_PROVIDER_IDS as readonly string[]).includes(value)) return value as AgentProviderId;
+  if (isValidProviderId(value)) return value;
   throw new Error(`unknown agent provider '${value}'`);
-}
-
-export type AgentProviderDefinition = {
-  id: AgentProviderId;
-  name: string;
-  /** Short one-liner shown in the agent info card. */
-  description?: string;
-  docUrl?: string;
-  installCommand?: string;
-  commands?: string[];
-  versionArgs?: string[];
-  /** Skip running the CLI for dependency version detection. */
-  skipVersionProbe?: boolean;
-  detectable?: boolean;
-  cli?: string;
-  autoApproveFlag?: string;
-  /** Auto-approval is provided by provider-specific environment variables instead of CLI args. */
-  autoApproveViaEnv?: boolean;
-  initialPromptFlag?: string;
-  resumeFlag?: string;
-  /**
-   * CLI flag to assign a unique session ID per chat instance.
-   * Used to isolate session state when multiple chats of the same provider
-   * run in the same worktree. The flag receives a deterministic UUID
-   * derived from the Switch Console session ID.
-   * e.g. '--session-id' for Claude Code.
-   */
-  sessionIdFlag?: string;
-  newSessionFlag?: string;
-  sessionIdOnResumeOnly?: boolean;
-  /** Resume flag used when sessionIdOnResumeOnly is set but no provider session id is stored yet. */
-  resumeWithoutSessionFlag?: string;
-  defaultArgs?: string[];
-  planActivateCommand?: string;
-  autoStartCommand?: string;
-  icon?: string;
-  iconDark?: string;
-  /** Accessible alt text for the provider logo. */
-  alt?: string;
-  /** When true, the logo should be colour-inverted in dark mode. */
-  invertInDark?: boolean;
-};
-
-/**
- * Provider ids and display metadata, plus a mirror of each provider's argv shape.
- *
- * The argv fields here are descriptive, not authoritative: nothing reads them at
- * spawn time. `packages/plugins/src/agents/impl/<id>/index.ts` builds the real
- * command, so change the plugin first and update the mirror to match.
- */
-export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
-  {
-    id: 'codex',
-    name: 'Codex',
-    description:
-      'CLI that connects to OpenAI models for project-aware code assistance and terminal workflows.',
-    docUrl: 'https://github.com/openai/codex',
-    installCommand: 'npm install -g @openai/codex',
-    commands: ['codex'],
-    versionArgs: ['--version'],
-    cli: 'codex',
-    // Kept in sync with the plugin by the parity test in
-    // src/main/core/providers/provider-argv-parity.test.ts.
-    autoApproveFlag: '-c approval_policy="never"',
-    initialPromptFlag: '',
-    resumeFlag: 'resume',
-    sessionIdFlag: ' ',
-    sessionIdOnResumeOnly: true,
-    resumeWithoutSessionFlag: 'resume --last',
-    icon: 'openai.svg',
-    alt: 'Codex',
-  },
-  {
-    id: 'claude',
-    name: 'Claude Code',
-    description:
-      'CLI that uses Anthropic Claude for code edits, explanations, and structured refactors in the terminal.',
-    docUrl: 'https://code.claude.com/docs/en/quickstart',
-    installCommand: 'curl -fsSL https://claude.ai/install.sh | bash',
-    commands: ['claude'],
-    versionArgs: ['--version'],
-    cli: 'claude',
-    autoApproveFlag: '--dangerously-skip-permissions',
-    initialPromptFlag: '',
-    resumeFlag: '--resume',
-    sessionIdFlag: '--session-id',
-    planActivateCommand: '/plan',
-    icon: 'claude.svg',
-    alt: 'Claude Code',
-  },
-  {
-    id: 'cursor',
-    name: 'Cursor',
-    description:
-      "Cursor's agent CLI; provides editor-style, location-aware assistance from the shell.",
-    docUrl: 'https://cursor.com/docs/cli/overview',
-    installCommand: 'curl https://cursor.com/install -fsS | bash',
-    commands: ['cursor-agent'],
-    versionArgs: ['--version'],
-    cli: 'cursor-agent',
-    autoApproveFlag: '-f --approve-mcps',
-    initialPromptFlag: '',
-    resumeFlag: '--resume',
-    icon: 'cursor.svg',
-    alt: 'Cursor CLI',
-    invertInDark: true,
-  },
-  {
-    id: 'antigravity',
-    name: 'Antigravity',
-    description:
-      'Google Antigravity ACP with native authentication, approvals and persistent conversations.',
-    docUrl: 'https://github.com/agentclientprotocol/registry/tree/main/antigravity-acp',
-    commands: ['antigravity-acp'],
-    versionArgs: ['--version'],
-    cli: 'antigravity-acp',
-    initialPromptFlag: '',
-    planActivateCommand: '/plan',
-    icon: 'antigravity.svg',
-    alt: 'Antigravity ACP',
-  },
-  {
-    id: 'opencode',
-    name: 'OpenCode',
-    description:
-      'OpenCode CLI that interfaces with models for code generation and edits from the shell.',
-    docUrl: 'https://opencode.ai/docs/cli/',
-    installCommand: 'npm install -g opencode-ai',
-    commands: ['opencode'],
-    versionArgs: ['--version'],
-    cli: 'opencode',
-    autoApproveViaEnv: true,
-    initialPromptFlag: '--prompt',
-    resumeFlag: '--session',
-    sessionIdFlag: '--session',
-    sessionIdOnResumeOnly: true,
-    resumeWithoutSessionFlag: '--continue',
-    icon: 'opencode.svg',
-    iconDark: 'opencode-dark.svg',
-    alt: 'OpenCode CLI',
-  },
-];
-
-const PROVIDER_MAP = new Map<string, AgentProviderDefinition>(
-  AGENT_PROVIDERS.map((provider) => [provider.id, provider])
-);
-
-export function getProvider(id: AgentProviderId): AgentProviderDefinition | undefined {
-  return PROVIDER_MAP.get(id);
-}
-
-export function getInstallCommandForProvider(id: AgentProviderId): string | null {
-  return PROVIDER_MAP.get(id)?.installCommand ?? null;
-}
-
-/**
- * Validates if a string is a valid provider ID.
- * @param value - The value to validate
- * @returns true if the value is a valid provider ID, false otherwise
- */
-export function isValidProviderId(value: unknown): value is AgentProviderId {
-  return typeof value === 'string' && AGENT_PROVIDER_IDS.includes(value as AgentProviderId);
-}
-
-export function isValidProviderSessionId(providerId: string, providerSessionId: string): boolean {
-  if (providerId === 'opencode') return providerSessionId.startsWith('ses');
-  return true;
 }
 
 /**
@@ -188,20 +103,13 @@ export function isValidProviderSessionId(providerId: string, providerSessionId: 
  */
 export function providerDisplayName(id: string | null | undefined): string | null {
   if (!id) return null;
-  if (!isValidProviderId(id)) return id;
-  return PROVIDER_MAP.get(id)?.name ?? id;
+  return getProvider(id)?.name ?? id;
 }
 
 export function getDescriptionForProvider(id: AgentProviderId): string | null {
-  return PROVIDER_MAP.get(id)?.description ?? null;
+  return getProvider(id)?.description ?? null;
 }
 
 export function getDocUrlForProvider(id: AgentProviderId): string | null {
-  return PROVIDER_MAP.get(id)?.docUrl ?? null;
-}
-
-export function listDetectableProviders(): AgentProviderDefinition[] {
-  return AGENT_PROVIDERS.filter(
-    (provider) => provider.detectable !== false && provider.commands?.length
-  );
+  return getProvider(id)?.docUrl ?? null;
 }

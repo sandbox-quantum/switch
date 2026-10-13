@@ -168,6 +168,6 @@ export class FakeLocator implements ProviderLocator {
 
   async locate(provider: Provider): Promise<LocatedProvider | null> {
     if (this.missing.has(provider)) return null;
-    return { path: `/usr/bin/${provider}`, version: '1.2.3' };
+    return { path: `/usr/bin/${provider}`, version: '1.2.3', versionProblem: null };
   }
 }

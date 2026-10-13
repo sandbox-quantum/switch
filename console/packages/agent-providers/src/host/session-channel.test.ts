@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
+import { tokenForms } from './redaction';
 import {
   connectParent,
   HOST_HUNG_UP_MS,
@@ -228,6 +229,51 @@ it("carries a host's question up to the watcher answering for its agent, and the
   await expect(host.ask({ type: 'tools' })).rejects.toThrow('No room watcher is running');
 });
 
+it("shares a token answered to one host with its agent's other hosts, and only theirs", async () => {
+  const links = new SessionLinks();
+  const pipe = (root: string) => {
+    const child = fakeChild();
+    links.attach(root, child as unknown as ChildProcess);
+    const { port } = fakePort();
+    port.send = (message: unknown) => {
+      child.emit('message', message);
+      return true;
+    };
+    child.send = (message, callback) => {
+      port.emit('message', message);
+      callback(null);
+      return true;
+    };
+    const host = connectParent(port);
+    const shared: string[] = [];
+    host.onRedactions((values) => shared.push(...values));
+    return { host, shared };
+  };
+  const token = 'synthetic-service-token';
+  links.answer('agent', async (_caller, ask) =>
+    ask.type === 'service-token'
+      ? { kind: 'token', token, expiresAt: '2026-10-08T12:00:00Z' }
+      : null
+  );
+
+  const asking = pipe('a1');
+  const sibling = pipe('a2');
+  const other = pipe('b1');
+  asking.host.identify(IDENTITY);
+  sibling.host.identify({ ...IDENTITY, sessionId: 'sibling' });
+  other.host.identify({ ...IDENTITY, agentId: 'other-agent', sessionId: 'other' });
+
+  await asking.host.ask({ type: 'service-token', service: 'github', rejected: null });
+
+  expect(sibling.shared).toEqual([...new Set(tokenForms(token))]);
+  expect(asking.shared).toEqual([...new Set(tokenForms(token))]);
+  expect(other.shared).toEqual([]);
+  // A host that starts (or resumes) later is handed what its agent already has.
+  const resumed = pipe('a3');
+  resumed.host.identify({ ...IDENTITY, sessionId: 'resumed' });
+  expect(resumed.shared).toEqual([...new Set(tokenForms(token))]);
+});
+
 it('refuses a question from a host that has not said who it is, and tells who exited', async () => {
   const links = new SessionLinks();
   const child = fakeChild();
@@ -318,24 +364,28 @@ it('stops sending to a host that hung up, and waits for the next one', async () 
   expect(await next).toBe('fresh');
 });
 
-it('kills a host that hung up and stays alive, with what it started', async () => {
-  vi.useFakeTimers();
-  try {
-    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
-    const links = new SessionLinks();
-    const hung = fakeChild();
-    links.attach('root', hung as unknown as ChildProcess);
-    hung.emit('disconnect');
+// Windows has no process groups; the tree kill it does instead is tested in windows-processes.
+it.skipIf(process.platform === 'win32')(
+  'kills a host that hung up and stays alive, with what it started',
+  async () => {
+    vi.useFakeTimers();
+    try {
+      const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      const links = new SessionLinks();
+      const hung = fakeChild();
+      links.attach('root', hung as unknown as ChildProcess);
+      hung.emit('disconnect');
 
-    await vi.advanceTimersByTimeAsync(HOST_HUNG_UP_MS - 1);
-    expect(kill).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    // Its group: the provider it started is in it.
-    expect(kill).toHaveBeenCalledWith(-4242, 'SIGKILL');
-  } finally {
-    vi.useRealTimers();
+      await vi.advanceTimersByTimeAsync(HOST_HUNG_UP_MS - 1);
+      expect(kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      // Its group: the provider it started is in it.
+      expect(kill).toHaveBeenCalledWith(-4242, 'SIGKILL');
+    } finally {
+      vi.useRealTimers();
+    }
   }
-});
+);
 
 it('leaves a host that hung up and then exited on its own', async () => {
   vi.useFakeTimers();

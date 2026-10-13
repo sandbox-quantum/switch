@@ -164,6 +164,23 @@ export async function serviceContainerId(host: ServerHost, service: string): Pro
   return id;
 }
 
+/**
+ * When the core container last started, as Docker reports it (ISO-8601), or
+ * null when it is not running. Throws when Docker could not be asked.
+ */
+export async function coreStartedAt(host: ServerHost): Promise<string | null> {
+  if (!(await isStackRunning(host))) return null;
+  const id = await serviceContainerId(host, CORE_SERVICE);
+  const stdout = await runDocker(host, ['inspect', '--format', '{{.State.StartedAt}}', id], 30_000);
+  const startedAt = stdout.trim();
+  if (Number.isNaN(Date.parse(startedAt))) {
+    throw new Error(
+      `Docker reported an unreadable start time for the core container: ${startedAt}`
+    );
+  }
+  return new Date(startedAt).toISOString();
+}
+
 /** Service names currently in the `running` state for the managed project. */
 export async function runningServices(host: ServerHost): Promise<string[]> {
   try {

@@ -59,6 +59,7 @@ async def signup_app(session_factory):
         gateway_oidc_enabled=False,
         gateway_oidc_provider_label=None,
         hosted_launch_capacity=2,
+        hosted_agents_enabled=True,
         keyring=TEST_KEYRING,
         gateway_cookie_secure=False,
     )
@@ -254,9 +255,9 @@ async def test_weak_password_or_bad_email_is_rejected(signup_app, payload):
         assert await session.scalar(select(func.count()).select_from(User)) == 0
 
 
-async def test_signup_succeeds_without_cloud_capacity(signup_app, caplog):
+async def test_signup_succeeds_without_cloud_machines(signup_app, caplog):
     app = signup_app
-    app.config.hosted_launch_capacity = 0
+    app.config.hosted_agents_enabled = False
     response = await _signup(app)
     assert response.status_code == 201, response.text
     assert response.json()["machine"] == {
@@ -297,9 +298,9 @@ async def test_signup_succeeds_when_every_machine_is_in_use(signup_app):
 
 async def test_ensure_is_idempotent(signup_app):
     app = signup_app
-    app.config.hosted_launch_capacity = 0
+    app.config.hosted_agents_enabled = False
     await _signup(app)
-    app.config.hosted_launch_capacity = 2
+    app.config.hosted_agents_enabled = True
     first = await _ensure(app, "new.person@example.com")
     assert first.status_code == 200, first.text
     second = await _ensure(app, "new.person@example.com")
@@ -453,7 +454,7 @@ async def test_ensure_wakes_an_idle_sleeping_machine(signup_app):
 async def test_ensure_refuses_when_cloud_machines_are_off(signup_app):
     app = signup_app
     await _signup(app)
-    app.config.hosted_launch_capacity = 0
+    app.config.hosted_agents_enabled = False
     response = await _ensure(app, "new.person@example.com")
     assert response.status_code == 503
     assert response.json()["detail"] == MACHINES_DISABLED

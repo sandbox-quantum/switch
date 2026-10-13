@@ -29,7 +29,8 @@ function lines(text: string): string[] {
   return text.split('\n');
 }
 
-describe('separate users', () => {
+// Linux only: systemd and Linux users.
+describe.skipIf(process.platform === 'win32')('separate users', () => {
   it('names everything after the controller user’s uid', () => {
     const names = separateUserNames(1001);
     expect(names.group).toBe('switch-agents-1001');

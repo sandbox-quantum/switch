@@ -3,13 +3,11 @@ import { observer } from 'mobx-react-lite';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
-import type {
-  DeployedTelemetry,
-  ManagedServerUpgrade,
-  SwitchVersionDrift,
-} from '@shared/core/managed-switch-server/managed-switch-server';
+import type { SwitchVersionDrift } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { localServerStore } from './local-server-store';
+import { ToneDot } from './managed-server-dot';
+import { managedServerState } from './managed-server-state';
 import { remoteServerStore } from './remote-server-store';
 import { serverAvailability } from './server-availability';
 
@@ -60,20 +58,6 @@ export function serverStatusLabel(server: SwitchServer): string {
   return STATE_LABEL[serverState(server)];
 }
 
-/**
- * The state as the switcher button reads it. It has no placement badge beside
- * it — the whole button is the one server — so the local stack says where it
- * runs here instead.
- */
-const SUBTITLE_LABEL: Record<ServerState, string> = {
-  ...STATE_LABEL,
-  'running-local': 'Running locally',
-};
-
-export function serverSubtitleLabel(server: SwitchServer): string {
-  return SUBTITLE_LABEL[serverState(server)];
-}
-
 /** Where a server runs. Null for one reached by URL: this app does not know. */
 export function serverPlacementLabel(server: SwitchServer): string | null {
   if (!server.managed) return null;
@@ -92,37 +76,6 @@ export function serverDrift(server: SwitchServer): SwitchVersionDrift | null {
     return remoteServerStore.driftFor(server.sshHost);
   }
   return localServerStore.drift;
-}
-
-/** The upgrade a managed server's stack owes this build, or null. */
-export function serverUpgrade(server: SwitchServer): ManagedServerUpgrade | null {
-  if (!server.managed) return null;
-  if (server.managementKind === 'remote' && server.sshHost) {
-    return remoteServerStore.upgradeFor(server.sshHost);
-  }
-  return localServerStore.upgrade;
-}
-
-/** The current step of a managed server's lifecycle operation, or null. */
-export function serverProgress(server: SwitchServer): string | null {
-  if (!server.managed) return null;
-  if (server.managementKind === 'remote' && server.sshHost) {
-    return remoteServerStore.statusFor(server.sshHost).message;
-  }
-  return localServerStore.message;
-}
-
-/**
- * What a managed server's running stack is doing about usage data. Null for a
- * server this app does not run: its operator decides, and the Console's toggle
- * neither reaches it nor claims to.
- */
-export function serverDeployedTelemetry(server: SwitchServer): DeployedTelemetry | null {
-  if (!server.managed) return null;
-  if (server.managementKind === 'remote' && server.sshHost) {
-    return remoteServerStore.deployedTelemetryFor(server.sshHost);
-  }
-  return localServerStore.deployedTelemetry;
 }
 
 const AVATAR_SIZE = {
@@ -189,6 +142,17 @@ export const ServerStatusPill = observer(function ServerStatusPill({
 }: {
   server: SwitchServer;
 }) {
+  // A server this Console runs says what it is doing — starting, stopping,
+  // updating — rather than only whether it can be reached.
+  const managed = managedServerState(server);
+  if (managed?.known) {
+    return (
+      <span className="flex items-center gap-1.5 rounded-full bg-background-tertiary px-2 py-0.5 text-xs text-foreground-muted">
+        <ToneDot tone={managed.tone} size={6} />
+        {managed.label}
+      </span>
+    );
+  }
   return (
     <span className="flex items-center gap-1.5 rounded-full bg-background-tertiary px-2 py-0.5 text-xs text-foreground-muted">
       <ServerStatusDot server={server} />

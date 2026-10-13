@@ -114,9 +114,7 @@ POLICY_NAME = "tenant_isolation"
 # so widening it fails the suite until someone changes the test too.
 #
 # A person is not a tenant member (`users`), nor is the record of how they
-# prove who they are (`oidc_identities`); `feature_flags` is a deployment
-# switch, and a flag that needs to vary per customer is a new scoped table
-# rather than a nullable column here. Alembic's `alembic_version` needs no
+# prove who they are (`oidc_identities`). Alembic's `alembic_version` needs no
 # entry: Alembic owns that table and never registers it on this metadata.
 #
 # The three telemetry tables are global because each records a fact about the
@@ -139,16 +137,27 @@ POLICY_NAME = "tenant_isolation"
 # workspace is that workspace's `machine_workspaces` row, which is scoped, and
 # `tenants_of_cloud_machine` (`db/tenant_lookup.py`) is how the cloud
 # controller, which acts for no tenant, finds which workspaces those are.
+#
+# `trust_settings` is Switch Trust's one guardrails policy for the whole
+# deployment (`docs/design/switch-trust-guardrails-v1.md`'s Settings UI
+# section) — a policy that varied per tenant would be a new scoped table, not
+# a row here.
+#
+# `service_oauth_clients` holds the OAuth client Core registered for itself at
+# a vendor that offers no other way to have one. The vendor sees one Switch,
+# so there is one client per deployment and service, shared by every tenant's
+# sign-ins; it holds no person's account, only the deployment's own client.
 GLOBAL_TABLES = frozenset(
     {
         "cloud_machines",
         "users",
         "oidc_identities",
-        "feature_flags",
         "deployment_identity",
         "telemetry_milestones",
         "telemetry_snapshot_watermark",
         "switch_core_processes",
+        "trust_settings",
+        "service_oauth_clients",
     }
 )
 

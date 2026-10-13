@@ -1,6 +1,9 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CirclePause, Loader2 } from 'lucide-react';
+import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
+import { isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
@@ -46,7 +49,7 @@ export function useAgentConnection(agent: Agent | null) {
   const health = query.data?.agents.find((entry) => entry.agentId === agent?.id);
   return { query, health, state: query.isError ? ('unknown' as const) : health?.state };
 }
-export function AgentConnectionIndicator({
+export const AgentConnectionIndicator = observer(function AgentConnectionIndicator({
   agent,
   showLabel = false,
 }: {
@@ -55,6 +58,10 @@ export function AgentConnectionIndicator({
 }) {
   const { navigate } = useNavigate();
   const { query, health, state } = useAgentConnection(agent);
+  // While its server is not running, the workspace's banner already says why
+  // nothing connects; a spinner on every agent would only repeat it.
+  const server = agent.serverId ? switchServersStore.serverById(agent.serverId) : null;
+  if (server && isFrozenServer(server)) return null;
   if (!agent.switchAgentId || !state || (!showLabel && state === 'connected')) return null;
   const attention = connectionNeedsAttention(state);
   const label = connectionLabels[state];
@@ -88,4 +95,4 @@ export function AgentConnectionIndicator({
       </TooltipContent>
     </Tooltip>
   );
-}
+});

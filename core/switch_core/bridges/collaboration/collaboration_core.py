@@ -977,17 +977,13 @@ class CollaborationCore:
                 await self._post_trust_notice(
                     msg,
                     "🚫 Your message was blocked by Switch Trust and was not "
-                    "delivered.",
+                    "delivered to the room. You can still see it, but agents "
+                    "can't access it.",
                     AdminMessageType.TRUST_BLOCKED,
                 )
                 return
             if check.redacted_content is not None:
                 content = check.redacted_content
-                redaction_notice = trust_redaction_notice(check)
-                if redaction_notice is not None:
-                    await self._post_trust_notice(
-                        msg, redaction_notice, AdminMessageType.TRUST_REDACTED
-                    )
             annotation = trust_annotation(check)
             if annotation is not None:
                 content = f"{content}\n\n{annotation}"
@@ -1006,6 +1002,27 @@ class CollaborationCore:
                     transport_room_id,
                 )
                 return
+            # Tell the sender what happened only now that the message is
+            # actually confirmed to have reached the room — posting this
+            # beforehand risks telling them their message was flagged/
+            # redacted when it never got there at all.
+            if check.redacted_content is not None:
+                redaction_notice = trust_redaction_notice(check)
+                if redaction_notice is not None:
+                    await self._post_trust_notice(
+                        msg, redaction_notice, AdminMessageType.TRUST_REDACTED
+                    )
+            if annotation is not None:
+                # The room itself never relays a human-authored event back out
+                # to a platform (see handle_outbound_message's human-sender
+                # skip), so without this the sender would never see the
+                # annotation their own client just appended to their message.
+                notice_type = (
+                    AdminMessageType.TRUST_ALERTED
+                    if check.outcome == "alerted"
+                    else AdminMessageType.TRUST_ERRORED
+                )
+                await self._post_trust_notice(msg, annotation, notice_type)
             # Record the correlation so a later reply (either direction) threads.
             await self._record_message_map(
                 external_channel_id=msg.channel_id,
@@ -1068,9 +1085,10 @@ class CollaborationCore:
     async def _post_trust_notice(
         self, msg: InboundMessage, body: str, message_type: AdminMessageType
     ) -> None:
-        """Tell the sender's platform a message was blocked or redacted.
-        Never lets a failed notice take the inbound message down with it —
-        mirrors `AgentCore._post_trust_blocked_notice`."""
+        """Tell the sender's platform what Switch Trust did with their message
+        — blocked, redacted, alerted, or errored. Never lets a failed notice
+        take the inbound message down with it — mirrors
+        `AgentCore._post_trust_blocked_notice`."""
         try:
             await self._adapter.admin_message(
                 msg.channel_id,

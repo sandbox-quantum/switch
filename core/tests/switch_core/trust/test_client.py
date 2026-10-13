@@ -5,11 +5,14 @@ sites that use them.
 
 import json
 import uuid
+from dataclasses import dataclass
 
 import httpx
 import pytest
 
+from switch_core.keys import UndecryptableError
 from switch_core.trust.client import (
+    DynamicTrustClient,
     GuardrailBlockedError,
     GuardrailsCheckError,
     HttpTrustClient,
@@ -19,6 +22,120 @@ from switch_core.trust.client import (
     check_message,
     trust_annotation,
 )
+
+
+@dataclass
+class _FakeRow:
+    endpoint: str
+    policy_id: str | None
+    api_key_encrypted: str | None
+
+
+class _FakeStore:
+    def __init__(self, row: _FakeRow | None) -> None:
+        self._row = row
+
+    async def get(self, session: object) -> _FakeRow | None:
+        return self._row
+
+
+class _FakeSession:
+    async def __aenter__(self) -> "_FakeSession":
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+class _FakeSessionFactory:
+    def __call__(self) -> _FakeSession:
+        return _FakeSession()
+
+
+class _FakeKeyring:
+    def decrypt(self, value: str) -> str:
+        return value.removeprefix("enc:")
+
+
+class _UndecryptableKeyring:
+    def decrypt(self, value: str) -> str:
+        raise UndecryptableError("no key in the keyring opens this value")
+
+
+def _dynamic_client(row: _FakeRow | None, handler, keyring=None) -> DynamicTrustClient:
+    return DynamicTrustClient(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        store=_FakeStore(row),  # type: ignore[arg-type]
+        keyring=keyring or _FakeKeyring(),  # type: ignore[arg-type]
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        timeout_seconds=1.0,
+    )
+
+
+def _unreachable(request: httpx.Request) -> httpx.Response:
+    raise AssertionError("no request should be made")
+
+
+@pytest.mark.asyncio
+async def test_dynamic_client_behaves_like_null_with_no_row() -> None:
+    client = _dynamic_client(None, _unreachable)
+    result = await client.check(role="user", content="hi", room_id="room-1")
+    assert result.outcome == "ok"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_client_behaves_like_null_when_policy_id_is_missing() -> None:
+    row = _FakeRow(
+        endpoint="https://trust.example",
+        policy_id=None,
+        api_key_encrypted="enc:k",
+    )
+    client = _dynamic_client(row, _unreachable)
+    result = await client.check(role="user", content="hi", room_id="room-1")
+    assert result.outcome == "ok"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_client_checks_against_the_current_row() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["key"] = request.headers.get("x-flintai-api-key")
+        seen["policy"] = request.headers.get("x-guardrails-policy-id")
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_OK"})
+
+    row = _FakeRow(
+        endpoint="https://trust.example",
+        policy_id="pol_123",
+        api_key_encrypted="enc:k",
+    )
+    client = _dynamic_client(row, handler)
+    result = await client.check(role="user", content="hi", room_id="room-1")
+
+    assert seen["key"] == "k"
+    assert seen["policy"] == "pol_123"
+    assert seen["url"] == "https://trust.example/guardrails/check"
+    assert result.outcome == "ok"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_client_turns_an_undecryptable_key_into_a_check_error() -> None:
+    """A key encrypted under a key since dropped from SECRET_KEYS must not
+    crash message sending — `check_message` only fails open on
+    `GuardrailsCheckError`, so the decrypt failure has to become one."""
+    row = _FakeRow(
+        endpoint="https://trust.example",
+        policy_id="pol_123",
+        api_key_encrypted="enc:k",
+    )
+    client = _dynamic_client(row, _unreachable, keyring=_UndecryptableKeyring())
+
+    with pytest.raises(GuardrailsCheckError):
+        await client.check(role="user", content="hi", room_id="room-1")
+
+    result = await check_message(client, role="user", content="hi", room_id="room-1")
+    assert result.outcome == "errored"
 
 
 def _client(handler) -> HttpTrustClient:
@@ -54,7 +171,7 @@ async def test_posts_the_one_message_with_the_expected_headers():
     # Always the same constant agent identity (Switch has no single "agent" to
     # attribute a check to); the room and a fresh per-check id carry the
     # per-call distinction instead.
-    assert seen["agent_name"] == "Switch Rooms"
+    assert seen["agent_name"] == "Switch Rooms Agents"
     assert seen["session_id"] == "room-1"
     assert uuid.UUID(str(seen["turn_id"]))  # a fresh, well-formed UUID
     assert seen["body"] == {"messages": [{"role": "user", "content": "hi"}]}

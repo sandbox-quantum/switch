@@ -2,8 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AdvancedConfigProblem } from '@renderer/features/locations/components/add-agent-modal/agent-advanced-config';
 import {
-  advancedFields,
   attributesFromForm,
   emptyForm,
   formFromAttributes,
@@ -11,7 +11,9 @@ import {
   type FormValue,
 } from '@renderer/features/locations/components/agent-definition-fields';
 import { type ModelCatalogueResult } from '@renderer/features/locations/components/agent-model-catalogue';
+import { choicesNotOffered } from '@renderer/features/locations/components/local-advanced-fields';
 import { useAgentEdit } from '@renderer/features/locations/components/main-panel/agent-edits';
+import { useLocalAdvancedFields } from '@renderer/features/locations/components/use-local-advanced-fields';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { isProvisioned } from '@renderer/features/sessions/stores/session-store';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
@@ -50,22 +52,9 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
   const providerId = agent?.providerId ?? null;
   const editable = !!agent;
 
-  const { data: allFields } = useQuery({
-    queryKey: ['agentAdvancedFields', providerId],
-    queryFn: () => (providerId ? rpc.agents.advancedFields({ providerId }) : Promise.resolve([])),
-    enabled: !!providerId,
-  });
-  const fields = useMemo(() => advancedFields(allFields ?? []), [allFields]);
-
-  // Where the provider keeps these settings, which decides whether a running
-  // session can be brought onto them. Asked of the provider rather than inferred
-  // from its id.
-  const { data: surface } = useQuery({
-    queryKey: ['agentAdvancedSurface', providerId],
-    queryFn: () =>
-      providerId ? rpc.agents.advancedSurface({ providerId }) : Promise.resolve('none' as const),
-    enabled: !!providerId,
-  });
+  // The fields are the agent's Switch server's; where the provider keeps the
+  // values decides whether a running session can be brought onto them.
+  const { fields, surface, problem } = useLocalAdvancedFields(agent?.serverId ?? null, providerId);
 
   const { data: locations } = useQuery({
     queryKey: ['locations'],
@@ -106,11 +95,13 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
 
   const staleSessionIds = sessionsStartedBeforeChanges(locationId, agentId);
 
+  // A stored setting the form does not show — the server's fields could not be
+  // read, or this Console cannot apply one — is kept rather than dropped unseen.
   const save = useMutation({
     mutationFn: () =>
       rpc.agents.updateAdvancedConfig({
         agentId: agentId as string,
-        attributes: attributesFromForm(fields, form),
+        attributes: { ...current, ...attributesFromForm(fields, form) },
       }),
     onSuccess: () => {
       toast({ title: 'Advanced configuration saved' });
@@ -204,7 +195,10 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
     revert: onRevert,
   });
 
-  if (!editable || fields.length === 0) return null;
+  if (!editable) return null;
+
+  const shownProblem = problem ?? (current ? choicesNotOffered(fields, current) : null);
+  if (fields.length === 0) return <AdvancedConfigProblem problem={shownProblem} />;
 
   // A launch profile is read once, when the session starts, so a change cannot
   // reach a running session without one — and a resume carries the new profile,
@@ -215,41 +209,44 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
   const showStaleNotice = restartable && staleSessionIds.length > 0 && (dirty || save.isSuccess);
 
   return (
-    <AdvancedConfigDisclosure
-      fields={fields}
-      form={form}
-      summary={summariseValues(fields, savedForm)}
-      catalogue={catalogue}
-      intro="The agent's model, reasoning effort and tools. Its instructions are above, and its name is fixed."
-      onFieldChange={setField}
-    >
-      {showStaleNotice && (
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
-          <p className="text-xs text-foreground-muted">
-            {staleSessionIds.length === 1
-              ? 'A session is running'
-              : `${staleSessionIds.length} sessions are running`}{' '}
-            on the previous configuration — it is read only when a session starts.{' '}
-            {dirty
-              ? 'Save, then Restart to apply it now.'
-              : 'It applies to the next session — or use Restart to apply it now (the conversation is resumed).'}
-          </p>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={dirty || restart.isPending}
-            onClick={() => restart.mutate()}
-          >
-            {restart.isPending ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <RefreshCw className="size-3.5" />
-            )}
-            {restartFailed.length > 0 ? 'Retry restart' : 'Restart'}
-          </Button>
-        </div>
-      )}
-    </AdvancedConfigDisclosure>
+    <div className="flex flex-col gap-2">
+      <AdvancedConfigDisclosure
+        fields={fields}
+        form={form}
+        summary={summariseValues(fields, savedForm)}
+        catalogue={catalogue}
+        intro="The agent's model, reasoning effort and tools. Its instructions are above, and its name is fixed."
+        onFieldChange={setField}
+      >
+        {showStaleNotice && (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
+            <p className="text-xs text-foreground-muted">
+              {staleSessionIds.length === 1
+                ? 'A session is running'
+                : `${staleSessionIds.length} sessions are running`}{' '}
+              on the previous configuration — it is read only when a session starts.{' '}
+              {dirty
+                ? 'Save, then Restart to apply it now.'
+                : 'It applies to the next session — or use Restart to apply it now (the conversation is resumed).'}
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={dirty || restart.isPending}
+              onClick={() => restart.mutate()}
+            >
+              {restart.isPending ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="size-3.5" />
+              )}
+              {restartFailed.length > 0 ? 'Retry restart' : 'Restart'}
+            </Button>
+          </div>
+        )}
+      </AdvancedConfigDisclosure>
+      <AdvancedConfigProblem problem={shownProblem} />
+    </div>
   );
 });
 

@@ -29,20 +29,12 @@ from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.management.advanced_config import validate_advanced_config
 from switch_core.management.process_lease import ProcessLeases
 from switch_core.management.sealed_logins import PublicKey, key_id
+from switch_core.providers.registry import AgentProviderId
 
-Provider = Literal["claude", "codex", "opencode", "antigravity", "cursor"]
+Provider = AgentProviderId
 ControllerKind = Literal["console", "daemon", "ec2"]
 DesiredState = Literal["running", "stopped"]
 Isolation = Literal["shared", "isolated"]
-
-# The known-agent spec each provider registers through.
-PROVIDER_KNOWN_AGENT_TYPES: dict[str, str] = {
-    "claude": "claude-code",
-    "codex": "codex",
-    "opencode": "opencode",
-    "antigravity": "antigravity",
-    "cursor": "cursor",
-}
 
 MAX_INSTRUCTIONS_BYTES = 32 * 1024
 MAX_CONTROLLER_NAME_CHARS = 200

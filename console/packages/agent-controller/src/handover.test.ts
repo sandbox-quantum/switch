@@ -182,7 +182,8 @@ describe('resolveSharedHostBundle', () => {
     const directory = join(dir, 'bundle-dir');
     mkdirSync(directory);
     expect(() => resolveSharedHostBundle(directory, {}, () => '')).toThrow(/is not a file/);
-    if (process.getuid?.() === 0) return;
+    // Windows has no mode bits to make a file unreadable with.
+    if (process.getuid?.() === 0 || process.platform === 'win32') return;
     const unreadable = join(dir, 'unreadable.mjs');
     writeFileSync(unreadable, '');
     chmodSync(unreadable, 0o000);

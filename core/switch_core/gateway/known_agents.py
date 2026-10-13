@@ -12,6 +12,11 @@ from switch_core.bridges.agent.protocol.types import (
     TaskProtocolConfig,
     ToolSpec,
 )
+from switch_core.providers.registry import (
+    AgentProvider,
+    agent_provider,
+    agent_providers,
+)
 
 if TYPE_CHECKING:
     from switch_core.db.models import Agent
@@ -28,25 +33,36 @@ class KnownAgentOptions(BaseModel):
 
 
 class KnownAgent(ABC):
-    """Pre-built agent definition for one-click registration.
+    """Pre-built agent definition for one-click registration, for one provider.
 
-    Each subclass binds together: the connector type, the typed options schema
-    accepted at registration, and a `build_profile` classmethod that derives
-    the integration profile from validated options.
+    Each subclass binds together the typed options schema accepted at
+    registration and a `build_profile` method that derives the integration
+    profile from validated options. The connector type and tools come from the
+    provider's entry in `switch_core.providers.registry`.
     """
 
-    connector_type: ClassVar[str]
     options_schema: ClassVar[type[KnownAgentOptions]]
-    tools: ClassVar[list[ToolSpec]]
-    models: ClassVar[list[ModelSpec]]
 
-    @classmethod
+    def __init__(self, provider: AgentProvider) -> None:
+        self.provider = provider
+
+    @property
+    def connector_type(self) -> str:
+        return self.provider.connector_type
+
+    @property
+    def tools(self) -> list[ToolSpec]:
+        return list(self.provider.tools)
+
+    @property
+    def models(self) -> list[ModelSpec]:
+        return []
+
     @abstractmethod
-    def build_profile(cls, options: KnownAgentOptions) -> IntegrationProfile: ...
+    def build_profile(self, options: KnownAgentOptions) -> IntegrationProfile: ...
 
-    @classmethod
-    def parse_options(cls, raw: dict[str, Any] | None) -> KnownAgentOptions:
-        return cls.options_schema.model_validate(raw or {})
+    def parse_options(self, raw: dict[str, Any] | None) -> KnownAgentOptions:
+        return self.options_schema.model_validate(raw or {})
 
 
 class ClaudeCodeOptions(KnownAgentOptions):
@@ -93,26 +109,9 @@ class ClaudeCodeOptions(KnownAgentOptions):
 
 
 class ClaudeCodeKnownAgent(KnownAgent):
-    connector_type = "Claude Code"
     options_schema = ClaudeCodeOptions
-    tools = [
-        ToolSpec(name="Bash", description="Executes shell commands"),
-        ToolSpec(name="Edit", description="Makes targeted edits to files"),
-        ToolSpec(name="Write", description="Creates or overwrites files"),
-        ToolSpec(name="Read", description="Reads file contents"),
-        ToolSpec(name="Glob", description="Finds files by name pattern"),
-        ToolSpec(name="Grep", description="Searches file contents for patterns"),
-        ToolSpec(name="NotebookEdit", description="Modifies Jupyter notebook cells"),
-        ToolSpec(name="Agent", description="Spawns a subagent to handle a task"),
-        ToolSpec(name="WebFetch", description="Fetches and processes web content"),
-        ToolSpec(name="WebSearch", description="Performs web searches"),
-        ToolSpec(name="Monitor", description="Runs background watch commands"),
-        ToolSpec(name="Skill", description="Executes a skill"),
-    ]
-    models: ClassVar[list[ModelSpec]] = []
 
-    @classmethod
-    def build_profile(cls, options: KnownAgentOptions) -> IntegrationProfile:
+    def build_profile(self, options: KnownAgentOptions) -> IntegrationProfile:
         assert isinstance(options, ClaudeCodeOptions)
         if options.auto_session:
             connection_model = "auto_session"
@@ -138,24 +137,24 @@ class ClaudeCodeKnownAgent(KnownAgent):
         )
 
 
-class CodexOptions(KnownAgentOptions):
+class GenericAgentOptions(KnownAgentOptions):
     auto_session: bool = False
-    """When True, the operator's connector (Switch Console) watches every room this
-    agent belongs to and auto-spawns a Codex session — connected to the room and
+    """When True, the operator's connector (Switch Console) watches every room
+    this agent belongs to and auto-spawns a session — connected to the room and
     wired to the agent's identity — the moment the agent is addressed in a room
-    where it has no live session. The registered profile becomes `auto_session`.
-    Switch Console delivers inbound room messages through Codex's app-server
-    protocol."""
+    where it has no live session. The registered profile becomes
+    `auto_session`. These providers have no connector channel of their own;
+    Switch Console delivers inbound room messages into the session itself."""
 
     repo_dir: str | None = None
     """Absolute path to the directory the agent's sessions run in. Switch
     Console sets it when the agent is onboarded. None when it is unknown."""
 
-    # No `channels_enabled`: Switch Console sends it for every provider, but Codex
-    # has no connector channel of its own, so nothing here could act on it.
+    # No `channels_enabled`: Switch Console sends it for every provider, but
+    # only Claude Code has a connector channel that could act on it.
     # `KnownAgentOptions` ignores unknown keys, so the shared registration path
-    # still works — and the schema-driven gateway form does not render a control
-    # that silently does nothing.
+    # still works — and the schema-driven gateway form does not render a
+    # control that silently does nothing.
 
     @field_validator("repo_dir", mode="before")
     @classmethod
@@ -165,101 +164,32 @@ class CodexOptions(KnownAgentOptions):
         return value
 
 
-class CodexKnownAgent(KnownAgent):
-    connector_type = "Codex CLI"
-    options_schema = CodexOptions
-    tools = [
-        ToolSpec(name="Shell", description="Executes shell commands"),
-        ToolSpec(name="ApplyPatch", description="Applies patches to files"),
-        ToolSpec(name="Read", description="Reads file contents"),
-    ]
-    models: ClassVar[list[ModelSpec]] = []
+class GenericKnownAgent(KnownAgent):
+    """The known agent of every provider without one of its own: a CLI that
+    Switch Console runs, delivering room messages into its session."""
 
-    @classmethod
-    def build_profile(cls, options: KnownAgentOptions) -> IntegrationProfile:
-        assert isinstance(options, CodexOptions)
-        # Switch Console watches and starts a session when auto_session;
-        # otherwise the profile is session_addressable. Codex does not report
-        # per-tool events to Switch or have its tool calls mediated by Switch,
-        # so those lists stay empty, unlike Claude Code.
-        connection_model = (
-            "auto_session" if options.auto_session else "session_addressable"
-        )
+    options_schema = GenericAgentOptions
+
+    def build_profile(self, options: KnownAgentOptions) -> IntegrationProfile:
+        assert isinstance(options, GenericAgentOptions)
         return IntegrationProfile(
-            connection_model=connection_model,
-            message_exchange=True,
-            pre_invocation_mediation=[],
-            post_invocation_mediation=[],
-            event_reporting=[],
-            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
-            # Same as Claude Code: these work only on a session Switch Console
-            # is running, so all three resolve per live session via
-            # AgentRuntimeState.
-            command_capabilities=CommandCapabilities(
-                reset="session_dependent",
-                compact="session_dependent",
-                interrupt="session_dependent",
-            ),
-        )
-
-
-class OpenCodeOptions(KnownAgentOptions):
-    auto_session: bool = False
-    """When True, the operator's connector (Switch Console) watches every room this
-    agent belongs to and auto-spawns an OpenCode session — connected to the room
-    and wired to the agent's identity — the moment the agent is addressed in a
-    room where it has no live session. The registered profile becomes
-    `auto_session`. Switch Console delivers inbound room messages through
-    OpenCode's HTTP server."""
-
-    repo_dir: str | None = None
-    """Absolute path to the directory the agent's sessions run in. Switch
-    Console sets it when the agent is onboarded. None when it is unknown."""
-
-    # No `channels_enabled`, for the same reason as Codex: Switch Console sends it
-    # for every provider, but OpenCode has no connector channel for it to act on.
-
-    @field_validator("repo_dir", mode="before")
-    @classmethod
-    def _blank_string_to_none(cls, value: object) -> object:
-        if isinstance(value, str) and value.strip() == "":
-            return None
-        return value
-
-
-class OpenCodeKnownAgent(KnownAgent):
-    connector_type = "OpenCode CLI"
-    options_schema = OpenCodeOptions
-    tools = [
-        ToolSpec(name="Bash", description="Executes shell commands"),
-        ToolSpec(name="Edit", description="Edits existing files"),
-        ToolSpec(name="Write", description="Writes new files"),
-        ToolSpec(name="Read", description="Reads file contents"),
-        ToolSpec(name="Grep", description="Searches file contents"),
-        ToolSpec(name="Glob", description="Finds files by pattern"),
-        ToolSpec(name="List", description="Lists directory contents"),
-        ToolSpec(name="WebFetch", description="Fetches web pages"),
-        ToolSpec(name="Task", description="Spawns a sub-agent"),
-    ]
-    models: ClassVar[list[ModelSpec]] = []
-
-    @classmethod
-    def build_profile(cls, options: KnownAgentOptions) -> IntegrationProfile:
-        assert isinstance(options, OpenCodeOptions)
-        return IntegrationProfile(
+            # Switch Console watches and auto-spawns when auto_session; otherwise
+            # it keeps a session live and delivers messages into it, which is
+            # the session_addressable model.
             connection_model=(
                 "auto_session" if options.auto_session else "session_addressable"
             ),
             message_exchange=True,
-            # OpenCode's tool activity is shown in Switch Console but is not
-            # reported to Switch as events, and Switch does not mediate its tool
-            # calls, so both lists stay empty, the same as Codex.
+            # Tool activity, where a provider reports it, goes to Switch Console
+            # to drive the session's status; none of it reaches Switch as
+            # reported events, and nothing mediates a tool call before it runs.
             pre_invocation_mediation=[],
             post_invocation_mediation=[],
             event_reporting=[],
             task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
-            # These work only on a session Switch Console is running, so all
-            # three resolve per live session via AgentRuntimeState.
+            # Reset / compact / interrupt only work while Switch Console drives
+            # the session; a standalone CLI cannot be controlled, so all three
+            # resolve per live session via AgentRuntimeState.
             command_capabilities=CommandCapabilities(
                 reset="session_dependent",
                 compact="session_dependent",
@@ -268,113 +198,37 @@ class OpenCodeKnownAgent(KnownAgent):
         )
 
 
-class AntigravityOptions(KnownAgentOptions):
-    auto_session: bool = False
-    repo_dir: str | None = None
-
-    @field_validator("repo_dir", mode="before")
-    @classmethod
-    def _blank_string_to_none(cls, value: object) -> object:
-        return None if isinstance(value, str) and not value.strip() else value
+# Providers whose known agent is not the generic one, by `known_agent_type`.
+_SPECIALISED: dict[str, type[KnownAgent]] = {"claude-code": ClaudeCodeKnownAgent}
 
 
-class AntigravityKnownAgent(KnownAgent):
-    connector_type = "Antigravity CLI"
-    options_schema = AntigravityOptions
-    tools = [
-        ToolSpec(name="run_command", description="Executes shell commands"),
-        ToolSpec(name="write_to_file", description="Writes files"),
-        ToolSpec(name="replace_file_content", description="Edits existing files"),
-        ToolSpec(
-            name="multi_replace_file_content",
-            description="Applies several edits to one file",
-        ),
-        ToolSpec(name="view_file", description="Reads file contents"),
-        ToolSpec(name="grep_search", description="Searches file contents"),
-        ToolSpec(name="find_by_name", description="Finds files by pattern"),
-        ToolSpec(name="list_dir", description="Lists directory contents"),
-        ToolSpec(name="read_url_content", description="Fetches web pages"),
-        ToolSpec(name="search_web", description="Searches the web"),
-        ToolSpec(name="call_mcp_tool", description="Calls a tool on an MCP server"),
-        ToolSpec(name="invoke_subagent", description="Delegates to a subagent"),
-    ]
-    models: ClassVar[list[ModelSpec]] = []
-
-    @classmethod
-    def build_profile(cls, options: KnownAgentOptions) -> IntegrationProfile:
-        assert isinstance(options, AntigravityOptions)
-        return IntegrationProfile(
-            connection_model="auto_session"
-            if options.auto_session
-            else "session_addressable",
-            message_exchange=True,
-            pre_invocation_mediation=[],
-            post_invocation_mediation=[],
-            event_reporting=[],
-            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
-            command_capabilities=CommandCapabilities(
-                reset="session_dependent",
-                compact="session_dependent",
-                interrupt="session_dependent",
-            ),
-        )
+def _known_agent_of(provider: AgentProvider) -> KnownAgent:
+    return _SPECIALISED.get(provider.known_agent_type, GenericKnownAgent)(provider)
 
 
-class CursorOptions(KnownAgentOptions):
-    auto_session: bool = False
-    repo_dir: str | None = None
-
-    @field_validator("repo_dir", mode="before")
-    @classmethod
-    def _blank_string_to_none(cls, value: object) -> object:
-        return None if isinstance(value, str) and not value.strip() else value
-
-
-class CursorKnownAgent(KnownAgent):
-    connector_type = "Cursor CLI"
-    options_schema = CursorOptions
-    tools = [
-        ToolSpec(name="shell", description="Executes shell commands"),
-        ToolSpec(name="read_file", description="Reads file contents"),
-        ToolSpec(name="write", description="Writes files"),
-        ToolSpec(name="str_replace", description="Edits existing files"),
-        ToolSpec(name="grep", description="Searches file contents"),
-        ToolSpec(name="glob", description="Finds files by pattern"),
-    ]
-    models: ClassVar[list[ModelSpec]] = []
-
-    @classmethod
-    def build_profile(cls, options: KnownAgentOptions) -> IntegrationProfile:
-        assert isinstance(options, CursorOptions)
-        return IntegrationProfile(
-            connection_model="auto_session"
-            if options.auto_session
-            else "session_addressable",
-            message_exchange=True,
-            pre_invocation_mediation=[],
-            post_invocation_mediation=[],
-            event_reporting=[],
-            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
-            command_capabilities=CommandCapabilities(
-                reset="session_dependent",
-                compact="session_dependent",
-                interrupt="session_dependent",
-            ),
-        )
+def known_agents() -> dict[str, KnownAgent]:
+    """Every known-agent spec, one per provider, keyed by the
+    `known_agent_type` an agent registered through it stores."""
+    return {
+        provider.known_agent_type: _known_agent_of(provider)
+        for provider in agent_providers()
+    }
 
 
-KNOWN_AGENTS: dict[str, type[KnownAgent]] = {
-    "claude-code": ClaudeCodeKnownAgent,
-    "codex": CodexKnownAgent,
-    "opencode": OpenCodeKnownAgent,
-    "antigravity": AntigravityKnownAgent,
-    "cursor": CursorKnownAgent,
-}
+def known_agent(agent_type: str) -> KnownAgent | None:
+    """The spec registered as `agent_type`, or None when there is none."""
+    return known_agents().get(agent_type)
+
+
+def provider_known_agent(provider_id: str) -> KnownAgent:
+    """The spec agents of `provider_id` register through. Raises
+    UnknownProvider for a provider Switch does not run."""
+    return _known_agent_of(agent_provider(provider_id))
 
 
 def known_agent_for(
     agent: Agent,
-) -> tuple[type[KnownAgent], KnownAgentOptions] | None:
+) -> tuple[KnownAgent, KnownAgentOptions] | None:
     """Resolve the KnownAgent spec and parsed options for a registered Agent.
 
     Returns None when the agent was not registered via `/agents/register`
@@ -382,7 +236,7 @@ def known_agent_for(
     """
     md = agent.metadata_ if isinstance(agent.metadata_, dict) else {}
     agent_type = md.get("known_agent_type")
-    spec = KNOWN_AGENTS.get(agent_type) if isinstance(agent_type, str) else None
+    spec = known_agent(agent_type) if isinstance(agent_type, str) else None
     if spec is None:
         return None
     options = spec.parse_options(md.get("known_agent_options"))

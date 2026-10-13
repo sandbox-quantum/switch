@@ -188,21 +188,25 @@ stored in the database.
 ## Agent management
 
 Managed agents, and the agent controllers that run them on users' machines, are
-off by default. To turn them on:
+off by default. The `agent_management` feature flag turns them on:
 
 ```yaml
 switchCore:
-  agentManagement:
-    enabled: true
+  featureFlags:
+    enabled: ["agent_management"]
 secrets:
   controllerTokenSecret: "<openssl rand -hex 32>"
 ```
 
 With `secrets.existingSecret`, put the token secret in that Secret as
-`CONTROLLER_TOKEN_SECRET` instead. The chart sets `AGENT_MANAGEMENT_ENABLED`,
+`CONTROLLER_TOKEN_SECRET` instead. The chart sets `FEATURE_FLAGS_ENABLED`,
 `CONTROLLER_TOKEN_SECRET` and `CONTROLLER_STATUS_INTERVAL_SECONDS` on switch-core
 and its migration Job, so enabling it is one rollout. Controllers enroll and
 connect under `/v1`, which `ingress.agentApiPaths` routes to switch-core by default.
+
+`switchCore.agentManagement.enabled` is gone: the chart refuses to render with it
+set to true, and switch-core refuses to start with `AGENT_MANAGEMENT_ENABLED=true`.
+Move it to the flag list instead.
 
 A deployment that set these variables with `kubectl set env` should remove them
 before the first upgrade that renders them (`kubectl set env deployment/<release>-switch-core

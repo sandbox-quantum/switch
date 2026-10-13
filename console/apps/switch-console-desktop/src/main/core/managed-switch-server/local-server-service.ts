@@ -12,6 +12,7 @@ import {
   CHECKOUT_IMAGE_TAG,
   type CheckoutBuild,
   type DockerAvailability,
+  type LocalActivityEntry,
   type LocalServerStatus,
   type StartLocalServerResult,
   managedServerUpgradeBlockedReason,
@@ -27,11 +28,13 @@ import {
   isCheckoutBuildEnabled,
   setCheckoutBuildEnabled,
 } from './checkout-build';
-import { isStackRunning } from './compose';
-import { LOCAL_SERVER_NAME } from './constants';
+import { coreStartedAt, isStackRunning, runningImages } from './compose';
+import { CORE_SERVICE, LOCAL_SERVER_NAME } from './constants';
 import { readVersionStatus } from './deployed-version';
+import { findFreePort, type LocalServerPorts } from './free-port';
 import { LocalServerHost } from './host/local-host';
 import type { ServerHost } from './host/types';
+import { readLocalActivity, recordLocalActivity } from './local-activity';
 import {
   owedUpgrade,
   readUpgradeJournal,
@@ -39,6 +42,7 @@ import {
   upgradeState,
 } from './managed-upgrade';
 import { resetStack, startStack, stopStack } from './pipeline';
+import { readPersistedPorts, rememberPorts } from './ports';
 import { readDeployedTelemetry } from './telemetry-consent';
 
 /**
@@ -58,6 +62,7 @@ import { readDeployedTelemetry } from './telemetry-consent';
 export class LocalServerService {
   private status: LocalServerStatus = {
     phase: 'stopped',
+    checked: false,
     upgrade: null,
     serverId: null,
     version: COMPATIBLE_SWITCH_VERSION,
@@ -67,6 +72,7 @@ export class LocalServerService {
     deployedTelemetry: null,
     message: null,
     error: null,
+    failedTo: null,
   };
 
   private busy = false;
@@ -88,7 +94,9 @@ export class LocalServerService {
   }
 
   private setStatus(patch: Partial<LocalServerStatus>): void {
-    this.status = { ...this.status, ...patch };
+    // Any change of phase settles what failed, unless the patch says.
+    const failedTo = patch.phase !== undefined ? (patch.failedTo ?? null) : this.status.failedTo;
+    this.status = { ...this.status, ...patch, failedTo };
     events.emit(localServerStatusChannel, this.status);
   }
 
@@ -192,6 +200,7 @@ export class LocalServerService {
     } catch (error) {
       log.warn('local-switch-server: boot status reconcile failed', { error });
     } finally {
+      this.setStatus({ checked: true });
       host.dispose();
     }
     // Not awaited: the boot check is done once the upgrade is under way, and a
@@ -263,6 +272,7 @@ export class LocalServerService {
       if (result.kind === 'docker-unavailable') {
         this.setStatus({ phase: 'error', error: result.detail });
         this.failUpgrade(result.detail);
+        await recordLocalActivity('start-failed', result.detail);
       } else if (result.kind === 'version-downgrade') {
         this.setStatus({
           phase: 'error',
@@ -272,14 +282,18 @@ export class LocalServerService {
           drift: { deployed: result.deployed, expected: result.expected, direction: 'downgrade' },
           upgrade: null,
         });
+        await recordLocalActivity('start-failed', this.status.error);
       } else if (result.kind === 'matrix-migration-failed') {
         const error = matrixMigrationFailedMessage(result.deployed, result.expected);
         this.setStatus({ phase: 'error', message: null, error, deployedVersion: result.deployed });
         this.failUpgrade(error);
+        await recordLocalActivity('start-failed', error);
       } else if (result.kind === 'error') {
         this.setStatus({ phase: 'error', error: result.message });
         this.failUpgrade(result.message);
+        await recordLocalActivity('start-failed', result.message);
       } else {
+        const updatedTo = this.status.upgrade?.to ?? null;
         // The pipeline just wrote this build's pin and converged the containers
         // onto it, so any drift the boot probe found is now resolved.
         this.setStatus({
@@ -292,6 +306,8 @@ export class LocalServerService {
           upgrade: null,
           deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
         });
+        if (updatedTo !== null) await recordLocalActivity('updated', updatedTo);
+        await recordLocalActivity('started', null);
         if (this.refused) {
           this.refused = false;
           for (const listener of this.upgradeListeners) listener(result.serverId);
@@ -304,6 +320,7 @@ export class LocalServerService {
       log.error('local-switch-server: start failed', { error });
       this.setStatus({ phase: 'error', error: message });
       this.failUpgrade(message);
+      await recordLocalActivity('start-failed', message);
       reportManagedServerStartThrew('local');
       return { kind: 'error', message };
     } finally {
@@ -336,14 +353,35 @@ export class LocalServerService {
         deployedTelemetry: null,
         upgrade: upgrade && upgradeState(upgrade, false),
       });
+      await recordLocalActivity('stopped', null);
       reportManagedServerOutcome('stop', 'local', 'success');
     } catch (error) {
-      this.setStatus({
-        phase: 'error',
-        error: error instanceof Error ? error.message : String(error),
-      });
       reportManagedServerOutcome('stop', 'local', 'failure');
-      throw error;
+      // A stop that errors may still have stopped the containers. Say what is
+      // true rather than what the command reported.
+      // Asked so that a failure to ask counts as still running.
+      const stillRunning = await runningImages(host).then(
+        (images) => images.has(CORE_SERVICE),
+        () => true
+      );
+      if (stillRunning) {
+        this.setStatus({
+          phase: 'error',
+          failedTo: 'stop',
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+      log.warn('local-switch-server: stop reported an error, but the stack is down', { error });
+      const upgrade = this.status.upgrade;
+      this.setStatus({
+        phase: 'stopped',
+        message: null,
+        error: null,
+        deployedTelemetry: null,
+        upgrade: upgrade && upgradeState(upgrade, false),
+      });
+      await recordLocalActivity('stopped', null);
     } finally {
       host.dispose();
       this.busy = false;
@@ -376,10 +414,12 @@ export class LocalServerService {
         drift: null,
         upgrade: null,
       });
+      await recordLocalActivity('reset', null);
       reportManagedServerOutcome('reset', 'local', 'success');
     } catch (error) {
       this.setStatus({
         phase: 'error',
+        failedTo: 'reset',
         error: error instanceof Error ? error.message : String(error),
       });
       reportManagedServerOutcome('reset', 'local', 'failure');
@@ -388,6 +428,49 @@ export class LocalServerService {
       host.dispose();
       this.busy = false;
     }
+  }
+
+  /** When the running stack's core container started, or null when it is not
+   * running. */
+  async startedAt(): Promise<string | null> {
+    if (this.status.phase !== 'running') return null;
+    const host: ServerHost = new LocalServerHost();
+    try {
+      return await coreStartedAt(host);
+    } finally {
+      host.dispose();
+    }
+  }
+
+  /** What has happened to the stack, most recent first. */
+  activity(): Promise<LocalActivityEntry[]> {
+    return readLocalActivity();
+  }
+
+  /**
+   * Move whichever of the stack's services publishes on `port` to a free port,
+   * then start it. For a start that failed because something else took the
+   * port since it was chosen.
+   */
+  async useAnotherPort(port: number): Promise<StartLocalServerResult> {
+    if (this.busy || this.starting) {
+      throw new Error('A local-server operation is already in progress.');
+    }
+    const host: ServerHost = new LocalServerHost();
+    try {
+      const ports = await readPersistedPorts(host);
+      if (!ports) throw new Error('This server has not chosen its ports yet.');
+      const service = (Object.keys(ports) as (keyof LocalServerPorts)[]).find(
+        (key) => ports[key] === port
+      );
+      if (!service) throw new Error(`This server does not publish anything on port ${port}.`);
+      const fresh = await findFreePort(new Set(Object.values(ports)));
+      log.info(`local-switch-server: moving ${service} from port ${port} to ${fresh}`);
+      await rememberPorts(host, { ...ports, [service]: fresh });
+    } finally {
+      host.dispose();
+    }
+    return this.start();
   }
 
   dispose(): void {

@@ -159,21 +159,21 @@ export type TelemetryCliFailure =
 declare const durationMsBrand: unique symbol;
 export type TelemetryDurationMs = number & { readonly [durationMsBrand]: true };
 
+declare const platformKeyBrand: unique symbol;
+
 /**
  * Which messaging platform a room or bridge is on.
  *
  * The server names the platform as free text, so this is narrowed at the emitter
- * rather than trusted — the same treatment provider ids get. `other` is a
- * platform we do not know about, `unknown` is one we could not read.
+ * rather than trusted (see `bridgePlatformOfType`): a platform key a server
+ * listed as one of its registered platforms, `other` for a platform we cannot
+ * vouch for, `unknown` for one we could not read. Branded so only the narrowing
+ * produces one.
  */
 export type TelemetryBridgePlatform =
-  | 'slack'
-  | 'mattermost'
-  | 'discord'
-  | 'teams'
-  | 'telegram'
   | 'other'
-  | 'unknown';
+  | 'unknown'
+  | (string & { readonly [platformKeyBrand]: true });
 
 /**
  * What asked for an update check.

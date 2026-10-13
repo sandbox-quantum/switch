@@ -12,6 +12,8 @@ import {
   withOwnershipLockOutlasting,
 } from './ownership-lock';
 
+if (process.platform === 'win32') vi.setConfig({ testTimeout: 60_000 });
+
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -51,11 +53,14 @@ async function child(root: string, stage: string): Promise<number | null> {
     });
   `;
   const processHandle = spawn(process.execPath, ['--input-type=module', '-e', script], {
-    stdio: 'ignore',
+    stdio: ['ignore', 'ignore', 'inherit'],
   });
   const [code] = await once(processHandle, 'exit');
   return code;
 }
+
+/** How `child` reports a process that killed itself: by signal, or on Windows with exit code 1. */
+const KILLED = process.platform === 'win32' ? 1 : null;
 
 it.each([
   'before-link',
@@ -67,7 +72,7 @@ it.each([
   'after-owner',
 ])('recovers after a process crash at %s', async (stage) => {
   const root = await rootDirectory();
-  expect(await child(root, stage)).toBeNull();
+  expect(await child(root, stage)).toBe(KILLED);
   await withOwnershipLock(root, () =>
     replaceOwner(join(root, 'shared-owner.lock'), { pid: process.pid, group: null })
   );

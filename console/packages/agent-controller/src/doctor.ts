@@ -150,13 +150,13 @@ async function providerChecks(inputs: DoctorInputs, bundle: string | null): Prom
 /** Checks this machine can run the agents Switch places on it, and says what to do where it cannot. */
 export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
   const checks: Check[] = [nodeCheck(inputs.nodeVersion)];
-  const supported = inputs.platform === 'darwin' || inputs.platform === 'linux';
+  const supported = ['darwin', 'linux', 'win32'].includes(inputs.platform);
   checks.push({
     name: 'Platform',
     status: supported ? 'ok' : 'fail',
     detail: supported
       ? inputs.platform
-      : `${inputs.platform} is not supported; use Linux or macOS.`,
+      : `${inputs.platform} is not supported; use Linux, macOS or Windows.`,
   });
   checks.push(...(await serverChecks(inputs)));
   let bundle: string | null = null;
@@ -173,27 +173,37 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
       detail: `Each agent runs as one of ${inputs.separateUsers.agentUsers} users of its own, in ${inputs.separateUsers.agentsDir}; a provider is ready only through what the --env-file gives agents.`,
     });
   checks.push(...(await providerChecks(inputs, bundle)));
-  const service = await inputs.service().catch((error: unknown) => errorMessage(error));
   const unit = inputs.separateUsers?.controllerUnit;
+  const service =
+    inputs.platform === 'win32'
+      ? 'console'
+      : await inputs.service().catch((error: unknown) => errorMessage(error));
   checks.push(
-    service === 'running'
-      ? { name: 'Service', status: 'ok', detail: 'Installed and running' }
-      : service === 'stopped'
-        ? {
-            name: 'Service',
-            status: 'warn',
-            detail: unit
-              ? `${unit} is not running: sudo systemctl start ${unit}`
-              : 'Installed, but not running',
-          }
-        : service === 'not-installed'
+    service === 'console'
+      ? {
+          name: 'Service',
+          status: 'ok',
+          detail:
+            'Not a service on Windows: Switch Console starts and stops this controller (or keep `run` going yourself)',
+        }
+      : service === 'running'
+        ? { name: 'Service', status: 'ok', detail: 'Installed and running' }
+        : service === 'stopped'
           ? {
               name: 'Service',
               status: 'warn',
-              detail:
-                'Not installed; run: switch-agent-controller install-service (or keep `run` going yourself)',
+              detail: unit
+                ? `${unit} is not running: sudo systemctl start ${unit}`
+                : 'Installed, but not running',
             }
-          : { name: 'Service', status: 'warn', detail: `Cannot tell: ${service}` }
+          : service === 'not-installed'
+            ? {
+                name: 'Service',
+                status: 'warn',
+                detail:
+                  'Not installed; run: switch-agent-controller install-service (or keep `run` going yourself)',
+              }
+            : { name: 'Service', status: 'warn', detail: `Cannot tell: ${service}` }
   );
   try {
     const latest = await inputs.latest();

@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from cryptography.fernet import Fernet
@@ -21,11 +22,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db import encrypted_json
 from switch_core.db.key_rotation import reencrypt_stored_secrets
 from switch_core.db.models import (
+    Agent,
     ApiKey,
     Client,
     CollaborationBridge,
     MessagingInstall,
+    ServiceConnection,
+    ServiceTokenIssuance,
     Tenant,
+    TrustSettings,
     User,
 )
 from switch_core.db.session_scope import tenant_session
@@ -90,8 +95,61 @@ async def _seed(
             installed_by_user_id=user_id,
         )
         session.add_all([bridge, key, install])
+        await session.flush()
+        agent_client = Client(
+            transport_user_id=f"@agent-{uuid.uuid4().hex[:8]}:switch.local",
+            display_name="agent client",
+            type="agent",
+        )
+        session.add(agent_client)
+        await session.flush()
+        agent = Agent(
+            name=f"agent-{uuid.uuid4().hex[:8]}",
+            description="",
+            agent_type="session_passive",
+            connector_type="external",
+            integration_profile={},
+            client_id=agent_client.id,
+            api_key_id=key.id,
+            owner_id=user_id,
+        )
+        connection = ServiceConnection(
+            user_id=user_id,
+            service="github",
+            status="active",
+            consent="write",
+            granted_scopes=[],
+            account_id="1001",
+            external_identity="ada",
+            encrypted_secret=_legacy_encrypt(f"service-secret-{tenant_id}"),
+            secret_revision=1,
+        )
+        session.add_all([agent, connection])
+        await session.flush()
+        issuance = ServiceTokenIssuance(
+            grant_id="grant",
+            agent_id=agent.id,
+            owner_id=user_id,
+            service="github",
+            principal="agent_key",
+            controller_id=None,
+            permissions={},
+            resources={},
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            token_sha256="0" * 64,
+            encrypted_token=_legacy_encrypt(f"service-token-{tenant_id}"),
+            revoke_requested=False,
+            attempts=0,
+        )
+        session.add(issuance)
         await session.commit()
-        return {"bridge": bridge.id, "key": key.id, "install": install.id}
+        return {
+            "bridge": bridge.id,
+            "key": key.id,
+            "install": install.id,
+            "issuance": issuance.id,
+            "user": user_id,
+        }
 
 
 async def _raw(
@@ -101,6 +159,14 @@ async def _raw(
         result = await session.execute(
             text(f"SELECT {column} FROM {table} WHERE id = :id"), {"id": row_id}
         )
+        return result.scalar_one()
+
+
+async def _raw_where(
+    owner: async_sessionmaker[AsyncSession], query: str, params: dict[str, str]
+) -> object:
+    async with owner() as session:
+        result = await session.execute(text(query), params)
         return result.scalar_one()
 
 
@@ -140,12 +206,58 @@ async def test_every_tenants_secrets_end_up_under_the_current_key(
         assert isinstance(token, str) and token.startswith(current)
         assert _NEW.decrypt(token) == f"install-{tenant_id}"
 
+        secret = await _raw_where(
+            rls_harness.owner,
+            "SELECT encrypted_secret FROM service_connections "
+            "WHERE tenant_id = :tenant AND user_id = :user",
+            {"tenant": tenant_id, "user": ids["user"]},
+        )
+        assert isinstance(secret, str) and secret.startswith(current)
+        assert _NEW.decrypt(secret) == f"service-secret-{tenant_id}"
+
+        issued = await _raw(
+            rls_harness.owner,
+            "service_token_issuances",
+            "encrypted_token",
+            ids["issuance"],
+        )
+        assert isinstance(issued, str) and issued.startswith(current)
+        assert _NEW.decrypt(issued) == f"service-token-{tenant_id}"
+
     # Once done, nothing needs the old key or the legacy secret any more.
     without_old = Keyring.parse("new:" + "n" * 40, legacy_secret=None)
     for ids in seeded.values():
         key = await _raw(rls_harness.owner, "api_keys", "encrypted_key", ids["key"])
         assert isinstance(key, str)
         without_old.decrypt(key)
+
+
+async def test_the_deployments_registered_clients_end_up_under_the_current_key(
+    rls_harness: RLSHarness,
+) -> None:
+    """A client Core registered at a vendor belongs to no tenant, and is
+    rewritten once whatever the tenants, by the runtime role."""
+    async with rls_harness.owner() as session:
+        await session.execute(
+            text(
+                "INSERT INTO service_oauth_clients "
+                "(service, registration_endpoint, oauth_client_id, encrypted_secret) "
+                "VALUES ('example', 'https://auth.example.test/register', "
+                "'registered-1', :secret)"
+            ),
+            {"secret": _legacy_encrypt('{"client_id": "registered-1"}')},
+        )
+        await session.commit()
+
+    await reencrypt_stored_secrets(rls_harness.restricted, _NEW, [])
+
+    secret = await _raw_where(
+        rls_harness.owner,
+        "SELECT encrypted_secret FROM service_oauth_clients WHERE service = :service",
+        {"service": "example"},
+    )
+    assert isinstance(secret, str) and secret.startswith(_NEW.current_prefix())
+    assert _NEW.decrypt(secret) == '{"client_id": "registered-1"}'
 
 
 async def test_a_value_no_key_opens_stops_the_boot(
@@ -161,6 +273,35 @@ async def test_a_value_no_key_opens_stops_the_boot(
     monkeypatch.setattr(encrypted_json, "_keyring", too_early)
     with pytest.raises(UndecryptableError):
         await reencrypt_stored_secrets(rls_harness.restricted, too_early, [tenant_id])
+
+
+async def test_the_global_trust_settings_key_is_reencrypted_with_no_tenants(
+    rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`trust_settings` is a global table (`rls_ddl.GLOBAL_TABLES`), swept
+    once outside the per-tenant loop — it must be reached even when there are
+    no tenants to iterate over at all."""
+    monkeypatch.setattr(encrypted_json, "_keyring", _OLD)
+    async with rls_harness.owner() as session:
+        session.add(
+            TrustSettings(
+                id="global",
+                endpoint="https://trust.example",
+                policy_id="pol_123",
+                api_key_encrypted=_legacy_encrypt("trust-key"),
+            )
+        )
+        await session.commit()
+
+    monkeypatch.setattr(encrypted_json, "_keyring", _NEW)
+    await reencrypt_stored_secrets(rls_harness.restricted, _NEW, [])
+
+    current = _NEW.current_prefix()
+    stored = await _raw(
+        rls_harness.owner, "trust_settings", "api_key_encrypted", "global"
+    )
+    assert isinstance(stored, str) and stored.startswith(current)
+    assert _NEW.decrypt(stored) == "trust-key"
 
 
 async def test_a_hash_only_key_is_left_alone(

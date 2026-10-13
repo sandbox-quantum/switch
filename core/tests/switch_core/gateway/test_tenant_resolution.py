@@ -140,6 +140,7 @@ def _session_app(
     *,
     signup_mode: str,
     invite_email_enabled: bool = False,
+    tenants_isolated: bool = True,
 ) -> FastAPI:
     """A route-scoped app for `GET /auth/session`, stubbed as `_app` is."""
 
@@ -157,6 +158,9 @@ def _session_app(
         gateway_signup_mode=signup_mode,
         gateway_max_workspaces_per_user=3,
         invite_email_enabled=invite_email_enabled,
+    )
+    app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: SimpleNamespace(
+        tenants_isolated=tenants_isolated
     )
     return app
 
@@ -375,12 +379,14 @@ class TestSessionStateEndpoint:
         *,
         signup_mode: str,
         invite_email_enabled: bool = False,
+        tenants_isolated: bool = True,
     ) -> httpx.Response:
         async with _client(
             _session_app(
                 session_factory,
                 signup_mode=signup_mode,
                 invite_email_enabled=invite_email_enabled,
+                tenants_isolated=tenants_isolated,
             ),
             token,
         ) as client:
@@ -483,6 +489,22 @@ class TestSessionStateEndpoint:
         ).json()
 
         assert body["state"] == "needs_workspace"
+        assert body["can_create_workspace"] is False
+
+    async def test_a_server_not_isolating_tenants_offers_no_workspace_creation(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id = await _make_user_with_memberships(
+            session_factory, name="single", tenant_ids=[TENANT_ZERO_ID]
+        )
+        token = create_jwt(user_id, "single@example.invalid", "admin", _KEYRING, None)
+
+        body = (
+            await self._get(
+                session_factory, token, signup_mode="open", tenants_isolated=False
+            )
+        ).json()
+
         assert body["can_create_workspace"] is False
 
     async def test_it_says_whether_invitations_are_e_mailed(

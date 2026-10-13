@@ -30,7 +30,13 @@ export type RoomEmbed =
    */
   | { kind: 'external'; url: string; platform: string }
   /** Nothing to show, with a reason worth surfacing rather than a blank pane. */
-  | { kind: 'unavailable'; reason: string };
+  | { kind: 'unavailable'; reason: string }
+  /**
+   * Bridged to a platform that cannot be embedded, with no link to open it at.
+   * Carries the platform key rather than a sentence, so the renderer names it
+   * the way the server describes it.
+   */
+  | { kind: 'unlinked'; platform: string };
 
 /**
  * Mattermost deeplinks are `mattermost://<host>/<team>/channels/<name>`, which

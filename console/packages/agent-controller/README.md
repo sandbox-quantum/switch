@@ -32,12 +32,14 @@ relay accepts.
 
 ## Requirements
 
-- macOS or Linux. The shared host needs POSIX process control.
+- macOS, Linux or Windows 10/11. On Windows the controller is meant to run with
+  Switch Console, which starts it; see [On Windows](#on-windows).
 - Node 22.13 or later. The store uses the built-in `node:sqlite`.
 - Each provider CLI the agents use, installed on `PATH` and signed in as the user
   the controller runs as (`claude`, `codex`, `opencode`, `agent`/`cursor-agent`,
   `antigravity-acp`), or its API key in the `--env-file` the controller runs with.
-- A Switch server with `AGENT_MANAGEMENT_ENABLED=true`. Behind a proxy or ingress,
+- A Switch server with the `agent_management` feature flag on
+  (`FEATURE_FLAGS_ENABLED=agent_management`). Behind a proxy or ingress,
   `/v1` must reach switch-core (the Helm chart routes it).
 
 ## Install
@@ -84,7 +86,7 @@ switch-agent-controller install-service [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller run [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller status [--data-dir <dir>]
 switch-agent-controller set-info [--name <name>] [--description <text>] [--data-dir <dir>]
-switch-agent-controller doctor [--data-dir <dir>]
+switch-agent-controller doctor [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller update [--check]
 ```
 
@@ -122,7 +124,7 @@ switch-agent-controller update [--check]
   URL that is not one, or is plain `http` to a host that is not loopback; a
   data directory that belongs to another controller identity, or whose store
   a newer controller wrote; a shared-host bundle that is missing, not a file
-  or unreadable; an unsupported platform (Windows); a data directory that
+  or unreadable; an unsupported platform; a data directory that
   holds no identity, or no credential (revoked earlier and wiped, or never
   enrolled); `set-info` with nothing to change, or a name or description past
   the limits; and with `--credential-stdin`, a credential that does not arrive
@@ -160,7 +162,24 @@ with a hash of its path, so two controllers on one account each get their own.
 
 On Linux without a systemd user manager (some containers and minimal VMs),
 `install-service` refuses. Run `run` under your own supervisor instead, with the
-restart rules below.
+restart rules below. It refuses on Windows too.
+
+### On Windows
+
+The controller runs natively on Windows, without WSL. Switch Console starts it
+and stops it, so it is not installed as a service there: `install-service`
+refuses, and a controller started by hand is run with `run`. Its data lives in
+`%LOCALAPPDATA%\Switch\agent-controller` (Console keeps its own under its app
+data), whose access list it sets to the current user and the system alone.
+
+- Provider CLIs are found on `PATH` with `PATHEXT`, so `claude.exe` and an npm
+  install's `codex.cmd` both count.
+- Antigravity has no Windows build, so it is reported as not installed.
+- `--agent-runtime separate-user` is Linux only.
+- An agent's shell setup is refused: it is a POSIX shell snippet.
+- Stopping an agent host asks it over its IPC channel or a stop file in its
+  state root, since Windows has no catchable SIGTERM. Process identity and
+  cleanup after a crash go through PowerShell's CIM cmdlets.
 
 ### Environment for the agents
 
@@ -274,6 +293,16 @@ when there is none. From then on the provider is reported ready with
   Antigravity) is written by the agent host in its own state. The agent runs in
   a process of its own, as a separate user under `--separate-users`, and is
   restarted when the login changes or is withdrawn.
+- Claude can also be given a Vertex AI login: a Google Cloud project, a region,
+  and a Google credential, either a service account key (recommended: one for a
+  service account that can use only Vertex AI, `roles/aiplatform.user`) or the
+  owner's own `gcloud auth application-default login` sign-in, which carries
+  all of their Google Cloud access. The agent host writes the credential to
+  `provider-home/google-credentials.json` in its own state (mode 0600), and the
+  agent's environment gets `CLAUDE_CODE_USE_VERTEX=1`,
+  `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` and
+  `GOOGLE_APPLICATION_CREDENTIALS` pointing at that file, with
+  `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` blanked.
 - Logins are kept in memory only, and fetched again every ten minutes and on
   each `provider.login` and `provider.recheck`. When Switch cannot be reached,
   the login already held is kept.
@@ -492,7 +521,6 @@ session hosts it launches with `process.execPath` run as Node too.
 - OOM kills are not detected. `oom_kills` is always `0`.
 - `restarts_10m` counts the relaunches reconciling made, not the restarts after a
   agent host failure.
-- Windows is not supported.
 
 ## Where data lives
 

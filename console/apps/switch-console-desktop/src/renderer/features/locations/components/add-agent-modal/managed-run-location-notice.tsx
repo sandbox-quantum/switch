@@ -1,7 +1,7 @@
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 import { useQuery } from '@tanstack/react-query';
 import { CircleAlert, Server } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   advancedConfigFromForm,
   MODEL_FIELD,
@@ -41,7 +41,34 @@ export function ManagedRunLocationNotice({
   onEnabled: () => void;
 }) {
   const [enabling, setEnabling] = useState(false);
+  const [autoTried, setAutoTried] = useState<string | null>(null);
   const notice = newAgentMachineNotice(machine, { label, sshHost });
+  const canEnable = notice.kind === 'blocked' && notice.enable !== null;
+  const where = `${serverId}:${workspaceId}:${sshHost ?? 'this-computer'}`;
+  const enableRef = useRef(enable);
+  enableRef.current = enable;
+
+  // A machine that can be set up for managed agents is set up as soon as it is
+  // chosen, as the automatic move to managed would: on a server with agent
+  // management that is how agents run, so asking first only stands in the way.
+  // Tried once per machine; if it fails, the button below is the way to retry.
+  useEffect(() => {
+    if (!canEnable || autoTried === where) return;
+    setAutoTried(where);
+    void enableRef.current();
+  }, [canEnable, where, autoTried]);
+
+  if (enabling)
+    return (
+      <p className="flex items-start gap-1.5 text-xs text-foreground-muted">
+        <Server className="mt-0.5 size-3.5 shrink-0" />
+        <span>
+          {sshHost
+            ? `Setting ${label} up to run managed agents…`
+            : 'Setting this computer up to run managed agents…'}
+        </span>
+      </p>
+    );
 
   if (notice.kind !== 'blocked')
     return (
@@ -51,7 +78,7 @@ export function ManagedRunLocationNotice({
       </p>
     );
 
-  const enable = async () => {
+  async function enable() {
     setEnabling(true);
     try {
       if (sshHost) await rpc.hostControllers.enable({ sshHost, serverId, workspaceId });
@@ -66,7 +93,7 @@ export function ManagedRunLocationNotice({
     } finally {
       setEnabling(false);
     }
-  };
+  }
 
   return (
     <div className="flex items-start gap-2 rounded-md border border-border bg-background-1 px-2 py-1.5 text-xs text-foreground-muted">

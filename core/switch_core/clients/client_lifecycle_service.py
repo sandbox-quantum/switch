@@ -91,6 +91,11 @@ class ClientLifecycleService:
         self._client_tenants: dict[str, str] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
+    @property
+    def tenants_isolated(self) -> bool:
+        """Whether a tenant beyond the first can be created on this deployment."""
+        return self._tenants_isolated
+
     def _make_user_id(self, localpart: str) -> str:
         return f"@{localpart}:{self._config.id_server_name}"
 

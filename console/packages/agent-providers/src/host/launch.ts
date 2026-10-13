@@ -1,15 +1,15 @@
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { link, mkdir, open, readFile, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { promisify } from 'node:util';
 import { replaceOwner, withOwnershipLock } from './ownership-lock';
-import { killProcessTree } from './process-fence';
+import { commandLineNames, killProcessTree, processCommandLine } from './process-fence';
 import type { SessionLinks } from './session-channel';
 import { recordSessionStart, type HostStartSource } from './session-start';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
+import { requestStop } from './stop-request';
 import { superviseSharedHost } from './supervisor';
 
 export function sharedSessionsBase(): string {
@@ -71,6 +71,7 @@ export function detachedSupervision(entrypoint: string): Supervision {
           [entrypoint, root, configPath, watcher ? '--watch-supervise' : '--supervise'],
           {
             detached: true,
+            windowsHide: true,
             stdio: ['ignore', log.fd, log.fd],
             env: process.env,
           }
@@ -264,16 +265,13 @@ async function stopOwnedProcess(root: string, ownerPath: string): Promise<void> 
     if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) return;
     throw error;
   }
-  if (process.platform === 'win32')
-    throw new Error(
-      'Automatic host restart requires process fencing, which is not available on Windows.'
-    );
-  const { stdout } = await promisify(execFile)('ps', ['-p', String(pid), '-o', 'command=']);
-  if (!stdout.includes(root))
+  const commandLine = await processCommandLine(pid);
+  if (commandLine === null) return;
+  if (!commandLineNames(commandLine, root))
     throw new Error(
       'The saved PID no longer identifies this SDK host. Refusing to stop another process.'
     );
-  process.kill(pid, 'SIGTERM');
+  await requestStop(root, pid);
   if (await exitsWithin(pid, STOP_GRACE_MS)) return;
   // Asked, and still here: most likely waiting on a child that will never
   // finish, such as a session host that hung up and stayed alive. Waiting

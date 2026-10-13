@@ -10,6 +10,13 @@ global:
   # private registry (e.g. a private GHCR namespace). Applied to every pod. Leave
   # empty for public images.
   imagePullSecrets: []
+  # Seconds the gateway pod waits in a preStop hook before SIGTERM on a roll, so
+  # the endpoint and any load balancer stop routing to it while its replacement
+  # is already serving, and the roll answers no requests with 502/503s. Only
+  # rendered on Kubernetes 1.30+ (the native `sleep` lifecycle action); 0 turns
+  # it off. switch-core and Mattermost roll with Recreate, where there is no
+  # replacement to drain to, so they get no hook.
+  preStopSleepSeconds: 5
 
 # ── Ingress ─────────────────────────────────────────────────────────────────
 # Generic Ingress for the web surface. Bring your own ingress controller
@@ -173,14 +180,30 @@ secrets:
 switchCore:
   # Existing Secret with github.json (client_id, client_secret, slug, origin).
   githubConnectionsSecret: ""
+  # Absolute path to the GitHub App's signing key inside a Secret this chart
+  # already mounts: /etc/switch-github/<key> for one kept beside github.json,
+  # or /etc/switch-hosted/<key> in hostedControllerSecret. With
+  # githubConnectionsSecret it sets GITHUB_APP_CONFIG_PATH and
+  # GITHUB_APP_PRIVATE_KEY_PATH, so agents can be granted GitHub. Without it,
+  # GitHub can be connected but not granted.
+  githubAppPrivateKeyPath: ""
+  # Existing Secret with client.json ({"client_id", "client_secret"}): the
+  # Web OAuth client of an internal Google app, for the Google Workspace
+  # connection. Register <gatewayPublicUrl>/gateway/service-connections/google-workspace/flows/callback
+  # as its redirect URI. Without it, Google Workspace shows as not set up.
+  googleWorkspaceClientSecret: ""
   hostedControllerSecret: ""
-  # How many cloud machines may run at once. Cloud machines run the agents
-  # controller and their owner's managed agents, so they need agentManagement.
+  # How many cloud machines may run at once; 0 means this server cannot run
+  # them. Cloud machines run the agents controller, so above 0 this needs the
+  # "agent_management" feature flag. The "hosted_agents" flag is what offers
+  # them in Switch Console.
   hostedLaunchCapacity: 0
   hostedDiskRetentionDays: 7
   hostedIdleStopMinutes: 30
   image: switch-core:latest
-  imagePullPolicy: Always
+  # Empty: IfNotPresent when the image is pinned by digest (as in a published
+  # chart), Always otherwise. Set it to override.
+  imagePullPolicy: ""
   logLevel: INFO
 
   # Logging. "text" is for reading in a terminal; "json" is what a log pipeline
@@ -315,11 +338,11 @@ switchCore:
   # once every API client authenticating against this deployment handles it.
   tenantChoiceEnabled: false
   # Agent management: managed agents, and the agent controllers (Switch Console,
-  # or switch-agent-controller on a user's own machine) that run them. Needs
+  # or switch-agent-controller on a user's own machine) that run them. Turned on
+  # by the "agent_management" feature flag (featureFlags.enabled below). Needs
   # secrets.controllerTokenSecret, and `/v1` routed to switch-core
   # (ingress.agentApiPaths does by default).
   agentManagement:
-    enabled: false
     # How often a controller must report; one silent for three of these is
     # shown as unknown and gets no new placements.
     statusIntervalSeconds: 60
@@ -330,6 +353,13 @@ switchCore:
   # Mattermost (mattermost.enabled) is added automatically.
   outbound:
     allowedPrivateHosts: []
+  # Feature flags turned on for this deployment (FEATURE_FLAGS_ENABLED), e.g.
+  # ["ecosystem.show_owners"]. Every other flag is off, and no one can change
+  # them while the server runs. An unknown flag stops switch-core at startup.
+  # Known flags: ecosystem.show_owners, agent_management, switch_cloud,
+  # hosted_agents, service_connections.
+  featureFlags:
+    enabled: []
   # Invitation e-mails. When enabled, an invitation addressed to an e-mail is
   # sent there through this SMTP relay (SES SMTP, Postmark, a company relay —
   # anything that speaks SMTP). Off, the invitation is still created and the
@@ -573,7 +603,9 @@ switchCore:
 # ── Gateway (React + nginx) ──────────────────────────────────────────────────
 gateway:
   image: gateway:latest
-  imagePullPolicy: Always
+  # Empty: IfNotPresent when the image is pinned by digest (as in a published
+  # chart), Always otherwise. Set it to override.
+  imagePullPolicy: ""
   replicaCount: 1
   service:
     type: ClusterIP
@@ -639,7 +671,9 @@ mattermost:
 # ── Setup Job ─────────────────────────────────────────────────────────────────
 setup:
   image: setup:latest
-  imagePullPolicy: Always
+  # Empty: IfNotPresent when the image is pinned by digest (as in a published
+  # chart), Always otherwise. Set it to override.
+  imagePullPolicy: ""
   backoffLimit: 5
 
 # ── PostgreSQL ────────────────────────────────────────────────────────────────

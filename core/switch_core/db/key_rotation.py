@@ -26,6 +26,10 @@ from switch_core.db.models import (
     MessagingInstall,
     ProviderConnection,
     ServerConnector,
+    ServiceConnection,
+    ServiceOAuthClient,
+    ServiceTokenIssuance,
+    TrustSettings,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.keys import Keyring
@@ -41,6 +45,15 @@ _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (MessagingInstall, "encrypted_bot_token"),
     (ProviderConnection, "encrypted_credential"),
     (MachineWorkspace, "enrollment_code_encrypted"),
+    (ServiceConnection, "encrypted_secret"),
+    (ServiceTokenIssuance, "encrypted_token"),
+)
+# In tables no tenant holds (`db/rls_ddl.py`, GLOBAL_TABLES), one row set for
+# the whole deployment (`trust_settings`, `service_oauth_clients`): rewritten
+# once, in a session bound to no tenant, rather than once per tenant.
+_GLOBAL_ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
+    (TrustSettings, "api_key_encrypted"),
+    (ServiceOAuthClient, "encrypted_secret"),
 )
 
 
@@ -88,7 +101,8 @@ async def reencrypt_stored_secrets(
     keyring: Keyring,
     tenant_ids: list[str],
 ) -> None:
-    """Bring every tenant's encrypted values onto the current key."""
+    """Bring every tenant's encrypted values, plus the deployment's global
+    ones, onto the current key."""
     total = 0
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
@@ -97,6 +111,10 @@ async def reencrypt_stored_secrets(
             for model, column in _ENCRYPTED_TEXT_COLUMNS:
                 total += await reencrypt_stale_text(session, keyring, model, column)
             await session.commit()
+    async with session_factory() as session:
+        for model, column in _GLOBAL_ENCRYPTED_TEXT_COLUMNS:
+            total += await reencrypt_stale_text(session, keyring, model, column)
+        await session.commit()
     if total:
         logger.warning(
             "Re-encrypted %d stored secret(s) under key %r. Older keys and "

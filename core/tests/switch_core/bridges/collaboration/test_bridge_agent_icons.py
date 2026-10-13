@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -56,6 +56,8 @@ class _Adapter(PlatformAdapter):
     """Concrete only so it can be instantiated — the icon plumbing under test
     lives entirely on the base class, and none of the platform methods are
     called here."""
+
+    display_name: ClassVar[str] = "Stub"
 
     async def start(self, *a: Any, **k: Any) -> Any: ...
     async def stop(self, *a: Any, **k: Any) -> Any: ...

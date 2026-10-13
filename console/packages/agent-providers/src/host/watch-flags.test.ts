@@ -1,9 +1,10 @@
 import type * as NodeFs from 'node:fs';
 import type { FSWatcher } from 'node:fs';
-import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
+import { replaceFile } from './replace-file';
 import { awaitWatchChange, readWatchFlags, type WatchFlags } from './watch-flags';
 
 const platform = vi.hoisted(() => ({ canWatch: true, watchers: [] as FSWatcher[] }));
@@ -40,7 +41,7 @@ async function watcherRoot(flags: WatchFlags) {
 async function write(root: string, flags: WatchFlags) {
   const temporary = join(root, 'watch.json.tmp');
   await writeFile(temporary, JSON.stringify(flags));
-  await rename(temporary, join(root, 'watch.json'));
+  await replaceFile(temporary, join(root, 'watch.json'));
 }
 
 it('reads both flags back', async () => {

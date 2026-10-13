@@ -88,6 +88,18 @@ describe('loadOrCreateSecrets', () => {
     expect(setSecret).toHaveBeenCalledWith('host-a', JSON.stringify(secrets));
   });
 
+  it('backfills a controller token secret on an install predating agent management', async () => {
+    const legacy = generateSecrets() as Partial<ReturnType<typeof generateSecrets>>;
+    delete legacy.controllerTokenSecret;
+    getSecret.mockResolvedValue(JSON.stringify(legacy));
+
+    const secrets = await loadOrCreateSecrets({ secretsKey: 'host-a' });
+
+    expect(secrets).toMatchObject(legacy);
+    expect(secrets.controllerTokenSecret).toMatch(/^[0-9a-f]{64}$/);
+    expect(setSecret).toHaveBeenCalledWith('host-a', JSON.stringify(secrets));
+  });
+
   it('never replaces a key ring the stored secrets were encrypted with', async () => {
     const current = generateSecrets();
     getSecret.mockResolvedValue(JSON.stringify(current));

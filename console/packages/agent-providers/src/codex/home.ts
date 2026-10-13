@@ -1,8 +1,23 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, copyFile, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse, stringify } from 'smol-toml';
 import { linkHomeAsset, linkSkills, optionalText } from '../host/provider-home';
+import { replaceFile } from '../host/replace-file';
+
+/**
+ * A managed agent's Codex configuration with the sandbox its sessions run
+ * in: Codex's default is read-only, which on a machine with no Codex
+ * configuration of its own leaves an agent unable to write in its own
+ * directory. An agent that bypasses permissions gets full access, any other
+ * may write in its workspace; a `sandbox_mode` the configuration already
+ * names is kept.
+ */
+export function withManagedCodexSandbox(config: string, autoApprove: boolean): string {
+  if ('sandbox_mode' in parse(config)) return config;
+  const mode = autoApprove ? 'danger-full-access' : 'workspace-write';
+  return `sandbox_mode = "${mode}"\n${config}`;
+}
 
 /** Native rollouts remain in the persistent session directory on the execution host. */
 export async function prepareCodexSessionHome(input: {
@@ -57,7 +72,7 @@ async function replacePrivateFile(path: string, value: string): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, value, { mode: 0o600, flag: 'wx' });
-    await rename(temporary, path);
+    await replaceFile(temporary, path);
   } finally {
     await rm(temporary, { force: true });
   }

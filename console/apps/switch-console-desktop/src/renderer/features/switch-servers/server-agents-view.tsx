@@ -21,6 +21,7 @@ import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -36,6 +37,7 @@ import {
 import type { Agent } from '@shared/core/agents/agents';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
+import { isFrozenServer } from './managed-server-state';
 import { ServerPage } from './server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { switchRoomsStore } from './switch-rooms-store';
@@ -61,6 +63,8 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
     void refreshSidebarRoomState(false);
   }, [serverId]);
 
+  // Connections are offered where the server has service connections on.
+  const serviceConnections = useFeatureFlags(serverId).service_connections;
   const machines = useCloudMachines(serverId);
   const managed = useManagedAgents(serverId);
   const agents = withoutManaged(agentsStore.agentsOnServer(serverId), managed.data);
@@ -71,7 +75,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
       title="Your Agents"
       description={`Agents on ${server?.name ?? 'this server'}. Add one, set how it is addressed, and start sessions.`}
       action={
-        machines.data && (
+        serviceConnections && (
           <Button variant="outline" size="sm" onClick={() => showConnectionsModal({ serverId })}>
             <Plug className="size-4" />
             Connections
@@ -113,7 +117,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
           <ManagedAgentCard key={agent.agentId} agent={agent} />
         ))}
       </div>
-      {managed.error && (
+      {managed.error && !(server && isFrozenServer(server)) && (
         <p role="alert" className="mt-3 text-sm text-destructive">
           {failureText(managed.error, 'Could not load managed agents.')}
         </p>

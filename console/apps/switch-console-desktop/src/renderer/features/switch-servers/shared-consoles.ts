@@ -1,8 +1,6 @@
 import { formatDistanceStrict } from 'date-fns';
 import {
   othersRecentlySeen,
-  type StackActivityAction,
-  type StackActivityEntry,
   type StackConsole,
   type StackRegister,
 } from '@shared/core/managed-switch-server/managed-switch-server';
@@ -17,21 +15,37 @@ export function describeConsole(console: Pick<StackConsole, 'name' | 'hostAccoun
   return `${console.name} (as ${console.hostAccount})`;
 }
 
-function names(first: StackConsole, rest: StackConsole[]): string {
-  const [second, ...more] = rest;
-  if (!second) return first.name;
-  if (more.length === 0) return `${first.name} and ${second.name}`;
-  return `${first.name}, ${second.name} and ${more.length} other${more.length === 1 ? '' : 's'}`;
+/**
+ * This Console's own desktop name on the register, or null before it has
+ * recorded itself. Another Console with the same name is another profile on
+ * this very computer, such as the Canary build.
+ */
+export function selfDesktop(register: StackRegister | null): string | null {
+  if (!register) return null;
+  return register.consoles.find((c) => c.consoleId === register.self)?.name ?? null;
+}
+
+function nameOf(console: StackConsole, self: string | null): string {
+  return self !== null && console.name === self ? 'another Console on this computer' : console.name;
+}
+
+/** `bob@desk`, `bob@desk and carol@lab`, `bob@desk, carol@lab and 2 others`. */
+export function namesOf(others: StackConsole[], self: string | null): string {
+  const unique = [...new Set(others.map((c) => nameOf(c, self)))];
+  const [first, second, ...more] = unique;
+  if (!first) return '';
+  if (!second) return first;
+  if (more.length === 0) return `${first} and ${second}`;
+  return `${first}, ${second} and ${more.length} other${more.length === 1 ? '' : 's'}`;
 }
 
 /**
  * The line under the server's controls saying it is shared, or null when
  * nobody else has used it recently.
  */
-export function sharedWithSentence(others: StackConsole[]): string | null {
-  const [first, ...rest] = others;
-  if (!first) return null;
-  return `Shared with ${names(first, rest)}. Stopping or restarting it affects them too.`;
+export function sharedWithSentence(others: StackConsole[], self: string | null): string | null {
+  if (others.length === 0) return null;
+  return `Shared with ${namesOf(others, self)}. Stopping or restarting it affects them too.`;
 }
 
 /**
@@ -64,18 +78,4 @@ export function sharedWithOthers(register: StackRegister | null, now: Date): boo
 export function whoElseSentence(register: StackRegister | null, now: Date): string | null {
   if (register === null) return 'Switch Console could not check who else uses it.';
   return affectedSentence(othersRecentlySeen(register, now), now);
-}
-
-const ACTION_WORDS: Record<StackActivityAction, string> = {
-  started: 'started it',
-  connected: 'connected',
-  stopped: 'stopped it',
-  reset: 'reset it',
-  disconnected: 'disconnected',
-};
-
-/** `bob@desk stopped it` — one line of the server's activity. */
-export function activitySentence(entry: StackActivityEntry, self: string): string {
-  const who = entry.consoleId === self ? 'This Console' : entry.name;
-  return `${who} ${ACTION_WORDS[entry.action]}`;
 }

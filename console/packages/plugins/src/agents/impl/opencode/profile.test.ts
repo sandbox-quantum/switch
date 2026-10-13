@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildOpencodeConfig,
   opencodeLaunchProfile,
-  opencodeLaunchProfileFields,
+  opencodeLaunchProfileSettings,
   opencodeProfileName,
   opencodeProfilePaths,
 } from './profile';
@@ -20,63 +20,49 @@ function configOf(profile: NonNullable<ReturnType<typeof opencodeLaunchProfile>>
   return parse(file.content);
 }
 
-describe('opencodeLaunchProfileFields', () => {
+describe('opencodeLaunchProfileSettings', () => {
   it('declares exactly the advanced keys the config builder consumes', () => {
-    expect(opencodeLaunchProfileFields().map((field) => field.key)).toEqual([
-      'model',
-      'variant',
-      'temperature',
-      'topP',
-      'maxSteps',
-      'webSearch',
-      'smallModel',
-    ]);
+    expect(opencodeLaunchProfileSettings()).toEqual({
+      variant: 'text',
+      temperature: 'number',
+      topP: 'number',
+      maxSteps: 'number',
+      webSearch: 'text',
+      smallModel: 'text',
+    });
   });
 
-  it('does not offer instructions as an advanced setting', () => {
-    // Instructions are a main attribute of the agent, collected once for every
-    // provider. Offering them here too would be two boxes for one value.
-    expect(opencodeLaunchProfileFields().map((field) => field.key)).not.toContain('instructions');
+  it('does not claim the model or instructions as advanced settings', () => {
+    // Main attributes of the agent, collected once for every provider.
+    expect(opencodeLaunchProfileSettings()).not.toHaveProperty('model');
+    expect(opencodeLaunchProfileSettings()).not.toHaveProperty('instructions');
   });
 
-  it('offers no Codex-only setting, which OpenCode has no key for', () => {
+  it('claims no Codex-only setting, which OpenCode has no key for', () => {
     // Verbosity and reasoning summary exist for Codex and simply do not exist in
-    // OpenCode's config; offering them would collect a value that goes nowhere.
-    const keys = opencodeLaunchProfileFields().map((field) => field.key);
+    // OpenCode's config; claiming them would accept a value that goes nowhere.
+    const keys = Object.keys(opencodeLaunchProfileSettings());
     expect(keys).not.toContain('verbosity');
     expect(keys).not.toContain('reasoningSummary');
     expect(keys).not.toContain('effort');
   });
 
-  it('declares no fixed list of reasoning variants, because there is not one', () => {
-    // The accepted values come from the chosen model's own capabilities, so any
-    // list hardcoded here would be wrong for most models — and flatly empty for
-    // every local one.
-    const variant = opencodeLaunchProfileFields().find((field) => field.key === 'variant')!;
-    expect(variant.options).toBeUndefined();
-  });
-
-  it('binds the variant to the model above, so the choices follow it', () => {
-    const variant = opencodeLaunchProfileFields().find((field) => field.key === 'variant')!;
-    expect(variant.catalogue).toEqual({ kind: 'model-variant', modelField: 'model' });
-  });
-
-  it('binds both model fields to the host catalogue, so a typo can be caught', () => {
-    // OpenCode accepts a model it does not have without complaint and only fails
-    // when the agent tries to answer, so the check has to happen here.
-    for (const key of ['model', 'smallModel']) {
-      const field = opencodeLaunchProfileFields().find((f) => f.key === key)!;
-      expect(field.catalogue).toEqual({ kind: 'model' });
-    }
-  });
-
-  it('names a field the variant can follow', () => {
-    // The renderer resolves the binding by key, so a rename that missed one side
-    // would silently leave the variant with no choices.
-    const fields = opencodeLaunchProfileFields();
-    const variant = fields.find((field) => field.key === 'variant')!;
-    const bound = variant.catalogue as { kind: string; modelField: string };
-    expect(fields.some((field) => field.key === bound.modelField)).toBe(true);
+  it('writes every declared setting, so one cannot be accepted and then dropped', () => {
+    const filled = Object.fromEntries(
+      Object.entries(opencodeLaunchProfileSettings()).map(([key, kind]) => [
+        key,
+        kind === 'number' ? '1' : key === 'webSearch' ? 'true' : 'x',
+      ])
+    );
+    const config = parse(buildOpencodeConfig(filled, null)!);
+    expect(Object.keys(config.agent.build).sort()).toEqual([
+      'maxSteps',
+      'permission',
+      'temperature',
+      'top_p',
+      'variant',
+    ]);
+    expect(config.small_model).toBe('x');
   });
 });
 

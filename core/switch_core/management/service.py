@@ -62,10 +62,11 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.hosted_machine_store import CloudMachineStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.gateway.cloud_controllers import (
+    enroll_revoked_again,
     record_controller_status,
     wake_controller_machine,
 )
-from switch_core.gateway.known_agents import KNOWN_AGENTS, KnownAgent
+from switch_core.gateway.known_agents import KnownAgent, provider_known_agent
 from switch_core.management import reason_codes, tokens
 from switch_core.management.errors import ManagementError, not_found
 from switch_core.management.notifier import ControllerNotifier
@@ -77,7 +78,6 @@ from switch_core.management.placement import (
 )
 from switch_core.management.process_lease import ProcessLeases, read_leases
 from switch_core.management.schemas import (
-    PROVIDER_KNOWN_AGENT_TYPES,
     ControllerDescription,
     CreateManagedAgentRequest,
     DefinitionV1,
@@ -91,6 +91,7 @@ from switch_core.management.schemas import (
     workspaces_dir_of,
 )
 from switch_core.management.sealed_logins import PublicKey, SealedLogin, key_id
+from switch_core.providers.registry import provider_ids
 
 logger = logging.getLogger(__name__)
 
@@ -727,8 +728,20 @@ class ManagementService:
         if controller.revoked_at is not None:
             return
         await self._revoke(session, tenant_id, controller_id)
+        machine = (
+            await enroll_revoked_again(session, controller_id, self.now())
+            if controller.kind == "ec2"
+            else None
+        )
         await session.commit()
         logger.info("Revoked agent controller %s", controller_id)
+        if machine is not None:
+            logger.info(
+                "Cloud machine %s enrolls a new controller for workspace %s at revision %s",
+                machine.id,
+                tenant_id,
+                machine.revision,
+            )
         self._announce_revoked(controller_id)
 
     async def _revoke(
@@ -894,12 +907,12 @@ class ManagementService:
         controller_id: str,
         provider: str,
     ) -> AgentController:
-        if provider not in PROVIDER_KNOWN_AGENT_TYPES:
+        if provider not in provider_ids():
             raise ManagementError(
                 422,
                 reason_codes.VALIDATION_ERROR,
                 f"Unknown provider {provider!r}; one of "
-                f"{', '.join(sorted(PROVIDER_KNOWN_AGENT_TYPES))}.",
+                f"{', '.join(sorted(provider_ids()))}.",
             )
         controller = await self.owned_controller(
             session, tenant_id, owner_id, controller_id
@@ -1376,14 +1389,14 @@ class ManagementService:
             provider = params.get("provider")
             if (
                 agent_id is not None
-                or provider not in PROVIDER_KNOWN_AGENT_TYPES
+                or provider not in provider_ids()
                 or set(params) != {"provider"}
             ):
                 raise ManagementError(
                     422,
                     reason_codes.VALIDATION_ERROR,
                     "provider.recheck takes no agent_id and params.provider naming "
-                    f"one of {', '.join(sorted(PROVIDER_KNOWN_AGENT_TYPES))}.",
+                    f"one of {', '.join(sorted(provider_ids()))}.",
                 )
         operation = await self.operations.create(
             session,
@@ -1477,14 +1490,15 @@ def with_directory(
 
 def _known_agent_registration(
     definition: DefinitionV1, existing_metadata: dict[str, Any] | None
-) -> tuple[type[KnownAgent], Any, dict[str, Any]]:
+) -> tuple[KnownAgent, Any, dict[str, Any]]:
     """The known-agent spec, options and metadata a definition registers with.
 
     Options the definition does not speak to (Claude Code's `channels_enabled`,
     say) keep whatever the agent already had. An agent already registered as
     a different known type is refused rather than silently converted.
     """
-    known_type = PROVIDER_KNOWN_AGENT_TYPES[definition.provider]
+    spec = provider_known_agent(definition.provider)
+    known_type = spec.provider.known_agent_type
     metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
     current_type = metadata.get("known_agent_type")
     if current_type is not None and current_type != known_type:
@@ -1494,7 +1508,6 @@ def _known_agent_registration(
             f"This agent is registered as {current_type!r}, which does not run "
             f"provider {definition.provider!r}.",
         )
-    spec = KNOWN_AGENTS[known_type]
     current_options = metadata.get("known_agent_options")
     raw_options = dict(current_options) if isinstance(current_options, dict) else {}
     raw_options["auto_session"] = True
