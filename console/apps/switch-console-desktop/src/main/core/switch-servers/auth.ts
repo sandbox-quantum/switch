@@ -6,12 +6,14 @@ import { LOCAL_SERVER_ADMIN_EMAIL } from '@main/core/managed-switch-server/const
 import { managedServerSecretsKey } from '@main/core/managed-switch-server/host/host-for-server';
 import { readSecrets } from '@main/core/managed-switch-server/secrets';
 import { log } from '@main/lib/logger';
-import type {
-  SignupResult,
-  SwitchServer,
-  SwitchUser,
+import {
+  dashboardOrigin,
+  type SignupResult,
+  type SwitchServer,
+  type SwitchUser,
 } from '@shared/core/switch-servers/switch-servers';
 import { consoleIdentityHeaders } from './console-identity';
+import { keepSeparateDashboard } from './server-address';
 import { getSessionCookie, setSessionCookie } from './servers-store';
 
 const SWITCH_AUTH_COOKIE = 'switch_auth';
@@ -23,7 +25,45 @@ export type LoginError =
   | { kind: 'failed'; message: string };
 
 function gatewayUrl(server: SwitchServer, path: string): string {
-  return `${server.gatewayUrl}/gateway${path}`;
+  return `${server.url}/gateway${path}`;
+}
+
+/**
+ * The same path on the origin the server's web pages are served from. Browser
+ * sign-in starts there: the server keeps the OIDC state in a cookie on the host
+ * the flow starts on, and an older server's identity provider returns to its
+ * dashboard's host, so starting anywhere else loses the state. Where Console
+ * has no dashboard address for such a server, the sign-in window follows the
+ * server to that host itself (see {@link callbackHostHop}).
+ */
+function webGatewayUrl(server: SwitchServer, path: string): string {
+  return `${dashboardOrigin(server)}/gateway${path}`;
+}
+
+/**
+ * Where to restart a browser sign-in that the server is sending to an identity
+ * provider which will return it to another host, or null to let it go on.
+ *
+ * Asked of the first redirect that leaves the host the sign-in started on: the
+ * server's own, on its way to the provider, carrying the `redirect_uri` the
+ * provider will return to. The flow's state is in a cookie on the starting
+ * host, so a return to a different one would find none. A current server makes
+ * that hop itself before this point; an older one, whose dashboard is on a host
+ * of its own, does not. Hostnames only, as cookies do. Nothing later is asked,
+ * so a page on the provider's side cannot steer it.
+ */
+export function callbackHostHop(startUrl: string, redirectUrl: string): string | null {
+  const start = new URL(startUrl);
+  let callback: URL;
+  try {
+    const redirectUri = new URL(redirectUrl).searchParams.get('redirect_uri');
+    if (redirectUri === null) return null;
+    callback = new URL(redirectUri);
+  } catch {
+    return null;
+  }
+  if (callback.protocol !== 'https:' && callback.protocol !== 'http:') return null;
+  return callback.hostname === start.hostname ? null : callback.origin;
 }
 
 /** Pull the `switch_auth` value out of the response's Set-Cookie headers. */
@@ -67,7 +107,7 @@ async function postCredentials(
   } catch (cause) {
     return err({
       kind: 'failed',
-      message: `Could not reach ${server.gatewayUrl}. Check that the address is right and that the server is running. (${cause instanceof Error ? cause.message : String(cause)})`,
+      message: `Could not reach ${server.url}. Check that the address is right and that the server is running. (${cause instanceof Error ? cause.message : String(cause)})`,
     });
   }
 }
@@ -117,7 +157,7 @@ export async function passwordLogin(
     const detail = await response.text().catch(() => '');
     return err({
       kind: 'failed',
-      message: `${server.gatewayUrl} rejected the sign-in with HTTP ${response.status}. That is a problem on the server, not with your credentials.${
+      message: `${server.url} rejected the sign-in with HTTP ${response.status}. That is a problem on the server, not with your credentials.${
         detail ? ` (${boundedBody(detail)})` : ''
       }`,
     });
@@ -197,7 +237,7 @@ export async function signup(
     if (kind && refusal) return err({ kind, message: refusal });
     return err({
       kind: 'failed',
-      message: `${server.gatewayUrl} rejected the sign-up with HTTP ${response.status}.${
+      message: `${server.url} rejected the sign-up with HTTP ${response.status}.${
         body ? ` (${refusal ?? boundedBody(body)})` : ''
       }`,
     });
@@ -335,7 +375,12 @@ export async function oidcLogin(server: SwitchServer): Promise<Result<true, Logi
     webPreferences: { partition, nodeIntegration: false, contextIsolation: true },
   });
 
-  return new Promise<Result<true, LoginError>>((resolve) => {
+  const startUrl = webGatewayUrl(server, '/auth/oidc/login');
+  // Set when the window follows the server to the host its identity provider
+  // returns to; see `callbackHostHop`.
+  let callbackOrigin: string | null = null;
+
+  const result = await new Promise<Result<true, LoginError>>((resolve) => {
     let settled = false;
     const finish = (result: Result<true, LoginError>) => {
       if (settled) return;
@@ -365,6 +410,20 @@ export async function oidcLogin(server: SwitchServer): Promise<Result<true, Logi
     win.webContents.on('did-redirect-navigation', () => void tryCapture());
     win.webContents.on('did-frame-finish-load', () => void tryCapture());
 
+    let leftStartHost = false;
+    win.webContents.on('will-redirect', (details) => {
+      if (leftStartHost || !details.isMainFrame) return;
+      if (new URL(details.url).hostname === new URL(startUrl).hostname) return;
+      leftStartHost = true;
+      const hop = callbackHostHop(startUrl, details.url);
+      if (hop === null) return;
+      details.preventDefault();
+      callbackOrigin = hop;
+      void win.loadURL(`${hop}/gateway/auth/oidc/login`).catch((cause) => {
+        finish(err({ kind: 'failed', message: `Could not open sign-in page: ${cause.message}` }));
+      });
+    });
+
     win.on('closed', () => {
       if (!settled) {
         settled = true;
@@ -373,8 +432,23 @@ export async function oidcLogin(server: SwitchServer): Promise<Result<true, Logi
       }
     });
 
-    void win.loadURL(gatewayUrl(server, '/auth/oidc/login')).catch((cause) => {
+    void win.loadURL(startUrl).catch((cause) => {
+      // Cancelled by the hop above, which has loaded the sign-in elsewhere.
+      if (callbackOrigin !== null) return;
       finish(err({ kind: 'failed', message: `Could not open sign-in page: ${cause.message}` }));
     });
   });
+
+  if (result.success && callbackOrigin !== null) {
+    // Where the server's sign-in returns is where an older server keeps its
+    // dashboard. Signed in either way, so a failure to record it is only noted.
+    await keepSeparateDashboard(server, callbackOrigin).catch((error: unknown) => {
+      log.warn('switch-servers: could not keep the host the sign-in returned to', {
+        server: server.id,
+        callbackOrigin,
+        error: String(error),
+      });
+    });
+  }
+  return result;
 }

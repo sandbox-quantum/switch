@@ -157,6 +157,7 @@ from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
+from switch_core.gateway.ui import GatewayUi
 from switch_core.logging_config import configure_logging
 from switch_core.management.wiring import Management, create_management
 from switch_core.messages.notify import MessageListener
@@ -652,7 +653,7 @@ async def run(config: SwitchConfig) -> None:
         room_role_store=room_role_store,
         external_user_store=external_user_store,
         connections=connections,
-        frontend_base_url=config.frontend_base_url,
+        frontend_base_url=config.dashboard_base_url,
         message_telemetry=message_telemetry,
     )
     # Members that only write: a person on another platform, and a bridge's own
@@ -722,7 +723,7 @@ async def run(config: SwitchConfig) -> None:
         agent_session_store=agent_session_store,
         room_service=room_service,
         connections=connections,
-        frontend_base_url=config.frontend_base_url,
+        frontend_base_url=config.dashboard_base_url,
     )
 
     # ── Agent management (off unless the agent_management flag is on) ─────────
@@ -754,6 +755,11 @@ async def run(config: SwitchConfig) -> None:
         connections=connections,
         telemetry=telemetry,
         trust_client=trust_client,
+        gateway_ui=(
+            GatewayUi.load(config.gateway_ui_dir)
+            if config.gateway_ui_dir is not None
+            else None
+        ),
     )
     # Every close reports, whichever of the five paths did it — and only for a
     # connection the handler saw start.

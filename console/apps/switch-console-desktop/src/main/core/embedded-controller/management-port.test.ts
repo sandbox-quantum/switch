@@ -23,7 +23,7 @@ vi.mock('@main/core/workspaces/workspace-session', () => ({
   withReachableWorkspaceSession: async (
     _workspaceId: string,
     fn: (server: unknown) => Promise<unknown>
-  ) => fn({ id: 'server-1', name: 'S', apiUrl: 'https://switch.example.com' }),
+  ) => fn({ id: 'server-1', name: 'S', url: 'https://switch.example.com' }),
 }));
 
 const { gatewayManagementPort, placedOn } = await import('./management-port');

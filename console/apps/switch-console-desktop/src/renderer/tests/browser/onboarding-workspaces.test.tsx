@@ -53,8 +53,8 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
 const SERVER = vi.hoisted(() => ({
   id: 'srv-1',
   name: 'switch.example.com',
-  gatewayUrl: 'https://switch.example.com',
-  apiUrl: 'https://switch.example.com:8000',
+  url: 'https://switch.example.com:8000',
+  dashboardUrl: 'https://switch.example.com',
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({

@@ -4,11 +4,11 @@ To check pod status:
   kubectl get pods -n {{ .Release.Namespace }}
 
 To access services via port-forward:
-
+{{ if .Values.gateway.enabled }}
   # Gateway (dashboard)
   kubectl port-forward svc/{{ include "switch.fullname" . }}-gateway 3000:3000 -n {{ .Release.Namespace }}
-
-  # Switch Core (API)
+{{ end }}
+  # Switch Core (API{{ if not .Values.gateway.enabled }} and dashboard{{ end }})
   kubectl port-forward svc/{{ include "switch.fullname" . }}-switch-core 8000:8000 -n {{ .Release.Namespace }}
 
   # Mattermost

@@ -2,9 +2,10 @@ import { makeAutoObservable, runInAction } from 'mobx';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import type {
-  RemoteAgentRoom,
-  RemoteRoomSummary,
+import {
+  dashboardOrigin,
+  type RemoteAgentRoom,
+  type RemoteRoomSummary,
 } from '@shared/core/switch-servers/switch-servers';
 import { UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
 import { serverAvailability } from './server-availability';
@@ -111,7 +112,7 @@ export class SwitchRoomsStore {
     if (!serverId) return null;
     const server = switchServersStore.servers.find((s) => s.id === serverId);
     if (!server) return null;
-    const base = server.gatewayUrl.replace(/\/+$/, '');
+    const base = dashboardOrigin(server).replace(/\/+$/, '');
     return `${base}/rooms/${roomId}`;
   }
 
@@ -123,7 +124,7 @@ export class SwitchRoomsStore {
   gatewayAgentUrl(serverId: string, switchAgentId: string): string | null {
     const server = switchServersStore.servers.find((s) => s.id === serverId);
     if (!server) return null;
-    const base = server.gatewayUrl.replace(/\/+$/, '');
+    const base = dashboardOrigin(server).replace(/\/+$/, '');
     return `${base}/agents/${switchAgentId}`;
   }
 

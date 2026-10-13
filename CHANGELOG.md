@@ -53,6 +53,18 @@ version of their own to them without also giving them a release of their own.
   organization's Rovo credits on every call, are still not asked for; four
   Confluence write tools (infographics and apps on a page) spend 15-30 credits
   a request, and the skill tells agents to use them only when asked.
+- **switch-core serves the operator dashboard on its own port,** beside the
+  API, so a server has one address. The image builds the dashboard and sets
+  `GATEWAY_UI_DIR`; unset or empty, as in a development run on the Vite dev
+  server, it serves none. Pages answer ahead of agent authentication from a
+  fixed list of the dashboard's routes, and an API route always wins a path
+  both could answer. With `FRONTEND_BASE_URL` unset, links to the dashboard
+  (invitation e-mails, and the room, document and reference links agents post)
+  use `GATEWAY_PUBLIC_URL`.
+- **Helm: `gateway.enabled` and `switchCore.serveDashboard`,** both on by
+  default. `gateway.enabled: false` drops the separate gateway Deployment, and
+  the managed Ingress sends every path to switch-core;
+  `switchCore.serveDashboard: false` keeps switch-core to the API.
 - **Operators can keep names away from outside avatar services.** An agent with
   no icon of its own is drawn by api.dicebear.com with its name as the seed, and
   a person relayed from another platform by ui-avatars.com with their name in the
@@ -68,6 +80,16 @@ version of their own to them without also giving them a release of their own.
   stored to never show. `GET /agents/icon-choices` offers none and says why, and
   `GET /agents/avatar-settings` tells Switch Console the setting. The default is
   unchanged. A server Switch Console runs for you always uses the default.
+
+#### Changed
+- **GET `/agents` and `/agents/<id>` answer with the dashboard's page** rather
+  than a 401, under an ingress that already routes those paths to switch-core,
+  so a hard refresh on the dashboard's Agents pages works.
+- **Browser sign-in starts on the host the identity provider returns to.** A
+  sign-in begun on another of the server's hosts is redirected to the host of
+  `GATEWAY_OIDC_REDIRECT_URL` first, so its state cookie is there when the
+  provider comes back. Afterwards it lands on `FRONTEND_BASE_URL` when that is
+  set, and otherwise on the host that set the session cookie.
 
 #### Security
 - **An agent icon URL must spell its host plainly.** A link with a backslash,
@@ -1683,6 +1705,30 @@ version of their own to them without also giving them a release of their own.
   turns sharing off for everyone at your next start, while a "yes" leaves it as
   it is — on stays on, off stays off — unless none of them has used the server
   in the last 14 days. The note now says so.
+
+#### Changed
+- **One address per server.** Adding or editing a server asks for its address,
+  the one its agents connect to, instead of a gateway URL and an API URL.
+  Saved servers keep their API address, which agents, controllers and remote
+  hosts already point at. Where the gateway address differed, Console keeps it
+  for dashboard pages, invite links and browser sign-in, until the server
+  serves its own dashboard and the old address stops answering.
+- **Console says when it has the wrong address.** An address that answers with
+  a web page is refused with what to enter instead; a dashboard page on a
+  server that serves none says so rather than opening on a refusal; and a
+  server whose address does not route `/gateway` to switch-core is reported as
+  that, rather than as a failed request.
+- **Older servers with their dashboard on a host of its own.** Added by its
+  address, such a server's browser sign-in is followed to the host its
+  identity provider returns to, and Console keeps that host for its dashboard
+  pages and invite links. A server that offers only password sign-in gets them
+  from an invite link to its dashboard, or once it is upgraded to serve the
+  dashboard itself.
+- **Upgrading: Console reaches the management API at the server's own
+  address.** Every `/gateway` call now goes to the address agents use. The
+  chart's single-host ingress needs nothing. A setup whose API host routes
+  only the agent paths has to route `/gateway` there to switch-core before
+  Console is upgraded; until then Console reports which address to fix.
 
 ### [0.39.0] - 2026-10-12
 

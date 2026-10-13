@@ -40,17 +40,47 @@ export function sameApiEndpoint(a: string, b: string): boolean {
   return a.trim().replace(/\/+$/, '') === b.trim().replace(/\/+$/, '');
 }
 
+/**
+ * One spelling per server address, so two that name the same server compare
+ * equal: scheme and host lowercased, a default port dropped, no trailing slash,
+ * a path kept. Input that does not parse is only trimmed.
+ */
+export function normaliseServerUrl(url: string): string {
+  const trimmed = url.trim();
+  try {
+    const parsed = new URL(trimmed);
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return trimmed.replace(/\/+$/, '');
+  }
+}
+
+/** Where a server's dashboard pages open: its own address, unless it still
+ * keeps the dashboard elsewhere. */
+export function dashboardOrigin(server: Pick<SwitchServer, 'url' | 'dashboardUrl'>): string {
+  return server.dashboardUrl ?? server.url;
+}
+
 /** A registered Switch server. Non-secret connection metadata only. */
 export type SwitchServer = {
   id: string;
   name: string;
-  /** Origin of the gateway deployment, e.g. `https://switch-gateway.example.com`.
-   * The management API lives under `${gatewayUrl}/gateway`. */
-  gatewayUrl: string;
-  /** Origin of the Switch core (agent bridge) API, e.g.
-   * `https://switch-api.example.com` — what an agent's `SWITCH_API_ENDPOINT`
-   * points at, and what an onboarded agent is matched to its server by. */
-  apiUrl: string;
+  /** The server's one address, e.g. `https://switch.example.com`: the origin
+   * of switch-core, which serves the agent API at its root, the management API
+   * under `${url}/gateway`, and the dashboard. What an agent's
+   * `SWITCH_API_ENDPOINT` points at, and what an onboarded agent is matched to
+   * its server by. */
+  url: string;
+  /** Where the dashboard opens when `url` does not serve it, else null. Open
+   * dashboard pages through {@link dashboardOrigin}, never from this directly.
+   *
+   * A fallback with an end date. A server older than switch-core serving its
+   * own dashboard keeps the gateway address it was registered with (migration
+   * 0052), cleared once its `url` answers with the dashboard; a managed stack
+   * gets its dashboard container's port while the compose it runs still has
+   * one. Remove it once Console no longer supports servers that predate the
+   * built-in dashboard and the bundled compose no longer runs the container. */
+  dashboardUrl: string | null;
   /** True when Switch Console runs this server itself (docker compose). Managed
    * servers are driven by the lifecycle controls, not the add/edit-server UI. */
   managed: boolean;
@@ -67,8 +97,19 @@ export type SwitchServer = {
 
 export type AddServerParams = {
   name: string;
-  gatewayUrl: string;
-  apiUrl: string;
+  url: string;
+  /** Where this server's dashboard was reached, when that is known to be a
+   * different address: an invite link names the dashboard's origin. Kept only
+   * if it serves the dashboard and `url` does not; see {@link SwitchServer}. */
+  dashboardUrl: string | null;
+};
+
+/** What a managed stack registers itself with: its own address, and where its
+ * dashboard container answers while it still runs one. */
+export type ManagedServerParams = {
+  name: string;
+  url: string;
+  dashboardUrl: string | null;
 };
 
 /** Identifies which managed server to upsert/look up: the single local stack,
@@ -78,8 +119,7 @@ export type ManagedServerRef = { kind: 'local' } | { kind: 'remote'; sshHost: st
 export type UpdateServerParams = {
   id: string;
   name: string;
-  gatewayUrl: string;
-  apiUrl: string;
+  url: string;
 };
 
 /** Rename a server (display name only). Works for managed and external servers;
@@ -90,7 +130,7 @@ export type RenameServerParams = {
 };
 
 /**
- * What happened to one agent when a server's API URL was cascaded to its
+ * What happened to one agent when a server's address was cascaded to its
  * members. `updated` — the agent's `SWITCH_API_ENDPOINT` was rewritten.
  * `not-provisioned` — the agent has no Switch credentials on disk yet, so there
  * was nothing to update (skipped, not an error). `failed` — the rewrite threw
@@ -98,7 +138,7 @@ export type RenameServerParams = {
  */
 export type AgentApiUrlPropagationOutcome = 'updated' | 'not-provisioned' | 'failed';
 
-/** Per-agent result of a server-API-URL cascade. */
+/** Per-agent result of a server-address cascade. */
 export type AgentApiUrlPropagation = {
   agentId: string;
   agentName: string;
@@ -109,11 +149,11 @@ export type AgentApiUrlPropagation = {
   error?: string;
 };
 
-/** Summary of cascading a server's API-URL edit to its member agents. */
+/** Summary of cascading a server's address edit to its member agents. */
 export type ServerApiUrlPropagation = {
-  /** True when the API URL actually changed, so propagation ran. When false the
-   * `agents` list is empty (the edit was name/gateway-only). */
-  apiUrlChanged: boolean;
+  /** True when the address actually changed, so propagation ran. When false the
+   * `agents` list is empty (the edit was name-only). */
+  urlChanged: boolean;
   agents: AgentApiUrlPropagation[];
 };
 

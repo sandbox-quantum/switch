@@ -142,7 +142,9 @@ Full walkthrough, including the Azure side:
   with your own manifest; [`samples/ingress.example.yaml`](samples/ingress.example.yaml)
   is copy-pasteable.
 - **`managed`** — the chart renders one path-routed Ingress on `ingress.host`:
-  `agentApiPaths` to switch-core, everything else to the gateway SPA.
+  `agentApiPaths` to switch-core, everything else to the gateway SPA — or, with
+  `gateway.enabled: false`, everything to switch-core, which serves the
+  dashboard itself. That drops the separate gateway Deployment.
 
 `switchCore.teamsBridge.ingress.mode` is independent of this — `dedicated` works
 under either.

@@ -1,3 +1,4 @@
+{{- if .Values.gateway.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -51,3 +52,4 @@ spec:
         - name: nginx-config
           configMap:
             name: {{ include "switch.fullname" . }}-gateway-nginx
+{{- end }}

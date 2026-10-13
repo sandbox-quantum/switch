@@ -25,7 +25,11 @@ vi.mock('./gateway-client', () => ({
   getServiceFlow: vi.fn(),
   startServiceConnection: vi.fn(),
 }));
-const server = { id: 'server', gatewayUrl: 'https://switch.example.test' } as SwitchServer;
+const server = {
+  id: 'server',
+  url: 'https://switch.example.test',
+  dashboardUrl: null,
+} as SwitchServer;
 const flows: [string, string][] = [];
 /** The service as the server lists it: on any port, or only on `ports`. */
 function listed(ports: number[] | null): ConnectionCatalogEntry[] {

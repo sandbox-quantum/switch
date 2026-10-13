@@ -11,6 +11,7 @@ const selection = vi.hoisted(() => ({ serverId: null as string | null }));
 const removeServer = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
 const connectToSwitchCloud = vi.hoisted(() => vi.fn());
+const oidcLogin = vi.hoisted(() => vi.fn());
 /** SSH hosts the reachability manager currently considers down. */
 const blockedHosts = vi.hoisted(() => new Set<string>());
 
@@ -25,6 +26,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       removeServer,
       addServer,
       connectToSwitchCloud,
+      oidcLogin,
     },
     onboarding: { installIsEmpty },
   },
@@ -79,8 +81,8 @@ function server(id: string, overrides: Partial<SwitchServer> = {}): SwitchServer
   return {
     id,
     name: id,
-    gatewayUrl: `https://${id}.example.com`,
-    apiUrl: `https://api.${id}.example.com`,
+    url: `https://api.${id}.example.com`,
+    dashboardUrl: `https://${id}.example.com`,
     managed: false,
     managementKind: null,
     sshHost: null,
@@ -385,7 +387,7 @@ describe('adding the first server', () => {
     addServer.mockResolvedValue(server('a'));
     listServers.mockResolvedValue([server('a')]);
     installIsEmpty.mockResolvedValue(false);
-    await store.addServer('a', 'https://a.example.com', 'https://a.example.com');
+    await store.addServer('a', 'https://a.example.com', null);
 
     expect(store.installIsEmpty).toBe(false);
   });
@@ -402,6 +404,18 @@ describe('adding the first server', () => {
     await store.connectToSwitchCloud();
 
     expect(store.installIsEmpty).toBe(false);
+  });
+});
+
+describe('signing in through the browser', () => {
+  it('reads the list again, for a dashboard address the sign-in found', async () => {
+    const store = newStore([server('a', { dashboardUrl: null })]);
+    oidcLogin.mockResolvedValue({ success: true, data: true });
+    listServers.mockResolvedValue([server('a', { dashboardUrl: 'https://a.example.com' })]);
+
+    expect(await store.oidcLogin('a')).toBe(true);
+
+    expect(store.servers[0]?.dashboardUrl).toBe('https://a.example.com');
   });
 });
 
@@ -694,9 +708,26 @@ describe('keeping a server active', () => {
     addServer.mockResolvedValue(created);
     listServers.mockResolvedValue([created]);
 
-    await store.addServer('New', created.gatewayUrl, created.apiUrl);
+    await store.addServer('New', created.url, null);
 
     expect(store.activeServerId).toBe('srv-new');
+  });
+
+  it('passes on where the server’s dashboard was reached, for the main process to check', async () => {
+    listServers.mockResolvedValue([]);
+    const store = new SwitchServersStore();
+    await store.init();
+    const created = server('srv-new');
+    addServer.mockResolvedValue(created);
+    listServers.mockResolvedValue([created]);
+
+    await store.addServer('New', 'https://switch-api.example.com', 'https://switch.example.com');
+
+    expect(addServer).toHaveBeenCalledWith({
+      name: 'New',
+      url: 'https://switch-api.example.com',
+      dashboardUrl: 'https://switch.example.com',
+    });
   });
 
   it('does not move the workspace when a second server is added', async () => {
@@ -709,7 +740,7 @@ describe('keeping a server active', () => {
     addServer.mockResolvedValue(created);
     listServers.mockResolvedValue([server('srv-a'), created]);
 
-    await store.addServer('B', created.gatewayUrl, created.apiUrl);
+    await store.addServer('B', created.url, null);
 
     expect(store.activeServerId).toBe('srv-a');
   });

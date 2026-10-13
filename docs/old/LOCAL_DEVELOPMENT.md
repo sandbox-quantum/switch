@@ -119,11 +119,17 @@ The operator dashboard you'd open in a browser is a separate Vite dev
 server, started with `just gateway-dev` (`cd gateway && npm run dev`), and it
 listens on **`:5173`**, not `:8000`. Forget to start it and there is simply
 nothing at `localhost:5173`; go to `localhost:8000` instead expecting a UI
-and you get switch-core's raw JSON API responses — it never serves the
-dashboard's static assets, in dev or otherwise. In a standalone or Helm
-deployment the dashboard is served by yet another process (the `gateway`
-image, a separate container), so this is a permanent split, not a dev-mode
-shortcut: switch-core is the API, something else is always the UI.
+and you get switch-core's raw JSON API responses.
+
+That is a development default, not how a deployed server works. switch-core
+serves the dashboard itself, on its own port beside the API, whenever
+`GATEWAY_UI_DIR` names a built dashboard — and the server image sets it, so a
+deployed server has one address for everything. To get the same in dev, build
+the dashboard once (`cd gateway && npm run build`) and run with
+`GATEWAY_UI_DIR=gateway/dist`; Vite stays the way to work on the dashboard
+itself, because it reloads as you edit. The separate `gateway` image (an nginx
+container serving the same build and forwarding `/gateway` to switch-core)
+still works in standalone and Helm deployments, but nothing needs it any more.
 
 The Vite dev server proxies every `/gateway/*` request to
 `http://127.0.0.1:8000` (see `gateway/vite.config.ts`), so from the browser's
@@ -139,7 +145,7 @@ any CORS configuration: as far as the browser can tell, it never left
 | URL | What's there | Started by |
 | --- | --- | --- |
 | `http://localhost:5173` | The operator dashboard (Vite dev server). Open this in a browser. | `just gateway-dev` |
-| `http://localhost:8000` | switch-core: the Agent Bridge API, the MCP server, and the gateway management API under `/gateway/*`. JSON, not a UI. | `just run` |
+| `http://localhost:8000` | switch-core: the Agent Bridge API, the MCP server, and the gateway management API under `/gateway/*`. Also the dashboard when `GATEWAY_UI_DIR` points at a build; otherwise JSON, not a UI. | `just run` |
 | `http://localhost:8081` | switch-core's collaboration callback listener — where Mattermost delivers a button press. Bound only once a bridge asks to be called back, so it is often not there at all. | `just run` |
 | `http://localhost:8065` | Mattermost, seeded as the local collaboration bridge. | `just up` |
 | `http://localhost:5432` | PostgreSQL. | `just up` |
@@ -151,45 +157,31 @@ dashboard, such as the OIDC login redirect — it should match wherever
 
 ## Connecting Switch Console to your local server
 
-Switch Console (the desktop app) talks to a Switch server over two
-addresses: a **Gateway URL** and an **API URL** — see [Add a
-server](../official/getting-started/add-a-server.md) for what each field
-means in general. They are not the same address in local dev, and getting
-either one wrong fails in a way that points somewhere else:
+Switch Console (the desktop app) connects to a Switch server by one address:
+switch-core's. In local dev that is **`http://localhost:8000`**. Console
+writes it into each connected agent's own config as the endpoint it
+registers against (the Agent Bridge / MCP surface), calls the gateway
+management API under `/gateway/*` on it (signing in, listing agents and
+rooms, the reachability check), and opens dashboard pages on it — the
+**Open** button under "Full admin interface", and links to rooms and agents.
 
-- **API URL** is `http://localhost:8000` — switch-core directly. This is the
-  address Console writes into each connected agent's own config as the
-  endpoint it registers against and talks to (the Agent Bridge / MCP
-  surface), so it always names switch-core itself.
-- **Gateway URL** is `http://localhost:5173` — the Vite dev server, **not**
-  `:8000`. Console uses this address for everything session-cookie-based:
-  its own calls into `/gateway/*` (signing in, listing agents and rooms),
-  the **Open** button under "Full admin interface" (which opens this exact
-  URL in your browser), and the periodic check that decides whether the
-  server shows as reachable. `just gateway-dev` has to be running for any of
-  that to work — Vite's `/gateway` proxy is what makes `:5173` stand in for
-  switch-core's session-authenticated surface, the same way it does for the
-  browser dashboard above.
+Those dashboard pages are the one thing that needs more than `just run`:
+switch-core serves them only when `GATEWAY_UI_DIR` names a built dashboard
+(see above). Without it, everything else works and the **Open** button loads
+a bare JSON response instead of the admin UI. Either run with
+`GATEWAY_UI_DIR=gateway/dist` after building the dashboard, or open the Vite
+dev server at `localhost:5173` in a browser yourself.
 
-Setting the Gateway URL to `:8000` looks reasonable, since switch-core does
-answer `/gateway/*` on that port directly, but it hits the thing this page
-already warned about: switch-core never serves the dashboard's static
-assets. The reachability check still passes — `/gateway/*` genuinely
-answers on `:8000` — so the only symptom is the **Open** button loading a
-bare JSON response instead of the admin UI; nothing on the server list looks
-wrong.
-
-The opposite mistake is quieter and easier to hit by accident: forget to
-start `just gateway-dev`, and there is nothing at `:5173` to answer the
-Gateway URL check, so Console reports the **whole server** as unreachable —
-even though switch-core (`just run`) is healthy and the API URL is
-answering fine. The symptom points at the backend; the actual cause is the
-frontend dev server not running.
+If you paste `http://localhost:5173` by mistake, Console refuses it when you
+save, because it answers with a web page rather than the API.
 
 In Switch Console, add a server, choose **Connect to an existing server**,
-and enter `http://localhost:5173` as the Gateway URL and
-`http://localhost:8000` as the API URL — with `just gateway-dev` already
-running.
+and enter `http://localhost:8000`.
+
+A server saved by an older Console with two addresses keeps working: its API
+address became its one address, and the old Gateway URL is kept, out of
+sight, for opening dashboard pages until the server serves its own dashboard
+and the old address stops answering.
 
 ## A local Switch Cloud
 
@@ -214,7 +206,10 @@ just local-cloud-console # the Console, with Switch Cloud at http://localhost:80
   `http://localhost:8000`, so pasting one into the Console's "Paste your
   invite link" finds the local Cloud. That comes from `FRONTEND_BASE_URL`,
   which `just local-cloud` sets to `:8000`. The dashboard's own links follow
-  it, so in this mode they open switch-core's JSON rather than the dashboard.
+  it, so they open switch-core's JSON rather than the dashboard unless
+  switch-core is serving it: build it (`just gateway-build`) and run
+  `GATEWAY_UI_DIR=gateway/dist just local-cloud`, and they open the dashboard
+  on `:8000`, as they do on a deployed Cloud.
 - **Joining by domain** is offered only for the domain of the admin's own
   address: `switch.local` for the default admin. Give test accounts
   addresses there.

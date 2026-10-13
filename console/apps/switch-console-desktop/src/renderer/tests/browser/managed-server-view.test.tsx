@@ -118,8 +118,8 @@ import '@renderer/index.css';
 const LOCAL = {
   id: 'srv-1',
   name: 'Local dev',
-  gatewayUrl: 'http://localhost:41000',
-  apiUrl: 'http://localhost:41001',
+  url: 'http://localhost:41001',
+  dashboardUrl: 'http://localhost:41000',
   managed: true,
   managementKind: 'local' as const,
   sshHost: null,

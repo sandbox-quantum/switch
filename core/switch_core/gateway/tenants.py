@@ -622,12 +622,12 @@ async def _deliver_invitation(
             invitation.tenant_id,
         )
         return "not_configured"
-    assert config.frontend_base_url is not None
+    assert config.dashboard_base_url is not None
     try:
         await mailer.send_invitation(
             InviteEmail(
                 to=invitation.email,
-                link=invite_link(config.frontend_base_url, token),
+                link=invite_link(config.dashboard_base_url, token),
                 workspace_name=workspace_name,
                 inviter_name=inviter_name,
                 role=invitation.role,

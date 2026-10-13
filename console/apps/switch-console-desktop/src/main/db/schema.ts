@@ -93,42 +93,43 @@ export const appSettings = sqliteTable(
  * keyed by server id — so this table holds only non-secret connection
  * metadata.
  */
-export const switchServers = sqliteTable(
-  'switch_servers',
-  {
-    id: text('id').primaryKey(),
-    name: text('name').notNull(),
-    /** Origin of the gateway deployment; the management API is at
-     * `${gatewayUrl}/gateway`. */
-    gatewayUrl: text('gateway_url').notNull(),
-    /**
-     * Origin of the Switch *core* (agent bridge) API — what an agent's
-     * `SWITCH_API_ENDPOINT` points at, and what an onboarded agent is matched to
-     * its server by. May differ from `gatewayUrl` (e.g. `switch-api.*` vs
-     * `switch-gateway.*`).
-     */
-    apiUrl: text('api_url').notNull(),
-    /** True when Switch Console provisions and runs this server itself via
-     * docker compose. Managed servers get lifecycle controls (start/stop/reset)
-     * and are not user-editable connection records. */
-    managed: integer('managed', { mode: 'boolean' }).notNull().default(false),
-    /** Where a managed server runs: `local` (this computer) or `remote` (an SSH
-     * host). Null for external servers; a legacy managed row with a null kind is
-     * read as `local`. */
-    managementKind: text('management_kind'),
-    /** SSH alias of the host a remote-managed server runs on; null otherwise. */
-    sshHost: text('ssh_host'),
-    createdAt: text('created_at')
-      .notNull()
-      .default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: text('updated_at')
-      .notNull()
-      .default(sql`CURRENT_TIMESTAMP`),
-  },
-  (table) => ({
-    gatewayUrlIdx: uniqueIndex('idx_switch_servers_gateway_url').on(table.gatewayUrl),
-  })
-);
+export const switchServers = sqliteTable('switch_servers', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  /**
+   * The server's one address: the origin of switch-core, which serves the
+   * agent API at its root, the management API under `/gateway`, and the
+   * dashboard. What an agent's `SWITCH_API_ENDPOINT` points at, and what an
+   * onboarded agent is matched to its server by.
+   *
+   * Not unique in the schema: before migration 0052 the gateway address was
+   * the unique one, so two rows may already share this. Adding a server
+   * refuses a duplicate instead.
+   */
+  url: text('url').notNull(),
+  /**
+   * Where the dashboard opens when `url` does not serve it: a server older
+   * than switch-core serving its own dashboard, or a managed stack still
+   * running a separate dashboard container. Null when `url` serves it.
+   */
+  dashboardUrl: text('dashboard_url'),
+  /** True when Switch Console provisions and runs this server itself via
+   * docker compose. Managed servers get lifecycle controls (start/stop/reset)
+   * and are not user-editable connection records. */
+  managed: integer('managed', { mode: 'boolean' }).notNull().default(false),
+  /** Where a managed server runs: `local` (this computer) or `remote` (an SSH
+   * host). Null for external servers; a legacy managed row with a null kind is
+   * read as `local`. */
+  managementKind: text('management_kind'),
+  /** SSH alias of the host a remote-managed server runs on; null otherwise. */
+  sshHost: text('ssh_host'),
+  createdAt: text('created_at')
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text('updated_at')
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
 
 /**
  * A workspace: the unit everything in the window is scoped to. A server hosts

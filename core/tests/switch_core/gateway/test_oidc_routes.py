@@ -5,9 +5,11 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.responses import RedirectResponse
+from starlette.testclient import TestClient
 
 import switch_core.gateway.oidc_routes as oidc_routes
 from switch_core.config import SwitchConfig
@@ -21,6 +23,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.user_store import OidcIdentityRaceError, UserStore
 from switch_core.gateway.auth import decode_jwt, hash_password
 from switch_core.gateway.auth_routes import auth_config
+from switch_core.gateway.dependencies import get_config
 
 
 def _tenant_claim(set_cookie: str) -> str | None:
@@ -830,3 +833,103 @@ class TestAuthConfigEndpoint:
     async def test_reports_the_signup_mode(self) -> None:
         result = await auth_config(config=_config(gateway_signup_mode="invite_only"))
         assert result.signup_mode == "invite_only"
+
+
+class _FakeAuthorize:
+    """Stands in for the authlib OIDC client at the login."""
+
+    def __init__(self) -> None:
+        self.redirect_uris: list[str] = []
+
+    async def authorize_redirect(
+        self, _request: object, redirect_uri: str
+    ) -> RedirectResponse:
+        self.redirect_uris.append(redirect_uri)
+        return RedirectResponse("https://idp.example/authorize", status_code=302)
+
+
+class TestTheLoginStartsOnTheCallbacksHost:
+    """The flow's state cookie must be on the host the provider returns to.
+
+    A server serving its dashboard on its own address may still have a separate
+    dashboard host that the identity provider returns to; a login begun on the
+    server's own host is first sent there.
+    """
+
+    _CALLBACK = "https://switch-dashboard.example.com/gateway/auth/oidc/callback"
+
+    def _client(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        host: str,
+        redirect_url: str | None,
+    ) -> tuple[TestClient, _FakeAuthorize]:
+        fake = _FakeAuthorize()
+        monkeypatch.setattr(oidc_routes, "_client", lambda: fake)
+        config = _config(gateway_oidc_redirect_url=redirect_url)
+        gateway = FastAPI()
+        gateway.include_router(oidc_routes.router)
+        gateway.dependency_overrides[get_config] = lambda: config
+        app = FastAPI()
+        app.mount("/gateway", gateway)
+        return TestClient(app, base_url=host, follow_redirects=False), fake
+
+    def test_a_login_on_another_host_is_sent_to_the_callbacks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, fake = self._client(
+            monkeypatch, "https://switch.example.com", self._CALLBACK
+        )
+        response = client.get("/gateway/auth/oidc/login")
+        assert response.status_code == 302
+        assert response.headers["location"] == (
+            "https://switch-dashboard.example.com/gateway/auth/oidc/login"
+            "?on_callback_host=1"
+        )
+        assert fake.redirect_uris == []
+
+    def test_a_login_on_the_callbacks_host_starts_there(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, fake = self._client(
+            monkeypatch, "https://switch-dashboard.example.com", self._CALLBACK
+        )
+        response = client.get("/gateway/auth/oidc/login")
+        assert response.headers["location"] == "https://idp.example/authorize"
+        assert fake.redirect_uris == [self._CALLBACK]
+
+    def test_another_port_on_the_same_host_is_the_same_host(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A cookie is shared across ports, and a proxy may drop the port from
+        # the Host header; sending the browser on would only loop.
+        client, fake = self._client(
+            monkeypatch,
+            "http://localhost:8000",
+            "http://localhost:3000/gateway/auth/oidc/callback",
+        )
+        client.get("/gateway/auth/oidc/login")
+        assert fake.redirect_uris == [
+            "http://localhost:3000/gateway/auth/oidc/callback"
+        ]
+
+    def test_a_proxy_rewriting_the_host_costs_one_hop_not_a_loop(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client, fake = self._client(
+            monkeypatch, "http://switch-core:8000", self._CALLBACK
+        )
+        with caplog.at_level("WARNING", logger=oidc_routes.__name__):
+            response = client.get("/gateway/auth/oidc/login?on_callback_host=1")
+        assert response.headers["location"] == "https://idp.example/authorize"
+        assert fake.redirect_uris == [self._CALLBACK]
+        assert "rewriting the Host header" in caplog.text
+
+    def test_without_a_configured_callback_the_login_starts_where_it_is(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, fake = self._client(monkeypatch, "https://switch.example.com", None)
+        client.get("/gateway/auth/oidc/login")
+        assert fake.redirect_uris == [
+            "https://switch.example.com/gateway/auth/oidc/callback"
+        ]

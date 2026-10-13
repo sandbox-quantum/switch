@@ -19,10 +19,10 @@ const { h } = vi.hoisted(() => ({
     } | null,
     agentExists: true,
     unauthorized: false,
-    server: { id: 'srv-1', name: 'Switch', apiUrl: 'https://switch.example.com' } as {
+    server: { id: 'srv-1', name: 'Switch', url: 'https://switch.example.com' } as {
       id: string;
       name: string;
-      apiUrl: string;
+      url: string;
       managementKind?: string;
       sshHost?: string;
     } | null,
@@ -104,7 +104,7 @@ beforeEach(() => {
   h.detected = { agentId: 'sw-1', apiEndpoint: 'https://switch.example.com' };
   h.agentExists = true;
   h.unauthorized = false;
-  h.server = { id: 'srv-1', name: 'Switch', apiUrl: 'https://switch.example.com' };
+  h.server = { id: 'srv-1', name: 'Switch', url: 'https://switch.example.com' };
 });
 
 describe('where an onboarded agent is said to have come from', () => {

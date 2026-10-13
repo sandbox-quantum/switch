@@ -1,3 +1,16 @@
+# The operator dashboard, which switch-core serves on its own port beside the
+# API (`GATEWAY_UI_DIR`), so a server has one address. The same build steps as
+# Dockerfile.gateway, but run on the build host's own platform rather than
+# under emulation for each target: the output is static files, the same for
+# every architecture the image targets.
+FROM --platform=$BUILDPLATFORM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS gateway-ui
+
+WORKDIR /gateway
+COPY gateway/package.json gateway/package-lock.json ./
+RUN npm ci
+COPY gateway/ .
+RUN npm run build
+
 FROM python:3.12-slim
 
 # Pin uv and install exactly what uv.lock resolves, so the image matches what
@@ -33,6 +46,9 @@ COPY core/alembic.ini .
 COPY core/README.md ./
 
 RUN uv sync --frozen --no-dev
+
+COPY --from=gateway-ui /gateway/dist /app/gateway-ui
+ENV GATEWAY_UI_DIR=/app/gateway-ui
 
 # The commit and repository this image was built from, reported with every
 # metric and log so two builds of the same version can be told apart. Declared
