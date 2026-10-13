@@ -94,7 +94,6 @@ class TestTagging:
         await service.aclose()
 
         assert sink.sent[0].resource == {
-            "service.name": "switch-core",
             "flint.client_id": "deployment-uuid",
             "flint_env": "prod",
             "flint_internal": "false",
@@ -211,7 +210,6 @@ class TestTheWireFormat:
                 name="switch_core.usage_snapshot",
                 properties={"room_count": 7, "from_template": True, "kind": "user"},
                 resource={
-                    "service.name": "switch-core",
                     "flint.client_id": "deployment-uuid",
                     "flint_env": "dev",
                     "flint_internal": "false",
@@ -268,7 +266,6 @@ class TestTheWireFormat:
                     "failed_attempts_before_success": 0,
                 },
                 resource={
-                    "service.name": "switch-core",
                     "flint.client_id": "deployment-uuid",
                     "flint_env": "prod",
                     "flint_internal": "false",
@@ -302,6 +299,47 @@ class TestTheWireFormat:
         # The relay sends each event to the Amplitude project this names.
         assert resource["flint_env"] == {"stringValue": "dev"}
         assert resource["flint_internal"] == {"stringValue": "false"}
+
+    async def test_the_sink_sends_no_service_or_environment_name_a_record_carries(
+        self,
+    ) -> None:
+        """The sink decides what names the service, so a caller that tagged a
+        record with operator-set text still cannot send it."""
+        bodies: list[str] = []
+
+        def _handle(request: httpx.Request) -> httpx.Response:
+            bodies.append(request.content.decode())
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = _relay_sink(http)
+        sink.send(
+            TelemetryRecord(
+                name="switch_core.deployment_started",
+                properties={"tenant_count": 1},
+                resource={
+                    "service.name": "acme-corp-switch",
+                    "deployment.environment": "acme-corp-prod",
+                    "flint.client_id": "deployment-uuid",
+                    "flint_env": "prod",
+                    "flint_internal": "false",
+                },
+                timestamp_ns=1,
+            )
+        )
+        await sink.aclose()
+        await http.aclose()
+
+        [raw] = bodies
+        body = json.loads(raw)
+        resource = {
+            a["key"]: a["value"]
+            for a in body["resourceLogs"][0]["resource"]["attributes"]
+        }
+        assert "acme" not in raw
+        assert resource["service.name"] == {"stringValue": "switch-core"}
+        assert "deployment.environment" not in resource
+        assert body["resourceLogs"][0]["scopeLogs"][0]["scope"]["name"] == "switch-core"
 
     async def test_it_posts_to_the_logs_signal(self) -> None:
         """Not `/v1/metrics`: the relay routes on log records, and a metric
@@ -423,7 +461,6 @@ def _a_record() -> TelemetryRecord:
         name="switch_core.deployment_started",
         properties={"tenant_count": 1},
         resource={
-            "service.name": "switch-core",
             "flint.client_id": "deployment-uuid",
             "flint_env": "dev",
             "flint_internal": "false",

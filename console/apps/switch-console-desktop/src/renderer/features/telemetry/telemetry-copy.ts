@@ -24,12 +24,13 @@ export const TELEMETRY_SUMMARY =
  * It governs a Switch server this app runs — the setting is written into that
  * server's configuration at every start — and it does not govern a server
  * reached by URL, which is somebody else's deployment with its own answer. On a
- * server other Consoles use too, a start turns sharing on only when nobody else
- * has been seen on it lately (`shareUsageData` in the managed-server pipeline),
- * while a "no" applies to everyone at the next start from here. The first is the
- * promise; the other two are its limits.
+ * server other Consoles use too, a "no" applies to everyone at the next start
+ * from here, while a "yes" leaves the server as it is — sharing already on stays
+ * on — unless nobody else has been seen on it lately (`shareUsageData` in the
+ * managed-server pipeline). The first is the promise; the other two are its
+ * limits.
  */
-export const TELEMETRY_SCOPE_NOTE = `The same answer applies to a Switch server this app runs for you. If other people use that server from their own Switch Console too, a yes turns sharing on only when none of them has used it in the last ${RECENTLY_SEEN_DAYS} days, and a no turns it off for everyone when you next start it. A server you connect to by URL is not covered — whoever operates it decides.`;
+export const TELEMETRY_SCOPE_NOTE = `The same answer applies to a Switch server this app runs for you. If other people use that server from their own Switch Console too, a no turns sharing off for everyone when you next start it, and a yes leaves it as it is unless none of them has used the server in the last ${RECENTLY_SEEN_DAYS} days. A server you connect to by URL is not covered — whoever operates it decides.`;
 
 export const TELEMETRY_DETAILS_LABEL = 'Read what is collected';
 

@@ -109,6 +109,8 @@ async def test_operator_chosen_names_never_reach_the_relay(
     config = _config(
         "prod", environment="acme-corp-prod", service_name="acme-corp-switch"
     )
+    assert config.environment == "acme-corp-prod"
+    assert config.service_name == "acme-corp-switch"
 
     raw, resource = await _send_one(config, session_factory, monkeypatch)
 
