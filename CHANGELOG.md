@@ -53,6 +53,28 @@ version of their own to them without also giving them a release of their own.
   organization's Rovo credits on every call, are still not asked for; four
   Confluence write tools (infographics and apps on a page) spend 15-30 credits
   a request, and the skill tells agents to use them only when asked.
+- **switch-core serves the operator dashboard on its own port,** beside the
+  API, so a server has one address. The image builds the dashboard and sets
+  `GATEWAY_UI_DIR`; unset or empty, as in a development run on the Vite dev
+  server, it serves none. Pages answer ahead of agent authentication from a
+  fixed list of the dashboard's routes, and an API route always wins a path
+  both could answer. With `FRONTEND_BASE_URL` unset, links to the dashboard
+  (invitation e-mails, and the room, document and reference links agents post)
+  use `GATEWAY_PUBLIC_URL`.
+- **Helm: `gateway.enabled` and `switchCore.serveDashboard`,** both on by
+  default. `gateway.enabled: false` drops the separate gateway Deployment, and
+  the managed Ingress sends every path to switch-core;
+  `switchCore.serveDashboard: false` keeps switch-core to the API.
+
+#### Changed
+- **GET `/agents` and `/agents/<id>` answer with the dashboard's page** rather
+  than a 401, under an ingress that already routes those paths to switch-core,
+  so a hard refresh on the dashboard's Agents pages works.
+- **Browser sign-in starts on the host the identity provider returns to.** A
+  sign-in begun on another of the server's hosts is redirected to the host of
+  `GATEWAY_OIDC_REDIRECT_URL` first, so its state cookie is there when the
+  provider comes back. Afterwards it lands on `FRONTEND_BASE_URL` when that is
+  set, and otherwise on the host that set the session cookie.
 
 ### [0.30.0] - 2026-10-12
 
@@ -1631,6 +1653,19 @@ version of their own to them without also giving them a release of their own.
   returns it; Console only accepted the gateway's host and refused the sign-in
   as an invalid URL. It now accepts either of the server's own origins, over
   HTTPS. Google Workspace connects this way.
+
+#### Changed
+- **One address per server.** Adding or editing a server asks for its address,
+  the one its agents connect to, instead of a gateway URL and an API URL.
+  Saved servers keep their API address, which agents, controllers and remote
+  hosts already point at. Where the gateway address differed, Console keeps it
+  for dashboard pages, invite links and browser sign-in, until the server
+  serves its own dashboard and the old address stops answering.
+- **Console says when it has the wrong address.** An address that answers with
+  a web page is refused with what to enter instead; a dashboard page on a
+  server that serves none says so rather than opening on a refusal; and a
+  server whose address does not route `/gateway` to switch-core is reported as
+  that, rather than as a failed request.
 
 ### [0.39.0] - 2026-10-12
 
