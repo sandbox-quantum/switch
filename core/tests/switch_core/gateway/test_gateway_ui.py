@@ -158,6 +158,7 @@ def _agent_bridge_app(gateway_ui: GatewayUi | None) -> FastAPI:
         oauth_audience = None
         oauth_verify_issuer = True
         id_server_name = "test"
+        service_connections_enabled = True
 
     app, _ = create_agent_bridge_app(
         agent_store=object(),  # type: ignore[arg-type]
