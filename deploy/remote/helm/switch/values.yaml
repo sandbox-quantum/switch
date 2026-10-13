@@ -264,9 +264,10 @@ switchCore:
   # Nothing that identifies anything inside the deployment is ever sent: no
   # room, tenant, agent, user or message id, no names, no message content, and
   # no free text of any kind. What is sent is counts (how many rooms, how many
-  # active users, how much traffic) and durations (how long from install to a
-  # working connector). The full list is in docs/old/telemetry-events.md and
-  # is enforced in code, not just documented.
+  # active users, how much traffic), durations (how long from install to a
+  # working connector) and values from closed sets (which platform, which agent
+  # runtime, success or failure). The full list is in
+  # docs/old/telemetry-events.md and is enforced in code, not just documented.
   telemetry:
     enabled: false
     # Base URL, no path — `/v1/logs` is appended, the same
@@ -281,6 +282,16 @@ switchCore:
     # Whether this is one of Flint's own deployments, so staff usage can be
     # told from adoption. Leave it false on any other deployment.
     internal: false
+
+  # Agents and people drawn by outside avatar services. An agent with no icon
+  # of its own wears a face from api.dicebear.com seeded with its name, and a
+  # person relayed from another platform a lettered badge from ui-avatars.com
+  # with their name in the URL. Chat clients load those images, so the services
+  # see the name and each reader's address. false sends no such URL, stored
+  # icons included: each platform shows its own default icon, new agents get no
+  # generated icon, and Switch Console stops drawing them for this server.
+  thirdPartyAvatars:
+    enabled: true
 
   # Public base URL the gateway is served on (used for links / OIDC redirects).
   # Empty while serveDashboard is on, links to the dashboard use

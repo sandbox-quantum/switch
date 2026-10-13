@@ -104,6 +104,7 @@ def _hosted_app(
         hosted_disk_retention_days=7,
         hosted_launch_capacity=1,
         hosted_agents_enabled=True,
+        third_party_avatars_enabled=True,
     )
 
     async def session():

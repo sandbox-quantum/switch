@@ -46,6 +46,7 @@ import {
   getConnectionCatalog,
   getGitHubConnection,
   fetchAgentIconChoices,
+  fetchAvatarSettings,
   cloudMachineLifecycle,
   ensureCloudMachine,
   listCloudMachines,
@@ -215,6 +216,10 @@ export const switchServersController = createRPCController({
   /** Whether the signed-in account may create a workspace on the server. */
   canCreateWorkspace: (serverId: string) =>
     withServerWorkspaceSession(serverId, (server) => fetchCanCreateWorkspace(server)),
+  /** Whether this server allows a third-party avatar URL (DiceBear, ui-avatars.com)
+   * to be generated or sent anywhere. */
+  avatarSettings: (serverId: string) =>
+    withReachableServerWorkspaceSession(serverId, (server) => fetchAvatarSettings(server)),
   /** The caller's cloud machines, or null when the server offers none. */
   cloudMachines: (serverId: string) =>
     withServerWorkspaceSession(serverId, async (server) =>

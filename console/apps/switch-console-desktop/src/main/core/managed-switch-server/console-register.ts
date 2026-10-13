@@ -19,9 +19,12 @@ import { CONSOLE_ID_PATTERN, UNDER_STATE_MUTEX } from './state-mutex';
  * Who uses a shared remote stack and what they last did to it, kept in its
  * state volume (CHOO-2893). Everyone signs in to the server as its one admin,
  * so the server cannot say who stopped it; each Console records itself in
- * `consoles/<id>.json` and an appended `activity.jsonl` instead. It is a
- * record, not a control: nothing is allowed or refused on its strength, and a
- * Console that fails to write it still does what it was asked.
+ * `consoles/<id>.json` and an appended `activity.jsonl` instead. It records
+ * rather than controls: no action is allowed or refused on its strength, and a
+ * Console that fails to write it still does what it was asked. The one decision
+ * it feeds is a cautious one: a start keeps usage sharing off rather than apply
+ * this Console's "yes" while others are seen on the server (`shareUsageData` in
+ * `pipeline.ts`).
  */
 
 /** Only the latest entries are read back; the file keeps a few hundred. */

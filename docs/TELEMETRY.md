@@ -3,8 +3,8 @@
 **Audience:** InfoSec.
 **Scope:** the Switch Console desktop app, and the consent decision it carries
 to a Switch server it runs for the user (§4.1). What that server itself
-collects is documented separately; Switch server-side logging is out of scope
-here and needs its own pass.
+collects is documented in [`old/telemetry-events.md`](old/telemetry-events.md);
+Switch server-side logging is out of scope here and needs its own pass.
 **Claim:** the data we transmit is anonymous. No field identifies a person, and
 no combination of the fields we transmit can be resolved back to one.
 
@@ -241,7 +241,7 @@ every time the Console starts it, in both directions. "No" is written down
 explicitly rather than left out, because a stack started under a "yes" would
 otherwise keep the setting it started with.
 
-Two limits are stated in the app rather than left to be discovered.
+Three limits are stated in the app rather than left to be discovered.
 
 - **The server reads the setting when it starts.** Changing the answer while it
   is running does not reach it until it restarts, and the Console does not
@@ -253,6 +253,36 @@ Two limits are stated in the app rather than left to be discovered.
   never as agreeing.
 - **A server reached by URL is not covered.** It is somebody else's deployment
   with its own answer, and the toggle neither reaches it nor claims to.
+
+The third is stated in the same note as the second, in a sentence; the detail
+is here. **On a server other people's Consoles also use, a "yes" does not turn
+sharing on over them, but a "yes" can keep it on.** This concerns a server on
+an SSH host, which several people can run from their own Consoles; the server
+on the user's own machine has no other users, and the answer is applied there
+as given.
+
+- **A "no" applies to everyone on the server**, but only when the Console that
+  holds it starts the server. Until then the server keeps the setting it
+  started with, and that person's server page says it is still sharing and
+  offers the restart.
+- **A "yes" applies only if the server's saved configuration already asks to
+  share, or no other Console has been seen on it in the last 14 days.** Each
+  Console records itself in a list kept on the host when it starts, stops,
+  connects to or resets the server, and once a day while it is open on a
+  running one. The list holds nobody's answer, so holding a "yes" back is a
+  precaution, not a check that someone said no.
+- **So an earlier "yes" can outlast a later "no".** If sharing was turned on
+  while one Console was alone, later starts under a "yes" keep it on with
+  others present. A co-user's "no" stops it only when their own Console
+  restarts the server.
+- **Failing to read the list holds a "yes" back** for that start. A host with
+  no list yet counts as nobody else, entries that cannot be parsed are
+  skipped, and a Console too old to write to the list is not counted.
+
+When a "yes" is held back, the Console does not say so at the time: the note
+states the rule, and the log records each case. The server's page does not
+report the server as out of step, because a restart from that Console would
+hold it back again.
 
 ---
 

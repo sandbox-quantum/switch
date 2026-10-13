@@ -12,6 +12,7 @@ from switch_core.agent_icon import (
     InvalidIconUrl,
     generated_icon_choices,
     normalise_icon_url,
+    refuse_third_party_avatar,
 )
 from switch_core.authz import Principal, require_manage
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
@@ -26,6 +27,7 @@ from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     TaskProtocolConfig,
 )
+from switch_core.config import SwitchConfig
 from switch_core.db.models import User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
@@ -33,6 +35,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
     get_agent_store,
+    get_config,
     get_protocol,
     get_room_store,
     get_session,
@@ -42,7 +45,9 @@ from switch_core.gateway.known_agents import known_agent, known_agents
 from switch_core.gateway.schemas import (
     AgentDetail,
     AgentSummary,
+    AvatarSettingsResponse,
     BulkRegisterResult,
+    IconChoicesResponse,
     KnownAgentType,
     RegisterAgentResponse,
     RegisterKnownAgentRequest,
@@ -152,15 +157,34 @@ async def list_known_agent_types() -> list[KnownAgentType]:
     ]
 
 
+@router.get("/avatar-settings")
+async def get_avatar_settings(
+    _user: Annotated[User, Depends(get_current_user)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> AvatarSettingsResponse:
+    """Whether a client may draw agents with icons from outside avatar
+    services. Switch Console builds the same generated icons the bridges do,
+    so it asks here rather than sending names the operator has kept in."""
+    return AvatarSettingsResponse(
+        third_party_avatars_enabled=config.third_party_avatars_enabled
+    )
+
+
 @router.get("/icon-choices")
 async def list_icon_choices(
     _user: Annotated[User, Depends(get_current_user)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
     name: Annotated[str, Query(min_length=1, max_length=128)],
     page: Annotated[int, Query(ge=0, le=1000)] = 0,
-) -> dict[str, list[str]]:
+) -> IconChoicesResponse:
     """One page of generated icons for an agent called `name`: page 0 leads
-    with the one an agent of that name gets when nobody picks an icon."""
-    return {"choices": generated_icon_choices(name, page)}
+    with the one an agent of that name gets when nobody picks an icon. An
+    empty page, flagged as such, when third-party avatars are off."""
+    if not config.third_party_avatars_enabled:
+        return IconChoicesResponse(choices=[], third_party_avatars_enabled=False)
+    return IconChoicesResponse(
+        choices=generated_icon_choices(name, page), third_party_avatars_enabled=True
+    )
 
 
 @router.post("/register")
@@ -392,6 +416,7 @@ async def update_agent_icon(
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> AgentSummary:
     """Set, change, or clear an agent's icon (CHOO-2171).
 
@@ -404,7 +429,9 @@ async def update_agent_icon(
     a private network — Switch dereferences it when a bridge needs the image
     as bytes, so an unconstrained URL would be a request made on the caller's
     behalf from inside our network. A rejected URL returns 400 rather than
-    being stored and failing later at render time.
+    being stored and failing later at render time. So is an icon on an avatar
+    service while the server has third-party avatars off, which no bridge
+    would show.
     """
     agent = await agent_store.get(session, agent_id)
     if agent is None:
@@ -422,7 +449,10 @@ async def update_agent_icon(
         )
 
     try:
-        icon_url = normalise_icon_url(req.icon_url)
+        icon_url = refuse_third_party_avatar(
+            normalise_icon_url(req.icon_url),
+            third_party_avatars=config.third_party_avatars_enabled,
+        )
     except InvalidIconUrl as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

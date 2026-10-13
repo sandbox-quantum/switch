@@ -49,9 +49,7 @@ def _service(sink: object, *, enabled: bool = True) -> TelemetryService:
         sink=sink,  # type: ignore[arg-type]
         enabled=enabled,
         client_id="deployment-uuid",
-        service_name="switch-core",
         version="1.2.3",
-        environment="pilot",
         telemetry_environment="prod",
         telemetry_internal=False,
     )
@@ -96,12 +94,10 @@ class TestTagging:
         await service.aclose()
 
         assert sink.sent[0].resource == {
-            "service.name": "switch-core",
             "flint.client_id": "deployment-uuid",
             "flint_env": "prod",
             "flint_internal": "false",
             "service.version": "1.2.3",
-            "deployment.environment": "pilot",
         }
 
     @pytest.mark.parametrize("environment", ["prod", "staging", "dev", "local"])
@@ -115,9 +111,7 @@ class TestTagging:
             sink=sink,  # type: ignore[arg-type]
             enabled=True,
             client_id="deployment-uuid",
-            service_name="switch-core",
             version="1.2.3",
-            environment=None,
             telemetry_environment=environment,
             telemetry_internal=False,
         )
@@ -137,9 +131,7 @@ class TestTagging:
             sink=sink,  # type: ignore[arg-type]
             enabled=True,
             client_id="deployment-uuid",
-            service_name="switch-core",
             version="1.2.3",
-            environment=None,
             telemetry_environment="prod",
             telemetry_internal=internal,
         )
@@ -149,17 +141,15 @@ class TestTagging:
 
         assert sink.sent[0].resource["flint_internal"] == sent
 
-    async def test_an_unset_environment_is_omitted_rather_than_empty(self) -> None:
-        """An absent attribute reads as "not configured"; an empty string reads
-        as a real environment named nothing."""
+    async def test_an_unknown_version_is_omitted_rather_than_empty(self) -> None:
+        """An absent attribute reads as "not known"; an empty string reads as a
+        real version named nothing."""
         sink = _RecordingSink()
         service = TelemetryService(
             sink=sink,  # type: ignore[arg-type]
             enabled=True,
             client_id="deployment-uuid",
-            service_name="switch-core",
             version=None,
-            environment=None,
             telemetry_environment="prod",
             telemetry_internal=False,
         )
@@ -167,7 +157,6 @@ class TestTagging:
         service.emit("deployment_started", tenant_count=1)
         await service.aclose()
 
-        assert "deployment.environment" not in sink.sent[0].resource
         assert "service.version" not in sink.sent[0].resource
 
 
@@ -221,7 +210,6 @@ class TestTheWireFormat:
                 name="switch_core.usage_snapshot",
                 properties={"room_count": 7, "from_template": True, "kind": "user"},
                 resource={
-                    "service.name": "switch-core",
                     "flint.client_id": "deployment-uuid",
                     "flint_env": "dev",
                     "flint_internal": "false",
@@ -278,7 +266,6 @@ class TestTheWireFormat:
                     "failed_attempts_before_success": 0,
                 },
                 resource={
-                    "service.name": "switch-core",
                     "flint.client_id": "deployment-uuid",
                     "flint_env": "prod",
                     "flint_internal": "false",
@@ -312,6 +299,47 @@ class TestTheWireFormat:
         # The relay sends each event to the Amplitude project this names.
         assert resource["flint_env"] == {"stringValue": "dev"}
         assert resource["flint_internal"] == {"stringValue": "false"}
+
+    async def test_the_sink_sends_no_service_or_environment_name_a_record_carries(
+        self,
+    ) -> None:
+        """The sink decides what names the service, so a caller that tagged a
+        record with operator-set text still cannot send it."""
+        bodies: list[str] = []
+
+        def _handle(request: httpx.Request) -> httpx.Response:
+            bodies.append(request.content.decode())
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = _relay_sink(http)
+        sink.send(
+            TelemetryRecord(
+                name="switch_core.deployment_started",
+                properties={"tenant_count": 1},
+                resource={
+                    "service.name": "acme-corp-switch",
+                    "deployment.environment": "acme-corp-prod",
+                    "flint.client_id": "deployment-uuid",
+                    "flint_env": "prod",
+                    "flint_internal": "false",
+                },
+                timestamp_ns=1,
+            )
+        )
+        await sink.aclose()
+        await http.aclose()
+
+        [raw] = bodies
+        body = json.loads(raw)
+        resource = {
+            a["key"]: a["value"]
+            for a in body["resourceLogs"][0]["resource"]["attributes"]
+        }
+        assert "acme" not in raw
+        assert resource["service.name"] == {"stringValue": "switch-core"}
+        assert "deployment.environment" not in resource
+        assert body["resourceLogs"][0]["scopeLogs"][0]["scope"]["name"] == "switch-core"
 
     async def test_it_posts_to_the_logs_signal(self) -> None:
         """Not `/v1/metrics`: the relay routes on log records, and a metric
@@ -433,7 +461,6 @@ def _a_record() -> TelemetryRecord:
         name="switch_core.deployment_started",
         properties={"tenant_count": 1},
         resource={
-            "service.name": "switch-core",
             "flint.client_id": "deployment-uuid",
             "flint_env": "dev",
             "flint_internal": "false",

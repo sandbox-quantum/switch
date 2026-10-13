@@ -40,9 +40,7 @@ class TelemetryService:
         sink: TelemetrySink,
         enabled: bool,
         client_id: str,
-        service_name: str,
         version: str | None,
-        environment: str | None,
         telemetry_environment: str,
         telemetry_internal: bool,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
@@ -55,7 +53,6 @@ class TelemetryService:
         self._session_factory = session_factory
         self._installed_at = installed_at
         self._resource = {
-            "service.name": service_name,
             "flint.client_id": client_id,
             # The relay picks the Amplitude project from this. Sent even as
             # `prod`, so an event says where it belongs rather than relying on
@@ -66,11 +63,9 @@ class TelemetryService:
             "flint_internal": "true" if telemetry_internal else "false",
         }
         # Omitted rather than sent empty: an absent attribute reads as "not
-        # configured", where `""` reads as a real environment named nothing.
+        # known", where `""` reads as a real version named nothing.
         if version:
             self._resource["service.version"] = version
-        if environment:
-            self._resource["deployment.environment"] = environment
 
     @property
     def enabled(self) -> bool:

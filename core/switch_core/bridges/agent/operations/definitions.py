@@ -2160,7 +2160,9 @@ async def update_agent_detail(
     Any agent:
         description: What the agent is for.
         display_name: Human label shown next to its name; "" clears it.
-        icon_url: An https link to its icon; "" clears it.
+        icon_url: An https link to its icon; "" clears it. A server with
+            third-party avatars off refuses one on dicebear.com or
+            ui-avatars.com.
         addressing: Who can address it: "owner_only" (your owner alone, not
             even their other agents, you included), "owner_and_owner_agents"
             (your owner and any agent they own) or "anyone".
@@ -2203,6 +2205,7 @@ async def update_agent_detail(
         display_name=display_name,
         icon_url=icon_url,
         addressing=addressing,
+        third_party_avatars=protocol.config.third_party_avatars_enabled,
     )
     changes = ManagedAgentChanges(
         provider=provider,

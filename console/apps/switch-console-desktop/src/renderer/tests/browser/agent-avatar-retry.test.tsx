@@ -2,6 +2,7 @@
  * An agent's avatar that fails to load is tried again before the initials
  * stay: the avatar service refuses bursts, and those refusals pass.
  */
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -28,7 +29,15 @@ it('tries a failed avatar again, then keeps the initials after the last try', as
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () =>
-    root!.render(<AgentAvatar name="Ada Lovelace" iconUrl="https://avatars.invalid/ada.svg" />)
+    root!.render(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentAvatar
+          name="Ada Lovelace"
+          iconUrl="https://avatars.invalid/ada.svg"
+          serverId={null}
+        />
+      </QueryClientProvider>
+    )
   );
 
   for (let tryNumber = 0; tryNumber < 3; tryNumber++) {

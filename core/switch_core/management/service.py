@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_icon import (
     InvalidIconUrl,
+    drop_third_party_avatar,
     generated_icon_url,
     normalise_icon_url,
 )
@@ -115,6 +116,9 @@ class ManagementSettings:
     # against (`GATEWAY_PUBLIC_URL`). None when the deployment has not said,
     # and then nothing can tell an owner what `--server` to enroll with.
     server_url: str | None
+    # `THIRD_PARTY_AVATARS_ENABLED`. Off, a new agent with no chosen icon
+    # stores none rather than the generated one, which carries its name.
+    third_party_avatars: bool
 
 
 @dataclass(frozen=True)
@@ -1097,9 +1101,12 @@ class ManagementService:
         )
         definition = with_directory(request.definition, controller, request.name)
         try:
-            icon_url = normalise_icon_url(request.icon_url) or generated_icon_url(
-                request.name
+            icon_url = drop_third_party_avatar(
+                normalise_icon_url(request.icon_url),
+                third_party_avatars=self.settings.third_party_avatars,
             )
+            if icon_url is None and self.settings.third_party_avatars:
+                icon_url = generated_icon_url(request.name)
         except InvalidIconUrl as exc:
             raise ManagementError(422, reason_codes.VALIDATION_ERROR, str(exc)) from exc
         spec, options, metadata = _known_agent_registration(definition, None)

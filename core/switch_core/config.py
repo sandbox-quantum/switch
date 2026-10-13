@@ -398,9 +398,10 @@ class SwitchConfig(BaseSettings):
     # is false nothing is collected and no request is made.
     #
     # What is reported is fixed in `telemetry/catalogue.py` and explained in
-    # `docs/old/telemetry-events.md`: counts and durations only, never an
-    # identifier for a room, tenant, agent, user or message, and never free
-    # text. The catalogue is enforced at the boundary rather than trusted.
+    # `docs/old/telemetry-events.md`: counts, durations and values from closed
+    # sets, never an identifier for a room, tenant, agent, user or message, and
+    # never free text. The catalogue is enforced at the boundary rather than
+    # trusted.
     telemetry_enabled: bool = False
 
     # Base URL of the relay, no path — `/v1/logs` is appended, the same
@@ -435,6 +436,18 @@ class SwitchConfig(BaseSettings):
     # deployment never sets it. Within a deployment, staff accounts are counted
     # separately by email domain whether or not this is set.
     telemetry_internal: bool = False
+
+    # Whether agents and people may be drawn by outside avatar services. An
+    # agent with no icon of its own wears a face from api.dicebear.com seeded
+    # with its name, and a person relayed from another platform a lettered
+    # badge from ui-avatars.com with their name in the URL. Slack, Discord and
+    # Teams clients load those URLs, so the services see the name and each
+    # reader's address; the Mattermost adapter loads them from this server.
+    # False sends no such URL anywhere, stored ones included: each platform
+    # shows its own default icon, new agents get no generated icon, setting an
+    # icon on one of those services is refused, and Switch Console stops
+    # drawing them for this server's agents.
+    third_party_avatars_enabled: bool = True
 
     server_host: str = "0.0.0.0"
     server_port: int = 8000

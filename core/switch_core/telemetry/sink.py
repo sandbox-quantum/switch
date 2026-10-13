@@ -31,6 +31,9 @@ from switch_core.telemetry.catalogue import PropertyValue
 
 logger = logging.getLogger(__name__)
 
+# Fixed, so no operator-set text (service or environment name) reaches the relay.
+_RELAY_SERVICE_NAME = "switch-core"
+
 # OTLP's severity number for INFO. A product event is not a log line, but the
 # relay carries it as one, and a record with no severity is rendered by some
 # receivers as an error.
@@ -316,12 +319,13 @@ def _resource_from(record: TelemetryRecord) -> OtlpResource:
     """The record's resource attributes, as the shared encoder wants them.
 
     Rebuilt here rather than in the service, so only this file depends on the
-    observability package.
+    observability package. The service name is fixed and the environment left
+    out here, whatever the record carries.
     """
     return OtlpResource(
-        service_name=record.resource["service.name"],
+        service_name=_RELAY_SERVICE_NAME,
         service_version=record.resource.get("service.version"),
-        environment=record.resource.get("deployment.environment"),
+        environment=None,
         deployment_id=record.resource["flint.client_id"],
         commit_sha=None,
         repository_url=None,

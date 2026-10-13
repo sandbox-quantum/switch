@@ -140,7 +140,9 @@ def protocol_service(
     svc.api_key_cache = cache
     svc.client_lifecycle = _FakeClientLifecycle(session_factory)  # type: ignore[assignment]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[assignment]
-    svc.config = SimpleNamespace(keyring=TEST_KEYRING)  # type: ignore[assignment]
+    svc.config = SimpleNamespace(  # type: ignore[assignment]
+        keyring=TEST_KEYRING, third_party_avatars_enabled=True
+    )
     svc.telemetry = None
     svc.event_buffer = EventBuffer(sequence_base=0)
     svc.connections = AgentConnectionRegistry()
@@ -190,6 +192,7 @@ def build_harness(
     *,
     controller_auth_ttl_seconds: float = 5,
     server_url: str | None = SERVER_URL,
+    third_party_avatars: bool = True,
 ) -> Harness:
     """The controller-token cache is on, as it is by default in production,
     so every management test runs through it."""
@@ -203,6 +206,7 @@ def build_harness(
         token_secret=TOKEN_SECRET,
         status_interval_seconds=STATUS_INTERVAL,
         server_url=server_url,
+        third_party_avatars=third_party_avatars,
         session_factory=session_factory,
         presence=protocol.connections.controllers,
         auth_cache=controller_auth_cache,
@@ -241,7 +245,9 @@ def build_harness(
     gateway_app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
     gateway_app.dependency_overrides[gw_deps.get_protocol] = lambda: protocol
     gateway_app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
-        keyring=TEST_KEYRING, gateway_tenant_choice_enabled=False
+        keyring=TEST_KEYRING,
+        gateway_tenant_choice_enabled=False,
+        third_party_avatars_enabled=third_party_avatars,
     )
     agent_app.mount("/gateway", gateway_app)
     agent_app.add_middleware(

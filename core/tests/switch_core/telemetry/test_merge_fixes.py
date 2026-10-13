@@ -138,9 +138,7 @@ class TestASessionIsTheAgentNotTheConnection:
             sink=sink,  # type: ignore[arg-type]
             enabled=True,
             client_id=VALID_UUID,
-            service_name="switch-core",
             version="1.0.0",
-            environment=None,
             telemetry_environment="prod",
             telemetry_internal=False,
         )

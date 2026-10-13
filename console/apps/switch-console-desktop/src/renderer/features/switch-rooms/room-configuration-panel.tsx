@@ -4,6 +4,7 @@ import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
@@ -529,6 +530,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
                 <AgentAvatar
                   name={agent.name}
                   iconUrl={remoteById.get(switchAgentId)?.iconUrl ?? null}
+                  serverId={agent.serverId}
                   size={22}
                 />
                 <span className="min-w-0 flex-1 truncate text-sm text-foreground">
@@ -586,6 +588,7 @@ function AgentMark({
       <AgentAvatar
         name={agentNameFor(agentId, workspaceId, remoteById)}
         iconUrl={remote?.iconUrl ?? null}
+        serverId={workspacesStore.serverIdFor(workspaceId)}
         size={26}
       />
     </span>
