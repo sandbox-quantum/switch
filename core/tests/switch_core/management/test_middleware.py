@@ -32,6 +32,7 @@ from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.wiring import create_management
 from switch_core.tenant_context import current_tenant_id
 from switch_core.trust.client import NullTrustClient
+from switch_core.user_changes import LocalUserChanges
 from tests.switch_core.management.harness import (
     TOKEN_SECRET,
     Harness,
@@ -279,7 +280,12 @@ class TestTheFlagOff:
             agent_management_enabled = False
 
         assert (
-            create_management(_Off(), object(), AgentConnectionRegistry().controllers)  # type: ignore[arg-type]
+            create_management(
+                _Off(),
+                object(),
+                AgentConnectionRegistry().controllers,
+                LocalUserChanges(),
+            )  # type: ignore[arg-type]
             is None
         )
 

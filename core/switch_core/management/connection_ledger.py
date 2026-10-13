@@ -43,6 +43,7 @@ from switch_core.bridges.agent.protocol.controller_presence import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
+from switch_core.user_changes import MACHINE, UserChangePublisher
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +71,13 @@ class ControllerConnectionLedger:
         session_factory: async_sessionmaker[AsyncSession],
         controllers: AgentControllerStore,
         clock: Callable[[], datetime],
+        user_changes: UserChangePublisher,
     ) -> None:
         self._process_id = process_id
         self._session_factory = session_factory
         self._controllers = controllers
         self._clock = clock
+        self._user_changes = user_changes
         self._pending: dict[str, _Transition] = {}
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
@@ -132,20 +135,31 @@ class ControllerConnectionLedger:
         unwritten = list(transitions)
         try:
             for tenant_id, batch in by_tenant.items():
+                owners: dict[str, str] = {}
                 async with tenant_session(self._session_factory, tenant_id) as session:
                     for transition in batch:
-                        await self._write_one(session, transition)
+                        owner_id = await self._write_one(session, transition)
+                        if owner_id is not None:
+                            owners[transition.controller_id] = owner_id
                     await session.commit()
                 for transition in batch:
                     unwritten.remove(transition)
+                for controller_id, owner_id in owners.items():
+                    self._user_changes.publish(
+                        tenant_id, owner_id, MACHINE, controller_id
+                    )
         except BaseException:
             for transition in unwritten:
                 self._pending.setdefault(transition.controller_id, transition)
             raise
 
-    async def _write_one(self, session: AsyncSession, transition: _Transition) -> None:
+    async def _write_one(
+        self, session: AsyncSession, transition: _Transition
+    ) -> str | None:
+        """Write one transition. Returns the controller's owner when the row
+        was written, so they can be told once it has committed."""
         if transition.disconnect_reason is None:
-            found = await self._controllers.record_connected(
+            owner_id = await self._controllers.record_connected(
                 session,
                 transition.tenant_id,
                 transition.controller_id,
@@ -153,13 +167,13 @@ class ControllerConnectionLedger:
                 process_id=self._process_id,
                 connected_at=transition.at,
             )
-            if not found:
+            if owner_id is None:
                 logger.warning(
                     "Controller %s connected, but has no row to record it on",
                     transition.controller_id,
                 )
-            return
-        written = await self._controllers.record_disconnected(
+            return owner_id
+        owner_id = await self._controllers.record_disconnected(
             session,
             transition.tenant_id,
             transition.controller_id,
@@ -167,7 +181,7 @@ class ControllerConnectionLedger:
             disconnected_at=transition.at,
             reason=transition.disconnect_reason,
         )
-        if not written:
+        if owner_id is None:
             logger.info(
                 "Controller %s connection %s went (%s), but its row names a newer "
                 "connection; left as it is",
@@ -175,3 +189,4 @@ class ControllerConnectionLedger:
                 transition.connection_id,
                 transition.disconnect_reason,
             )
+        return owner_id

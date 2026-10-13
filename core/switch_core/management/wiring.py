@@ -54,6 +54,7 @@ from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.notifier import ControllerNotifier
 from switch_core.management.process_lease import ProcessLease
 from switch_core.management.service import ManagementService, ManagementSettings
+from switch_core.user_changes import UserChangePublisher
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,7 @@ def build_management(
     auth_cache: ControllerAuthCache,
     clock: Callable[[], datetime],
     process_id: str,
+    user_changes: UserChangePublisher,
 ) -> Management:
     controllers = AgentControllerStore()
     processes = SwitchCoreProcessStore()
@@ -143,6 +145,7 @@ def build_management(
         session_factory=session_factory,
         controllers=controllers,
         clock=clock,
+        user_changes=user_changes,
     )
     presence.use_ledger(ledger)
     service = ManagementService(
@@ -153,6 +156,7 @@ def build_management(
             third_party_avatars=third_party_avatars,
         ),
         notifier=ControllerNotifier(),
+        user_changes=user_changes,
         controllers=controllers,
         definitions=AgentDefinitionStore(),
         operations=AgentControllerOperationStore(),
@@ -191,6 +195,7 @@ def create_management(
     config: SwitchConfig,
     session_factory: async_sessionmaker[AsyncSession],
     presence: ControllerPresence,
+    user_changes: UserChangePublisher,
 ) -> Management | None:
     if not config.agent_management_enabled:
         return None
@@ -215,4 +220,5 @@ def create_management(
         ),
         clock=utc_now,
         process_id=str(uuid.uuid4()),
+        user_changes=user_changes,
     )

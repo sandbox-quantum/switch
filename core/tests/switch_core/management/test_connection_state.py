@@ -115,12 +115,12 @@ class _CountingStore(AgentControllerStore):
             self.failures -= 1
             raise ConnectionError("the database went away")
 
-    async def record_connected(self, *args: Any, **kwargs: Any) -> bool:
+    async def record_connected(self, *args: Any, **kwargs: Any) -> str | None:
         self._maybe_fail()
         self.connected += 1
         return await super().record_connected(*args, **kwargs)
 
-    async def record_disconnected(self, *args: Any, **kwargs: Any) -> bool:
+    async def record_disconnected(self, *args: Any, **kwargs: Any) -> str | None:
         self._maybe_fail()
         self.disconnected += 1
         return await super().record_disconnected(*args, **kwargs)
@@ -246,6 +246,7 @@ class TestTheMachineState:
             session_factory=harness.session_factory,
             controllers=store,
             clock=harness.clock,
+            user_changes=harness.user_changes,
         )
         presence.use_ledger(ledger)
         owner = await add_member(harness.session_factory, "ada")
@@ -491,6 +492,7 @@ class TestTheLedger:
                 session_factory=harness.session_factory,
                 controllers=AgentControllerStore(),
                 clock=harness.clock,
+                user_changes=harness.user_changes,
             )
             elsewhere.disconnected(earlier, "heartbeat_lapsed")
             await elsewhere.flush_all()
@@ -509,6 +511,7 @@ class TestTheLedger:
             session_factory=harness.session_factory,
             controllers=store,
             clock=harness.clock,
+            user_changes=harness.user_changes,
         )
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:
@@ -531,6 +534,7 @@ class TestTheLedger:
             session_factory=harness.session_factory,
             controllers=store,
             clock=harness.clock,
+            user_changes=harness.user_changes,
         )
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:

@@ -277,12 +277,12 @@ class AgentControllerStore:
         connection_id: str,
         process_id: str,
         connected_at: datetime,
-    ) -> bool:
+    ) -> str | None:
         """Record that the controller's socket attached to this connection,
         held by this process. It replaces whatever the row held: the process
-        holding the live socket is the authority. Returns whether the
-        controller's row exists. `updated_at` is left alone: connecting is
-        not an edit."""
+        holding the live socket is the authority. Returns the controller's
+        owner, or None when it has no row. `updated_at` is left alone:
+        connecting is not an edit."""
         result = await session.execute(
             update(AgentController)
             .where(
@@ -297,10 +297,10 @@ class AgentControllerStore:
                 disconnect_reason=None,
                 updated_at=AgentController.updated_at,
             )
-            .returning(AgentController.id)
+            .returning(AgentController.owner_id)
             .execution_options(synchronize_session=False)
         )
-        return result.scalar_one_or_none() is not None
+        return result.scalar_one_or_none()
 
     async def record_disconnected(
         self,
@@ -311,12 +311,12 @@ class AgentControllerStore:
         connection_id: str,
         disconnected_at: datetime,
         reason: str,
-    ) -> bool:
+    ) -> str | None:
         """Record that the controller's socket on this connection went, and
         why. Written only while the row still names this connection, so a
         process closing a connection the controller has since replaced
-        through another process leaves the replacement standing. Returns
-        whether the row was written."""
+        through another process leaves the replacement standing. Returns the
+        controller's owner when the row was written, else None."""
         result = await session.execute(
             update(AgentController)
             .where(
@@ -329,10 +329,10 @@ class AgentControllerStore:
                 disconnect_reason=reason,
                 updated_at=AgentController.updated_at,
             )
-            .returning(AgentController.id)
+            .returning(AgentController.owner_id)
             .execution_options(synchronize_session=False)
         )
-        return result.scalar_one_or_none() is not None
+        return result.scalar_one_or_none()
 
     async def set_credential(
         self,
