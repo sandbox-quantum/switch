@@ -45,6 +45,16 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **The Airtable connection.** A person connects Airtable from Switch Console,
+  choosing at Airtable's consent screen which bases and workspaces to share,
+  and a granted agent reads and updates records and comments in them, as that
+  person, through Airtable's MCP server. Nothing is configured on the server:
+  Core registers its own client with Airtable. Airtable offers no read-only
+  sign-in, so every connection can write; changing tables and fields is not
+  asked for, and Airtable refuses it. On Enterprise plans an Airtable admin may
+  have to allowlist the client. Airtable cannot revoke a sign-in, so
+  disconnecting says so and points to Airtable's own settings, as any OAuth
+  service without revocation now does rather than reporting a failed revoke.
 - **Confluence through the Atlassian connection.** Connecting Atlassian now
   also asks for Confluence's read, search and (for writing) write scopes, so a
   granted agent reaches Confluence pages beside Jira issues. People who
@@ -1696,6 +1706,7 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Airtable's logo on the Connections grid.**
 - **Console follows a server that keeps names away from avatar services.** On a
   server with `THIRD_PARTY_AVATARS_ENABLED=false`, Console no longer loads
   DiceBear or ui-avatars.com images for that server's agents and shows their
