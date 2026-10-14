@@ -60,7 +60,7 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
     adapters = build_adapters(
         CATALOG, github_app=app, environ={}, http=HTTP, registration=REG
     )
-    assert set(adapters) == {"github", "atlassian", "datadog"}
+    assert set(adapters) == {"github", "airtable", "atlassian", "datadog"}
     assert isinstance(adapters["github"], GitHubAdapter)
     assert adapters["github"].can_issue is True
 
@@ -96,6 +96,24 @@ def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> Non
         "search:jira:agent-interface read:confluence:agent-interface "
         "search:confluence:agent-interface write:jira:agent-interface "
         "write:confluence:agent-interface"
+    )
+
+
+def test_airtable_needs_no_settings_and_registers_its_ports_and_scopes() -> None:
+    adapters = build_adapters(
+        CATALOG, github_app=None, environ={}, http=HTTP, registration=REG
+    )
+    adapter = adapters["airtable"]
+    assert isinstance(adapter, OAuthAdapter)
+    client = adapter._client
+    assert isinstance(client, RegisteredClient)
+    assert client._request["redirect_uris"] == [
+        f"http://127.0.0.1:{port}/switch-services/callback"
+        for port in (39231, 39232, 39233, 39234, 39235)
+    ]
+    assert client._request["scope"] == (
+        "data.records:read schema.bases:read data.recordComments:read "
+        "workspacesAndBases:read data.records:write data.recordComments:write"
     )
 
 
