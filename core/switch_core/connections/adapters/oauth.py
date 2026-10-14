@@ -29,6 +29,7 @@ import httpx
 
 from switch_core.connections.adapters import (
     AccessToken,
+    ConnectionNotRevocable,
     ConnectionSecret,
     IssuedToken,
     IssueRequest,
@@ -495,6 +496,12 @@ class OAuthAdapter:
         )
 
     async def revoke_connection(self, secret: ConnectionSecret) -> None:
+        if self._oauth.revocation_url is None and not self._oauth.revocation_discovered:
+            raise ConnectionNotRevocable(
+                f"Switch has forgotten the {self._name} sign-in but cannot revoke "
+                f"it. Remove Switch's access in your {self._name} settings if it "
+                "should stop working."
+            )
         endpoints = await self.endpoints()
         url = (
             endpoints.revocation

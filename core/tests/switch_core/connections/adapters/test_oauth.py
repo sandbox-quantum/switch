@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import (
     AccessToken,
+    ConnectionNotRevocable,
     ConnectionSecret,
     IssueRequest,
     ReauthorizationRequiredError,
@@ -354,10 +355,14 @@ class TestDisconnect:
         assert revoked["token"] == secret.values["refresh_token"]
         assert revoked["token_type_hint"] == "refresh_token"
 
-    async def test_says_so_where_the_vendor_offers_no_revocation(self, vendor) -> None:
+    async def test_says_it_cannot_revoke_where_the_vendor_offers_no_revocation(
+        self, vendor
+    ) -> None:
         adapter, _ = _adapter(vendor)
         secret = await _sign_in(adapter, vendor)
-        with pytest.raises(ServiceAdapterError, match="no way to revoke"):
+        with pytest.raises(
+            ConnectionNotRevocable, match="Remove Switch's access in your Example"
+        ):
             await adapter.revoke_connection(secret)
         assert vendor.revoked == []
 
@@ -390,8 +395,9 @@ class TestDisconnect:
             ),
         )
         secret = await _sign_in(adapter, vendor)
-        with pytest.raises(ServiceAdapterError, match="no way to revoke"):
+        with pytest.raises(ServiceAdapterError, match="no way to revoke") as raised:
             await adapter.revoke_connection(secret)
+        assert not isinstance(raised.value, ConnectionNotRevocable)
 
 
 class TestWhereTheMetadataIs:
@@ -531,3 +537,46 @@ class TestThroughTheBroker:
         assert stored["refresh_token"] in vendor.live_refresh
         assert stored["access_token"] == tokens[0].token
         assert IDENTITY_URL not in vendor.paths
+
+    async def test_disconnecting_a_vendor_without_revocation_says_so_plainly(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        vendor,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        adapter, _ = _adapter(vendor)
+        broker = ServiceBroker(
+            session_factory=session_factory,
+            keyring=TEST_KEYRING,
+            catalog=pass_through_catalog(tmp_path / "catalog"),
+            adapters={"example": adapter},
+            disabled={},
+            store=STORE,
+            token_retention=timedelta(days=30),
+        )
+        secret = await _sign_in(adapter, vendor)
+        async with session_factory() as session:
+            owner = await _user(session, "ada")
+            await STORE.save_connection(
+                session,
+                user_id=owner.id,
+                service="example",
+                consent="write",
+                granted_scopes=["read:items", "write:items"],
+                account_id="acct-1",
+                external_identity="ada@example.test",
+                encrypted_secret=TEST_KEYRING.encrypt(json.dumps(secret.values)),
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            warning = await broker.disconnect(session, owner.id, "example")
+
+        assert warning is not None
+        assert "cannot revoke it" in warning
+        assert "could not revoke" not in warning
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+        assert vendor.revoked == []
+        async with session_factory() as session:
+            assert await STORE.get_connection(session, owner.id, "example") is None
