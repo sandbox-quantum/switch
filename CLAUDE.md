@@ -19,6 +19,10 @@ history — a later commit cannot take it back. Keep internal detail out of it:
   traceability, but write so the comment stands on its own without the ticket —
   a reader outside the company cannot open it. Keep them out of user-facing
   docs and the changelog.
+- **Pull requests and commits are public too**: titles, descriptions, commit
+  messages and review comments. A ticket key is fine (in the title, say), but
+  never a link to the internal issue tracker or any other internal URL. Outside
+  readers cannot open it, and the link itself names internal hosts.
 
 ## Project Overview
 
