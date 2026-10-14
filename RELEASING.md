@@ -119,10 +119,14 @@ building from source at deploy time.
   hold releases and RCs only. Nothing is ever tagged `latest`.
 - **The dev charts carry a moving `main` tag.** Once both charts are pushed,
   the run moves their `main` tag to its build, but only while the commit it
-  built is still the tip of main, so a slower run cannot move it backwards. An
-  environment that follows main (development, through ArgoCD) tracks that tag
-  and resolves it to a digest; every other environment pins a version. The
-  cleanup never deletes the build `main` points at.
+  built is still the tip of main, so a slower run cannot move it backwards. The
+  tag is for people and scripts that pull the chart directly. The cleanup never
+  deletes the build `main` points at.
+- **An environment that follows main does it by version, not by the tag.**
+  ArgoCD resolves a Helm chart in an OCI registry by semver constraint and
+  refuses a literal tag such as `main`. So development's Application asks for
+  `>=0.0.0-0`, the highest version including pre-releases, which by the scheme
+  below is always the newest dev build. Every other environment pins a version.
 - **Version** `<next patch>-dev.<run number>.g<short sha>`, e.g.
   `0.29.1-dev.512.g7f0c803` after `switch-v0.29.0`: one patch above the newest
   release tag on main, so a dev build sorts after the release it contains and

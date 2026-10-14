@@ -87,10 +87,13 @@ cannot fill in the URL fields until they are live and publicly reachable.
 
 ## Manifest
 
-Substitute the host in the four `url` fields. The scopes, slash commands and
-bot events are identical to the self-registered app's, because the app does
-the same job once installed — the differences are all in `settings` and
-`oauth_config`.
+Substitute the host in the four `url` fields. The scopes and slash commands
+are identical to the self-registered app's, because the app does the same job
+once installed. The other differences are in `settings` and `oauth_config`,
+and in two extra bot events: `app_uninstalled` and `tokens_revoked` are how
+Slack says an install is over, and switch-core marks the install inactive on
+either (`slack/install.py`). Without them, a workspace that removes the app
+stays listed as connected.
 
 ```json
 {
@@ -169,7 +172,9 @@ the same job once installed — the differences are all in `settings` and
                 "message.channels",
                 "message.groups",
                 "message.im",
-                "message.mpim"
+                "message.mpim",
+                "app_uninstalled",
+                "tokens_revoked"
             ]
         },
         "interactivity": {
