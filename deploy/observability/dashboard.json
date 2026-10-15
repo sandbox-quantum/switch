@@ -548,7 +548,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Garbage-collection pause p99 / max (ms) by generation. Needs distribution mapping, see README",
+        "title": "Garbage-collection pause p99 / avg (ms) by generation. Needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -556,7 +556,7 @@
             "display_type": "line"
           },
           {
-            "q": "max:switch.runtime.gc_pause{$env,$service} by {generation}",
+            "q": "avg:switch.runtime.gc_pause{$env,$service} by {generation}",
             "display_type": "bars"
           }
         ]
