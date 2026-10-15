@@ -162,7 +162,7 @@ describe('buildEnvFile', () => {
 
     const missing = [...interpolated]
       .filter((key) => !intentionallyUnset.has(key))
-      .filter((key) => !vars[key])
+      .filter((key) => !(key in vars))
       .sort();
 
     expect(missing, 'compose interpolates these but the .env does not set them').toEqual([]);
