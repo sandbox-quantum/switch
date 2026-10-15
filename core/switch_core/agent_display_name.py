@@ -16,6 +16,7 @@ bridge or database import, so the `!` command surface and the collaboration
 adapters can share one rule rather than each growing their own.
 """
 
+import re
 from typing import NoReturn
 
 # Discord caps a webhook username at 80 characters; the other platforms sit at
@@ -144,3 +145,24 @@ def agent_label_with_identifier(display_name: str | None, name: str) -> str:
         return name
 
     return f"{defuse_label_markup(display_name)} (`{name}`)"
+
+
+def label_from_name(name: str) -> str:
+    """The label a name usually reads as: ``notes-helper`` -> ``Notes Helper``."""
+    words = [word for word in re.split(r"[-_.]+", name) if word]
+    return " ".join(word[:1].upper() + word[1:] for word in words)
+
+
+def label_after_rename(
+    display_name: str | None, old_name: str, new_name: str
+) -> str | None:
+    """The display name an agent should carry once renamed, when nobody said.
+
+    A label that is just the old name written out ("Notes Helper" for
+    notes-helper) follows the new name ("Meeting Scribe" for meeting-scribe),
+    since keeping it would leave the agent read under its old name. Anything
+    else was chosen on purpose and is kept, as is having none.
+    """
+    if display_name and display_name == label_from_name(old_name):
+        return label_from_name(new_name)
+    return display_name

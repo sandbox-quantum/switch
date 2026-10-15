@@ -23,6 +23,7 @@ from pydantic.json_schema import SkipJsonSchema
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.collaboration.adapter import (
+    AgentIdentity,
     ChannelNotBindable,
     ConfigEditRefused,
     PlatformAdapter,
@@ -2770,13 +2771,11 @@ class TeamsAdapter(PlatformAdapter):
 
     # ── Agent identity ───────────────────────────────────────────────────────
 
-    async def create_agent_identity(
-        self, agent_name: str, agent_description: str
-    ) -> None:
+    async def create_agent_identity(self, agent: AgentIdentity) -> None:
         # Single-bot model: no per-agent platform account is created.
         pass
 
-    async def remove_agent_identity(self, agent_name: str) -> None:
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None:
         pass
 
     async def get_channel_agent_names(self, channel_id: str) -> list[str]:

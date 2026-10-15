@@ -7,11 +7,20 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
-from switch_core.agent_display_name import agent_label, agent_label_with_identifier
+from switch_core.agent_display_name import (
+    agent_label,
+    agent_label_with_identifier,
+    label_after_rename,
+)
 from switch_core.aliases import (
     AliasError,
     check_alias_collisions,
     validate_alias_format,
+)
+from switch_core.authz import Principal, require_manage
+from switch_core.bridges.agent.protocol.agent_core import (
+    AgentExistsError,
+    AgentRenameRefused,
 )
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
@@ -27,6 +36,8 @@ from switch_core.gateway.known_agents import known_agent_for
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from switch_core.clients.agent_consumer import AgentConsumer
     from switch_core.clients.command_consumer import CommandConsumer
     from switch_core.clients.room_meta import RoomMeta
@@ -195,8 +206,9 @@ class CommandArg:
     Every argument declared today is a mention-style token (`@agent`, `@role`,
     `@alias`) matching `mentions.NAME_CHAR`, so a bridge can round-trip a
     declared value back into the positional `args` string the handlers parse.
-    A command taking genuine free text is not representable here and would need
-    a kind/type field adding before it could be declared.
+    The one exception is `free_text`: the last argument may take the rest of
+    the line as written, spaces and all (a display name), and a bridge passes
+    it through untouched.
 
     `name` is what the user sees as the field label on platforms that render
     one, so it must be lowercase and match Discord's `^[-_a-z0-9]{1,32}$`.
@@ -205,6 +217,7 @@ class CommandArg:
     name: str
     description: str
     required: bool
+    free_text: bool = False
 
 
 @dataclass(frozen=True)
@@ -846,6 +859,212 @@ async def _cmd_invite(
     )
 
 
+# ── Rename and delete ─────────────────────────────────────────────────────────
+
+
+def _bare_name(token: str) -> str:
+    return token.strip().lstrip("@")
+
+
+def _strip_quotes(text: str) -> str:
+    text = text.strip()
+    for opening, closing in (('"', '"'), ("'", "'"), ("\u201c", "\u201d")):
+        if len(text) >= 2 and text.startswith(opening) and text.endswith(closing):
+            return text[1:-1].strip()
+    return text
+
+
+async def _manage_refusal(
+    host: CommandConsumer, session: AsyncSession, event: CommandEvent, agent: Agent
+) -> str | None:
+    """Why this command's sender may not rename or delete `agent`, or None
+    when they may.
+
+    The same rule as the gateway: the agent's owner, or an admin of the
+    workspace. The sender is a person on a chat platform, known to Switch
+    through the Switch users who have linked that platform account; an
+    account nobody has linked cannot be told apart from anyone else, so it is
+    refused with what to do about it.
+    """
+    client = await host.client_store.get_by_transport_user_id(session, event.user_id)
+    external = (
+        await host._external_user_store.get_by_client_id(session, client.id)
+        if client is not None
+        else None
+    )
+    if external is None:
+        return (
+            "Only a person can rename or delete an agent, from their own chat account."
+        )
+    claimants = await host._external_user_store.claimant_ids(session, external.id)
+    if not claimants:
+        return (
+            "This chat account isn't linked to a Switch user, so I can't tell "
+            "whether you own this agent. Link it to your Switch user in Switch "
+            "Console (Messaging apps), then try again."
+        )
+    for user_id in claimants:
+        user = await host._user_store.get(session, user_id)
+        if user is None:
+            continue
+        try:
+            require_manage(
+                Principal(user.id, await host._user_store.administers(session, user)),
+                agent.owner_id,
+            )
+            return None
+        except PermissionError:
+            continue
+    return "Only the agent's owner or a workspace admin can rename or delete it."
+
+
+async def _cmd_rename_agent(
+    client: AgentConsumer, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    host = cast("CommandConsumer", client)
+    usage = (
+        "Usage: `!rename-agent @agent new-name [Display Name]`. Leave out the "
+        "display name to keep it, or to have it follow the new name when it is "
+        "just the old name written out."
+    )
+    parts = (event.args or "").split(maxsplit=2)
+    if len(parts) < 2:
+        await _reply(host, room, event, usage)
+        return
+    old, new_name = _bare_name(parts[0]), _bare_name(parts[1])
+    given_label = _strip_quotes(parts[2]) if len(parts) == 3 else None
+
+    async with host.session_factory() as session:
+        agent = await host._agent_store.get_by_name_insensitive(session, old)
+        if agent is None:
+            await _reply(
+                host,
+                room,
+                event,
+                f"No agent named `{old}`. Run `!list-switch-agents` to see registered agents.",
+            )
+            return
+        refusal = await _manage_refusal(host, session, event, agent)
+        agent_id, old_name, old_label = agent.id, agent.name, agent.display_name
+        # Not held across the rename, which opens its own sessions and calls
+        # every bridge.
+        await session.commit()
+    if refusal is not None:
+        await _reply(host, room, event, f"⚠️ {refusal}")
+        return
+
+    display_name = (
+        given_label
+        if given_label is not None
+        else label_after_rename(old_label, old_name, new_name)
+    )
+    try:
+        result = await host._agent_admin.core.rename_agent(
+            agent_id=agent_id, new_name=new_name, display_name=display_name
+        )
+    except (AgentExistsError, AgentRenameRefused, ValueError) as exc:
+        await _reply(host, room, event, f"⚠️ Not renamed: {exc}")
+        return
+
+    label = agent_label_with_identifier(result.display_name, result.new_name)
+    if result.old_name == result.new_name:
+        lines = [f"Updated **{label}**."]
+    else:
+        lines = [
+            f"Renamed `{result.old_name}` to **{label}**. Mention it by its new "
+            "name from now on."
+        ]
+    if result.bridge_failures:
+        lines.append(
+            "Not yet updated on "
+            + "; ".join(result.bridge_failures)
+            + ". It catches up when that bridge next starts."
+        )
+    if result.templates_mentioning_old_name:
+        lines.append(
+            "Saved templates still naming the old name: "
+            + ", ".join(f"`{name}`" for name in result.templates_mentioning_old_name)
+            + "."
+        )
+    logger.info(
+        "Renamed agent %s from %s to %s by in-room command from %s",
+        agent_id,
+        result.old_name,
+        result.new_name,
+        event.user_id,
+    )
+    await _reply(host, room, event, "\n".join(lines))
+
+
+async def _cmd_delete_agent(
+    client: AgentConsumer, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    host = cast("CommandConsumer", client)
+    parts = (event.args or "").split()
+    if not parts:
+        await _reply(
+            host,
+            room,
+            event,
+            "Usage: `!delete-agent @agent`, then `!delete-agent @agent confirm` to go ahead.",
+        )
+        return
+    name = _bare_name(parts[0])
+    confirming = len(parts) > 1 and _bare_name(parts[1]).lower() == "confirm"
+
+    async with host.session_factory() as session:
+        agent = await host._agent_store.get_by_name_insensitive(session, name)
+        if agent is None:
+            await _reply(
+                host,
+                room,
+                event,
+                f"No agent named `{name}`. Run `!list-switch-agents` to see registered agents.",
+            )
+            return
+        refusal = await _manage_refusal(host, session, event, agent)
+        agent_id, agent_name = agent.id, agent.name
+        label = agent_label_with_identifier(agent.display_name, agent.name)
+        await session.commit()
+    if refusal is not None:
+        await _reply(host, room, event, f"⚠️ {refusal}")
+        return
+
+    if not confirming or not host.take_delete_request(
+        room.room_id, event.user_id, agent_id
+    ):
+        host.request_delete(room.room_id, event.user_id, agent_id)
+        await _reply(
+            host,
+            room,
+            event,
+            f"This permanently deletes **{label}**: its credentials, its place in "
+            "every room, and its handle on connected chat platforms. To go ahead, "
+            f"send `!delete-agent {agent_name} confirm` within 2 minutes.",
+        )
+        return
+
+    try:
+        deletion = await host._agent_admin.core.delete_agent(agent_id=agent_id)
+    except ValueError as exc:
+        await _reply(host, room, event, f"⚠️ Not deleted: {exc}")
+        return
+    lines = [f"Deleted **{label}**."]
+    if deletion.bridge_failures:
+        lines.append(
+            "Clean-up still to finish on "
+            + "; ".join(deletion.bridge_failures)
+            + ". It finishes when that bridge next starts."
+        )
+    logger.info(
+        "Deleted agent %s (%s) by in-room command from %s",
+        agent_id,
+        agent_name,
+        event.user_id,
+    )
+    await _reply(host, room, event, "\n".join(lines))
+
+
 # Emoji + label shown per status by the !status command.
 _STATUS_DISPLAY: dict[AgentStatus, tuple[str, str]] = {
     AgentStatus.LIVE: ("🟢", "live"),
@@ -1347,6 +1566,36 @@ COMMANDS: list[Command] = [
             CommandArg(
                 "agent", "The registered agent to add to this room", required=True
             ),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "rename-agent",
+        "Rename an agent, and its display name with it. Owner or admin only. "
+        "Usage: `!rename-agent @agent new-name [Display Name]`.",
+        _cmd_rename_agent,
+        args_spec=(
+            CommandArg("agent", "The agent to rename", required=True),
+            CommandArg(
+                "new_name", "Its new name (lowercase, no spaces)", required=True
+            ),
+            CommandArg(
+                "display_name",
+                "Its new display name (leave empty to keep it)",
+                required=False,
+                free_text=True,
+            ),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "delete-agent",
+        "Delete an agent everywhere, after a confirmation. Owner or admin only. "
+        "Usage: `!delete-agent @agent`, then `!delete-agent @agent confirm`.",
+        _cmd_delete_agent,
+        args_spec=(
+            CommandArg("agent", "The agent to delete", required=True),
+            CommandArg("confirm", "Type confirm to go ahead", required=False),
         ),
         admin_owned=True,
     ),

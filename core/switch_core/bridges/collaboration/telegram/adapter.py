@@ -41,6 +41,7 @@ from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, CommandArg
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
+    AgentIdentity,
     ChannelNotBindable,
     PlatformAdapter,
     RemovalFailed,
@@ -2253,12 +2254,10 @@ class TelegramAdapter(PlatformAdapter):
 
     # ── Agent identity ───────────────────────────────────────────────────────
 
-    async def create_agent_identity(
-        self, agent_name: str, agent_description: str
-    ) -> None:
+    async def create_agent_identity(self, agent: AgentIdentity) -> None:
         pass
 
-    async def remove_agent_identity(self, agent_name: str) -> None:
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None:
         pass
 
     async def get_channel_agent_names(self, channel_id: str) -> list[str]:

@@ -6,6 +6,7 @@ import re
 import secrets
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +21,7 @@ from switch_core.addressing import (
 from switch_core.agent_display_name import normalise_display_name
 from switch_core.agent_icon import (
     drop_third_party_avatar,
+    generated_icon_url,
     normalise_icon_url,
     prepare_icon_url,
     refuse_third_party_avatar,
@@ -62,6 +64,11 @@ from switch_core.bridges.agent.registration_bootstrap import (
     REGISTRATION_KEY_TYPES,
     resolve_registration_owner_id,
 )
+from switch_core.bridges.collaboration.adapter import (
+    AgentIdentity,
+    AgentIdentityConflict,
+    agent_identity,
+)
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.actor import AgentActor, SystemActor
@@ -75,6 +82,7 @@ from switch_core.db.models import (
     Agent,
     AgentRuntimeState,
     ApiKey,
+    Client,
     Message,
     MessageAttachment,
     Model,
@@ -84,6 +92,7 @@ from switch_core.db.models import (
     RoomGroup,
     RoomRole,
     Task,
+    Template,
     Tool,
     User,
     require_tenant_id,
@@ -248,6 +257,37 @@ class AgentExistsError(Exception):
     caller did not opt into re-registration via ``overwrite=True``."""
 
 
+class AgentRenameRefused(ValueError):
+    """A rename Switch will not do, with the reason in words a person can act
+    on."""
+
+
+@dataclass(frozen=True)
+class AgentRenameResult:
+    """What a rename did.
+
+    `bridge_failures` names each chat platform that could not be updated, with
+    why: the rename stands in Switch, and the platform catches up when its
+    bridge next starts. `templates_mentioning_old_name` lists saved templates
+    whose text still says the old name, which a rename does not rewrite."""
+
+    agent_id: str
+    old_name: str
+    new_name: str
+    display_name: str | None
+    bridge_failures: list[str]
+    templates_mentioning_old_name: list[str]
+
+
+@dataclass(frozen=True)
+class AgentDeletionResult:
+    """What a delete left outstanding: each chat platform whose clean-up
+    failed, with why. The agent is gone either way; the platform finishes the
+    clean-up when its bridge next starts."""
+
+    bridge_failures: list[str]
+
+
 class BootstrapOwnerMisconfiguredError(Exception):
     """Raised when the deployment-wide bootstrap key's owner account cannot
     be resolved or trusted (see ``registration_bootstrap.py``).
@@ -286,6 +326,9 @@ class AgentCore:
     # still exists. Set by the process wiring when something outside Core keeps
     # state about agents that a cascade alone would drop without telling anyone.
     _agent_removal_listener: Callable[[str, str], Awaitable[None]] | None = None
+    # Told (tenant_id, agent_id, old_name) just after an agent is renamed, for
+    # state outside Core that was derived from the old name.
+    _agent_rename_listener: Callable[[str, str, str], Awaitable[None]] | None = None
     # The credential broker, set by the process wiring when service
     # connections are on; None means they are off, and nothing can be granted.
     service_broker: ServiceBroker | None = None
@@ -543,7 +586,10 @@ class AgentCore:
                     "first_agent_registered", known_agent_type=runtime
                 )
 
-        await self._create_bridge_identities(tenant_id, name, description)
+        async with self.session_factory() as session:
+            registered = await self.agent_store.get(session, agent_id)
+        if registered is not None:
+            await self._create_bridge_identities(tenant_id, agent_identity(registered))
 
         return RegistrationResult(
             agent_id=agent_id,
@@ -814,9 +860,9 @@ class AgentCore:
         self._agent_removal_listener = listener
 
     async def _create_bridge_identities(
-        self, tenant_id: str, agent_name: str, description: str
+        self, tenant_id: str, agent: AgentIdentity
     ) -> None:
-        """Create `agent_name`'s platform identity on the bridges of
+        """Create the agent's platform identity on the bridges of
         `tenant_id` — and only that tenant's bridges.
 
         The tenant is passed in rather than read from the ambient context so
@@ -827,15 +873,44 @@ class AgentCore:
         """
         for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
             try:
-                await collaboration_core.adapter.create_agent_identity(
-                    agent_name, description
-                )
+                await collaboration_core.adapter.create_agent_identity(agent)
             except Exception:
                 logger.warning(
                     "Failed to create bridge identity for %s",
-                    agent_name,
+                    agent.name,
                     exc_info=True,
                 )
+
+    async def update_bridge_identities(self, agent_id: str) -> list[str]:
+        """Tell the tenant's bridges an agent's display name or description
+        changed, so platform handles that show them follow. Returns the
+        platforms that could not be updated, with why."""
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError("update_bridge_identities requires a bound tenant")
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, agent_id)
+        if agent is None:
+            raise ValueError(f"Agent not found: {agent_id}")
+        identity = agent_identity(agent)
+        failures: list[str] = []
+        for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
+            try:
+                await collaboration_core.adapter.update_agent_identity(identity)
+            except Exception as exc:
+                logger.error(
+                    "Failed to update %s identity for agent %s",
+                    collaboration_core.bridge_type,
+                    agent.name,
+                    exc_info=True,
+                )
+                failures.append(f"{collaboration_core.bridge_type}: {exc}")
+        return failures
+
+    def set_agent_rename_listener(
+        self, listener: Callable[[str, str, str], Awaitable[None]]
+    ) -> None:
+        self._agent_rename_listener = listener
 
     async def record_client_declaration(
         self, agent_id: str, connection_id: str, declaration: ClientDeclaration
@@ -933,9 +1008,12 @@ class AgentCore:
             await self.agent_store.update(session, agent_id, icon_url=validated)
             await session.commit()
 
-    async def _remove_bridge_identities(self, tenant_id: str, agent_name: str) -> None:
-        """Remove `agent_name`'s platform identity from the bridges of
-        `tenant_id` — and only that tenant's bridges.
+    async def _remove_bridge_identities(
+        self, tenant_id: str, agent: AgentIdentity
+    ) -> list[str]:
+        """Remove the agent's platform identity from the bridges of
+        `tenant_id` — and only that tenant's bridges. Returns each platform
+        that could not be cleaned up, with why.
 
         Unscoped, this is worse than its `_create_bridge_identities` twin:
         deleting an agent in one tenant would delete the platform bot, user
@@ -943,23 +1021,270 @@ class AgentCore:
         there, the tenant is the caller's to establish — `delete_agent`
         refuses without one before it stops anything.
         """
+        failures: list[str] = []
         for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
             try:
-                await collaboration_core.adapter.remove_agent_identity(agent_name)
-            except Exception:
-                logger.warning(
-                    "Failed to remove bridge identity for %s",
-                    agent_name,
+                await collaboration_core.adapter.remove_agent_identity(agent)
+            except Exception as exc:
+                logger.error(
+                    "Failed to remove %s identity for agent %s; the bridge "
+                    "finishes the clean-up when it next starts",
+                    collaboration_core.bridge_type,
+                    agent.name,
                     exc_info=True,
                 )
+                failures.append(f"{collaboration_core.bridge_type}: {exc}")
+        return failures
+
+    async def _rename_bridge_identities(
+        self, tenant_id: str, old_name: str, agent: AgentIdentity
+    ) -> list[str]:
+        failures: list[str] = []
+        for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
+            try:
+                await collaboration_core.adapter.rename_agent_identity(old_name, agent)
+            except Exception as exc:
+                logger.error(
+                    "Failed to rename %s identity for agent %s to %s; the bridge "
+                    "catches up when it next starts",
+                    collaboration_core.bridge_type,
+                    old_name,
+                    agent.name,
+                    exc_info=True,
+                )
+                failures.append(f"{collaboration_core.bridge_type}: {exc}")
+        return failures
+
+    async def rename_agent(
+        self, *, agent_id: str, new_name: str, display_name: str | None
+    ) -> AgentRenameResult:
+        """Change an agent's name, the identifier people type and mention, and
+        its display name, the label people read, in one step.
+
+        `display_name` is what the label becomes: pass the current one to keep
+        it, and None or a blank string to clear it. The two travel together
+        because a label is usually the name written out ("Notes Helper" for
+        notes-helper), and renaming one without the other leaves the agent
+        reading under its old name everywhere it is shown.
+
+        Everything that points at the agent by id (rooms, roles, aliases,
+        tasks, credentials) follows on its own. What carries the name is
+        updated here: the agent row, the name its messages are sent under (in
+        the database and in the running actor, at once, because bridges
+        recognise an agent's own messages by it), paused runs that will wake
+        it by name, and its handle on each chat platform. An agent wearing the
+        avatar its name generates keeps that avatar.
+
+        Checked before anything is written, so a refusal changes nothing:
+        the name's format, that it is free, that it clashes with no alias or
+        role in the agent's rooms, and that no chat platform has something
+        else under the handle it would need. A platform that fails after the
+        write is reported in the result, not raised: the rename stands.
+
+        Raises:
+            ValueError: the name is malformed or reserved, the display name is
+                unsafe to render (InvalidDisplayName), or no such agent.
+            AgentExistsError: another agent has the name.
+            AgentRenameRefused: a clash in a room or on a platform, or an agent
+                that cannot be renamed (a subagent, a parent of subagents, or
+                one a server connector discovered).
+            RuntimeError: no tenant is bound.
+        """
+        (
+            tenant_id,
+            new_display_name,
+            old_name,
+            old_display_name,
+        ) = await self._prepare_rename(agent_id, new_name, display_name)
+        if old_name == new_name:
+            if old_display_name == new_display_name:
+                return AgentRenameResult(
+                    agent_id, old_name, new_name, new_display_name, [], []
+                )
+            async with self.session_factory() as session:
+                await self.agent_store.update(
+                    session, agent_id, display_name=new_display_name
+                )
+                await session.commit()
+            failures = await self.update_bridge_identities(agent_id)
+            return AgentRenameResult(
+                agent_id, old_name, new_name, new_display_name, failures, []
+            )
+
+        async with self.session_factory() as session:
+            await self.agent_store.lock_name(session, new_name)
+            agent = await self.agent_store.get(session, agent_id)
+            if agent is None:
+                raise ValueError(f"Agent not found: {agent_id}")
+            await self._check_renamable(session, agent, new_name)
+            columns: dict[str, object] = {
+                "name": new_name,
+                "display_name": new_display_name,
+            }
+            # Only where avatars are generated at all: with third-party
+            # avatars off there is no generated face to keep.
+            if agent.icon_url is None and self.config.third_party_avatars_enabled:
+                columns["icon_url"] = generated_icon_url(old_name)
+            await self.agent_store.update(session, agent_id, **columns)
+            client = await session.get(Client, agent.client_id)
+            if client is not None:
+                client.display_name = new_name
+            await self._rename_in_run_controls(session, old_name, new_name)
+            templates = await self._templates_mentioning(session, old_name)
+            await session.commit()
+            await session.refresh(agent)
+            identity = agent_identity(agent)
+
+        actor = self.client_lifecycle.get(agent.client_id)
+        if actor is not None:
+            await actor.set_display_name(new_name)
+            # The running agent decides whether a message addresses it from the
+            # row it holds, so it has to hold the renamed one now, not after
+            # the next message that already matched its old name.
+            if isinstance(actor, AgentActor):
+                actor.set_agent(agent)
+        if self._agent_rename_listener is not None:
+            await self._agent_rename_listener(tenant_id, agent_id, old_name)
+        bridge_failures = await self._rename_bridge_identities(
+            tenant_id, old_name, identity
+        )
+        logger.info(
+            "Renamed agent %s from %s to %s%s",
+            agent_id,
+            old_name,
+            new_name,
+            f" ({len(bridge_failures)} platform(s) behind)" if bridge_failures else "",
+        )
+        return AgentRenameResult(
+            agent_id=agent_id,
+            old_name=old_name,
+            new_name=new_name,
+            display_name=new_display_name,
+            bridge_failures=bridge_failures,
+            templates_mentioning_old_name=templates,
+        )
+
+    async def check_rename(
+        self, *, agent_id: str, new_name: str, display_name: str | None
+    ) -> None:
+        """Raise whatever `rename_agent` would refuse with, without changing
+        anything, so a caller doing more than a rename can check it first."""
+        await self._prepare_rename(agent_id, new_name, display_name)
+
+    async def _prepare_rename(
+        self, agent_id: str, new_name: str, display_name: str | None
+    ) -> tuple[str, str | None, str, str | None]:
+        """Every check a rename makes before it writes. Returns the tenant, the
+        display name as it will be stored, and the agent's current name and
+        display name."""
+        if not _VALID_NAME_RE.match(new_name):
+            raise ValueError(
+                f"Invalid agent name: {new_name!r}. "
+                "Use only lowercase letters, digits, dots, hyphens, and underscores."
+            )
+        reject_reserved_mention_name(new_name, kind="Agent name")
+        new_display_name = normalise_display_name(display_name)
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError("rename_agent requires a bound tenant")
+
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, agent_id)
+            if agent is None:
+                raise ValueError(f"Agent not found: {agent_id}")
+            old_name, old_display_name = agent.name, agent.display_name
+            if old_name != new_name:
+                await self._check_renamable(session, agent, new_name)
+
+        if old_name != new_name:
+            for collaboration_core in self.collab_lifecycle.bridges_for_tenant(
+                tenant_id
+            ):
+                try:
+                    await collaboration_core.adapter.check_agent_identity_name(
+                        agent_id, new_name
+                    )
+                except AgentIdentityConflict as exc:
+                    raise AgentRenameRefused(str(exc)) from exc
+        return tenant_id, new_display_name, old_name, old_display_name
+
+    async def _check_renamable(
+        self, session: AsyncSession, agent: Agent, new_name: str
+    ) -> None:
+        if (agent.metadata_ or {}).get("server_connector_id"):
+            raise AgentRenameRefused(
+                f"Agent '{agent.name}' was found by a server connector, which "
+                "would bring it back under its old name. Rename it at its source."
+            )
+        if agent.parent_agent_id is not None:
+            raise AgentRenameRefused(
+                f"Agent '{agent.name}' is a subagent; its name comes from its "
+                "parent's, so it cannot be renamed on its own."
+            )
+        if await self.agent_store.get_children(session, [agent.id]):
+            raise AgentRenameRefused(
+                f"Agent '{agent.name}' has subagents named after it, so it "
+                "cannot be renamed yet."
+            )
+        clash = await self.agent_store.get_by_name_insensitive(session, new_name)
+        if clash is not None and clash.id != agent.id:
+            raise AgentExistsError(f"Agent already exists: {new_name!r}.")
+        low = new_name.lower()
+        rooms = await self.room_store.get_rooms_for_agent(
+            session, agent.id, include_archived=True
+        )
+        for room in rooms:
+            aliases = await self.room_store.list_aliases(session, room.id)
+            if any(
+                other != agent.id and alias.lower() == low
+                for other, alias in aliases.items()
+            ):
+                raise AgentRenameRefused(
+                    f"'{new_name}' is another agent's alias in room '{room.name}'."
+                )
+            roles = await self.room_role_store.list_roles(session, room.id)
+            if any(role.name.lower() == low for role in roles):
+                raise AgentRenameRefused(
+                    f"'{new_name}' is the name of a role in room '{room.name}'."
+                )
+
+    async def _rename_in_run_controls(
+        self, session: AsyncSession, old_name: str, new_name: str
+    ) -> None:
+        """Paused runs record which agent to wake by name; move them over."""
+        result = await session.execute(
+            select(Room).where(Room.run_control["paused_agent_name"].astext == old_name)
+        )
+        for room in result.scalars().all():
+            room.run_control = {
+                **(room.run_control or {}),
+                "paused_agent_name": new_name,
+            }
+
+    async def _templates_mentioning(
+        self, session: AsyncSession, name: str
+    ) -> list[str]:
+        result = await session.execute(
+            select(Template.name, Template.content).where(
+                Template.content.contains(name)
+            )
+        )
+        word = re.compile(rf"(?<![A-Za-z0-9._-]){re.escape(name)}(?![A-Za-z0-9._-])")
+        return sorted(
+            {tname for tname, content in result.all() if word.search(content)}
+        )
 
     async def delete_agent(
         self,
         *,
         agent_id: str | None = None,
         agent_name: str | None = None,
-    ) -> None:
+    ) -> AgentDeletionResult:
         """Delete an agent and clean up all associated state.
+
+        Returns the chat platforms whose clean-up failed. The agent is deleted
+        regardless, since leaving it half torn down is worse; each bridge
+        retires what was left behind when it next starts.
 
         Provide exactly one of ``agent_id`` or ``agent_name``.
 
@@ -993,7 +1318,7 @@ class AgentCore:
 
         client_id = agent.client_id
         resolved_id = agent.id
-        resolved_name = agent.name
+        identity = agent_identity(agent)
         # Captured before the row goes: afterwards there is nothing left to
         # describe what was removed, and "an agent was deleted" without its
         # runtime or its age says almost nothing.
@@ -1008,7 +1333,7 @@ class AgentCore:
         await self.client_lifecycle.stop(client_id)
         self.event_buffer.remove(resolved_id)
 
-        await self._remove_bridge_identities(tenant_id, resolved_name)
+        bridge_failures = await self._remove_bridge_identities(tenant_id, identity)
 
         # One transaction for the agent and its client, stopped above; see
         # `ClientLifecycleService.delete_record`.
@@ -1019,6 +1344,7 @@ class AgentCore:
         self.api_key_cache.invalidate_agent(resolved_id)
 
         emit_safely(self.telemetry, "agent_deleted", removed)
+        return AgentDeletionResult(bridge_failures=bridge_failures)
 
     async def _room_count_for(self, agent_id: str) -> int:
         """How many rooms an agent is in, for reporting only.
@@ -3810,6 +4136,8 @@ class AgentCore:
                     session, target_agent_id, **update.columns
                 )
                 await session.commit()
+                if {"description", "display_name"} & update.columns.keys():
+                    await self.update_bridge_identities(target_agent_id)
 
             refreshed = await self.agent_store.get(session, target_agent_id)
             assert refreshed is not None

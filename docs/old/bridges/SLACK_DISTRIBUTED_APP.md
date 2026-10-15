@@ -126,6 +126,8 @@ the same job once installed — the differences are all in `settings` and
             { "command": "/set-alias", "url": "https://HOST/messaging/slack/commands", "description": "Give an agent a room alias", "usage_hint": "@agent-name @alias", "should_escape": true },
             { "command": "/remove-alias", "url": "https://HOST/messaging/slack/commands", "description": "Remove a room alias", "usage_hint": "@alias (or @agent-name)", "should_escape": true },
             { "command": "/invite-agent", "url": "https://HOST/messaging/slack/commands", "description": "Add an existing agent to this room", "usage_hint": "@agent-name", "should_escape": true },
+            { "command": "/rename-agent", "url": "https://HOST/messaging/slack/commands", "description": "Rename an agent (owner or admin)", "usage_hint": "@agent-name new-name [Display Name]", "should_escape": true },
+            { "command": "/delete-agent", "url": "https://HOST/messaging/slack/commands", "description": "Delete an agent (owner or admin)", "usage_hint": "@agent-name [confirm]", "should_escape": true },
             { "command": "/run-cmd", "url": "https://HOST/messaging/slack/commands", "description": "Show the terminal command to start a session for an agent", "usage_hint": "@agent-name [@role]", "should_escape": true },
             { "command": "/agents-greet", "url": "https://HOST/messaging/slack/commands", "description": "Have agents in the room introduce themselves", "should_escape": false },
             { "command": "/room-url", "url": "https://HOST/messaging/slack/commands", "description": "Show the frontend URL for this room", "should_escape": false }
@@ -169,7 +171,8 @@ the same job once installed — the differences are all in `settings` and
                 "message.channels",
                 "message.groups",
                 "message.im",
-                "message.mpim"
+                "message.mpim",
+                "subteam_updated"
             ]
         },
         "interactivity": {

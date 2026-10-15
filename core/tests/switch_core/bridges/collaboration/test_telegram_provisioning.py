@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from switch_core.bridges.collaboration.adapter import AgentIdentity
 from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
 from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
@@ -23,6 +24,9 @@ from switch_core.bridges.collaboration.telegram.adapter import (
 
 SUPERGROUP_ID = "-1001234567890"
 BOT_USERNAME = "acme_switch_bot"
+_SCOUT = AgentIdentity(
+    agent_id="agent-scout", name="scout", description="a scout", display_name=None
+)
 
 
 def _run(coro: Any) -> Any:
@@ -148,8 +152,8 @@ def test_adding_agents_is_a_no_op_under_the_single_bot_model() -> None:
 def test_agent_identities_are_a_no_op_under_the_single_bot_model() -> None:
     adapter = _adapter()
 
-    _run(adapter.create_agent_identity("scout", "a scout"))
-    _run(adapter.remove_agent_identity("scout"))
+    _run(adapter.create_agent_identity(_SCOUT))
+    _run(adapter.remove_agent_identity(_SCOUT))
 
     assert _run(adapter.get_channel_agent_names(SUPERGROUP_ID)) == []
 

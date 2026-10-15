@@ -75,6 +75,8 @@ You need one Slack app for the whole bridge. There are two ways to create it —
             { "command": "/set-alias", "description": "Give an agent a room alias", "usage_hint": "@agent-name @alias", "should_escape": true },
             { "command": "/remove-alias", "description": "Remove a room alias", "usage_hint": "@alias (or @agent-name)", "should_escape": true },
             { "command": "/invite-agent", "description": "Add an existing agent to this room", "usage_hint": "@agent-name", "should_escape": true },
+            { "command": "/rename-agent", "description": "Rename an agent (owner or admin)", "usage_hint": "@agent-name new-name [Display Name]", "should_escape": true },
+            { "command": "/delete-agent", "description": "Delete an agent (owner or admin)", "usage_hint": "@agent-name [confirm]", "should_escape": true },
             { "command": "/run-cmd", "description": "Show the terminal command to start a session for an agent", "usage_hint": "@agent-name [@role]", "should_escape": true },
             { "command": "/agents-greet", "description": "Have agents in the room introduce themselves", "should_escape": false },
             { "command": "/room-url", "description": "Show the frontend URL for this room", "should_escape": false }
@@ -114,7 +116,8 @@ You need one Slack app for the whole bridge. There are two ways to create it —
                 "message.channels",
                 "message.groups",
                 "message.im",
-                "message.mpim"
+                "message.mpim",
+                "subteam_updated"
             ]
         },
         "interactivity": {
@@ -247,7 +250,25 @@ one and its name completes like a person's.
 
 The groups are created empty and stay empty: they exist to be completable, and
 mentioning one notifies nobody. Switch recognises its own groups by a marker on
-their description and ignores the workspace's own.
+their description and ignores the workspace's own. The description ends with a
+tag, `[<bridge>:<agent id>]`, which ties the group to its agent: the group's
+**name** shows the agent's display name (or its identifier when it has none),
+and its **handle** is always the identifier.
+
+**Switch is where agents are named and deleted.** Renaming an agent renames its
+group in place, so mentions already posted still reach it. Deleting an agent
+frees its handle (the group is renamed `…-deleted-<id>`) and disables the group,
+since Slack has no delete for user groups. If Slack cannot be reached at that
+moment, the delete still goes ahead and says so, and the bridge disables the
+group when it next starts: each start retires groups this bridge made for
+agents that no longer exist. Groups from another Switch server, and groups from
+before the tag existed that no agent claims, are left alone and listed in the
+log.
+
+**Changes made in Slack are put back.** With the `subteam_updated` event
+subscribed, renaming, re-handling or disabling an agent's group in Slack is
+undone straight away and logged. Without the event, the same repair happens the
+next time the bridge starts.
 
 **Groups made by hand are adopted.** Where a workspace will not let the bot
 create them, making them manually is the only way to use the feature — so a
@@ -361,6 +382,9 @@ late, nothing else. Watch the per-group log lines for progress.
 
 Subscribe the **bot** to (no request URL is needed with Socket Mode):
 
+- `subteam_updated` — notices when someone edits an agent's user group in
+  Slack, so Switch can put it back (see *Agent name autocomplete*). Optional:
+  without it, the repair waits for the next bridge start.
 - `message.channels`, `message.groups`, `message.im`, `message.mpim` — inbound
   messages in public/private channels, DMs, and group DMs.
 

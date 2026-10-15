@@ -20,6 +20,7 @@ from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
     PlatformAdapter,
     SupportsSharedConnection,
+    agent_identity,
 )
 from switch_core.bridges.collaboration.models import (
     ChannelType,
@@ -614,29 +615,28 @@ class CollaborationCore:
         ) as session:
             agents = await self._agent_store.get_all(session)
 
-        failed = 0
-        for agent in agents:
-            try:
-                await self._adapter.create_agent_identity(agent.name, agent.description)
-            except Exception:
-                failed += 1
-                logger.exception(
-                    "Failed to create %s identity for agent %s",
-                    self._bridge_type,
-                    agent.name,
-                )
+        failures = await self._adapter.sync_agent_identities(
+            [agent_identity(agent) for agent in agents]
+        )
+        for name, exc in failures:
+            logger.error(
+                "Failed to provision %s identity for agent %s: %s",
+                self._bridge_type,
+                name,
+                exc,
+                exc_info=exc,
+            )
 
         # Counts calls that returned, not identities that now exist: an adapter
         # that cannot provision at all reports that itself. Reporting the agent
         # count regardless of failures would read as success on a run where
         # every one of them failed.
-        if failed:
+        if failures:
             logger.warning(
-                "Provisioned %s identities for %d of %d agents; %d failed",
+                "Provisioned %s identities for %d agents; %d failed",
                 self._bridge_type,
-                len(agents) - failed,
                 len(agents),
-                failed,
+                len(failures),
             )
         else:
             logger.info(

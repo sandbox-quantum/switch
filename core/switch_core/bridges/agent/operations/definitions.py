@@ -41,7 +41,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ConnectionError_,
     evicted_session_warning,
 )
-from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
@@ -2330,6 +2330,7 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
 @operation
 async def update_agent_detail(
     agent_id: str,
+    name: str | None = None,
     description: str | None = None,
     display_name: str | None = None,
     icon_url: str | None = None,
@@ -2347,9 +2348,17 @@ async def update_agent_detail(
     """Change an agent your owner owns, and return its fresh detail.
 
     Owner-only: the agent's owner must be your own owner (a permission error
-    otherwise). Omit a field to leave it unchanged. An agent cannot be renamed.
+    otherwise). Omit a field to leave it unchanged.
 
     Any agent:
+        name: Rename it: the identifier people type and mention (lowercase
+            letters, digits, '.', '-', '_'). Pass `display_name` with it when
+            the label is the name written out ("Notes Writer" for
+            notes-writer); otherwise the label stays. Rooms, roles, aliases and
+            credentials follow; its handle on each chat platform is renamed
+            too. Refused for a name in use, one that clashes with an alias or
+            role in its rooms or a handle on a chat platform, a subagent or a
+            parent of subagents, and an agent a server connector found.
         description: What the agent is for.
         display_name: Human label shown next to its name; "" clears it.
         icon_url: An https link to its icon; "" clears it. A server with
@@ -2387,7 +2396,11 @@ async def update_agent_detail(
         The `get_agent_detail` shape plus `managed`: for a managed agent, the
         entry `list_managed_agents` shows for it (provider, model,
         advanced_config, machine, desired_state, actual, revision); null when
-        the agent is not managed or you cannot manage agents.
+        the agent is not managed or you cannot manage agents. Plus `renamed`
+        when `name` changed it: `{old_name, bridge_failures,
+        templates_mentioning_old_name}` — each chat platform that could not be
+        updated yet (the rename stands; it catches up when its bridge next
+        starts), and saved templates whose text still says the old name.
     """
     caller_id = get_agent_id()
     protocol = get_protocol()
@@ -2410,6 +2423,19 @@ async def update_agent_detail(
         machine=machine,
         desired_state=desired_state,
     )
+    rename_label: str | None = None
+    if name is not None:
+        current = await protocol.get_agent_detail(caller_id, agent_id)
+        rename_label = current.display_name if display_name is None else display_name
+        # Checked before any managed change is made, and made after them: a
+        # refused rename then changes nothing, and a refused managed change
+        # leaves the name as it was.
+        try:
+            await protocol.check_rename(
+                agent_id=agent_id, new_name=name, display_name=rename_label
+            )
+        except AgentExistsError as exc:
+            raise ValueError(str(exc)) from exc
     port = management_port()
     managed: dict[str, Any] | None = None
     if not changes.is_empty():
@@ -2429,8 +2455,25 @@ async def update_agent_detail(
             managed = await port.managed_agent(
                 permission.tenant_id, permission.owner.id, agent_id
             )
+    renamed: dict[str, Any] | None = None
+    if name is not None:
+        try:
+            result = await protocol.rename_agent(
+                agent_id=agent_id, new_name=name, display_name=rename_label
+            )
+        except AgentExistsError as exc:
+            raise ValueError(str(exc)) from exc
+        if result.old_name != result.new_name:
+            renamed = {
+                "old_name": result.old_name,
+                "bridge_failures": result.bridge_failures,
+                "templates_mentioning_old_name": result.templates_mentioning_old_name,
+            }
     detail = await protocol.update_agent_detail(caller_id, agent_id, profile)
-    return {**detail.model_dump(), "managed": managed}
+    response = {**detail.model_dump(), "managed": managed}
+    if renamed is not None:
+        response["renamed"] = renamed
+    return response
 
 
 @operation

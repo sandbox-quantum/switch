@@ -19,12 +19,19 @@ from typing import Any
 import discord
 import pytest
 
+from switch_core.bridges.collaboration.adapter import AgentIdentity
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
 
 GUILD_ID = 900
+
+
+def _agent(name: str, description: str = "") -> AgentIdentity:
+    return AgentIdentity(
+        agent_id=f"id-{name}", name=name, description=description, display_name=None
+    )
 
 
 def _run(coro: Any) -> Any:
@@ -54,6 +61,11 @@ class _FakeRole:
         self.members = members or []
         self._guild = guild
 
+    async def edit(self, *, name: str, reason: str | None = None) -> None:
+        assert self._guild is not None
+        self._guild.edited.append((self.id, name))
+        self.name = name
+
     async def delete(self, *, reason: str | None = None) -> None:
         assert self._guild is not None
         if self._guild.delete_error is not None:
@@ -70,6 +82,7 @@ class _FakeGuild:
             role._guild = self
         self.created: list[dict[str, Any]] = []
         self.deleted: list[int] = []
+        self.edited: list[tuple[int, str]] = []
         self.create_error: Exception | None = None
         self.delete_error: Exception | None = None
         self._next_id = 1000
@@ -119,7 +132,7 @@ def test_an_agent_gets_a_mentionable_role_of_its_own() -> None:
     guild = _FakeGuild()
     adapter = _adapter(guild)
 
-    _run(adapter.create_agent_identity("flint-tracker", "Tracks flint"))
+    _run(adapter.create_agent_identity(_agent("flint-tracker", "Tracks flint")))
 
     assert len(guild.created) == 1
     made = guild.created[0]
@@ -133,7 +146,7 @@ def test_the_role_carries_no_permissions_and_is_not_hoisted() -> None:
     guild = _FakeGuild()
     adapter = _adapter(guild)
 
-    _run(adapter.create_agent_identity("flint-tracker", "Tracks flint"))
+    _run(adapter.create_agent_identity(_agent("flint-tracker", "Tracks flint")))
 
     made = guild.created[0]
     assert made["permissions"] == discord.Permissions.none()
@@ -144,8 +157,8 @@ def test_provisioning_the_same_agent_twice_makes_one_role() -> None:
     guild = _FakeGuild()
     adapter = _adapter(guild)
 
-    _run(adapter.create_agent_identity("flint-tracker", "Tracks flint"))
-    _run(adapter.create_agent_identity("flint-tracker", "Tracks flint"))
+    _run(adapter.create_agent_identity(_agent("flint-tracker", "Tracks flint")))
+    _run(adapter.create_agent_identity(_agent("flint-tracker", "Tracks flint")))
 
     assert len(guild.created) == 1
 
@@ -154,7 +167,7 @@ def test_nothing_is_created_when_the_setting_is_off() -> None:
     guild = _FakeGuild()
     adapter = _adapter(guild, agent_roles=False)
 
-    _run(adapter.create_agent_identity("flint-tracker", "Tracks flint"))
+    _run(adapter.create_agent_identity(_agent("flint-tracker", "Tracks flint")))
 
     assert guild.created == []
 
@@ -169,7 +182,7 @@ def test_a_role_already_named_for_the_agent_is_adopted() -> None:
     guild = _FakeGuild([_FakeRole(7, "flint-tracker")])
     adapter = _adapter(guild)
 
-    _run(adapter.create_agent_identity("flint-tracker", "Tracks flint"))
+    _run(adapter.create_agent_identity(_agent("flint-tracker", "Tracks flint")))
 
     assert guild.created == []
     assert adapter._agent_role_ids["flint-tracker"] == 7
@@ -181,7 +194,7 @@ def test_a_similarly_named_role_is_not_captured() -> None:
     guild = _FakeGuild([_FakeRole(7, "Flint Trackers")])
     adapter = _adapter(guild)
 
-    _run(adapter.create_agent_identity("flint-tracker", "Tracks flint"))
+    _run(adapter.create_agent_identity(_agent("flint-tracker", "Tracks flint")))
 
     assert len(guild.created) == 1
 
@@ -192,9 +205,9 @@ def test_a_similarly_named_role_is_not_captured() -> None:
 def test_the_role_goes_when_the_agent_does() -> None:
     guild = _FakeGuild()
     adapter = _adapter(guild)
-    _run(adapter.create_agent_identity("flint-tracker", "Tracks flint"))
+    _run(adapter.create_agent_identity(_agent("flint-tracker", "Tracks flint")))
 
-    _run(adapter.remove_agent_identity("flint-tracker"))
+    _run(adapter.remove_agent_identity(_agent("flint-tracker")))
 
     assert guild.deleted == [1001]
 
@@ -212,7 +225,7 @@ def test_a_role_people_are_wearing_is_left_alone(
     adapter = _adapter(guild)
 
     with caplog.at_level(logging.WARNING):
-        _run(adapter.remove_agent_identity("flint-tracker"))
+        _run(adapter.remove_agent_identity(_agent("flint-tracker")))
 
     assert guild.deleted == []
     assert "not ours to delete" in caplog.text
@@ -222,9 +235,61 @@ def test_removing_an_agent_that_never_had_a_role_is_quiet() -> None:
     guild = _FakeGuild()
     adapter = _adapter(guild)
 
-    _run(adapter.remove_agent_identity("flint-tracker"))
+    _run(adapter.remove_agent_identity(_agent("flint-tracker")))
 
     assert guild.deleted == []
+
+
+# ── Renaming an agent ────────────────────────────────────────────────────────
+
+
+def test_a_rename_renames_the_same_role() -> None:
+    """Editing the role in place keeps its id, so a pill already posted for
+    the agent still resolves, and no second role is minted."""
+    guild = _FakeGuild()
+    adapter = _adapter(guild)
+    _run(adapter.create_agent_identity(_agent("notes-taker")))
+
+    _run(adapter.rename_agent_identity("notes-taker", _agent("meeting-scribe")))
+
+    assert guild.edited == [(1001, "meeting-scribe")]
+    assert len(guild.created) == 1
+    assert adapter._agent_role_ids == {"meeting-scribe": 1001}
+    assert adapter.translate_outbound("ask @meeting-scribe") == "ask <@&1001>"
+    assert adapter.translate_outbound("ask @notes-taker") == "ask @notes-taker"
+    assert adapter.translate_inbound("hey <@&1001>") == "hey @meeting-scribe"
+
+
+def test_a_rename_finds_a_role_made_by_hand_by_its_old_name() -> None:
+    guild = _FakeGuild([_FakeRole(7, "notes-taker")])
+    adapter = _adapter(guild)
+
+    _run(adapter.rename_agent_identity("notes-taker", _agent("meeting-scribe")))
+
+    assert guild.edited == [(7, "meeting-scribe")]
+    assert guild.created == []
+    assert adapter._agent_role_ids == {"meeting-scribe": 7}
+
+
+def test_a_rename_with_no_role_to_rename_makes_one() -> None:
+    guild = _FakeGuild()
+    adapter = _adapter(guild)
+
+    _run(adapter.rename_agent_identity("notes-taker", _agent("meeting-scribe")))
+
+    assert guild.edited == []
+    assert [made["name"] for made in guild.created] == ["meeting-scribe"]
+    assert adapter._agent_role_ids == {"meeting-scribe": 1001}
+
+
+def test_a_rename_does_nothing_when_the_setting_is_off() -> None:
+    guild = _FakeGuild([_FakeRole(7, "notes-taker")])
+    adapter = _adapter(guild, agent_roles=False)
+
+    _run(adapter.rename_agent_identity("notes-taker", _agent("meeting-scribe")))
+
+    assert guild.edited == []
+    assert guild.created == []
 
 
 # ── A server that cannot host them ───────────────────────────────────────────
@@ -238,8 +303,8 @@ def test_a_missing_manage_roles_permission_is_named_once(
     adapter = _adapter(guild)
 
     with caplog.at_level(logging.WARNING):
-        _run(adapter.create_agent_identity("flint-tracker", "Tracks flint"))
-        _run(adapter.create_agent_identity("chalk-tracker", "Tracks chalk"))
+        _run(adapter.create_agent_identity(_agent("flint-tracker", "Tracks flint")))
+        _run(adapter.create_agent_identity(_agent("chalk-tracker", "Tracks chalk")))
 
     complaints = [
         r for r in caplog.records if "agent roles are unavailable" in r.getMessage()
@@ -258,8 +323,8 @@ def test_a_server_out_of_roles_says_so_rather_than_retrying(
     adapter = _adapter(guild)
 
     with caplog.at_level(logging.WARNING):
-        _run(adapter.create_agent_identity("flint-tracker", "Tracks flint"))
-        _run(adapter.create_agent_identity("chalk-tracker", "Tracks chalk"))
+        _run(adapter.create_agent_identity(_agent("flint-tracker", "Tracks flint")))
+        _run(adapter.create_agent_identity(_agent("chalk-tracker", "Tracks chalk")))
 
     assert guild.created == []
     assert "250 roles" in caplog.text
@@ -273,7 +338,7 @@ def test_an_unrecognised_refusal_is_not_swallowed() -> None:
     adapter = _adapter(guild)
 
     with pytest.raises(discord.HTTPException):
-        _run(adapter.create_agent_identity("flint-tracker", "Tracks flint"))
+        _run(adapter.create_agent_identity(_agent("flint-tracker", "Tracks flint")))
 
 
 # ── Translation ──────────────────────────────────────────────────────────────
@@ -308,7 +373,7 @@ def test_a_mention_of_a_role_that_is_gone_is_left_as_it_came() -> None:
 def test_an_agent_name_goes_out_as_its_role_pill() -> None:
     guild = _FakeGuild()
     adapter = _adapter(guild)
-    _run(adapter.create_agent_identity("flint-tracker", "Tracks flint"))
+    _run(adapter.create_agent_identity(_agent("flint-tracker", "Tracks flint")))
 
     assert adapter.translate_outbound("ask @flint-tracker") == "ask <@&1001>"
 

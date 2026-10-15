@@ -91,6 +91,7 @@ from switch_core.bridges.collaboration.webhooks import (
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
+from switch_core.clients.agent_admin import AgentAdministration
 from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -729,6 +730,10 @@ async def run(config: SwitchConfig) -> None:
     )
     collab_lifecycle._room_service = room_service
 
+    # The rename and delete commands reach AgentCore through this, bound once
+    # AgentCore exists below.
+    agent_admin = AgentAdministration()
+
     # Registered after RoomService is built: the command consumer owns the
     # `!invite-agent` command, which reuses RoomService to add agents to the
     # room (and any bridged channel).
@@ -743,6 +748,9 @@ async def run(config: SwitchConfig) -> None:
         reference_store=reference_store,
         agent_session_store=agent_session_store,
         room_service=room_service,
+        external_user_store=external_user_store,
+        user_store=user_store,
+        agent_admin=agent_admin,
         connections=connections,
         frontend_base_url=config.frontend_base_url,
     )
@@ -777,6 +785,7 @@ async def run(config: SwitchConfig) -> None:
         telemetry=telemetry,
         trust_client=trust_client,
     )
+    agent_admin.bind(protocol)
     # Every close reports, whichever of the five paths did it — and only for a
     # connection the handler saw start.
     connections.set_close_listener(protocol.sessions.on_close)

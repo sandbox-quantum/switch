@@ -15,6 +15,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.collaboration.adapter import AgentIdentity
 from switch_core.db.models import Room
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.room_store import RoomStore
@@ -80,3 +81,69 @@ class TestDeleteAgentInARoom:
             assert await RoomStore().get_client_ids(session, room_id) == []
             # Only the memberships go; the room outlives its member.
             assert await RoomStore().get(session, room_id) is not None
+
+
+class _Adapter:
+    def __init__(self, error: str | None = None) -> None:
+        self.error = error
+        self.removed: list[str] = []
+
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None:
+        if self.error is not None:
+            raise RuntimeError(self.error)
+        self.removed.append(agent.name)
+
+
+class _Bridge:
+    def __init__(self, bridge_type: str, adapter: _Adapter) -> None:
+        self.bridge_type = bridge_type
+        self.adapter = adapter
+
+
+class _Bridges:
+    def __init__(self, bridges: list[_Bridge]) -> None:
+        self.bridges = bridges
+
+    def bridges_for_tenant(self, tenant_id: str) -> list[_Bridge]:
+        return self.bridges
+
+
+class TestDeleteAgentWhenAPlatformFails:
+    async def test_the_agent_still_goes_and_the_failure_is_reported(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A platform that cannot be told must not keep the agent alive, and
+        must not be passed over in silence either."""
+        svc = make_service(session_factory)
+        svc.client_lifecycle = _DeletingClientLifecycle(session_factory)  # type: ignore[assignment]
+        svc.event_buffer = EventBuffer(session_factory, sequence_base=0)
+        failing = _Adapter(error="Slack is down")
+        working = _Adapter()
+        svc.collab_lifecycle = _Bridges(  # type: ignore[assignment]
+            [_Bridge("slack", failing), _Bridge("mattermost", working)]
+        )
+        owner = await make_owner(session_factory)
+        agent_id = await register(svc, "notes-taker", owner)
+
+        result = await svc.delete_agent(agent_id=agent_id)
+
+        assert result.bridge_failures == ["slack: Slack is down"]
+        assert working.removed == ["notes-taker"]
+        async with session_factory() as session:
+            assert await svc.agent_store.get(session, agent_id) is None
+
+    async def test_a_clean_delete_reports_nothing(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = make_service(session_factory)
+        svc.client_lifecycle = _DeletingClientLifecycle(session_factory)  # type: ignore[assignment]
+        svc.event_buffer = EventBuffer(session_factory, sequence_base=0)
+        working = _Adapter()
+        svc.collab_lifecycle = _Bridges([_Bridge("slack", working)])  # type: ignore[assignment]
+        owner = await make_owner(session_factory)
+        await register(svc, "notes-taker", owner)
+
+        result = await svc.delete_agent(agent_name="notes-taker")
+
+        assert result.bridge_failures == []
+        assert working.removed == ["notes-taker"]

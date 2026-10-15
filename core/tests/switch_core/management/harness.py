@@ -129,6 +129,10 @@ class _FakeClientLifecycle:
         """No client is ever started here."""
         return None
 
+    def get(self, client_id: str) -> None:
+        """No client is ever started here, so a rename has no actor to tell."""
+        return None
+
 
 class _NoBridges:
     def bridges_for_tenant(self, tenant_id: str) -> list[object]:

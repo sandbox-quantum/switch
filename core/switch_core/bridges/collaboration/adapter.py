@@ -4,11 +4,19 @@ import logging
 import math
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar, Literal, Protocol, final, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Literal,
+    Protocol,
+    final,
+    runtime_checkable,
+)
 
 from switch_core.agent_display_name import defuse_label_markup
 from switch_core.agent_icon import (
@@ -55,7 +63,40 @@ from switch_core.sessions.contract import (
     TurnUpsert,
 )
 
+if TYPE_CHECKING:
+    from switch_core.db.models import Agent
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AgentIdentity:
+    """An agent as a bridge needs it to keep the agent's platform handle.
+
+    ``agent_id`` is the stable key: it never changes, so a platform object
+    tied to it survives a rename on either side. ``name`` is the identifier
+    people type and mention, and it can change.
+    """
+
+    agent_id: str
+    name: str
+    description: str
+    display_name: str | None
+
+
+def agent_identity(agent: Agent) -> AgentIdentity:
+    """The identity a bridge keeps for this stored agent."""
+    return AgentIdentity(
+        agent_id=agent.id,
+        name=agent.name,
+        description=agent.description,
+        display_name=agent.display_name,
+    )
+
+
+class AgentIdentityConflict(ValueError):
+    """The platform already has something that is not this agent under the
+    handle the agent would need, so the agent cannot take that name there."""
 
 
 @dataclass(frozen=True)
@@ -1491,12 +1532,54 @@ class PlatformAdapter(ABC):
         ...
 
     @abstractmethod
-    async def create_agent_identity(
-        self, agent_name: str, agent_description: str
-    ) -> None: ...
+    async def create_agent_identity(self, agent: AgentIdentity) -> None:
+        """Give the agent its platform handle, or bring an existing one in
+        line with it. Idempotent."""
 
     @abstractmethod
-    async def remove_agent_identity(self, agent_name: str) -> None: ...
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None:
+        """Retire the agent's platform handle. Raises when the platform could
+        not be told, so the caller can say the clean-up is outstanding."""
+
+    async def check_agent_identity_name(self, agent_id: str, new_name: str) -> None:
+        """Raise `AgentIdentityConflict` if this platform has something other
+        than agent ``agent_id`` holding the handle ``new_name`` would need.
+
+        Asked before a rename is written, so a clash refuses the rename instead
+        of leaving the agent renamed in Switch and stranded on the platform.
+        Default: nothing to check."""
+        return None
+
+    async def rename_agent_identity(self, old_name: str, agent: AgentIdentity) -> None:
+        """Move the agent's platform handle from ``old_name`` to ``agent.name``.
+
+        Default: retire the old handle and provision a new one. Adapters that
+        can rename their platform object in place override this, so whatever
+        hangs off it (membership, history) carries over."""
+        await self.remove_agent_identity(replace(agent, name=old_name))
+        await self.create_agent_identity(agent)
+
+    async def update_agent_identity(self, agent: AgentIdentity) -> None:
+        """The agent's display name or description changed. Default: nothing,
+        for platforms whose handle carries neither."""
+        return None
+
+    async def sync_agent_identities(
+        self, agents: Sequence[AgentIdentity]
+    ) -> list[tuple[str, BaseException]]:
+        """Bring every agent's handle in line, at bridge start.
+
+        Returns the agents that failed, by name, with what went wrong, rather
+        than stopping at the first. Adapters that can tell their own handles
+        apart from everything else on the platform override this to also
+        retire handles left behind by agents that no longer exist."""
+        failures: list[tuple[str, BaseException]] = []
+        for agent in agents:
+            try:
+                await self.create_agent_identity(agent)
+            except Exception as exc:
+                failures.append((agent.name, exc))
+        return failures
 
     @abstractmethod
     async def get_channel_agent_names(self, channel_id: str) -> list[str]: ...
@@ -1605,6 +1688,15 @@ class PlatformAdapter(ABC):
         Default is a no-op; adapters whose outbound endpoint is only discovered
         from inbound activities (Teams, whose Bot Connector ``serviceUrl`` is
         carried on inbound activities) override this to persist it."""
+        return None
+
+    def set_bridge_id(self, bridge_id: str) -> None:
+        """Tell the adapter the id of the bridge it serves.
+
+        Default is a no-op. Slack overrides it to mark the user groups it
+        creates as this bridge's, so clean-up never touches a group another
+        Switch installation made in the same workspace.
+        """
         return None
 
     def set_tenant_id(self, tenant_id: str) -> None:

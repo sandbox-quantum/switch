@@ -40,6 +40,9 @@ export interface RoomSummary {
 export interface AgentSummary {
   id: string;
   name: string;
+  // The label people read ("Notes Helper"); null when none was chosen and the
+  // name is shown instead.
+  display_name: string | null;
   description: string;
   connector_type: string;
   connection_model: string | null;
@@ -621,11 +624,39 @@ export async function fetchAgent(agentId: string): Promise<AgentDetail | null> {
   return fetchJson<AgentDetail>(`/agents/${agentId}`);
 }
 
-export async function deleteAgent(agentId: string): Promise<boolean> {
-  const res = await fetchJson<{ ok: boolean }>(`/agents/${agentId}`, {
+export interface DeleteAgentResult {
+  ok: boolean;
+  // Chat platforms whose clean-up failed. The agent is deleted regardless;
+  // each platform finishes the clean-up when its bridge next starts.
+  bridge_cleanup_failures: string[];
+}
+
+export async function deleteAgent(agentId: string): Promise<DeleteAgentResult | null> {
+  return fetchJson<DeleteAgentResult>(`/agents/${agentId}`, {
     method: "DELETE",
   });
-  return res?.ok ?? false;
+}
+
+export interface RenameAgentResult {
+  agent: AgentSummary;
+  old_name: string;
+  // Chat platforms that could not be updated yet. The rename stands; each
+  // catches up when its bridge next starts.
+  bridge_failures: string[];
+  templates_mentioning_old_name: string[];
+}
+
+// Renames the agent and sets its display name in one step. Pass the current
+// display name to keep it, and null to clear it.
+export async function renameAgent(
+  agentId: string,
+  name: string,
+  displayName: string | null,
+): Promise<RenameAgentResult> {
+  return jsonRequest<RenameAgentResult>(`/agents/${agentId}/name`, "PUT", {
+    name,
+    display_name: displayName,
+  });
 }
 
 export async function updateAgentAddressingPolicy(

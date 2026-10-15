@@ -21,6 +21,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     ActivitySnapshot,
+    AgentIdentity,
     ChannelNotBindable,
     PlatformAdapter,
     RemovalFailed,
@@ -2446,9 +2447,7 @@ class DiscordAdapter(PlatformAdapter):
 
     # ── Agent identity ───────────────────────────────────────────────────────
 
-    async def create_agent_identity(
-        self, agent_name: str, agent_description: str
-    ) -> None:
+    async def create_agent_identity(self, agent: AgentIdentity) -> None:
         """Give the agent a mentionable guild role so its name completes on `@`.
 
         Discord only autocompletes things it knows about, and an agent is not a
@@ -2461,6 +2460,7 @@ class DiscordAdapter(PlatformAdapter):
         """
         if not self._agent_roles_available():
             return
+        agent_name = agent.name
         if agent_name.casefold() in self._agent_role_ids:
             return
 
@@ -2504,7 +2504,31 @@ class DiscordAdapter(PlatformAdapter):
         self._agent_role_ids[agent_name.casefold()] = role.id
         logger.info("Created Discord role %s for agent %s", role.id, agent_name)
 
-    async def remove_agent_identity(self, agent_name: str) -> None:
+    async def rename_agent_identity(self, old_name: str, agent: AgentIdentity) -> None:
+        """Rename the agent's role in place, so mentions of it keep working.
+
+        Falls back to provisioning a fresh role when the old one cannot be
+        found, as on a server where the agent never had one."""
+        if not self._agent_roles_available():
+            return
+        guild = await self._get_guild()
+        role_id = self._agent_role_ids.get(old_name.casefold())
+        role = (
+            guild.get_role(role_id)
+            if role_id is not None
+            else discord.utils.get(guild.roles, name=old_name)
+        )
+        if role is None:
+            await self.create_agent_identity(agent)
+            return
+        await role.edit(name=agent.name, reason="Switch agent renamed")
+        self._agent_role_ids.pop(old_name.casefold(), None)
+        self._agent_role_ids[agent.name.casefold()] = role.id
+        logger.info(
+            "Renamed Discord role %s from %s to %s", role.id, old_name, agent.name
+        )
+
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None:
         """Delete the agent's role, unless people are wearing it.
 
         A Discord role carries no metadata, so an agent's role is recognised by
@@ -2516,6 +2540,7 @@ class DiscordAdapter(PlatformAdapter):
         if not self._agent_roles_available():
             return
 
+        agent_name = agent.name
         guild = await self._get_guild()
         role_id = self._agent_role_ids.pop(agent_name.casefold(), None)
         role = (
