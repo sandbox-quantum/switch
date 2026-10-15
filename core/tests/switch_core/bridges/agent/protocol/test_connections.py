@@ -8,6 +8,7 @@ import pytest
 
 from switch_core.bridges.agent.protocol.agent_connections import (
     FENCED_PROTOCOL_REVISION,
+    HEARTBEAT_INTERVAL_SECONDS,
     HEARTBEAT_LAPSED,
     HEARTBEAT_TTL_SECONDS,
     MAX_CONNECTIONS_PER_AGENT,
@@ -626,3 +627,8 @@ class TestLiveConnectionIds:
         conn.last_beat = time.monotonic() - HEARTBEAT_TTL_SECONDS - 1
 
         assert registry.live_connection_ids() == {"c2"}
+
+
+def test_the_ttl_survives_two_lost_beats() -> None:
+    """One dropped or late beat must never cost a connection."""
+    assert HEARTBEAT_TTL_SECONDS >= 3 * HEARTBEAT_INTERVAL_SECONDS

@@ -16,7 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.commands import room_control_frame
 from switch_core.bridges.agent.protocol.agent_detail import assemble_agent_detail
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_TTL_SECONDS
+from switch_core.bridges.agent.protocol.liveness import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    HEARTBEAT_TTL_SECONDS,
+)
 from switch_core.bridges.agent.protocol.presence import (
     agents_present_in,
     rooms_occupied,
@@ -123,7 +126,7 @@ class TestOpening:
             room_id = await add_room(harness.session_factory, agent_id)
             opened = await open_connection(client, controller)
         assert opened["agents"] == [agent_id]
-        assert opened["heartbeat_interval_s"] == 2.0
+        assert opened["heartbeat_interval_s"] == HEARTBEAT_INTERVAL_SECONDS
 
         stream = await open_stream(harness, controller, opened)
         (state, attached) = await take(stream, 2)
@@ -137,7 +140,7 @@ class TestOpening:
                 "report_within_s": 60,
                 "connection_id": opened["connection_id"],
                 "generation": opened["generation"],
-                "heartbeat_interval_s": 2.0,
+                "heartbeat_interval_s": HEARTBEAT_INTERVAL_SECONDS,
             },
         )
         assert attached == (
