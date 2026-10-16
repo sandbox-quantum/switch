@@ -209,6 +209,16 @@ just local-cloud-console # the Console, with Switch Cloud at http://localhost:80
   `just local-cloud-user <email> "<name>" <password>` adds more accounts.
   Every account made this way joins the admin's workspace; create another
   workspace in the Console to invite people into, or to open to a domain.
+- **A brand-new person, as often as you like:** set
+  `GATEWAY_SIGNUP_ENABLED=true` and `GATEWAY_SIGNUP_MODE=open` in `.env`,
+  restart `just local-cloud`, then run `just local-cloud-fresh` for each try.
+  It starts the Console in a new data folder, so the first-run pages begin at
+  the welcome page, and prints a new address to use with **Create account**
+  on the sign-in page. The address is on a domain of its own, so the account
+  starts with no workspace and onboarding offers to create one. Sign-up asks
+  for no name, so the part before the @ is the name you are greeted by. Each run
+  leaves a `switchdash-fresh-<time>` folder behind; delete them when you are
+  done.
 - **Invitation e-mails** are sent to Mailpit, which keeps them rather than
   delivering them: read them at `http://localhost:8025`. Their links point at
   `http://localhost:8000`, so pasting one into the Console's "Paste your

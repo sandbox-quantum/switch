@@ -22,7 +22,11 @@ from switch_core.db.stores.hosted_machine_store import (
 )
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import decode_jwt, get_current_user, verify_password
-from switch_core.gateway.auth_routes import MACHINE_OWNER_STOPPED, _prewarm
+from switch_core.gateway.auth_routes import (
+    MACHINE_OWNER_STOPPED,
+    NO_WORKSPACE_YET,
+    _prewarm,
+)
 from switch_core.gateway.auth_routes import router as auth_router
 from switch_core.gateway.dependencies import (
     get_config,
@@ -132,15 +136,22 @@ def test_signup_needs_password_login_too():
     ).gateway_signup_open
 
 
-@pytest.mark.parametrize("mode", ["invite_only", "open"])
-def test_signup_is_closed_outside_default_tenant_mode(mode):
-    """Sign-up lands a new account in tenant zero, which is only what
-    `gateway_signup_mode` decides for a first sign-in under `default_tenant`."""
-    assert not SwitchConfig.model_construct(
-        gateway_signup_enabled=True,
-        gateway_password_login_enabled=True,
-        gateway_signup_mode=mode,
-    ).gateway_signup_open
+@pytest.mark.parametrize(
+    ("mode", "open_"),
+    [("default_tenant", True), ("open", True), ("invite_only", False)],
+)
+def test_signup_follows_the_signup_mode(mode, open_):
+    """Sign-up lands where a first sign-in does: tenant zero under
+    `default_tenant`, no workspace under `open`. `invite_only` takes no one
+    who was not invited."""
+    assert (
+        SwitchConfig.model_construct(
+            gateway_signup_enabled=True,
+            gateway_password_login_enabled=True,
+            gateway_signup_mode=mode,
+        ).gateway_signup_open
+        is open_
+    )
 
 
 OIDC = {
@@ -222,6 +233,29 @@ async def test_signup_signs_in_a_tenant_zero_member_with_a_warming_machine(
         "/auth/login", json={"email": "new.person@example.com", "password": PASSWORD}
     )
     assert login.status_code == 200, login.text
+
+
+async def test_open_mode_signup_joins_no_workspace(signup_app):
+    app = signup_app
+    app.config.gateway_signup_mode = "open"
+    response = await _signup(app)
+    assert response.status_code == 201, response.text
+    assert response.json()["machine"] == {
+        "status": "unavailable",
+        "reason": NO_WORKSPACE_YET,
+    }
+
+    user = await _user(app, "new.person@example.com")
+    token = decode_jwt(response.cookies["switch_auth"], TEST_KEYRING)
+    assert (token["sub"], token["tenant_id"]) == (user.id, None)
+    async with app.factory() as session:
+        memberships = await session.scalar(
+            select(func.count())
+            .select_from(TenantMember)
+            .where(TenantMember.user_id == user.id)
+        )
+    assert memberships == 0
+    assert await _machines(app) == []
 
 
 async def test_signup_keeps_a_display_name(signup_app):
