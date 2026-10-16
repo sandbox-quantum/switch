@@ -1358,3 +1358,38 @@ it('posts for a room turn that ended without the agent posting, and not for one 
     expect(await host.stop()).toBeNull();
   }
 });
+
+it('posts nothing for a room turn started by a message the agent only followed', async () => {
+  const host = await start({ rooms: true });
+  const asks = () => host.parent.sent.filter((message) => message.kind === 'ask');
+  try {
+    const followed = roomMessage(1, 'Timo, which name is best?');
+    followed.event.payload = {
+      ...followed.event.payload,
+      followed: true,
+    } as typeof followed.event.payload;
+    expect(await host.parent.ask({ type: 'room', handoff: followed })).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 5000 });
+    const turnId = host.turns[0]!.turnId;
+    host.emit({
+      type: 'item.completed',
+      turnId,
+      item: {
+        id: 'a',
+        type: 'assistant_message',
+        status: 'completed',
+        title: '',
+        text: 'People are talking to each other, so I stay quiet.',
+      },
+    });
+    host.emit({ type: 'turn.completed', turnId, outcome: 'completed', usage: [] });
+    await vi.waitFor(async () => {
+      const { value } = await host.parent.ask({ type: 'snapshot' });
+      expect((value as Snapshot).turns.find((t) => t.turnId === turnId)?.status).toBe('completed');
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(asks()).toEqual([]);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});

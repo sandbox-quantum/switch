@@ -252,7 +252,12 @@ through the session's own MCP server, so it is recognised the same way for every
 provider. The decision is recorded in the session's `inbox.jsonl` before the post,
 so a turn is answered at most once, across restarts too. A turn the host stops
 itself (a stop, parking, a reset) is not answered, and a post that fails is logged
-and noted in the transcript without affecting the session.
+and noted in the transcript without affecting the session. Nor is a turn that
+completed for a message the agent only followed (`followed` on the message
+payload: it was not named, and reached the agent by following the conversation),
+since staying silent there may be the agent's own choice; a followed turn that
+failed is still answered. That a message was followed is recorded in
+`inbox.jsonl` before it runs, so the rule holds across restarts.
 
 Attachment hashes are stored at upload and checked during download and staging.
 Deleting the SDK session also removes its attachment blobs. Older uploads without

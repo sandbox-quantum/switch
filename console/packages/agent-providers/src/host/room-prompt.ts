@@ -21,6 +21,8 @@ export const roomMessageSchema = z.object({
     message_id: z.string().min(1),
     body: z.string(),
     thread_id: z.string().nullish(),
+    // Absent from servers that predate it, which never deliver by following.
+    followed: z.boolean().default(false),
     attachments: z
       .array(
         z.object({

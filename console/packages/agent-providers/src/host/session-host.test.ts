@@ -1403,6 +1403,63 @@ it('tells the room a turn that never reached the provider failed', async () => {
   );
 });
 
+it('stays silent when a followed room message ends without a post, across a restart', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, root } = await startReplying(reply);
+  await host.markFollowed('quiet');
+  await host.shutdown();
+  // The mark is recorded before the message runs, so a restart keeps it.
+  const recovered = await startReplying(reply, root);
+  await recovered.host.command({
+    ...roomMessage('quiet', 'thread'),
+    epoch: recovered.host.snapshot().session.epoch,
+  });
+  await waitFor(() => expect(recovered.adapter.sendTurn).toHaveBeenCalledOnce());
+  said(recovered.emit, 'quiet', 'thought', 'People are talking to each other, so I stay quiet.');
+  recovered.emit({ type: 'turn.completed', turnId: 'quiet', outcome: 'completed', usage: [] });
+  await waitFor(() => expect(recovered.host.snapshot().turns[0]?.status).toBe('completed'));
+  await recovered.host.barrier();
+  expect(reply).not.toHaveBeenCalled();
+  expect(await roomReplyRecords(root)).toEqual([]);
+});
+
+it("still tells the room a followed room message's turn failed", async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, adapter } = await startReplying(reply);
+  await host.markFollowed('broken');
+  await host.command(roomMessage('broken', null));
+  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  emit({
+    type: 'turn.completed',
+    turnId: 'broken',
+    outcome: 'error',
+    message: 'Upgrade your plan to continue',
+    usage: [],
+  });
+  await waitFor(() => expect(reply).toHaveBeenCalledOnce());
+  expect(reply.mock.calls[0]![0].body).toBe(
+    'I finished without replying. The turn failed: Upgrade your plan to continue'
+  );
+});
+
+it('marks only the turn it names as followed', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, adapter } = await startReplying(reply);
+  await host.markFollowed('followed');
+  await host.command(roomMessage('followed', null));
+  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  emit({ type: 'turn.completed', turnId: 'followed', outcome: 'completed', usage: [] });
+  await host.command(roomMessage('named', null));
+  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  emit({ type: 'turn.completed', turnId: 'named', outcome: 'completed', usage: [] });
+  await waitFor(() => expect(reply).toHaveBeenCalledOnce());
+  expect(reply).toHaveBeenCalledWith({
+    roomId: 'room',
+    threadId: null,
+    body: 'I finished without replying.',
+  });
+});
+
 it('posts nothing for a turn no room message started', async () => {
   const reply = vi.fn(async (_reply: RoomReply) => {});
   const { host, emit, adapter } = await startReplying(reply);

@@ -58,6 +58,8 @@ export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('model'), id: z.string(), options: z.record(z.string(), z.string()) }),
   /** The host posts this turn's reply to its room itself: decided once, before posting. */
   z.object({ type: z.literal('room-reply'), commandId: z.string() }),
+  /** A room message that reached the agent only by following the conversation. */
+  z.object({ type: z.literal('room-followed'), commandId: z.string() }),
 ]);
 type RecordEntry = z.infer<typeof hostInboxRecordSchema>;
 export type HostSessionStart = {
@@ -101,6 +103,7 @@ export class HostedSession {
   private readonly dispatched = new Set<string>();
   private readonly finished = new Set<string>();
   private readonly roomReplies = new Set<string>();
+  private readonly followedTurns = new Set<string>();
   private readonly postedTurns = new Set<string>();
   private readonly usage = new Map<string, TokenUsage[]>();
   private readonly resumeOperations = new Set<string>();
@@ -180,6 +183,7 @@ export class HostedSession {
       if (record.type === 'reset-completed') this.resetPending = false;
       if (record.type === 'model') config.input.model = { id: record.id, options: record.options };
       if (record.type === 'room-reply') this.roomReplies.add(record.commandId);
+      if (record.type === 'room-followed') this.followedTurns.add(record.commandId);
     }
     this.projector = new ChatProjector(config.session, config.redactions ?? null);
     this.unsubscribe = adapter.subscribe((event) => {
@@ -1037,11 +1041,24 @@ export class HostedSession {
   }
 
   /**
+   * Records that the room message `commandId` runs reached the agent only by
+   * following the conversation, before the command is run, so the decision
+   * below survives a restart.
+   */
+  async markFollowed(commandId: string): Promise<void> {
+    if (this.followedTurns.has(commandId)) return;
+    await this.inbox.append({ type: 'room-followed', commandId });
+    this.followedTurns.add(commandId);
+  }
+
+  /**
    * Answers the room itself when a turn a room message started ended without
    * the agent posting anywhere — a provider that ended on a quota or sign-in
    * error, or a model that replied in plain text — since the room would
    * otherwise hear nothing at all. A turn the host cut short on purpose
-   * (stopping, parking, a reset) is left alone.
+   * (stopping, parking, a reset) is left alone, and so is one that completed
+   * for a message the agent only followed: nobody named it, so staying silent
+   * may be exactly what it chose.
    *
    * Decided once per turn and recorded before the post, so a restart never
    * posts it twice. The post runs beside the session; one that fails is
@@ -1053,8 +1070,10 @@ export class HostedSession {
     detail: string | null
   ): Promise<void> {
     const posted = this.postedTurns.delete(turnId);
+    const followed = this.followedTurns.delete(turnId);
     const reply = this.config.replyToRoom;
     if (!reply || posted || this.shuttingDown || this.stopped || this.resetting) return;
+    if (followed && outcome === 'completed') return;
     if (this.roomReplies.has(turnId)) return;
     const origin = this.commands.get(turnId)?.origin;
     if (!origin?.roomId || !origin.messageId) return;

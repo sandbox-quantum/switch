@@ -45,6 +45,7 @@
         "channel_type": null,
         "payload": {
           "addressed": true,
+          "followed": false,
           "sender": "@ada:switch.local",
           "sender_name": "Ada",
           "sender_kind": null,

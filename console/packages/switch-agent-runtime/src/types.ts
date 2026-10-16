@@ -22,6 +22,9 @@ export interface AttachmentRef {
 
 export interface MessagePayload {
   addressed: boolean;
+  /** True when the agent was not named and the message reached it only by
+   * following the conversation. Absent from servers that predate the field. */
+  followed?: boolean;
   sender: string;
   sender_name: string;
   /** "user", "agent", or "platform" (the Switch app itself). Absent from

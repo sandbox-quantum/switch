@@ -749,6 +749,7 @@ export async function runSharedHost(
           attachments,
           preface: instructionsNote,
         });
+        if (message.data.payload.followed) await host!.markFollowed(command.commandId);
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.

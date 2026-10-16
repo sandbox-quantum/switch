@@ -232,6 +232,12 @@ class AttachmentRef(BaseModel):
 
 class MessagePayload(BaseModel):
     addressed: bool
+    # True when the agent was not named and the message reached it only by
+    # following the conversation (a reply in a thread it takes part in, say).
+    # The agent may rightly stay silent then, so its host does not answer the
+    # room for it when the turn ends without a post. Defaults to False so a
+    # payload stored before the field existed still parses.
+    followed: bool = False
     sender: str
     sender_name: str
     # Who sent this: "user" (a human on a bridge), "agent", or "platform"
