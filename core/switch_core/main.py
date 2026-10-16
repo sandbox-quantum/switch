@@ -1963,8 +1963,6 @@ def _distributed_teams_app(
     if not config.teams_app_client_id:
         return None
     assert config.messaging_public_url is not None
-    assert config.teams_app_privacy_url is not None
-    assert config.teams_app_terms_url is not None
     teams_app = TeamsSharedApp.from_config(config)
     installers.register(
         TeamsAppInstaller(

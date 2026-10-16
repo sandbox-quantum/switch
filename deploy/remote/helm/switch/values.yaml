@@ -490,8 +490,8 @@ switchCore:
     # trusts as a federated credential, so no secret exists at all.
     credential: secret
     # Shown to the admin approving the app, and required in its package.
-    privacyUrl: ""
-    termsUrl: ""
+    privacyUrl: "https://docs.switchagents.ai/legal/privacy-policy"
+    termsUrl: "https://docs.switchagents.ai/legal/terms"
     # The app's name in Teams, up to 30 characters; empty means "Agent
     # Switch". Name each non-production environment's app (for example
     # "Agent Switch (dev)"), so an organisation that approves more than one
