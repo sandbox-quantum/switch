@@ -1,10 +1,15 @@
 import { ExternalLink, Plus, Search, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
+import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import { localAgentTabStore } from '@renderer/features/locations/stores/local-agent-tabs';
+import { agentTabStore } from '@renderer/features/managed-agents/agent-tab-store';
+import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { agentProviderLabelFor } from '@renderer/lib/components/agent-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
+import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
 import {
@@ -19,6 +24,7 @@ import type {
   ConnectionAgent,
   ConnectionCatalogEntry,
 } from '@shared/core/switch-servers/connection-catalog';
+import { agentLinkFor, openAgentConnections } from './agent-links';
 import {
   useConnectionAgents,
   useGitHubConnection,
@@ -47,6 +53,8 @@ import {
  * heading with the count, a card per agent, and an "Add agent" that opens a
  * search of the person's other agents under the cards. Adding one turns the
  * service on for it there and then; the cross on a card turns it off again.
+ * A card opens the agent's Connections tab; an agent from another Console has
+ * no page here, so its card is plain.
  */
 export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
   serverId,
@@ -73,6 +81,9 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
   const iconFor = (agentId: string) =>
     remote.data?.find((agent) => agent.id === agentId)?.iconUrl ?? null;
   const usedBy = agents.data?.filter((agent) => agent.granted) ?? [];
+  const { navigate } = useNavigate();
+  const managed = useManagedAgents(serverId);
+  const local = agentsStore.agentsInWorkspace(workspaceId);
   const canAdd = connected && offersAddAgent(connection) && agents.data != null;
   const reload = useReloadConnectors(workspaceId);
   const [removingId, setRemovingId] = useState<string | null>(null);
@@ -144,38 +155,69 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
       )}
       {usedBy.length > 0 && (
         <div role="list" aria-label="Agents" className="grid grid-cols-2 gap-2.5">
-          {usedBy.map((agent) => (
-            <div
-              key={agent.agent_id}
-              role="listitem"
-              className="group relative flex items-center gap-3 rounded-[10px] border border-border bg-[var(--surface-2)] py-3 pr-9 pl-3.5"
-            >
-              <span className="flex size-7 shrink-0 items-center justify-center">
-                <AgentAvatar
-                  name={agent.name}
-                  iconUrl={iconFor(agent.agent_id)}
-                  serverId={serverId}
-                  size={26}
-                />
-              </span>
-              <div className="flex min-w-0 flex-col">
-                <span className="truncate text-sm font-medium text-foreground">{agent.name}</span>
-                <span className="truncate text-xs text-foreground-muted">
-                  {agentProviderLabelFor(agent.agent_id, workspaceId)}
+          {usedBy.map((agent) => {
+            const link = agentLinkFor(agent.agent_id, local, managed.data);
+            const body = (
+              <>
+                <span className="flex size-7 shrink-0 items-center justify-center">
+                  <AgentAvatar
+                    name={agent.name}
+                    iconUrl={iconFor(agent.agent_id)}
+                    serverId={serverId}
+                    size={26}
+                  />
                 </span>
-              </div>
-              <button
-                type="button"
-                aria-label={`Turn ${name} off for ${agent.name}`}
-                title={`Turn ${name} off for ${agent.name}`}
-                disabled={removingId !== null}
-                onClick={() => void remove(agent)}
-                className="absolute top-1.5 right-1.5 flex size-5 cursor-pointer items-center justify-center rounded-md text-foreground-muted opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[var(--fill-2)] hover:text-foreground focus-visible:opacity-100 disabled:cursor-wait"
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate text-sm font-medium text-foreground">{agent.name}</span>
+                  <span className="truncate text-xs text-foreground-muted">
+                    {agentProviderLabelFor(agent.agent_id, workspaceId)}
+                  </span>
+                </span>
+              </>
+            );
+            return (
+              <div
+                key={agent.agent_id}
+                role="listitem"
+                title={link.kind === 'elsewhere' ? link.title : undefined}
+                className={cn(
+                  'group relative flex items-center gap-3 rounded-[10px] border border-border bg-[var(--surface-2)] py-3 pr-9 pl-3.5 transition-colors',
+                  link.kind !== 'elsewhere' && 'hover:bg-[var(--fill)]'
+                )}
               >
-                {removingId === agent.agent_id ? <Spinner /> : <X className="size-3.5" />}
-              </button>
-            </div>
-          ))}
+                {link.kind === 'elsewhere' ? (
+                  body
+                ) : (
+                  <button
+                    type="button"
+                    title={`Open ${agent.name}'s Connections tab`}
+                    onClick={() =>
+                      openAgentConnections(link, navigate, {
+                        local: localAgentTabStore,
+                        managed: agentTabStore,
+                      })
+                    }
+                    className="focus-visible:ring-ring flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-sm text-left focus-visible:ring-2 focus-visible:outline-none"
+                  >
+                    {/* Stretched over the card, so the whole card opens the agent while
+                        the cross beside it keeps its own target. */}
+                    <span aria-hidden className="absolute inset-0 rounded-[10px]" />
+                    {body}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  aria-label={`Turn ${name} off for ${agent.name}`}
+                  title={`Turn ${name} off for ${agent.name}`}
+                  disabled={removingId !== null}
+                  onClick={() => void remove(agent)}
+                  className="absolute top-1.5 right-1.5 z-10 flex size-5 cursor-pointer items-center justify-center rounded-md text-foreground-muted opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[var(--fill-2)] hover:text-foreground focus-visible:opacity-100 disabled:cursor-wait"
+                >
+                  {removingId === agent.agent_id ? <Spinner /> : <X className="size-3.5" />}
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
       {removal.error && (
@@ -201,7 +243,7 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
       )}
       {!offersAddAgent(connection) && (
         <p className="text-xs text-foreground-muted">
-          Turn it on for an agent from that agent&apos;s settings.
+          Turn it on for an agent from the agent&apos;s Connections tab.
         </p>
       )}
       {connection.slug === 'github' && usedBy.length > 0 && (

@@ -75,17 +75,30 @@ const NO_EDITS: Edits = { values: {}, form: {} };
  * A managed agent, on the same page a Console agent has: who it is, the machine
  * it runs on, how it behaves, and its sessions. Every edit on it is one set of
  * pending changes for the page's save bar; the server checks the definition
- * against the agent's machine and refuses it whole.
+ * against the agent's machine and refuses it whole. `serviceGrants` shows its
+ * Service access, which a page with a Connections tab shows there instead.
  */
-export function ManagedAgentPage({ agent }: { agent: ManagedAgentView }) {
+export function ManagedAgentPage({
+  agent,
+  serviceGrants,
+}: {
+  agent: ManagedAgentView;
+  serviceGrants: boolean;
+}) {
   return (
     <AgentEditsProvider>
-      <ManagedAgentPageContent agent={agent} />
+      <ManagedAgentPageContent agent={agent} serviceGrants={serviceGrants} />
     </AgentEditsProvider>
   );
 }
 
-function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
+function ManagedAgentPageContent({
+  agent,
+  serviceGrants,
+}: {
+  agent: ManagedAgentView;
+  serviceGrants: boolean;
+}) {
   const queryClient = useQueryClient();
   const showAddToRoom = useShowModal('addAgentToRoomModal');
   const schemaQuery = useAdvancedConfigSchema(agent.serverId);
@@ -275,13 +288,15 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
                 agentName={agent.name}
                 showName={false}
               />
-              <ServiceGrantsRow
-                serverId={agent.serverId}
-                workspaceId={agent.workspaceId}
-                agentId={agent.agentId}
-                agentName={managedAgentLabel(agent)}
-                cloud={agent.machine !== null && isCloudMachine(agent.machine)}
-              />
+              {serviceGrants && (
+                <ServiceGrantsRow
+                  serverId={agent.serverId}
+                  workspaceId={agent.workspaceId}
+                  agentId={agent.agentId}
+                  agentName={managedAgentLabel(agent)}
+                  cloud={agent.machine !== null && isCloudMachine(agent.machine)}
+                />
+              )}
               <SettingRow
                 title="Directory"
                 info={{

@@ -1,6 +1,6 @@
 import { makeAutoObservable } from 'mobx';
 
-export type AgentTab = 'chats' | 'settings';
+export type AgentTab = 'chats' | 'connections' | 'settings';
 
 /**
  * Which tab the open agent is showing, as the room page's tab is kept: one

@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import type { AddressingPolicy } from './switch-servers';
 
 /** A grant giving an agent access to its owner's connection to a service. */
 export const serviceGrantSchema = z.object({
@@ -21,20 +20,3 @@ export type ServiceGrants = z.infer<typeof serviceGrantsSchema>;
 
 /** What a grant change can leave behind: access already handed out, usable for a while. */
 export const serviceGrantWarningSchema = z.object({ warning: z.string().nullable() });
-
-/**
- * Owner-only addressing: the owner, and agents the owner runs. What the grant
- * screens offer when anyone can address an agent with grants.
- */
-export const OWNER_ONLY_POLICY: AddressingPolicy = {
-  rules: [
-    {
-      rooms: '*',
-      room_groups: '*',
-      users: [],
-      agents: [],
-      owner: true,
-      owner_agents: true,
-    },
-  ],
-};

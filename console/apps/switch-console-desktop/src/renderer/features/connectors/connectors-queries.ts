@@ -4,7 +4,7 @@ import { events, rpc } from '@renderer/lib/ipc';
 import type { ServerFeatureFlags } from '@shared/core/feature-flags/feature-flags';
 import { featureFlagsChangedChannel } from '@shared/events/featureFlagEvents';
 
-/** The workspace's catalog, shared with the agent settings' Service access row. */
+/** The workspace's catalog, shared with an agent's Connections tab and Service access row. */
 export const catalogKey = (workspaceId: string) => ['workspace-service-connections', workspaceId];
 const agentsKey = (workspaceId: string, service: string) => [
   'connection-agents',
@@ -57,8 +57,8 @@ export function useWorkspaceServices(workspaceId: string) {
 
 /**
  * Re-read everything a connection, grant or switch change can move: the
- * catalog, who uses each service, the admin's switches, and the agent
- * settings that read the same connections and grants.
+ * catalog, who uses each service, the admin's switches, and the agent pages
+ * that read the same connections and grants.
  */
 export function useReloadConnectors(workspaceId: string): () => Promise<void> {
   const queryClient = useQueryClient();

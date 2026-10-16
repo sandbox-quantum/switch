@@ -71,7 +71,7 @@ export function ConnectionsGrid({
       <DialogContentArea className="space-y-4 pt-0">
         <p className="text-sm text-foreground-muted">
           Connect the services your agents can work with. Each agent uses a service only once you
-          grant it, from the agent's settings.
+          grant it, from the agent's Connections tab.
         </p>
         <SearchInput
           aria-label="Search connections"

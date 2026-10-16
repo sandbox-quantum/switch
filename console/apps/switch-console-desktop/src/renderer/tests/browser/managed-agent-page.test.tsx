@@ -3,7 +3,8 @@
  * header, instructions, General, the server's Advanced configuration for its
  * provider and its sessions. Every edit is pending until the page's save bar
  * saves them together, sending only what changed; a refusal is shown in the
- * server's words.
+ * server's words. Its tabbed titlebar keeps every tab in view beside a long
+ * name.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
@@ -66,7 +67,12 @@ vi.mock(
 vi.mock('@renderer/lib/components/agent-icon-picker', () => ({ AgentIconPicker: () => null }));
 vi.mock('@renderer/lib/modal/modal-provider', () => ({ useShowModal: () => vi.fn() }));
 
+import '@renderer/index.css';
+import { agentTabs } from '@renderer/features/managed-agents/agent-tabs';
 import { ManagedAgentPage } from '@renderer/features/managed-agents/managed-agent-page';
+import { TabbedAgentTitlebar } from '@renderer/features/managed-agents/tabbed-agent-titlebar';
+import { TitlebarBreadcrumb } from '@renderer/lib/components/titlebar/titlebar-breadcrumb';
+import { WorkspaceLayoutContextProvider } from '@renderer/lib/layout/layout-provider';
 
 const AGENT: ManagedAgentView = {
   serverId: 'server-1',
@@ -132,7 +138,7 @@ beforeEach(async () => {
   await act(async () => {
     root.render(
       <QueryClientProvider client={client}>
-        <ManagedAgentPage agent={AGENT} />
+        <ManagedAgentPage agent={AGENT} serviceGrants />
       </QueryClientProvider>
     );
   });
@@ -261,6 +267,7 @@ it('shows where the machine will make the agent’s directory when nothing names
       <QueryClientProvider client={client}>
         <ManagedAgentPage
           key="unplaced"
+          serviceGrants
           agent={{ ...AGENT, definition: { ...AGENT.definition, directory: null } }}
         />
       </QueryClientProvider>
@@ -283,7 +290,7 @@ it('gives an agent on the Switch cloud machine the cloud agent’s service acces
   await act(async () => {
     root.render(
       <QueryClientProvider client={client}>
-        <ManagedAgentPage key="cloud" agent={{ ...AGENT, machine }} />
+        <ManagedAgentPage key="cloud" agent={{ ...AGENT, machine }} serviceGrants />
       </QueryClientProvider>
     );
   });
@@ -292,4 +299,42 @@ it('gives an agent on the Switch cloud machine the cloud agent’s service acces
       'Service access for pm-agent (agent-1 in workspace-1, cloud)'
     )
   );
+});
+
+it('keeps Chats, Connections and Settings in view beside a long name, on every tab', async () => {
+  const tabs = agentTabs(true, undefined);
+  expect(tabs.map((tab) => tab.label)).toEqual(['Chats', 'Connections', 'Settings']);
+  for (const shown of tabs) {
+    const host = document.createElement('div');
+    host.style.width = '900px';
+    document.body.appendChild(host);
+    const titleRoot = createRoot(host);
+    await act(async () =>
+      titleRoot.render(
+        <WorkspaceLayoutContextProvider>
+          <TabbedAgentTitlebar
+            breadcrumb={
+              <TitlebarBreadcrumb crumbs={[{ key: 'agent', label: 'm3-managed-reviewer' }]} />
+            }
+            tab={shown.value}
+            tabs={tabs}
+            onTab={() => {}}
+            rightSlot={null}
+          />
+        </WorkspaceLayoutContextProvider>
+      )
+    );
+    const control = host.querySelector<HTMLElement>('[aria-label="Agent view"]')!;
+    const side = control.parentElement!.parentElement!.getBoundingClientRect();
+    for (const { label } of tabs) {
+      const item = control.querySelector<HTMLElement>(`[aria-label="${label}"]`)!;
+      const box = item.getBoundingClientRect();
+      expect(box.width, `${label} on ${shown.label}`).toBeGreaterThan(0);
+      expect(item.scrollWidth, `${label} on ${shown.label}`).toBeLessThanOrEqual(item.clientWidth);
+      expect(box.right, `${label} on ${shown.label}`).toBeLessThanOrEqual(side.right + 0.5);
+    }
+    expect(host.textContent).toContain('m3-managed-reviewer');
+    act(() => titleRoot.unmount());
+    host.remove();
+  }
 });
