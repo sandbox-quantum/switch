@@ -119,8 +119,11 @@ export type ServiceSkill = { name: string; content: string };
 export type ServiceEndpoint = { endpoint: string; token: string; agentId: string };
 
 /**
- * The agent's grants. A Switch from before service connections answers the
- * route with 404, which is the truth: it grants nothing.
+ * The agent's grants. A Switch without service connections (from before them,
+ * or with their flag off) answers the route with 404, which is the truth: it
+ * grants nothing. A 404 from a Switch that has them on is something else, a
+ * relay or route that did not reach them, and is raised rather than read as
+ * no grants.
  */
 export async function readServiceGrants(
   switchEndpoint: ServiceEndpoint,
@@ -142,14 +145,53 @@ export async function readServiceGrants(
     );
   }
   if (response.status === 404) {
-    await response.body?.cancel();
-    return [];
+    const detail = (await response.text()).slice(0, 300);
+    if (!(await serviceConnectionsOn(switchEndpoint, fetchImpl))) return [];
+    throw new Error(
+      `Switch has service connections on but answered 404 for this agent's service grants: ${detail}`
+    );
   }
   if (!response.ok) {
     await response.body?.cancel();
     throw new Error(`Switch refused this agent's service grants (HTTP ${response.status}).`);
   }
   return grantsResponseSchema.parse(await response.json()).grants;
+}
+
+const featureFlagsSchema = z.object({
+  flags: z.array(z.object({ key: z.string(), enabled: z.boolean() })),
+});
+
+/** Whether Switch reports its service connections flag on. A Switch from before flags has none. */
+async function serviceConnectionsOn(
+  switchEndpoint: ServiceEndpoint,
+  fetchImpl: typeof fetch
+): Promise<boolean> {
+  const url = switchEndpoint.endpoint.replace(/\/$/, '') + '/agents/feature-flags';
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      headers: { Authorization: `Bearer ${switchEndpoint.token}` },
+      redirect: 'error',
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (error) {
+    throw new Error(
+      `Switch answered 404 for this agent's service grants, and its feature flags could not be read to tell why: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  if (response.status === 404) {
+    await response.body?.cancel();
+    return false;
+  }
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(
+      `Switch answered 404 for this agent's service grants, and refused its feature flags (HTTP ${response.status}).`
+    );
+  }
+  const { flags } = featureFlagsSchema.parse(await response.json());
+  return flags.some((flag) => flag.key === 'service_connections' && flag.enabled);
 }
 
 /** The skills of the agent's grants, one per service. */

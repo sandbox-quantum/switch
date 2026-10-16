@@ -487,6 +487,15 @@ describe('what the relay refuses', () => {
 });
 
 describe('forwarding to Switch', () => {
+  it('forwards the feature flags, which name no agent', async () => {
+    await fetch(`${relay.endpoint}/agents/feature-flags`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const forwarded = core.requests.at(-1)!;
+    expect(forwarded.path).toBe('/agents/feature-flags');
+    expect(forwarded.headers['x-switch-agent-id']).toBe(AGENT);
+  });
+
   it('swaps the credential, names the agent, and passes the answer back', async () => {
     const response = await fetch(`${relay.endpoint}/agent-sessions/session-1/activity`, {
       method: 'POST',
