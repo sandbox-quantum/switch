@@ -1,0 +1,542 @@
+{
+  "title": "Switch — core across pods",
+  "description": "switch-core per pod: is the work split, is anything doubled, how hot are the pods and the database. Source: deploy/observability/multi-pod-dashboard.json.",
+  "layout_type": "ordered",
+  "reflow_type": "fixed",
+  "template_variables": [
+    {
+      "name": "service",
+      "prefix": "service",
+      "default": "switch-core"
+    },
+    {
+      "name": "process_id",
+      "prefix": "process_id",
+      "default": "*"
+    }
+  ],
+  "widgets": [
+    {
+      "definition": {
+        "type": "note",
+        "content": "**Is work split across the pods, and is nothing doubled?** Every series is per pod (`process_id`). With two pods, bridges, agents and pool use should split between them and sum to what one pod carried; events in vs out should keep the one-pod ratio. Pick the deployment with `service` (`switch-core` is pilot, `switch-core-dev` is development).",
+        "background_color": "blue",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Bridges running, by pod",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "sum:switch.bridges.running{$service,$process_id} by {process_id}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line",
+            "formulas": [
+              {
+                "formula": "q0"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 2,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agents connected, by pod",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "sum:switch.agents.connected{$service,$process_id} by {process_id}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line",
+            "formulas": [
+              {
+                "formula": "q0"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 2,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Consumers and connectors running, by pod",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "sum:switch.consumers.running{$service,$process_id} by {process_id}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "q1",
+                "query": "sum:switch.connectors.running{$service,$process_id} by {process_id}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line",
+            "formulas": [
+              {
+                "formula": "q0"
+              },
+              {
+                "formula": "q1"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 2,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Platform events in / out",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "sum:switch.bridge.events_in{$service,$process_id}.as_count()"
+              },
+              {
+                "data_source": "metrics",
+                "name": "q1",
+                "query": "sum:switch.bridge.events_out{$service,$process_id}.as_count()"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "bars",
+            "formulas": [
+              {
+                "formula": "q0"
+              },
+              {
+                "formula": "q1"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 5,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Messages sent / delivered",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "sum:switch.messages.sent{$service,$process_id}.as_count()"
+              },
+              {
+                "data_source": "metrics",
+                "name": "q1",
+                "query": "sum:switch.messages.delivered{$service,$process_id}.as_count()"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "bars",
+            "formulas": [
+              {
+                "formula": "q0"
+              },
+              {
+                "formula": "q1"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 5,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Delivery lag (max), by pod",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "max:switch.messages.delivery_lag{$service,$process_id} by {process_id}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line",
+            "formulas": [
+              {
+                "formula": "q0"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 5,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "DB pool in use, by pod",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "max:switch.db.pool.in_use{$service,$process_id} by {process_id}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line",
+            "formulas": [
+              {
+                "formula": "q0"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 8,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "DB pool wait (max), by pod",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "max:switch.db.pool.wait.duration{$service,$process_id} by {process_id}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line",
+            "formulas": [
+              {
+                "formula": "q0"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 8,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "DB server connections",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "max:switch.db.server.connections{$service}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line",
+            "formulas": [
+              {
+                "formula": "q0"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 8,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "CPU (cores), by pod",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "sum:switch.runtime.cpu_seconds{$service,$process_id} by {process_id}.as_rate()"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line",
+            "formulas": [
+              {
+                "formula": "q0"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 11,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Memory RSS, by pod",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "max:switch.runtime.memory_rss{$service,$process_id} by {process_id}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line",
+            "formulas": [
+              {
+                "formula": "q0"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 11,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Event loop lag (max), by pod",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "max:switch.runtime.event_loop_lag{$service,$process_id} by {process_id}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line",
+            "formulas": [
+              {
+                "formula": "q0"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 11,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Bridge errors, by pod",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "sum:switch.bridge.errors{$service,$process_id} by {process_id}.as_count()"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "bars",
+            "formulas": [
+              {
+                "formula": "q0"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 14,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Database transactions",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "sum:switch.db.server.transactions{$service}.as_rate()"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line",
+            "formulas": [
+              {
+                "formula": "q0"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 14,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "DB query time (max), by pod",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "max:switch.db.query.duration{$service,$process_id} by {process_id}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line",
+            "formulas": [
+              {
+                "formula": "q0"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 14,
+        "width": 4,
+        "height": 3
+      }
+    }
+  ]
+}
