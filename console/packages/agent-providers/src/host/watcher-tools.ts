@@ -390,8 +390,8 @@ export class WatcherControl {
 
   /**
    * Start the session a message to this room would start, or confirm the one
-   * placed there, without a message: Console warming a chat while its user
-   * types. Resolves to that session, or null when the agent may not start one.
+   * placed there, without a message: a chat just created or reopened.
+   * Resolves to that session, or null when the agent may not start one.
    * Refused when no watcher is running.
    */
   warm(roomId: string): Promise<string | null> {

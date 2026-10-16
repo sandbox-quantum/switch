@@ -220,12 +220,8 @@ export async function fetchChatMedia(
   };
 }
 
-export async function setChatHidden(
-  server: SwitchServer,
-  roomId: string,
-  hidden: boolean
-): Promise<void> {
-  await call(server, `${room(roomId)}/hidden`, { method: hidden ? 'PUT' : 'DELETE' });
+export async function archiveChat(server: SwitchServer, roomId: string): Promise<void> {
+  await call(server, `${room(roomId)}/archive`, { method: 'POST' });
 }
 
 /** Rename uses the room route: a chat's name is its room's name. */

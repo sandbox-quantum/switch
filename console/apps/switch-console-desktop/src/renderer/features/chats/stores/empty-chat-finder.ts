@@ -36,18 +36,18 @@ export class EmptyChatFinder {
 
     if (chat.lastMessage === null) return true;
 
-    const defaultName = this.defaultChatName(chat);
     const lastMessageFromAgent = chat.agents.some(
       (agent) =>
         chat.lastMessage?.senderName === agent.name ||
         chat.lastMessage?.senderName === agent.displayName
     );
 
-    return chat.name === defaultName && lastMessageFromAgent;
+    return this.hasDefaultName(chat) && lastMessageFromAgent;
   }
 
-  private defaultChatName(chat: ChatSummary): string {
+  /** "New chat" now; "Chat with <agents>" for chats made before that default. */
+  private hasDefaultName(chat: ChatSummary): boolean {
     const agentNames = chat.agents.map((agent) => agent.displayName || agent.name).join(', ');
-    return `Chat with ${agentNames}`;
+    return chat.name === 'New chat' || chat.name === `Chat with ${agentNames}`;
   }
 }

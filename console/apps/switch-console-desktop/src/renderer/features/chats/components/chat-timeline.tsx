@@ -2,9 +2,9 @@ import { format, isToday, isYesterday } from 'date-fns';
 import { CornerUpLeft, Loader2, RotateCw, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { Fragment, type ReactNode } from 'react';
-import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { Button } from '@renderer/lib/ui/button';
+import { cn } from '@renderer/utils/utils';
 import { agentInitials } from '@shared/core/agents/agent-avatar';
 import type { ChatAgent, ChatMessage } from '@shared/core/chats/chats';
 import {
@@ -15,12 +15,19 @@ import {
 } from '@shared/core/chats/chats';
 import { foldTurnEndNotices, placeTurns, type TurnActivity } from '../activity-join';
 import { messageAnchorId, threadChip } from '../chat-threads';
+import { hiddenStopRows } from '../stop-rows';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatTimeline, PendingSend } from '../stores/chat-timeline-store';
 import { chatsStore } from '../stores/chats';
 import { ChatMarkdown } from '../ui/chat-markdown';
 import { FailedIcon, WorkLogRow } from '../ui/work-log';
-import { ChatActivityBlock, ChatRequests, turnEndLabel } from './chat-activity-block';
+import {
+  AgentRow,
+  ChatActivityBlock,
+  ChatRequests,
+  turnEndLabel,
+  turnShown,
+} from './chat-activity-block';
 import { ChatAttachments } from './chat-attachments';
 
 /** Messages more than this far apart start a new dated group. */
@@ -33,9 +40,9 @@ function dayLabel(date: Date): string {
   return format(date, 'd MMM yyyy, HH:mm');
 }
 
-function Separator({ children }: { children: ReactNode }) {
+function Separator({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className="flex items-center gap-3 text-xs text-foreground-passive">
+    <div className={cn('flex items-center gap-3 text-xs text-foreground-passive', className)}>
       <span className="h-px flex-1 bg-border" />
       {children}
       <span className="h-px flex-1 bg-border" />
@@ -153,6 +160,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
     ])
   );
   const liveNotices = liveSessionStartingNotices(timeline.messages, turnAgents);
+  const stopRows = hiddenStopRows(timeline.messages);
   // Open requests whose turn shows under no loaded message still need an answer.
   const shownRequests = new Set(
     [...blocksByAnchor.values()].flatMap((blocks) =>
@@ -160,10 +168,25 @@ export const ChatTimelineView = observer(function ChatTimelineView({
     )
   );
   let previous: Date | null = null;
+  /** The agent whose block the last row belongs to; its next row shows no avatar or name. */
+  let blockAgent: string | null = null;
+  const startsBlock = (agentId: string | null) => {
+    const head = agentId === null || agentId !== blockAgent;
+    blockAgent = agentId;
+    return head;
+  };
+  let isFirstElement = true;
+  const spacing = (isNewBlock: boolean = true): string => {
+    if (isFirstElement) {
+      isFirstElement = false;
+      return '';
+    }
+    return isNewBlock ? 'mt-5' : 'mt-1.5';
+  };
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col">
       {timeline.hasMore && (
-        <div className="flex justify-center">
+        <div className={cn('flex justify-center', spacing())}>
           <Button
             size="sm"
             variant="ghost"
@@ -177,71 +200,78 @@ export const ChatTimelineView = observer(function ChatTimelineView({
       {timeline.messages.map((message) => {
         const notice = isSessionStartingNotice(message);
         if (notice && !liveNotices.has(message.messageId)) return null;
-        if (foldedNotices.has(message.messageId)) return null;
+        if (foldedNotices.has(message.messageId) || stopRows.has(message.messageId)) return null;
         const ended = turnEndNotice(message);
         const sentAt = new Date(message.sentAt);
-        const separator =
-          previous === null || sentAt.getTime() - previous.getTime() > GROUP_GAP_MS ? (
-            <Separator>{dayLabel(sentAt)}</Separator>
-          ) : null;
+        // The conversation's first message gets no separator above it; a later group does.
+        const newGroup =
+          previous === null
+            ? timeline.hasMore
+            : sentAt.getTime() - previous.getTime() > GROUP_GAP_MS;
+        const separator = newGroup ? (
+          <Separator className={spacing()}>{dayLabel(sentAt)}</Separator>
+        ) : null;
         previous = sentAt;
+        if (separator) blockAgent = null;
         const chip = threadChip(message, find);
         const turns = turnsByMessage.get(message.messageId) ?? [];
         const agent = agentOf(message.sender.agentId);
         const mine = message.sender.userId !== null && message.sender.userId === myUserId;
+        const agentLabel = {
+          name: agent ? chatAgentLabel(agent) : message.sender.name,
+          iconUrl: agent?.iconUrl ?? null,
+        };
+        const agentRow = notice || ended !== null || message.sender.kind === 'agent';
+        const head = startsBlock(agentRow ? message.sender.agentId : null);
         return (
           <Fragment key={message.messageId}>
             {separator}
             {notice ? (
-              <div id={messageAnchorId(message.messageId)} className="flex gap-3" role="status">
-                <AgentAvatar
-                  name={agent ? chatAgentLabel(agent) : message.sender.name}
-                  iconUrl={agent?.iconUrl ?? null}
-                  serverId={serverId}
-                  size={28}
-                  className="mt-0.5"
+              <AgentRow
+                id={messageAnchorId(message.messageId)}
+                className={spacing(head)}
+                agent={agentLabel}
+                serverId={serverId}
+                head={head}
+                role="status"
+              >
+                <WorkLogRow
+                  icon={<Loader2 aria-hidden className="size-3.5 animate-spin" />}
+                  label={
+                    agents.length > 1
+                      ? `${message.sender.name} is starting a session…`
+                      : 'Starting a session…'
+                  }
+                  active
                 />
-                <div className="flex min-w-0 flex-1 flex-col pt-0.5">
-                  <WorkLogRow
-                    icon={<Loader2 aria-hidden className="size-3.5 animate-spin" />}
-                    label={
-                      agents.length > 1
-                        ? `${message.sender.name} is starting a session…`
-                        : 'Starting a session…'
-                    }
-                    active
-                  />
-                </div>
-              </div>
+              </AgentRow>
             ) : ended ? (
-              <div id={messageAnchorId(message.messageId)} className="flex gap-3" role="status">
-                <AgentAvatar
-                  name={agent ? chatAgentLabel(agent) : message.sender.name}
-                  iconUrl={agent?.iconUrl ?? null}
-                  serverId={serverId}
-                  size={28}
-                  className="mt-0.5"
+              <AgentRow
+                id={messageAnchorId(message.messageId)}
+                className={spacing(head)}
+                agent={agentLabel}
+                serverId={serverId}
+                head={head}
+                role="status"
+              >
+                <WorkLogRow
+                  icon={<FailedIcon />}
+                  label={turnEndLabel(
+                    ended.outcome === 'interrupted'
+                      ? 'Stopped'
+                      : ended.outcome === 'failed'
+                        ? 'The turn ended with an error'
+                        : 'Finished without replying',
+                    ended.reason
+                  )}
+                  title={ended.reason ?? undefined}
+                  tone={ended.outcome === 'completed' ? 'passive' : 'failed'}
                 />
-                <div className="flex min-w-0 flex-1 flex-col pt-0.5">
-                  <WorkLogRow
-                    icon={<FailedIcon />}
-                    label={turnEndLabel(
-                      ended.outcome === 'interrupted'
-                        ? 'Stopped'
-                        : ended.outcome === 'failed'
-                          ? 'The turn ended with an error'
-                          : 'Finished without replying',
-                      ended.reason
-                    )}
-                    title={ended.reason ?? undefined}
-                    tone={ended.outcome === 'completed' ? 'passive' : 'failed'}
-                  />
-                </div>
-              </div>
+              </AgentRow>
             ) : message.sender.kind === 'human' && mine ? (
               <div
                 id={messageAnchorId(message.messageId)}
-                className="group/row flex flex-col items-end gap-1"
+                className={cn('group/row flex flex-col items-end gap-1', spacing())}
               >
                 {chip && <ThreadChipButton chip={chip} />}
                 <div className="flex max-w-[85%] items-start gap-1">
@@ -261,7 +291,10 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 </span>
               </div>
             ) : message.sender.kind === 'human' ? (
-              <div id={messageAnchorId(message.messageId)} className="group/row flex gap-3">
+              <div
+                id={messageAnchorId(message.messageId)}
+                className={cn('group/row flex gap-3', spacing())}
+              >
                 <PersonAvatar name={message.sender.name} />
                 <div className="flex max-w-[85%] min-w-0 flex-col items-start gap-1">
                   {chip && <ThreadChipButton chip={chip} />}
@@ -288,21 +321,16 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 <ReplyButton onReply={() => onReply(message)} />
               </div>
             ) : message.sender.kind === 'agent' ? (
-              <div id={messageAnchorId(message.messageId)} className="group/row flex gap-3">
-                <AgentAvatar
-                  name={agent ? chatAgentLabel(agent) : message.sender.name}
-                  iconUrl={agent?.iconUrl ?? null}
-                  serverId={serverId}
-                  size={28}
-                  className="mt-0.5"
-                />
-                <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <AgentRow
+                id={messageAnchorId(message.messageId)}
+                className={cn('group/row', spacing(head))}
+                agent={agentLabel}
+                serverId={serverId}
+                head={head}
+                trailing={<ReplyButton onReply={() => onReply(message)} />}
+              >
+                <div className="flex flex-col gap-1">
                   {chip && <ThreadChipButton chip={chip} />}
-                  {agents.length > 1 && (
-                    <span className="text-xs font-medium text-foreground-muted">
-                      {message.sender.name}
-                    </span>
-                  )}
                   <div className="text-sm leading-relaxed">
                     <ChatMarkdown>{message.body}</ChatMarkdown>
                   </div>
@@ -312,18 +340,18 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                     attachments={message.attachments}
                   />
                 </div>
-                <ReplyButton onReply={() => onReply(message)} />
-              </div>
+              </AgentRow>
             ) : (
               <p
                 id={messageAnchorId(message.messageId)}
-                className="text-center text-xs text-foreground-muted"
+                className={cn('text-center text-xs text-foreground-muted', spacing())}
               >
                 {message.body}
               </p>
             )}
             {(blocksByAnchor.get(message.messageId) ?? []).map(({ activity, turn }) => {
               const turnAgent = agentOf(activity.agentId);
+              const head = turnShown(activity, turn) && startsBlock(activity.agentId);
               return (
                 <ChatActivityBlock
                   serverId={serverId}
@@ -331,10 +359,12 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                   activity={activity}
                   turn={turn}
                   endReason={endReasons.get(`${activity.agentId}:${turn.turnId}`) ?? null}
+                  head={head}
                   agent={{
                     name: turnAgent ? chatAgentLabel(turnAgent) : activity.agentId,
                     iconUrl: turnAgent?.iconUrl ?? null,
                   }}
+                  className={spacing(head)}
                 />
               );
             })}
@@ -347,23 +377,30 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         );
         if (!requests.length) return null;
         const agent = agentOf(activity.agentId);
+        const head = startsBlock(activity.agentId);
         return (
-          <div key={`requests:${activity.agentId}`} className="flex gap-3">
-            <AgentAvatar
-              name={agent ? chatAgentLabel(agent) : activity.agentId}
-              iconUrl={agent?.iconUrl ?? null}
-              serverId={serverId}
-              size={28}
-              className="mt-0.5"
-            />
-            <div className="flex min-w-0 flex-1 flex-col pt-0.5">
-              <ChatRequests activity={activity} requests={requests} />
-            </div>
-          </div>
+          <AgentRow
+            key={`requests:${activity.agentId}`}
+            agent={{
+              name: agent ? chatAgentLabel(agent) : activity.agentId,
+              iconUrl: agent?.iconUrl ?? null,
+            }}
+            serverId={serverId}
+            head={head}
+            className={spacing(head)}
+          >
+            <ChatRequests activity={activity} requests={requests} />
+          </AgentRow>
         );
       })}
       {timeline.pending.map((send) => (
-        <PendingBubble key={send.requestId} timeline={timeline} send={send} find={find} />
+        <PendingBubble
+          key={send.requestId}
+          timeline={timeline}
+          send={send}
+          find={find}
+          className={spacing()}
+        />
       ))}
     </div>
   );
@@ -373,16 +410,21 @@ const PendingBubble = observer(function PendingBubble({
   timeline,
   send,
   find,
+  className,
 }: {
   timeline: ChatTimeline;
   send: PendingSend;
   find: (messageId: string) => ChatMessage | undefined;
+  className?: string;
 }) {
   const chip = send.threadRootId
     ? threadChip({ threadRootId: send.threadRootId, messageId: send.requestId }, find)
     : null;
   return (
-    <div className="flex flex-col items-end gap-1" aria-busy={send.state === 'sending'}>
+    <div
+      className={cn('flex flex-col items-end gap-1', className)}
+      aria-busy={send.state === 'sending'}
+    >
       {chip && <ThreadChipButton chip={chip} />}
       <div className="max-w-[85%] rounded-2xl bg-background-1 px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap opacity-70">
         {send.body}

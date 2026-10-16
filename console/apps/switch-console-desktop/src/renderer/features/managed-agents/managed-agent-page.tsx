@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { LocalDirectorySelector } from '@renderer/features/locations/components/add-agent-modal/local-directory-selector';
 import type {
   FormState,
@@ -10,6 +10,7 @@ import type { ModelCatalogueResult } from '@renderer/features/locations/componen
 import {
   AgentEditsProvider,
   useAgentEdit,
+  useAgentEdits,
 } from '@renderer/features/locations/components/main-panel/agent-edits';
 import { AgentInstructionsField } from '@renderer/features/locations/components/main-panel/agent-instructions-section';
 import { AgentHeaderLayout } from '@renderer/features/locations/components/main-panel/agent-page-header';
@@ -26,8 +27,11 @@ import { ServiceGrantsRow } from '@renderer/features/locations/components/settin
 import { SettingRow } from '@renderer/features/locations/components/settings-view/sections/setting-row';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
+import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { appState } from '@renderer/lib/stores/app-state';
 import { workspaceAgentsQueryKey } from '@renderer/lib/stores/use-workspace-agents';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
@@ -100,6 +104,7 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
   const edit = editOf(agent, schema, saved, draft);
   const [error, setError] = useState<string | null>(null);
   const [instructionsExpanded, setInstructionsExpanded] = useState(false);
+  const chatsOn = useFeatureFlags(agent.serverId).agent_chats;
 
   const setValue = <K extends keyof Edits['values']>(key: K, value: Draft[K]) =>
     setEdits((current) => ({ ...current, values: { ...current.values, [key]: value } }));
@@ -158,6 +163,7 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
   };
 
   useAgentEdit({ id: 'managed-agent', order: 0, dirty: !editIsEmpty(edit), save, revert });
+  useConfirmLeave(agent);
 
   const catalogue = useHostCatalogue(agent, machines);
   const title = draft.displayName.trim() || agent.name;
@@ -165,6 +171,15 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
 
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col">
+      <AgentSaveBar />
+      {error && (
+        <p
+          role="alert"
+          className="shrink-0 border-b border-border px-8 py-3 text-sm text-foreground-destructive"
+        >
+          {error}
+        </p>
+      )}
       <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[900px] flex-col gap-10 px-8 pb-20">
           <AgentHeaderLayout
@@ -210,9 +225,11 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
             }
             actions={
               <>
-                <WithReason reason={SESSIONS_START_WHEN_ADDRESSED}>
-                  <Button disabled>New Session</Button>
-                </WithReason>
+                {!chatsOn && (
+                  <WithReason reason={SESSIONS_START_WHEN_ADDRESSED}>
+                    <Button disabled>New Session</Button>
+                  </WithReason>
+                )}
                 <Button
                   variant="outline"
                   onClick={() =>
@@ -370,17 +387,51 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
           </section>
         </div>
       </div>
-      {error && (
-        <p
-          role="alert"
-          className="shrink-0 border-t border-border px-8 pt-3 text-sm text-foreground-destructive"
-        >
-          {error}
-        </p>
-      )}
-      <AgentSaveBar />
     </div>
   );
+}
+
+/**
+ * While the page has unsaved changes, leaving it — another screen, another
+ * agent, a chat beside it, or closing the window — asks first.
+ */
+function useConfirmLeave(agent: ManagedAgentView) {
+  const { dirty, revertAll } = useAgentEdits();
+  const confirm = useShowModal('confirmActionModal');
+  const { section } = useParams('managedAgent').params;
+  const { serverId, agentId } = agent;
+  useEffect(() => {
+    if (!dirty) return;
+    appState.navigation.setLeaveGuard((viewId, params) => {
+      const target = (params ?? {}) as { serverId?: string; agentId?: string; section?: string };
+      if (
+        viewId === 'managedAgent' &&
+        target.serverId === serverId &&
+        target.agentId === agentId &&
+        target.section === section
+      )
+        return Promise.resolve(true);
+      return new Promise((resolve) =>
+        confirm({
+          title: 'You have unsaved changes',
+          description: "If you leave now, your changes to this agent's settings will be lost.",
+          cancelLabel: 'Stay',
+          confirmLabel: 'Discard and leave',
+          onSuccess: () => {
+            revertAll();
+            resolve(true);
+          },
+          onClose: () => resolve(false),
+        })
+      );
+    });
+    const refuseUnload = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener('beforeunload', refuseUnload);
+    return () => {
+      appState.navigation.setLeaveGuard(null);
+      window.removeEventListener('beforeunload', refuseUnload);
+    };
+  }, [dirty, revertAll, confirm, serverId, agentId, section]);
 }
 
 /**

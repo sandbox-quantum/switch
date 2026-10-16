@@ -8,8 +8,8 @@ export type ConsoleChatRoute =
   | { viewId: 'chat'; params: { serverId: string; roomId: string; agentId: string } };
 
 /**
- * Where a 1-1 Console chat opens: on its agent's Chats tab when the agent is a
- * managed agent, which is the only agent page with that tab, else on its own.
+ * Where a 1-1 Console chat opens: on its agent's page when the agent is a
+ * managed agent, which is the only agent page with chats, else on its own.
  */
 export function consoleChatRoute(
   serverId: string,

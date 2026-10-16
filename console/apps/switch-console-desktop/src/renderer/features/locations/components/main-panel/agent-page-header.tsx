@@ -2,7 +2,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
-import { agentTabStore } from '@renderer/features/managed-agents/agent-tab-store';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
@@ -58,7 +57,7 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const switchAgentId = agent?.switchAgentId ?? null;
-  // The Chats tab is on a managed agent's page only.
+  // A managed agent's page is where its chats are.
   const managedAgents = useManagedAgents(agent?.serverId ?? null);
   const chatsEnabled = useFeatureFlags(agent?.serverId).agent_chats;
   const chatsTab =
@@ -129,7 +128,6 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
                 const serverId = agent.serverId as string;
                 const switchAgentId = agent.switchAgentId as string;
                 if (chatsTab) {
-                  agentTabStore.setTab(switchAgentId, 'chats');
                   navigate('managedAgent', { serverId, agentId: switchAgentId, name: title });
                   return;
                 }

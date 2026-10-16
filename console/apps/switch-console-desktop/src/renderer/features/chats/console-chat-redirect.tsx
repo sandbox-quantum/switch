@@ -1,6 +1,5 @@
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
-import { agentTabStore } from '@renderer/features/managed-agents/agent-tab-store';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { isConsoleDirectChatSummary } from '@renderer/features/switch-servers/room-filters';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
@@ -36,10 +35,8 @@ export const ConsoleChatRedirect = observer(function ConsoleChatRedirect({
         entry.viewId === 'room' &&
         (entry.params as { roomId?: string }).roomId === roomId
     );
-    if (route.viewId === 'managedAgent') {
-      agentTabStore.setTab(agent.id, 'chats');
-      appState.navigation.navigate('managedAgent', route.params);
-    } else appState.navigation.navigate('chat', route.params);
+    if (route.viewId === 'managedAgent') appState.navigation.navigate('managedAgent', route.params);
+    else appState.navigation.navigate('chat', route.params);
   }, [enabled, serverId, roomId, agent, isManaged, managed.isLoading]);
 
   return null;

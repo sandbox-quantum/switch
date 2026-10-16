@@ -290,7 +290,7 @@ async def test_several_agents_make_a_private_channel_with_all_of_them(
     assert chat["channelType"] == "channel_private"
     assert chat["bridgeType"] is None
     assert sorted(a["id"] for a in chat["agents"]) == sorted([helper.id, other.id])
-    assert chat["name"] == "Chat with helper, other"
+    assert chat["name"] == "New chat"
 
     async with chats.factory() as session:
         clients = set(await RoomStore().get_client_ids(session, chat["roomId"]))

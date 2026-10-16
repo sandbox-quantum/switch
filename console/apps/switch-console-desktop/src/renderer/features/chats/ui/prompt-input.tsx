@@ -145,9 +145,10 @@ export function PromptInputButton({
 export type PromptInputStatus = 'idle' | 'sending' | 'running';
 
 /**
- * Send while idle, a spinner while a send is in flight, and Stop while the agent
- * is running. A Stop that cannot be honoured stays visible but disabled, with
- * the reason on hover — it is kept focusable so the tooltip can still be read.
+ * Send while idle, a spinner while a send is in flight, and a Stop icon in the
+ * same round button while the agent is running. A Stop that cannot be honoured
+ * stays visible but disabled, with the reason on hover — it is kept focusable so
+ * the tooltip can still be read.
  */
 export function PromptInputSubmit({
   status,
@@ -162,28 +163,29 @@ export function PromptInputSubmit({
   disabled?: boolean;
   className?: string;
 }) {
+  const shape =
+    'rounded-xl border-none bg-(--composer-send-bg) text-(--composer-send-fg) hover:bg-(--composer-send-bg-hover) hover:text-(--composer-send-fg) active:bg-(--composer-send-bg-active) disabled:opacity-50';
   if (status === 'running') {
     const reason = stopDisabledReason ?? null;
-    const stop = (
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className={cn('gap-1.5', className)}
-        disabled={reason !== null || disabled || !onStop}
-        focusableWhenDisabled
-        title={reason ?? undefined}
-        onClick={onStop}
-      >
-        <SquareIcon className="size-3 fill-current" />
-        Stop
-      </Button>
-    );
-    if (reason === null) return stop;
     return (
       <Tooltip>
-        <TooltipTrigger render={stop} />
-        <TooltipContent>{reason}</TooltipContent>
+        <TooltipTrigger
+          render={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className={cn(shape, className)}
+              disabled={reason !== null || disabled || !onStop}
+              focusableWhenDisabled
+              aria-label="Stop reply"
+              onClick={onStop}
+            >
+              <SquareIcon className="size-3 fill-current" />
+            </Button>
+          }
+        />
+        <TooltipContent>{reason ?? 'Stop'}</TooltipContent>
       </Tooltip>
     );
   }
@@ -194,10 +196,7 @@ export function PromptInputSubmit({
       type="submit"
       variant="ghost"
       size="icon-sm"
-      className={cn(
-        'rounded-xl border-none bg-(--composer-send-bg) text-(--composer-send-fg) hover:bg-(--composer-send-bg-hover) active:bg-(--composer-send-bg-active) disabled:opacity-50',
-        className
-      )}
+      className={cn(shape, className)}
       disabled={sending || disabled}
       aria-label={sending ? 'Sending' : 'Send'}
       title={sending ? 'Sending' : 'Send'}

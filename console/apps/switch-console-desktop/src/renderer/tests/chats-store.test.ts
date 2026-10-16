@@ -7,6 +7,12 @@ import {
 } from '@renderer/features/chats/stores/chats-store';
 import type { ChatMessage, ChatSummary } from '@shared/core/chats/chats';
 
+vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
+  switchRoomsStore: {
+    refreshRoomState: vi.fn(async () => {}),
+  },
+}));
+
 function summary(roomId: string, seq: number): ChatSummary {
   return {
     roomId,
@@ -63,6 +69,8 @@ function setup(
     list: vi.fn(list),
     identity,
     timeline: () => timeline as TimelineApi,
+    archive: vi.fn(async () => {}),
+    delete: vi.fn(async () => {}),
   };
   const store = new ChatsStore(api, events);
   return {
@@ -95,16 +103,35 @@ describe('ChatsStore', () => {
   });
 
   it('brings a hidden chat back when a message arrives in it', async () => {
-    let chats = [summary('r1', 1), summary('r2', 1)];
+    let chats = [summary('r1', 1)];
     const { store, api, emit } = setup(async () => chats);
     await store.connect('s1');
-    store.hide('r2');
     expect(store.chat('r2')).toBeUndefined();
 
     chats = [summary('r1', 1), summary('r2', 2)];
     emit(message('r2', 2));
     await vi.waitFor(() => expect(store.chat('r2')?.lastMessage?.seq).toBe(2));
     expect(api.list).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['archive', 'delete'] as const)(
+    'drops a chat once the server agrees to %s it',
+    async (op) => {
+      const { store, api } = setup(async () => [summary('r1', 1), summary('r2', 1)]);
+      await store.connect('s1');
+      await store[op]('s1', 'r2');
+      expect(api[op]).toHaveBeenCalledWith('s1', 'r2');
+      expect(store.chat('r2')).toBeUndefined();
+      expect(store.chat('r1')).toBeDefined();
+    }
+  );
+
+  it.each(['archive', 'delete'] as const)('keeps a chat the server refuses to %s', async (op) => {
+    const { store, api } = setup(async () => [summary('r1', 1)]);
+    await store.connect('s1');
+    vi.mocked(api[op]).mockRejectedValueOnce(new Error('Not authorized'));
+    await expect(store[op]('s1', 'r1')).rejects.toThrow('Not authorized');
+    expect(store.chat('r1')).toBeDefined();
   });
 
   it('does not relist for a room the person lost', async () => {

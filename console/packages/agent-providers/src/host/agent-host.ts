@@ -53,8 +53,8 @@ const assignmentSchema = z.strictObject({
 });
 
 /**
- * A session started for a room before any message reached it (Console warming
- * a chat while its user types). It has no sequence: nothing was delivered.
+ * A session started for a room before any message reached it (a chat just
+ * created or reopened). It has no sequence: nothing was delivered.
  */
 const warmedSchema = z.strictObject({
   warmed: z.literal(true),

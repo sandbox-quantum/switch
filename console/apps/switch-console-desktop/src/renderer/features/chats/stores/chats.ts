@@ -27,6 +27,8 @@ export const chatsStore = new ChatsStore(
       send: (roomId, input) => rpc.chats.send({ serverId, roomId, ...input }),
       newId: () => crypto.randomUUID(),
     }),
+    archive: (serverId, roomId) => rpc.chats.archive(serverId, roomId),
+    delete: (serverId, roomId) => rpc.chats.delete(serverId, roomId),
   },
   chatsEventsFrom(events)
 );

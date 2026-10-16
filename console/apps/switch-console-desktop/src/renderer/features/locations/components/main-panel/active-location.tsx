@@ -30,6 +30,7 @@ export const ActiveLocation = observer(function ActiveLocation() {
   return (
     <AgentEditsProvider>
       <div className="flex min-h-0 w-full flex-1 flex-col">
+        <AgentSaveBar />
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           <div className="mx-auto flex w-full max-w-[900px] flex-col gap-10 px-8 pb-20">
             <AgentPageHeader />
@@ -38,9 +39,6 @@ export const ActiveLocation = observer(function ActiveLocation() {
             <SessionList />
           </div>
         </div>
-        {/* Outside the scroll area: an edit made at the top of the page should
-            not need scrolling to the bottom before it can be saved. */}
-        <AgentSaveBar />
       </div>
     </AgentEditsProvider>
   );

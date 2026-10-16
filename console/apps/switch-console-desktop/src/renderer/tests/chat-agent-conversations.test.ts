@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { agentConversations } from '@renderer/features/chats/agent-conversations';
+import {
+  agentConversations,
+  byLatestDirectChat,
+} from '@renderer/features/chats/agent-conversations';
 import type { ChatSummary } from '@shared/core/chats/chats';
 import type { RemoteAgentRoom } from '@shared/core/switch-servers/switch-servers';
 
@@ -65,5 +68,46 @@ describe('agentConversations', () => {
       { roomId: 'team', roomName: 'team', archived: false, status: 'live', roomRole: null },
       { roomId: 'group', roomName: 'Try me' },
     ]);
+  });
+});
+
+describe('byLatestDirectChat', () => {
+  const agents = ['alpha', 'beta', 'gamma', 'delta'].map((agentId) => ({ agentId }));
+  const chat = (roomId: string, agentId: string, sentAt: string | null) =>
+    summary({
+      roomId,
+      agents: [agent(agentId, agentId)],
+      lastMessage: sentAt ? { seq: 1, sentAt, preview: '', senderName: 'x' } : null,
+    });
+  const ids = (list: { agentId: string }[]) => list.map((each) => each.agentId);
+
+  it('puts the newest chat first and agents with no chat after, in their order', () => {
+    const chats = [
+      chat('g1', 'gamma', '2026-01-01T00:00:00Z'),
+      chat('g2', 'gamma', '2026-01-03T00:00:00Z'),
+      chat('d1', 'delta', '2026-01-02T00:00:00Z'),
+      chat('b1', 'beta', null),
+    ];
+    expect(ids(byLatestDirectChat(agents, chats))).toEqual(['gamma', 'delta', 'alpha', 'beta']);
+  });
+
+  it('ignores chats that are not 1-1 Console chats', () => {
+    const pair = summary({
+      roomId: 'pair',
+      agents: [agent('delta', 'delta'), agent('beta', 'beta')],
+      lastMessage: { seq: 1, sentAt: '2026-01-05T00:00:00Z', preview: '', senderName: 'x' },
+    });
+    const slack = { ...chat('s', 'gamma', '2026-01-05T00:00:00Z'), bridgeType: 'slack' };
+    expect(ids(byLatestDirectChat(agents, [pair, slack]))).toEqual(ids(agents));
+  });
+
+  it('keeps the given order on a tie', () => {
+    const at = '2026-01-01T00:00:00Z';
+    const chats = [chat('d', 'delta', at), chat('b', 'beta', at)];
+    expect(ids(byLatestDirectChat(agents, chats))).toEqual(['beta', 'delta', 'alpha', 'gamma']);
+  });
+
+  it('leaves the order unchanged with no chats', () => {
+    expect(ids(byLatestDirectChat(agents, null))).toEqual(ids(agents));
   });
 });

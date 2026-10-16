@@ -469,7 +469,7 @@ describe('runController', () => {
     expect(await running).toBe('stopped');
   });
 
-  it('warms the agent host for a room when Switch says someone is typing, and only warns when it cannot', async () => {
+  it('warms the agent host for a room when Switch asks, and only warns when it cannot', async () => {
     const warnings: string[] = [];
     core.setAssignment({ revision: 1, agents: [agent(1)] });
     running = runController(

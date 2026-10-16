@@ -2,16 +2,14 @@ import { ChevronDown, Minimize2, Plus, RotateCcw, RotateCw, X } from 'lucide-rea
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { isEditableTarget } from '@renderer/lib/hooks/use-arrow-key-navigation';
-import { rpc } from '@renderer/lib/ipc';
 import { modalStore } from '@renderer/lib/modal/modal-store';
 import { Button } from '@renderer/lib/ui/button';
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { type ChatAgent, type ChatMessage, chatAgentLabel } from '@shared/core/chats/chats';
 import { snippetOf } from '../chat-threads';
-import { agentChatsFlag } from '../stores/agent-chats-flag';
+import { isInterruptAck } from '../stop-rows';
 import type { AgentActivity, ControlRequest } from '../stores/chat-activity-store';
 import type { ChatFile, ChatTimeline } from '../stores/chat-timeline-store';
-import { createChatWarmer } from '../stores/chat-warmer';
 import { chatTitler } from '../stores/chats';
 import {
   PromptInput,
@@ -32,12 +30,6 @@ async function toBase64(file: File): Promise<string> {
 function chatFile(file: File): ChatFile {
   return { name: file.name, type: file.type, size: file.size, read: () => toBase64(file) };
 }
-
-/** Starts the agent's session while its user types, so the first message does not wait for it. */
-const warmChat = createChatWarmer(
-  (serverId, agentId, roomId) => rpc.chats.warm({ serverId, agentId, roomId }),
-  Date.now
-);
 
 /** Drafts by chat, so a draft outlives navigating away. */
 const drafts = new Map<string, string>();
@@ -82,6 +74,14 @@ const ControlStatus = observer(function ControlStatus({
           : undefined;
         const failed = control.state === 'failed';
         const unknown = control.state === 'unknown';
+        // The turn's "Stopped" row says a Stop worked; only its failures show here.
+        if (
+          control.command === 'interrupt' &&
+          !failed &&
+          !unknown &&
+          (!reply || isInterruptAck(reply))
+        )
+          return null;
         return (
           <div
             key={control.requestId}
@@ -286,8 +286,6 @@ export const ChatComposer = observer(function ChatComposer({
               value={draft}
               disabled={disabled !== null}
               onChange={(event) => {
-                if (!draft && event.target.value && agent && agents.length === 1)
-                  if (agentChatsFlag(serverId)) void warmChat(serverId, agent.id, timeline.roomId);
                 setDraft(event.target.value);
               }}
             />

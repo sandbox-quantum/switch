@@ -37,6 +37,7 @@ export const ChatRow = observer(function ChatRow({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const busy = chatBusy(serverId, chat);
+  const actions = chatActions(serverId, chat);
   return (
     <SidebarMenuRow className="group/row justify-between" isActive={isActive} onClick={onOpen}>
       <div className="flex h-6 min-w-0 flex-1 items-center gap-1">
@@ -57,20 +58,22 @@ export const ChatRow = observer(function ChatRow({
             ) : null}
           </span>
         )}
-        <DropdownMenu onOpenChange={setMenuOpen}>
-          <DropdownMenuTrigger
-            className={`${menuOpen ? 'flex' : 'hidden group-hover/row:flex'} size-6 items-center justify-center rounded-md text-foreground-tertiary-muted hover:bg-background-tertiary-2`}
-            aria-label={`Actions for ${chat.name}`}
-            onMouseDown={(event) => event.preventDefault()}
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <MoreHorizontal className="size-3.5" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <ChatActionItems actions={chatActions(serverId, chat)} />
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {actions.length > 0 && (
+          <DropdownMenu onOpenChange={setMenuOpen}>
+            <DropdownMenuTrigger
+              className={`${menuOpen ? 'flex' : 'hidden group-hover/row:flex'} size-6 items-center justify-center rounded-md text-foreground-tertiary-muted hover:bg-background-tertiary-2`}
+              aria-label={`Actions for ${chat.name}`}
+              onMouseDown={(event) => event.preventDefault()}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <MoreHorizontal className="size-3.5" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <ChatActionItems actions={actions} />
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
     </SidebarMenuRow>
   );

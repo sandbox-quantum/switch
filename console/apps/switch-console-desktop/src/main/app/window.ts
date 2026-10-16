@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, dialog } from 'electron';
 import appIcon from '@/assets/images/switch-console/icon-dock.png?asset';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
@@ -85,6 +85,20 @@ export function createMainWindow(): BrowserWindow {
     if (typeof mainWindow?.setWindowButtonVisibility === 'function') {
       mainWindow.setWindowButtonVisibility(true);
     }
+  });
+
+  // The renderer refuses an unload while a screen has unsaved changes; the
+  // person decides here, since a page cannot show its own dialog during unload.
+  mainWindow.webContents.on('will-prevent-unload', (event) => {
+    const choice = dialog.showMessageBoxSync(mainWindow!, {
+      type: 'question',
+      message: 'You have unsaved changes',
+      detail: 'If you leave now, your unsaved changes will be lost.',
+      buttons: ['Stay', 'Discard and leave'],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    if (choice === 1) event.preventDefault();
   });
 
   // Cleanup reference on close

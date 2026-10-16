@@ -615,7 +615,7 @@ export async function runController(
     });
   };
 
-  /** A hint from someone typing to the agent: a failure costs only the head start. */
+  /** A hint that a chat with the agent was created or reopened: a failure costs only the head start. */
   const warmAgent = async (agentId: string, roomId: string): Promise<void> => {
     try {
       await runtime.warm(agentId, roomId);

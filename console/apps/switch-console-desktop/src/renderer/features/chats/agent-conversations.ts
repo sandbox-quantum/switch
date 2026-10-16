@@ -21,3 +21,24 @@ export function agentConversations(
   const rooms = [...listed, ...unlisted].sort((a, b) => a.roomName.localeCompare(b.roomName));
   return { direct, rooms };
 }
+
+/**
+ * Agents by their newest 1-1 Console chat message, newest first. Agents with
+ * no such chat, and ties, keep the order they came in. No chats (flag off or
+ * not loaded) leaves the order as it is.
+ */
+export function byLatestDirectChat<T extends { agentId: string }>(
+  agents: readonly T[],
+  chats: Iterable<ChatSummary> | null
+): T[] {
+  if (chats === null) return [...agents];
+  const latest = new Map<string, string>();
+  for (const chat of chats) {
+    if (!chat.lastMessage || !isConsoleDirectChatSummary(chat)) continue;
+    const id = chat.agents[0].id;
+    if ((latest.get(id) ?? '') < chat.lastMessage.sentAt) latest.set(id, chat.lastMessage.sentAt);
+  }
+  return [...agents].sort((a, b) =>
+    (latest.get(b.agentId) ?? '').localeCompare(latest.get(a.agentId) ?? '')
+  );
+}

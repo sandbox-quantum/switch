@@ -21,8 +21,9 @@ of its agents' watchers exactly the stream it would have had from Switch:
 - `agent.session_command {agent_id, room_id, command}`: an in-room command
   (`!reset`, `!compact`, `!interrupt`, a Stop press) for the session working in
   `room_id`, which the controller routes. `command` is today's frame.
-- `agent.warm {agent_id, room_id}`: someone is typing to the agent in
-  `room_id`; start the session a message there would start. A hint only.
+- `agent.warm {agent_id, room_id}`: a chat with the agent was just created
+  or reopened as `room_id`; start the session a message there would start. A
+  hint only.
 - `agent.approval_outcome {agent_id, outcome}`.
 - `agent.rooms {agent_id, rooms}`: its room membership changed.
 - `agent.detached {agent_id, reason}`: `unassigned` or `deleted`.

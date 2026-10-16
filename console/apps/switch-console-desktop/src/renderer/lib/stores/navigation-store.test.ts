@@ -77,3 +77,48 @@ describe('NavigationStore.restoreSnapshot', () => {
     expect(store.currentViewId).toBe('home');
   });
 });
+
+describe('NavigationStore leave guard', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('navigates at once when no guard is set', () => {
+    const store = buildStore();
+    store.navigate('location', { locationId: 'p1' });
+    expect(store.currentViewId).toBe('location');
+  });
+
+  it('holds a navigation until the guard lets it through', async () => {
+    const store = buildStore();
+    let answer!: (ok: boolean) => void;
+    const guard = vi.fn(() => new Promise<boolean>((resolve) => (answer = resolve)));
+    store.setLeaveGuard(guard);
+    store.navigate('location', { locationId: 'p1' });
+    expect(guard).toHaveBeenCalledWith('location', { locationId: 'p1' });
+    expect(store.currentViewId).toBe('home');
+    answer(true);
+    await vi.waitFor(() => expect(store.currentViewId).toBe('location'));
+  });
+
+  it('stays when the guard refuses', async () => {
+    const store = buildStore();
+    store.setLeaveGuard(() => Promise.resolve(false));
+    store.navigate('location', { locationId: 'p1' });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.currentViewId).toBe('home');
+  });
+
+  it("guards a change to the current view's params, and not to another view's", async () => {
+    const store = buildStore();
+    store.navigate('location', { locationId: 'p1' });
+    store.setLeaveGuard(() => Promise.resolve(false));
+    store.updateViewParams('location', { locationId: 'p2' });
+    store.updateViewParams('session', { sessionId: 's1' } as never);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.viewParamsStore.location).toEqual({ locationId: 'p1' });
+    expect(store.viewParamsStore.session).toEqual({ sessionId: 's1' });
+  });
+});
