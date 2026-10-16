@@ -42,8 +42,8 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
   /** Further settings for this kind of agent, after the common ones. */
   children: ReactNode;
 }) {
-  // Sessions, permissions and addressing are set once and rarely revisited, so
-  // they start folded — the identity fields above are what the dialog is for.
+  // Permissions and addressing are set once and rarely revisited, so they start
+  // folded — the identity fields above are what the dialog is for.
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
@@ -144,7 +144,7 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
         <DisclosureRow
           open={settingsOpen}
           title="Settings"
-          meta="Sessions, permissions, who can address it"
+          meta="Agent permissions and who can address it"
           onToggle={() => setSettingsOpen((v) => !v)}
         />
         {settingsOpen && (
