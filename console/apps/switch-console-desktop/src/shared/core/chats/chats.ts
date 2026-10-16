@@ -176,6 +176,8 @@ export function liveSessionStartingNotices(
 
 /** What the host posts for a turn that ended without the agent posting, then why it ended. */
 export const UNPOSTED_REPLY_MESSAGE = 'I finished without replying.';
+export const TURN_FAILED_MESSAGE = 'My turn failed before I could reply';
+export const TURN_TOO_LARGE_ADVICE = 'Use !reset to start a fresh session';
 export const TURN_FAILED_PHRASE = 'The turn failed';
 export const TURN_INTERRUPTED_PHRASE = 'The turn was interrupted';
 
@@ -187,7 +189,19 @@ export type TurnEndNotice = {
 /** The host's notice of a turn that ended without a reply, or null for any other message. */
 export function turnEndNotice(message: ChatMessage): TurnEndNotice | null {
   const body = message.body.trim();
-  if (message.sender.kind !== 'agent' || !body.startsWith(UNPOSTED_REPLY_MESSAGE)) return null;
+  if (message.sender.kind !== 'agent') return null;
+  if (body === `${TURN_FAILED_MESSAGE}.`) return { outcome: 'failed', reason: null };
+  if (body.startsWith(`${TURN_FAILED_MESSAGE}: `)) {
+    const reason = body.slice(TURN_FAILED_MESSAGE.length + 2).trim();
+    // The advice ends the host's notice; lead with it so the one visible line shows it, not the raw error.
+    const advice = reason.lastIndexOf(`\n\n${TURN_TOO_LARGE_ADVICE}`);
+    if (advice === -1) return { outcome: 'failed', reason };
+    return {
+      outcome: 'failed',
+      reason: `${reason.slice(advice + 2)}\n\n${reason.slice(0, advice).trim()}`,
+    };
+  }
+  if (!body.startsWith(UNPOSTED_REPLY_MESSAGE)) return null;
   const rest = body.slice(UNPOSTED_REPLY_MESSAGE.length).trim();
   if (!rest) return { outcome: 'completed', reason: null };
   for (const [phrase, outcome] of [

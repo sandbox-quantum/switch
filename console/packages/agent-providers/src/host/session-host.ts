@@ -1359,16 +1359,28 @@ export function lastAssistantText(snapshot: Snapshot, turnId: string): string {
 /** What the host posts for a turn that ended without the agent posting. */
 export function unpostedReply(text: string, outcome: TurnOutcome, detail: string | null): string {
   const reason = detail?.trim() ? `: ${cap(detail.trim(), 1000)}` : '.';
-  const failure =
-    outcome === 'error'
-      ? `The turn failed${reason}`
-      : outcome === 'interrupted'
-        ? `The turn was interrupted${reason}`
-        : null;
+  if (outcome === 'error') {
+    const error = detail?.trim() || text;
+    const failed = `My turn failed before I could reply${error ? `: ${cap(error, 1000)}` : '.'}`;
+    const said =
+      text && !text.includes(error)
+        ? `\n\nMy last words were:\n\n${cap(text, ROOM_REPLY_LIMIT)}`
+        : '';
+    const hint = isRequestTooLarge(error)
+      ? '\n\nUse !reset to start a fresh session, then send your message again. This conversation is too large for the model provider.'
+      : '';
+    return `${failed}${said}${hint}`;
+  }
+  const failure = outcome === 'interrupted' ? `The turn was interrupted${reason}` : null;
   if (!text)
     return failure ? `I finished without replying. ${failure}` : 'I finished without replying.';
   const said = `I finished without posting a reply. My last words were:\n\n${cap(text, ROOM_REPLY_LIMIT)}`;
   return failure && !(detail && text.includes(detail.trim())) ? `${said}\n\n(${failure})` : said;
+}
+
+/** The model provider refused the request because the conversation is over its size limit. */
+export function isRequestTooLarge(text: string): boolean {
+  return /exceeds [\d.]+ ?MB limit|request_too_large|request too large/i.test(text);
 }
 
 function cap(text: string, limit: number): string {

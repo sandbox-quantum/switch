@@ -122,12 +122,14 @@ export function outcomeForResult(result: SDKResultMessage): TurnOutcome {
   if (terminal === 'aborted_streaming' || terminal === 'aborted_tools') return 'interrupted';
   const errors = resultErrors(result).join(' ').toLowerCase();
   if (errors.includes('interrupt') || errors.includes('request was aborted')) return 'interrupted';
-  if (result.subtype === 'success') return 'completed';
+  if (result.subtype === 'success' && !result.is_error) return 'completed';
   return 'error';
 }
 
 /** `[ede_diagnostic] …` entries are CLI-internal telemetry and must not be shown. */
 export function resultMessageText(result: SDKResultMessage): string | undefined {
+  if (result.subtype === 'success')
+    return result.is_error && result.result ? result.result : undefined;
   return resultErrors(result).find((error) => !error.startsWith('[ede_diagnostic]'));
 }
 

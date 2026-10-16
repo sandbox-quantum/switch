@@ -6,7 +6,13 @@ import type { Command, Session, Snapshot } from '@switch-console/shared/session-
 import { afterEach, expect, it, vi } from 'vitest';
 import { ProviderConversationUnavailableError, type ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
-import { HostedSession, lastAssistantText, type RoomReply, unpostedReply } from './session-host';
+import {
+  HostedSession,
+  isRequestTooLarge,
+  lastAssistantText,
+  type RoomReply,
+  unpostedReply,
+} from './session-host';
 
 /**
  * `vi.waitFor` with room for a slow disk: every step here is a journal write
@@ -1388,7 +1394,7 @@ it('tells the room a failed turn with nothing to show failed, and why', async ()
   expect(reply).toHaveBeenCalledWith({
     roomId: 'room',
     threadId: 'thread',
-    body: 'I finished without replying. The turn failed: Not signed in.',
+    body: 'My turn failed before I could reply: Not signed in.',
   });
 });
 
@@ -1399,7 +1405,7 @@ it('tells the room a turn that never reached the provider failed', async () => {
   await host.command(roomMessage('unsent', null));
   await waitFor(() => expect(reply).toHaveBeenCalledOnce());
   expect(reply.mock.calls[0]![0].body).toBe(
-    'I finished without replying. The turn failed: Error: quota exhausted'
+    'My turn failed before I could reply: Error: quota exhausted'
   );
 });
 
@@ -1482,15 +1488,30 @@ it('caps what a room reply quotes and adds the failure the text does not already
   expect(long.length).toBe(
     'I finished without posting a reply. My last words were:\n\n'.length + 4000
   );
-  expect(
-    unpostedReply('Upgrade your plan to continue', 'error', 'Upgrade your plan to continue')
-  ).toBe(
-    'I finished without posting a reply. My last words were:\n\nUpgrade your plan to continue'
-  );
   expect(unpostedReply('Halfway there', 'interrupted', 'Stopped by a person')).toBe(
     'I finished without posting a reply. My last words were:\n\nHalfway there\n\n(The turn was interrupted: Stopped by a person)'
   );
-  expect(unpostedReply('', 'error', null)).toBe('I finished without replying. The turn failed.');
+});
+
+it('says a failed turn failed, and quotes last words only when they add something', () => {
+  expect(
+    unpostedReply('Upgrade your plan to continue', 'error', 'Upgrade your plan to continue')
+  ).toBe('My turn failed before I could reply: Upgrade your plan to continue');
+  expect(unpostedReply('Checking the logs', 'error', 'API Error: 500 overloaded')).toBe(
+    'My turn failed before I could reply: API Error: 500 overloaded\n\nMy last words were:\n\nChecking the logs'
+  );
+  expect(unpostedReply('', 'error', null)).toBe('My turn failed before I could reply.');
+});
+
+it('tells the room how to recover when the conversation is over the provider size limit', () => {
+  const error = 'API Error: 400 The message size (31000000 bytes) exceeds 30.000MB limit.';
+  const reply = unpostedReply(error, 'error', error);
+  expect(reply.startsWith(`My turn failed before I could reply: ${error}`)).toBe(true);
+  expect(reply).toContain('Use !reset to start a fresh session');
+  expect(unpostedReply('', 'error', 'API Error: 400 invalid tool schema')).not.toContain('!reset');
+  expect(isRequestTooLarge('API Error: 413 {"type":"request_too_large"}')).toBe(true);
+  expect(isRequestTooLarge('Request too large for model')).toBe(true);
+  expect(isRequestTooLarge('API Error: 400 file exceeds the limit')).toBe(false);
 });
 
 /**

@@ -5,7 +5,8 @@ import {
   type ChatMessage,
   liveSessionStartingNotices,
   SESSION_STARTING_MESSAGE,
-  TURN_FAILED_PHRASE,
+  TURN_FAILED_MESSAGE,
+  TURN_TOO_LARGE_ADVICE,
   TURN_INTERRUPTED_PHRASE,
   turnEndNotice,
   UNPOSTED_REPLY_MESSAGE,
@@ -93,6 +94,30 @@ describe('turn-end notices', () => {
       reason: null,
     });
     expect(read('I finished without replying.')).toEqual({ outcome: 'completed', reason: null });
+    expect(read('My turn failed before I could reply: API Error: 400 bad request')).toEqual({
+      outcome: 'failed',
+      reason: 'API Error: 400 bad request',
+    });
+    expect(read('My turn failed before I could reply.')).toEqual({
+      outcome: 'failed',
+      reason: null,
+    });
+  });
+
+  it('leads a too-large failure with the advice, then the provider error', () => {
+    const advice = `${TURN_TOO_LARGE_ADVICE}, then send your message again. This conversation is too large for the model provider.`;
+    expect(
+      turnEndNotice(
+        message(
+          '$n',
+          'helper',
+          `My turn failed before I could reply: API Error: 400 exceeds 30.000MB limit\n\n${advice}`
+        )
+      )
+    ).toEqual({
+      outcome: 'failed',
+      reason: `${advice}\n\nAPI Error: 400 exceeds 30.000MB limit`,
+    });
   });
 
   it('leaves other messages alone', () => {
@@ -114,7 +139,10 @@ describe('turn-end notices', () => {
     );
     expect(source).toContain(`'${UNPOSTED_REPLY_MESSAGE}'`);
     expect(source).toContain(`\`${UNPOSTED_REPLY_MESSAGE} \${failure}\``);
-    expect(source).toContain(`\`${TURN_FAILED_PHRASE}\${reason}\``);
+    expect(source).toContain(
+      `\`${TURN_FAILED_MESSAGE}\${error ? \`: \${cap(error, 1000)}\` : '.'}\``
+    );
+    expect(source).toContain(`'\\n\\n${TURN_TOO_LARGE_ADVICE},`);
     expect(source).toContain(`\`${TURN_INTERRUPTED_PHRASE}\${reason}\``);
     expect(source).toContain("? `: ${cap(detail.trim(), 1000)}` : '.'");
   });

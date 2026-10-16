@@ -694,6 +694,33 @@ describe('ClaudeAdapter turn attribution', () => {
     expect(recorder.ofType('runtime.error')[0]?.message).toBe('Reached the turn limit');
   });
 
+  it('reports a success result flagged is_error as an error turn carrying the provider error', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    const error = 'API Error: 400 The message size (31000000 bytes) exceeds 30.000MB limit.';
+    query.emit(
+      resultMessage([String(sent?.uuid)], { is_error: true, api_error_status: 400, result: error })
+    );
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.outcome).toBe('error');
+    expect(done.message).toBe(error);
+    expect(recorder.ofType('runtime.error')[0]?.message).toBe(error);
+  });
+
+  it('reports a plain success result as a completed turn', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    query.emit(resultMessage([String(sent?.uuid)], { result: 'done' }));
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.outcome).toBe('completed');
+    expect(done.message).toBeUndefined();
+    expect(recorder.ofType('runtime.error')).toHaveLength(0);
+  });
+
   it('ignores a result for sends this adapter never made', async () => {
     const { sdk, adapter, recorder } = await startSession();
     await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
