@@ -1058,6 +1058,9 @@ class TelegramAdapter(PlatformAdapter):
     def set_on_attached(self, callback: Callable[[], None]) -> None:
         self._on_attached = callback
 
+    def awaiting_shared_connection(self) -> bool:
+        return self._shared and self._bot is None
+
     def attach_shared_connection(self, connection: Any) -> None:
         """Hand a shared bridge the deployment's bot, once.
 

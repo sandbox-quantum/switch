@@ -351,6 +351,11 @@ class SupportsSharedConnection(Protocol):
 
     def set_on_attached(self, callback: Callable[[], None]) -> None: ...
 
+    def awaiting_shared_connection(self) -> bool:
+        """Whether this bridge runs on the shared connection and has not been
+        attached to it yet, so nothing that reaches the platform can run."""
+        ...
+
 
 class PlatformAdapter(ABC):
     #: The platform as a person names it — "Microsoft Teams", not "teams".
