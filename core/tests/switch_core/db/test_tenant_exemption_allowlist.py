@@ -66,6 +66,11 @@ _ALLOWED_MODULES = {
     # then bind each tenant and work under its own policy, the same shape as
     # session-activity upkeep above.
     "switch_core.connections.maintenance",
+    # The operator's Connectors page counts who is connected through each
+    # app, and who would have to reconnect if it were replaced, across every
+    # workspace: enumerate, then read each one's connections under its own
+    # policy, the same shape as service-token upkeep above.
+    "switch_core.gateway.connector_apps",
     # The runtime-state sweep reads every tenant's stale rows, one tenant at a
     # time; `register_agent_with_token` resolves a registration credential by
     # its globally unique hash, which is the read that produces a tenant.
@@ -234,6 +239,11 @@ _RAW_SESSION_FACTORY_MODULES = {
     # tenant's: read and written in a session bound to none, and re-encrypted
     # once at boot by the global pass above.
     "switch_core.connections.oauth_clients",
+    # The apps the operator registered at connectors' vendors
+    # (`service_app_credentials`, in `rls_ddl.GLOBAL_TABLES`): one per
+    # deployment and service, shared by every tenant's sign-ins, so read at
+    # boot and after the operator changes one, in a session bound to none.
+    "switch_core.connections.app_credentials",
 }
 
 # Calls that end in `session_factory` but hand one back rather than open a

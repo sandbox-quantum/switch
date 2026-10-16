@@ -52,6 +52,7 @@ async def connect_github(session: AsyncSession, owner: str, keyring: Keyring) ->
                 }
             )
         ),
+        oauth_client_id=None,
     )
 
 

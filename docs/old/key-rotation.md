@@ -18,7 +18,7 @@ the purpose, so a key that leaks from one use does not open another.
 | OIDC login cookie | signed cookie | one login round trip (10 minutes) | current key only; a login in progress at the moment of rotation starts again |
 | Messaging install state | signed token | one install round trip | verified with any key in `SECRET_KEYS` |
 | Mattermost card buttons | signed context in posted messages | as long as the post | verified with any key in `SECRET_KEYS` |
-| Stored credentials: API keys, hosted-install bot tokens, bridge and connector configs | encrypted, value names its key | until changed | re-encrypted under the current key at boot |
+| Stored credentials: API keys, hosted-install bot tokens, bridge and connector configs, connector app credentials | encrypted, value names its key | until changed | re-encrypted under the current key at boot |
 
 The first key is used for everything new. Older keys only verify and decrypt.
 

@@ -101,7 +101,8 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.client_signals import ClientSignals
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.config import SwitchConfig, deprecated_env_names
-from switch_core.connections.adapters.github import GitHubApp
+from switch_core.connections.app_credentials import ConnectorApps
+from switch_core.connections.app_signals import ConnectorAppSignals
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.github_move import move_github_connections
 from switch_core.connections.loader import CATALOG
@@ -163,6 +164,7 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
+from switch_core.db.stores.service_app_credential_store import ServiceAppCredentialStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.task_store import TaskStore
@@ -1117,6 +1119,27 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     room_service.on_room_agents_changed(chat_service.sync_room)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
 
+    # ── Connector app credentials ─────────────────────────────────────────────
+    # Each connector's app, from configuration or a row the operator saved,
+    # before anything that serves a sign-in reads them.
+    service_http = guarded_async_client(config.outbound_policy, timeout=20)
+    service_registration = ClientRegistration(
+        session_factory=session_factory,
+        keyring=config.keyring,
+        public_url=config.gateway_public_url,
+        server_name=config.id_server_name,
+    )
+    connector_apps = ConnectorApps(
+        catalog=CATALOG,
+        config=config,
+        environ=os.environ,
+        session_factory=session_factory,
+        store=ServiceAppCredentialStore(config.keyring),
+        http=service_http,
+        registration=service_registration,
+    )
+    await connector_apps.load()
+
     # ── Gateway app ───────────────────────────────────────────────────────────
     gateway_app = create_gateway_app(
         agent_store=agent_store,
@@ -1147,6 +1170,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             else None
         ),
         chat_service=chat_service,
+        connector_apps=connector_apps,
         config=config,
     )
 
@@ -1247,22 +1271,16 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # A service is issued only where this server is set up for it, as its
     # catalog entry's adapter says (`connections/registry.py`). Without any,
     # the broker's upkeep still revokes and prunes whatever records exist.
-    github_app: GitHubApp | None = gateway_app.state.github_app
     service_broker = ServiceBroker(
         session_factory=session_factory,
         keyring=config.keyring,
         catalog=CATALOG,
         adapters=build_adapters(
             CATALOG,
-            github_app=github_app,
-            environ=os.environ,
-            http=guarded_async_client(config.outbound_policy, timeout=20),
-            registration=ClientRegistration(
-                session_factory=session_factory,
-                keyring=config.keyring,
-                public_url=config.gateway_public_url,
-                server_name=config.id_server_name,
-            ),
+            github_app=connector_apps.github_app(),
+            oauth_clients=connector_apps.oauth_clients(),
+            http=service_http,
+            registration=service_registration,
         ),
         disabled=config.disabled_services,
         store=ServiceConnectionStore(),
@@ -1272,6 +1290,13 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    # A connector app the operator saves or removes, put to work in every process.
+    ConnectorAppSignals(
+        apps=connector_apps,
+        broker=service_broker,
+        state=gateway_app.state,
+        bus=signal_bus,
+    )
     if config.service_connections_enabled:
         protocol.service_broker = service_broker
 

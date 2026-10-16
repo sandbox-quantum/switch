@@ -493,6 +493,7 @@ class TestThroughTheBroker:
                 account_id="acct-1",
                 external_identity="ada@example.test",
                 encrypted_secret=TEST_KEYRING.encrypt(json.dumps(values)),
+                oauth_client_id=None,
             )
             for agent in agents:
                 await STORE.save_grant(

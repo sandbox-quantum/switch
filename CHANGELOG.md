@@ -45,6 +45,33 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **The server's operator sets up connector apps from the dashboard.** A
+  Connectors page, beside Users and for the operator alone, sets up the
+  GitHub App and Google Workspace's OAuth client (and any static client the
+  catalog adds) with no restart. Each save is checked with the vendor first,
+  and stored, encrypted, only if the vendor accepts it; GitHub's App name is
+  read from GitHub. A secret or private key can be rotated without
+  disconnecting anyone; switching to a different app says first how many
+  people in how many workspaces must reconnect. The variables that set them
+  today (`GITHUB_APP_CONFIG_PATH` and `GITHUB_APP_PRIVATE_KEY_PATH`,
+  `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`) keep working and win over a saved
+  app, and **Copy into Switch** moves one into the dashboard with nothing
+  retyped. Changes are recorded in a new server-wide audit log
+  (`server_audit_events`). Members of a server without an app are told to ask
+  whoever runs it to add it under Connectors; `GET /service-connections`
+  gains `server_setup_needed`. The page and its routes are there only with
+  the `service_connections` flag on, like the rest of service connections;
+  without it the page says what to turn on. A connection made under an app since removed
+  can still be disconnected; the disconnect then says Switch could not revoke
+  the sign-in and where to revoke it. A change reaches every switch-core
+  replica within seconds, and one that missed it within half a minute. See
+  `docs/old/github-app-setup.md` and `docs/old/google-workspace-setup.md`.
+- **A connection knows the app it signed in through.** A connection made
+  through an app the operator has since replaced shows as needing
+  reconnection, and an agent asking for its token is told to reconnect
+  rather than handed the vendor's refusal. A sign-in that started before the
+  app was replaced is asked to start again. Connections made before this
+  release are unaffected.
 - **Confluence through the Atlassian connection.** Connecting Atlassian now
   also asks for Confluence's read, search and (for writing) write scopes, so a
   granted agent reaches Confluence pages beside Jira issues. People who
@@ -1740,6 +1767,18 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **The server's operator sets up connector apps in Console.** For the
+  operator, the Admin page has a Connector apps section under Server, below
+  the workspace's switches: the GitHub App and Google Workspace's OAuth
+  client as tiles, the
+  ones needing attention first, each with its state and the one thing to do
+  next. A tile opens the app's page, with its client, its secret's last four
+  characters or its key's fingerprint, who uses it and a check with the
+  vendor; updating a secret, switching to a different app and removing it are
+  in its menu. Setting one up walks through creating it at the vendor, with
+  the values to paste and copy buttons, then checks and saves it in one step,
+  marking the value the vendor refused. It is the dashboard's Connectors page,
+  which stays for now. Needs a server from this release.
 - **Console follows a server that keeps names away from avatar services.** On a
   server with `THIRD_PARTY_AVATARS_ENABLED=false`, Console no longer loads
   DiceBear or ui-avatars.com images for that server's agents and shows their

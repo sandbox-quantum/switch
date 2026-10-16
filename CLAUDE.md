@@ -202,8 +202,12 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
 - `docs/old/GATEWAY_OIDC_SETUP.md` — configuring the gateway's bring-your-own
   OIDC browser sign-in (variables, redirect URI, WorkOS Connect setup)
 - `docs/old/google-workspace-setup.md` — offering Google Workspace on a
-  self-hosted server: registering the internal Google app, its redirect URI,
+  self-hosted server: registering the Google app (Internal or External), its
+  redirect URI, saving it under Connectors or in
   `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`, and switching it off
+- `docs/old/github-app-setup.md` — offering GitHub on a self-hosted server:
+  creating the GitHub App, saving it under Connectors or in configuration,
+  which wins, rotating its secret or key, and replacing it
 - `docs/old/LOCAL_DEVELOPMENT.md` — running Switch locally for development:
   `just` recipes, which port serves what, connecting Switch Console to a
   local server

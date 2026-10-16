@@ -96,12 +96,13 @@ class GitHubReach:
 
 
 class GitHubConnections:
-    def __init__(self, config_path: str):
-        config = json.loads(Path(config_path).read_text())
-        self.client_id = config["client_id"]
-        self.client_secret = config["client_secret"]
-        self.slug = config["slug"]
-        self.origin = config["origin"].rstrip("/")
+    def __init__(
+        self, *, client_id: str, client_secret: str, slug: str, origin: str
+    ) -> None:
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.slug = slug
+        self.origin = origin.rstrip("/")
         url = urlsplit(self.origin)
         if (
             url.scheme != "https"
@@ -118,6 +119,16 @@ class GitHubConnections:
             raise ValueError("GitHub connection configuration is invalid")
         self.callback = self.origin + "/gateway/provider-connections/github/callback"
         self.install_url = f"https://github.com/apps/{self.slug}/installations/new"
+
+    @classmethod
+    def from_file(cls, config_path: str) -> GitHubConnections:
+        config = json.loads(Path(config_path).read_text())
+        return cls(
+            client_id=config["client_id"],
+            client_secret=config["client_secret"],
+            slug=config["slug"],
+            origin=config["origin"],
+        )
 
     async def revoke(self, token: str) -> None:
         try:

@@ -52,7 +52,7 @@ async def github_app(request, tmp_path, session_factory):
             }
         )
     )
-    github = GitHubConnections(str(config))
+    github = GitHubConnections.from_file(str(config))
     github.exchange = AsyncMock(
         return_value={
             "access_token": "SYNTHETIC-ACCESS",
@@ -508,6 +508,31 @@ async def test_disconnect_finishes_and_warns_when_github_revoke_fails(github_app
         )
 
 
+async def test_disconnect_works_once_the_app_is_removed(github_app):
+    client, github, _, factory = github_app
+    flow = await authorize(client)
+    await relay(client, flow)
+    assert (await complete(client, flow)).status_code == 200
+    # As `install_github_app(state, None)` and the broker leave the server.
+    state = client._transport.app.state
+    state.github_connections = None
+    state.service_broker.replace_adapter("github", None)
+    result = await client.delete(BASE)
+    assert result.status_code == 200
+    assert result.json()["warning"] == (
+        "GitHub is not set up on this server, so Switch could not revoke the "
+        "sign-in. Revoke it at GitHub."
+    )
+    github.revoke.assert_not_called()
+    async with factory() as session:
+        assert (
+            await session.scalar(
+                select(ServiceConnection).where(ServiceConnection.service == "github")
+            )
+            is None
+        )
+
+
 @pytest.mark.parametrize("status", [204, 404, 422])
 async def test_oauth_revocation_deletes_only_the_selected_token(
     github_app, monkeypatch, status
@@ -628,3 +653,30 @@ async def test_switched_off_mid_flow_the_sign_in_is_revoked_and_not_kept(github_
         assert (flow.status, flow.encrypted_result) == ("failed", None)
         assert flow.error == GITHUB_REFUSAL["detail"]
         assert await session.scalar(select(ServiceConnection)) is None
+
+
+async def test_the_connection_records_the_apps_client(github_app):
+    client, _, _, factory = github_app
+    flow_id = await authorize(client)
+    await relay(client, flow_id)
+    assert (await complete(client, flow_id)).status_code == 200
+    async with factory() as session:
+        row = await session.scalar(
+            select(ServiceConnection).where(ServiceConnection.service == "github")
+        )
+    assert row.oauth_client_id == "example-client"
+
+
+async def test_an_app_replaced_during_the_sign_in_is_refused(github_app):
+    """The sign-in carried over to an App with another client: its code was
+    issued to the old one, so it is refused before GitHub is asked."""
+    client, github, _, _ = github_app
+    flow_id = await authorize(client)
+    await relay(client, flow_id)
+    github.client_id = "another-client"
+    response = await complete(client, flow_id)
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "This server's GitHub App changed during your sign-in. Start it again."
+    )
+    github.exchange.assert_not_called()

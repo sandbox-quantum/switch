@@ -146,6 +146,7 @@ async def connect(
                     }
                 )
             ),
+            oauth_client_id=None,
         )
         await session.commit()
 

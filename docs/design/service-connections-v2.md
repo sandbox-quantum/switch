@@ -32,7 +32,8 @@ auth:
   refresh: rotating           # rotating | reusable
   oauth:
     registration: dynamic     # dynamic: Core registers its own client
-                              # static: client_settings names <PREFIX>_CLIENT_CONFIG_PATH
+                              # static: the operator's, saved in the dashboard or named
+                              # by <PREFIX>_CLIENT_CONFIG_PATH (client_settings)
     redirect: [loopback]      # loopback (Switch Console) and/or core (Core's callback)
     loopback_ports: [39231, 39232, 39233, 39234, 39235]
     prompt: consent           # sent with every authorization
@@ -91,10 +92,19 @@ An entry with a `cli` has no MCP server to discover from, so it names its
 one), and its client is the operator's (`registration: static`). No two
 entries may give a session a server of the same name.
 
-`<PREFIX>_CLIENT_CONFIG_PATH` names a static client's settings, a JSON file
-holding `client_id` and `client_secret` and nothing else. Unset, the service is
-shown as not set up on this server, with the entry's `setup_note`; set but
-unusable, the server does not start.
+A static client is the server operator's, and comes from one of two places
+(`connections/app_credentials.py`): a row saved from the dashboard's Connector
+apps page (`service_app_credentials`, its secret encrypted with the keyring),
+or the JSON file `<PREFIX>_CLIENT_CONFIG_PATH` names, holding `client_id` and
+`client_secret` and nothing else. Configuration wins where both are set. With
+neither, the service is shown as not set up on this server, and people are told
+to ask whoever runs it; a file set but unusable stops the server, and a saved
+row that cannot be used leaves the service not set up, with the reason on the
+operator's page. A saved client is checked with the vendor before it is stored
+and is in use at once. Each connection records the client it signed in through
+(`service_connections.oauth_client_id`), so one made through a client the
+operator has since replaced is told to reconnect rather than refused by the
+vendor.
 
 ## Tokens
 
@@ -372,8 +382,8 @@ one of three shapes. Pick the first that fits:
 1. **A remote MCP server with OAuth** (Atlassian): `adapter: oauth` with `mcp`.
    Where the vendor offers dynamic client registration, nothing is set up on
    the server (`registration: dynamic`); otherwise each server's operator
-   registers an OAuth app and names it in `<PREFIX>_CLIENT_CONFIG_PATH`
-   (`registration: static`).
+   registers an OAuth app and saves it under Connectors in the dashboard,
+   or names it in `<PREFIX>_CLIENT_CONFIG_PATH` (`registration: static`).
 2. **A command-line tool with OAuth** (Google Workspace): `adapter: oauth` with
    `cli`, a pinned release per platform with its SHA-256, and the allow and
    deny lists that keep it to the vendor's own commands.
@@ -443,9 +453,10 @@ Built from a spike against a test Workspace with an Internal app:
 - **Its own client per server.** Each server's operator registers an internal
   Google app, a Web client whose redirect is Core's callback,
   `<GATEWAY_PUBLIC_URL>/gateway/service-connections/google-workspace/flows/callback`,
-  and names its settings in `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`
-  ([operator setup](../old/google-workspace-setup.md)). Unset, Google Workspace
-  is listed as not set up on this server.
+  and saves it under Connectors in the dashboard, or names its settings in
+  `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`
+  ([operator setup](../old/google-workspace-setup.md)). Without either, Google
+  Workspace is listed as not set up on this server.
 - **Offline access.** Google returns a refresh token only for
   `access_type=offline`, and on a later sign-in only with `prompt=consent`;
   both go with every authorization. Refresh tokens are reusable.
@@ -486,7 +497,8 @@ as unavailable through its own deployment settings, not this repository:
 `DISABLED_SERVICES` `{"google-workspace": "<the reason people see>"}`.
 
 To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
-`enabled: false`, or unset `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`. Each lists
+`enabled: false`, or remove its client (under Connectors, or by unsetting
+`GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
 
 ## Not yet

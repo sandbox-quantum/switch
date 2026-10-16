@@ -60,6 +60,10 @@ MAX_CODE_LENGTH = 8192
 INTERRUPTED = "Sign-in was interrupted. Start it again from Switch Console."
 
 
+def client_changed(name: str) -> str:
+    return f"This server's {name} app changed during your sign-in. Start it again."
+
+
 class FlowError(Exception):
     """The flow cannot go on; the message is for the person."""
 
@@ -231,13 +235,19 @@ class ServiceFlows:
         self, flow: ServiceFlow, adapter: OAuthAdapter
     ) -> tuple[str, str]:
         """Where the browser signs in at the vendor, and the nonce that marks
-        the browser sent there; once per flow."""
+        the browser sent there; once per flow. The flow records the client it
+        is sent through, so a code issued to one client is never exchanged
+        with another."""
         nonce = secrets.token_urlsafe(32)
+        client_id = await adapter.client_id()
         taken = await self._flows.advance(
             flow.stored,
             expect=("pending",),
             to="authorizing",
-            changes={"browser_nonce_hash": digest(nonce)},
+            changes={
+                "browser_nonce_hash": digest(nonce),
+                "details": {**flow.stored.details, "client_id": client_id},
+            },
         )
         if taken is None:
             raise FlowError("This sign-in has already been used. Connect again.")
@@ -309,6 +319,9 @@ class ServiceFlows:
         if checking is None:
             raise refused
         try:
+            recorded = flow.stored.details.get("client_id")
+            if recorded is not None and recorded != await adapter.client_id():
+                raise ServiceAdapterError(client_changed(flow.name))
             signed_in = await adapter.exchange_code(
                 code=code,
                 verifier=flow.stored.verifier,

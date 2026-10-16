@@ -1494,6 +1494,7 @@ class TestMemberRoutes:
                 encrypted_secret=_KEYRING.encrypt(
                     json.dumps({"access_token": "SYNTHETIC-USER-TOKEN"})
                 ),
+                oauth_client_id=None,
             )
             session.add(
                 ServiceTokenIssuance(

@@ -41,17 +41,23 @@ function entry(slug: string, category: string): ConnectionCatalogEntry {
 }
 
 describe('the Admin page’s sections', () => {
-  it('shows the workspace switches, under Workspace, to its admins only', () => {
-    expect(adminGroups({ administers: true })).toEqual([
+  it('shows the workspace switches to its admins, and the apps under Server to the operator alone', () => {
+    expect(adminGroups({ administers: true, operator: false })).toEqual([
       { scope: 'workspace', sections: ['connectors'] },
     ]);
-    expect(adminGroups({ administers: false })).toEqual([]);
+    expect(adminGroups({ administers: true, operator: true })).toEqual([
+      { scope: 'workspace', sections: ['connectors'] },
+      { scope: 'server', sections: ['apps'] },
+    ]);
+    expect(adminGroups({ administers: false, operator: false })).toEqual([]);
   });
 
   it('opens the section asked for when the person may use it, otherwise the first', () => {
-    const groups = adminGroups({ administers: true });
-    expect(shownAdminSection(groups, 'connectors')).toBe('connectors');
-    expect(shownAdminSection(groups, undefined)).toBe('connectors');
+    const operator = adminGroups({ administers: true, operator: true });
+    const admin = adminGroups({ administers: true, operator: false });
+    expect(shownAdminSection(operator, 'apps')).toBe('apps');
+    expect(shownAdminSection(admin, 'apps')).toBe('connectors');
+    expect(shownAdminSection(admin, undefined)).toBe('connectors');
     expect(shownAdminSection([], 'connectors')).toBeNull();
   });
 });

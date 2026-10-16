@@ -15,6 +15,10 @@ import {
 } from '@main/core/workspaces/workspace-session';
 import { listWorkspacesForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
+import type {
+  SaveConnectorAppInput,
+  SaveConnectorAppResult,
+} from '@shared/core/switch-servers/connector-apps';
 import {
   type InviteServer,
   SWITCH_CLOUD_NAME,
@@ -64,6 +68,12 @@ import {
   fetchPendingInvitations,
   GatewayError,
   type RemoteTenant,
+  checkConnectorApp,
+  fetchConnectorAppImpact,
+  fetchConnectorApps,
+  importConnectorApp,
+  removeConnectorApp,
+  saveConnectorApp,
 } from './gateway-client';
 import { openAuthenticatedGatewayPage } from './gateway-web';
 import {
@@ -473,6 +483,42 @@ export const switchServersController = createRPCController({
 
   clearTrustSettings: async (serverId: string): Promise<ClearTrustSettingsResult> =>
     clearTrustSettingsOnServer(await requireReachableServer(serverId)),
+
+  /**
+   * The apps connectors sign in through, for the server's operator: not
+   * scoped to a workspace, since one app serves them all. Null when the
+   * server has none to set up.
+   */
+  getConnectorApps: async (serverId: string) =>
+    fetchConnectorApps(await requireReachableServer(serverId)),
+
+  /** Check a connector's app with its vendor, and save it if the vendor accepts it. */
+  saveConnectorApp: async (params: {
+    serverId: string;
+    service: string;
+    input: SaveConnectorAppInput;
+  }): Promise<SaveConnectorAppResult> =>
+    saveConnectorApp(await requireReachableServer(params.serverId), params.service, params.input),
+
+  /** Copy a connector's app from the server's configuration into Switch. */
+  importConnectorApp: async (params: { serverId: string; service: string }) =>
+    importConnectorApp(await requireReachableServer(params.serverId), params.service),
+
+  /** Ask the vendor about the connector's app in use; nothing is stored. */
+  checkConnectorApp: async (params: { serverId: string; service: string }) =>
+    checkConnectorApp(await requireReachableServer(params.serverId), params.service),
+
+  /** Who would have to reconnect if the app `clientId` names replaced the one in use. */
+  getConnectorAppImpact: async (params: { serverId: string; service: string; clientId: string }) =>
+    fetchConnectorAppImpact(
+      await requireReachableServer(params.serverId),
+      params.service,
+      params.clientId
+    ),
+
+  /** Remove a connector's saved app; the connections made through it are kept. */
+  removeConnectorApp: async (params: { serverId: string; service: string }) =>
+    removeConnectorApp(await requireReachableServer(params.serverId), params.service),
 
   // Reported here rather than in `auth.ts`: the same functions are used to
   // re-authenticate a managed server on its own and to log in while starting a

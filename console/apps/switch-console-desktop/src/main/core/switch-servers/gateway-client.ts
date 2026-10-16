@@ -29,6 +29,19 @@ import {
   workspaceServicesSchema,
 } from '@shared/core/switch-servers/connection-catalog';
 import {
+  type ConnectorApp,
+  type ConnectorAppCheckResult,
+  type ConnectorAppImpact,
+  type ConnectorApps,
+  type SaveConnectorAppInput,
+  type SaveConnectorAppResult,
+  connectorAppCheckResultSchema,
+  connectorAppImpactSchema,
+  connectorAppRefusalSchema,
+  connectorAppSchema,
+  connectorAppsSchema,
+} from '@shared/core/switch-servers/connector-apps';
+import {
   gitHubConnectionSchema,
   gitHubFlowSchema,
 } from '@shared/core/switch-servers/github-connection';
@@ -3119,6 +3132,116 @@ export async function setWorkspaceService(
     { authenticated: true, method: 'PUT', body: { enabled } }
   );
   return workspaceServiceChangeSchema.parse(await response.json());
+}
+
+const connectorAppPath = (service: string, rest = '') =>
+  `/connector-apps/${encodeURIComponent(service)}${rest}`;
+
+/**
+ * The server's connector apps, for its operator; null when the server has
+ * none to set up (a 404: it predates them, or its `service_connections` flag
+ * is off). Any other failure, a refusal included, is thrown for the caller
+ * to show.
+ */
+export async function fetchConnectorApps(server: SwitchServer): Promise<ConnectorApps | null> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, '/connector-apps', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
+  return connectorAppsSchema.parse(await response.json());
+}
+
+/**
+ * Save a connector's app once its vendor accepts it; it takes effect at once.
+ * A refusal from the vendor's check is answered, with the value to look at
+ * again; any other failure is thrown.
+ */
+export async function saveConnectorApp(
+  server: SwitchServer,
+  service: string,
+  input: SaveConnectorAppInput
+): Promise<SaveConnectorAppResult> {
+  let response: Response;
+  try {
+    response = await gatewayFetch(server, connectorAppPath(service), {
+      authenticated: true,
+      method: 'PUT',
+      body: input,
+    });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 422 && cause.body) {
+      const refusal = connectorAppRefusalSchema.safeParse(safeJson(cause.body));
+      if (refusal.success)
+        return {
+          kind: 'refused',
+          message: refusal.data.detail,
+          field: refusal.data.field,
+          checks: refusal.data.checks,
+        };
+    }
+    throw cause;
+  }
+  return { kind: 'saved', app: connectorAppSchema.parse(await response.json()) };
+}
+
+function safeJson(body: string): unknown {
+  try {
+    return JSON.parse(body);
+  } catch {
+    return null;
+  }
+}
+
+/** Copy the app configuration sets into a saved one, so the configuration can be removed. */
+export async function importConnectorApp(
+  server: SwitchServer,
+  service: string
+): Promise<ConnectorApp> {
+  const response = await gatewayFetch(server, connectorAppPath(service, '/import'), {
+    authenticated: true,
+    method: 'POST',
+  });
+  return connectorAppSchema.parse(await response.json());
+}
+
+/** Ask the vendor about the app in use; nothing is stored. */
+export async function checkConnectorApp(
+  server: SwitchServer,
+  service: string
+): Promise<ConnectorAppCheckResult> {
+  const response = await gatewayFetch(server, connectorAppPath(service, '/check'), {
+    authenticated: true,
+    method: 'POST',
+  });
+  return connectorAppCheckResultSchema.parse(await response.json());
+}
+
+/** Who would have to reconnect if the app `clientId` names replaced the one in use. */
+export async function fetchConnectorAppImpact(
+  server: SwitchServer,
+  service: string,
+  clientId: string
+): Promise<ConnectorAppImpact> {
+  const query = new URLSearchParams({ client_id: clientId });
+  const response = await gatewayFetch(server, connectorAppPath(service, `/impact?${query}`), {
+    authenticated: true,
+  });
+  return connectorAppImpactSchema.parse(await response.json());
+}
+
+/** Remove the saved app; answers who was connected through it, and keeps their connections. */
+export async function removeConnectorApp(
+  server: SwitchServer,
+  service: string
+): Promise<ConnectorAppImpact> {
+  const response = await gatewayFetch(server, connectorAppPath(service), {
+    authenticated: true,
+    method: 'DELETE',
+  });
+  return connectorAppImpactSchema.parse(await response.json());
 }
 
 /**

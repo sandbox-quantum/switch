@@ -158,6 +158,15 @@ POLICY_NAME = "tenant_isolation"
 # added to the schema (`db/schema_version.py`), as Alembic's own
 # `alembic_version` records which is applied. It describes the schema and
 # holds no data of anyone's.
+#
+# `service_app_credentials` is the same for an app the operator registered at
+# the vendor (a GitHub App, a static OAuth client) and entered from the
+# dashboard: one per deployment and service, shared by every tenant's
+# sign-ins. A workspace's own app would be a new scoped table, not a row here.
+#
+# `server_audit_events` is the history of changes no tenant owns, such as the
+# operator setting up one of those apps. `audit_events` is scoped, so a
+# server-wide change has no tenant to be filed under there.
 GLOBAL_TABLES = frozenset(
     {
         "cloud_machines",
@@ -171,6 +180,8 @@ GLOBAL_TABLES = frozenset(
         "trust_settings",
         "service_oauth_clients",
         "schema_expand_only_revisions",
+        "service_app_credentials",
+        "server_audit_events",
     }
 )
 

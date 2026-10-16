@@ -35,7 +35,7 @@ def github(tmp_path) -> GitHubConnections:
             }
         )
     )
-    return GitHubConnections(str(config))
+    return GitHubConnections.from_file(str(config))
 
 
 def _repo(repo_id: int) -> dict:

@@ -3960,6 +3960,10 @@ class ServiceConnection(TenantScoped, Base):
     encrypted_secret: Mapped[str] = mapped_column(Text, nullable=False)
     secret_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The OAuth client the sign-in went through, so a connection made through
+    # a client the operator has since replaced is known to need reconnecting.
+    # Null for a key, and for a sign-in made before it was recorded.
+    oauth_client_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -4061,6 +4065,62 @@ class ServiceOAuthClient(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class ServiceAppCredential(Base):
+    """The app the operator registered at a service's vendor, for the whole server.
+
+    A GitHub App or a static OAuth client, entered from the dashboard rather
+    than a settings file (`connections/app_credentials.py`). One row per
+    deployment and service, as `ServiceOAuthClient` is: the vendor sees one
+    Switch. `service` is a catalog slug, checked in code. `client_id` and
+    `settings` (non-secret extras, such as a GitHub App's slug) are kept in the
+    clear; `encrypted_secrets` is keyring-encrypted JSON of every secret the
+    kind has, so a kind with more secrets needs no migration.
+    """
+
+    __tablename__ = "service_app_credentials"
+
+    service: Mapped[str] = mapped_column(Text, primary_key=True)
+    client_id: Mapped[str] = mapped_column(Text, nullable=False)
+    settings: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    encrypted_secrets: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_by: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ServerAuditEvent(Base):
+    """One change to the server as a whole: who did what, to what, when.
+
+    `AuditEvent` records a tenant's history; a change no tenant owns, such as
+    the operator setting up a connector's app, has no tenant to be filed
+    under, so it lands here. The same shape and the same rules: append-only
+    for the runtime role (`grant_runtime_role`), `actor_user_id` with no
+    foreign key so the history outlives the account, and `details` holding
+    identifiers and field names, never a secret.
+    """
+
+    __tablename__ = "server_audit_events"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False
+    )
+    actor_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    target_type: Mapped[str] = mapped_column(Text, nullable=False)
+    target_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class WorkspaceServiceSetting(TenantScoped, Base):

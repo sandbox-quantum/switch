@@ -115,6 +115,7 @@ async def _granted(
             account_id=f"{service}-account",
             external_identity=owner.name,
             encrypted_secret=TEST_KEYRING.encrypt("{}"),
+            oauth_client_id=None,
         )
         grant = await STORE.save_grant(
             session,

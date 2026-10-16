@@ -16,6 +16,7 @@ import {
   Typography,
 } from "@mui/material";
 import { useCallback, useEffect, useState } from "react";
+import { Link as RouterLink } from "react-router";
 import {
   type AgentDetail,
   ApiError,
@@ -32,6 +33,7 @@ import {
   setServiceGrant,
   updateAgentAddressingPolicy,
 } from "../../data/api";
+import { useAuth } from "../../data/AuthContext";
 
 type Access = "read" | "write";
 
@@ -86,6 +88,7 @@ export default function ServiceAccessSection({
   const [notice, setNotice] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
+  const { isOperator } = useAuth();
 
   const load = useCallback(async () => {
     try {
@@ -132,6 +135,7 @@ export default function ServiceAccessSection({
   // Services whose agents use the owner's own token: on or off, nothing to choose.
   const onOff = services.filter((service) => service.enabled && service.pass_through);
   const onOffSlugs = new Set(onOff.map((service) => service.slug));
+  const githubService = services.find((service) => service.slug === "github") ?? null;
 
   return (
     <>
@@ -225,6 +229,7 @@ export default function ServiceAccessSection({
               grant={grants.grants.find((grant) => grant.service === service.slug) ?? null}
               agentName={agent.name}
               busy={busy}
+              canSetUp={isOperator}
               onTurnOn={() =>
                 void act(() => setServiceGrant(agent.id, service.slug, { access: null, resources: {} }))
               }
@@ -236,6 +241,8 @@ export default function ServiceAccessSection({
           <GitHubGrantForm
             github={github}
             githubError={githubError}
+            notSetUp={githubService?.server_setup_needed ? githubService.unavailable_reason : null}
+            canSetUp={isOperator}
             current={githubGrant}
             busy={busy}
             onCancel={githubGrant ? () => setEditing(false) : null}
@@ -276,12 +283,22 @@ export function onOffGrantNote(
     : note;
 }
 
+/** The operator's way from a service that is not set up to where it is set up. */
+function SetUpLink() {
+  return (
+    <Button component={RouterLink} to="/connectors" size="small" sx={{ ml: 1 }}>
+      Set up
+    </Button>
+  );
+}
+
 /** A service whose agents use the owner's own token: on or off, at the connection's level. */
 function OnOffGrant({
   service,
   grant,
   agentName,
   busy,
+  canSetUp,
   onTurnOn,
   onTurnOff,
 }: {
@@ -289,6 +306,7 @@ function OnOffGrant({
   grant: ServiceGrant | null;
   agentName: string;
   busy: boolean;
+  canSetUp: boolean;
   onTurnOn: () => void;
   onTurnOff: () => void;
 }) {
@@ -317,6 +335,7 @@ function OnOffGrant({
       {service.unavailable_reason && (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
           {service.unavailable_reason}
+          {canSetUp && service.server_setup_needed && <SetUpLink />}
         </Typography>
       )}
       {!grant && !connected && !service.unavailable_reason && (
@@ -334,6 +353,8 @@ function OnOffGrant({
 function GitHubGrantForm({
   github,
   githubError,
+  notSetUp,
+  canSetUp,
   current,
   busy,
   onCancel,
@@ -341,6 +362,9 @@ function GitHubGrantForm({
 }: {
   github: GitHubConnection | null;
   githubError: string | null;
+  /** Why GitHub is not set up on this server, when its App is not. */
+  notSetUp: string | null;
+  canSetUp: boolean;
   current: ServiceGrant | null;
   busy: boolean;
   onCancel: (() => void) | null;
@@ -356,6 +380,13 @@ function GitHubGrantForm({
     current ? repositoryIds(current.resources) : [],
   );
 
+  if (notSetUp)
+    return (
+      <Typography variant="body2" color="text.secondary">
+        {notSetUp}
+        {canSetUp && <SetUpLink />}
+      </Typography>
+    );
   if (githubError) return <Alert severity="error">{githubError}</Alert>;
   if (github === null) return <CircularProgress size={20} />;
   if (github.status === "not_connected")

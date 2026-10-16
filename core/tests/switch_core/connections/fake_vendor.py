@@ -54,6 +54,10 @@ class FakeVendor:
         self.grant_error: Exception | None = None
         self.checked: list[tuple[str, dict[str, Any]]] = []
         self.resolved: list[list[str]] = []
+        self.client_id: str | None = None
+
+    def current_client_id(self) -> str | None:
+        return self.client_id
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
         self.refreshes += 1

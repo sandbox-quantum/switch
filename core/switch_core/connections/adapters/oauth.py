@@ -66,6 +66,10 @@ class AuthorizationEndpoints:
 class ClientSource(Protocol):
     """Where the adapter has its OAuth client from."""
 
+    def known_client_id(self) -> str | None:
+        """The client's id where it is already known, without asking anyone."""
+        ...
+
     async def credentials(
         self, endpoints: AuthorizationEndpoints
     ) -> OAuthClientCredentials: ...
@@ -76,6 +80,9 @@ class StaticClient:
     """A client the operator registered, from its settings file."""
 
     client: OAuthClientCredentials
+
+    def known_client_id(self) -> str | None:
+        return self.client.client_id
 
     async def credentials(
         self, endpoints: AuthorizationEndpoints
@@ -93,10 +100,17 @@ class Identity:
 
 @dataclass(frozen=True)
 class SignIn:
-    """What an authorization code was exchanged for."""
+    """What an authorization code was exchanged for, and through which client."""
 
     secret: ConnectionSecret
     granted_scopes: list[str]
+    client_id: str
+
+
+@dataclass(frozen=True)
+class TokenAnswer:
+    body: dict[str, Any]
+    client_id: str
 
 
 def s256(verifier: str) -> str:
@@ -309,7 +323,14 @@ class OAuthAdapter:
         )
         return None if match is None else _https(match.group(1), "resource metadata")
 
-    async def _token_request(self, form: dict[str, str]) -> dict[str, Any]:
+    def current_client_id(self) -> str | None:
+        return self._client.known_client_id()
+
+    async def client_id(self) -> str:
+        """The client a sign-in starting now goes through."""
+        return (await self._client.credentials(await self.endpoints())).client_id
+
+    async def _token_request(self, form: dict[str, str]) -> TokenAnswer:
         endpoints = await self.endpoints()
         client = await self._client.credentials(endpoints)
         data = {**form, "client_id": client.client_id}
@@ -326,7 +347,7 @@ class OAuthAdapter:
             )
         )
         if response.status_code == 200:
-            return self._json(response, "token response")
+            return TokenAnswer(self._json(response, "token response"), client.client_id)
         try:
             error = response.json().get("error")
         except (ValueError, AttributeError):
@@ -410,7 +431,7 @@ class OAuthAdapter:
         self, *, code: str, verifier: str, redirect_uri: str, scopes: list[str]
     ) -> SignIn:
         """The sign-in an authorization code stands for; Core keeps it."""
-        body = await self._token_request(
+        answer = await self._token_request(
             {
                 "grant_type": "authorization_code",
                 "code": code,
@@ -418,11 +439,12 @@ class OAuthAdapter:
                 "redirect_uri": redirect_uri,
             }
         )
-        values = self._credentials(body, {})
+        values = self._credentials(answer.body, {})
         granted = values.get("scope")
         return SignIn(
             ConnectionSecret(values),
             granted.split() if isinstance(granted, str) else list(scopes),
+            answer.client_id,
         )
 
     async def identify(self, access_token: str) -> Identity:
@@ -465,10 +487,10 @@ class OAuthAdapter:
             raise ReauthorizationRequiredError(
                 f"The {self._name} connection holds no refresh token."
             )
-        body = await self._token_request(
+        answer = await self._token_request(
             {"grant_type": "refresh_token", "refresh_token": refresh_token}
         )
-        return ConnectionSecret(self._credentials(body, secret.values))
+        return ConnectionSecret(self._credentials(answer.body, secret.values))
 
     async def check_grant(
         self, access_token: str, request: IssueRequest

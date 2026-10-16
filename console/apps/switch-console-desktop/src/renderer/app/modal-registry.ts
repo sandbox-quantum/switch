@@ -1,3 +1,9 @@
+import {
+  ConnectorAppMoveDialog,
+  ConnectorAppRemoveDialog,
+  ConnectorAppSecretDialog,
+  ConnectorAppSetupDialog,
+} from '@renderer/features/admin/connector-app-dialogs';
 import { RenameChatModal } from '@renderer/features/chats/components/chat-modals';
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
 import { ConnectServiceModal } from '@renderer/features/connectors/connect-service-modal';
@@ -95,6 +101,16 @@ export const modalRegistry = {
   connectChatModal: createModal(ConnectChatModal, { size: 'md' }),
   connectServiceModal: createModal(ConnectServiceModal, { size: 'md' }),
   disconnectServiceModal: createModal(DisconnectServiceDialog, { size: 'sm' }),
+  connectorAppSetupModal: createModal(ConnectorAppSetupDialog, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
+  connectorAppSecretModal: createModal(ConnectorAppSecretDialog, {
+    size: 'sm',
+    dismissOnOutsideClick: false,
+  }),
+  connectorAppRemoveModal: createModal(ConnectorAppRemoveDialog, { size: 'sm' }),
+  connectorAppMoveModal: createModal(ConnectorAppMoveDialog, { size: 'sm' }),
   claimIdentityModal: createModal(ClaimIdentityModal, {
     size: 'md',
     dismissOnOutsideClick: false,

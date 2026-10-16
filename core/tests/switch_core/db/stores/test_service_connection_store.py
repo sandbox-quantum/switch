@@ -72,6 +72,7 @@ async def _connect(
         account_id=account_id,
         external_identity=f"login-{account_id}",
         encrypted_secret=TEST_KEYRING.encrypt(json.dumps(secret or SECRET)),
+        oauth_client_id=None,
     )
 
 

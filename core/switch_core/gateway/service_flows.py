@@ -288,6 +288,7 @@ async def complete(
             account_id=account.account_id,
             external_identity=account.label,
             secret=signed_in.secret,
+            oauth_client_id=signed_in.client_id,
         )
     except ServiceError as error:
         await flows.failed(exchange.flow, error.message)

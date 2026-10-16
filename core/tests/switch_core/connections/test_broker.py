@@ -28,6 +28,8 @@ from switch_core.connections.adapters import (
     ServiceAdapterError,
 )
 from switch_core.connections.broker import (
+    CLIENT_REPLACED,
+    CONNECTOR_REVOKED,
     Principal,
     ServiceBroker,
     ServiceError,
@@ -139,6 +141,7 @@ async def _connect(
         encrypted_secret=TEST_KEYRING.encrypt(
             json.dumps(_secret(expires_in=expires_in))
         ),
+        oauth_client_id=None,
     )
 
 
@@ -857,6 +860,7 @@ class TestSwitchedOff:
                     account_id="1001",
                     external_identity="ada-gh",
                     secret=ConnectionSecret(_secret(expires_in=3600)),
+                    oauth_client_id=None,
                 )
             assert (caught.value.status_code, caught.value.message) == (403, reason)
 
@@ -945,6 +949,7 @@ async def _pass_through(
                     }
                 )
             ),
+            oauth_client_id=None,
         )
         grant = await STORE.save_grant(
             session,
@@ -1239,6 +1244,7 @@ async def _gated(
                     }
                 )
             ),
+            oauth_client_id=None,
         )
         await STORE.save_grant(
             session,
@@ -1307,6 +1313,7 @@ async def _connect_github(g: Gated, session_factory) -> None:
             account_id="1001",
             external_identity="ada-gh",
             secret=ConnectionSecret(dict(NEW_GITHUB_SIGN_IN)),
+            oauth_client_id=None,
         )
 
 
@@ -1321,6 +1328,7 @@ async def _connect_key(g: Gated, session_factory) -> None:
             account_id="dd-org",
             external_identity="Key · datadoghq.eu",
             secret=ConnectionSecret(dict(DATADOG_KEY)),
+            oauth_client_id=None,
         )
 
 
@@ -1335,6 +1343,7 @@ async def _relink_oauth(g: Gated, session_factory) -> None:
             account_id="acct-1",
             external_identity="ada@example.test",
             secret=ConnectionSecret(dict(NEW_EXAMPLE_SIGN_IN)),
+            oauth_client_id=None,
         )
 
 
@@ -1503,3 +1512,89 @@ async def _all_connections(
             select(ServiceConnection).order_by(ServiceConnection.service)
         )
         return [(row.service, row.account_id, row.encrypted_secret) for row in rows]
+
+
+class TestReplacedClient:
+    async def _recorded(
+        self, session_factory: async_sessionmaker[AsyncSession], world: World, client
+    ) -> None:
+        async with session_factory() as session:
+            await session.execute(
+                update(ServiceConnection)
+                .where(ServiceConnection.user_id == world.owner.id)
+                .values(oauth_client_id=client)
+            )
+            await session.commit()
+
+    async def test_a_connection_through_a_replaced_client_must_reconnect(
+        self, broker, session_factory, vendor
+    ) -> None:
+        """Told at once, with no vendor call: a refresh token the old client
+        issued is no use to the new one."""
+        world = await _world(session_factory, expires_in=60)
+        await self._recorded(session_factory, world, "old-client")
+        vendor.client_id = "new-client"
+
+        refused = await _refused(broker, session_factory, world.agent.id)
+
+        assert refused.code == CONNECTOR_REVOKED
+        assert "an app this server no longer uses" in refused.message
+        assert vendor.refreshes == 0 and vendor.issued == []
+        connection = await _connection(session_factory, world.owner.id)
+        assert connection is not None
+        assert (connection.status, connection.error_code) == (
+            "needs_reauthorization",
+            CLIENT_REPLACED,
+        )
+
+    async def test_the_same_client_issues_as_before(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+        await self._recorded(session_factory, world, "example-client")
+        vendor.client_id = "example-client"
+
+        token = await _issue(broker, session_factory, world.agent.id)
+        assert token.resources == RESOURCES
+
+    async def test_a_disconnect_after_the_app_is_removed_says_why_nothing_was_revoked(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+        broker.replace_adapter("github", None)
+        async with session_factory() as session:
+            warning = await broker.disconnect(session, world.owner.id, "github")
+        assert warning == (
+            "GitHub is not set up on this server, so Switch could not revoke "
+            "the sign-in. Revoke it at GitHub."
+        )
+        assert vendor.connections_revoked == []
+        assert await _connection(session_factory, world.owner.id) is None
+
+    async def test_a_vendor_that_answers_badly_keeps_the_general_warning(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+
+        async def refused(secret: object) -> None:
+            raise ServiceAdapterError("GitHub answered 500.")
+
+        vendor.revoke_connection = refused  # type: ignore[method-assign]
+        async with session_factory() as session:
+            warning = await broker.disconnect(session, world.owner.id, "github")
+        assert warning == (
+            "GitHub could not revoke the sign-in. Revoke it in your GitHub settings."
+        )
+
+    async def test_an_unrecorded_client_keeps_todays_behaviour(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+        await self._recorded(session_factory, world, None)
+        vendor.client_id = "new-client"
+
+        token = await _issue(broker, session_factory, world.agent.id)
+        assert token.resources == RESOURCES
+        connection = await _connection(session_factory, world.owner.id)
+        assert connection is not None
+        assert broker.client_replaced(connection) is False

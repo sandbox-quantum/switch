@@ -42,6 +42,7 @@ def _app(**overrides: object) -> object:
         protocol=MagicMock(),
         install_service=None,
         invite_mailer=None,
+        connector_apps=MagicMock(**{"github_app.return_value": None}),
         config=config,
     )
 
@@ -73,6 +74,8 @@ SERVICE_ROUTES = {
     "/service-connections/{service}/agents",
     "/workspace/services",
     "/workspace/services/{service}",
+    "/connector-apps",
+    "/connector-apps/{service}",
 }
 
 

@@ -27,6 +27,7 @@ from switch_core.db.models import (
     Client,
     CollaborationBridge,
     MessagingInstall,
+    ServiceAppCredential,
     ServiceConnection,
     ServiceTokenIssuance,
     Tenant,
@@ -258,6 +259,56 @@ async def test_the_deployments_registered_clients_end_up_under_the_current_key(
     )
     assert isinstance(secret, str) and secret.startswith(_NEW.current_prefix())
     assert _NEW.decrypt(secret) == '{"client_id": "registered-1"}'
+
+
+async def test_the_operators_connector_apps_end_up_under_the_current_key(
+    rls_harness: RLSHarness,
+) -> None:
+    """An app the operator entered from the dashboard belongs to no tenant,
+    and is rewritten once by the global pass."""
+    _, operator = await _tenant_with_user(rls_harness.owner)
+    async with rls_harness.owner() as session:
+        session.add(
+            ServiceAppCredential(
+                service="google-workspace",
+                client_id="example-client-id",
+                settings={},
+                encrypted_secrets=_legacy_encrypt('{"client_secret": "example"}'),
+                updated_by=operator,
+            )
+        )
+        await session.commit()
+
+    await reencrypt_stored_secrets(rls_harness.restricted, _NEW, [])
+
+    secret = await _raw_where(
+        rls_harness.owner,
+        "SELECT encrypted_secrets FROM service_app_credentials WHERE service = :service",
+        {"service": "google-workspace"},
+    )
+    assert isinstance(secret, str) and secret.startswith(_NEW.current_prefix())
+    assert _NEW.decrypt(secret) == '{"client_secret": "example"}'
+
+
+async def test_a_connector_app_no_key_opens_stops_the_boot(
+    rls_harness: RLSHarness,
+) -> None:
+    _, operator = await _tenant_with_user(rls_harness.owner)
+    async with rls_harness.owner() as session:
+        session.add(
+            ServiceAppCredential(
+                service="google-workspace",
+                client_id="example-client-id",
+                settings={},
+                encrypted_secrets=_OLD.encrypt('{"client_secret": "example"}'),
+                updated_by=operator,
+            )
+        )
+        await session.commit()
+
+    too_early = Keyring.parse("new:" + "n" * 40, legacy_secret=None)
+    with pytest.raises(UndecryptableError):
+        await reencrypt_stored_secrets(rls_harness.restricted, too_early, [])
 
 
 async def test_a_value_no_key_opens_stops_the_boot(

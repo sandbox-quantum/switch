@@ -51,6 +51,7 @@ from switch_core.connections.adapters import (
 )
 from switch_core.connections.adapters.api_key import ApiKeyAdapter
 from switch_core.connections.adapters.oauth import OAuthAdapter
+from switch_core.connections.app_credentials import needs_operator_app, not_set_up
 from switch_core.connections.loader import (
     TOKEN_PLACEHOLDER,
     AccessLevel,
@@ -125,6 +126,9 @@ REVOCATION_CLAIM = timedelta(seconds=90)
 VENDOR_CALL_SECONDS = 8
 ACCESS_WARNING = "Some access already given out may remain for up to 1 hour."
 SWITCHED_OFF = "Switched off on this server."
+# Why a connection needs reconnecting: the operator replaced the app it
+# signed in through.
+CLIENT_REPLACED = "client_replaced"
 
 
 class ServiceError(Exception):
@@ -912,6 +916,18 @@ class ServiceBroker:
                     "Connections.",
                     retryable=False,
                 )
+            if self.client_replaced(connection):
+                await self._store.mark_needs_reauthorization(
+                    session, owner_id, service, CLIENT_REPLACED
+                )
+                await session.commit()
+                raise self._revoked(
+                    service,
+                    ReauthorizationRequiredError(
+                        f"{name} was connected through an app this server no "
+                        "longer uses."
+                    ),
+                )
             secret = self._secret(connection)
             token = secret.access_token
             fresh = secret.expires_at > time.time() + before.total_seconds()
@@ -1062,6 +1078,39 @@ class ServiceBroker:
             and service not in self._disabled
         )
 
+    def server_setup_needed(self, service: str) -> bool:
+        """Whether `service` waits on the operator setting up its app here."""
+        entry = self._catalog.get(service)
+        return (
+            entry is not None
+            and entry.definition.enabled
+            and needs_operator_app(entry.definition)
+            and service not in self._adapters
+        )
+
+    def client_replaced(self, connection: ServiceConnection) -> bool:
+        """Whether `connection` signed in through a client its service no
+        longer uses, so it must reconnect. Unknown either side is no."""
+        if connection.oauth_client_id is None:
+            return False
+        adapter = self._adapters.get(connection.service)
+        current = None if adapter is None else adapter.current_client_id()
+        return current is not None and current != connection.oauth_client_id
+
+    def replace_adapter(self, service: str, adapter: ServiceAdapter | None) -> None:
+        """Use `adapter` for `service` from the next call on, or none.
+
+        One assignment on the event loop, so a reader sees the old adapter or
+        the new one, never a mix. A call already under way finishes on the
+        adapter it started with.
+        """
+        if service not in self._catalog:
+            raise ValueError(f"No service named {service!r} in the catalog.")
+        if adapter is None:
+            self._adapters.pop(service, None)
+        else:
+            self._adapters[service] = adapter
+
     def availability(self, service: str) -> str | None:
         """Why `service` cannot be granted on this server, or None if it can."""
         entry = self._catalog.get(service)
@@ -1072,9 +1121,8 @@ class ServiceBroker:
             return reason
         adapter = self._adapters.get(service)
         if adapter is None:
-            oauth = entry.definition.auth.oauth
-            if oauth is not None and oauth.setup_note is not None:
-                return f"Not set up on this server. {oauth.setup_note}"
+            if needs_operator_app(entry.definition):
+                return not_set_up(entry.definition.name)
             return f"{entry.definition.name} is not set up on this server."
         if not adapter.can_issue:
             return (
@@ -1372,8 +1420,12 @@ class ServiceBroker:
         account_id: str,
         external_identity: str,
         secret: ConnectionSecret,
+        oauth_client_id: str | None,
     ) -> str | None:
         """Link the person's account, or re-link it in place.
+
+        `oauth_client_id` is the vendor client the sign-in went through, None
+        for a key.
 
         Re-linking keeps the grants (a different account then fails them with
         `grant_account_changed`) and revokes what was issued on the old
@@ -1419,6 +1471,7 @@ class ServiceBroker:
             account_id=account_id,
             external_identity=external_identity,
             encrypted_secret=self._keyring.encrypt(json.dumps(secret.values)),
+            oauth_client_id=oauth_client_id,
         )
         await record_audit_event(
             session,
@@ -1688,11 +1741,17 @@ class ServiceBroker:
             entry = self._catalog.get(service)
             name = service if entry is None else entry.definition.name
             adapter = self._adapters.get(service)
+            if adapter is None:
+                logger.warning(
+                    "%s sign-in not revoked: the service is not set up on this server",
+                    service,
+                )
+                warnings.append(
+                    f"{name} is not set up on this server, so Switch could not "
+                    f"revoke the sign-in. Revoke it at {name}."
+                )
+                continue
             try:
-                if adapter is None:
-                    raise ServiceUnavailableError(
-                        f"{name} is not available on this server."
-                    )
                 async with asyncio.timeout(VENDOR_CALL_SECONDS):
                     await adapter.revoke_connection(secret)
             except ConnectionNotRevocable as error:

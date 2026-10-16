@@ -9,8 +9,9 @@ auth:
   # Google's refresh tokens survive their use.
   refresh: reusable
   oauth:
-    # Each server's operator registers an internal Google app (a Web client)
-    # and names its settings in GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH.
+    # Each server's operator registers a Google app (a Web client) and saves
+    # it under Connectors in the dashboard, or names its settings in
+    # GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH.
     registration: static
     client_settings: GOOGLE_WORKSPACE
     redirect: [core]
@@ -23,8 +24,6 @@ auth:
     # personal one, or another organization's) does not pick it unasked.
     prompt: consent select_account
     authorization_params: { access_type: offline }
-    # Shown after "Not set up on this server." where the settings are unset.
-    setup_note: Its operator registers an internal Google app; see the docs.
   identity:
     url: https://openidconnect.googleapis.com/v1/userinfo
     account_id: sub

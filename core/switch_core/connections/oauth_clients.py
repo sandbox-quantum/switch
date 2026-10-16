@@ -115,6 +115,9 @@ class RegisteredClient:
         self._known: tuple[str, OAuthClientCredentials] | None = None
         self._lock = asyncio.Lock()
 
+    def known_client_id(self) -> str | None:
+        return None if self._known is None else self._known[1].client_id
+
     async def credentials(
         self, endpoints: AuthorizationEndpoints
     ) -> OAuthClientCredentials:

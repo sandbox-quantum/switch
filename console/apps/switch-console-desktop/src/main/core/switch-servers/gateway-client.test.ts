@@ -54,6 +54,10 @@ const {
   fetchServiceGrants,
   fetchWorkspaceServices,
   setWorkspaceService,
+  fetchConnectorApps,
+  saveConnectorApp,
+  fetchConnectorAppImpact,
+  removeConnectorApp,
   removeServiceGrant,
   setServiceGrant,
   getGitHubConnection,
@@ -173,6 +177,33 @@ function cookieHeaderOf(call: unknown[]): string {
 }
 
 const fetchMock = vi.fn(async () => okMeResponse());
+
+const CONNECTOR_APP = {
+  slug: 'github',
+  name: 'GitHub',
+  kind: 'github_app',
+  source: 'saved',
+  configuration_variables: ['GITHUB_CONNECTIONS_CONFIG_PATH'],
+  deprecated: false,
+  client_id: 'Iv1',
+  saved_client_id: 'Iv1',
+  fields: { slug: 'switch-example' },
+  secrets: {
+    client_secret: { set: true, last4: 'ab12' },
+    private_key: { set: true, fingerprint: 'SHA256:abc' },
+  },
+  saved_ignored: false,
+  unreadable: false,
+  load_error: null,
+  redirect_uri: 'https://switch.example.com/gateway/provider-connections/github/callback',
+  setup_blocked: null,
+  install_url: 'https://github.com/apps/switch-example/installations/new',
+  updated_by_name: 'Ada',
+  updated_at: '2026-10-16T09:00:00+00:00',
+  connected_members: 3,
+  workspaces: 1,
+  stale_connections: 0,
+};
 
 describe('gatewayFetch proactive session renewal', () => {
   beforeEach(() => {
@@ -1348,6 +1379,93 @@ describe('GitHub connection transport', () => {
     expect(url).toBe('https://switch.example.com/gateway/workspace/services/github');
     expect(init.method).toBe('PUT');
     expect(JSON.parse(String(init.body))).toEqual({ enabled: false });
+  });
+  it("reads the server's connector apps, and none from a server without them", async () => {
+    const apps = { public_url: 'https://switch.example.com', apps: [CONNECTOR_APP] };
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...apps, registered: [{ slug: 'linear' }] }))
+    );
+    expect(await fetchConnectorApps(SERVER)).toEqual(apps);
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/connector-apps'
+    );
+
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }));
+    expect(await fetchConnectorApps(SERVER)).toBeNull();
+
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Admins only."}', { status: 403 }));
+    await expect(fetchConnectorApps(SERVER)).rejects.toMatchObject({ status: 403 });
+  });
+  it("answers a vendor's refusal of a save with the value to look at, and throws the rest", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(CONNECTOR_APP)));
+    expect(await saveConnectorApp(SERVER, 'github', { client_id: 'Iv1', replace: false })).toEqual({
+      kind: 'saved',
+      app: CONNECTOR_APP,
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/connector-apps/github');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ client_id: 'Iv1', replace: false });
+
+    const check = {
+      name: 'secret',
+      ok: false,
+      message: 'GitHub refused the secret.',
+      field: 'client_secret',
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          detail: 'GitHub refused the secret.',
+          field: 'client_secret',
+          checks: [check],
+        }),
+        { status: 422 }
+      )
+    );
+    expect(
+      await saveConnectorApp(SERVER, 'github', {
+        client_id: 'Iv1',
+        client_secret: 'x',
+        replace: false,
+      })
+    ).toEqual({
+      kind: 'refused',
+      message: 'GitHub refused the secret.',
+      field: 'client_secret',
+      checks: [check],
+    });
+
+    // A 422 that is not the vendor's (a missing secret) is a failure like any other.
+    fetchMock.mockResolvedValueOnce(
+      new Response('{"detail":"Enter the client secret."}', { status: 422 })
+    );
+    await expect(
+      saveConnectorApp(SERVER, 'github', { client_id: 'Iv1', replace: false })
+    ).rejects.toMatchObject({ status: 422, detail: 'Enter the client secret.' });
+  });
+  it('asks who would reconnect, and who was connected through a removed app', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ connected_members: 4, workspaces: 2 }))
+    );
+    expect(await fetchConnectorAppImpact(SERVER, 'google-workspace', 'a b')).toEqual({
+      connected_members: 4,
+      workspaces: 2,
+    });
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/connector-apps/google-workspace/impact?client_id=a+b'
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ connected_members: 0, workspaces: 0 }))
+    );
+    expect(await removeConnectorApp(SERVER, 'github')).toEqual({
+      connected_members: 0,
+      workspaces: 0,
+    });
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit])[1].method).toBe(
+      'DELETE'
+    );
   });
   it("reads someone else's agent's grants as none, and any other failure as one", async () => {
     fetchMock.mockResolvedValueOnce(new Response('{"detail":"Agent not found."}', { status: 404 }));

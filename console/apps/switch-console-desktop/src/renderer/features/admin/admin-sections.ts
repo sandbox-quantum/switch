@@ -1,9 +1,10 @@
-export type AdminSection = 'connectors';
+export type AdminSection = 'connectors' | 'apps';
 
 export type AdminScope = 'workspace' | 'server';
 
 export const ADMIN_SECTION_LABELS = {
   connectors: 'Connectors',
+  apps: 'Connector apps',
 } as const satisfies Record<AdminSection, string>;
 
 export type AdminGroup = { scope: AdminScope; sections: AdminSection[] };
@@ -13,11 +14,13 @@ export type AdminGroup = { scope: AdminScope; sections: AdminSection[] };
  * they reach. Each is there only for the role that may use it, so nobody is
  * shown a control the server would refuse: the workspace's connector
  * switches are its admins' (the server's operator administers every
- * workspace). A group with nothing in it is left out.
+ * workspace), and the apps connectors sign in through are the operator's
+ * alone. A group with nothing in it is left out.
  */
-export function adminGroups(person: { administers: boolean }): AdminGroup[] {
+export function adminGroups(person: { administers: boolean; operator: boolean }): AdminGroup[] {
   const groups: AdminGroup[] = [
     { scope: 'workspace', sections: person.administers ? ['connectors'] : [] },
+    { scope: 'server', sections: person.operator ? ['apps'] : [] },
   ];
   return groups.filter((group) => group.sections.length > 0);
 }

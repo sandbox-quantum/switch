@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from switch_core.connections.adapters.api_key import ApiKeyAdapter
 from switch_core.connections.adapters.github import GitHubAdapter, load_github_app
-from switch_core.connections.adapters.oauth import OAuthAdapter
+from switch_core.connections.adapters.oauth import OAuthAdapter, OAuthClientCredentials
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG, CATALOG_ROOT, load_catalog
 from switch_core.connections.oauth_clients import RegisteredClient
@@ -59,7 +59,7 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
         _config(github_app_config_path=settings, github_app_private_key_path=key)
     )
     adapters = build_adapters(
-        CATALOG, github_app=app, environ={}, http=HTTP, registration=REG
+        CATALOG, github_app=app, oauth_clients={}, http=HTTP, registration=REG
     )
     assert set(adapters) == {"github", "atlassian", "datadog"}
     assert isinstance(adapters["github"], GitHubAdapter)
@@ -68,21 +68,21 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
 
 def test_github_without_the_app_is_left_not_set_up() -> None:
     adapters = build_adapters(
-        CATALOG, github_app=None, environ={}, http=HTTP, registration=REG
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
     )
     assert "github" not in adapters
 
 
 def test_a_key_service_needs_nothing_set_up_on_the_server() -> None:
     adapters = build_adapters(
-        CATALOG, github_app=None, environ={}, http=HTTP, registration=REG
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
     )
     assert isinstance(adapters["datadog"], ApiKeyAdapter)
 
 
 def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> None:
     adapters = build_adapters(
-        CATALOG, github_app=None, environ={}, http=HTTP, registration=REG
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
     )
     adapter = adapters["atlassian"]
     assert isinstance(adapter, OAuthAdapter)
@@ -101,12 +101,10 @@ def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> Non
 
 
 def test_a_static_oauth_client_gets_the_generic_adapter(tmp_path: Path) -> None:
-    path = tmp_path / "client.json"
-    path.write_text(json.dumps({"client_id": "c", "client_secret": "SYNTHETIC"}))
     adapters = build_adapters(
         _catalog(tmp_path, STATIC),
         github_app=None,
-        environ={"EXAMPLE_CLIENT_CONFIG_PATH": str(path)},
+        oauth_clients={"example": OAuthClientCredentials("c", "SYNTHETIC")},
         http=HTTP,
         registration=REG,
     )
@@ -114,19 +112,17 @@ def test_a_static_oauth_client_gets_the_generic_adapter(tmp_path: Path) -> None:
 
 
 def test_a_cli_entry_gets_the_generic_adapter_with_its_client(tmp_path: Path) -> None:
-    path = tmp_path / "client.json"
-    path.write_text(json.dumps({"client_id": "c", "client_secret": "SYNTHETIC"}))
     catalog = _catalog(tmp_path, CLI_ENTRY)
     adapters = build_adapters(
         catalog,
         github_app=None,
-        environ={"EXAMPLE_CLIENT_CONFIG_PATH": str(path)},
+        oauth_clients={"example": OAuthClientCredentials("c", "SYNTHETIC")},
         http=HTTP,
         registration=REG,
     )
     assert isinstance(adapters["example"], OAuthAdapter)
     assert "example" not in build_adapters(
-        catalog, github_app=None, environ={}, http=HTTP, registration=REG
+        catalog, github_app=None, oauth_clients={}, http=HTTP, registration=REG
     )
 
 
@@ -136,7 +132,7 @@ def test_a_static_oauth_client_without_settings_is_not_set_up(
     adapters = build_adapters(
         _catalog(tmp_path, STATIC),
         github_app=None,
-        environ={},
+        oauth_clients={},
         http=HTTP,
         registration=REG,
     )
@@ -145,7 +141,11 @@ def test_a_static_oauth_client_without_settings_is_not_set_up(
 
 def test_a_dynamic_client_is_registered_by_core(tmp_path: Path) -> None:
     adapters = build_adapters(
-        _catalog(tmp_path), github_app=None, environ={}, http=HTTP, registration=REG
+        _catalog(tmp_path),
+        github_app=None,
+        oauth_clients={},
+        http=HTTP,
+        registration=REG,
     )
     adapter = adapters["example"]
     assert isinstance(adapter, OAuthAdapter)
@@ -160,41 +160,60 @@ def test_a_core_callback_without_a_public_address_stops_the_server(
         build_adapters(
             _catalog(tmp_path, core_only),
             github_app=None,
-            environ={},
+            oauth_clients={},
             http=HTTP,
             registration=REG,
         )
 
 
-def test_an_entry_not_set_up_here_shows_its_catalog_note(
-    tmp_path: Path, session_factory
-) -> None:
-    root = tmp_path / "catalog"
-    shutil.copytree(CATALOG_ROOT, root)
-    _write_example(
-        root,
-        OAUTH_ENTRY.replace(
-            "    registration: dynamic\n",
-            "    registration: static\n"
-            "    client_settings: EXAMPLE\n"
-            "    setup_note: Its operator registers an Example app; see the docs.\n",
-        ),
-    )
-    broker = ServiceBroker(
+def _broker(catalog: dict, session_factory, adapters: dict) -> ServiceBroker:
+    return ServiceBroker(
         session_factory=session_factory,
         keyring=TEST_KEYRING,
-        catalog=load_catalog(root),
-        adapters={},
+        catalog=catalog,
+        adapters=adapters,
         disabled={},
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
     )
-    assert broker.availability("example") == (
-        "Not set up on this server. Its operator registers an Example app; see the docs."
+
+
+def test_an_app_not_set_up_here_says_who_sets_it_up(
+    tmp_path: Path, session_factory
+) -> None:
+    broker = _broker(_catalog(tmp_path, STATIC), session_factory, {})
+    reason = (
+        "{} is not set up on this server. Ask whoever runs your Switch server "
+        "to add it under Connectors in the Switch dashboard."
     )
+    assert broker.availability("example") == reason.format("Example")
+    assert broker.availability("github") == reason.format("GitHub")
     assert broker.connectable("example") is False
+
+
+def test_a_replaced_adapter_is_used_at_once(tmp_path: Path, session_factory) -> None:
+    catalog = _catalog(tmp_path, STATIC)
+    broker = _broker(catalog, session_factory, {})
+    adapter = build_adapters(
+        catalog,
+        github_app=None,
+        oauth_clients={"example": OAuthClientCredentials("c", "SYNTHETIC")},
+        http=HTTP,
+        registration=REG,
+    )["example"]
+
+    broker.replace_adapter("example", adapter)
+    assert broker.availability("example") is None
+    assert broker.connectable("example") is True
+
+    broker.replace_adapter("example", None)
+    assert broker.availability("example") is not None
+    assert broker.connectable("example") is False
+
+    with pytest.raises(ValueError, match="No service named"):
+        broker.replace_adapter("nowhere", None)
 
 
 class TestClientSettings:

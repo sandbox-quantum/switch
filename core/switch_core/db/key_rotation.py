@@ -38,6 +38,7 @@ from switch_core.db.models import (
     MessagingInstall,
     ProviderConnection,
     ServerConnector,
+    ServiceAppCredential,
     ServiceConnection,
     ServiceOAuthClient,
     ServiceTokenIssuance,
@@ -66,11 +67,13 @@ _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (SignInFlow, "encrypted_result"),
 )
 # In tables no tenant holds (`db/rls_ddl.py`, GLOBAL_TABLES), one row set for
-# the whole deployment (`trust_settings`, `service_oauth_clients`): rewritten
+# the whole deployment (`trust_settings`, `service_oauth_clients`,
+# `service_app_credentials`): rewritten
 # once, in a session bound to no tenant, rather than once per tenant.
 _GLOBAL_ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (TrustSettings, "api_key_encrypted"),
     (ServiceOAuthClient, "encrypted_secret"),
+    (ServiceAppCredential, "encrypted_secrets"),
 )
 
 

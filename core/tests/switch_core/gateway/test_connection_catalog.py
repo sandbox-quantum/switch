@@ -68,6 +68,7 @@ async def link_github(session_factory, user_id):
             encrypted_secret=TEST_KEYRING.encrypt(
                 json.dumps({"access_token": "SYNTHETIC"})
             ),
+            oauth_client_id=None,
         )
         await session.commit()
 
