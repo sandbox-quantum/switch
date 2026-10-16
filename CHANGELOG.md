@@ -363,6 +363,17 @@ version of their own to them without also giving them a release of their own.
 #### Security
 - **Multi-tenant security hardening** across the server and gateway (#641).
 
+#### Changed
+- **The Helm chart runs switch-core as a ServiceAccount of its own.**
+  It is `<release>-switch-core` (`switchCore.serviceAccount`) where it used to be
+  the namespace's `default`, which every pod that names no account shares, so
+  anything trusting switch-core's identity, such as the distributed Teams app's
+  federated credential, trusts switch-core alone. `create: false` with a `name`
+  runs it as an account made elsewhere. A Teams app whose federated
+  credential trusts `default` stops getting tokens after this upgrade: add a
+  credential for `system:serviceaccount:<namespace>:<release>-switch-core`
+  first, and remove the old one once the new pod is up.
+
 #### Fixed
 - **A silent Mattermost no longer freezes all of switch-core** (#660).
 - **Teams no longer adds users to the whole team** when a private channel is
