@@ -3,7 +3,7 @@ import { app } from 'electron';
 import { sessionDeeplinkChannel } from '@shared/core/switch-rooms/switchRoomEvents';
 import { events } from '../lib/events';
 import { log } from '../lib/logger';
-import { getMainWindow } from './window';
+import { focusMainWindow, getMainWindow } from './window';
 
 /**
  * Custom URL scheme Switch Console registers with the OS. Matches the scheme the
@@ -61,20 +61,12 @@ function parseSessionDeeplink(rawUrl: string): ParsedDeeplink | null {
   return { server, agentId, roomId, sessionId };
 }
 
-function focusWindow(): void {
-  const win = getMainWindow();
-  if (!win) return;
-  if (win.isMinimized()) win.restore();
-  win.show();
-  win.focus();
-}
-
 /** Parse, focus the app, and hand the deeplink to the renderer (or buffer it
  * when the renderer isn't up yet). */
 export function handleDeeplinkUrl(rawUrl: string): void {
   const parsed = parseSessionDeeplink(rawUrl);
   if (!parsed) return;
-  focusWindow();
+  focusMainWindow();
   const win = getMainWindow();
   if (win && !win.webContents.isLoading()) {
     events.emit(sessionDeeplinkChannel, { ...parsed, coldStart: false });

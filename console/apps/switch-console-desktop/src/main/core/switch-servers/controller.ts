@@ -69,7 +69,6 @@ import { openAuthenticatedGatewayPage } from './gateway-web';
 import {
   startGitHubBrowserFlow,
   getGitHubBrowserFlow,
-  confirmGitHubBrowserFlow,
   cancelGitHubBrowserFlow,
 } from './github-browser-flow';
 import { deleteManagedClaudeCredential } from './managed-claude-credential';
@@ -88,7 +87,6 @@ import {
 } from './servers-store';
 import {
   cancelServiceBrowserFlow,
-  confirmServiceBrowserFlow,
   getServiceBrowserFlow,
   startServiceBrowserFlow,
 } from './service-browser-flow';
@@ -319,8 +317,6 @@ export const switchServersController = createRPCController({
     ),
   getGitHubFlow: (serverId: string, id: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => getGitHubBrowserFlow(server, id)),
-  confirmGitHubConnection: (serverId: string, id: string) =>
-    withReachableServerWorkspaceSession(serverId, (server) => confirmGitHubBrowserFlow(server, id)),
   cancelGitHubConnection: (serverId: string, id: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => cancelGitHubBrowserFlow(server, id)),
   disconnectGitHub: (serverId: string) =>
@@ -332,10 +328,6 @@ export const switchServersController = createRPCController({
   getServiceFlow: (serverId: string, service: string, id: string) =>
     withReachableServerWorkspaceSession(serverId, (server) =>
       getServiceBrowserFlow(server, service, id)
-    ),
-  confirmServiceConnection: (serverId: string, service: string, id: string) =>
-    withReachableServerWorkspaceSession(serverId, (server) =>
-      confirmServiceBrowserFlow(server, service, id)
     ),
   cancelServiceConnection: (serverId: string, service: string, id: string) =>
     withReachableServerWorkspaceSession(serverId, (server) =>

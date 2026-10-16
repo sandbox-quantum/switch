@@ -1,3 +1,4 @@
+import { appService } from '@main/core/app/service';
 import { backfillAgentIcons } from '@main/core/switch-servers/backfill-agent-icons';
 import { withResolvedHomeUrls } from '@main/core/switch-servers/bridge-home-url';
 import { createBridgeOnServer } from '@main/core/switch-servers/create-bridge';
@@ -54,10 +55,16 @@ import {
   type TemplateRun,
   type TemplateVisibility,
   updateAddressingPolicy,
+  fetchConnectionAgents,
   fetchServiceGrants,
+  fetchWorkspaceServices,
   getConnectionCatalog,
   getGitHubConnection,
+  connectServiceWithKey,
+  disconnectGitHub,
+  disconnectService,
   setServiceGrant,
+  setWorkspaceService,
   removeServiceGrant,
   updateCanManageAgents,
   updateAgentDescription,
@@ -72,6 +79,11 @@ import {
 } from '@main/core/switch-servers/identities';
 import { hostUnreachable } from '@main/core/switch-servers/require-server';
 import { serverKindOf } from '@main/core/switch-servers/servers-store';
+import {
+  cancelServiceBrowserFlow,
+  getServiceBrowserFlow,
+  startServiceBrowserFlow,
+} from '@main/core/switch-servers/service-browser-flow';
 import { saveTeamsPackage } from '@main/core/switch-servers/teams-package';
 import { updateBridgeOnServer } from '@main/core/switch-servers/update-bridge';
 import { bridgePlatformOfType } from '@main/core/telemetry/bridge-platform';
@@ -805,6 +817,62 @@ export const workspacesController = createRPCController({
   /** Every catalog service with the signed-in person's connection to it, in this workspace. */
   getServiceConnections: (workspaceId: string) =>
     withWorkspaceSession(workspaceId, getConnectionCatalog),
+
+  /**
+   * Start signing in to `service` for this workspace: the browser opens at the
+   * vendor, and this Console's listener takes the result back. Resolves to the
+   * flow's id.
+   */
+  startServiceConnection: (params: { workspaceId: string; service: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      startServiceBrowserFlow(server, params.service, (url) => appService.openExternal(url))
+    ),
+
+  getServiceFlow: (params: { workspaceId: string; service: string; flowId: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      getServiceBrowserFlow(server, params.service, params.flowId)
+    ),
+
+  cancelServiceConnection: (params: { workspaceId: string; service: string; flowId: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      cancelServiceBrowserFlow(server, params.service, params.flowId)
+    ),
+
+  /** Connect `service` with a key, or replace the key it has; Switch checks it with the vendor. */
+  connectServiceWithKey: (params: {
+    workspaceId: string;
+    service: string;
+    fields: Record<string, string>;
+  }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      connectServiceWithKey(server, params.service, params.fields)
+    ),
+
+  /** Disconnect `service` in this workspace: its grants go with it. */
+  disconnectService: (params: { workspaceId: string; service: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) => disconnectService(server, params.service)),
+
+  disconnectGitHub: (workspaceId: string) =>
+    withWorkspaceSession(workspaceId, (server) => disconnectGitHub(server)),
+
+  /** The signed-in person's own agents in this workspace, and which are granted `service`. */
+  getConnectionAgents: (params: { workspaceId: string; service: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchConnectionAgents(server, params.service)
+    ),
+
+  /**
+   * The workspace's switch for each service, for a workspace admin; null when
+   * its server has no workspace switch.
+   */
+  getWorkspaceServices: (workspaceId: string) =>
+    withWorkspaceSession(workspaceId, fetchWorkspaceServices),
+
+  /** Switch a service on or off for everyone in this workspace; workspace admins only. */
+  setWorkspaceService: (params: { workspaceId: string; service: string; enabled: boolean }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      setWorkspaceService(server, params.service, params.enabled)
+    ),
 
   /**
    * Create or replace the agent's grant on a service; owner only. Resolves to

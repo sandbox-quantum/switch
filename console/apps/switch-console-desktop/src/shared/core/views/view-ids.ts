@@ -18,6 +18,7 @@ export const VIEW_IDS = [
   'server',
   'managedServer',
   'serverAgents',
+  'connectors',
   'serverRooms',
   'remoteHosts',
   'remoteHost',
@@ -26,6 +27,7 @@ export const VIEW_IDS = [
   'templateDetail',
   'templateUse',
   'templateCapture',
+  'admin',
 ] as const;
 
 export type ViewIdName = (typeof VIEW_IDS)[number];

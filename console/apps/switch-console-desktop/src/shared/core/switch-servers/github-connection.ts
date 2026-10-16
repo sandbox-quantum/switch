@@ -23,7 +23,9 @@ export const gitHubConnectionSchema = z.discriminatedUnion('status', [
 ]);
 export type GitHubConnection = z.infer<typeof gitHubConnectionSchema>;
 export const gitHubFlowSchema = z.object({
-  status: z.enum(['pending', 'checking', 'ready', 'failed']),
+  status: z.enum(['pending', 'checking', 'connected', 'failed']),
   login: z.string(),
+  error: z.string().nullable(),
+  warning: z.string().nullable(),
 });
 export type GitHubFlow = z.infer<typeof gitHubFlowSchema>;

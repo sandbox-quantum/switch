@@ -1757,6 +1757,60 @@ version of their own to them without also giving them a release of their own.
 - **Usage data goes to `telemetry.switchagents.ai`.** Console reported to
   `telemetry.flintai.dev`, an older name for the same relay that is being
   retired. Only where it is sent changes; what is sent, and the opt-out, do not.
+- **A sign-in comes back to Console on its own.** When the browser returns
+  from a service's sign-in, Console comes to the front with the next step
+  showing, and the browser's page says the sign-in is done and the tab can be
+  closed. It used to stay behind the browser, with a page telling the person
+  to return to it and confirm. Services whose sign-in returns through the
+  server (Google Workspace, GitHub) also no longer stop on the server's
+  "Continue in Switch Console" page, with a server from the same release.
+- **A sign-in connects without a confirm step.** Once the browser returns,
+  the server keeps the connection and Console shows the result: a service
+  whose agents are added from its page opens that page with the search ready,
+  and any other shows "connected" in the dialog. Console no longer asks to
+  confirm the account first; the account is chosen at the vendor, and
+  Disconnect undoes a wrong one. A sign-in the server refuses, such as an
+  account already linked to someone else in the workspace, shows the reason in
+  the dialog, and the browser's page says to look there. GitHub's sign-in
+  works the same way. Needs a server from this release.
+- **A connector's agents are managed on its page, the way a room's
+  participants are.** The connector's page lists the agents using it as
+  cards, with each agent's avatar and what runs it, under an "Agents" heading
+  with the count. "Add agent" opens a search of your other agents under the
+  cards, and choosing one turns the service on for it at once. Connecting a
+  service now lands on its page with that search open, instead of a checklist
+  in the connect dialog. An agent others can address is offered with a note
+  that it would act as you. A cross on a card, shown on hover, turns the
+  service off for that agent again, so one agent's access can be taken away
+  without disconnecting from every agent.
+- **GitHub is connected, and handed to agents, from its page like any other
+  connector.** Its page has a Repositories section: one card per account the
+  App is installed on, with its count, opening to a directory of names in
+  columns that is searched rather than scrolled once it is long, re-read as
+  the window regains focus. The section's "Choose repositories", "Change
+  repositories" once there are some, goes straight to GitHub. The connect
+  dialog ends with Done once GitHub is connected, the page behind already
+  current; it no longer offers Back or Disconnect, which the page has. "Add
+  agent" is offered for GitHub too: what every added agent gets is chosen
+  above the search, and the page says so while nothing is chosen, since no
+  agent can be added until something is. "Choose repositories" opens the
+  choice in place: the account where there are several, the repositories as
+  chips, added one by one from a search or all at once and removed with a
+  cross, and whether the agent may push. An agent's own choice is changed on
+  its Connections tab, whose form is the same choice in place of the account
+  dropdown and checkbox list.
+- **A workspace's service switches are on an Admin page.** They were a
+  "Workspace" tab on the Connectors page, beside Yours and Discover. An Admin
+  entry in the sidebar, shown to the workspace's admins and the server's
+  operator where service connections are on, opens a page laid out like
+  Settings: its sections down the side, grouped under what they reach
+  ("Workspace" and the workspace's name). Its Connectors section shows the
+  switches as tiles like Discover's: each service with its category, how many
+  members have connected it and agents use it, and who last changed it, with
+  its switch. A tile keeps its place when it flips, and switching one off
+  still asks first when anyone uses it. The Connectors page has Yours and
+  Discover again, with "Manage in Admin" in its header for an admin, and its
+  search now fills the row.
 - **Connector tools ask in approval-required and auto-accept-edits mode.**
   Calls to a granted service's tools (Jira and Confluence through Atlassian,
   Datadog, Google Workspace) used to run without asking in every mode. They now

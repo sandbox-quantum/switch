@@ -1,5 +1,6 @@
 import {
   allFeatureFlagsOff,
+  FLAGS_NOT_READ_YET,
   type FeatureFlagKey,
   resolveFeatureFlags,
   sameFeatureFlags,
@@ -54,7 +55,7 @@ export class FeatureFlagsService {
         serverId,
         flags: allFeatureFlagsOff(),
         fetchedAt: null,
-        error: 'Not read yet',
+        error: FLAGS_NOT_READ_YET,
       }
     );
   }

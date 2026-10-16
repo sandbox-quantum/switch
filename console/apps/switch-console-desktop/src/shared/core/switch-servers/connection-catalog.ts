@@ -45,6 +45,13 @@ export const connectionCatalogEntrySchema = z.object({
   key: serviceKeyFormSchema.nullable(),
   /** The connected account as people recognise it; null when not connected. */
   external_identity: z.string().nullable(),
+  /** What the person allowed when they connected; null when not connected or not said. */
+  consent: z.enum(['read', 'write']).nullable(),
+  /**
+   * Whether the workspace has the service switched on. Null from a server
+   * with no workspace switch, which every page treats as on.
+   */
+  workspace_enabled: z.boolean().nullable(),
 });
 export type ConnectionCatalogEntry = z.infer<typeof connectionCatalogEntrySchema>;
 
@@ -61,6 +68,8 @@ export const connectionCatalogSchema = z.object({
         loopback_ports: true,
         key: true,
         external_identity: true,
+        consent: true,
+        workspace_enabled: true,
       })
       .extend({ status: z.enum(['connected', 'not_connected', 'coming_soon']) })
   ),
@@ -85,7 +94,48 @@ export const serviceConnectionsSchema = z.object({
       loopback_ports: z.array(z.number().int()).nullable().default(null),
       key: serviceKeyFormSchema.nullable().default(null),
       external_identity: z.string().nullable().default(null),
+      consent: z.enum(['read', 'write']).nullable().default(null),
+      workspace_enabled: z.boolean().nullable().default(null),
       status: z.enum(['not_connected', 'active', 'needs_reauthorization', 'error']),
     })
   ),
 });
+
+/** `GET /service-connections/{service}/agents`: the person's own agents in the workspace. */
+export const connectionAgentsSchema = z.array(
+  z.object({
+    agent_id: z.string(),
+    name: z.string(),
+    /** Whether the agent has a grant on the service. */
+    granted: z.boolean(),
+    /** Whether anyone but its owner can address it, and so use what it is granted. */
+    addressing_open: z.boolean(),
+  })
+);
+export type ConnectionAgent = z.infer<typeof connectionAgentsSchema>[number];
+
+/** One catalog service as a workspace admin sees it: switched on or off, and who it reaches. */
+export const workspaceServiceSchema = z.object({
+  slug: z.string(),
+  name: z.string(),
+  enabled: z.boolean(),
+  /** Who last switched it; null while nobody has touched its switch. */
+  updated_by_name: z.string().nullable(),
+  updated_at: z.string().nullable(),
+  /** How many people in the workspace have connected it. */
+  connected_members: z.number().int(),
+  /** How many agents in the workspace are granted it. */
+  granted_agents: z.number().int(),
+});
+export type WorkspaceService = z.infer<typeof workspaceServiceSchema>;
+
+/** `GET /workspace/services`, for workspace admins. */
+export const workspaceServicesSchema = z.object({ services: z.array(workspaceServiceSchema) });
+
+/** `PUT /workspace/services/{service}`: `warning` when issued access could not all be revoked yet. */
+export const workspaceServiceChangeSchema = z.object({
+  slug: z.string(),
+  enabled: z.boolean(),
+  warning: z.string().nullable(),
+});
+export type WorkspaceServiceChange = z.infer<typeof workspaceServiceChangeSchema>;

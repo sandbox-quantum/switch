@@ -116,7 +116,7 @@ id, no IP field, no Switch identity.
 
 | Event | Fields, with example values |
 |---|---|
-| `view_opened` | `view_id`, one of exactly 10: `home`, `location`, `session`, `room`, `settings`, `server`, `serverAgents`, `serverRooms`, `remoteHosts`, `remoteHost` |
+| `view_opened` | `view_id`, one of exactly 18: `home`, `location`, `session`, `managedAgent`, `room`, `settings`, `server`, `managedServer`, `serverAgents`, `connectors`, `serverRooms`, `remoteHosts`, `remoteHost`, `templateImport`, `templates`, `templateDetail`, `templateUse`, `templateCapture` |
 | `command_executed` | `command_id`, one of 28 known commands: `app.settings`, `app.newSession`, `app.addServer`, `app.toggleTheme`, `session.newTerminal`, `session.gitPush`, … · `invoked_by`: `palette` / `shortcut` |
 | `deeplink_opened` | `resolved`: `true` / `false` · `cold_start`: `true` / `false`. **The URL is never sent.** |
 | `onboarding_step_started` | `step_id`, one of exactly 4: `addServer`, `agentProviders`, `onboardAgents`, `createRoom` |

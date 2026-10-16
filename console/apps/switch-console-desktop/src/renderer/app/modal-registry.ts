@@ -1,5 +1,7 @@
 import { RenameChatModal } from '@renderer/features/chats/components/chat-modals';
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
+import { ConnectServiceModal } from '@renderer/features/connectors/connect-service-modal';
+import { DisconnectServiceDialog } from '@renderer/features/connectors/disconnect-dialog';
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
 import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
@@ -16,7 +18,6 @@ import { AssignServerModal } from '@renderer/features/switch-servers/assign-serv
 import { BundledChatSignInModal } from '@renderer/features/switch-servers/BundledChatSignIn';
 import { ClaimIdentityModal } from '@renderer/features/switch-servers/ClaimIdentityModal';
 import { ConnectChatModal } from '@renderer/features/switch-servers/ConnectChatModal';
-import { ConnectionsModal } from '@renderer/features/switch-servers/ConnectionsModal';
 import { ConnectMessagingAppModal } from '@renderer/features/switch-servers/ConnectMessagingAppModal';
 import { CreateRoomModal } from '@renderer/features/switch-servers/CreateRoomModal';
 import { DeleteServerModal } from '@renderer/features/switch-servers/DeleteServerModal';
@@ -92,7 +93,8 @@ export const modalRegistry = {
     dismissOnOutsideClick: false,
   }),
   connectChatModal: createModal(ConnectChatModal, { size: 'md' }),
-  connectionsModal: createModal(ConnectionsModal, { size: 'md' }),
+  connectServiceModal: createModal(ConnectServiceModal, { size: 'md' }),
+  disconnectServiceModal: createModal(DisconnectServiceDialog, { size: 'sm' }),
   claimIdentityModal: createModal(ClaimIdentityModal, {
     size: 'md',
     dismissOnOutsideClick: false,
