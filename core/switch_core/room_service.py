@@ -507,6 +507,7 @@ class RoomService:
         )
 
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+        validate_visibility_pair(config.read_visibility, config.write_visibility)
         await self._validate_attachments(config)
         # Before anything is provisioned: a name refused after the channel and
         # the room exist would leave both behind. Alias collisions need the
