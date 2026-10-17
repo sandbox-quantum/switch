@@ -597,8 +597,8 @@ export const LocalSetupStep = observer(function LocalSetupStep({
             <p className="text-xs font-medium text-foreground-muted">Starting will:</p>
             <ul className="space-y-1.5 text-xs text-foreground-muted">
               <SetupStepItem>
-                Download PostgreSQL and Switch if this computer doesn't have them (under 100 MB, on
-                the first run only)
+                Set up PostgreSQL and the Switch server. They come with Switch Console, so nothing
+                needs downloading
               </SetupStepItem>
               <SetupStepItem>Run them in the background on this computer</SetupStepItem>
               <SetupStepItem>

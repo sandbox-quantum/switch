@@ -179,6 +179,10 @@ export type LocalServerStatus = {
   /** Whether Mattermost is turned on for a native server (it needs Docker).
    * A Docker server always runs it, so this is false there. */
   mattermost: boolean;
+  /** How the Mattermost beside a native server is doing since the last start:
+   * it comes up after the server does. Null when it is off, or when nothing has
+   * been seen of it since Console launched. */
+  mattermostState: 'starting' | 'running' | 'failed' | null;
   /** Something the last start could not do that did not stop it (Mattermost
    * skipped or failed, say), for the server page to say; else null. */
   notice: string | null;

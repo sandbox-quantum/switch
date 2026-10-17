@@ -75,9 +75,17 @@ const runtime = vi.hoisted(() => ({
   write: vi.fn(async () => {}),
 }));
 vi.mock('./runtime', () => ({ readLocalRuntime: runtime.read, writeLocalRuntime: runtime.write }));
-vi.mock('./paths', () => ({ localServerDir: () => '/data/local-switch-server' }));
+vi.mock('./paths', () => ({
+  localServerDir: () => '/data/local-switch-server',
+  localServerBundleRoot: () => null,
+}));
 const native = vi.hoisted(() => ({
-  start: vi.fn<(opts: unknown) => Promise<StartLocalServerResult>>(),
+  start: vi.fn<
+    (opts: unknown) => Promise<{
+      result: StartLocalServerResult;
+      bringUpMattermost: ((onProgress: (m: string) => void) => Promise<void>) | null;
+    }>
+  >(),
   stop: vi.fn(async () => {}),
   reset: vi.fn(async () => {}),
   running: vi.fn(async () => false),
@@ -130,7 +138,7 @@ beforeEach(() => {
   runtime.read.mockResolvedValue('docker');
   native.running.mockResolvedValue(false);
   native.deployed.mockResolvedValue({ kind: 'absent' });
-  native.start.mockResolvedValue(started);
+  native.start.mockResolvedValue({ result: started, bringUpMattermost: null });
 });
 
 it('upgrades a running server that is behind at boot, without switching to it', async () => {
@@ -456,4 +464,38 @@ it('moves a Docker server to native when it is reset', async () => {
   expect(removeFile).toHaveBeenCalledWith('.env');
   expect(runtime.write).toHaveBeenCalledWith('/data/local-switch-server', 'native');
   expect(service.getStatus()).toMatchObject({ phase: 'stopped', runtime: 'native' });
+});
+
+it('brings Mattermost up after the start has returned, and says so when it fails', async () => {
+  runtime.read.mockResolvedValue('native');
+  let fail: (error: Error) => void = () => {};
+  native.start.mockResolvedValue({
+    result: started,
+    bringUpMattermost: () =>
+      new Promise<void>((_resolve, reject) => {
+        fail = reject;
+      }),
+  });
+  const service = new LocalServerService();
+  await boot(service);
+
+  await expect(service.start()).resolves.toEqual(started);
+  expect(service.getStatus()).toMatchObject({ phase: 'running', mattermostState: 'starting' });
+
+  fail(new Error('Docker is not available'));
+  await vi.waitFor(() => expect(service.getStatus().mattermostState).toBe('failed'));
+  expect(service.getStatus()).toMatchObject({
+    phase: 'running',
+    notice: 'The server is running, but Mattermost could not be set up: Docker is not available',
+  });
+});
+
+it('reports Mattermost running once it is up', async () => {
+  runtime.read.mockResolvedValue('native');
+  native.start.mockResolvedValue({ result: started, bringUpMattermost: async () => {} });
+  const service = new LocalServerService();
+  await boot(service);
+
+  await service.start();
+  await vi.waitFor(() => expect(service.getStatus().mattermostState).toBe('running'));
 });

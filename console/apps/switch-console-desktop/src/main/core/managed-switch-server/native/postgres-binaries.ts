@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { getWindowsEnvValue } from '@switch-console/core/exec';
 import { findExecutableOnPath } from '@main/core/utils/resolve-executable';
 import { log } from '@main/lib/logger';
+import type { LocalServerBundle } from './bundle';
 import { installPinnedArchive } from './download';
 import { exe, type NativeLayout } from './native-paths';
 import {
@@ -29,7 +30,7 @@ export type PostgresBinaries = {
   /** Directory holding `initdb`, `pg_ctl` and `postgres`. */
   binDir: string;
   major: number;
-  source: 'installed' | 'downloaded';
+  source: 'installed' | 'bundled' | 'downloaded';
 };
 
 const REQUIRED = ['initdb', 'pg_ctl', 'postgres'] as const;
@@ -183,6 +184,19 @@ async function recordChoice(layout: NativeLayout, binaries: PostgresBinaries): P
   await writeFile(path.join(layout.run, CHOICE_FILE), `${JSON.stringify(binaries, null, 2)}\n`);
 }
 
+/** The PostgreSQL the app ships, when it ships one that runs. */
+async function bundledPostgres(bundle: LocalServerBundle | null): Promise<PostgresBinaries | null> {
+  if (bundle?.postgresBinDir == null) return null;
+  const major = await probeBinDir(bundle.postgresBinDir);
+  if (major === null) {
+    log.warn('local-switch-server: the bundled PostgreSQL does not run', {
+      binDir: bundle.postgresBinDir,
+    });
+    return null;
+  }
+  return { binDir: bundle.postgresBinDir, major, source: 'bundled' };
+}
+
 /**
  * The PostgreSQL that can run the existing cluster, found without downloading
  * anything: the one used last, an installed copy of the cluster's major, or
@@ -190,7 +204,8 @@ async function recordChoice(layout: NativeLayout, binaries: PostgresBinaries): P
  * of those is here any more.
  */
 export async function findPostgresForCluster(
-  layout: NativeLayout
+  layout: NativeLayout,
+  bundle: LocalServerBundle | null
 ): Promise<PostgresBinaries | null> {
   const required = await clusterMajor(layout.pgdata);
   if (required === null) return null;
@@ -204,6 +219,8 @@ export async function findPostgresForCluster(
   }
   const installed = (await detectInstalledPostgres()).find((c) => c.major === required);
   if (installed) return installed;
+  const bundled = await bundledPostgres(bundle);
+  if (bundled !== null && bundled.major === required) return bundled;
   const portable = path.join(layout.toolchain, `postgres-${POSTGRES_VERSION}`, 'bin');
   if ((await probeBinDir(portable)) === required) {
     return { binDir: portable, major: required, source: 'downloaded' };
@@ -275,10 +292,12 @@ async function downloadPostgres(
  * under the major that created it, so an installed copy of another major is
  * passed over, and the one used last time is preferred while it still works.
  * Without a cluster, the newest supported installed copy wins; with none
- * installed, the pinned portable build is downloaded.
+ * installed, the one the app ships, and in a build that ships none (a dev
+ * build), the pinned portable build is downloaded.
  */
 export async function resolvePostgres(
   layout: NativeLayout,
+  bundle: LocalServerBundle | null,
   onMessage: (message: string) => void
 ): Promise<PostgresBinaries> {
   const required = await clusterMajor(layout.pgdata);
@@ -302,9 +321,12 @@ export async function resolvePostgres(
   const installed = (await detectInstalledPostgres()).filter(
     (candidate) => required === null || candidate.major === required
   );
+  const bundled = await bundledPostgres(bundle);
   let chosen: PostgresBinaries;
   if (installed.length > 0) {
     chosen = installed[0];
+  } else if (bundled !== null && (required === null || bundled.major === required)) {
+    chosen = bundled;
   } else if (required === null || required === POSTGRES_MAJOR) {
     chosen = await downloadPostgres(layout, onMessage);
   } else {

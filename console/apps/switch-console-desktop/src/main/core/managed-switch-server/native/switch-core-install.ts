@@ -1,12 +1,17 @@
-import { access, appendFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { appendFile, cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { log } from '@main/lib/logger';
 import { CHECKOUT_IMAGE_TAG } from '@shared/core/managed-switch-server/managed-switch-server';
+import type { LocalServerBundle } from './bundle';
 import { downloadFile, extractArchive } from './download';
 import type { NativeLayout } from './native-paths';
 import { runCommand } from './run-command';
 import { SWITCH_CORE_PYTHON, switchSourceArchiveUrl } from './toolchain-pins';
 import type { UvBinary } from './uv';
+
+const execFileAsync = promisify(execFile);
 
 const SYNC_TIMEOUT_MS = 20 * 60 * 1000;
 const MARKER_FILE = 'installed.json';
@@ -26,15 +31,6 @@ function venvPython(venv: string): string {
   return process.platform === 'win32'
     ? path.join(venv, 'Scripts', 'python.exe')
     : path.join(venv, 'bin', 'python');
-}
-
-async function exists(file: string): Promise<boolean> {
-  try {
-    await access(file);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** The environment uv runs with: its cache and the Pythons it fetches are
@@ -83,6 +79,7 @@ async function uvSync(
   }
 }
 
+/** The version the install in `dir` was made for, or null when there is none. */
 async function readMarker(dir: string): Promise<string | null> {
   try {
     const parsed = JSON.parse(await readFile(path.join(dir, MARKER_FILE), 'utf8')) as {
@@ -106,13 +103,14 @@ async function readMarker(dir: string): Promise<string | null> {
 export async function installSwitchCore(opts: {
   layout: NativeLayout;
   uv: UvBinary;
+  bundle: LocalServerBundle | null;
   version: string;
   owner: string;
   repo: string;
   checkoutRoot: string | null;
   onMessage: (message: string) => void;
 }): Promise<SwitchCoreInstall> {
-  const { layout, uv, version, owner, repo, checkoutRoot, onMessage } = opts;
+  const { layout, uv, bundle, version, owner, repo, checkoutRoot, onMessage } = opts;
 
   if (checkoutRoot !== null) {
     const projectDir = path.join(checkoutRoot, 'core');
@@ -132,7 +130,16 @@ export async function installSwitchCore(opts: {
   const projectDir = path.join(src, 'core');
   const venv = path.join(dir, 'venv');
   const python = venvPython(venv);
-  if ((await readMarker(dir)) === version && (await exists(python))) {
+  // Checked by running it, not by its file existing: an environment made from
+  // the app's bundled Python stops working if the app moves.
+  if ((await readMarker(dir)) === version && (await runs(python))) {
+    return { version, sourceRoot: src, projectDir, python };
+  }
+
+  if (bundle !== null) {
+    onMessage(`Installing switch-core ${version}…`);
+    await installFromBundle(layout, uv, bundle, src, venv);
+    await writeMarker(dir, { version, source: 'bundle', bundleBuiltAt: bundle.builtAt });
     return { version, sourceRoot: src, projectDir, python };
   }
 
@@ -150,11 +157,94 @@ export async function installSwitchCore(opts: {
   onMessage(`Installing switch-core ${version} (first start of this version)…`);
   await rm(venv, { recursive: true, force: true });
   await uvSync(uv, layout, projectDir, venv);
-  await writeFile(
-    path.join(dir, MARKER_FILE),
-    `${JSON.stringify({ version, uv: uv.version }, null, 2)}\n`
-  );
+  await writeMarker(dir, { version, source: 'download', uv: uv.version });
   return { version, sourceRoot: src, projectDir, python };
+}
+
+async function writeMarker(dir: string, marker: Record<string, string>): Promise<void> {
+  await writeFile(path.join(dir, MARKER_FILE), `${JSON.stringify(marker, null, 2)}\n`);
+}
+
+/** Whether the environment's Python runs and finds switch-core's compiled
+ * dependencies: an environment made from the app's bundle stops finding
+ * them if the app moves. */
+async function runs(python: string): Promise<boolean> {
+  try {
+    await execFileAsync(python, ['-c', 'import asyncpg, pydantic_core, switch_core'], {
+      timeout: 60_000,
+      windowsHide: true,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Install from what the app ships, without the network: copy the release's
+ * source out of the app (an update replaces the bundle), make an environment
+ * on the bundled Python that reaches the bundled, already-installed
+ * dependencies through a `.pth` file — they stay where the app's signature
+ * covers them — then install switch-core itself, editable as the download
+ * path does, so its migrations and version metadata are where it looks.
+ */
+async function installFromBundle(
+  layout: NativeLayout,
+  uv: UvBinary,
+  bundle: LocalServerBundle,
+  src: string,
+  venv: string
+): Promise<void> {
+  await rm(src, { recursive: true, force: true });
+  await rm(venv, { recursive: true, force: true });
+  await cp(bundle.switchSource, src, { recursive: true });
+  await mkdir(layout.logs, { recursive: true });
+  const installLog = path.join(layout.logs, 'install.log');
+  const lines: string[] = [];
+  const env: NodeJS.ProcessEnv = {
+    ...uvEnvironment(layout, venv),
+    UV_OFFLINE: '1',
+    UV_PYTHON_DOWNLOADS: 'never',
+    UV_PYTHON_PREFERENCE: 'only-system',
+  };
+  const uvRun = (args: string[]) =>
+    runCommand(uv.path, args, {
+      cwd: layout.root,
+      env,
+      onLine: (line) => lines.push(line),
+      timeoutMs: SYNC_TIMEOUT_MS,
+    });
+  try {
+    await appendFile(installLog, `\n# install from ${bundle.root} (${new Date().toISOString()})\n`);
+    await uvRun(['venv', '--python', bundle.python, venv]);
+    await writeFile(
+      path.join(await venvSitePackages(venv), 'switch-bundle.pth'),
+      `${bundle.sitePackages}\n`
+    );
+    await uvRun([
+      'pip',
+      'install',
+      '--python',
+      venvPython(venv),
+      '--no-index',
+      '--find-links',
+      bundle.buildWheels,
+      '--no-deps',
+      '-e',
+      path.join(src, 'core'),
+    ]);
+  } finally {
+    await appendFile(installLog, `${lines.join('\n')}\n`);
+  }
+}
+
+/** The environment's `site-packages` directory. */
+async function venvSitePackages(venv: string): Promise<string> {
+  if (process.platform === 'win32') return path.join(venv, 'Lib', 'site-packages');
+  const lib = path.join(venv, 'lib');
+  const python = (await readdir(lib)).find((entry) => entry.startsWith('python'));
+  if (!python) throw new Error(`The environment in ${venv} has no lib/python* directory.`);
+  return path.join(lib, python, 'site-packages');
 }
 
 /** Remove installed releases other than `keep`, once a start on it has

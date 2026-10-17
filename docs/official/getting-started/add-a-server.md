@@ -28,15 +28,15 @@ Everything runs on your computer, as ordinary background processes. You don't ne
 
 You don't need to configure the server yourself. Switch Console starts it and everything it needs. It:
 
-- Uses the PostgreSQL already on your computer (version 14 to 18), or downloads its own copy if there isn't one. Switch Console's copy and the server's data stay in Switch Console's own folder.
-- Downloads the Switch server and installs it with [uv](https://docs.astral.sh/uv/). It uses the uv you already have, or downloads its own.
+- Uses the PostgreSQL already on your computer (version 16 to 18), or the copy that comes with Switch Console if there isn't one. The server's data stays in Switch Console's own folder.
+- Installs the Switch server, which also comes with Switch Console, so setting it up downloads nothing.
 - Selects free ports and binds them to this computer only.
 - Creates an administrator account.
 - Signs Switch Console in automatically.
 
-There is no URL to copy and no secret to enter. The first start downloads under 100 MB; later starts reuse what it downloaded.
+There is no URL to copy and no secret to enter. A first setup takes about a minute.
 
-**Mattermost is optional.** If Docker is installed and running, you can turn on **Also run Mattermost** to get a built-in messaging app for your rooms. Mattermost runs in Docker beside the server. Without Docker the server works the same, just with no built-in messaging app — you can still connect Slack, Discord, Telegram, or Microsoft Teams to it.
+**Mattermost is optional.** If Docker is installed and running, you can turn on **Also run Mattermost** to get a built-in messaging app for your rooms. Mattermost runs in Docker beside the server and is set up in the background once the server is running, so you can start using the server straight away. Without Docker the server works the same, just with no built-in messaging app — you can still connect Slack, Discord, Telegram, or Microsoft Teams to it.
 
 **Note**
 

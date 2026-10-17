@@ -118,6 +118,11 @@ export class LocalServerStore {
     return this.status?.mattermost ?? false;
   }
 
+  /** How the Mattermost beside a native server is doing, when known. */
+  get mattermostState(): LocalServerStatus['mattermostState'] {
+    return this.status?.mattermostState ?? null;
+  }
+
   get isTransitioning(): boolean {
     return this.busy || this.phase === 'starting' || this.phase === 'stopping';
   }

@@ -5,13 +5,18 @@ import { promisify } from 'node:util';
 import { getWindowsEnvValue } from '@switch-console/core/exec';
 import { findExecutableOnPath } from '@main/core/utils/resolve-executable';
 import { log } from '@main/lib/logger';
+import type { LocalServerBundle } from './bundle';
 import { installPinnedArchive } from './download';
 import { exe, type NativeLayout } from './native-paths';
 import { currentNativePlatform, UV_VERSION, uvArchive } from './toolchain-pins';
 
 const execFileAsync = promisify(execFile);
 
-export type UvBinary = { path: string; version: string; source: 'installed' | 'downloaded' };
+export type UvBinary = {
+  path: string;
+  version: string;
+  source: 'installed' | 'bundled' | 'downloaded';
+};
 
 /** `uv 0.11.33 (x86_64-unknown-linux-gnu)` → `0.11.33`. */
 export function parseUvVersion(output: string): string | null {
@@ -64,6 +69,7 @@ function installedCandidates(env: NodeJS.ProcessEnv): string[] {
  */
 export async function resolveUv(
   layout: NativeLayout,
+  bundle: LocalServerBundle | null,
   onMessage: (message: string) => void,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<UvBinary> {
@@ -75,6 +81,14 @@ export async function resolveUv(
       continue;
     }
     return { path: candidate, version, source: 'installed' };
+  }
+
+  if (bundle !== null) {
+    const version = await probeUv(bundle.uv);
+    if (version !== null) return { path: bundle.uv, version, source: 'bundled' };
+    log.warn('local-switch-server: the bundled uv does not run; downloading one', {
+      path: bundle.uv,
+    });
   }
 
   const platform = currentNativePlatform();

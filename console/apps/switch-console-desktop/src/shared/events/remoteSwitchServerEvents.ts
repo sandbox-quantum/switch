@@ -7,7 +7,10 @@ import { defineEvent } from '@shared/lib/ipc/events';
 /** Status of a remote-managed stack, tagged with the SSH host it runs on (the
  * renderer keeps one entry per host). Reuses the local status shape, less the
  * runtime: a remote stack always runs on the host's Docker. */
-export type RemoteServerStatus = Omit<LocalServerStatus, 'runtime' | 'mattermost' | 'notice'> & {
+export type RemoteServerStatus = Omit<
+  LocalServerStatus,
+  'runtime' | 'mattermost' | 'mattermostState' | 'notice'
+> & {
   sshHost: string;
   /** Something done to the stack from elsewhere (another Console, or the host
    * itself) that the user should know, or null. */

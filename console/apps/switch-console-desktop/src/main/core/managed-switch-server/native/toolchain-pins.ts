@@ -133,6 +133,10 @@ export function postgresArchive(platform: NativePlatform): PinnedArchive | null 
   };
 }
 
+/** Raised when the bundle's layout changes, so a bundle built to an older
+ * layout is rebuilt rather than reused (scripts/build-local-server-bundle.mjs). */
+export const BUNDLE_FORMAT = 2;
+
 /** The Python switch-core is installed into, fetched by uv when missing. */
 export const SWITCH_CORE_PYTHON = '3.12';
 

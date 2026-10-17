@@ -52,6 +52,7 @@ import {
 import { readMattermostEnabled, writeMattermostEnabled } from './native/mattermost';
 import { nativeLayout } from './native/native-paths';
 import {
+  type NativeStartResult,
   nativeStackRunning,
   nativeStartedAt,
   readNativeDeployedVersion,
@@ -60,7 +61,7 @@ import {
   startNativeStack,
   stopNativeStack,
 } from './native/native-stack';
-import { localServerDir } from './paths';
+import { localServerBundleRoot, localServerDir } from './paths';
 import { resetStack, startStack, stopStack } from './pipeline';
 import { readPersistedPorts, rememberPorts } from './ports';
 import { readLocalRuntime, writeLocalRuntime } from './runtime';
@@ -85,6 +86,7 @@ export class LocalServerService {
     phase: 'stopped',
     runtime: null,
     mattermost: false,
+    mattermostState: null,
     notice: null,
     checked: false,
     upgrade: null,
@@ -115,6 +117,36 @@ export class LocalServerService {
 
   detectDocker(): Promise<DockerAvailability> {
     return new LocalServerHost().detectDocker();
+  }
+
+  /** Counts starts and stops, so a Mattermost bring-up that a later stop or
+   * start overtook does not report into the status of a server it is no longer
+   * part of. */
+  private mattermostRun = 0;
+
+  /**
+   * Bring Mattermost up beside a native server that is already running and in
+   * use. Its outcome lands on the status; a failure leaves the server running
+   * and says why, rather than failing a start that has already succeeded.
+   */
+  private async runMattermost(
+    bringUp: NonNullable<NativeStartResult['bringUpMattermost']>
+  ): Promise<void> {
+    const run = this.mattermostRun;
+    const current = () => run === this.mattermostRun && this.status.phase === 'running';
+    try {
+      await bringUp((message) => log.info(`local-switch-server: ${message}`));
+      if (current()) this.setStatus({ mattermostState: 'running' });
+    } catch (error) {
+      log.error('local-switch-server: Mattermost did not start', { error: String(error) });
+      if (!current()) return;
+      this.setStatus({
+        mattermostState: 'failed',
+        notice: `The server is running, but Mattermost could not be set up: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      });
+    }
   }
 
   /**
@@ -333,14 +365,22 @@ export class LocalServerService {
         checkoutRoot,
       };
       if (native) await writeLocalRuntime(localServerDir(), 'native');
-      const result = native
-        ? await startNativeStack({
-            ...common,
-            layout: nativeLayout(localServerDir()),
-            mattermost: await readMattermostEnabled(localServerDir()),
-          })
-        : // Nobody else shares the local stack, so there is nothing to lock.
-          await startStack({ ...common, lease: null });
+      this.mattermostRun++;
+      let bringUpMattermost: NativeStartResult['bringUpMattermost'] = null;
+      let result: StartLocalServerResult;
+      if (native) {
+        const started = await startNativeStack({
+          ...common,
+          layout: nativeLayout(localServerDir()),
+          mattermost: await readMattermostEnabled(localServerDir()),
+          bundleRoot: localServerBundleRoot(),
+        });
+        result = started.result;
+        bringUpMattermost = started.bringUpMattermost;
+      } else {
+        // Nobody else shares the local stack, so there is nothing to lock.
+        result = await startStack({ ...common, lease: null });
+      }
       if (result.kind === 'docker-unavailable') {
         this.setStatus({ phase: 'error', error: result.detail });
         this.failUpgrade(result.detail);
@@ -378,7 +418,9 @@ export class LocalServerService {
           upgrade: null,
           deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
           notice: result.warning,
+          mattermostState: bringUpMattermost ? 'starting' : null,
         });
+        if (bringUpMattermost) void this.runMattermost(bringUpMattermost);
         if (updatedTo !== null) await recordLocalActivity('updated', updatedTo);
         await recordLocalActivity('started', null);
         if (this.refused) {
@@ -421,7 +463,8 @@ export class LocalServerService {
         phase: 'stopping',
         message: native ? 'Stopping the server…' : 'Stopping containers…',
       });
-      if (native) await stopNativeStack(nativeLayout(localServerDir()));
+      this.mattermostRun++;
+      if (native) await stopNativeStack(nativeLayout(localServerDir()), localServerBundleRoot());
       else await stopStack(host, null);
       const upgrade = this.status.upgrade;
       this.setStatus({
@@ -430,6 +473,7 @@ export class LocalServerService {
         error: null,
         deployedTelemetry: null,
         notice: null,
+        mattermostState: null,
         upgrade: upgrade && upgradeState(upgrade, false),
       });
       await recordLocalActivity('stopped', null);
@@ -461,6 +505,7 @@ export class LocalServerService {
         error: null,
         deployedTelemetry: null,
         notice: null,
+        mattermostState: null,
         upgrade: upgrade && upgradeState(upgrade, false),
       });
       await recordLocalActivity('stopped', null);
@@ -487,7 +532,8 @@ export class LocalServerService {
       if (server) await deleteAgentsForServer(server.id);
       if ((await this.runtime()) === 'native') {
         this.setStatus({ phase: 'stopping', message: 'Deleting the server and its data…' });
-        await resetNativeStack(host, nativeLayout(localServerDir()));
+        this.mattermostRun++;
+        await resetNativeStack(host, nativeLayout(localServerDir()), localServerBundleRoot());
       } else {
         this.setStatus({ phase: 'stopping', message: 'Destroying containers and data…' });
         await resetStack(host, null);
@@ -505,6 +551,7 @@ export class LocalServerService {
         error: null,
         deployedTelemetry: null,
         notice: null,
+        mattermostState: null,
         deployedVersion: null,
         drift: null,
         upgrade: null,

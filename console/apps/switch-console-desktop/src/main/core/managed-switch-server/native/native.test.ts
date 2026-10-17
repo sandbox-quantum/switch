@@ -193,7 +193,7 @@ describe('resolvePostgres', () => {
       const layout = nativeLayout(root);
       await mkdir(layout.pgdata, { recursive: true });
       await writeFile(path.join(layout.pgdata, 'PG_VERSION'), '14\n');
-      await expect(resolvePostgres(layout, () => {})).rejects.toThrow(
+      await expect(resolvePostgres(layout, null, () => {})).rejects.toThrow(
         'created by PostgreSQL 14, and switch-core needs PostgreSQL 16 or newer. Reset the server'
       );
     } finally {

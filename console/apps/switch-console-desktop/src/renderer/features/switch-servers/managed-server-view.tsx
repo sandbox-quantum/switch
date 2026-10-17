@@ -310,12 +310,18 @@ const ManagedServerPage = observer(function ManagedServerPage({
             <div className="min-w-0">
               <p className="text-[13px] text-foreground">Mattermost</p>
               <p className="mt-0.5 text-xs text-[var(--fg-dim)]">
-                {localDocker === null
-                  ? 'Checking for Docker…'
-                  : localDocker.available
-                    ? 'Team chat for your rooms, run in Docker beside the server.'
-                    : 'Team chat for your rooms needs Docker, which is not available here. The server works without it.'}
-                {answering && ' Restart the server to apply a change.'}
+                {answering && localServerStore.mattermostState === 'starting'
+                  ? 'Setting up beside the server… the server is already usable.'
+                  : answering && localServerStore.mattermostState === 'running'
+                    ? 'Running. Team chat for your rooms, in Docker beside the server.'
+                    : localDocker === null
+                      ? 'Checking for Docker…'
+                      : localDocker.available
+                        ? 'Team chat for your rooms, run in Docker beside the server.'
+                        : 'Team chat for your rooms needs Docker, which is not available here. The server works without it.'}
+                {answering &&
+                  localServerStore.mattermostState !== 'starting' &&
+                  ' Restart the server to apply a change.'}
               </p>
             </div>
             <Switch

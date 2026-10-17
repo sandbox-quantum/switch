@@ -6,6 +6,7 @@ import { STABLE_SWITCH_VERSION } from '@shared/app-identity';
 import { pickFreePorts } from '../free-port';
 import { waitForHealth } from '../health';
 import { generateSecrets } from '../secret-values';
+import { readLocalServerBundle } from './bundle';
 import { runningCore, startCore, stopCore } from './core-process';
 import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
 import { nativeLayout } from './native-paths';
@@ -30,6 +31,9 @@ vi.mock('@main/lib/logger', () => ({
  * pin and boot it until the gateway answers. Slow and online, so opt-in:
  *
  *   SWITCH_NATIVE_INTEGRATION=1 pnpm vitest run --project node native-toolchain
+ *
+ * Add SWITCH_LOCAL_SERVER_BUNDLE=$PWD/dist-local-server (after
+ * `pnpm run build:local-server`) to run the packaged app's offline path.
  */
 describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)('native toolchain', () => {
   let root = '';
@@ -44,11 +48,19 @@ describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)('native toolchain', () =
     const secrets = generateSecrets();
     const ports = await pickFreePorts();
 
-    const uv = await resolveUv(layout, log);
-    const postgres = await resolvePostgres(layout, log);
+    // With SWITCH_LOCAL_SERVER_BUNDLE set to a built bundle, the packaged
+    // (offline) path; without, the download path.
+    const bundle = await readLocalServerBundle(
+      process.env.SWITCH_LOCAL_SERVER_BUNDLE ?? null,
+      STABLE_SWITCH_VERSION
+    );
+    if (process.env.SWITCH_LOCAL_SERVER_BUNDLE) expect(bundle).not.toBeNull();
+    const uv = await resolveUv(layout, bundle, log);
+    const postgres = await resolvePostgres(layout, bundle, log);
     const install = await installSwitchCore({
       layout,
       uv,
+      bundle,
       version: STABLE_SWITCH_VERSION,
       owner: 'sandbox-quantum',
       repo: 'switch',
