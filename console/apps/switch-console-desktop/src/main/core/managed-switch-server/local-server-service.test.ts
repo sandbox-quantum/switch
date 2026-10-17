@@ -90,6 +90,7 @@ const native = vi.hoisted(() => ({
   reset: vi.fn(async () => {}),
   running: vi.fn(async () => false),
   deployed: vi.fn(),
+  launcher: vi.fn(),
 }));
 vi.mock('./native/native-stack', () => ({
   startNativeStack: native.start,
@@ -99,6 +100,16 @@ vi.mock('./native/native-stack', () => ({
   nativeStartedAt: vi.fn(),
   readNativeDeployedVersion: native.deployed,
   readNativeTelemetry: vi.fn(async () => ({ known: true, enabled: false })),
+  nativeMattermostLauncher: native.launcher,
+}));
+const mattermost = vi.hoisted(() => ({
+  write: vi.fn(async () => {}),
+  stop: vi.fn(async () => {}),
+}));
+vi.mock('./native/mattermost', () => ({
+  readMattermostEnabled: async () => null,
+  writeMattermostEnabled: mattermost.write,
+  stopMattermost: mattermost.stop,
 }));
 
 const { LocalServerService } = await import('./local-server-service');
@@ -498,4 +509,25 @@ it('reports Mattermost running once it is up', async () => {
 
   await service.start();
   await vi.waitFor(() => expect(service.getStatus().mattermostState).toBe('running'));
+});
+
+it('turns Mattermost on for a running server without restarting it', async () => {
+  runtime.read.mockResolvedValue('native');
+  native.running.mockResolvedValue(true);
+  native.deployed.mockResolvedValue({ kind: 'deployed', version: '0.11.0', source: 'env-file' });
+  const bringUp = vi.fn(async () => {});
+  native.launcher.mockResolvedValue(bringUp);
+  const service = new LocalServerService();
+  await boot(service);
+
+  await service.setMattermost(true);
+
+  expect(native.start).not.toHaveBeenCalled();
+  expect(mattermost.write).toHaveBeenCalledWith('/data/local-switch-server', true);
+  await vi.waitFor(() => expect(service.getStatus().mattermostState).toBe('running'));
+  expect(bringUp).toHaveBeenCalledOnce();
+
+  await service.setMattermost(false);
+  expect(mattermost.stop).toHaveBeenCalledWith(expect.anything(), false);
+  expect(service.getStatus()).toMatchObject({ phase: 'running', mattermostState: null });
 });

@@ -176,9 +176,10 @@ export type LocalServerStatus = {
   phase: LocalServerPhase;
   /** How this server runs, once read at boot; null until then. */
   runtime: LocalServerRuntime | null;
-  /** Whether Mattermost is turned on for a native server (it needs Docker).
-   * A Docker server always runs it, so this is false there. */
-  mattermost: boolean;
+  /** Whether Mattermost is turned on for a native server (it needs Docker);
+   * null when the user never chose, which means on wherever Docker is
+   * available. A Docker server always runs it, so this is null there. */
+  mattermost: boolean | null;
   /** How the Mattermost beside a native server is doing since the last start:
    * it comes up after the server does. Null when it is off, or when nothing has
    * been seen of it since Console launched. */

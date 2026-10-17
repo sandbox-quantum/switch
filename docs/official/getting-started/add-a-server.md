@@ -36,7 +36,7 @@ You don't need to configure the server yourself. Switch Console starts it and ev
 
 There is no URL to copy and no secret to enter. A first setup takes about a minute.
 
-**Mattermost is optional.** If Docker is installed and running, you can turn on **Also run Mattermost** to get a built-in messaging app for your rooms. Mattermost runs in Docker beside the server and is set up in the background once the server is running, so you can start using the server straight away. Without Docker the server works the same, just with no built-in messaging app — you can still connect Slack, Discord, Telegram, or Microsoft Teams to it.
+**Mattermost is optional.** If Docker (with its Compose plugin) is installed and running, **Also run Mattermost** is on by default and gives you a built-in messaging app for your rooms. Mattermost runs in Docker beside the server and is set up in the background once the server is running, so you can start using the server straight away. You can turn it on or off later from the server's page; the change applies straight away, without restarting the server. Without Docker the server works the same, just with no built-in messaging app — you can still connect Slack, Discord, Telegram, or Microsoft Teams to it.
 
 **Note**
 

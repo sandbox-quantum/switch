@@ -49,10 +49,11 @@ import {
   type UpgradeJournal,
   upgradeState,
 } from './managed-upgrade';
-import { readMattermostEnabled, writeMattermostEnabled } from './native/mattermost';
+import { readMattermostEnabled, stopMattermost, writeMattermostEnabled } from './native/mattermost';
 import { nativeLayout } from './native/native-paths';
 import {
   type NativeStartResult,
+  nativeMattermostLauncher,
   nativeStackRunning,
   nativeStartedAt,
   readNativeDeployedVersion,
@@ -85,7 +86,7 @@ export class LocalServerService {
   private status: LocalServerStatus = {
     phase: 'stopped',
     runtime: null,
-    mattermost: false,
+    mattermost: null,
     mattermostState: null,
     notice: null,
     checked: false,
@@ -162,6 +163,29 @@ export class LocalServerService {
     }
     await writeMattermostEnabled(localServerDir(), enabled);
     this.setStatus({ mattermost: enabled });
+    // A running server takes the change now: Mattermost runs on its own and
+    // registers itself, so nothing about the server needs restarting.
+    if (this.status.phase !== 'running' || this.busy) return;
+    const layout = nativeLayout(localServerDir());
+    this.mattermostRun++;
+    if (!enabled) {
+      this.setStatus({ mattermostState: null, notice: null });
+      await stopMattermost(layout, false);
+      return;
+    }
+    const host: ServerHost = new LocalServerHost();
+    try {
+      const bringUp = await nativeMattermostLauncher(
+        host,
+        layout,
+        this.checkoutRootForStart(),
+        (line) => events.emit(localServerLogChannel, { line })
+      );
+      this.setStatus({ mattermostState: 'starting', notice: null });
+      void this.runMattermost(bringUp);
+    } finally {
+      host.dispose();
+    }
   }
 
   /** How the server runs, read off its directory and recorded on the status. */

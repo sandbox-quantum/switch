@@ -117,15 +117,16 @@ export function mattermostCallbackBaseUrl(platform: NodeJS.Platform, callbackPor
   return `http://${platform === 'linux' ? '127.0.0.1' : 'host.docker.internal'}:${callbackPort}`;
 }
 
-/** Whether the user wants Mattermost with the native server. */
-export async function readMattermostEnabled(localServerDir: string): Promise<boolean> {
+/** Whether the user wants Mattermost with the native server, or null when
+ * they never said — which means yes wherever Docker is available. */
+export async function readMattermostEnabled(localServerDir: string): Promise<boolean | null> {
   try {
     const parsed = JSON.parse(await readFile(path.join(localServerDir, SETTINGS_FILE), 'utf8')) as {
       enabled?: unknown;
     };
     return parsed.enabled === true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
   }
 }
@@ -215,6 +216,20 @@ export async function startMattermost(params: StartMattermostParams): Promise<vo
       timeoutMs: SETUP_TIMEOUT_MS,
     }
   );
+}
+
+/**
+ * Pull Mattermost's image ahead of time, so a first Mattermost does not start
+ * its multi-hundred-megabyte download only once the server is up. Run beside
+ * the server's own setup; `compose up` pulls anyway if this did not finish.
+ */
+export function pullMattermostImage(onLog: (line: string) => void): Promise<void> {
+  return runCommand(dockerExecutable(), ['pull', '--platform', 'linux/amd64', mattermostImage()], {
+    cwd: process.cwd(),
+    env: process.env,
+    onLine: onLog,
+    timeoutMs: COMPOSE_TIMEOUT_MS,
+  });
 }
 
 /** Stop Mattermost, keeping its data. A machine without Docker, or one that

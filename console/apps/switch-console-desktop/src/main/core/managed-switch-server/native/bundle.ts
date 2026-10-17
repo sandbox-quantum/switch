@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { access, cp, readdir, readFile, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { log } from '@main/lib/logger';
 import { exe } from './native-paths';
@@ -89,4 +90,60 @@ export async function readLocalServerBundle(
     sitePackages: path.join(root, 'switch', 'site-packages'),
     buildWheels: path.join(root, 'switch', 'build-wheels'),
   };
+}
+
+const COPY_PREFIX = 'bundle-';
+
+/**
+ * The bundle, copied out of the app into the local server's own directory,
+ * which is where the server then runs from.
+ *
+ * Running PostgreSQL and Python from inside the app ties the server to wherever
+ * the app happens to be: an AppImage is mounted at a new path on every launch
+ * and unmounted when it quits, taking the running server's files with it; on
+ * Windows an update cannot replace files a running server holds open; and a
+ * moved app leaves the server pointing at nothing. A copy has none of that,
+ * for the price of the disk it takes. Made once per bundle build, and only
+ * named as complete once fully written.
+ */
+export async function materializeBundle(
+  bundle: LocalServerBundle,
+  toolchainDir: string,
+  onMessage: (message: string) => void
+): Promise<LocalServerBundle> {
+  const id = createHash('sha256')
+    .update(`${bundle.switchVersion}\n${bundle.builtAt}`)
+    .digest('hex')
+    .slice(0, 12);
+  const destination = path.join(toolchainDir, `${COPY_PREFIX}${id}`);
+  try {
+    await access(path.join(destination, 'manifest.json'));
+  } catch {
+    onMessage('Unpacking the Switch server…');
+    const staging = `${destination}.copying`;
+    await rm(staging, { recursive: true, force: true });
+    await cp(bundle.root, staging, { recursive: true, verbatimSymlinks: true });
+    await rename(staging, destination);
+  }
+  const copy = await readLocalServerBundle(destination, bundle.switchVersion);
+  if (copy === null) {
+    throw new Error(`The copy of the bundled server in ${destination} is unreadable.`);
+  }
+  return copy;
+}
+
+/** Remove copies of older bundles once a start on `keep` has succeeded. */
+export async function pruneBundleCopies(toolchainDir: string, keep: string): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(toolchainDir);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const dir = path.join(toolchainDir, entry);
+    if (!entry.startsWith(COPY_PREFIX) || dir === keep) continue;
+    log.info(`local-switch-server: removing the old bundle copy ${entry}`);
+    await rm(dir, { recursive: true, force: true });
+  }
 }

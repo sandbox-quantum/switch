@@ -318,10 +318,7 @@ const ManagedServerPage = observer(function ManagedServerPage({
                       ? 'Checking for Docker…'
                       : localDocker.available
                         ? 'Team chat for your rooms, run in Docker beside the server.'
-                        : 'Team chat for your rooms needs Docker, which is not available here. The server works without it.'}
-                {answering &&
-                  localServerStore.mattermostState !== 'starting' &&
-                  ' Restart the server to apply a change.'}
+                        : `Team chat for your rooms needs Docker. ${localDocker.detail} The server works without it.`}
               </p>
             </div>
             <Switch

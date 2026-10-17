@@ -6,7 +6,7 @@ import { STABLE_SWITCH_VERSION } from '@shared/app-identity';
 import { pickFreePorts } from '../free-port';
 import { waitForHealth } from '../health';
 import { generateSecrets } from '../secret-values';
-import { readLocalServerBundle } from './bundle';
+import { materializeBundle, readLocalServerBundle } from './bundle';
 import { runningCore, startCore, stopCore } from './core-process';
 import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
 import { nativeLayout } from './native-paths';
@@ -50,11 +50,14 @@ describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)('native toolchain', () =
 
     // With SWITCH_LOCAL_SERVER_BUNDLE set to a built bundle, the packaged
     // (offline) path; without, the download path.
-    const bundle = await readLocalServerBundle(
+    const shipped = await readLocalServerBundle(
       process.env.SWITCH_LOCAL_SERVER_BUNDLE ?? null,
       STABLE_SWITCH_VERSION
     );
-    if (process.env.SWITCH_LOCAL_SERVER_BUNDLE) expect(bundle).not.toBeNull();
+    if (process.env.SWITCH_LOCAL_SERVER_BUNDLE) expect(shipped).not.toBeNull();
+    // Run from a copy, as the app does, never from the bundle itself.
+    const bundle = shipped && (await materializeBundle(shipped, layout.toolchain, log));
+    if (bundle) expect(bundle.root.startsWith(layout.toolchain)).toBe(true);
     const uv = await resolveUv(layout, bundle, log);
     const postgres = await resolvePostgres(layout, bundle, log);
     const install = await installSwitchCore({

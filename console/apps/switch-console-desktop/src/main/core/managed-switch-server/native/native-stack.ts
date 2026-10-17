@@ -34,7 +34,7 @@ import { registerManagedServer } from '../pipeline';
 import { clearPorts, resolvePorts } from '../ports';
 import { clearSecrets, loadOrCreateSecrets } from '../secrets';
 import { telemetryConsent } from '../telemetry-consent';
-import { readLocalServerBundle } from './bundle';
+import { materializeBundle, pruneBundleCopies, readLocalServerBundle } from './bundle';
 import {
   CORE_ENV_FILE,
   coreFailureLine,
@@ -44,7 +44,12 @@ import {
   waitForCoreHealth,
 } from './core-process';
 import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
-import { type StartMattermostParams, startMattermost, stopMattermost } from './mattermost';
+import {
+  pullMattermostImage,
+  type StartMattermostParams,
+  startMattermost,
+  stopMattermost,
+} from './mattermost';
 import type { NativeLayout } from './native-paths';
 import {
   findPostgresForCluster,
@@ -60,7 +65,11 @@ import {
   syncPasswords,
   writeClusterConfig,
 } from './postgres-cluster';
-import { installSwitchCore, pruneSwitchCoreInstalls } from './switch-core-install';
+import {
+  existingSwitchCoreInstall,
+  installSwitchCore,
+  pruneSwitchCoreInstalls,
+} from './switch-core-install';
 import { resolveUv } from './uv';
 
 /** What was last started here: the version the database has been (or is
@@ -81,8 +90,9 @@ export type NativeStartOptions = {
   signal: AbortSignal;
   /** Dev-only: run switch-core from this checkout's `core/`. */
   checkoutRoot: string | null;
-  /** Whether to run Mattermost beside the server (needs Docker). */
-  mattermost: boolean;
+  /** Whether to run Mattermost beside the server (needs Docker); null when
+   * the user never chose, which means yes wherever Docker is available. */
+  mattermost: boolean | null;
   /** The app's bundled toolchain, or null in a build that ships none. */
   bundleRoot: string | null;
 };
@@ -216,6 +226,39 @@ async function startNativeMattermost(params: StartMattermostParams): Promise<voi
   await startMattermost(params);
 }
 
+/**
+ * Bring Mattermost up beside a server that is already running, without
+ * restarting it: Mattermost runs on its own and registers itself with the
+ * running server. For turning it on from the server page.
+ */
+export async function nativeMattermostLauncher(
+  host: ServerHost,
+  layout: NativeLayout,
+  checkoutRoot: string | null,
+  onLog: (line: string) => void
+): Promise<(onProgress: (message: string) => void) => Promise<void>> {
+  const install = await existingSwitchCoreInstall(layout, COMPATIBLE_SWITCH_VERSION, checkoutRoot);
+  if (install === null) {
+    throw new Error(
+      'The server has not been set up yet, so there is nothing to add Mattermost to.'
+    );
+  }
+  const secrets = await loadOrCreateSecrets(host);
+  const ports = await resolvePorts(host);
+  return (onProgress) =>
+    startNativeMattermost({
+      layout,
+      install,
+      secrets,
+      apiUrl: nativeApiUrl(ports.api),
+      mattermostPort: ports.mattermost,
+      postgresPort: ports.postgres,
+      callbackPort: ports.gateway,
+      onMessage: onProgress,
+      onLog,
+    });
+}
+
 export async function startNativeStack(opts: NativeStartOptions): Promise<NativeStartResult> {
   const { host, layout, ref, serverName, activate, onMessage, onLog, onUpgrade, signal } = opts;
   const { checkoutRoot, mattermost } = opts;
@@ -242,7 +285,20 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
     }
   }
 
-  const bundle = await readLocalServerBundle(opts.bundleRoot, COMPATIBLE_SWITCH_VERSION);
+  // Mattermost's image downloads while the server is set up, when it will be
+  // wanted: unless the user said otherwise, wherever Docker is available.
+  const runMattermost = mattermost ?? (await detectDocker()).available;
+  const pulled = runMattermost
+    ? pullMattermostImage(() => {}).catch((error: unknown) => {
+        log.warn('local-switch-server: could not pull Mattermost ahead of time', {
+          error: String(error),
+        });
+      })
+    : null;
+
+  const shipped = await readLocalServerBundle(opts.bundleRoot, COMPATIBLE_SWITCH_VERSION);
+  const bundle =
+    shipped === null ? null : await materializeBundle(shipped, layout.toolchain, onMessage);
   const uv = await resolveUv(layout, bundle, onMessage);
   const postgres = await resolvePostgres(layout, bundle, onMessage);
   const install = await installSwitchCore({
@@ -338,9 +394,10 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
     // Mattermost comes up after this returns, beside a server already in use:
     // pulling and seeding it takes minutes, and nothing about the server
     // itself waits on it.
-    const bringUpMattermost = mattermost
-      ? (onProgress: (message: string) => void) =>
-          startNativeMattermost({
+    const bringUpMattermost = runMattermost
+      ? async (onProgress: (message: string) => void) => {
+          await pulled;
+          await startNativeMattermost({
             layout,
             install,
             secrets,
@@ -350,10 +407,18 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
             callbackPort: ports.gateway,
             onMessage: onProgress,
             onLog,
-          })
+          });
+        }
       : null;
 
     if (checkoutRoot === null) {
+      if (bundle !== null) {
+        await pruneBundleCopies(layout.toolchain, bundle.root).catch((error: unknown) => {
+          log.warn('local-switch-server: could not remove old bundle copies', {
+            error: String(error),
+          });
+        });
+      }
       await pruneSwitchCoreInstalls(layout, install.version).catch((error: unknown) => {
         log.warn('local-switch-server: could not remove old switch-core installs', {
           error: String(error),

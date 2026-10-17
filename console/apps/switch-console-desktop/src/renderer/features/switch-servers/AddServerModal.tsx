@@ -743,7 +743,7 @@ function MattermostOption({
   onChange,
 }: {
   enabled: boolean;
-  docker: { available: boolean } | null;
+  docker: { available: true } | { available: false; detail: string } | null;
   disabled: boolean;
   onChange: (enabled: boolean) => void;
 }) {
@@ -757,7 +757,7 @@ function MattermostOption({
             ? 'Checking for Docker…'
             : available
               ? 'Team chat for your rooms, in Switch Console. Runs in Docker.'
-              : 'Team chat for your rooms needs Docker, which is not available here. The server works without it.'}
+              : `Team chat for your rooms needs Docker. ${docker.available ? '' : docker.detail} The server works without it.`}
         </p>
       </div>
       <Switch

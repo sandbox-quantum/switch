@@ -79,16 +79,27 @@ async function uvSync(
   }
 }
 
-/** The version the install in `dir` was made for, or null when there is none. */
-async function readMarker(dir: string): Promise<string | null> {
+type Marker = { version?: unknown; source?: unknown; bundleRoot?: unknown };
+
+/** What the install in `dir` was made from, or null when there is none. */
+async function readMarker(dir: string): Promise<Marker | null> {
   try {
-    const parsed = JSON.parse(await readFile(path.join(dir, MARKER_FILE), 'utf8')) as {
-      version?: unknown;
-    };
-    return typeof parsed.version === 'string' ? parsed.version : null;
+    return JSON.parse(await readFile(path.join(dir, MARKER_FILE), 'utf8')) as Marker;
   } catch {
     return null;
   }
+}
+
+/** Whether an install made from `marker` serves `version` from `bundle`: one
+ * made from another copy of the bundle is redone, so old copies can go. */
+function markerMatches(
+  marker: Marker | null,
+  version: string,
+  bundle: LocalServerBundle | null
+): boolean {
+  if (marker?.version !== version) return false;
+  if (bundle === null) return true;
+  return marker.source === 'bundle' && marker.bundleRoot === bundle.root;
 }
 
 /**
@@ -132,14 +143,14 @@ export async function installSwitchCore(opts: {
   const python = venvPython(venv);
   // Checked by running it, not by its file existing: an environment made from
   // the app's bundled Python stops working if the app moves.
-  if ((await readMarker(dir)) === version && (await runs(python))) {
+  if (markerMatches(await readMarker(dir), version, bundle) && (await runs(python))) {
     return { version, sourceRoot: src, projectDir, python };
   }
 
   if (bundle !== null) {
     onMessage(`Installing switch-core ${version}…`);
     await installFromBundle(layout, uv, bundle, src, venv);
-    await writeMarker(dir, { version, source: 'bundle', bundleBuiltAt: bundle.builtAt });
+    await writeMarker(dir, { version, source: 'bundle', bundleRoot: bundle.root });
     return { version, sourceRoot: src, projectDir, python };
   }
 
@@ -245,6 +256,34 @@ async function venvSitePackages(venv: string): Promise<string> {
   const python = (await readdir(lib)).find((entry) => entry.startsWith('python'));
   if (!python) throw new Error(`The environment in ${venv} has no lib/python* directory.`);
   return path.join(lib, python, 'site-packages');
+}
+
+/**
+ * The install a start already made for `version`, without installing anything,
+ * or null when there is none that runs. For acting on a running server
+ * (bringing its Mattermost up) without going through a start.
+ */
+export async function existingSwitchCoreInstall(
+  layout: NativeLayout,
+  version: string,
+  checkoutRoot: string | null
+): Promise<SwitchCoreInstall | null> {
+  if (checkoutRoot !== null) {
+    const python = venvPython(path.join(layout.switchCore, CHECKOUT_IMAGE_TAG, 'venv'));
+    return (await runs(python))
+      ? {
+          version: CHECKOUT_IMAGE_TAG,
+          sourceRoot: checkoutRoot,
+          projectDir: path.join(checkoutRoot, 'core'),
+          python,
+        }
+      : null;
+  }
+  const dir = path.join(layout.switchCore, version);
+  const src = path.join(dir, 'src');
+  const python = venvPython(path.join(dir, 'venv'));
+  if ((await readMarker(dir))?.version !== version || !(await runs(python))) return null;
+  return { version, sourceRoot: src, projectDir: path.join(src, 'core'), python };
 }
 
 /** Remove installed releases other than `keep`, once a start on it has
