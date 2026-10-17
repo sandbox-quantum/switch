@@ -278,14 +278,18 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<StartL
     const healthy = await waitForCoreHealth(layout, apiUrl, signal);
     if (!healthy) {
       const alive = (await runningCore(layout)) !== null;
-      const reason = await coreFailureLine(layout);
       await stopAfterFailedStart(layout, postgres);
-      // The reason leads, on the first line: the UI headlines that line alone.
+      // Read once the process is gone: a crash's last words reach the log as
+      // it exits, after the exit is first noticed.
+      const reason = await coreFailureLine(layout);
+      // One line, reason first: the server page headlines a failure's first
+      // line alone.
+      const logFile = path.join(layout.logs, 'switch-core.log');
       return {
         kind: 'error',
         message:
           `${alive ? 'switch-core did not become healthy in time' : 'switch-core stopped during startup'}` +
-          `${reason ? `: ${reason}` : '.'}\nFull log: ${path.join(layout.logs, 'switch-core.log')}`,
+          `${reason ? `: ${reason}` : ''} (full log: ${logFile})`,
       };
     }
 

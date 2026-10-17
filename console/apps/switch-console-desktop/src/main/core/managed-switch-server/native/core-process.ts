@@ -177,13 +177,21 @@ export async function stopCore(layout: NativeLayout): Promise<void> {
  * log, or else its last line.
  */
 export async function coreFailureLine(layout: NativeLayout): Promise<string | null> {
-  let text: string;
-  try {
-    text = await readFile(path.join(layout.logs, 'switch-core.log'), 'utf8');
-  } catch {
-    return null;
+  // A process that has just died may still be handing its last output to the
+  // file; a few short retries let a traceback land before it is read.
+  let line: string | null = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) await sleep(500);
+    let text: string;
+    try {
+      text = await readFile(path.join(layout.logs, 'switch-core.log'), 'utf8');
+    } catch {
+      continue;
+    }
+    line = failureLine(text);
+    if (line !== null && /(Error|Exception|FATAL)\b/.test(line)) return line;
   }
-  return failureLine(text);
+  return line;
 }
 
 export function failureLine(log: string): string | null {
