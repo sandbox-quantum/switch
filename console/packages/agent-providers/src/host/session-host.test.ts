@@ -6,6 +6,7 @@ import type { Command, Session, Snapshot } from '@switch-console/shared/session-
 import { afterEach, expect, it, vi } from 'vitest';
 import { ProviderConversationUnavailableError, type ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
+import { CONNECTOR_APPROVAL_NOTICE, ServiceNotices } from './service-notices';
 import { HostedSession, lastAssistantText, type RoomReply, unpostedReply } from './session-host';
 
 /**
@@ -94,6 +95,7 @@ function setup(provider: Session['provider']) {
       runtimeMode: 'approval-required' as const,
       env: {},
       mcpServers: {},
+      connectorMcpServers: [],
     },
   };
   return { adapter, config, emit };
@@ -1611,4 +1613,60 @@ it('keeps tool input and output off the event stream, the journal and the snapsh
       tools: [expect.objectContaining({ input, output: 'PRIVATE OUTPUT', toolName: 'Read' })],
     },
   ]);
+});
+
+it("tells its owner when the provider asks to run a connector's tool, and only then", async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-host-test-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  const asked: string[] = [];
+  const notices = new ServiceNotices();
+  const host = await HostedSession.start(
+    root,
+    {
+      ...fixture.config,
+      connectorApproval: (connector) => {
+        asked.push(connector);
+        notices.raise(CONNECTOR_APPROVAL_NOTICE);
+      },
+    },
+    fixture.adapter
+  );
+  hosts.push(host);
+  notices.attach((message) => host.serviceFallback(message));
+  const published: Array<{ type: string; message?: string; request?: { requestId: string } }> = [];
+  host.onPublished((event) => published.push(event.body as (typeof published)[number]));
+  await waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  await host.command(message('turn'));
+  const connectorRequest = (requestId: string) => ({
+    type: 'request.opened' as const,
+    turnId: 'turn',
+    requestId,
+    requestType: 'mcp_tool_approval' as const,
+    title: `atlassian wants to run ${requestId}`,
+    options: [{ decision: 'accept' as const, label: 'Allow once' }],
+    connector: 'atlassian',
+  });
+  fixture.emit({
+    type: 'request.opened',
+    turnId: 'turn',
+    requestId: 'bash',
+    requestType: 'command_execution_approval',
+    title: 'ls',
+    options: [{ decision: 'accept', label: 'Allow once' }],
+  });
+  fixture.emit(connectorRequest('search'));
+  fixture.emit(connectorRequest('add_comment'));
+  await waitFor(() => expect(host.snapshot().requests).toHaveLength(3));
+  await host.barrier();
+  expect(asked).toEqual(['atlassian', 'atlassian']);
+
+  const order = published.flatMap((body) =>
+    body.type === 'notice' && body.message === CONNECTOR_APPROVAL_NOTICE
+      ? ['notice']
+      : body.type === 'request.opened' && body.request
+        ? [body.request.requestId]
+        : []
+  );
+  expect(order).toEqual(['bash', 'notice', 'search', 'add_comment']);
 });

@@ -74,6 +74,9 @@ from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.gateway.trust_settings import router as trust_settings_router
+from switch_core.gateway.workspace_services import (
+    router as workspace_services_router,
+)
 from switch_core.keys import Purpose
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
@@ -170,6 +173,7 @@ def create_gateway_app(
     if config.service_connections_enabled:
         app.include_router(service_connections_router, tags=["service-connections"])
         app.include_router(service_flows_router, tags=["service-connections"])
+        app.include_router(workspace_services_router, tags=["service-connections"])
 
     # authlib's OIDC client stores transient state/nonce/PKCE in the request
     # session across the IdP redirect round-trip; SameSite=Lax lets the cookie

@@ -4,7 +4,7 @@ any step of one.
 A person connecting GitHub (`gateway/github_connections.py`) or a catalog
 service (`connections/flows.py`) from Switch Console goes through half a dozen
 requests: Console starts the flow, the browser leaves for the vendor and comes
-back, Console hands over the code, follows the flow and confirms it. With
+back, Console hands over the code and reads the outcome. With
 several processes behind one address each request may reach a different one,
 so the flow is a row in `sign_in_flows` rather than an entry in one process's
 memory.
@@ -85,6 +85,7 @@ class StoredFlow:
     result: Mapping[str, Any] | None
     account_label: str | None
     error: str | None
+    warning: str | None
 
     def holds_secret(self, presented: str) -> bool:
         """Whether `presented` is the completion secret Console started with."""
@@ -294,4 +295,5 @@ class SignInFlows:
             ),
             account_label=row.account_label,
             error=row.error,
+            warning=row.warning,
         )

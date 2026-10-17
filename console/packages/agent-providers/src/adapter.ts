@@ -63,6 +63,12 @@ export interface ProviderSessionStartInput {
   env: Record<string, string>;
   /** MCP servers the session must expose to the agent, keyed by server name. */
   mcpServers: Record<string, McpServerSpec>;
+  /**
+   * Servers whose tools follow `runtimeMode` instead of being auto-approved:
+   * the granted connectors' (`host/shared-config.ts`). Every other server in
+   * {@link mcpServers}, Switch's own above all, is auto-approved in every mode.
+   */
+  connectorMcpServers: string[];
   /** Extra system-level context appended to whatever the vendor loads itself. */
   systemContext?: string;
   /**

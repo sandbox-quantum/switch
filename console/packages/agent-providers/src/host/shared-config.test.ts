@@ -402,6 +402,43 @@ describe('the skills of the agent’s service grants', () => {
     }
   });
 
+  it('name the granted vendors, MCP and CLI alike, as the connectors, never Switch', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+    const served = (port: number) => ({
+      transport: 'http' as const,
+      url: `http://127.0.0.1:${port}/mcp`,
+    });
+    try {
+      const prepared = await prepareSharedConfig(
+        root,
+        await configFor(root, 'claude'),
+        runtime,
+        NO_SERVICES,
+        null,
+        // A vendor MCP server and a vendor CLI, both served on loopback.
+        { atlassian: served(4400), 'google-workspace': served(4401) }
+      );
+      expect(prepared.input.connectorMcpServers.sort()).toEqual(['atlassian', 'google-workspace']);
+      expect(prepared.input.connectorMcpServers).not.toContain('switch');
+      expect(Object.keys(prepared.input.mcpServers).sort()).toEqual([
+        'atlassian',
+        'google-workspace',
+        'switch',
+      ]);
+      const none = await prepareSharedConfig(
+        root,
+        await configFor(root, 'claude'),
+        runtime,
+        NO_SERVICES,
+        null,
+        {}
+      );
+      expect(none.input.connectorMcpServers).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('tell the session when they could not be loaded', async () => {
     const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
     try {

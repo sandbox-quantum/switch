@@ -2,7 +2,7 @@
 
 The routes of `connections/flows.py`, for any catalog entry with the
 `oauth` adapter; GitHub keeps its own (`gateway/github_connections.py`).
-Switch Console starts, completes, follows and confirms a flow as the signed-in
+Switch Console starts, completes, follows and drops a flow as the signed-in
 person; `authorize` and `callback` are the browser's, in core mode, and are
 tied to the flow by its state and a cookie rather than by a session.
 """
@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 from html import escape
 from typing import Annotated, cast
-from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -75,8 +74,7 @@ def _page(name: str, message: str, status: int) -> HTMLResponse:
             "Cache-Control": "no-store",
             "Referrer-Policy": "no-referrer",
             "Content-Security-Policy": (
-                "default-src 'none'; frame-ancestors 'none'; form-action 'self'; "
-                "base-uri 'none'"
+                "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
             ),
         },
     )
@@ -121,6 +119,7 @@ async def start(
 ) -> dict | JSONResponse:
     """Begin signing in: where to send the browser, and which way it returns."""
     try:
+        await broker.require_workspace_enabled(session, service)
         definition, adapter = broker.sign_in(service)
     except ServiceError as error:
         return service_refusal(error)
@@ -191,49 +190,10 @@ async def callback(
     request: Request,
     flows: Annotated[ServiceFlows, Depends(get_service_flows)],
 ) -> Response:
-    """Back from the vendor: the person says this is their Switch account."""
+    """Back from the vendor: the browser takes the code on to Switch Console,
+    on the computer it left from."""
     state = request.query_params.get("state", "")
     code = request.query_params.get("code", "")
-    try:
-        flow = await flows.flow(state)
-        if flow.service != service:
-            raise FlowError(INTERRUPTED)
-        await flows.returning(flow, code, request.cookies.get(_cookie(state), ""))
-    except FlowError:
-        return _page("Connections", INTERRUPTED, 400)
-    response = _page(
-        flow.name,
-        f"Linking {escape(flow.name)} to <strong>{escape(flow.owner_label)}</strong>. "
-        "Continue only if this is your Switch account. Use the same computer where "
-        "you started the connection."
-        f'<form method="post" action="{_cookie_path(service)}">'
-        f'<input type="hidden" name="state" value="{escape(state, quote=True)}">'
-        f'<input type="hidden" name="code" value="{escape(code, quote=True)}">'
-        '<button type="submit">Continue in Switch Console</button></form>',
-        200,
-    )
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'none'; frame-ancestors 'none'; "
-        f"form-action 'self' http://127.0.0.1:{flow.port}; base-uri 'none'"
-    )
-    return response
-
-
-@router.post("/callback")
-async def relay(
-    service: str,
-    request: Request,
-    flows: Annotated[ServiceFlows, Depends(get_service_flows)],
-) -> Response:
-    """The person continued: their browser takes the code to Switch Console."""
-    body = bytearray()
-    async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > 2 * MAX_CODE_LENGTH:
-            return _page("Connections", "Invalid sign-in response.", 400)
-    value = parse_qs(body.decode("utf-8", errors="replace"))
-    state = value.get("state", [""])[0]
-    code = value.get("code", [""])[0]
     try:
         flow = await flows.flow(state)
         if flow.service != service:
@@ -258,23 +218,25 @@ async def relay(
     return response
 
 
-@router.post("/{flow_id}/complete", status_code=204, response_model=None)
+@router.post("/{flow_id}/complete", response_model=None)
 async def complete(
     service: str,
     flow_id: str,
     body: CompleteFlow,
     user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     flows: Annotated[ServiceFlows, Depends(get_service_flows)],
-) -> Response:
-    """Console hands back the code its listener received, with its secret."""
+) -> dict | JSONResponse:
+    """Console hands back the code its listener received, with its secret:
+    Core exchanges it, reads the account and writes the connection."""
     flow = await _owned(flows, service, flow_id, user)
     try:
         _, adapter = broker.sign_in(service)
     except ServiceError as error:
         return service_refusal(error)
     try:
-        await flows.complete(
+        exchange = await flows.complete(
             flow,
             completion_secret=body.completion_secret,
             code=body.code,
@@ -284,56 +246,12 @@ async def complete(
         raise HTTPException(400, str(error)) from None
     except ServiceUnavailableError as error:
         raise HTTPException(503, str(error)) from None
-    return Response(status_code=204)
-
-
-@router.get("/{flow_id}")
-async def flow_status(
-    service: str,
-    flow_id: str,
-    user: Annotated[User, Depends(get_current_user)],
-    flows: Annotated[ServiceFlows, Depends(get_service_flows)],
-) -> dict:
-    flow = await _owned(flows, service, flow_id, user)
-    return {
-        "status": (
-            flow.status if flow.status in ("checking", "ready", "failed") else "pending"
-        ),
-        "account": None if flow.account is None else flow.account.label,
-        "error": flow.error,
-    }
-
-
-@router.delete("/{flow_id}", status_code=204)
-async def cancel(
-    service: str,
-    flow_id: str,
-    user: Annotated[User, Depends(get_current_user)],
-    flows: Annotated[ServiceFlows, Depends(get_service_flows)],
-) -> Response:
-    await flows.discard(await _owned(flows, service, flow_id, user))
-    return Response(status_code=204)
-
-
-@router.post("/{flow_id}/confirm", response_model=None)
-async def confirm(
-    service: str,
-    flow_id: str,
-    body: FlowSecret,
-    user: Annotated[User, Depends(get_current_user)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
-    flows: Annotated[ServiceFlows, Depends(get_service_flows)],
-) -> dict | JSONResponse:
-    """The person confirms the account: the connection is written."""
-    flow = await _owned(flows, service, flow_id, user)
     try:
-        flows.ready(flow, body.completion_secret)
-        consent = flows.consent(flow)
+        consent = flows.consent(exchange)
     except FlowError as error:
-        raise HTTPException(409, str(error)) from None
-    account, signed_in = flow.account, flow.signed_in
-    assert account is not None and signed_in is not None
+        await flows.failed(exchange.flow, str(error))
+        raise HTTPException(400, str(error)) from None
+    account, signed_in = exchange.account, exchange.signed_in
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
         {"key": f"service-link:{require_tenant_id()}:{service}"},
@@ -347,13 +265,15 @@ async def confirm(
         )
     )
     if taken is not None:
+        linked = (
+            f"This {flow.name} account is already linked to another Switch "
+            "user in this workspace. Remove that link first."
+        )
+        await flows.failed(exchange.flow, linked)
         return JSONResponse(
             status_code=409,
             content={
-                "detail": (
-                    f"This {flow.name} account is already linked to another Switch "
-                    "user in this workspace. Remove that link first."
-                ),
+                "detail": linked,
                 "code": "account_linked_elsewhere",
                 "retryable": False,
             },
@@ -370,12 +290,45 @@ async def confirm(
             secret=signed_in.secret,
         )
     except ServiceError as error:
+        await flows.failed(exchange.flow, error.message)
         return service_refusal(error)
-    await flows.discard(flow)
+    await flows.connected(exchange, warning)
     logger.info(
         "Service account linked: tenant=%s user=%s service=%s",
         require_tenant_id(),
         user.id,
         service,
     )
-    return {"warning": warning, "consent": consent}
+    return {"warning": warning, "consent": consent, "account": account.label}
+
+
+@router.get("/{flow_id}")
+async def flow_status(
+    service: str,
+    flow_id: str,
+    user: Annotated[User, Depends(get_current_user)],
+    flows: Annotated[ServiceFlows, Depends(get_service_flows)],
+) -> dict:
+    flow = await _owned(flows, service, flow_id, user)
+    return {
+        "status": (
+            flow.status
+            if flow.status in ("checking", "connected", "failed")
+            else "pending"
+        ),
+        "account": flow.account_label,
+        "error": flow.error,
+        "warning": flow.warning,
+    }
+
+
+@router.delete("/{flow_id}", status_code=204)
+async def drop(
+    service: str,
+    flow_id: str,
+    user: Annotated[User, Depends(get_current_user)],
+    flows: Annotated[ServiceFlows, Depends(get_service_flows)],
+) -> Response:
+    """Console is done with the flow: cancelled, or its outcome read."""
+    await flows.discard(await _owned(flows, service, flow_id, user))
+    return Response(status_code=204)

@@ -280,6 +280,7 @@ async function start(
         runtimeMode: 'approval-required',
         env: {},
         mcpServers: {},
+        connectorMcpServers: [],
       },
       ...(opts.rooms ? { roomConnection: { connectionId: 'controller' } } : {}),
       parent: channel,

@@ -3987,13 +3987,17 @@ class SignInFlow(TenantScoped, Base):
     conditional update only, so of two requests racing for one step exactly
     one takes it.
 
-    Nothing secret is stored in the clear: the PKCE verifier and, once the code
-    is exchanged, the vendor's credentials are keyring-encrypted, and the
-    completion secret and browser nonce are kept as SHA-256 hashes, compared
-    against what Console and the browser present. `details` holds what the
-    flow asked the vendor for (its name, scopes and consent), none of it
-    secret. Rows expire after ten minutes, and expired ones are deleted as the
-    next flow in the workspace starts.
+    Nothing secret is stored in the clear: the PKCE verifier is
+    keyring-encrypted, and the completion secret and browser nonce are kept as
+    SHA-256 hashes, compared against what Console and the browser present.
+    The vendor's credentials never reach the row: the request that exchanges
+    the code writes the connection, and the flow then holds the outcome
+    (`account_label`, `warning` or `error`) for Console to read until it drops
+    the flow. `encrypted_result` held those credentials between the exchange
+    and a confirm step that is gone; it stays for a release that still writes
+    it. `details` holds what the flow asked the vendor for (its name, scopes
+    and consent), none of it secret. Rows expire after ten minutes, and
+    expired ones are deleted as the next flow in the workspace starts.
     """
 
     __tablename__ = "sign_in_flows"
@@ -4001,7 +4005,7 @@ class SignInFlow(TenantScoped, Base):
         CheckConstraint("kind IN ('github', 'service')", name="ck_sign_in_flows_kind"),
         CheckConstraint(
             "status IN ('pending', 'authorizing', 'returning', 'delivered', "
-            "'checking', 'ready', 'failed')",
+            "'checking', 'ready', 'connected', 'failed')",
             name="ck_sign_in_flows_status",
         ),
         CheckConstraint("mode IN ('loopback', 'core')", name="ck_sign_in_flows_mode"),
@@ -4026,6 +4030,7 @@ class SignInFlow(TenantScoped, Base):
     encrypted_result: Mapped[str | None] = mapped_column(Text, nullable=True)
     account_label: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    warning: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -4055,6 +4060,32 @@ class ServiceOAuthClient(Base):
     encrypted_secret: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class WorkspaceServiceSetting(TenantScoped, Base):
+    """A workspace admin switched a catalog service on or off for the workspace.
+
+    No row means on: a row is written only when an admin touches the switch,
+    so `updated_by` always names a person. `service` is a catalog slug, checked
+    in code as `ServiceConnection.service` is. Off, nobody in the workspace can
+    connect, grant or be issued a token for it, and its grants drop out of
+    what agents' sessions are given; the grants themselves are kept.
+    """
+
+    __tablename__ = "workspace_service_settings"
+    __table_args__ = (PrimaryKeyConstraint("tenant_id", "service"),)
+
+    service: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_by: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
 

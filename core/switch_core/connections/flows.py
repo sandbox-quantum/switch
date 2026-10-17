@@ -7,14 +7,15 @@ token. The browser comes back one of two ways, as the catalog allows and this
 server can offer:
 
 - **loopback**: the vendor redirects straight to Console's listener.
-- **core**: the vendor redirects to Core's callback, which asks the person to
-  continue (showing whose Switch account the sign-in will join), then relays
-  the code to Console's listener. A cookie set when the browser left through
-  Core ties the return to that browser.
+- **core**: the vendor redirects to Core's callback, which sends the browser
+  straight on to Console's listener with the code. A cookie set when the
+  browser left through Core ties the return to that browser.
 
-Either way Console posts the code back with its completion secret, Core
-exchanges it and reads the account, and Console confirms; only then is the
-connection written, through `ServiceBroker.connect`.
+Either way Console posts the code back with its completion secret, and Core
+exchanges it, reads the account and writes the connection through
+`ServiceBroker.connect` in that one step. The flow then reads connected, or
+failed with the reason, holding no token, until it expires or Console drops
+it.
 
 Flows are rows in `sign_in_flows` (`connections/sign_in_flows.py`), as
 GitHub's are, so any switch-core process can take any step: ten minutes each,
@@ -28,7 +29,6 @@ from dataclasses import dataclass
 from urllib.parse import urlencode
 
 from switch_core.connections.adapters import (
-    ConnectionSecret,
     ReauthorizationRequiredError,
     ServiceAdapterError,
 )
@@ -68,8 +68,8 @@ class FlowError(Exception):
 class ServiceFlow:
     """A service sign-in as its row stands.
 
-    Status runs pending → authorizing → (core: returning → delivered) →
-    checking → ready | failed.
+    Status runs pending → authorizing → (core: delivered) → checking →
+    connected | failed.
     """
 
     stored: StoredFlow
@@ -99,29 +99,26 @@ class ServiceFlow:
         return self.stored.port
 
     @property
-    def owner_label(self) -> str:
-        return self.stored.owner_label
-
-    @property
     def error(self) -> str | None:
         return self.stored.error
 
     @property
-    def account(self) -> Identity | None:
-        result = self.stored.result
-        if result is None:
-            return None
-        return Identity(account_id=result["account_id"], label=result["account_label"])
+    def account_label(self) -> str | None:
+        return self.stored.account_label
 
     @property
-    def signed_in(self) -> SignIn | None:
-        result = self.stored.result
-        if result is None:
-            return None
-        return SignIn(
-            secret=ConnectionSecret(dict(result["secret"])),
-            granted_scopes=list(result["granted_scopes"]),
-        )
+    def warning(self) -> str | None:
+        return self.stored.warning
+
+
+@dataclass(frozen=True)
+class Exchange:
+    """What the vendor issued for a flow's code: held in memory only until
+    the connection is written, never in the flow's row."""
+
+    flow: StoredFlow
+    signed_in: SignIn
+    account: Identity
 
 
 class ServiceFlows:
@@ -256,11 +253,12 @@ class ServiceFlows:
             raise
         return url, nonce
 
-    async def returning(self, flow: ServiceFlow, code: str, nonce: str) -> None:
-        """The browser is back at Core's callback, in core mode."""
+    async def deliver(self, flow: ServiceFlow, code: str, nonce: str) -> str:
+        """The browser is back at Core's callback, in core mode: where it
+        takes the code on to Console's listener. Once per flow."""
         if (
             flow.mode != "core"
-            or flow.status not in ("authorizing", "returning")
+            or flow.status != "authorizing"
             or len(code) > MAX_CODE_LENGTH
             or not flow.stored.holds_nonce(nonce)
         ):
@@ -269,29 +267,13 @@ class ServiceFlows:
             error = f"{flow.name} sign-in was cancelled."
             await self._flows.advance(
                 flow.stored,
-                expect=("authorizing", "returning"),
+                expect=("authorizing",),
                 to="failed",
                 changes={"error": error},
             )
             raise FlowError(error)
         taken = await self._flows.advance(
-            flow.stored, expect=("authorizing", "returning"), to="returning", changes={}
-        )
-        if taken is None:
-            raise FlowError("The sign-in could not be verified.")
-
-    async def deliver(self, flow: ServiceFlow, code: str, nonce: str) -> str:
-        """The person continued: where their browser takes the code to Console."""
-        if (
-            flow.mode != "core"
-            or flow.status != "returning"
-            or not code
-            or len(code) > MAX_CODE_LENGTH
-            or not flow.stored.holds_nonce(nonce)
-        ):
-            raise FlowError("The sign-in could not be verified.")
-        taken = await self._flows.advance(
-            flow.stored, expect=("returning",), to="delivered", changes={}
+            flow.stored, expect=("authorizing",), to="delivered", changes={}
         )
         if taken is None:
             raise FlowError("The sign-in could not be verified.")
@@ -306,8 +288,10 @@ class ServiceFlows:
         completion_secret: str,
         code: str,
         adapter: OAuthAdapter,
-    ) -> None:
-        """Console hands back the code; Core exchanges it and reads the account."""
+    ) -> Exchange:
+        """Console hands back the code; Core exchanges it and reads the account.
+        The flow stays `checking` until the caller writes the connection and
+        settles it with `connected` or `failed`."""
         ready_for = "authorizing" if flow.mode == "loopback" else "delivered"
         refused = FlowError(
             f"{flow.name} sign-in could not be verified. Connect again."
@@ -333,64 +317,48 @@ class ServiceFlows:
             )
             account = await adapter.identify(signed_in.secret.access_token or "")
         except ReauthorizationRequiredError:
-            await self._fail(
+            await self.failed(
                 checking, f"{flow.name} refused the sign-in. Connect again."
             )
             raise FlowError(
                 f"{flow.name} refused the sign-in. Connect again."
             ) from None
         except ServiceAdapterError as error:
-            await self._fail(checking, str(error))
+            await self.failed(checking, str(error))
             raise FlowError(str(error)) from None
         except BaseException:
-            await self._fail(checking, INTERRUPTED)
+            await self.failed(checking, INTERRUPTED)
             raise
-        ready = await self._flows.advance(
-            checking,
-            expect=("checking",),
-            to="ready",
-            changes={
-                "encrypted_result": self._flows.seal(
-                    {
-                        "secret": signed_in.secret.values,
-                        "granted_scopes": list(signed_in.granted_scopes),
-                        "account_id": account.account_id,
-                        "account_label": account.label,
-                    }
-                ),
-                "account_label": account.label,
-            },
-        )
-        if ready is None:
-            # The flow expired or was cancelled while the code was exchanged:
-            # what the vendor issued has nowhere to go.
-            raise FlowError(INTERRUPTED)
+        return Exchange(flow=checking, signed_in=signed_in, account=account)
 
-    async def _fail(self, flow: StoredFlow, error: str) -> None:
+    def consent(self, exchange: Exchange) -> AccessLevel:
+        """What the person consented to, as the vendor granted it."""
+        granted = set(exchange.signed_in.granted_scopes)
+        details = exchange.flow.details
+        write_scopes = set(details["write_scopes"])
+        if write_scopes and write_scopes <= granted:
+            return "write"
+        if set(details["read_scopes"]) <= granted:
+            return "read"
+        raise FlowError(
+            f"{details['name']} granted less than Switch needs to read. Connect "
+            "again and allow what it asks for."
+        )
+
+    async def connected(self, exchange: Exchange, warning: str | None) -> None:
+        """The connection is written: the outcome stays on the flow, without
+        the token, for Console to read."""
+        await self._flows.advance(
+            exchange.flow,
+            expect=("checking",),
+            to="connected",
+            changes={"account_label": exchange.account.label, "warning": warning},
+        )
+
+    async def failed(self, flow: StoredFlow, error: str) -> None:
         await self._flows.advance(
             flow, expect=("checking",), to="failed", changes={"error": error}
         )
-
-    def consent(self, flow: ServiceFlow) -> AccessLevel:
-        """What the person consented to, as the vendor granted it."""
-        signed_in = flow.signed_in
-        assert signed_in is not None
-        granted = set(signed_in.granted_scopes)
-        write_scopes = set(flow.stored.details["write_scopes"])
-        if write_scopes and write_scopes <= granted:
-            return "write"
-        if set(flow.stored.details["read_scopes"]) <= granted:
-            return "read"
-        raise FlowError(
-            f"{flow.name} granted less than Switch needs to read. Connect again "
-            "and allow what it asks for."
-        )
-
-    def ready(self, flow: ServiceFlow, completion_secret: str) -> None:
-        if not flow.stored.holds_secret(completion_secret):
-            raise FlowError(INTERRUPTED)
-        if flow.status != "ready":
-            raise FlowError(f"Finish signing in to {flow.name} before confirming.")
 
     async def discard(self, flow: ServiceFlow) -> None:
         await self._flows.discard(flow.stored)

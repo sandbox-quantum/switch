@@ -24,6 +24,7 @@ from switch_core.connections.registry import (
     load_client_settings,
 )
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.adapters.test_github import _app_files, _config
 from tests.switch_core.connections.test_loader import (
@@ -187,6 +188,8 @@ def test_an_entry_not_set_up_here_shows_its_catalog_note(
         disabled={},
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=False,
     )
     assert broker.availability("example") == (
         "Not set up on this server. Its operator registers an Example app; see the docs."

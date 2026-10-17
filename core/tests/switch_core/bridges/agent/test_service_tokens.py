@@ -51,7 +51,7 @@ def vendor() -> FakeVendor:
 def harness(
     session_factory: async_sessionmaker[AsyncSession], vendor: FakeVendor
 ) -> Harness:
-    return build_service_harness(session_factory, vendor)[0]
+    return build_service_harness(session_factory, vendor, workspace_gate=False)[0]
 
 
 async def _fetch(harness: Harness, agent_id: str, headers: dict[str, str]):

@@ -7,6 +7,7 @@ import {
   recordedServicesShape,
   recordSessionServices,
   servicesChanged,
+  servicesChangeSince,
   servicesShape,
 } from './session-services';
 
@@ -93,5 +94,63 @@ describe('whether a session’s grants changed', () => {
   it('is never a change on a guess', () => {
     expect(servicesChanged(undefined, '[1]')).toBe(false);
     expect(servicesChanged('[]', null)).toBe(false);
+  });
+});
+
+describe('what a restarted session is told about its services', () => {
+  const services = (...names: string[]) => ({
+    grants: names.map((name) => grant(name)),
+    unavailable: null,
+  });
+  const shape = (...names: string[]) => servicesShape(services(...names));
+  const REMOVED_DATADOG =
+    "Datadog was removed from this agent's tools: it was switched off for the workspace, or its grant was removed.";
+
+  it('names a service taken away, and both reasons it may have gone', () => {
+    expect(servicesChangeSince(shape('atlassian', 'datadog'), services('atlassian'))).toBe(
+      REMOVED_DATADOG
+    );
+  });
+
+  it('names a service given back, and several at once', () => {
+    expect(servicesChangeSince(shape('atlassian'), services('atlassian', 'datadog'))).toBe(
+      "Datadog was added to this agent's tools."
+    );
+    expect(
+      servicesChangeSince(shape('datadog', 'github', 'google-workspace'), services('atlassian'))
+    ).toBe(
+      "Datadog, GitHub and Google Workspace were removed from this agent's tools: each was switched off for the workspace, or its grant was removed. Atlassian was added to this agent's tools."
+    );
+  });
+
+  it('says nothing when the same services stay, whatever changed in them', () => {
+    expect(
+      servicesChangeSince(shape('datadog'), {
+        grants: [grant('datadog', { tools: ['search'] })],
+        unavailable: null,
+      })
+    ).toBeNull();
+  });
+
+  it('says nothing for a new session, or when either side is unknown', () => {
+    expect(servicesChangeSince(undefined, services('datadog'))).toBeNull();
+    expect(servicesChangeSince(null, services('datadog'))).toBeNull();
+    expect(
+      servicesChangeSince(shape('datadog'), { grants: [], unavailable: 'Switch is unreachable' })
+    ).toBeNull();
+  });
+
+  it('is said once for a change: the restart records the grants it started with', async () => {
+    // What each start of a session's host does, in order: read the previous
+    // host's record, then replace it with its own.
+    const root = await mkdtemp(join(tmpdir(), 'session-services-'));
+    const hostStarts = async (now: ReturnType<typeof services>) => {
+      const change = servicesChangeSince(await recordedServicesShape(root), now);
+      await recordSessionServices(root, now);
+      return change;
+    };
+    expect(await hostStarts(services('atlassian', 'datadog'))).toBeNull();
+    expect(await hostStarts(services('atlassian'))).toBe(REMOVED_DATADOG);
+    expect(await hostStarts(services('atlassian'))).toBeNull();
   });
 });

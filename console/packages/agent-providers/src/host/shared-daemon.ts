@@ -16,7 +16,11 @@ import { adapterFor } from './server';
 import { grantedSkills } from './service-access';
 import { runGitCredentialHelper, runGitHubCli } from './service-github';
 import { HOST_EXIT_GRACE_MS, SessionLinks } from './session-channel';
-import { recordSessionServices } from './session-services';
+import {
+  recordedServicesShape,
+  recordSessionServices,
+  servicesChangeSince,
+} from './session-services';
 import {
   readProviderLogin,
   readSharedCredentials,
@@ -46,6 +50,7 @@ async function main(): Promise<void> {
             cwd: mode,
             runtimeMode: 'approval-required',
             mcpServers: {},
+            connectorMcpServers: [],
             env: Object.fromEntries(
               Object.entries(process.env).filter(
                 (entry): entry is [string, string] => entry[1] !== undefined
@@ -208,6 +213,17 @@ async function main(): Promise<void> {
     process.on('disconnect', () => stop.abort());
     try {
       const services = await sessionServiceGrants(config);
+      // Read before this host's own record replaces it: a host restarted
+      // because a service was taken away or granted says which.
+      const servicesChange = servicesChangeSince(
+        await recordedServicesShape(resolve(root)).catch((error: unknown) => {
+          console.warn(
+            `Could not read which services this session's previous host started with, so a change to them is not announced: ${error instanceof Error ? error.message : String(error)}`
+          );
+          return undefined;
+        }),
+        services
+      );
       // What the watcher compares the agent's grants against, to restart this
       // host when a service is granted or taken away (`servicesChanged`).
       await recordSessionServices(resolve(root), services);
@@ -221,6 +237,7 @@ async function main(): Promise<void> {
           grantedSkills(services.grants)
         ),
         services,
+        servicesChange,
         entrypoint: process.argv[1]!,
         port: process,
         authenticate:

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import type { HttpMcpServerSpec } from '../adapter';
+import type { HttpMcpServerSpec, ProviderSessionStartInput } from '../adapter';
 import { prepareCodexSessionHome } from '../codex/home';
 import { agentHasOwnUser } from './host-permissions';
 import { type HostedCredential, hostedCredentialSchema } from './provider-login';
@@ -117,7 +117,9 @@ export function servicesUnavailableNotice(reason: string): string {
  * granted GitHub gets Git's credential helper and the `gh` wrapper, which ask
  * the session's service endpoint for the token. `vendors` are the granted
  * vendors' MCP servers this host serves on loopback (`vendor-mcp.ts`), given
- * to the CLI beside Switch's own under their own names.
+ * to the CLI beside Switch's own under their own names, and named in
+ * `connectorMcpServers`, so their tools follow the session's runtime mode
+ * where Switch's own are always allowed.
  */
 export async function prepareSharedConfig(
   root: string,
@@ -209,7 +211,13 @@ export async function prepareSharedConfig(
   input.mcpServers.switch = runtime;
   if (!agentApiUrl || !token)
     throw new Error('Shared SDK host requires execution-host Switch credentials.');
-  return { agentApiUrl, token, input, notices };
+  // Read from the grants as the session starts, never from the saved
+  // configuration, so a resume follows the grants as they are then.
+  const started: ProviderSessionStartInput = {
+    ...input,
+    connectorMcpServers: Object.keys(vendors),
+  };
+  return { agentApiUrl, token, input: started, notices };
 }
 
 /**

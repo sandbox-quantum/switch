@@ -91,6 +91,22 @@ version of their own to them without also giving them a release of their own.
   and the dev environment's, follow it. A controller
   run as a service installs a release beside the one it runs and keeps the one
   before. Roll back by pointing the values at the previous release.
+- **Workspace admins can switch each service off for their workspace.** With
+  the `service_connections` flag on, `GET /gateway/workspace/services` lists
+  every connectable service with whether the workspace has it on, who last
+  changed it and when, and how many members are connected and agents granted;
+  `PUT /gateway/workspace/services/{service}` with `{"enabled": false}` switches
+  it off (workspace admins and owners, audited). Off, nobody in the workspace
+  can start a sign-in, paste a key, connect, grant or be issued a token for it,
+  and the refusal says who can turn it back on and where. A running session
+  loses the service within half a minute: its grants list leaves it out, and
+  its host restarts it without the service. A token already handed out may be
+  used until then, except GitHub's, which is revoked before the switch
+  answers. Grants are kept, so switching it on again needs no re-grant. A
+  service with no setting is on, so an upgraded server behaves as before. The
+  service list now says `workspace_enabled` for each service, and
+  `GET /gateway/service-connections/{service}/agents` lists the caller's own
+  agents with whether each holds a grant and whether others can address it.
 
 #### Changed
 - **Usage telemetry goes to `telemetry.switchagents.ai` by default.** The
@@ -102,7 +118,24 @@ version of their own to them without also giving them a release of their own.
 - **Documentation links point at `docs.switchagents.ai`.** Links in the docs
   and the synced `docs/official` pages used `docs.flintai.dev`, the older name
   for the same site. Old links still redirect.
+- **A sign-in that returns through the server goes straight back to Switch
+  Console.** Google Workspace and GitHub send the browser back to the server
+  rather than to the computer it left from. The server used to stop there on
+  a page naming the Switch account and asking the person to continue; it now
+  sends the browser on to Switch Console at once. The page remains only when
+  the return cannot be verified or the consent was cancelled. What ties a
+  sign-in to the browser and the Console that started it is unchanged.
 
+- **Signing in to a service connects it without a confirm step.** Once the
+  browser returns, the server exchanges the code, reads the account and keeps
+  the connection in one step, and Switch Console shows the result. It used to
+  hold the sign-in until the person confirmed the account in Console. The
+  account is chosen at the vendor, and Disconnect undoes a wrong one. The
+  flow's `complete` route now answers with the account and any warning, its
+  status reads `connected` or `failed` with the reason, and the `confirm`
+  route is gone, for GitHub's flow as well; a Switch Console from before this
+  release cannot finish a sign-in against this server, so update both
+  together. Migration `bf016e18bc16`, expand-only.
 #### Security
 - **An agent icon URL must spell its host plainly.** A link with a backslash,
   or a host with percent-encoding or non-ASCII characters, is refused: browsers
@@ -1724,6 +1757,28 @@ version of their own to them without also giving them a release of their own.
 - **Usage data goes to `telemetry.switchagents.ai`.** Console reported to
   `telemetry.flintai.dev`, an older name for the same relay that is being
   retired. Only where it is sent changes; what is sent, and the opt-out, do not.
+- **Connector tools ask in approval-required and auto-accept-edits mode.**
+  Calls to a granted service's tools (Jira and Confluence through Atlassian,
+  Datadog, Google Workspace) used to run without asking in every mode. They now
+  follow the agent's mode, as its other tools do: an approval card asks first,
+  and declining tells the agent the call was refused. Full access still allows
+  them, and Switch's own room tools never ask. The first such card in a session
+  comes with a notice saying why. Claude Code, Codex and OpenCode cards name the
+  server and tool and show what the call will send, so the text of a comment
+  can be read before it is posted; a long input is cut and the card says how
+  much is not shown. Codex cards can be approved for the rest of the session. A
+  session started before the update keeps allowing them until it restarts.
+- **A Console session in "approval required" no longer inherits your own
+  Claude Code default mode.** Console now starts a Claude Code session in that
+  mode with Claude Code's `default` permission mode. It used to leave the mode
+  unset, so a `defaultMode` such as `auto` in your own Claude Code settings
+  applied, and tools, connector tools among them, could run without the
+  approval card the mode promises.
+- **A session says which services it lost or gained.** When a running session
+  restarts because its agent's services changed, it shows a notice naming
+  them, for example "Datadog was removed from this agent's tools: it was
+  switched off for the workspace, or its grant was removed." The agent is told
+  the same as it resumes, so it does not look for tools it no longer has.
 
 #### Fixed
 - **Signing in to a service through Core works on a server whose gateway and

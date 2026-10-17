@@ -206,8 +206,14 @@ interface SessionState {
   drained: Promise<void>;
   compaction?: { resolve: () => void; reject: (error: Error) => void; boundary: boolean };
   runtimeMode: ProviderSessionStartInput['runtimeMode'];
-  /** `mcp__<server>__` prefixes for the servers the caller registered. */
-  registeredMcpPrefixes: string[];
+  /**
+   * `mcp__<server>__` prefixes for the registered servers whose tools are
+   * allowed without asking: all but the connectors, whose tools follow
+   * `runtimeMode`.
+   */
+  autoApprovedMcpPrefixes: string[];
+  /** The connectors' prefixes, by server name, to say which one a request is for. */
+  connectorMcpPrefixes: Map<string, string>;
   input: PromptQueue;
   turn: ActiveTurn | null;
   pendingApprovals: Map<string, PendingApproval>;
@@ -353,6 +359,13 @@ export function mcpToolPrefixes(names: string[]): string[] {
   return names.map((name) => `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}__`);
 }
 
+/** `{ connector }` when `toolName` is one of the session's connectors' tools. */
+function connectorOf(session: SessionState, toolName: string): { connector?: string } {
+  for (const [name, prefix] of session.connectorMcpPrefixes)
+    if (toolName.startsWith(prefix)) return { connector: name };
+  return {};
+}
+
 /** Rescoped so "allow for this session" never writes a rule to the user's settings. */
 function sessionScoped(suggestions: readonly PermissionUpdate[] | undefined): PermissionUpdate[] {
   return (suggestions ?? []).map((suggestion) => ({ ...suggestion, destination: 'session' }));
@@ -444,12 +457,10 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     filterShadowedWarningOnce();
 
-    // SDK 0.3.260 otherwise inserts --permission-mode default before spawning the CLI.
-    const options: Options & { resolvePermissionModeInCli: boolean } = {
-      resolvePermissionModeInCli: true,
+    const options: Options = {
       cwd: input.cwd,
       env: input.env,
-      ...(permissionMode ? { permissionMode } : {}),
+      permissionMode,
       strictMcpConfig: false,
       // The connector plugin Switch used to ship would add a second Switch
       // server with its own connection; kept off for installs that still have it.
@@ -503,7 +514,12 @@ export class ClaudeAdapter implements ProviderAdapter {
       query: running,
       drained: Promise.resolve(),
       runtimeMode: input.runtimeMode,
-      registeredMcpPrefixes: mcpToolPrefixes(Object.keys(mcpServers)),
+      autoApprovedMcpPrefixes: mcpToolPrefixes(
+        Object.keys(mcpServers).filter((name) => !input.connectorMcpServers.includes(name))
+      ),
+      connectorMcpPrefixes: new Map(
+        input.connectorMcpServers.map((name) => [name, mcpToolPrefixes([name])[0]!])
+      ),
       input: prompt,
       turn: null,
       pendingApprovals: new Map(),
@@ -1096,7 +1112,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         });
         return { behavior: 'allow' };
       }
-      if (session.registeredMcpPrefixes.some((prefix) => toolName.startsWith(prefix))) {
+      if (session.autoApprovedMcpPrefixes.some((prefix) => toolName.startsWith(prefix))) {
         return { behavior: 'allow' };
       }
       return this.requestApproval(session, toolName, toolInput, options);
@@ -1198,6 +1214,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         requestType: requestTypeForTool(toolName),
         ...approvalContent(toolName, toolInput, options.title, options.description),
         options: APPROVAL_OPTIONS,
+        ...connectorOf(session, toolName),
         raw: { source: 'claude', payload: { toolName, toolInput } },
       });
     });

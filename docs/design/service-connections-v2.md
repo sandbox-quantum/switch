@@ -122,7 +122,7 @@ hour. A token already handed out stays valid at the vendor until it expires.
 ## Connecting
 
 Routes under `/gateway/service-connections/{service}/flows`: start, authorize,
-callback (GET, then the POST relay), complete, status, confirm and cancel.
+callback, complete, status and drop.
 Switch Console starts a flow with a one-time state, its listener's port and a
 completion secret. Core keeps the PKCE verifier and exchanges the code, so
 neither Console nor the browser holds a token. The browser comes back the first
@@ -130,16 +130,23 @@ way the catalog allows that this server can offer:
 
 - **loopback**: straight to Console's listener on 127.0.0.1. With
   `loopback_ports`, only on one of them; Console listens on the first free one.
-- **core**: to Core's callback (needs `GATEWAY_PUBLIC_URL`), which shows whose
-  Switch account the sign-in will join and relays the code to Console's
-  listener. A cookie set as the browser left through Core ties it to that
-  browser.
+- **core**: to Core's callback (needs `GATEWAY_PUBLIC_URL`), which sends the
+  browser straight on to Console's listener with the code. A cookie set as the
+  browser left through Core ties it to that browser, and the callback takes a
+  flow's code once; a page is shown only when the return cannot be verified
+  or the consent was cancelled.
 
-Console posts the code back with its completion secret; Core exchanges it and
-reads the account; the connection is written through `broker.connect()` only
-when Console confirms. The consent recorded is what the vendor granted: write
-where every write scope was granted, else read. Flows live in memory: ten
-minutes each, at most 256, one per person.
+Console's listener brings Console to the front as the code arrives, and
+posts it back with the completion secret; in that one step Core exchanges
+it, reads the account, refuses an account already linked to another person
+in the workspace, and writes the connection through `broker.connect()`.
+There is no confirm step: the person chose the account at the vendor. The
+flow then reads `connected` (with the account and any warning) or `failed`
+(with the reason), holding no token, until Console drops it or it expires.
+The consent recorded is what the vendor granted: write where every write
+scope was granted, else read. Flows are rows in `sign_in_flows`, so any
+process can take any step: ten minutes each, at most 256 per workspace, one
+per person.
 
 A dynamically registered client is the deployment's own, kept in
 `service_oauth_clients` (one row per service, encrypted with the keyring,
@@ -223,6 +230,23 @@ as its owner there, that off stops its sessions within a minute, and, for a
 token that lives longer, that a token already handed out stays valid until it
 expires or the owner disconnects.
 
+`GET /gateway/service-connections/{service}/agents` lists the caller's own
+agents in the workspace, each with whether it holds a grant on the service and
+whether others can address it, for the "used by" list and the checklist
+Console offers after connecting. Another member's agents never appear; an
+unknown or placeholder slug is 404.
+
+"Others can address it" (`addressing_open`, here and on the agent's grants
+list) is false only for owner-only in its strict sense: the owner alone, in
+person. Any agent sender counts as someone else, the owner's own agents
+included, so "you and your agents" (`owner_agents`) and any named agent make it
+true. An agent is not the person: whoever addressed the owner's other agent can
+have it pass the request on, and the grant is then used for them. This is what
+Console reports and warns about; it does not refuse the agent-to-agent path,
+which an `owner_agents` rule still admits. Carrying the originating person on
+agent-to-agent messages, so that "you and your agents" can be safe for an agent
+with grants, is a later follow-up.
+
 ## Switching connections on
 
 The whole feature is behind the `service_connections` feature flag
@@ -239,6 +263,35 @@ the boot-time GitHub move and the token upkeep run either way.
 "Switched off on this server." A switched-off service is listed with its
 reason and cannot be connected, granted or issued a token (403 `forbidden`);
 disconnecting still works. A slug outside the catalog stops the server.
+
+## Switching a service on for a workspace
+
+A workspace admin switches each catalog service on or off for the workspace
+(`GET` and `PUT /gateway/workspace/services[/{service}]`, admins and owners,
+and the operator in a workspace they belong to). A service with no setting is
+on, so an upgraded server behaves as before; a row is written only when an
+admin touches the switch, and each change is audited
+(`workspace_service.enabled` / `.disabled`). The switch applies only with the
+`service_connections` flag on; with it off, GitHub works as it always has.
+The list carries `connected_members` and `granted_agents`, what Console shows
+before an admin confirms switching off.
+
+Off, nobody in the workspace can start a sign-in, paste a key, connect, grant
+or be issued a token for the service: 403 `forbidden`, "Datadog is not enabled
+in this workspace. Ask a workspace admin; they switch it on under Connectors in
+Switch Console." The server's own `DISABLED_SERVICES` reason is checked first.
+A sign-in that completes after the switch is refused and revoked at the
+vendor. Grants are kept, but the grants list a session reads leaves the
+service out, so a running session loses the service within half a minute, as
+it does a removed grant: its host restarts it without the service. A token
+already handed out may be used until that restart, except GitHub's, which the
+switch queues and revokes before it answers (`warning` when some could not be
+yet; the five-minute tick keeps trying). On again, the grants come back with
+no re-grant.
+
+The service list (`GET /gateway/service-connections`) carries
+`workspace_enabled` per service, `true` for every service when the flag is
+off.
 
 ## Keys
 
@@ -438,6 +491,10 @@ it as unavailable, with its reason, and the next token request fails.
 
 ## Not yet
 
+- Shared workspace connections, and a per-workspace OAuth client: every
+  connection is a person's own, and every workspace signs in through the
+  deployment's one client per vendor. A workspace's switch only turns a
+  service on or off.
 - `grants.changed` on the agent and controller streams: a grant change reaches
   a running session within half a minute, by the host reading the grants
   again, not at once.

@@ -69,6 +69,8 @@ export interface AcpSessionContext {
     title: string;
     detail?: string;
     options: Array<{ decision: ApprovalDecision; label: string; response: unknown }>;
+    /** The connector server whose tool this asks to run, if it is one. */
+    connector?: string;
   }): Promise<unknown>;
   /** Add a finished item to the running turn's transcript. */
   completeItem(item: ProviderItem): void;

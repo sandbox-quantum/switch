@@ -91,6 +91,7 @@ it
             env,
             runtimeMode: 'full-access',
             mcpServers: { echo: echoMcpServerSpec() },
+            connectorMcpServers: [],
             ...(provider === 'claude' ? { model: { id: 'claude-sonnet-5' } } : {}),
             ...(provider === 'opencode' ? { model: { id: 'opencode/big-pickle' } } : {}),
           },

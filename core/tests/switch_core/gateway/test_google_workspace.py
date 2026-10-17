@@ -27,6 +27,7 @@ from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.models import ServiceConnection, User
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway.service_connections import (
     router as service_connections_router,
 )
@@ -110,6 +111,8 @@ def _world(
         disabled=disabled or {},
         store=STORE,
         token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=False,
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker
@@ -139,13 +142,9 @@ async def _connect(world: World, client: httpx.AsyncClient, user: User) -> None:
     back = urlsplit(world.google.authorize(left.headers["location"]))
     assert f"{back.scheme}://{back.netloc}{back.path}" == f"{PUBLIC}{FLOWS}/callback"
     code = parse_qs(back.query)["code"][0]
-    page = await client.get(f"{back.path}?{back.query}", cookies=cookie)
-    assert page.status_code == 200
-    relayed = await client.post(
-        f"{FLOWS}/callback", data={"state": state, "code": code}, cookies=cookie
-    )
-    assert relayed.status_code == 303
-    listener = urlsplit(relayed.headers["location"])
+    returned = await client.get(f"{back.path}?{back.query}", cookies=cookie)
+    assert returned.status_code == 303
+    listener = urlsplit(returned.headers["location"])
     assert (listener.netloc, listener.path) == (
         f"127.0.0.1:{PORT}",
         LOOPBACK_CALLBACK_PATH,
@@ -156,13 +155,7 @@ async def _connect(world: World, client: httpx.AsyncClient, user: User) -> None:
         json={"completion_secret": secret, "code": code},
         cookies=cookies_for(user),
     )
-    assert completed.status_code == 204, completed.text
-    confirmed = await client.post(
-        f"{FLOWS}/{state}/confirm",
-        json={"completion_secret": secret},
-        cookies=cookies_for(user),
-    )
-    assert confirmed.status_code == 200, confirmed.text
+    assert completed.status_code == 200, completed.text
 
 
 async def _connection(

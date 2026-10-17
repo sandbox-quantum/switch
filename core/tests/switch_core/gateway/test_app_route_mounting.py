@@ -70,6 +70,9 @@ SERVICE_ROUTES = {
     "/service-connections/{service}/key",
     "/agents/{agent_id}/service-grants",
     "/service-connections/{service}/flows",
+    "/service-connections/{service}/agents",
+    "/workspace/services",
+    "/workspace/services/{service}",
 }
 
 

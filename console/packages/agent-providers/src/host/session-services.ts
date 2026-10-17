@@ -2,6 +2,7 @@ import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { ServiceGrant } from './service-access';
+import { servicesChangedNotice } from './service-notices';
 import { type SessionServices, type SharedHostConfig, sessionServiceGrants } from './shared-config';
 
 /**
@@ -79,6 +80,31 @@ export function servicesChanged(
   current: string | null
 ): boolean {
   return recorded !== undefined && current !== null && recorded !== current;
+}
+
+const shapeServicesSchema = z.array(z.object({ service: z.string() }));
+
+/**
+ * What a session is told about services that went or came since its host
+ * last started: null for a host with no record (a new session, or one from
+ * before the record), for grants that could not be read on either side, or
+ * when the same services are granted (their tools changed, say).
+ */
+export function servicesChangeSince(
+  recorded: string | null | undefined,
+  services: SessionServices
+): string | null {
+  const current = servicesShape(services);
+  if (recorded === undefined || recorded === null || !servicesChanged(recorded, current))
+    return null;
+  const parsed = shapeServicesSchema.safeParse(JSON.parse(recorded));
+  if (!parsed.success) return null;
+  const before = new Set(parsed.data.map((grant) => grant.service));
+  const after = new Set(services.grants.map((grant) => grant.service));
+  return servicesChangedNotice(
+    [...before].filter((service) => !after.has(service)).sort(),
+    [...after].filter((service) => !before.has(service)).sort()
+  );
 }
 
 /** The shape of the agent's grants as they stand now, read as the watcher's template reaches Switch. */
