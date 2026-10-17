@@ -54,7 +54,6 @@ describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)('native toolchain', () =
       repo: 'switch',
       checkoutRoot: null,
       onMessage: log,
-      onLog: () => {},
     });
 
     const passwords = { owner: secrets.dbPassword, runtime: secrets.dbRuntimePassword };

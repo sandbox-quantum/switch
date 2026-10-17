@@ -34,7 +34,7 @@ You don't need to configure the server yourself. Switch Console starts it and ev
 - Creates an administrator account.
 - Signs Switch Console in automatically.
 
-There is no URL to copy and no secret to enter. The first start downloads about 200 MB; later starts reuse what it downloaded.
+There is no URL to copy and no secret to enter. The first start downloads under 100 MB; later starts reuse what it downloaded.
 
 **Mattermost is optional.** If Docker is installed and running, you can turn on **Also run Mattermost** to get a built-in messaging app for your rooms. Mattermost runs in Docker beside the server. Without Docker the server works the same, just with no built-in messaging app — you can still connect Slack, Discord, Telegram, or Microsoft Teams to it.
 

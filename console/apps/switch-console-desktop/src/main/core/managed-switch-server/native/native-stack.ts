@@ -222,7 +222,6 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<StartL
     repo: RELEASE_REPO_NAME,
     checkoutRoot,
     onMessage,
-    onLog,
   });
 
   onMessage('Stopping the running server…');
@@ -245,83 +244,101 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<StartL
   await writeClusterConfig(layout, ports.postgres);
   onMessage('Starting PostgreSQL…');
   await startCluster(postgres, layout, onLog);
+  // From here a failure leaves processes behind that nothing would stop; a
+  // failed start stops them again, so it does not look half-running.
+  try {
+    const telemetryEnabled = await telemetryConsent();
+    const settings = buildNativeCoreSettings({
+      apiPort: ports.api,
+      postgresPort: ports.postgres,
+      // No dashboard process runs natively, so the port set aside for one
+      // carries the callback listener instead of a fifth port being added.
+      callbackPort: ports.gateway,
+      secrets,
+      telemetryEnabled,
+      telemetryEnvironment: currentFlintEnv(),
+      telemetryInternal: (await currentInternalFlag()) === 'true',
+    });
+    await writeDeployedVersion(layout, install.version);
+    onMessage('Starting switch-core…');
+    const record = await startCore(layout, install, settings);
+    log.info(`local-switch-server: started switch-core ${install.version} (pid ${record.pid})`);
 
-  const telemetryEnabled = await telemetryConsent();
-  const settings = buildNativeCoreSettings({
-    apiPort: ports.api,
-    postgresPort: ports.postgres,
-    // No dashboard process runs natively, so the port set aside for one
-    // carries the callback listener instead of a fifth port being added.
-    callbackPort: ports.gateway,
-    secrets,
-    telemetryEnabled,
-    telemetryEnvironment: currentFlintEnv(),
-    telemetryInternal: (await currentInternalFlag()) === 'true',
-  });
-  await writeDeployedVersion(layout, install.version);
-  onMessage('Starting switch-core…');
-  const record = await startCore(layout, install, settings);
-  log.info(`local-switch-server: started switch-core ${install.version} (pid ${record.pid})`);
+    onMessage('Waiting for the server to become healthy…');
+    const healthy = await waitForHealth(apiUrl, { signal });
+    if (!healthy) {
+      const alive = (await runningCore(layout)) !== null;
+      const tail = await coreLogTail(layout, 3);
+      await stopAfterFailedStart(layout, postgres);
+      return {
+        kind: 'error',
+        message:
+          `${alive ? 'switch-core did not become healthy in time' : 'switch-core stopped during startup'}.` +
+          (tail ? ` Its log ends:\n${tail}` : '') +
+          `\nFull log: ${path.join(layout.logs, 'switch-core.log')}`,
+      };
+    }
 
-  onMessage('Waiting for the server to become healthy…');
-  const healthy = await waitForHealth(apiUrl, { signal });
-  if (!healthy) {
-    const alive = (await runningCore(layout)) !== null;
-    const tail = await coreLogTail(layout);
-    return {
-      kind: 'error',
-      message:
-        `${alive ? 'switch-core did not become healthy in time' : 'switch-core exited during startup'}.` +
-        (tail ? ` Its log ends:\n${tail}` : ` See ${path.join(layout.logs, 'switch-core.log')}.`),
-    };
-  }
+    const serverId = await registerManagedServer(
+      ref,
+      serverName,
+      { gatewayUrl: apiUrl, apiUrl },
+      secrets,
+      activate,
+      onMessage
+    );
+    if (upgrade) await finishUpgrade(host);
 
-  const serverId = await registerManagedServer(
-    ref,
-    serverName,
-    { gatewayUrl: apiUrl, apiUrl },
-    secrets,
-    activate,
-    onMessage
-  );
-  if (upgrade) await finishUpgrade(host);
-
-  let warning: string | null = null;
-  if (mattermost) {
-    const docker = await detectDocker();
-    if (!docker.available) {
-      warning =
-        'Mattermost is turned on, but Docker is not available, so the server is running ' +
-        `without it. ${docker.detail}`;
-      log.warn(`local-switch-server: ${warning}`);
-    } else {
-      try {
-        await startMattermost({
-          layout,
-          install,
-          secrets,
-          apiUrl,
-          mattermostPort: ports.mattermost,
-          postgresPort: ports.postgres,
-          callbackPort: ports.gateway,
-          onMessage,
-          onLog,
-        });
-      } catch (error) {
-        log.error('local-switch-server: Mattermost did not start', { error: String(error) });
-        warning = `The server is running, but Mattermost could not be set up: ${errorText(error)}`;
+    let warning: string | null = null;
+    if (mattermost) {
+      const docker = await detectDocker();
+      if (!docker.available) {
+        warning =
+          'Mattermost is turned on, but Docker is not available, so the server is running ' +
+          `without it. ${docker.detail}`;
+        log.warn(`local-switch-server: ${warning}`);
+      } else {
+        try {
+          await startMattermost({
+            layout,
+            install,
+            secrets,
+            apiUrl,
+            mattermostPort: ports.mattermost,
+            postgresPort: ports.postgres,
+            callbackPort: ports.gateway,
+            onMessage,
+            onLog,
+          });
+        } catch (error) {
+          log.error('local-switch-server: Mattermost did not start', { error: String(error) });
+          warning = `The server is running, but Mattermost could not be set up: ${errorText(error)}`;
+        }
       }
     }
-  }
 
-  if (checkoutRoot === null) {
-    await pruneSwitchCoreInstalls(layout, install.version).catch((error: unknown) => {
-      log.warn('local-switch-server: could not remove old switch-core installs', {
-        error: String(error),
+    if (checkoutRoot === null) {
+      await pruneSwitchCoreInstalls(layout, install.version).catch((error: unknown) => {
+        log.warn('local-switch-server: could not remove old switch-core installs', {
+          error: String(error),
+        });
       });
-    });
+    }
+    return { kind: 'started', serverId, telemetryEnabled, warning };
+  } catch (error) {
+    await stopAfterFailedStart(layout, postgres);
+    throw error;
   }
-  return { kind: 'started', serverId, telemetryEnabled, warning };
+}
+
+/** Stop what a failed start left running. Best effort: the start's own
+ * failure is what gets reported, and this one is logged beside it. */
+async function stopAfterFailedStart(layout: NativeLayout, postgres: PostgresBinaries) {
+  await stopProcesses(layout, postgres, () => {}).catch((error: unknown) => {
+    log.error('local-switch-server: could not stop the server after a failed start', {
+      error: String(error),
+    });
+  });
 }
 
 /** Stop the server. Never downloads anything: when the PostgreSQL that runs

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -10,7 +10,8 @@ import { generateSecrets } from '../secret-values';
 import { buildNativeCoreSettings } from './core-settings';
 import { downloadFile } from './download';
 import { mattermostCallbackBaseUrl, mattermostComposeYaml, mattermostImage } from './mattermost';
-import { parsePostgresMajor } from './postgres-binaries';
+import { nativeLayout } from './native-paths';
+import { parsePostgresMajor, resolvePostgres } from './postgres-binaries';
 import { currentNativePlatform, postgresArchive, uvArchive } from './toolchain-pins';
 import { parseUvVersion } from './uv';
 
@@ -182,5 +183,21 @@ describe('readLocalRuntime', () => {
     await writeLocalRuntime(recorded, 'native');
     await writeFile(path.join(recorded, '.env'), 'SWITCH_VERSION=0.1.0\n');
     expect(await readLocalRuntime(recorded)).toBe('native');
+  });
+});
+
+describe('resolvePostgres', () => {
+  it('refuses a database created by a PostgreSQL older than switch-core supports', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'switch-pg14-'));
+    try {
+      const layout = nativeLayout(root);
+      await mkdir(layout.pgdata, { recursive: true });
+      await writeFile(path.join(layout.pgdata, 'PG_VERSION'), '14\n');
+      await expect(resolvePostgres(layout, () => {})).rejects.toThrow(
+        'created by PostgreSQL 14, and switch-core needs PostgreSQL 16 or newer. Reset the server'
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

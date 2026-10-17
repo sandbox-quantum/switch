@@ -1,4 +1,4 @@
-import { access, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, appendFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { log } from '@main/lib/logger';
 import { CHECKOUT_IMAGE_TAG } from '@shared/core/managed-switch-server/managed-switch-server';
@@ -54,20 +54,33 @@ export function uvEnvironment(layout: NativeLayout, venv: string): NodeJS.Proces
   };
 }
 
+/**
+ * Install the environment. uv's per-package output goes to `install.log`, not
+ * the UI's log tail, where hundreds of lines would bury whatever went wrong;
+ * a failure still carries uv's last words in its message.
+ */
 async function uvSync(
   uv: UvBinary,
   layout: NativeLayout,
   projectDir: string,
-  venv: string,
-  onLine: (line: string) => void
+  venv: string
 ): Promise<void> {
+  await mkdir(layout.logs, { recursive: true });
+  const installLog = path.join(layout.logs, 'install.log');
+  await appendFile(installLog, `\n# uv sync ${projectDir} (${new Date().toISOString()})\n`);
+  const lines: string[] = [];
+  const onLine = (line: string) => lines.push(line);
   // `--frozen` installs exactly the lockfile the release was tested with, the
   // same command the published image is built by.
-  await runCommand(
-    uv.path,
-    ['sync', '--frozen', '--no-dev', '--python', SWITCH_CORE_PYTHON, '--project', projectDir],
-    { cwd: projectDir, env: uvEnvironment(layout, venv), onLine, timeoutMs: SYNC_TIMEOUT_MS }
-  );
+  try {
+    await runCommand(
+      uv.path,
+      ['sync', '--frozen', '--no-dev', '--python', SWITCH_CORE_PYTHON, '--project', projectDir],
+      { cwd: projectDir, env: uvEnvironment(layout, venv), onLine, timeoutMs: SYNC_TIMEOUT_MS }
+    );
+  } finally {
+    await appendFile(installLog, `${lines.join('\n')}\n`);
+  }
 }
 
 async function readMarker(dir: string): Promise<string | null> {
@@ -98,15 +111,14 @@ export async function installSwitchCore(opts: {
   repo: string;
   checkoutRoot: string | null;
   onMessage: (message: string) => void;
-  onLog: (line: string) => void;
 }): Promise<SwitchCoreInstall> {
-  const { layout, uv, version, owner, repo, checkoutRoot, onMessage, onLog } = opts;
+  const { layout, uv, version, owner, repo, checkoutRoot, onMessage } = opts;
 
   if (checkoutRoot !== null) {
     const projectDir = path.join(checkoutRoot, 'core');
     const venv = path.join(layout.switchCore, CHECKOUT_IMAGE_TAG, 'venv');
     onMessage(`Installing switch-core from ${checkoutRoot}…`);
-    await uvSync(uv, layout, projectDir, venv, onLog);
+    await uvSync(uv, layout, projectDir, venv);
     return {
       version: CHECKOUT_IMAGE_TAG,
       sourceRoot: checkoutRoot,
@@ -137,7 +149,7 @@ export async function installSwitchCore(opts: {
 
   onMessage(`Installing switch-core ${version} (first start of this version)…`);
   await rm(venv, { recursive: true, force: true });
-  await uvSync(uv, layout, projectDir, venv, onLog);
+  await uvSync(uv, layout, projectDir, venv);
   await writeFile(
     path.join(dir, MARKER_FILE),
     `${JSON.stringify({ version, uv: uv.version }, null, 2)}\n`

@@ -17,8 +17,12 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-/** The oldest and newest PostgreSQL majors an installed copy may be. */
-export const MIN_POSTGRES_MAJOR = 14;
+/**
+ * The oldest and newest PostgreSQL majors an installed copy may be. 16 is what
+ * the Docker stack runs and switch-core's migrations are tested on; older
+ * majors lack syntax they use (a column list on `ON DELETE SET NULL` is 15+).
+ */
+export const MIN_POSTGRES_MAJOR = 16;
 export const MAX_POSTGRES_MAJOR = 18;
 
 export type PostgresBinaries = {
@@ -278,6 +282,13 @@ export async function resolvePostgres(
   onMessage: (message: string) => void
 ): Promise<PostgresBinaries> {
   const required = await clusterMajor(layout.pgdata);
+  if (required !== null && required < MIN_POSTGRES_MAJOR) {
+    throw new Error(
+      `This server's database was created by PostgreSQL ${required}, and switch-core needs ` +
+        `PostgreSQL ${MIN_POSTGRES_MAJOR} or newer. Reset the server to set it up again ` +
+        `(this deletes its data).`
+    );
+  }
   const previous = await readChoice(layout);
   if (previous && (required === null || previous.major === required)) {
     if ((await probeBinDir(previous.binDir)) === previous.major) return previous;
