@@ -244,6 +244,44 @@ export async function stopCluster(
   );
 }
 
+/**
+ * Stop a cluster whose binaries are gone, by signalling the postmaster named in
+ * its lock file: SIGINT is PostgreSQL's fast shutdown, as `pg_ctl -m fast`
+ * sends. Windows has no such signal, so there it can only report the problem.
+ */
+export async function stopClusterByPid(layout: NativeLayout): Promise<void> {
+  let pid: number;
+  try {
+    const lock = await readFile(path.join(layout.pgdata, 'postmaster.pid'), 'utf8');
+    pid = Number(lock.split('\n')[0]);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return;
+  }
+  if (process.platform === 'win32') {
+    throw new Error(
+      `PostgreSQL (pid ${pid}) is still running, and the binaries that could stop it are gone.`
+    );
+  }
+  process.kill(pid, 'SIGINT');
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`PostgreSQL (pid ${pid}) did not stop within a minute.`);
+}
+
 async function logTail(file: string): Promise<string | null> {
   try {
     const lines = (await readFile(file, 'utf8')).trim().split('\n');

@@ -180,6 +180,34 @@ async function recordChoice(layout: NativeLayout, binaries: PostgresBinaries): P
 }
 
 /**
+ * The PostgreSQL that can run the existing cluster, found without downloading
+ * anything: the one used last, an installed copy of the cluster's major, or
+ * the portable build already unpacked. Null when there is no cluster, or none
+ * of those is here any more.
+ */
+export async function findPostgresForCluster(
+  layout: NativeLayout
+): Promise<PostgresBinaries | null> {
+  const required = await clusterMajor(layout.pgdata);
+  if (required === null) return null;
+  const previous = await readChoice(layout);
+  if (
+    previous &&
+    previous.major === required &&
+    (await probeBinDir(previous.binDir)) === required
+  ) {
+    return previous;
+  }
+  const installed = (await detectInstalledPostgres()).find((c) => c.major === required);
+  if (installed) return installed;
+  const portable = path.join(layout.toolchain, `postgres-${POSTGRES_VERSION}`, 'bin');
+  if ((await probeBinDir(portable)) === required) {
+    return { binDir: portable, major: required, source: 'downloaded' };
+  }
+  return null;
+}
+
+/**
  * Recreate the shared-library symlinks the portable build lists in
  * `pg-symlinks.json`, which npm packaging cannot carry. Paths in the list are
  * relative to the package, under `native/`, which extraction stripped.

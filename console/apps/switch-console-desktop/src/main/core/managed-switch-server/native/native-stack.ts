@@ -37,12 +37,17 @@ import { CORE_ENV_FILE, coreLogTail, runningCore, startCore, stopCore } from './
 import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
 import { startMattermost, stopMattermost } from './mattermost';
 import type { NativeLayout } from './native-paths';
-import { clusterMajor, resolvePostgres, type PostgresBinaries } from './postgres-binaries';
+import {
+  findPostgresForCluster,
+  type PostgresBinaries,
+  resolvePostgres,
+} from './postgres-binaries';
 import {
   clusterExists,
   initCluster,
   startCluster,
   stopCluster,
+  stopClusterByPid,
   syncPasswords,
   writeClusterConfig,
 } from './postgres-cluster';
@@ -319,16 +324,12 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<StartL
   return { kind: 'started', serverId, telemetryEnabled, warning };
 }
 
-/** The PostgreSQL the cluster ran with last, without looking for or
- * downloading one: stopping must not fetch anything. Null when there is no
- * cluster to stop. */
-async function binariesForStop(layout: NativeLayout): Promise<PostgresBinaries | null> {
-  if ((await clusterMajor(layout.pgdata)) === null) return null;
-  return resolvePostgres(layout, () => {});
-}
-
+/** Stop the server. Never downloads anything: when the PostgreSQL that runs
+ * the cluster cannot be found, its postmaster is signalled directly. */
 export async function stopNativeStack(layout: NativeLayout): Promise<void> {
-  await stopProcesses(layout, await binariesForStop(layout), () => {});
+  const binaries = await findPostgresForCluster(layout);
+  await stopProcesses(layout, binaries, () => {});
+  if (binaries === null) await stopClusterByPid(layout);
 }
 
 /**
