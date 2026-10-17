@@ -48,7 +48,13 @@ vi.mock('./local-activity', () => ({
 }));
 vi.mock('./ports', () => ({ readPersistedPorts: m.ports, rememberPorts: m.remember }));
 vi.mock('./free-port', () => ({ findFreePort: async () => 51234 }));
-vi.mock('./deployed-version', () => ({ readVersionStatus: m.version }));
+vi.mock('./deployed-version', () => ({
+  readVersionStatus: m.version,
+  versionStatusOf: (deployed: { kind: string; version?: string }) =>
+    deployed.kind === 'deployed'
+      ? { deployedVersion: deployed.version, drift: null }
+      : { deployedVersion: null, drift: null },
+}));
 vi.mock('./telemetry-consent', () => ({ readDeployedTelemetry: vi.fn() }));
 vi.mock('./managed-upgrade', async (importOriginal) => ({
   ...(await importOriginal<typeof ManagedUpgrade>()),
@@ -58,8 +64,33 @@ const resetStack = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('./pipeline', () => ({ startStack: m.start, stopStack: m.stop, resetStack }));
 vi.mock('./host/local-host', () => ({
   LocalServerHost: class {
+    label = 'this computer';
+    removeFile = removeFile;
     dispose() {}
   },
+}));
+const removeFile = vi.hoisted(() => vi.fn(async () => {}));
+const runtime = vi.hoisted(() => ({
+  read: vi.fn(async (): Promise<'docker' | 'native'> => 'docker'),
+  write: vi.fn(async () => {}),
+}));
+vi.mock('./runtime', () => ({ readLocalRuntime: runtime.read, writeLocalRuntime: runtime.write }));
+vi.mock('./paths', () => ({ localServerDir: () => '/data/local-switch-server' }));
+const native = vi.hoisted(() => ({
+  start: vi.fn<(opts: unknown) => Promise<StartLocalServerResult>>(),
+  stop: vi.fn(async () => {}),
+  reset: vi.fn(async () => {}),
+  running: vi.fn(async () => false),
+  deployed: vi.fn(),
+}));
+vi.mock('./native/native-stack', () => ({
+  startNativeStack: native.start,
+  stopNativeStack: native.stop,
+  resetNativeStack: native.reset,
+  nativeStackRunning: native.running,
+  nativeStartedAt: vi.fn(),
+  readNativeDeployedVersion: native.deployed,
+  readNativeTelemetry: vi.fn(async () => ({ known: true, enabled: false })),
 }));
 
 const { LocalServerService } = await import('./local-server-service');
@@ -96,6 +127,10 @@ beforeEach(() => {
   m.version.mockResolvedValue(behind);
   m.journal.mockResolvedValue(null);
   m.start.mockImplementation(upgradingStart());
+  runtime.read.mockResolvedValue('docker');
+  native.running.mockResolvedValue(false);
+  native.deployed.mockResolvedValue({ kind: 'absent' });
+  native.start.mockResolvedValue(started);
 });
 
 it('upgrades a running server that is behind at boot, without switching to it', async () => {
@@ -364,4 +399,61 @@ it('reports a stop that errored with the stack still up, or unreadable, as a fai
   m.start.mockResolvedValue({ kind: 'error', message: 'bind: address already in use' });
   await service.start();
   expect(service.getStatus()).toMatchObject({ phase: 'error', failedTo: null });
+});
+
+it('starts a native server without the Docker pipeline, and records the runtime', async () => {
+  runtime.read.mockResolvedValue('native');
+  const service = new LocalServerService();
+  await boot(service);
+
+  const result = await service.start();
+
+  expect(result).toEqual(started);
+  expect(native.start).toHaveBeenCalledOnce();
+  expect(m.start).not.toHaveBeenCalled();
+  expect(runtime.write).toHaveBeenCalledWith('/data/local-switch-server', 'native');
+  expect(service.getStatus()).toMatchObject({ phase: 'running', runtime: 'native' });
+});
+
+it('reads a native server as running from its processes, not from Docker', async () => {
+  runtime.read.mockResolvedValue('native');
+  native.running.mockResolvedValue(true);
+  native.deployed.mockResolvedValue({ kind: 'deployed', version: '0.11.0', source: 'env-file' });
+  const service = new LocalServerService();
+  await boot(service);
+
+  expect(m.running).not.toHaveBeenCalled();
+  expect(service.getStatus()).toMatchObject({
+    phase: 'running',
+    runtime: 'native',
+    deployedVersion: '0.11.0',
+  });
+});
+
+it('stops a native server through its own stop', async () => {
+  runtime.read.mockResolvedValue('native');
+  native.deployed.mockResolvedValue({ kind: 'deployed', version: '0.11.0', source: 'env-file' });
+  const service = new LocalServerService();
+  await boot(service);
+
+  await service.stop();
+
+  expect(native.stop).toHaveBeenCalledOnce();
+  expect(m.stop).not.toHaveBeenCalled();
+  expect(service.getStatus()).toMatchObject({ phase: 'stopped' });
+});
+
+it('moves a Docker server to native when it is reset', async () => {
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  const service = new LocalServerService();
+  await boot(service);
+
+  await service.reset();
+
+  expect(resetStack).toHaveBeenCalledOnce();
+  expect(native.reset).not.toHaveBeenCalled();
+  expect(removeFile).toHaveBeenCalledWith('standalone-docker-compose.yml');
+  expect(removeFile).toHaveBeenCalledWith('.env');
+  expect(runtime.write).toHaveBeenCalledWith('/data/local-switch-server', 'native');
+  expect(service.getStatus()).toMatchObject({ phase: 'stopped', runtime: 'native' });
 });
