@@ -1,4 +1,4 @@
-import path from "node:path";
+import path from 'node:path';
 
 /**
  * Where a native local server keeps everything, under the local server's own
@@ -28,22 +28,22 @@ export type NativeLayout = {
 };
 
 export function nativeLayout(localServerDir: string): NativeLayout {
-  const root = path.join(localServerDir, "native");
+  const root = path.join(localServerDir, 'native');
   return {
     root,
-    toolchain: path.join(root, "toolchain"),
-    downloads: path.join(root, "downloads"),
-    uvCache: path.join(root, "toolchain", "uv-cache"),
-    uvPython: path.join(root, "toolchain", "python"),
-    switchCore: path.join(root, "switch-core"),
-    pgdata: path.join(root, "pgdata"),
-    logs: path.join(root, "logs"),
-    run: path.join(root, "run"),
-    backups: path.join(root, "backups"),
+    toolchain: path.join(root, 'toolchain'),
+    downloads: path.join(root, 'downloads'),
+    uvCache: path.join(root, 'toolchain', 'uv-cache'),
+    uvPython: path.join(root, 'toolchain', 'python'),
+    switchCore: path.join(root, 'switch-core'),
+    pgdata: path.join(root, 'pgdata'),
+    logs: path.join(root, 'logs'),
+    run: path.join(root, 'run'),
+    backups: path.join(root, 'backups'),
   };
 }
 
 /** An executable's file name on this platform. */
 export function exe(name: string, platform: NodeJS.Platform = process.platform): string {
-  return platform === "win32" ? `${name}.exe` : name;
+  return platform === 'win32' ? `${name}.exe` : name;
 }

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn } from 'node:child_process';
 
 export type RunOptions = {
   cwd: string;
@@ -21,28 +21,28 @@ export function runCommand(command: string, args: string[], opts: RunOptions): P
       cwd: opts.cwd,
       env: opts.env,
       windowsHide: true,
-      stdio: [opts.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+      stdio: [opts.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
-    let tail = "";
+    let tail = '';
     const emit = (chunk: Buffer) => {
-      const text = chunk.toString("utf8");
+      const text = chunk.toString('utf8');
       tail = (tail + text).slice(-4000);
-      for (const raw of text.split("\n")) {
-        const line = raw.replace(/\r$/, "");
+      for (const raw of text.split('\n')) {
+        const line = raw.replace(/\r$/, '');
         if (line.length > 0) opts.onLine(line);
       }
     };
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
+      child.kill('SIGTERM');
       reject(new Error(`${command} timed out after ${Math.round(opts.timeoutMs / 1000)}s`));
     }, opts.timeoutMs);
-    child.stdout?.on("data", emit);
-    child.stderr?.on("data", emit);
-    child.on("error", (error) => {
+    child.stdout?.on('data', emit);
+    child.stderr?.on('data', emit);
+    child.on('error', (error) => {
       clearTimeout(timer);
       reject(error);
     });
-    child.on("close", (code) => {
+    child.on('close', (code) => {
       clearTimeout(timer);
       if (code === 0) resolve();
       else reject(new Error(`${command} failed (exit ${code}): ${tail.trim()}`));

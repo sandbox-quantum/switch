@@ -1,8 +1,8 @@
-import type { TelemetryFlintEnv } from "../../telemetry/config";
-import { LOCAL_SERVER_ADMIN_EMAIL, LOCAL_SERVER_BIND_ADDR } from "../constants";
-import { MANAGED_SERVER_FEATURE_FLAGS, TELEMETRY_ENABLED_KEY } from "../env-file";
-import type { LocalServerSecrets } from "../secret-values";
-import { DATABASE, OWNER_ROLE, RUNTIME_ROLE } from "./postgres-cluster";
+import type { TelemetryFlintEnv } from '../../telemetry/config';
+import { LOCAL_SERVER_ADMIN_EMAIL, LOCAL_SERVER_BIND_ADDR } from '../constants';
+import { MANAGED_SERVER_FEATURE_FLAGS, TELEMETRY_ENABLED_KEY } from '../env-file';
+import type { LocalServerSecrets } from '../secret-values';
+import { DATABASE, OWNER_ROLE, RUNTIME_ROLE } from './postgres-cluster';
 
 export type NativeCoreSettingsParams = {
   /** switch-core's port on loopback, which serves both the agent API and the
@@ -37,31 +37,31 @@ export function buildNativeCoreSettings(params: NativeCoreSettingsParams): Recor
     // its default is every interface, which nothing here needs.
     COLLABORATION_CALLBACK_HOST: LOCAL_SERVER_BIND_ADDR,
     COLLABORATION_CALLBACK_PORT: String(params.callbackPort),
-    DB_HOST: "127.0.0.1",
+    DB_HOST: '127.0.0.1',
     DB_PORT: String(postgresPort),
     DB_USER: RUNTIME_ROLE,
     DB_PASSWORD: secrets.dbRuntimePassword,
     DB_OWNER_USER: OWNER_ROLE,
     DB_OWNER_PASSWORD: secrets.dbPassword,
     DB_NAME: DATABASE,
-    ID_SERVER_NAME: "localhost",
+    ID_SERVER_NAME: 'localhost',
     AGENT_REGISTRATION_TOKEN: secrets.agentRegistrationToken,
     JWT_SECRET_KEY: secrets.jwtSecretKey,
     SECRET_KEYS: secrets.secretKeys,
-    FEATURE_FLAGS_ENABLED: MANAGED_SERVER_FEATURE_FLAGS.join(","),
+    FEATURE_FLAGS_ENABLED: MANAGED_SERVER_FEATURE_FLAGS.join(','),
     CONTROLLER_TOKEN_SECRET: secrets.controllerTokenSecret,
     GATEWAY_ADMIN_EMAIL: LOCAL_SERVER_ADMIN_EMAIL,
     GATEWAY_ADMIN_PASSWORD: secrets.gatewayAdminPassword,
     FRONTEND_BASE_URL: apiUrl,
-    GATEWAY_COOKIE_SECURE: "false",
+    GATEWAY_COOKIE_SECURE: 'false',
     GATEWAY_PUBLIC_URL: apiUrl,
     // The bundled Mattermost, when there is one, is published on loopback.
-    OUTBOUND_ALLOWED_PRIVATE_HOSTS: "localhost,127.0.0.1",
-    [TELEMETRY_ENABLED_KEY]: telemetryEnabled ? "true" : "false",
+    OUTBOUND_ALLOWED_PRIVATE_HOSTS: 'localhost,127.0.0.1',
+    [TELEMETRY_ENABLED_KEY]: telemetryEnabled ? 'true' : 'false',
     TELEMETRY_ENVIRONMENT: params.telemetryEnvironment,
-    TELEMETRY_INTERNAL: params.telemetryInternal ? "true" : "false",
+    TELEMETRY_INTERNAL: params.telemetryInternal ? 'true' : 'false',
     // Tells the server's agents that Switch Console runs it, as the Docker
     // stack's `.env` does.
-    MANAGED_BY_CONSOLE: "true",
+    MANAGED_BY_CONSOLE: 'true',
   };
 }

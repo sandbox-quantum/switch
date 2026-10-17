@@ -1,14 +1,14 @@
-import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { mkdir, rename, rm } from "node:fs/promises";
-import path from "node:path";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
-import type { ReadableStream as WebReadableStream } from "node:stream/web";
-import { promisify } from "node:util";
-import { resolveExecutable, windowsInstallPath } from "@main/core/utils/resolve-executable";
-import type { PinnedArchive } from "./toolchain-pins";
+import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createWriteStream } from 'node:fs';
+import { mkdir, rename, rm } from 'node:fs/promises';
+import path from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import type { ReadableStream as WebReadableStream } from 'node:stream/web';
+import { promisify } from 'node:util';
+import { resolveExecutable, windowsInstallPath } from '@main/core/utils/resolve-executable';
+import type { PinnedArchive } from './toolchain-pins';
 
 const execFileAsync = promisify(execFile);
 
@@ -19,17 +19,17 @@ const EXTRACT_TIMEOUT_MS = 10 * 60 * 1000;
 function parseIntegrity(integrity: string): {
   algorithm: string;
   digest: string;
-  encoding: "hex" | "base64";
+  encoding: 'hex' | 'base64';
 } {
-  if (integrity.startsWith("sha256:")) {
-    return { algorithm: "sha256", digest: integrity.slice("sha256:".length), encoding: "hex" };
+  if (integrity.startsWith('sha256:')) {
+    return { algorithm: 'sha256', digest: integrity.slice('sha256:'.length), encoding: 'hex' };
   }
-  const dash = integrity.indexOf("-");
+  const dash = integrity.indexOf('-');
   if (dash === -1) throw new Error(`Unrecognised integrity value: ${integrity}`);
   return {
     algorithm: integrity.slice(0, dash),
     digest: integrity.slice(dash + 1),
-    encoding: "base64",
+    encoding: 'base64',
   };
 }
 
@@ -42,7 +42,7 @@ function parseIntegrity(integrity: string): {
 export async function downloadFile(
   url: string,
   destination: string,
-  integrity: string | null,
+  integrity: string | null
 ): Promise<void> {
   await mkdir(path.dirname(destination), { recursive: true });
   const partial = `${destination}.partial`;
@@ -53,7 +53,7 @@ export async function downloadFile(
   const expected = integrity === null ? null : parseIntegrity(integrity);
   const hash = expected === null ? null : createHash(expected.algorithm);
   const body = Readable.fromWeb(response.body as WebReadableStream<Uint8Array>);
-  if (hash !== null) body.on("data", (chunk: Buffer) => hash.update(chunk));
+  if (hash !== null) body.on('data', (chunk: Buffer) => hash.update(chunk));
   try {
     await pipeline(body, createWriteStream(partial, { mode: 0o600 }));
     if (expected !== null && hash !== null) {
@@ -61,7 +61,7 @@ export async function downloadFile(
       if (actual !== expected.digest) {
         throw new Error(
           `The download from ${url} does not match its pinned checksum, so it was not used ` +
-            `(expected ${expected.algorithm} ${expected.digest}, got ${actual}).`,
+            `(expected ${expected.algorithm} ${expected.digest}, got ${actual}).`
         );
       }
     }
@@ -78,11 +78,11 @@ export async function downloadFile(
  * on Linux.
  */
 export function tarExecutable(env: NodeJS.ProcessEnv = process.env): string {
-  return resolveExecutable("tar", {
+  return resolveExecutable('tar', {
     candidates: [
-      "/usr/bin/tar",
-      "/bin/tar",
-      windowsInstallPath(env, "SystemRoot", "System32", "tar.exe") ?? "",
+      '/usr/bin/tar',
+      '/bin/tar',
+      windowsInstallPath(env, 'SystemRoot', 'System32', 'tar.exe') ?? '',
     ].filter(Boolean),
     env,
   });
@@ -97,12 +97,12 @@ export function tarExecutable(env: NodeJS.ProcessEnv = process.env): string {
 export async function extractArchive(
   archive: string,
   destination: string,
-  stripComponents: number,
+  stripComponents: number
 ): Promise<void> {
   const staging = `${destination}.extracting`;
   await rm(staging, { recursive: true, force: true });
   await mkdir(staging, { recursive: true });
-  const args = ["-xf", archive, "-C", staging];
+  const args = ['-xf', archive, '-C', staging];
   if (stripComponents > 0) args.push(`--strip-components=${stripComponents}`);
   try {
     await execFileAsync(tarExecutable(), args, {
@@ -123,7 +123,7 @@ export async function extractArchive(
 export async function installPinnedArchive(
   archive: PinnedArchive,
   downloadsDir: string,
-  destination: string,
+  destination: string
 ): Promise<void> {
   const file = path.join(downloadsDir, path.basename(new URL(archive.url).pathname));
   try {
