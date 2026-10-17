@@ -72,6 +72,11 @@ def _fake_self(
     ) -> str:
         return unavailable_reply
 
+    async def _sender_role(
+        _session: object, _sender: str, _content: object
+    ) -> str | None:
+        return None
+
     ns = SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name="cc-bug-fixing"),
         tenant_id=TENANT_ZERO_ID,
@@ -82,6 +87,7 @@ def _fake_self(
         _compute_addressed=_compute_addressed,
         _fresh_agent=_fresh_agent,
         _gate_addressed=_gate_addressed,
+        _sender_role=_sender_role,
         _is_available=_is_available,
         _reply_when_unavailable_here=_reply_when_unavailable_here,
         _triggered_by_auto_reply=AgentRecipient._triggered_by_auto_reply,
