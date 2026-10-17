@@ -760,6 +760,13 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(min_length=PASSWORD_MIN_LENGTH)
 
 
+class DeleteAccountRequest(BaseModel):
+    """The account's own email, typed by the person as their confirmation:
+    an SSO account has no password to ask for."""
+
+    email: str
+
+
 class SignupRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     email: Annotated[

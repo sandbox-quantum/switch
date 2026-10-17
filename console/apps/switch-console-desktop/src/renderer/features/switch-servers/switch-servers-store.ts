@@ -702,6 +702,15 @@ export class SwitchServersStore {
     }
   }
 
+  /**
+   * Delete the signed-in account on `serverId`, confirmed by its email. Throws
+   * with the server's reason when it refuses, for the dialog that asked to say.
+   */
+  async deleteAccount(serverId: string, email: string): Promise<void> {
+    await rpc.switchServers.deleteAccount({ serverId, email });
+    await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
+  }
+
   private clearError(): void {
     runInAction(() => {
       this.error = null;
