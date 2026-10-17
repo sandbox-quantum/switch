@@ -173,7 +173,9 @@ their account.
 
 **A service such as GitHub** — if `services[].connection` is "not_connected",
 link [Connections](switchdash://open/connections) to connect it. Once it's
-"active", you can give an agent access with `set_agent_service`, after a yes.
+"active", you can give an agent access with `set_agent_service`. First ask in
+plain words (which agent, which service, read or write) and wait for a yes to
+that question. A request made earlier in the chat is not a yes.
 For a service that needs their choice, such as which GitHub repositories, link
 the agent's settings page instead:
 `switchdash://open/agent/<agent-id>?tab=settings`.

@@ -169,6 +169,7 @@ describe('ClaudeAdapter session lifecycle', () => {
     });
     expect(options.settings).toEqual({
       enabledPlugins: { 'switch-connector@switch-plugins': false },
+      permissions: { allow: ['mcp__switch'] },
     });
   });
 
@@ -216,6 +217,7 @@ describe('ClaudeAdapter session lifecycle', () => {
     );
     expect(sdk.options().settings).toEqual({
       enabledPlugins: { 'switch-connector@switch-plugins': false },
+      permissions: { allow: ['mcp__switch'] },
     });
     expect(sdk.options().settingSources).toBeUndefined();
     const native = createFakeSdk();

@@ -363,6 +363,33 @@ function turnStatusMessage(result: SDKResultMessage, outcome: TurnOutcome): stri
   return resultMessageText(result) ?? `Claude turn ended: ${result.subtype}`;
 }
 
+/**
+ * The settings a session adds to the person's own Claude Code settings.
+ *
+ * The tools of the servers the host registers are allowed outright. `canUseTool`
+ * allows them too, but Claude Code's auto mode, when it is the person's
+ * default, asks its classifier before `canUseTool` is ever reached, and the
+ * classifier refuses a Switch tool that hands out access as a permission grant,
+ * whatever Switch itself allows. An allow rule is settled before the classifier.
+ *
+ * The connector plugin Switch used to ship would add a second Switch server with
+ * its own connection; it is kept off for installs that still have it.
+ */
+function sessionSettings(
+  mcpServers: Record<string, McpServerConfig>
+): { settings: Record<string, unknown> } | Record<string, never> {
+  const names = Object.keys(mcpServers);
+  if (names.length === 0) return {};
+  return {
+    settings: {
+      ...(mcpServers.switch
+        ? { enabledPlugins: { 'switch-connector@switch-plugins': false } }
+        : {}),
+      permissions: { allow: names.map((name) => `mcp__${name}`) },
+    },
+  };
+}
+
 export class ClaudeAdapter implements ProviderAdapter {
   readonly provider = PROVIDER;
 
@@ -451,11 +478,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       env: input.env,
       ...(permissionMode ? { permissionMode } : {}),
       strictMcpConfig: false,
-      // The connector plugin Switch used to ship would add a second Switch
-      // server with its own connection; kept off for installs that still have it.
-      ...(mcpServers.switch
-        ? { settings: { enabledPlugins: { 'switch-connector@switch-plugins': false } } }
-        : {}),
+      ...sessionSettings(mcpServers),
       canUseTool: this.makeCanUseTool(input.sessionId),
       ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
