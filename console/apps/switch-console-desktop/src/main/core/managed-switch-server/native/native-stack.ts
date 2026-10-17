@@ -1,40 +1,40 @@
-import { appendFileSync, mkdirSync } from 'node:fs';
-import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
-import path from 'node:path';
-import { assertManagedServerUrlFree } from '@main/core/switch-servers/servers-store';
-import { log } from '@main/lib/logger';
+import { appendFileSync, mkdirSync } from "node:fs";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
+import path from "node:path";
+import { assertManagedServerUrlFree } from "@main/core/switch-servers/servers-store";
+import { log } from "@main/lib/logger";
 import {
   COMPATIBLE_SWITCH_VERSION,
   RELEASE_REPO_NAME,
   RELEASE_REPO_OWNER,
-} from '@shared/app-identity';
+} from "@shared/app-identity";
 import {
   CHECKOUT_IMAGE_TAG,
   type DeployedTelemetry,
   type StartLocalServerResult,
-} from '@shared/core/managed-switch-server/managed-switch-server';
-import { MAX_START_FAILURE_LINE } from '@shared/core/managed-switch-server/start-failure';
-import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
-import { currentFlintEnv } from '../../telemetry/config';
-import { currentInternalFlag } from '../../telemetry/internal-account';
-import { classifyVersionDrift, type DeployedVersion } from '../deployed-version';
-import { detectDocker } from '../docker';
-import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY } from '../env-file';
-import { errorText } from '../error-text';
-import type { LocalServerPorts } from '../free-port';
-import type { ServerHost } from '../host/types';
+} from "@shared/core/managed-switch-server/managed-switch-server";
+import { MAX_START_FAILURE_LINE } from "@shared/core/managed-switch-server/start-failure";
+import type { ManagedServerRef } from "@shared/core/switch-servers/switch-servers";
+import { currentFlintEnv } from "../../telemetry/config";
+import { currentInternalFlag } from "../../telemetry/internal-account";
+import { classifyVersionDrift, type DeployedVersion } from "../deployed-version";
+import { detectDocker } from "../docker";
+import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY } from "../env-file";
+import { errorText } from "../error-text";
+import type { LocalServerPorts } from "../free-port";
+import type { ServerHost } from "../host/types";
 import {
   finishUpgrade,
   type OwedUpgrade,
   prepareUpgradeFrom,
   type UpgradeJournal,
-} from '../managed-upgrade';
-import { registerManagedServer } from '../pipeline';
-import { clearPorts, resolvePorts } from '../ports';
-import { clearSecrets, loadOrCreateSecrets } from '../secrets';
-import { telemetryConsent } from '../telemetry-consent';
-import { materializeBundle, pruneBundleCopies, readLocalServerBundle } from './bundle';
+} from "../managed-upgrade";
+import { registerManagedServer } from "../pipeline";
+import { clearPorts, resolvePorts } from "../ports";
+import { clearSecrets, loadOrCreateSecrets } from "../secrets";
+import { telemetryConsent } from "../telemetry-consent";
+import { materializeBundle, pruneBundleCopies, readLocalServerBundle } from "./bundle";
 import {
   CORE_ENV_FILE,
   coreFailureLine,
@@ -42,20 +42,20 @@ import {
   startCore,
   stopCore,
   waitForCoreHealth,
-} from './core-process';
-import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
+} from "./core-process";
+import { buildNativeCoreSettings, nativeApiUrl } from "./core-settings";
 import {
   pullMattermostImage,
   type StartMattermostParams,
   startMattermost,
   stopMattermost,
-} from './mattermost';
-import type { NativeLayout } from './native-paths';
+} from "./mattermost";
+import type { NativeLayout } from "./native-paths";
 import {
   findPostgresForCluster,
   type PostgresBinaries,
   resolvePostgres,
-} from './postgres-binaries';
+} from "./postgres-binaries";
 import {
   clusterExists,
   initCluster,
@@ -64,18 +64,18 @@ import {
   stopClusterByPid,
   syncPasswords,
   writeClusterConfig,
-} from './postgres-cluster';
+} from "./postgres-cluster";
 import {
   existingSwitchCoreInstall,
   installSwitchCore,
   pruneSwitchCoreInstalls,
-} from './switch-core-install';
-import { resolveUv } from './uv';
+} from "./switch-core-install";
+import { resolveUv } from "./uv";
 
 /** What was last started here: the version the database has been (or is
  * being) migrated to. Written before switch-core boots, as the Docker stack
  * writes `SWITCH_VERSION` into `.env` before `compose up`. */
-const DEPLOYED_FILE = 'deployed.json';
+const DEPLOYED_FILE = "deployed.json";
 
 export type NativeStartOptions = {
   /** Files (ports, journal) and the secrets key, shared with the Docker mode. */
@@ -100,34 +100,34 @@ export type NativeStartOptions = {
 export async function readNativeDeployedVersion(layout: NativeLayout): Promise<DeployedVersion> {
   let raw: string;
   try {
-    raw = await readFile(path.join(layout.run, DEPLOYED_FILE), 'utf8');
+    raw = await readFile(path.join(layout.run, DEPLOYED_FILE), "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      return { kind: 'unreadable', reason: errorText(error) };
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      return { kind: "unreadable", reason: errorText(error) };
     }
     // No record, but a cluster: something started it that this build cannot
     // date, which must not read as a fresh install.
     if (await clusterExists(layout)) {
       return {
-        kind: 'unreadable',
+        kind: "unreadable",
         reason: `${DEPLOYED_FILE} is missing beside an existing database`,
       };
     }
-    return { kind: 'absent' };
+    return { kind: "absent" };
   }
   try {
     const parsed = JSON.parse(raw) as { version?: unknown };
-    if (typeof parsed.version === 'string' && parsed.version.length > 0) {
-      return { kind: 'deployed', version: parsed.version, source: 'env-file' };
+    if (typeof parsed.version === "string" && parsed.version.length > 0) {
+      return { kind: "deployed", version: parsed.version, source: "env-file" };
     }
   } catch {}
-  return { kind: 'unreadable', reason: `${DEPLOYED_FILE} does not name a version` };
+  return { kind: "unreadable", reason: `${DEPLOYED_FILE} does not name a version` };
 }
 
 async function writeDeployedVersion(layout: NativeLayout, version: string): Promise<void> {
   await writeFile(
     path.join(layout.run, DEPLOYED_FILE),
-    `${JSON.stringify({ version }, null, 2)}\n`
+    `${JSON.stringify({ version }, null, 2)}\n`,
   );
 }
 
@@ -135,8 +135,8 @@ async function writeDeployedVersion(layout: NativeLayout, version: string): Prom
 function portFree(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = createServer();
-    server.once('error', () => resolve(false));
-    server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)));
+    server.once("error", () => resolve(false));
+    server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)));
   });
 }
 
@@ -161,27 +161,27 @@ async function assertPortsFree(ports: LocalServerPorts): Promise<void> {
 async function backupDataDirectory(
   layout: NativeLayout,
   from: string,
-  onMessage: (message: string) => void
+  onMessage: (message: string) => void,
 ): Promise<string> {
   onMessage(
-    `Backing up the database before updating switch-core ${from} → ${COMPATIBLE_SWITCH_VERSION}…`
+    `Backing up the database before updating switch-core ${from} → ${COMPATIBLE_SWITCH_VERSION}…`,
   );
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const directory = path.join(layout.backups, `${stamp}-switch-core-${from}`);
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  await cp(layout.pgdata, path.join(directory, 'pgdata'), { recursive: true });
+  await cp(layout.pgdata, path.join(directory, "pgdata"), { recursive: true });
   await writeFile(
-    path.join(directory, 'README.txt'),
+    path.join(directory, "README.txt"),
     [
       `Switch Console took this backup before updating the Switch server from switch-core ${from} to ${COMPATIBLE_SWITCH_VERSION}.`,
-      '',
-      'pgdata/   a copy of the PostgreSQL data directory, taken with the server stopped',
-      '',
-      'Keep it private: it holds every message and credential the server stored. To go back,',
+      "",
+      "pgdata/   a copy of the PostgreSQL data directory, taken with the server stopped",
+      "",
+      "Keep it private: it holds every message and credential the server stored. To go back,",
       `stop the server, replace ${layout.pgdata} with this copy, and run switch-core ${from}.`,
-      '',
-    ].join('\n'),
-    { mode: 0o600 }
+      "",
+    ].join("\n"),
+    { mode: 0o600 },
   );
   log.info(`local-switch-server: backed up the database to ${directory} before updating`);
   return directory;
@@ -192,7 +192,7 @@ async function backupDataDirectory(
 async function stopProcesses(
   layout: NativeLayout,
   binaries: PostgresBinaries | null,
-  onLog: (line: string) => void
+  onLog: (line: string) => void,
 ): Promise<void> {
   await stopMattermost(layout, false);
   await stopCore(layout);
@@ -235,12 +235,12 @@ export async function nativeMattermostLauncher(
   host: ServerHost,
   layout: NativeLayout,
   checkoutRoot: string | null,
-  onLog: (line: string) => void
+  onLog: (line: string) => void,
 ): Promise<(onProgress: (message: string) => void) => Promise<void>> {
   const install = await existingSwitchCoreInstall(layout, COMPATIBLE_SWITCH_VERSION, checkoutRoot);
   if (install === null) {
     throw new Error(
-      'The server has not been set up yet, so there is nothing to add Mattermost to.'
+      "The server has not been set up yet, so there is nothing to add Mattermost to.",
     );
   }
   const secrets = await loadOrCreateSecrets(host);
@@ -269,17 +269,17 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
   const apiUrl = nativeApiUrl(ports.api);
   await assertManagedServerUrlFree(apiUrl, ref);
 
-  onMessage('Checking the deployed version…');
+  onMessage("Checking the deployed version…");
   const deployed = await readNativeDeployedVersion(layout);
   if (
     checkoutRoot === null &&
-    deployed.kind === 'deployed' &&
+    deployed.kind === "deployed" &&
     deployed.version !== CHECKOUT_IMAGE_TAG
   ) {
     const drift = classifyVersionDrift(deployed.version, COMPATIBLE_SWITCH_VERSION);
-    if (drift?.direction === 'downgrade') {
+    if (drift?.direction === "downgrade") {
       return {
-        result: { kind: 'version-downgrade', deployed: drift.deployed, expected: drift.expected },
+        result: { kind: "version-downgrade", deployed: drift.deployed, expected: drift.expected },
         bringUpMattermost: null,
       };
     }
@@ -290,7 +290,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
   const runMattermost = mattermost ?? (await detectDocker()).available;
   const pulled = runMattermost
     ? pullMattermostImage(() => {}).catch((error: unknown) => {
-        log.warn('local-switch-server: could not pull Mattermost ahead of time', {
+        log.warn("local-switch-server: could not pull Mattermost ahead of time", {
           error: String(error),
         });
       })
@@ -312,10 +312,10 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
     onMessage,
   });
 
-  onMessage('Stopping the running server…');
+  onMessage("Stopping the running server…");
   // PostgreSQL's own setup output goes to a file: in the UI's log tail it
   // would push whatever actually went wrong out of sight.
-  const pgLog = fileLogger(path.join(layout.logs, 'postgres-setup.log'));
+  const pgLog = fileLogger(path.join(layout.logs, "postgres-setup.log"));
   await stopProcesses(layout, postgres, pgLog);
   await assertPortsFree(ports);
 
@@ -333,7 +333,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
     await writeDeployedVersion(layout, install.version);
   }
   await writeClusterConfig(layout, ports.postgres);
-  onMessage('Starting PostgreSQL…');
+  onMessage("Starting PostgreSQL…");
   await startCluster(postgres, layout, pgLog);
   // From here a failure leaves processes behind that nothing would stop; a
   // failed start stops them again, so it does not look half-running.
@@ -348,14 +348,14 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       secrets,
       telemetryEnabled,
       telemetryEnvironment: currentFlintEnv(),
-      telemetryInternal: (await currentInternalFlag()) === 'true',
+      telemetryInternal: (await currentInternalFlag()) === "true",
     });
     await writeDeployedVersion(layout, install.version);
-    onMessage('Starting switch-core…');
+    onMessage("Starting switch-core…");
     const record = await startCore(layout, install, settings);
     log.info(`local-switch-server: started switch-core ${install.version} (pid ${record.pid})`);
 
-    onMessage('Waiting for the server to become healthy…');
+    onMessage("Waiting for the server to become healthy…");
     const healthy = await waitForCoreHealth(layout, apiUrl, signal);
     if (!healthy) {
       const alive = (await runningCore(layout)) !== null;
@@ -366,17 +366,17 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       // One line, reason first: the server page headlines a failure's first
       // line alone.
       const head = alive
-        ? 'switch-core did not become healthy in time'
-        : 'switch-core stopped during startup';
-      const tail = ` (full log: ${path.join(layout.logs, 'switch-core.log')})`;
+        ? "switch-core did not become healthy in time"
+        : "switch-core stopped during startup";
+      const tail = ` (full log: ${path.join(layout.logs, "switch-core.log")})`;
       // The reason is what gets shortened to fit, never the log's path.
       const room = MAX_START_FAILURE_LINE - head.length - tail.length - 2;
       const shown =
         reason === null || room < 20
-          ? ''
+          ? ""
           : `: ${reason.length > room ? `${reason.slice(0, room - 1)}…` : reason}`;
       return {
-        result: { kind: 'error', message: `${head}${shown}${tail}` },
+        result: { kind: "error", message: `${head}${shown}${tail}` },
         bringUpMattermost: null,
       };
     }
@@ -387,7 +387,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       { gatewayUrl: apiUrl, apiUrl },
       secrets,
       activate,
-      onMessage
+      onMessage,
     );
     if (upgrade) await finishUpgrade(host);
 
@@ -414,19 +414,19 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
     if (checkoutRoot === null) {
       if (bundle !== null) {
         await pruneBundleCopies(layout.toolchain, bundle.root).catch((error: unknown) => {
-          log.warn('local-switch-server: could not remove old bundle copies', {
+          log.warn("local-switch-server: could not remove old bundle copies", {
             error: String(error),
           });
         });
       }
       await pruneSwitchCoreInstalls(layout, install.version).catch((error: unknown) => {
-        log.warn('local-switch-server: could not remove old switch-core installs', {
+        log.warn("local-switch-server: could not remove old switch-core installs", {
           error: String(error),
         });
       });
     }
     return {
-      result: { kind: 'started', serverId, telemetryEnabled, warning: null },
+      result: { kind: "started", serverId, telemetryEnabled, warning: null },
       bringUpMattermost,
     };
   } catch (error) {
@@ -445,7 +445,7 @@ function fileLogger(file: string): (line: string) => void {
  * failure is what gets reported, and this one is logged beside it. */
 async function stopAfterFailedStart(layout: NativeLayout, postgres: PostgresBinaries) {
   await stopProcesses(layout, postgres, () => {}).catch((error: unknown) => {
-    log.error('local-switch-server: could not stop the server after a failed start', {
+    log.error("local-switch-server: could not stop the server after a failed start", {
       error: String(error),
     });
   });
@@ -455,7 +455,7 @@ async function stopAfterFailedStart(layout: NativeLayout, postgres: PostgresBina
  * the cluster cannot be found, its postmaster is signalled directly. */
 export async function stopNativeStack(
   layout: NativeLayout,
-  bundleRoot: string | null
+  bundleRoot: string | null,
 ): Promise<void> {
   const bundle = await readLocalServerBundle(bundleRoot, COMPATIBLE_SWITCH_VERSION);
   const binaries = await findPostgresForCluster(layout, bundle);
@@ -471,13 +471,13 @@ export async function stopNativeStack(
 export async function resetNativeStack(
   host: ServerHost,
   layout: NativeLayout,
-  bundleRoot: string | null
+  bundleRoot: string | null,
 ): Promise<void> {
   await stopNativeStack(layout, bundleRoot);
   // Its schema goes with the cluster below; only its uploaded files are in the
   // volume. Without Docker they cannot be removed, which is said, not hidden.
   await stopMattermost(layout, true).catch((error: unknown) => {
-    log.error('local-switch-server: could not remove Mattermost’s files volume', {
+    log.error("local-switch-server: could not remove Mattermost’s files volume", {
       error: String(error),
     });
   });
@@ -501,7 +501,7 @@ export async function nativeStartedAt(layout: NativeLayout): Promise<string | nu
  * environment it was started with — which is what it read at boot. */
 export async function readNativeTelemetry(layout: NativeLayout): Promise<DeployedTelemetry> {
   try {
-    const env = await readFile(path.join(layout.run, CORE_ENV_FILE), 'utf8');
+    const env = await readFile(path.join(layout.run, CORE_ENV_FILE), "utf8");
     return { known: true, enabled: envFlag(readEnvValue(env, TELEMETRY_ENABLED_KEY)) };
   } catch (error) {
     return { known: false, reason: `${CORE_ENV_FILE}: ${errorText(error)}` };

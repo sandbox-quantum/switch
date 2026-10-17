@@ -1,27 +1,27 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import { afterAll, describe, expect, it, vi } from 'vitest';
-import { STABLE_SWITCH_VERSION } from '@shared/app-identity';
-import { pickFreePorts } from '../free-port';
-import { waitForHealth } from '../health';
-import { generateSecrets } from '../secret-values';
-import { materializeBundle, readLocalServerBundle } from './bundle';
-import { runningCore, startCore, stopCore } from './core-process';
-import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
-import { nativeLayout } from './native-paths';
-import { resolvePostgres } from './postgres-binaries';
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { STABLE_SWITCH_VERSION } from "@shared/app-identity";
+import { pickFreePorts } from "../free-port";
+import { waitForHealth } from "../health";
+import { generateSecrets } from "../secret-values";
+import { materializeBundle, readLocalServerBundle } from "./bundle";
+import { runningCore, startCore, stopCore } from "./core-process";
+import { buildNativeCoreSettings, nativeApiUrl } from "./core-settings";
+import { nativeLayout } from "./native-paths";
+import { resolvePostgres } from "./postgres-binaries";
 import {
   initCluster,
   startCluster,
   stopCluster,
   syncPasswords,
   writeClusterConfig,
-} from './postgres-cluster';
-import { installSwitchCore } from './switch-core-install';
-import { resolveUv } from './uv';
+} from "./postgres-cluster";
+import { installSwitchCore } from "./switch-core-install";
+import { resolveUv } from "./uv";
 
-vi.mock('@main/lib/logger', () => ({
+vi.mock("@main/lib/logger", () => ({
   log: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
@@ -35,14 +35,14 @@ vi.mock('@main/lib/logger', () => ({
  * Add SWITCH_LOCAL_SERVER_BUNDLE=$PWD/dist-local-server (after
  * `pnpm run build:local-server`) to run the packaged app's offline path.
  */
-describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)('native toolchain', () => {
-  let root = '';
+describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)("native toolchain", () => {
+  let root = "";
   afterAll(async () => {
     if (root) await rm(root, { recursive: true, force: true });
   });
 
-  it('boots switch-core on its own PostgreSQL', { timeout: 20 * 60 * 1000 }, async () => {
-    root = await mkdtemp(path.join(os.tmpdir(), 'switch-native-'));
+  it("boots switch-core on its own PostgreSQL", { timeout: 20 * 60 * 1000 }, async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), "switch-native-"));
     const layout = nativeLayout(root);
     const log = (line: string) => process.stdout.write(`  ${line}\n`);
     const secrets = generateSecrets();
@@ -52,7 +52,7 @@ describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)('native toolchain', () =
     // (offline) path; without, the download path.
     const shipped = await readLocalServerBundle(
       process.env.SWITCH_LOCAL_SERVER_BUNDLE ?? null,
-      STABLE_SWITCH_VERSION
+      STABLE_SWITCH_VERSION,
     );
     if (process.env.SWITCH_LOCAL_SERVER_BUNDLE) expect(shipped).not.toBeNull();
     // Run from a copy, as the app does, never from the bundle itself.
@@ -65,8 +65,8 @@ describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)('native toolchain', () =
       uv,
       bundle,
       version: STABLE_SWITCH_VERSION,
-      owner: 'sandbox-quantum',
-      repo: 'switch',
+      owner: "sandbox-quantum",
+      repo: "switch",
       checkoutRoot: null,
       onMessage: log,
     });
@@ -85,9 +85,9 @@ describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)('native toolchain', () =
           callbackPort: ports.gateway,
           secrets,
           telemetryEnabled: false,
-          telemetryEnvironment: 'local',
+          telemetryEnvironment: "local",
           telemetryInternal: false,
-        })
+        }),
       );
       expect(await waitForHealth(nativeApiUrl(ports.api), { timeoutMs: 120_000 })).toBe(true);
       expect(await runningCore(layout)).not.toBeNull();
@@ -111,9 +111,9 @@ describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)('native toolchain', () =
           callbackPort: ports.gateway,
           secrets,
           telemetryEnabled: false,
-          telemetryEnvironment: 'local',
+          telemetryEnvironment: "local",
           telemetryInternal: false,
-        })
+        }),
       );
       expect(await waitForHealth(nativeApiUrl(ports.api), { timeoutMs: 120_000 })).toBe(true);
     } finally {

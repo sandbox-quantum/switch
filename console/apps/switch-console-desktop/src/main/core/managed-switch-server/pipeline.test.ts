@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type * as AppIdentity from '@shared/app-identity';
-import type * as DeployedVersion from './deployed-version';
-import type { ServerHost } from './host/types';
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as AppIdentity from "@shared/app-identity";
+import type * as DeployedVersion from "./deployed-version";
+import type { ServerHost } from "./host/types";
 
 /**
  * Covers the two things `startStack` decides rather than merely sequences: the
@@ -15,92 +15,92 @@ const composeUpMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const waitForHealthMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)));
 const logError = vi.hoisted(() => vi.fn());
 const logWarn = vi.hoisted(() => vi.fn());
-const buildEnvFileMock = vi.hoisted(() => vi.fn((_params: unknown) => 'SWITCH_VERSION=0.11.0\n'));
+const buildEnvFileMock = vi.hoisted(() => vi.fn((_params: unknown) => "SWITCH_VERSION=0.11.0\n"));
 const telemetryConsentMock = vi.hoisted(() => vi.fn(() => Promise.resolve(false)));
 const currentInternalFlagMock = vi.hoisted(() =>
-  vi.fn((): Promise<'true' | 'false' | 'unknown'> => Promise.resolve('unknown'))
+  vi.fn((): Promise<"true" | "false" | "unknown"> => Promise.resolve("unknown")),
 );
 
 // Pin the build's expected version so the guard's arithmetic is not coupled to
 // whatever the real pin happens to be.
 const prepareUpgradeMock = vi.hoisted(() =>
-  vi.fn<(...args: unknown[]) => Promise<unknown>>(() => Promise.resolve(null))
+  vi.fn<(...args: unknown[]) => Promise<unknown>>(() => Promise.resolve(null)),
 );
 const finishUpgradeMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
-vi.mock('./console-register', () => ({
-  readRegister: vi.fn(async () => ({ self: 'me', consoles: [], activity: [] })),
+vi.mock("./console-register", () => ({
+  readRegister: vi.fn(async () => ({ self: "me", consoles: [], activity: [] })),
 }));
-vi.mock('@shared/app-identity', async (importOriginal) => ({
+vi.mock("@shared/app-identity", async (importOriginal) => ({
   ...(await importOriginal<typeof AppIdentity>()),
-  COMPATIBLE_SWITCH_VERSION: '0.11.0',
+  COMPATIBLE_SWITCH_VERSION: "0.11.0",
 }));
-vi.mock('@main/lib/logger', () => ({
+vi.mock("@main/lib/logger", () => ({
   log: { error: logError, warn: logWarn, info: vi.fn() },
 }));
-vi.mock('./deployed-version', async (importOriginal) => ({
+vi.mock("./deployed-version", async (importOriginal) => ({
   ...(await importOriginal<typeof DeployedVersion>()),
   readDeployedVersion: readDeployedVersionMock,
 }));
-vi.mock('./compose', () => ({
+vi.mock("./compose", () => ({
   composeUp: composeUpMock,
   composeDown: vi.fn(() => Promise.resolve()),
   runningImages: vi.fn(),
   isStackRunning: vi.fn(),
 }));
-vi.mock('./health', () => ({ waitForHealth: waitForHealthMock }));
-vi.mock('./bundled-compose', () => ({ bundledComposeYaml: () => 'services: {}' }));
-vi.mock('./secrets', () => ({
-  loadOrCreateSecrets: () => Promise.resolve({ gatewayAdminPassword: 'pw' }),
+vi.mock("./health", () => ({ waitForHealth: waitForHealthMock }));
+vi.mock("./bundled-compose", () => ({ bundledComposeYaml: () => "services: {}" }));
+vi.mock("./secrets", () => ({
+  loadOrCreateSecrets: () => Promise.resolve({ gatewayAdminPassword: "pw" }),
   clearSecrets: vi.fn(),
 }));
-vi.mock('./ports', () => ({
+vi.mock("./ports", () => ({
   resolvePorts: () =>
     Promise.resolve({ gateway: 3300, api: 8000, mattermost: 8065, postgres: 5432 }),
   clearPorts: vi.fn(),
 }));
-vi.mock('./env-file', () => ({
+vi.mock("./env-file", () => ({
   buildEnvFile: buildEnvFileMock,
   readEnvValue: vi.fn(),
-  TELEMETRY_ENABLED_KEY: 'TELEMETRY_ENABLED',
+  TELEMETRY_ENABLED_KEY: "TELEMETRY_ENABLED",
 }));
-vi.mock('./telemetry-consent', () => ({
+vi.mock("./telemetry-consent", () => ({
   telemetryConsent: telemetryConsentMock,
   readDeployedTelemetry: vi.fn(),
 }));
 const setActiveServerIdMock = vi.hoisted(() => vi.fn());
-vi.mock('@main/core/telemetry/internal-account', () => ({
+vi.mock("@main/core/telemetry/internal-account", () => ({
   currentInternalFlag: currentInternalFlagMock,
 }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({
+vi.mock("@main/core/switch-servers/servers-store", () => ({
   assertManagedServerUrlFree: () => Promise.resolve(),
-  ensureManagedServer: () => Promise.resolve({ id: 'srv-1' }),
+  ensureManagedServer: () => Promise.resolve({ id: "srv-1" }),
   setActiveServerId: setActiveServerIdMock,
 }));
 // Reads this install's own workspace rows, and through them the database client.
-vi.mock('@main/core/workspaces/reconcile-workspaces', () => ({
+vi.mock("@main/core/workspaces/reconcile-workspaces", () => ({
   reconcileServerWorkspaces: () => Promise.resolve(),
 }));
-vi.mock('@main/core/switch-servers/auth', () => ({
+vi.mock("@main/core/switch-servers/auth", () => ({
   passwordLogin: () => Promise.resolve({ success: true }),
 }));
-vi.mock('./managed-upgrade', () => ({
+vi.mock("./managed-upgrade", () => ({
   prepareUpgrade: prepareUpgradeMock,
   finishUpgrade: finishUpgradeMock,
 }));
 
-const { startStack } = await import('./pipeline');
-const { currentFlintEnv } = await import('../telemetry/config');
-const { ENV_FILE_NAME } = await import('./constants');
+const { startStack } = await import("./pipeline");
+const { currentFlintEnv } = await import("../telemetry/config");
+const { ENV_FILE_NAME } = await import("./constants");
 
 function options() {
   const writeFile = vi.fn<(relPath: string, content: string, mode?: number) => Promise<void>>(() =>
-    Promise.resolve()
+    Promise.resolve(),
   );
   const host = {
-    label: 'this computer',
+    label: "this computer",
     sharedState: null,
     writeFile,
-    detectDocker: () => Promise.resolve({ available: true, version: '27.0.0' }),
+    detectDocker: () => Promise.resolve({ available: true, version: "27.0.0" }),
     checkNetworking: vi.fn(() => Promise.resolve()),
     establishNetworking: vi.fn(() => Promise.resolve()),
   };
@@ -108,8 +108,8 @@ function options() {
     writeFile,
     opts: {
       host: host as unknown as ServerHost,
-      ref: { kind: 'local' as const },
-      serverName: 'Local',
+      ref: { kind: "local" as const },
+      serverName: "Local",
       onMessage: vi.fn(),
       onLog: vi.fn(),
       activate: true,
@@ -125,23 +125,23 @@ beforeEach(() => {
   vi.clearAllMocks();
   prepareUpgradeMock.mockResolvedValue(null);
   telemetryConsentMock.mockResolvedValue(false);
-  currentInternalFlagMock.mockResolvedValue('unknown');
-  buildEnvFileMock.mockReturnValue('SWITCH_VERSION=0.11.0\n');
+  currentInternalFlagMock.mockResolvedValue("unknown");
+  buildEnvFileMock.mockReturnValue("SWITCH_VERSION=0.11.0\n");
 });
 
-describe('startStack version guard', () => {
-  it('refuses to start a stack that is ahead of this build', async () => {
+describe("startStack version guard", () => {
+  it("refuses to start a stack that is ahead of this build", async () => {
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: '0.12.0',
-      source: 'container',
+      kind: "deployed",
+      version: "0.12.0",
+      source: "container",
     });
     const { opts, writeFile } = options();
 
     expect(await startStack(opts)).toEqual({
-      kind: 'version-downgrade',
-      deployed: '0.12.0',
-      expected: '0.11.0',
+      kind: "version-downgrade",
+      deployed: "0.12.0",
+      expected: "0.11.0",
     });
     // Nothing on the host may be touched: the existing `.env` still names the
     // version the stack was last started with, so the refusal is recoverable
@@ -151,17 +151,17 @@ describe('startStack version guard', () => {
     expect(logError).toHaveBeenCalledOnce();
   });
 
-  it('starts a stack that is behind this build, rewriting the .env', async () => {
+  it("starts a stack that is behind this build, rewriting the .env", async () => {
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: '0.3.0',
-      source: 'container',
+      kind: "deployed",
+      version: "0.3.0",
+      source: "container",
     });
     const { opts, writeFile } = options();
 
     expect(await startStack(opts)).toEqual({
-      kind: 'started',
-      serverId: 'srv-1',
+      kind: "started",
+      serverId: "srv-1",
       telemetryEnabled: false,
       warning: null,
     });
@@ -169,9 +169,9 @@ describe('startStack version guard', () => {
     expect(composeUpMock).toHaveBeenCalledOnce();
   });
 
-  it('tells the server which project its usage belongs in, and whether its person is staff', async () => {
-    readDeployedVersionMock.mockResolvedValue({ kind: 'absent' });
-    currentInternalFlagMock.mockResolvedValue('true');
+  it("tells the server which project its usage belongs in, and whether its person is staff", async () => {
+    readDeployedVersionMock.mockResolvedValue({ kind: "absent" });
+    currentInternalFlagMock.mockResolvedValue("true");
     const { opts } = options();
 
     await startStack(opts);
@@ -180,54 +180,54 @@ describe('startStack version guard', () => {
       expect.objectContaining({
         telemetryEnvironment: currentFlintEnv(),
         telemetryInternal: true,
-      })
+      }),
     );
   });
 
-  it('does not call an unknown account staff', async () => {
-    readDeployedVersionMock.mockResolvedValue({ kind: 'absent' });
+  it("does not call an unknown account staff", async () => {
+    readDeployedVersionMock.mockResolvedValue({ kind: "absent" });
     const { opts } = options();
 
     await startStack(opts);
 
     expect(buildEnvFileMock).toHaveBeenCalledWith(
-      expect.objectContaining({ telemetryInternal: false })
+      expect.objectContaining({ telemetryInternal: false }),
     );
   });
 
-  it('starts a fresh host with nothing deployed', async () => {
-    readDeployedVersionMock.mockResolvedValue({ kind: 'absent' });
+  it("starts a fresh host with nothing deployed", async () => {
+    readDeployedVersionMock.mockResolvedValue({ kind: "absent" });
     const { opts } = options();
     expect(await startStack(opts)).toEqual({
-      kind: 'started',
-      serverId: 'srv-1',
+      kind: "started",
+      serverId: "srv-1",
       telemetryEnabled: false,
       warning: null,
     });
   });
 
-  it('starts a matching stack (the plain restart path)', async () => {
+  it("starts a matching stack (the plain restart path)", async () => {
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: '0.11.0',
-      source: 'container',
+      kind: "deployed",
+      version: "0.11.0",
+      source: "container",
     });
     const { opts } = options();
     expect(await startStack(opts)).toEqual({
-      kind: 'started',
-      serverId: 'srv-1',
+      kind: "started",
+      serverId: "srv-1",
       telemetryEnabled: false,
       warning: null,
     });
   });
 
-  it('proceeds with a warning when the deployed version cannot be read', async () => {
-    readDeployedVersionMock.mockResolvedValue({ kind: 'unreadable', reason: 'daemon down' });
+  it("proceeds with a warning when the deployed version cannot be read", async () => {
+    readDeployedVersionMock.mockResolvedValue({ kind: "unreadable", reason: "daemon down" });
     const { opts } = options();
 
     expect(await startStack(opts)).toEqual({
-      kind: 'started',
-      serverId: 'srv-1',
+      kind: "started",
+      serverId: "srv-1",
       telemetryEnabled: false,
       warning: null,
     });
@@ -236,43 +236,43 @@ describe('startStack version guard', () => {
     expect(logWarn).toHaveBeenCalledOnce();
   });
 
-  it('allows a version it cannot compare, since a downgrade is not proven', async () => {
+  it("allows a version it cannot compare, since a downgrade is not proven", async () => {
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: 'nightly',
-      source: 'container',
+      kind: "deployed",
+      version: "nightly",
+      source: "container",
     });
     const { opts } = options();
     expect(await startStack(opts)).toEqual({
-      kind: 'started',
-      serverId: 'srv-1',
+      kind: "started",
+      serverId: "srv-1",
       telemetryEnabled: false,
       warning: null,
     });
   });
 
-  it('says so loudly when it cannot prove the start is not a downgrade', async () => {
+  it("says so loudly when it cannot prove the start is not a downgrade", async () => {
     // An uncomparable pair used to fall into the same "not a downgrade" branch
     // as a clean match and pass in complete silence (CHOO-1865). It carries the
     // same risk as a downgrade; we simply cannot prove it, and the log has to
     // make that difference visible to whoever reads it afterwards.
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: 'nightly',
-      source: 'container',
+      kind: "deployed",
+      version: "nightly",
+      source: "container",
     });
     const { opts } = options();
     await startStack(opts);
 
     expect(logError).toHaveBeenCalledOnce();
-    expect(logError.mock.calls[0]?.[0]).toContain('not comparable');
+    expect(logError.mock.calls[0]?.[0]).toContain("not comparable");
   });
 
-  it('stays silent when the versions match, so the log means something', async () => {
+  it("stays silent when the versions match, so the log means something", async () => {
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: '0.11.0',
-      source: 'container',
+      kind: "deployed",
+      version: "0.11.0",
+      source: "container",
     });
     const { opts } = options();
     await startStack(opts);
@@ -281,11 +281,11 @@ describe('startStack version guard', () => {
     expect(logWarn).not.toHaveBeenCalled();
   });
 
-  it('refuses before writing configuration, so nothing off-host happens either', async () => {
+  it("refuses before writing configuration, so nothing off-host happens either", async () => {
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: '0.12.0',
-      source: 'env-file',
+      kind: "deployed",
+      version: "0.12.0",
+      source: "env-file",
     });
     const { writeFile, opts } = options();
     await startStack(opts);
@@ -293,40 +293,40 @@ describe('startStack version guard', () => {
   });
 });
 
-describe('startStack checkout build', () => {
+describe("startStack checkout build", () => {
   /** The whole point of the dev mode: the images must come from the working
    * tree, and must not be tagged as if they were the pinned release. */
-  it('writes the build override, tags the images apart, and builds', async () => {
-    readDeployedVersionMock.mockResolvedValue({ kind: 'absent' });
+  it("writes the build override, tags the images apart, and builds", async () => {
+    readDeployedVersionMock.mockResolvedValue({ kind: "absent" });
     const { opts, writeFile } = options();
-    opts.checkoutRoot = '/src/switch';
+    opts.checkoutRoot = "/src/switch";
 
     expect(await startStack(opts)).toEqual({
-      kind: 'started',
-      serverId: 'srv-1',
+      kind: "started",
+      serverId: "srv-1",
       telemetryEnabled: false,
       warning: null,
     });
 
     const override = writeFile.mock.calls.find(
-      ([name]) => name === 'standalone-docker-compose.build.yml'
+      ([name]) => name === "standalone-docker-compose.build.yml",
     );
-    expect(override?.[1]).toContain('/src/switch');
+    expect(override?.[1]).toContain("/src/switch");
     expect(composeUpMock).toHaveBeenCalledWith(expect.anything(), expect.any(Function), true);
   });
 
-  it('skips the downgrade guard, saying so, rather than refusing the start', async () => {
+  it("skips the downgrade guard, saying so, rather than refusing the start", async () => {
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: '0.12.0',
-      source: 'container',
+      kind: "deployed",
+      version: "0.12.0",
+      source: "container",
     });
     const { opts } = options();
-    opts.checkoutRoot = '/src/switch';
+    opts.checkoutRoot = "/src/switch";
 
     expect(await startStack(opts)).toEqual({
-      kind: 'started',
-      serverId: 'srv-1',
+      kind: "started",
+      serverId: "srv-1",
       telemetryEnabled: false,
       warning: null,
     });
@@ -336,139 +336,139 @@ describe('startStack checkout build', () => {
   // CHOO-2890. The toggle is only honoured end to end if a start carries the
   // answer as given — including "no", which must be written rather than left
   // out, and including a start that is really a restart.
-  it('applies the current consent answer to the stack it starts', async () => {
-    readDeployedVersionMock.mockResolvedValue({ kind: 'absent' });
+  it("applies the current consent answer to the stack it starts", async () => {
+    readDeployedVersionMock.mockResolvedValue({ kind: "absent" });
     telemetryConsentMock.mockResolvedValue(true);
     const { opts } = options();
 
     expect(await startStack(opts)).toEqual({
-      kind: 'started',
-      serverId: 'srv-1',
+      kind: "started",
+      serverId: "srv-1",
       telemetryEnabled: true,
       warning: null,
     });
     expect(buildEnvFileMock).toHaveBeenCalledWith(
-      expect.objectContaining({ telemetryEnabled: true })
+      expect.objectContaining({ telemetryEnabled: true }),
     );
   });
 
-  it('applies a refusal just as explicitly', async () => {
-    readDeployedVersionMock.mockResolvedValue({ kind: 'absent' });
+  it("applies a refusal just as explicitly", async () => {
+    readDeployedVersionMock.mockResolvedValue({ kind: "absent" });
     telemetryConsentMock.mockResolvedValue(false);
     const { opts } = options();
 
     await startStack(opts);
 
     expect(buildEnvFileMock).toHaveBeenCalledWith(
-      expect.objectContaining({ telemetryEnabled: false })
+      expect.objectContaining({ telemetryEnabled: false }),
     );
   });
 
   // A start that cannot read the answer must not invent one: writing a guess is
   // how a refusal gets quietly overridden.
-  it('fails the start rather than guessing at the answer', async () => {
-    readDeployedVersionMock.mockResolvedValue({ kind: 'absent' });
-    telemetryConsentMock.mockRejectedValue(new Error('settings unreadable'));
+  it("fails the start rather than guessing at the answer", async () => {
+    readDeployedVersionMock.mockResolvedValue({ kind: "absent" });
+    telemetryConsentMock.mockRejectedValue(new Error("settings unreadable"));
     const { opts } = options();
 
-    await expect(startStack(opts)).rejects.toThrow('settings unreadable');
+    await expect(startStack(opts)).rejects.toThrow("settings unreadable");
     expect(composeUpMock).not.toHaveBeenCalled();
   });
 
-  it('leaves the released path unbuilt and without an override', async () => {
-    readDeployedVersionMock.mockResolvedValue({ kind: 'absent' });
+  it("leaves the released path unbuilt and without an override", async () => {
+    readDeployedVersionMock.mockResolvedValue({ kind: "absent" });
     const { opts, writeFile } = options();
 
     await startStack(opts);
 
     expect(
-      writeFile.mock.calls.some(([name]) => name === 'standalone-docker-compose.build.yml')
+      writeFile.mock.calls.some(([name]) => name === "standalone-docker-compose.build.yml"),
     ).toBe(false);
     expect(composeUpMock).toHaveBeenCalledWith(expect.anything(), expect.any(Function), false);
   });
 });
 
-describe('startStack upgrade', () => {
-  const journal = { from: '0.10.0', to: '0.11.0', backup: '/data/backups/x' };
+describe("startStack upgrade", () => {
+  const journal = { from: "0.10.0", to: "0.11.0", backup: "/data/backups/x" };
 
-  it('backs the database up before rewriting the stack and closes the journal once healthy', async () => {
+  it("backs the database up before rewriting the stack and closes the journal once healthy", async () => {
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: '0.10.0',
-      source: 'container',
+      kind: "deployed",
+      version: "0.10.0",
+      source: "container",
     });
     const order: string[] = [];
     prepareUpgradeMock.mockImplementation(async () => {
-      order.push('backup');
+      order.push("backup");
       return journal;
     });
     finishUpgradeMock.mockImplementation(async () => {
-      order.push('finish');
+      order.push("finish");
     });
     const { opts, writeFile } = options();
     writeFile.mockImplementation(async (name: string) => {
       order.push(`write ${name}`);
     });
 
-    expect(await startStack(opts)).toMatchObject({ kind: 'started' });
-    expect(order[0]).toBe('backup');
-    expect(order.at(-1)).toBe('finish');
+    expect(await startStack(opts)).toMatchObject({ kind: "started" });
+    expect(order[0]).toBe("backup");
+    expect(order.at(-1)).toBe("finish");
     expect(prepareUpgradeMock).toHaveBeenCalledWith(
       opts.host,
       null,
       opts.onMessage,
-      opts.onUpgrade
+      opts.onUpgrade,
     );
   });
 
-  it('leaves the stack untouched when the backup fails', async () => {
+  it("leaves the stack untouched when the backup fails", async () => {
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: '0.10.0',
-      source: 'container',
+      kind: "deployed",
+      version: "0.10.0",
+      source: "container",
     });
-    prepareUpgradeMock.mockRejectedValue(new Error('pg_dumpall failed: disk full'));
+    prepareUpgradeMock.mockRejectedValue(new Error("pg_dumpall failed: disk full"));
     const { opts, writeFile } = options();
 
-    await expect(startStack(opts)).rejects.toThrow('disk full');
+    await expect(startStack(opts)).rejects.toThrow("disk full");
     expect(writeFile).not.toHaveBeenCalled();
     expect(composeUpMock).not.toHaveBeenCalled();
     expect(finishUpgradeMock).not.toHaveBeenCalled();
   });
 
-  it('keeps the journal when the upgraded stack never turns healthy', async () => {
+  it("keeps the journal when the upgraded stack never turns healthy", async () => {
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: '0.10.0',
-      source: 'container',
+      kind: "deployed",
+      version: "0.10.0",
+      source: "container",
     });
     prepareUpgradeMock.mockResolvedValue(journal);
     waitForHealthMock.mockResolvedValueOnce(false);
     const { opts } = options();
 
-    expect(await startStack(opts)).toMatchObject({ kind: 'error' });
+    expect(await startStack(opts)).toMatchObject({ kind: "error" });
     expect(finishUpgradeMock).not.toHaveBeenCalled();
   });
 
-  it('does not back up a stack that is ahead of this build', async () => {
+  it("does not back up a stack that is ahead of this build", async () => {
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: '0.12.0',
-      source: 'container',
+      kind: "deployed",
+      version: "0.12.0",
+      source: "container",
     });
     const { opts } = options();
 
-    expect(await startStack(opts)).toMatchObject({ kind: 'version-downgrade' });
+    expect(await startStack(opts)).toMatchObject({ kind: "version-downgrade" });
     expect(prepareUpgradeMock).not.toHaveBeenCalled();
   });
 
-  it('does not switch the active server for a background upgrade', async () => {
-    readDeployedVersionMock.mockResolvedValue({ kind: 'absent' });
+  it("does not switch the active server for a background upgrade", async () => {
+    readDeployedVersionMock.mockResolvedValue({ kind: "absent" });
     const { opts } = options();
 
     await startStack({ ...opts, activate: false });
     expect(setActiveServerIdMock).not.toHaveBeenCalled();
     await startStack(opts);
-    expect(setActiveServerIdMock).toHaveBeenCalledWith('srv-1');
+    expect(setActiveServerIdMock).toHaveBeenCalledWith("srv-1");
   });
 });

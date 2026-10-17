@@ -1,4 +1,4 @@
-import { log } from '@main/lib/logger';
+import { log } from "@main/lib/logger";
 
 const DEFAULT_TIMEOUT_MS = 3 * 60 * 1000;
 const POLL_INTERVAL_MS = 2000;
@@ -6,17 +6,17 @@ const POLL_INTERVAL_MS = 2000;
 const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
       return;
     }
     const timer = setTimeout(resolve, ms);
     signal?.addEventListener(
-      'abort',
+      "abort",
       () => {
         clearTimeout(timer);
-        reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+        reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
       },
-      { once: true }
+      { once: true },
     );
   });
 
@@ -28,7 +28,7 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
  */
 export async function waitForHealth(
   apiUrl: string,
-  opts: { signal?: AbortSignal; timeoutMs?: number } = {}
+  opts: { signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<boolean> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;

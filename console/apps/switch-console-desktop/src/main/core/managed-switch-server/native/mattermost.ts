@@ -1,19 +1,19 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import path from 'node:path';
-import { log } from '@main/lib/logger';
-import { bundledComposeYaml } from '../bundled-compose';
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { log } from "@main/lib/logger";
+import { bundledComposeYaml } from "../bundled-compose";
 import {
   LOCAL_SERVER_ADMIN_EMAIL,
   LOCAL_SERVER_MATTERMOST_TEAM,
   LOCAL_SERVER_MATTERMOST_USER,
   LOCAL_SERVER_PROJECT_NAME,
-} from '../constants';
-import { dockerExecutable } from '../docker';
-import type { LocalServerSecrets } from '../secret-values';
-import type { NativeLayout } from './native-paths';
-import { MATTERMOST_DATABASE, OWNER_ROLE } from './postgres-cluster';
-import { runCommand } from './run-command';
-import type { SwitchCoreInstall } from './switch-core-install';
+} from "../constants";
+import { dockerExecutable } from "../docker";
+import type { LocalServerSecrets } from "../secret-values";
+import type { NativeLayout } from "./native-paths";
+import { MATTERMOST_DATABASE, OWNER_ROLE } from "./postgres-cluster";
+import { runCommand } from "./run-command";
+import type { SwitchCoreInstall } from "./switch-core-install";
 
 /**
  * The optional Mattermost beside a native server. Mattermost ships only as a
@@ -26,8 +26,8 @@ import type { SwitchCoreInstall } from './switch-core-install';
  * on this machine with switch-core's own Python.
  */
 
-const COMPOSE_FILE = 'mattermost-compose.yml';
-const SETTINGS_FILE = 'mattermost.json';
+const COMPOSE_FILE = "mattermost-compose.yml";
+const SETTINGS_FILE = "mattermost.json";
 const PROJECT_NAME = `${LOCAL_SERVER_PROJECT_NAME}-mattermost`;
 const COMPOSE_TIMEOUT_MS = 20 * 60 * 1000;
 const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
@@ -36,7 +36,7 @@ const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
  * Console's embedded room view is written against. */
 export function mattermostImage(composeYaml: string = bundledComposeYaml()): string {
   const match = /image:\s*(mattermost\/mattermost-team-edition:[^\s]+)/.exec(composeYaml);
-  if (!match) throw new Error('The bundled compose file names no Mattermost image.');
+  if (!match) throw new Error("The bundled compose file names no Mattermost image.");
   return match[1];
 }
 
@@ -58,95 +58,95 @@ export type MattermostComposeParams = {
  */
 export function mattermostComposeYaml(params: MattermostComposeParams): string {
   const { platform, mattermostPort, postgresPort, ownerPassword } = params;
-  const hostNetwork = platform === 'linux';
-  const hostAddress = hostNetwork ? '127.0.0.1' : 'host.docker.internal';
+  const hostNetwork = platform === "linux";
+  const hostAddress = hostNetwork ? "127.0.0.1" : "host.docker.internal";
   const env: Record<string, string> = {
-    MM_SQLSETTINGS_DRIVERNAME: 'postgres',
+    MM_SQLSETTINGS_DRIVERNAME: "postgres",
     MM_SQLSETTINGS_DATASOURCE: `postgres://${OWNER_ROLE}:${ownerPassword}@${hostAddress}:${postgresPort}/${MATTERMOST_DATABASE}?sslmode=disable`,
     MM_SERVICESETTINGS_SITEURL: `http://localhost:${mattermostPort}`,
-    MM_SERVICESETTINGS_LISTENADDRESS: hostNetwork ? `127.0.0.1:${mattermostPort}` : ':8065',
-    MM_SERVICESETTINGS_ENABLELOCALMODE: 'true',
-    MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: 'false',
-    MM_DISPLAYSETTINGS_CUSTOMURLSCHEMES: 'switchdash',
-    MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: 'true',
-    MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: 'true',
+    MM_SERVICESETTINGS_LISTENADDRESS: hostNetwork ? `127.0.0.1:${mattermostPort}` : ":8065",
+    MM_SERVICESETTINGS_ENABLELOCALMODE: "true",
+    MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false",
+    MM_DISPLAYSETTINGS_CUSTOMURLSCHEMES: "switchdash",
+    MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true",
+    MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true",
     // A button press on a Switch card is a POST from Mattermost to
     // switch-core's callback port, on a private address it refuses to call
     // unless named here.
     MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: `${hostAddress} localhost`,
-    MM_TEAMSETTINGS_ENABLEOPENSERVER: 'true',
-    MM_TEAMSETTINGS_TEAMMATENAMEDISPLAY: 'full_name',
-    MM_LOGSETTINGS_ENABLEDIAGNOSTICS: 'false',
-    MM_LOGSETTINGS_ENABLESENTRY: 'false',
-    MM_SERVICESETTINGS_ENABLESECURITYFIXALERT: 'false',
-    MM_ANNOUNCEMENTSETTINGS_ADMINNOTICESENABLED: 'false',
-    MM_ANNOUNCEMENTSETTINGS_USERNOTICESENABLED: 'false',
-    MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE: 'false',
+    MM_TEAMSETTINGS_ENABLEOPENSERVER: "true",
+    MM_TEAMSETTINGS_TEAMMATENAMEDISPLAY: "full_name",
+    MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false",
+    MM_LOGSETTINGS_ENABLESENTRY: "false",
+    MM_SERVICESETTINGS_ENABLESECURITYFIXALERT: "false",
+    MM_ANNOUNCEMENTSETTINGS_ADMINNOTICESENABLED: "false",
+    MM_ANNOUNCEMENTSETTINGS_USERNOTICESENABLED: "false",
+    MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE: "false",
     MM_PLUGINSETTINGS_PLUGINSTATES:
       '{"mattermost-ai":{"Enable":false},"com.mattermost.calls":{"Enable":false}}',
   };
   const lines = [
-    '# Generated by Switch Console for a native local server — do not edit.',
-    'services:',
-    '  mattermost:',
+    "# Generated by Switch Console for a native local server — do not edit.",
+    "services:",
+    "  mattermost:",
     `    image: ${mattermostImage()}`,
     // Published for amd64 only; arm64 hosts run it emulated.
-    '    platform: linux/amd64',
+    "    platform: linux/amd64",
   ];
   if (hostNetwork) {
-    lines.push('    network_mode: host');
+    lines.push("    network_mode: host");
   } else {
     lines.push(
-      '    ports:',
+      "    ports:",
       `      - "127.0.0.1:${mattermostPort}:8065"`,
-      '    extra_hosts:',
-      '      - "host.docker.internal:host-gateway"'
+      "    extra_hosts:",
+      '      - "host.docker.internal:host-gateway"',
     );
   }
-  lines.push('    volumes:', '      - mmdata:/mattermost/data', '    environment:');
+  lines.push("    volumes:", "      - mmdata:/mattermost/data", "    environment:");
   for (const [key, value] of Object.entries(env)) {
     lines.push(`      ${key}: ${JSON.stringify(value)}`);
   }
-  lines.push('volumes:', '  mmdata:', '');
-  return lines.join('\n');
+  lines.push("volumes:", "  mmdata:", "");
+  return lines.join("\n");
 }
 
 /** Where Mattermost reaches switch-core's callback listener, from inside its
  * container. */
 export function mattermostCallbackBaseUrl(platform: NodeJS.Platform, callbackPort: number): string {
-  return `http://${platform === 'linux' ? '127.0.0.1' : 'host.docker.internal'}:${callbackPort}`;
+  return `http://${platform === "linux" ? "127.0.0.1" : "host.docker.internal"}:${callbackPort}`;
 }
 
 /** Whether the user wants Mattermost with the native server, or null when
  * they never said — which means yes wherever Docker is available. */
 export async function readMattermostEnabled(localServerDir: string): Promise<boolean | null> {
   try {
-    const parsed = JSON.parse(await readFile(path.join(localServerDir, SETTINGS_FILE), 'utf8')) as {
+    const parsed = JSON.parse(await readFile(path.join(localServerDir, SETTINGS_FILE), "utf8")) as {
       enabled?: unknown;
     };
     return parsed.enabled === true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
 }
 
 export async function writeMattermostEnabled(
   localServerDir: string,
-  enabled: boolean
+  enabled: boolean,
 ): Promise<void> {
   await mkdir(localServerDir, { recursive: true });
   await writeFile(
     path.join(localServerDir, SETTINGS_FILE),
-    `${JSON.stringify({ enabled }, null, 2)}\n`
+    `${JSON.stringify({ enabled }, null, 2)}\n`,
   );
 }
 
 function compose(layout: NativeLayout, args: string[], onLog: (line: string) => void) {
   return runCommand(
     dockerExecutable(),
-    ['compose', '-p', PROJECT_NAME, '-f', path.join(layout.root, COMPOSE_FILE), ...args],
-    { cwd: layout.root, env: process.env, onLine: onLog, timeoutMs: COMPOSE_TIMEOUT_MS }
+    ["compose", "-p", PROJECT_NAME, "-f", path.join(layout.root, COMPOSE_FILE), ...args],
+    { cwd: layout.root, env: process.env, onLine: onLog, timeoutMs: COMPOSE_TIMEOUT_MS },
   );
 }
 
@@ -179,28 +179,28 @@ export async function startMattermost(params: StartMattermostParams): Promise<vo
       postgresPort: params.postgresPort,
       ownerPassword: secrets.dbPassword,
     }),
-    { mode: 0o600 }
+    { mode: 0o600 },
   );
-  onMessage('Starting Mattermost (pulling its image if needed)…');
-  await compose(layout, ['up', '-d'], onLog);
+  onMessage("Starting Mattermost (pulling its image if needed)…");
+  await compose(layout, ["up", "-d"], onLog);
 
-  onMessage('Setting up Mattermost…');
+  onMessage("Setting up Mattermost…");
   await runCommand(
     install.python,
-    [path.join(install.sourceRoot, 'deploy', 'shared_resources', 'setup.py')],
+    [path.join(install.sourceRoot, "deploy", "shared_resources", "setup.py")],
     {
       cwd: layout.root,
       env: {
         ...process.env,
-        PYTHONUNBUFFERED: '1',
+        PYTHONUNBUFFERED: "1",
         SWITCH_URL: params.apiUrl,
         MATTERMOST_URL: mattermostUrl,
         MATTERMOST_URL_FOR_SWITCH: mattermostUrl,
         MATTERMOST_CALLBACK_BASE_URL: mattermostCallbackBaseUrl(
           process.platform,
-          params.callbackPort
+          params.callbackPort,
         ),
-        MATTERMOST_ADMIN_USER: 'admin',
+        MATTERMOST_ADMIN_USER: "admin",
         MATTERMOST_ADMIN_PASSWORD: secrets.mattermostAdminPassword,
         MATTERMOST_TEAM_NAME: LOCAL_SERVER_MATTERMOST_TEAM,
         MATTERMOST_USER: LOCAL_SERVER_MATTERMOST_USER,
@@ -214,7 +214,7 @@ export async function startMattermost(params: StartMattermostParams): Promise<vo
         if (!/password/i.test(line)) onLog(line);
       },
       timeoutMs: SETUP_TIMEOUT_MS,
-    }
+    },
   );
 }
 
@@ -224,7 +224,7 @@ export async function startMattermost(params: StartMattermostParams): Promise<vo
  * the server's own setup; `compose up` pulls anyway if this did not finish.
  */
 export function pullMattermostImage(onLog: (line: string) => void): Promise<void> {
-  return runCommand(dockerExecutable(), ['pull', '--platform', 'linux/amd64', mattermostImage()], {
+  return runCommand(dockerExecutable(), ["pull", "--platform", "linux/amd64", mattermostImage()], {
     cwd: process.cwd(),
     env: process.env,
     onLine: onLog,
@@ -236,15 +236,15 @@ export function pullMattermostImage(onLog: (line: string) => void): Promise<void
  * never started it, has nothing to stop. */
 export async function stopMattermost(layout: NativeLayout, removeData: boolean): Promise<void> {
   try {
-    await readFile(path.join(layout.root, COMPOSE_FILE), 'utf8');
+    await readFile(path.join(layout.root, COMPOSE_FILE), "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
   try {
-    await compose(layout, removeData ? ['down', '-v'] : ['down'], () => {});
+    await compose(layout, removeData ? ["down", "-v"] : ["down"], () => {});
   } catch (error) {
     if (removeData) throw error;
-    log.warn('local-switch-server: could not stop Mattermost', { error: String(error) });
+    log.warn("local-switch-server: could not stop Mattermost", { error: String(error) });
   }
 }

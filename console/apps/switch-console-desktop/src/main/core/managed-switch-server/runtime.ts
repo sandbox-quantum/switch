@@ -1,9 +1,9 @@
-import { access, readFile, writeFile, mkdir } from 'node:fs/promises';
-import path from 'node:path';
-import type { LocalServerRuntime } from '@shared/core/managed-switch-server/managed-switch-server';
-import { COMPOSE_FILE_NAME, ENV_FILE_NAME } from './constants';
+import { access, readFile, writeFile, mkdir } from "node:fs/promises";
+import path from "node:path";
+import type { LocalServerRuntime } from "@shared/core/managed-switch-server/managed-switch-server";
+import { COMPOSE_FILE_NAME, ENV_FILE_NAME } from "./constants";
 
-const RUNTIME_FILE = 'runtime.json';
+const RUNTIME_FILE = "runtime.json";
 
 async function exists(file: string): Promise<boolean> {
   try {
@@ -25,18 +25,18 @@ async function exists(file: string): Promise<boolean> {
  */
 export async function readLocalRuntime(dir: string): Promise<LocalServerRuntime> {
   try {
-    const parsed = JSON.parse(await readFile(path.join(dir, RUNTIME_FILE), 'utf8')) as {
+    const parsed = JSON.parse(await readFile(path.join(dir, RUNTIME_FILE), "utf8")) as {
       runtime?: unknown;
     };
-    if (parsed.runtime === 'docker' || parsed.runtime === 'native') return parsed.runtime;
+    if (parsed.runtime === "docker" || parsed.runtime === "native") return parsed.runtime;
     throw new Error(`${path.join(dir, RUNTIME_FILE)} names no runtime this build knows.`);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   const dockerInstall =
     (await exists(path.join(dir, COMPOSE_FILE_NAME))) ||
     (await exists(path.join(dir, ENV_FILE_NAME)));
-  return dockerInstall ? 'docker' : 'native';
+  return dockerInstall ? "docker" : "native";
 }
 
 export async function writeLocalRuntime(dir: string, runtime: LocalServerRuntime): Promise<void> {

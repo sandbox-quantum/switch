@@ -1,10 +1,10 @@
-import { log } from '@main/lib/logger';
-import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
+import { log } from "@main/lib/logger";
+import { COMPATIBLE_SWITCH_VERSION } from "@shared/app-identity";
 import type {
   RemoteStackProbe,
   ServerLockHolder,
   SwitchVersionDrift,
-} from '@shared/core/managed-switch-server/managed-switch-server';
+} from "@shared/core/managed-switch-server/managed-switch-server";
 import {
   CORE_SERVICE,
   ENV_FILE_NAME,
@@ -12,13 +12,13 @@ import {
   STACK_HELPER_IMAGE,
   STACK_STATE_LABEL,
   STACK_STATE_VOLUME_SUFFIX,
-} from './constants';
-import { classifyVersionDrift, imageTag } from './deployed-version';
-import { readStackEnv, type StackEnv } from './env-file';
-import { commandFailure, errorText } from './error-text';
-import type { ServerHost } from './host/types';
-import type { ServerLease } from './stack-lock';
-import { WHILE_HOLDING_SERVER_LOCK } from './state-mutex';
+} from "./constants";
+import { classifyVersionDrift, imageTag } from "./deployed-version";
+import { readStackEnv, type StackEnv } from "./env-file";
+import { commandFailure, errorText } from "./error-text";
+import type { ServerHost } from "./host/types";
+import type { ServerLease } from "./stack-lock";
+import { WHILE_HOLDING_SERVER_LOCK } from "./state-mutex";
 
 /**
  * What a remote host has of a Switch Console-managed stack, read off the host
@@ -33,35 +33,35 @@ import { WHILE_HOLDING_SERVER_LOCK } from './state-mutex';
 /** Only the remote host shares its stack, so only it provides this. */
 export type StackStateHost = Pick<
   ServerHost,
-  'ctx' | 'dockerBin' | 'composeProjectName' | 'label' | 'workingDir' | 'readFile'
+  "ctx" | "dockerBin" | "composeProjectName" | "label" | "workingDir" | "readFile"
 > & {
   writeCommandInput(
     command: string,
     args: string[],
     input: string,
-    opts: { timeoutMs: number }
+    opts: { timeoutMs: number },
   ): Promise<void>;
 };
 
-const COMPOSE_PROJECT_LABEL = 'com.docker.compose.project';
-const COMPOSE_SERVICE_LABEL = 'com.docker.compose.service';
-const COMPOSE_WORKING_DIR_LABEL = 'com.docker.compose.project.working_dir';
+const COMPOSE_PROJECT_LABEL = "com.docker.compose.project";
+const COMPOSE_SERVICE_LABEL = "com.docker.compose.service";
+const COMPOSE_WORKING_DIR_LABEL = "com.docker.compose.project.working_dir";
 
-const STATE_MOUNT = '/state';
-const PUBLISHED_ENV_FILE = 'stack.env';
+const STATE_MOUNT = "/state";
+const PUBLISHED_ENV_FILE = "stack.env";
 /** Beside the published copy: which database volume it was written for. */
-const PUBLISHED_STAMP_FILE = 'stack.db';
+const PUBLISHED_STAMP_FILE = "stack.db";
 /** Separates the copy from its stamp when both come back from one read. */
-const STAMP_MARKER = '---switch-console-stamp---';
+const STAMP_MARKER = "---switch-console-stamp---";
 
 /** Holds the Postgres data whose credentials the published copy must match. */
-const DATABASE_VOLUME = 'pgdata';
+const DATABASE_VOLUME = "pgdata";
 
 const QUICK_TIMEOUT_MS = 60_000;
 /** A host that has never run the stack has to pull the helper image first. */
 const PULL_TIMEOUT_MS = 10 * 60_000;
 
-export function stackStateVolume(host: Pick<StackStateHost, 'composeProjectName'>): string {
+export function stackStateVolume(host: Pick<StackStateHost, "composeProjectName">): string {
   return `${host.composeProjectName}_${STACK_STATE_VOLUME_SUFFIX}`;
 }
 
@@ -70,7 +70,7 @@ export function stackStateVolume(host: Pick<StackStateHost, 'composeProjectName'
 async function docker(
   host: StackStateHost,
   args: string[],
-  timeout: number = QUICK_TIMEOUT_MS
+  timeout: number = QUICK_TIMEOUT_MS,
 ): Promise<string> {
   try {
     const { stdout } = await host.ctx.exec(host.dockerBin, args, {
@@ -85,7 +85,7 @@ async function docker(
 
 function lines(stdout: string): string[] {
   return stdout
-    .split('\n')
+    .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
 }
@@ -121,15 +121,15 @@ export async function listProjectResources(host: StackStateHost): Promise<Projec
 async function listContainers(host: StackStateHost): Promise<ProjectContainer[]> {
   return lines(
     await docker(host, [
-      'ps',
-      '--all',
-      '--filter',
+      "ps",
+      "--all",
+      "--filter",
       `label=${COMPOSE_PROJECT_LABEL}=${host.composeProjectName}`,
-      '--format',
+      "--format",
       `{{.Label "${COMPOSE_SERVICE_LABEL}"}}\t{{.State}}\t{{.Label "${COMPOSE_WORKING_DIR_LABEL}"}}\t{{.Image}}`,
-    ])
+    ]),
   ).map((line) => {
-    const [service = '', state = '', workingDir = '', image = ''] = line.split('\t');
+    const [service = "", state = "", workingDir = "", image = ""] = line.split("\t");
     return { service, state, workingDir: workingDir || null, image };
   });
 }
@@ -137,13 +137,13 @@ async function listContainers(host: StackStateHost): Promise<ProjectContainer[]>
 export async function stateVolumeExists(host: StackStateHost): Promise<boolean> {
   const stateVolumes = lines(
     await docker(host, [
-      'volume',
-      'ls',
-      '--filter',
+      "volume",
+      "ls",
+      "--filter",
       `label=${STACK_STATE_LABEL}=${host.composeProjectName}`,
-      '--format',
-      '{{.Name}}',
-    ])
+      "--format",
+      "{{.Name}}",
+    ]),
   );
   return stateVolumes.includes(stackStateVolume(host));
 }
@@ -151,13 +151,13 @@ export async function stateVolumeExists(host: StackStateHost): Promise<boolean> 
 async function listDataVolumes(host: StackStateHost): Promise<string[]> {
   return lines(
     await docker(host, [
-      'volume',
-      'ls',
-      '--filter',
+      "volume",
+      "ls",
+      "--filter",
       `label=${COMPOSE_PROJECT_LABEL}=${host.composeProjectName}`,
-      '--format',
-      '{{.Name}}',
-    ])
+      "--format",
+      "{{.Name}}",
+    ]),
   );
 }
 
@@ -167,13 +167,13 @@ async function listDataVolumes(host: StackStateHost): Promise<string[]> {
 async function databaseStamp(host: StackStateHost, dataVolumes: string[]): Promise<string | null> {
   const volume = `${host.composeProjectName}_${DATABASE_VOLUME}`;
   if (!dataVolumes.includes(volume)) return null;
-  const stamp = await docker(host, ['volume', 'inspect', '--format', '{{.CreatedAt}}', volume]);
+  const stamp = await docker(host, ["volume", "inspect", "--format", "{{.CreatedAt}}", volume]);
   return stamp.trim() || null;
 }
 
 /** What the launcher says on stderr when the host has no helper image, so the
  * caller can pull it under a pull's timeout and try again. */
-const HELPER_IMAGE_MISSING = 'switch-console: the helper image is not on this host';
+const HELPER_IMAGE_MISSING = "switch-console: the helper image is not on this host";
 
 /**
  * Runs a container against the state volume in one round trip. Without the
@@ -185,43 +185,43 @@ const HELPER_IMAGE_MISSING = 'switch-console: the helper image is not on this ho
  * compose project, mount, `yes` for stdin; then the script and its arguments.
  */
 const LAUNCHER = [
-  'docker=$1 image=$2 volume=$3 label=$4 create=$5 project=$6 mount=$7 stdin=$8',
-  'shift 8',
+  "docker=$1 image=$2 volume=$3 label=$4 create=$5 project=$6 mount=$7 stdin=$8",
+  "shift 8",
   'if ! "$docker" image inspect "$image" >/dev/null 2>&1; then',
   `  own=$("$docker" ps -a --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=postgres --format '{{.Image}}' | head -n 1)`,
   '  if [ -n "$own" ] && "$docker" image inspect "$own" >/dev/null 2>&1; then image=$own',
   `  else echo '${HELPER_IMAGE_MISSING}' >&2; exit 97; fi`,
-  'fi',
+  "fi",
   'if [ "$create" = yes ]; then "$docker" volume create --label "$label" "$volume" >/dev/null || exit 1; fi',
-  'interactive=',
+  "interactive=",
   'if [ "$stdin" = yes ]; then interactive=--interactive; fi',
-  'script=$1',
-  'shift',
+  "script=$1",
+  "shift",
   'exec "$docker" run --rm $interactive --network none --volume "$mount" --entrypoint sh "$image" -c "$script" stack-state "$@"',
-].join('\n');
+].join("\n");
 
 type StateContainer = {
   /** A read never creates the volume; the caller has checked it exists. */
-  mode: 'read' | 'write';
+  mode: "read" | "write";
   script: string;
   /** Arrive as `$1…`. Visible in the host's process table: never a secret. */
   scriptArgs: string[];
 };
 
 function launcherArgs(host: StackStateHost, container: StateContainer, interactive: boolean) {
-  const mount = `${stackStateVolume(host)}:${STATE_MOUNT}${container.mode === 'read' ? ':ro' : ''}`;
+  const mount = `${stackStateVolume(host)}:${STATE_MOUNT}${container.mode === "read" ? ":ro" : ""}`;
   return [
-    '-c',
+    "-c",
     LAUNCHER,
-    'state-launcher',
+    "state-launcher",
     host.dockerBin,
     STACK_HELPER_IMAGE,
     stackStateVolume(host),
     `${STACK_STATE_LABEL}=${host.composeProjectName}`,
-    container.mode === 'write' ? 'yes' : 'no',
+    container.mode === "write" ? "yes" : "no",
     host.composeProjectName,
     mount,
-    interactive ? 'yes' : 'no',
+    interactive ? "yes" : "no",
     container.script,
     ...container.scriptArgs,
   ];
@@ -234,7 +234,7 @@ async function withHelperImage<T>(host: StackStateHost, launch: () => Promise<T>
     return await launch();
   } catch (error) {
     if (!errorText(error).includes(HELPER_IMAGE_MISSING)) throw error;
-    await docker(host, ['pull', '--quiet', STACK_HELPER_IMAGE], PULL_TIMEOUT_MS);
+    await docker(host, ["pull", "--quiet", STACK_HELPER_IMAGE], PULL_TIMEOUT_MS);
     return launch();
   }
 }
@@ -242,7 +242,7 @@ async function withHelperImage<T>(host: StackStateHost, launch: () => Promise<T>
 async function runStateContainer(host: StackStateHost, container: StateContainer): Promise<string> {
   return withHelperImage(host, async () => {
     try {
-      const { stdout } = await host.ctx.exec('sh', launcherArgs(host, container, false), {
+      const { stdout } = await host.ctx.exec("sh", launcherArgs(host, container, false), {
         timeout: QUICK_TIMEOUT_MS,
         maxBuffer: 8 * 1024 * 1024,
       });
@@ -256,7 +256,7 @@ async function runStateContainer(host: StackStateHost, container: StateContainer
 /** Mounts the state volume read-only. The volume must already exist: `docker
  * run -v` would otherwise create it, and a read must not. */
 export async function readStateVolume(host: StackStateHost, script: string): Promise<string> {
-  return runStateContainer(host, { mode: 'read', script, scriptArgs: [] });
+  return runStateContainer(host, { mode: "read", script, scriptArgs: [] });
 }
 
 /** `input` goes on stdin, the only way a secret may reach the script. Creates
@@ -265,15 +265,15 @@ export async function writeStateVolume(
   host: StackStateHost,
   script: string,
   input: string,
-  scriptArgs: string[]
+  scriptArgs: string[],
 ): Promise<void> {
   await withHelperImage(host, () =>
     host.writeCommandInput(
-      'sh',
-      launcherArgs(host, { mode: 'write', script, scriptArgs }, true),
+      "sh",
+      launcherArgs(host, { mode: "write", script, scriptArgs }, true),
       input,
-      { timeoutMs: QUICK_TIMEOUT_MS }
-    )
+      { timeoutMs: QUICK_TIMEOUT_MS },
+    ),
   );
 }
 
@@ -283,9 +283,9 @@ export async function writeStateVolume(
 export async function runStateScript(
   host: StackStateHost,
   script: string,
-  scriptArgs: string[]
+  scriptArgs: string[],
 ): Promise<string> {
-  return runStateContainer(host, { mode: 'write', script, scriptArgs });
+  return runStateContainer(host, { mode: "write", script, scriptArgs });
 }
 
 /** The published `.env`, and the database volume it was written for (null
@@ -296,13 +296,13 @@ export async function readPublishedCopy(host: StackStateHost): Promise<Published
   const out = await readStateVolume(
     host,
     `cat "${STATE_MOUNT}/${PUBLISHED_ENV_FILE}" 2>/dev/null; printf '\\n%s\\n' '${STAMP_MARKER}'; ` +
-      `cat "${STATE_MOUNT}/${PUBLISHED_STAMP_FILE}" 2>/dev/null; true`
+      `cat "${STATE_MOUNT}/${PUBLISHED_STAMP_FILE}" 2>/dev/null; true`,
   );
   // The marker follows a newline of its own; taking exactly that one back off
   // leaves the copy byte for byte as published.
   const split = out.lastIndexOf(`\n${STAMP_MARKER}`);
   const env = split === -1 ? out : out.slice(0, split);
-  const stamp = split === -1 ? '' : out.slice(split + 1 + STAMP_MARKER.length).trim();
+  const stamp = split === -1 ? "" : out.slice(split + 1 + STAMP_MARKER.length).trim();
   if (env.trim().length === 0) return null;
   return { env, stamp: stamp || null };
 }
@@ -310,19 +310,19 @@ export async function readPublishedCopy(host: StackStateHost): Promise<Published
 /** Reads the stamp from stdin's first line and the copy from the rest; the
  * server lock's token is `$1`. */
 const PUBLISH_SCRIPT = [
-  'set -e',
+  "set -e",
   WHILE_HOLDING_SERVER_LOCK,
-  'umask 077',
-  'IFS= read -r stamp',
+  "umask 077",
+  "IFS= read -r stamp",
   `cat > "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp"`,
   `mv "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp" "${STATE_MOUNT}/${PUBLISHED_ENV_FILE}"`,
   'if [ -n "$stamp" ]; then',
   `  printf "%s\\n" "$stamp" > "${STATE_MOUNT}/.${PUBLISHED_STAMP_FILE}.tmp"`,
   `  mv "${STATE_MOUNT}/.${PUBLISHED_STAMP_FILE}.tmp" "${STATE_MOUNT}/${PUBLISHED_STAMP_FILE}"`,
-  'else',
+  "else",
   `  rm -f "${STATE_MOUNT}/${PUBLISHED_STAMP_FILE}"`,
-  'fi',
-].join('\n');
+  "fi",
+].join("\n");
 
 /**
  * Atomically publish `env`, the exact file a start gives compose, only while
@@ -335,10 +335,10 @@ const PUBLISH_SCRIPT = [
 export async function publishEnv(
   host: StackStateHost,
   env: string,
-  lease: ServerLease
+  lease: ServerLease,
 ): Promise<string | null> {
   const stamp = await databaseStamp(host, await listDataVolumes(host));
-  await writeStateVolume(host, PUBLISH_SCRIPT, `${stamp ?? ''}\n${env}`, [lease.token]);
+  await writeStateVolume(host, PUBLISH_SCRIPT, `${stamp ?? ""}\n${env}`, [lease.token]);
   return stamp;
 }
 
@@ -346,13 +346,13 @@ export async function publishEnv(
  * from a Console that does not publish. */
 export async function stampPublishedEnv(
   host: StackStateHost,
-  lease: ServerLease
+  lease: ServerLease,
 ): Promise<string | null> {
   const stamp = await databaseStamp(host, await listDataVolumes(host));
   if (stamp === null) {
     log.warn(
       `stack-state: the stack on ${host.label} has no database volume after starting, ` +
-        `so its published settings are not stamped with one`
+        `so its published settings are not stamped with one`,
     );
     return null;
   }
@@ -363,7 +363,7 @@ export async function stampPublishedEnv(
       `printf "%s\\n" "$stamp" > "${STATE_MOUNT}/.${PUBLISHED_STAMP_FILE}.tmp" && ` +
       `mv "${STATE_MOUNT}/.${PUBLISHED_STAMP_FILE}.tmp" "${STATE_MOUNT}/${PUBLISHED_STAMP_FILE}"`,
     `${stamp}\n`,
-    [lease.token]
+    [lease.token],
   );
   return stamp;
 }
@@ -373,7 +373,7 @@ export async function stampPublishedEnv(
  * volume, including the activity record, is kept. */
 export async function withdrawPublishedEnv(
   host: StackStateHost,
-  lease: ServerLease
+  lease: ServerLease,
 ): Promise<void> {
   if (!(await stateVolumeExists(host))) return;
   await writeStateVolume(
@@ -381,20 +381,20 @@ export async function withdrawPublishedEnv(
     `set -e\n${WHILE_HOLDING_SERVER_LOCK}\n` +
       `rm -f "${STATE_MOUNT}/${PUBLISHED_ENV_FILE}" "${STATE_MOUNT}/.${PUBLISHED_ENV_FILE}.tmp" ` +
       `"${STATE_MOUNT}/${PUBLISHED_STAMP_FILE}"`,
-    '',
-    [lease.token]
+    "",
+    [lease.token],
   );
 }
 
-export type StackEnvSource = 'published' | 'working-dir';
+export type StackEnvSource = "published" | "working-dir";
 
 export type StackOnHost =
   /** No containers or data: the only case where new credentials may be made. */
-  | { kind: 'absent' }
+  | { kind: "absent" }
   /** `published` is false for a stack started before publishing existed,
    * which the next start or connect publishes. */
   | {
-      kind: 'present';
+      kind: "present";
       env: StackEnv;
       /** The exact `.env` text, so what gets published is what compose read. */
       raw: string;
@@ -409,21 +409,21 @@ export type StackOnHost =
     }
   /** Another account's never-published stack, whose settings this account
    * cannot read. Starting here would recreate it with new credentials. */
-  | { kind: 'unshared'; ownerDir: string | null; running: boolean }
+  | { kind: "unshared"; ownerDir: string | null; running: boolean }
   /** `raw` lets a start check another copy of the settings against what this
    * one does carry before filling the gaps from it. */
   | {
-      kind: 'incomplete';
+      kind: "incomplete";
       source: StackEnvSource;
       missing: string[];
       raw: string;
       running: boolean;
     }
   /** Distinct from `absent`: an unreachable daemon is not an empty host. */
-  | { kind: 'unreadable'; reason: string };
+  | { kind: "unreadable"; reason: string };
 
 export function unsharedStackMessage(hostLabel: string, ownerDir: string | null): string {
-  const where = ownerDir ? ` (from ${ownerDir})` : '';
+  const where = ownerDir ? ` (from ${ownerDir})` : "";
   return (
     `The Switch server on ${hostLabel} was set up from another account${where} and its settings ` +
     `have not been shared, so this account cannot read them. Starting it from here would ` +
@@ -435,7 +435,7 @@ export function unsharedStackMessage(hostLabel: string, ownerDir: string | null)
 /** Compared with this build's pin by the version it runs when running, else
  * by the one its settings name. */
 export function driftOf(
-  stack: Extract<StackOnHost, { kind: 'present' }>
+  stack: Extract<StackOnHost, { kind: "present" }>,
 ): SwitchVersionDrift | null {
   const version = stack.runningVersion ?? stack.env.version;
   return version === null ? null : classifyVersionDrift(version, COMPATIBLE_SWITCH_VERSION);
@@ -446,37 +446,37 @@ export function driftOf(
 export function probeFromStack(
   hostLabel: string,
   stack: StackOnHost,
-  busy: ServerLockHolder | null
+  busy: ServerLockHolder | null,
 ): RemoteStackProbe {
   switch (stack.kind) {
-    case 'absent':
-      return { kind: 'absent', busy };
-    case 'present':
+    case "absent":
+      return { kind: "absent", busy };
+    case "present":
       return {
-        kind: 'present',
+        kind: "present",
         running: stack.running,
         deployedVersion: stack.runningVersion ?? stack.env.version,
         shared: stack.published,
         drift: driftOf(stack),
         busy,
       };
-    case 'unshared':
+    case "unshared":
       return {
-        kind: 'unshared',
+        kind: "unshared",
         running: stack.running,
         ownerDir: stack.ownerDir,
         message: unsharedStackMessage(hostLabel, stack.ownerDir),
       };
-    case 'incomplete':
-      return { kind: 'incomplete', running: stack.running, missing: stack.missing };
-    case 'unreadable':
-      return { kind: 'unreadable', reason: stack.reason };
+    case "incomplete":
+      return { kind: "incomplete", running: stack.running, missing: stack.missing };
+    case "unreadable":
+      return { kind: "unreadable", reason: stack.reason };
   }
 }
 
 function isRunning(resources: ProjectResources): boolean {
   return resources.containers.some(
-    (container) => container.service === CORE_SERVICE && container.state === 'running'
+    (container) => container.service === CORE_SERVICE && container.state === "running",
   );
 }
 
@@ -485,15 +485,15 @@ function fromEnvText(
   source: StackEnvSource,
   resources: ProjectResources,
   published: boolean,
-  stamp: string | null
+  stamp: string | null,
 ): StackOnHost {
   const running = isRunning(resources);
   const reading = readStackEnv(raw);
-  if (reading.kind === 'incomplete') {
-    return { kind: 'incomplete', source, missing: reading.missing, raw, running };
+  if (reading.kind === "incomplete") {
+    return { kind: "incomplete", source, missing: reading.missing, raw, running };
   }
   return {
-    kind: 'present',
+    kind: "present",
     env: reading.env,
     raw,
     source,
@@ -506,7 +506,7 @@ function fromEnvText(
 
 function runningCoreVersion(resources: ProjectResources): string | null {
   const core = resources.containers.find(
-    (container) => container.service === CORE_SERVICE && container.state === 'running'
+    (container) => container.service === CORE_SERVICE && container.state === "running",
   );
   return core ? imageTag(core.image) : null;
 }
@@ -534,23 +534,23 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
     if (resources.stateVolume) published = await readPublishedCopy(host);
     if (published?.stamp) database = await databaseStamp(host, resources.dataVolumes);
   } catch (error) {
-    return { kind: 'unreadable', reason: errorText(error) };
+    return { kind: "unreadable", reason: errorText(error) };
   }
 
   const hasProject = resources.containers.length > 0 || resources.dataVolumes.length > 0;
-  if (!hasProject) return { kind: 'absent' };
+  if (!hasProject) return { kind: "absent" };
 
   const running = isRunning(resources);
   // A copy with no stamp, or no database volume to compare it with, cannot be
   // judged and is trusted.
   const stale = published?.stamp != null && database != null && published.stamp !== database;
   if (published !== null && !stale) {
-    return fromEnvText(published.env, 'published', resources, true, published.stamp);
+    return fromEnvText(published.env, "published", resources, true, published.stamp);
   }
   if (stale) {
     log.warn(
       `stack-state: the published settings on ${host.label} were written for a database that ` +
-        `has since been recreated, by a Console that does not share its settings; ignoring them`
+        `has since been recreated, by a Console that does not share its settings; ignoring them`,
     );
   }
 
@@ -558,8 +558,8 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
   const foreignDir = resources.containers
     .map((container) => container.workingDir)
     .find((dir): dir is string => dir !== null && dir !== host.workingDir);
-  if (foreignDir !== undefined) return { kind: 'unshared', ownerDir: foreignDir, running };
-  if (own === null) return { kind: 'unshared', ownerDir: null, running };
+  if (foreignDir !== undefined) return { kind: "unshared", ownerDir: foreignDir, running };
+  if (own === null) return { kind: "unshared", ownerDir: null, running };
   // A copy stamped for a database since recreated belongs to a stack that is
   // gone: a Console that does not share its settings reset it and started it
   // with its own credentials, leaving nothing else to say whose it is now.
@@ -570,15 +570,15 @@ export async function inspectStack(host: StackStateHost): Promise<StackOnHost> {
       current =
         database !== undefined ? database : await databaseStamp(host, resources.dataVolumes);
     } catch (error) {
-      return { kind: 'unreadable', reason: errorText(error) };
+      return { kind: "unreadable", reason: errorText(error) };
     }
     if (current !== null && current !== stamp) {
       log.warn(
         `stack-state: this account's settings on ${host.label} were written for a database ` +
-          `that has since been recreated elsewhere; not using them`
+          `that has since been recreated elsewhere; not using them`,
       );
-      return { kind: 'unshared', ownerDir: null, running };
+      return { kind: "unshared", ownerDir: null, running };
     }
   }
-  return fromEnvText(own, 'working-dir', resources, false, stamp);
+  return fromEnvText(own, "working-dir", resources, false, stamp);
 }

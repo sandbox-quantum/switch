@@ -1,19 +1,19 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { isPorts, type LocalServerPorts } from './free-port';
-import type { ServerHost } from './host/types';
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { isPorts, type LocalServerPorts } from "./free-port";
+import type { ServerHost } from "./host/types";
 
 /** Reading the persisted choice only needs the state directory — not a live
  * host — so these take the narrowest shape that works. */
-type HostStateDir = Pick<ServerHost, 'stateDir'>;
+type HostStateDir = Pick<ServerHost, "stateDir">;
 
 function portsFilePath(host: HostStateDir): string {
-  return join(host.stateDir, 'ports.json');
+  return join(host.stateDir, "ports.json");
 }
 
 async function loadPersisted(host: HostStateDir): Promise<LocalServerPorts | null> {
   try {
-    const parsed: unknown = JSON.parse(await readFile(portsFilePath(host), 'utf8'));
+    const parsed: unknown = JSON.parse(await readFile(portsFilePath(host), "utf8"));
     return isPorts(parsed) ? parsed : null;
   } catch {
     return null;
@@ -22,7 +22,7 @@ async function loadPersisted(host: HostStateDir): Promise<LocalServerPorts | nul
 
 async function persist(host: ServerHost, ports: LocalServerPorts): Promise<void> {
   await mkdir(dirname(portsFilePath(host)), { recursive: true });
-  await writeFile(portsFilePath(host), JSON.stringify(ports, null, 2), 'utf8');
+  await writeFile(portsFilePath(host), JSON.stringify(ports, null, 2), "utf8");
 }
 
 /**
@@ -58,7 +58,7 @@ export async function rememberPorts(host: ServerHost, ports: LocalServerPorts): 
  * or so a Console that disconnects keeps nothing of a stack it no longer uses. */
 export async function clearPorts(host: HostStateDir): Promise<void> {
   try {
-    await writeFile(portsFilePath(host), JSON.stringify({}), 'utf8');
+    await writeFile(portsFilePath(host), JSON.stringify({}), "utf8");
   } catch {
     // Best-effort: a missing file is already the desired state.
   }

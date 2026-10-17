@@ -1,11 +1,11 @@
-import { beforeEach, expect, it, vi } from 'vitest';
-import type * as AppIdentity from '@shared/app-identity';
-import type { StartLocalServerResult } from '@shared/core/managed-switch-server/managed-switch-server';
-import type * as ManagedUpgrade from './managed-upgrade';
-import type { StartStackOptions } from './pipeline';
-import type * as StackLock from './stack-lock';
-import type { StackOnHost } from './stack-state';
-import type * as StackState from './stack-state';
+import { beforeEach, expect, it, vi } from "vitest";
+import type * as AppIdentity from "@shared/app-identity";
+import type { StartLocalServerResult } from "@shared/core/managed-switch-server/managed-switch-server";
+import type * as ManagedUpgrade from "./managed-upgrade";
+import type { StartStackOptions } from "./pipeline";
+import type * as StackLock from "./stack-lock";
+import type { StackOnHost } from "./stack-state";
+import type * as StackState from "./stack-state";
 
 /**
  * Upgrading remote stacks to this build's switch-core pin, and holding sessions
@@ -39,38 +39,38 @@ const m = vi.hoisted(() => {
     start: vi.fn<(opts: StartStackOptions) => Promise<StartLocalServerResult>>(),
   };
 });
-vi.mock('@shared/app-identity', async (importOriginal) => ({
+vi.mock("@shared/app-identity", async (importOriginal) => ({
   ...(await importOriginal<typeof AppIdentity>()),
-  COMPATIBLE_SWITCH_VERSION: '0.11.0',
+  COMPATIBLE_SWITCH_VERSION: "0.11.0",
 }));
-vi.mock('@main/core/remote-hosts/production-host-reachability', () => ({
+vi.mock("@main/core/remote-hosts/production-host-reachability", () => ({
   hostReachabilityService: m.reachability,
 }));
-vi.mock('@main/lib/events', () => ({ events: { emit: vi.fn() } }));
-vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }));
-vi.mock('@main/core/telemetry/managed-server', () => ({
+vi.mock("@main/lib/events", () => ({ events: { emit: vi.fn() } }));
+vi.mock("@main/lib/logger", () => ({ log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }));
+vi.mock("@main/core/telemetry/managed-server", () => ({
   reportManagedServerOutcome: vi.fn(),
   reportManagedServerStart: vi.fn(),
   reportManagedServerStartThrew: vi.fn(),
 }));
-vi.mock('@main/core/switch-servers/delete-server-agents', () => ({
+vi.mock("@main/core/switch-servers/delete-server-agents", () => ({
   deleteAgentsForServer: vi.fn(),
 }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({
+vi.mock("@main/core/switch-servers/servers-store", () => ({
   listManagedServers: m.servers,
   getRemoteManagedServer: vi.fn(),
   ensureManagedServer: vi.fn(),
   removeServer: vi.fn(),
 }));
-vi.mock('./stack-state', async (importOriginal) => ({
+vi.mock("./stack-state", async (importOriginal) => ({
   ...(await importOriginal<typeof StackState>()),
   inspectStack: m.inspect,
   stateVolumeExists: async () => true,
 }));
-vi.mock('./console-register', () => ({
+vi.mock("./console-register", () => ({
   writeRecord: vi.fn(),
   readRegister: m.register,
-  hostAccount: async () => 'me',
+  hostAccount: async () => "me",
 }));
 
 /** The server lock, recording takes and releases in order. The real module's
@@ -80,23 +80,23 @@ const acquireServerLock = vi.hoisted(() =>
   vi.fn(async (_host: unknown, claim: { action: string }, _opts: unknown) => {
     lockEvents.push(`take ${claim.action}`);
     return {
-      token: 'lease-token',
+      token: "lease-token",
       lost: false,
       assertHeld: vi.fn(async () => {}),
       release: vi.fn(async () => {
         lockEvents.push(`release ${claim.action}`);
       }),
     };
-  })
+  }),
 );
 const readServerLock = vi.hoisted(() => vi.fn(async () => null));
-vi.mock('./stack-lock', async (importOriginal) => ({
+vi.mock("./stack-lock", async (importOriginal) => ({
   ...(await importOriginal<typeof StackLock>()),
   acquireServerLock,
   readServerLock,
 }));
 const kvStore = vi.hoisted(() => new Map<string, unknown>());
-vi.mock('@main/db/kv', () => ({
+vi.mock("@main/db/kv", () => ({
   KV: class {
     constructor(private readonly namespace: string) {}
     async get(key: string) {
@@ -110,28 +110,28 @@ vi.mock('@main/db/kv', () => ({
     }
   },
 }));
-vi.mock('@main/core/switch-servers/console-identity', () => ({
+vi.mock("@main/core/switch-servers/console-identity", () => ({
   getConsoleIdentity: async () => ({
-    id: 'aaaaaaaa-0000-4000-8000-000000000001',
-    name: 'me@laptop',
+    id: "aaaaaaaa-0000-4000-8000-000000000001",
+    name: "me@laptop",
   }),
 }));
 
-vi.mock('./paths', () => ({ remoteServerStateDir: (slug: string) => `/user-data/remote/${slug}` }));
-vi.mock('./secrets', () => ({ clearSecrets: vi.fn() }));
-vi.mock('./ports', () => ({ clearPorts: vi.fn() }));
-vi.mock('./deployed-version', () => ({ readVersionStatus: m.version }));
-vi.mock('./telemetry-consent', () => ({ readDeployedTelemetry: vi.fn() }));
-vi.mock('./managed-upgrade', async (importOriginal) => ({
+vi.mock("./paths", () => ({ remoteServerStateDir: (slug: string) => `/user-data/remote/${slug}` }));
+vi.mock("./secrets", () => ({ clearSecrets: vi.fn() }));
+vi.mock("./ports", () => ({ clearPorts: vi.fn() }));
+vi.mock("./deployed-version", () => ({ readVersionStatus: m.version }));
+vi.mock("./telemetry-consent", () => ({ readDeployedTelemetry: vi.fn() }));
+vi.mock("./managed-upgrade", async (importOriginal) => ({
   ...(await importOriginal<typeof ManagedUpgrade>()),
   readUpgradeJournal: m.journal,
 }));
-vi.mock('./pipeline', () => ({
+vi.mock("./pipeline", () => ({
   bringWorkingDirInStep: async (
     host: { writeFile: (...args: unknown[]) => Promise<void> },
-    stack: { source: string; raw: string }
+    stack: { source: string; raw: string },
   ) => {
-    if (stack.source === 'published') await host.writeFile('.env', stack.raw, 0o600);
+    if (stack.source === "published") await host.writeFile(".env", stack.raw, 0o600);
   },
   startStack: m.start,
   adoptRunningStack: m.adopt,
@@ -139,7 +139,7 @@ vi.mock('./pipeline', () => ({
   stopStack: vi.fn(),
   resetStack: vi.fn(),
 }));
-vi.mock('./host/remote-host', () => ({
+vi.mock("./host/remote-host", () => ({
   createRemoteServerHost: async (sshHost: string) => ({
     sshHost,
     label: sshHost,
@@ -149,21 +149,21 @@ vi.mock('./host/remote-host', () => ({
   }),
 }));
 
-const { RemoteServerService } = await import('./remote-server-service');
+const { RemoteServerService } = await import("./remote-server-service");
 
 const behind = {
-  deployedVersion: '0.10.0',
-  drift: { deployed: '0.10.0', expected: '0.11.0', direction: 'upgrade' },
+  deployedVersion: "0.10.0",
+  drift: { deployed: "0.10.0", expected: "0.11.0", direction: "upgrade" },
 };
-const inStep = { deployedVersion: '0.11.0', drift: null };
+const inStep = { deployedVersion: "0.11.0", drift: null };
 const ports = { gateway: 1, api: 2, mattermost: 3, postgres: 4 };
 
 function present(running: boolean): StackOnHost {
   return {
-    kind: 'present',
-    env: { ports, secrets: {} as never, version: '0.10.0' },
-    raw: 'PUBLISHED\n',
-    source: 'published',
+    kind: "present",
+    env: { ports, secrets: {} as never, version: "0.10.0" },
+    raw: "PUBLISHED\n",
+    source: "published",
     running,
     published: true,
     runningVersion: null,
@@ -172,14 +172,14 @@ function present(running: boolean): StackOnHost {
 }
 
 function startedOn(serverId: string): StartLocalServerResult {
-  return { kind: 'started', serverId, telemetryEnabled: false, warning: null };
+  return { kind: "started", serverId, telemetryEnabled: false, warning: null };
 }
 
 /** A start that runs the upgrade the way the pipeline does: announce, then work. */
 function upgradingStart(result?: StartLocalServerResult) {
   return async (opts: StartStackOptions) => {
-    opts.onUpgrade({ from: '0.10.0', to: '0.11.0' });
-    return result ?? startedOn(opts.ref.kind === 'remote' ? `srv-${opts.ref.sshHost}` : 'local');
+    opts.onUpgrade({ from: "0.10.0", to: "0.11.0" });
+    return result ?? startedOn(opts.ref.kind === "remote" ? `srv-${opts.ref.sshHost}` : "local");
   };
 }
 
@@ -193,197 +193,197 @@ beforeEach(() => {
   m.listeners.length = 0;
   m.blocked.clear();
   m.servers.mockResolvedValue([
-    { id: 'srv-builder', name: 'Builder', managementKind: 'remote', sshHost: 'builder' },
+    { id: "srv-builder", name: "Builder", managementKind: "remote", sshHost: "builder" },
   ]);
   m.inspect.mockResolvedValue(present(true));
   m.adopt.mockResolvedValue({ ports, secrets: {} });
   m.version.mockResolvedValue(behind);
   m.journal.mockResolvedValue(null);
-  m.register.mockResolvedValue({ self: 'me', consoles: [], activity: [] });
+  m.register.mockResolvedValue({ self: "me", consoles: [], activity: [] });
   m.start.mockImplementation(upgradingStart());
 });
 
-it('upgrades a running remote stack that is behind at boot, instead of adopting it', async () => {
+it("upgrades a running remote stack that is behind at boot, instead of adopting it", async () => {
   const service = new RemoteServerService();
   await service.initialize();
-  await service.ensureReady('builder', 'Builder');
+  await service.ensureReady("builder", "Builder");
 
   expect(m.start).toHaveBeenCalledOnce();
   expect(m.start).toHaveBeenCalledWith(
     expect.objectContaining({
-      ref: { kind: 'remote', sshHost: 'builder' },
-      serverName: 'Builder',
+      ref: { kind: "remote", sshHost: "builder" },
+      serverName: "Builder",
       activate: false,
-    })
+    }),
   );
   expect(m.establish).not.toHaveBeenCalled();
-  expect(service.getStatus('builder')).toMatchObject({
-    phase: 'running',
-    serverId: 'srv-builder',
+  expect(service.getStatus("builder")).toMatchObject({
+    phase: "running",
+    serverId: "srv-builder",
     upgrade: null,
     drift: null,
   });
 });
 
-it('holds sessions for the host while its upgrade runs', async () => {
+it("holds sessions for the host while its upgrade runs", async () => {
   let finish: (result: StartLocalServerResult) => void = () => {};
   m.start.mockImplementation(
     (opts) =>
       new Promise((resolve) => {
-        opts.onUpgrade({ from: '0.10.0', to: '0.11.0' });
+        opts.onUpgrade({ from: "0.10.0", to: "0.11.0" });
         finish = resolve;
-      })
+      }),
   );
   const service = new RemoteServerService();
   void service.initialize();
   let ready = false;
-  const session = service.ensureReady('builder', 'Builder').then(() => {
+  const session = service.ensureReady("builder", "Builder").then(() => {
     ready = true;
   });
 
   await vi.waitFor(() => expect(m.start).toHaveBeenCalledOnce());
-  expect(service.getStatus('builder').upgrade).toEqual({
-    state: 'updating',
-    from: '0.10.0',
-    to: '0.11.0',
+  expect(service.getStatus("builder").upgrade).toEqual({
+    state: "updating",
+    from: "0.10.0",
+    to: "0.11.0",
   });
   expect(ready).toBe(false);
-  finish(startedOn('srv-builder'));
+  finish(startedOn("srv-builder"));
   await session;
   expect(ready).toBe(true);
 });
 
-it('adopts a running stack that is in step without restarting it', async () => {
+it("adopts a running stack that is in step without restarting it", async () => {
   m.version.mockResolvedValue(inStep);
   const service = new RemoteServerService();
   await service.initialize();
-  await service.ensureReady('builder', 'Builder');
+  await service.ensureReady("builder", "Builder");
 
   expect(m.start).not.toHaveBeenCalled();
   expect(m.establish).toHaveBeenCalledOnce();
-  expect(service.getStatus('builder')).toMatchObject({
-    phase: 'running',
-    serverId: 'srv-builder',
+  expect(service.getStatus("builder")).toMatchObject({
+    phase: "running",
+    serverId: "srv-builder",
     upgrade: null,
   });
 });
 
-it('upgrades a stopped stack that is behind at its next start, not before', async () => {
+it("upgrades a stopped stack that is behind at its next start, not before", async () => {
   m.inspect.mockResolvedValue(present(false));
   const service = new RemoteServerService();
   const upgraded = vi.fn();
   service.onUpgradeFinished(upgraded);
   await service.initialize();
 
-  await expect(service.ensureReady('builder', 'Builder')).rejects.toThrow(
-    /Builder is stopped on switch-core 0\.10\.0/
+  await expect(service.ensureReady("builder", "Builder")).rejects.toThrow(
+    /Builder is stopped on switch-core 0\.10\.0/,
   );
   expect(m.start).not.toHaveBeenCalled();
 
-  expect(await service.start('builder', 'Builder')).toMatchObject({ kind: 'started' });
+  expect(await service.start("builder", "Builder")).toMatchObject({ kind: "started" });
   expect(m.start).toHaveBeenCalledWith(expect.objectContaining({ activate: true }));
-  await expect(service.ensureReady('builder', 'Builder')).resolves.toBeUndefined();
-  expect(upgraded).toHaveBeenCalledExactlyOnceWith('srv-builder');
+  await expect(service.ensureReady("builder", "Builder")).resolves.toBeUndefined();
+  expect(upgraded).toHaveBeenCalledExactlyOnceWith("srv-builder");
 });
 
-it('upgrades a host that was unreachable at boot once it comes back, holding sessions meanwhile', async () => {
-  m.blocked.add('builder');
+it("upgrades a host that was unreachable at boot once it comes back, holding sessions meanwhile", async () => {
+  m.blocked.add("builder");
   const service = new RemoteServerService();
   await service.initialize();
-  await service.ensureReady('builder', 'Builder');
+  await service.ensureReady("builder", "Builder");
   expect(m.start).not.toHaveBeenCalled();
 
   let finish: (result: StartLocalServerResult) => void = () => {};
   m.start.mockImplementation(
     (opts) =>
       new Promise((resolve) => {
-        opts.onUpgrade({ from: '0.10.0', to: '0.11.0' });
+        opts.onUpgrade({ from: "0.10.0", to: "0.11.0" });
         finish = resolve;
-      })
+      }),
   );
-  m.blocked.delete('builder');
-  announce('builder', 'reachable');
+  m.blocked.delete("builder");
+  announce("builder", "reachable");
   // Asked straight after the recovery, as a watcher restoring its controller does.
   let ready = false;
-  const session = service.ensureReady('builder', 'Builder').then(() => {
+  const session = service.ensureReady("builder", "Builder").then(() => {
     ready = true;
   });
 
   await vi.waitFor(() => expect(m.start).toHaveBeenCalledOnce());
   expect(ready).toBe(false);
-  finish(startedOn('srv-builder'));
+  finish(startedOn("srv-builder"));
   await session;
-  expect(service.getStatus('builder').upgrade).toBeNull();
+  expect(service.getStatus("builder").upgrade).toBeNull();
 });
 
-it('surfaces a failed upgrade with its error and retries when the host is reconciled again', async () => {
+it("surfaces a failed upgrade with its error and retries when the host is reconciled again", async () => {
   m.start.mockImplementationOnce(
-    upgradingStart({ kind: 'error', message: 'The server did not become healthy in time.' })
+    upgradingStart({ kind: "error", message: "The server did not become healthy in time." }),
   );
   const service = new RemoteServerService();
   const upgraded = vi.fn();
   service.onUpgradeFinished(upgraded);
   await service.initialize();
 
-  await expect(service.ensureReady('builder', 'Builder')).rejects.toThrow(
-    /Updating Builder from switch-core 0\.10\.0 to 0\.11\.0 failed: The server did not become healthy/
+  await expect(service.ensureReady("builder", "Builder")).rejects.toThrow(
+    /Updating Builder from switch-core 0\.10\.0 to 0\.11\.0 failed: The server did not become healthy/,
   );
-  expect(service.getStatus('builder')).toMatchObject({
-    phase: 'error',
-    upgrade: { state: 'failed', error: 'The server did not become healthy in time.' },
+  expect(service.getStatus("builder")).toMatchObject({
+    phase: "error",
+    upgrade: { state: "failed", error: "The server did not become healthy in time." },
   });
 
-  announce('builder', 'reachable');
+  announce("builder", "reachable");
   await vi.waitFor(() => expect(m.start).toHaveBeenCalledTimes(2));
-  await expect(service.ensureReady('builder', 'Builder')).resolves.toBeUndefined();
-  expect(upgraded).toHaveBeenCalledExactlyOnceWith('srv-builder');
+  await expect(service.ensureReady("builder", "Builder")).resolves.toBeUndefined();
+  expect(upgraded).toHaveBeenCalledExactlyOnceWith("srv-builder");
 });
 
-it('does not hold one host’s sessions behind another host’s upgrade', async () => {
+it("does not hold one host’s sessions behind another host’s upgrade", async () => {
   m.servers.mockResolvedValue([
-    { id: 'srv-builder', name: 'Builder', managementKind: 'remote', sshHost: 'builder' },
-    { id: 'srv-other', name: 'Other', managementKind: 'remote', sshHost: 'other' },
+    { id: "srv-builder", name: "Builder", managementKind: "remote", sshHost: "builder" },
+    { id: "srv-other", name: "Other", managementKind: "remote", sshHost: "other" },
   ]);
   m.start.mockImplementation(
     (opts) =>
       new Promise(() => {
-        opts.onUpgrade({ from: '0.10.0', to: '0.11.0' });
-      })
+        opts.onUpgrade({ from: "0.10.0", to: "0.11.0" });
+      }),
   );
   m.version.mockImplementation(async (host: { sshHost: string }) =>
-    host.sshHost === 'builder' ? behind : inStep
+    host.sshHost === "builder" ? behind : inStep,
   );
   const service = new RemoteServerService();
   await service.initialize();
 
-  await expect(service.ensureReady('other', 'Other')).resolves.toBeUndefined();
-  expect(service.getStatus('builder').upgrade?.state).toBe('updating');
+  await expect(service.ensureReady("other", "Other")).resolves.toBeUndefined();
+  expect(service.getStatus("builder").upgrade?.state).toBe("updating");
 });
 
-it('refuses sessions when the host cannot be reached for its upgrade, rather than hanging', async () => {
+it("refuses sessions when the host cannot be reached for its upgrade, rather than hanging", async () => {
   const service = new RemoteServerService();
   m.inspect.mockImplementation(async () => {
     // The host drops between the probe and the start.
-    m.blocked.add('builder');
+    m.blocked.add("builder");
     return present(true);
   });
   await service.initialize();
 
-  await expect(service.ensureReady('builder', 'Builder')).rejects.toThrow(
-    /failed: builder is unreachable/
+  await expect(service.ensureReady("builder", "Builder")).rejects.toThrow(
+    /failed: builder is unreachable/,
   );
 });
 
 /** A register in which someone else last used the server `daysAgo` days ago. */
 function usedByBob(daysAgo: number) {
   return {
-    self: 'me',
+    self: "me",
     consoles: [
       {
-        consoleId: 'bob',
-        name: 'bob@desk',
-        hostAccount: 'bob',
-        appVersion: '0.36.0',
+        consoleId: "bob",
+        name: "bob@desk",
+        hostAccount: "bob",
+        appVersion: "0.36.0",
         lastSeenAt: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString(),
       },
     ],
@@ -391,74 +391,74 @@ function usedByBob(daysAgo: number) {
   };
 }
 
-it('holds the update of a running server others used lately, until someone here runs it', async () => {
+it("holds the update of a running server others used lately, until someone here runs it", async () => {
   m.register.mockResolvedValue(usedByBob(1));
   const service = new RemoteServerService();
   const upgraded = vi.fn();
   service.onUpgradeFinished(upgraded);
   await service.initialize();
 
-  await expect(service.ensureReady('builder', 'Builder')).rejects.toThrow(
-    /Builder runs switch-core 0\.10\.0 .* Others use it too/
+  await expect(service.ensureReady("builder", "Builder")).rejects.toThrow(
+    /Builder runs switch-core 0\.10\.0 .* Others use it too/,
   );
   expect(m.start).not.toHaveBeenCalled();
   // Still reachable from here while it waits: only sessions are held.
   expect(m.establish).toHaveBeenCalledOnce();
-  expect(service.getStatus('builder')).toMatchObject({
-    phase: 'running',
-    upgrade: { state: 'held', from: '0.10.0', to: '0.11.0' },
+  expect(service.getStatus("builder")).toMatchObject({
+    phase: "running",
+    upgrade: { state: "held", from: "0.10.0", to: "0.11.0" },
   });
 
-  expect(await service.start('builder', 'Builder')).toMatchObject({ kind: 'started' });
-  await expect(service.ensureReady('builder', 'Builder')).resolves.toBeUndefined();
-  expect(upgraded).toHaveBeenCalledExactlyOnceWith('srv-builder');
+  expect(await service.start("builder", "Builder")).toMatchObject({ kind: "started" });
+  await expect(service.ensureReady("builder", "Builder")).resolves.toBeUndefined();
+  expect(upgraded).toHaveBeenCalledExactlyOnceWith("srv-builder");
 });
 
-it('updates on its own when nobody else has used the server for over two weeks', async () => {
+it("updates on its own when nobody else has used the server for over two weeks", async () => {
   m.register.mockResolvedValue(usedByBob(15));
   const service = new RemoteServerService();
   await service.initialize();
-  await service.ensureReady('builder', 'Builder');
+  await service.ensureReady("builder", "Builder");
 
   expect(m.start).toHaveBeenCalledOnce();
 });
 
-it('resumes an update this account already started, whoever else uses the server', async () => {
+it("resumes an update this account already started, whoever else uses the server", async () => {
   m.register.mockResolvedValue(usedByBob(1));
-  m.journal.mockResolvedValue({ from: '0.10.0', startedAt: '2026-01-01T00:00:00Z' });
+  m.journal.mockResolvedValue({ from: "0.10.0", startedAt: "2026-01-01T00:00:00Z" });
   const service = new RemoteServerService();
   await service.initialize();
-  await service.ensureReady('builder', 'Builder');
+  await service.ensureReady("builder", "Builder");
 
   expect(m.start).toHaveBeenCalledOnce();
 });
 
-it('asks rather than updates when it cannot tell who uses the server', async () => {
-  m.register.mockRejectedValue(new Error('no such volume'));
+it("asks rather than updates when it cannot tell who uses the server", async () => {
+  m.register.mockRejectedValue(new Error("no such volume"));
   const service = new RemoteServerService();
   await service.initialize();
 
-  await expect(service.ensureReady('builder', 'Builder')).rejects.toThrow(/Others use it too/);
+  await expect(service.ensureReady("builder", "Builder")).rejects.toThrow(/Others use it too/);
   expect(m.start).not.toHaveBeenCalled();
 });
 
-it('lets turned-away sessions run once a Connect finds the stack brought up to date elsewhere', async () => {
+it("lets turned-away sessions run once a Connect finds the stack brought up to date elsewhere", async () => {
   m.inspect.mockResolvedValue(present(false));
   const service = new RemoteServerService();
   const upgraded = vi.fn();
   service.onUpgradeFinished(upgraded);
   await service.initialize();
-  await expect(service.ensureReady('builder', 'Builder')).rejects.toThrow(/stopped/);
+  await expect(service.ensureReady("builder", "Builder")).rejects.toThrow(/stopped/);
 
   // Someone else started it at the pin; this Console joins it.
   m.connect.mockResolvedValue({
-    kind: 'connected',
-    serverId: 'srv-builder',
-    deployedVersion: '0.11.0',
+    kind: "connected",
+    serverId: "srv-builder",
+    deployedVersion: "0.11.0",
   });
   m.version.mockResolvedValue(inStep);
-  await service.connect('builder', 'Builder');
+  await service.connect("builder", "Builder");
 
-  expect(upgraded).toHaveBeenCalledExactlyOnceWith('srv-builder');
-  await expect(service.ensureReady('builder', 'Builder')).resolves.toBeUndefined();
+  expect(upgraded).toHaveBeenCalledExactlyOnceWith("srv-builder");
+  await expect(service.ensureReady("builder", "Builder")).resolves.toBeUndefined();
 });

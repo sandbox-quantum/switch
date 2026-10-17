@@ -1,6 +1,6 @@
-import { createServer, type Server, type Socket } from 'node:net';
-import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
-import { log } from '@main/lib/logger';
+import { createServer, type Server, type Socket } from "node:net";
+import type { SshClientProxy } from "@main/core/ssh/lifecycle/ssh-client-proxy";
+import { log } from "@main/lib/logger";
 
 /** Listen on `127.0.0.1:<port>`, saying why not when that fails. */
 function bind(server: Server, port: number, label: string): Promise<void> {
@@ -8,19 +8,19 @@ function bind(server: Server, port: number, label: string): Promise<void> {
     const onError = (err: NodeJS.ErrnoException) =>
       reject(
         new Error(
-          err.code === 'EADDRINUSE'
+          err.code === "EADDRINUSE"
             ? // Likely on a shared host: the stack was set up from another
               // computer, whose free ports this one's need not be.
               `Port ${port} is already in use on this computer, so the Switch server on ` +
                 `${label} cannot be reached from here. Switch Console reaches a remote ` +
                 `server through the same port number on this computer as on the host, so ` +
                 `whatever is using port ${port} here has to stop first.`
-            : `cannot bind local port ${port} for ${label}: ${err.message}`
-        )
+            : `cannot bind local port ${port} for ${label}: ${err.message}`,
+        ),
       );
-    server.once('error', onError);
-    server.listen(port, '127.0.0.1', () => {
-      server.removeListener('error', onError);
+    server.once("error", onError);
+    server.listen(port, "127.0.0.1", () => {
+      server.removeListener("error", onError);
       resolve();
     });
   });
@@ -46,7 +46,7 @@ export class PortForwarder {
 
   constructor(
     private readonly proxy: SshClientProxy,
-    private readonly label: string
+    private readonly label: string,
   ) {}
 
   /**
@@ -83,18 +83,18 @@ export class PortForwarder {
     this.servers.push(server);
     await bind(server, port, this.label);
     // Later listener errors are non-fatal — log rather than crash.
-    server.on('error', (err) =>
-      log.warn(`port-forward: listener error on :${port} (${this.label})`, { err })
+    server.on("error", (err) =>
+      log.warn(`port-forward: listener error on :${port} (${this.label})`, { err }),
     );
   }
 
   private bridge(socket: Socket, port: number): void {
-    socket.on('error', () => socket.destroy());
+    socket.on("error", () => socket.destroy());
     this.proxy
       .forwardOut(port)
       .then((channel) => {
-        channel.on('error', () => socket.destroy());
-        socket.on('close', () => channel.destroy());
+        channel.on("error", () => socket.destroy());
+        socket.on("close", () => channel.destroy());
         socket.pipe(channel);
         channel.pipe(socket);
       })

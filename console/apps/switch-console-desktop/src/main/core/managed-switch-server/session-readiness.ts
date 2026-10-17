@@ -1,6 +1,6 @@
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import { localServerService } from './local-server-service';
-import { remoteServerService } from './remote-server-service';
+import type { SwitchServer } from "@shared/core/switch-servers/switch-servers";
+import { localServerService } from "./local-server-service";
+import { remoteServerService } from "./remote-server-service";
 
 /**
  * The one gate between a managed Switch server and anything that runs agents
@@ -13,7 +13,7 @@ import { remoteServerService } from './remote-server-service';
  */
 export async function ensureServerSessionReady(server: SwitchServer): Promise<void> {
   if (!server.managed) return;
-  if (server.managementKind === 'remote') {
+  if (server.managementKind === "remote") {
     // A remote row without a host is not one Console can supervise.
     if (server.sshHost === null) return;
     await remoteServerService.ensureReady(server.sshHost, server.name);

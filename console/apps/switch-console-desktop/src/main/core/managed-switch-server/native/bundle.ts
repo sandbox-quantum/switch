@@ -1,9 +1,9 @@
-import { createHash } from 'node:crypto';
-import { access, cp, readdir, readFile, rename, rm } from 'node:fs/promises';
-import path from 'node:path';
-import { log } from '@main/lib/logger';
-import { exe } from './native-paths';
-import { BUNDLE_FORMAT, SWITCH_CORE_PYTHON } from './toolchain-pins';
+import { createHash } from "node:crypto";
+import { access, cp, readdir, readFile, rename, rm } from "node:fs/promises";
+import path from "node:path";
+import { log } from "@main/lib/logger";
+import { exe } from "./native-paths";
+import { BUNDLE_FORMAT, SWITCH_CORE_PYTHON } from "./toolchain-pins";
 
 /**
  * What a packaged Console ships for the native local server, so a first start
@@ -45,23 +45,23 @@ type Manifest = {
  */
 export async function readLocalServerBundle(
   root: string | null,
-  expectedSwitchVersion: string
+  expectedSwitchVersion: string,
 ): Promise<LocalServerBundle | null> {
   if (root === null) return null;
   let manifest: Manifest;
   try {
-    manifest = JSON.parse(await readFile(path.join(root, 'manifest.json'), 'utf8')) as Manifest;
+    manifest = JSON.parse(await readFile(path.join(root, "manifest.json"), "utf8")) as Manifest;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      log.warn('local-switch-server: the bundled server is unreadable; downloading instead', {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      log.warn("local-switch-server: the bundled server is unreadable; downloading instead", {
         root,
         error: String(error),
       });
     }
     return null;
   }
-  if (manifest.bundle !== BUNDLE_FORMAT || typeof manifest.builtAt !== 'string') {
-    log.warn('local-switch-server: the bundled server has an unknown layout; downloading instead', {
+  if (manifest.bundle !== BUNDLE_FORMAT || typeof manifest.builtAt !== "string") {
+    log.warn("local-switch-server: the bundled server has an unknown layout; downloading instead", {
       root,
     });
     return null;
@@ -69,30 +69,30 @@ export async function readLocalServerBundle(
   if (manifest.switchVersion !== expectedSwitchVersion) {
     log.warn(
       `local-switch-server: the bundled server is switch-core ${String(manifest.switchVersion)}, ` +
-        `not the ${expectedSwitchVersion} this build pins; downloading instead`
+        `not the ${expectedSwitchVersion} this build pins; downloading instead`,
     );
     return null;
   }
   const postgresVersion =
-    typeof manifest.postgresVersion === 'string' ? manifest.postgresVersion : null;
+    typeof manifest.postgresVersion === "string" ? manifest.postgresVersion : null;
   return {
     root,
     builtAt: manifest.builtAt,
     switchVersion: expectedSwitchVersion,
-    postgresBinDir: postgresVersion === null ? null : path.join(root, 'postgres', 'bin'),
+    postgresBinDir: postgresVersion === null ? null : path.join(root, "postgres", "bin"),
     postgresVersion,
-    uv: path.join(root, 'uv', exe('uv')),
+    uv: path.join(root, "uv", exe("uv")),
     python:
-      process.platform === 'win32'
-        ? path.join(root, 'python', 'python.exe')
-        : path.join(root, 'python', 'bin', `python${SWITCH_CORE_PYTHON}`),
-    switchSource: path.join(root, 'switch', 'src'),
-    sitePackages: path.join(root, 'switch', 'site-packages'),
-    buildWheels: path.join(root, 'switch', 'build-wheels'),
+      process.platform === "win32"
+        ? path.join(root, "python", "python.exe")
+        : path.join(root, "python", "bin", `python${SWITCH_CORE_PYTHON}`),
+    switchSource: path.join(root, "switch", "src"),
+    sitePackages: path.join(root, "switch", "site-packages"),
+    buildWheels: path.join(root, "switch", "build-wheels"),
   };
 }
 
-const COPY_PREFIX = 'bundle-';
+const COPY_PREFIX = "bundle-";
 
 /**
  * The bundle, copied out of the app into the local server's own directory,
@@ -109,17 +109,17 @@ const COPY_PREFIX = 'bundle-';
 export async function materializeBundle(
   bundle: LocalServerBundle,
   toolchainDir: string,
-  onMessage: (message: string) => void
+  onMessage: (message: string) => void,
 ): Promise<LocalServerBundle> {
-  const id = createHash('sha256')
+  const id = createHash("sha256")
     .update(`${bundle.switchVersion}\n${bundle.builtAt}`)
-    .digest('hex')
+    .digest("hex")
     .slice(0, 12);
   const destination = path.join(toolchainDir, `${COPY_PREFIX}${id}`);
   try {
-    await access(path.join(destination, 'manifest.json'));
+    await access(path.join(destination, "manifest.json"));
   } catch {
-    onMessage('Unpacking the Switch server…');
+    onMessage("Unpacking the Switch server…");
     const staging = `${destination}.copying`;
     await rm(staging, { recursive: true, force: true });
     await cp(bundle.root, staging, { recursive: true, verbatimSymlinks: true });

@@ -1,4 +1,4 @@
-import composeYaml from './resources/standalone-docker-compose.pinned.yml?raw';
+import composeYaml from "./resources/standalone-docker-compose.pinned.yml?raw";
 
 /** The standalone compose bundled into the app (pinned to
  * COMPATIBLE_SWITCH_VERSION), inlined at build time. Written to the host working

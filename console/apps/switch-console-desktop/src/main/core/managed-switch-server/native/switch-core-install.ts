@@ -1,20 +1,20 @@
-import { execFile } from 'node:child_process';
-import { appendFile, cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import path from 'node:path';
-import { promisify } from 'node:util';
-import { log } from '@main/lib/logger';
-import { CHECKOUT_IMAGE_TAG } from '@shared/core/managed-switch-server/managed-switch-server';
-import type { LocalServerBundle } from './bundle';
-import { downloadFile, extractArchive } from './download';
-import type { NativeLayout } from './native-paths';
-import { runCommand } from './run-command';
-import { SWITCH_CORE_PYTHON, switchSourceArchiveUrl } from './toolchain-pins';
-import type { UvBinary } from './uv';
+import { execFile } from "node:child_process";
+import { appendFile, cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { promisify } from "node:util";
+import { log } from "@main/lib/logger";
+import { CHECKOUT_IMAGE_TAG } from "@shared/core/managed-switch-server/managed-switch-server";
+import type { LocalServerBundle } from "./bundle";
+import { downloadFile, extractArchive } from "./download";
+import type { NativeLayout } from "./native-paths";
+import { runCommand } from "./run-command";
+import { SWITCH_CORE_PYTHON, switchSourceArchiveUrl } from "./toolchain-pins";
+import type { UvBinary } from "./uv";
 
 const execFileAsync = promisify(execFile);
 
 const SYNC_TIMEOUT_MS = 20 * 60 * 1000;
-const MARKER_FILE = 'installed.json';
+const MARKER_FILE = "installed.json";
 
 export type SwitchCoreInstall = {
   /** What is installed: the release version, or {@link CHECKOUT_IMAGE_TAG}. */
@@ -28,9 +28,9 @@ export type SwitchCoreInstall = {
 };
 
 function venvPython(venv: string): string {
-  return process.platform === 'win32'
-    ? path.join(venv, 'Scripts', 'python.exe')
-    : path.join(venv, 'bin', 'python');
+  return process.platform === "win32"
+    ? path.join(venv, "Scripts", "python.exe")
+    : path.join(venv, "bin", "python");
 }
 
 /** The environment uv runs with: its cache and the Pythons it fetches are
@@ -44,9 +44,9 @@ export function uvEnvironment(layout: NativeLayout, venv: string): NodeJS.Proces
     UV_PYTHON_INSTALL_DIR: layout.uvPython,
     // A Python uv installed itself, never whatever happens to be on PATH: the
     // server should run on the same interpreter on every machine.
-    UV_PYTHON_PREFERENCE: 'only-managed',
-    UV_NO_PROGRESS: '1',
-    VIRTUAL_ENV: '',
+    UV_PYTHON_PREFERENCE: "only-managed",
+    UV_NO_PROGRESS: "1",
+    VIRTUAL_ENV: "",
   };
 }
 
@@ -59,10 +59,10 @@ async function uvSync(
   uv: UvBinary,
   layout: NativeLayout,
   projectDir: string,
-  venv: string
+  venv: string,
 ): Promise<void> {
   await mkdir(layout.logs, { recursive: true });
-  const installLog = path.join(layout.logs, 'install.log');
+  const installLog = path.join(layout.logs, "install.log");
   await appendFile(installLog, `\n# uv sync ${projectDir} (${new Date().toISOString()})\n`);
   const lines: string[] = [];
   const onLine = (line: string) => lines.push(line);
@@ -71,11 +71,11 @@ async function uvSync(
   try {
     await runCommand(
       uv.path,
-      ['sync', '--frozen', '--no-dev', '--python', SWITCH_CORE_PYTHON, '--project', projectDir],
-      { cwd: projectDir, env: uvEnvironment(layout, venv), onLine, timeoutMs: SYNC_TIMEOUT_MS }
+      ["sync", "--frozen", "--no-dev", "--python", SWITCH_CORE_PYTHON, "--project", projectDir],
+      { cwd: projectDir, env: uvEnvironment(layout, venv), onLine, timeoutMs: SYNC_TIMEOUT_MS },
     );
   } finally {
-    await appendFile(installLog, `${lines.join('\n')}\n`);
+    await appendFile(installLog, `${lines.join("\n")}\n`);
   }
 }
 
@@ -84,7 +84,7 @@ type Marker = { version?: unknown; source?: unknown; bundleRoot?: unknown };
 /** What the install in `dir` was made from, or null when there is none. */
 async function readMarker(dir: string): Promise<Marker | null> {
   try {
-    return JSON.parse(await readFile(path.join(dir, MARKER_FILE), 'utf8')) as Marker;
+    return JSON.parse(await readFile(path.join(dir, MARKER_FILE), "utf8")) as Marker;
   } catch {
     return null;
   }
@@ -95,11 +95,11 @@ async function readMarker(dir: string): Promise<Marker | null> {
 function markerMatches(
   marker: Marker | null,
   version: string,
-  bundle: LocalServerBundle | null
+  bundle: LocalServerBundle | null,
 ): boolean {
   if (marker?.version !== version) return false;
   if (bundle === null) return true;
-  return marker.source === 'bundle' && marker.bundleRoot === bundle.root;
+  return marker.source === "bundle" && marker.bundleRoot === bundle.root;
 }
 
 /**
@@ -124,8 +124,8 @@ export async function installSwitchCore(opts: {
   const { layout, uv, bundle, version, owner, repo, checkoutRoot, onMessage } = opts;
 
   if (checkoutRoot !== null) {
-    const projectDir = path.join(checkoutRoot, 'core');
-    const venv = path.join(layout.switchCore, CHECKOUT_IMAGE_TAG, 'venv');
+    const projectDir = path.join(checkoutRoot, "core");
+    const venv = path.join(layout.switchCore, CHECKOUT_IMAGE_TAG, "venv");
     onMessage(`Installing switch-core from ${checkoutRoot}…`);
     await uvSync(uv, layout, projectDir, venv);
     return {
@@ -137,9 +137,9 @@ export async function installSwitchCore(opts: {
   }
 
   const dir = path.join(layout.switchCore, version);
-  const src = path.join(dir, 'src');
-  const projectDir = path.join(src, 'core');
-  const venv = path.join(dir, 'venv');
+  const src = path.join(dir, "src");
+  const projectDir = path.join(src, "core");
+  const venv = path.join(dir, "venv");
   const python = venvPython(venv);
   // Checked by running it, not by its file existing: an environment made from
   // the app's bundled Python stops working if the app moves.
@@ -150,7 +150,7 @@ export async function installSwitchCore(opts: {
   if (bundle !== null) {
     onMessage(`Installing switch-core ${version}…`);
     await installFromBundle(layout, uv, bundle, src, venv);
-    await writeMarker(dir, { version, source: 'bundle', bundleRoot: bundle.root });
+    await writeMarker(dir, { version, source: "bundle", bundleRoot: bundle.root });
     return { version, sourceRoot: src, projectDir, python };
   }
 
@@ -168,7 +168,7 @@ export async function installSwitchCore(opts: {
   onMessage(`Installing switch-core ${version} (first start of this version)…`);
   await rm(venv, { recursive: true, force: true });
   await uvSync(uv, layout, projectDir, venv);
-  await writeMarker(dir, { version, source: 'download', uv: uv.version });
+  await writeMarker(dir, { version, source: "download", uv: uv.version });
   return { version, sourceRoot: src, projectDir, python };
 }
 
@@ -181,7 +181,7 @@ async function writeMarker(dir: string, marker: Record<string, string>): Promise
  * them if the app moves. */
 async function runs(python: string): Promise<boolean> {
   try {
-    await execFileAsync(python, ['-c', 'import asyncpg, pydantic_core, switch_core'], {
+    await execFileAsync(python, ["-c", "import asyncpg, pydantic_core, switch_core"], {
       timeout: 60_000,
       windowsHide: true,
     });
@@ -204,19 +204,19 @@ async function installFromBundle(
   uv: UvBinary,
   bundle: LocalServerBundle,
   src: string,
-  venv: string
+  venv: string,
 ): Promise<void> {
   await rm(src, { recursive: true, force: true });
   await rm(venv, { recursive: true, force: true });
   await cp(bundle.switchSource, src, { recursive: true });
   await mkdir(layout.logs, { recursive: true });
-  const installLog = path.join(layout.logs, 'install.log');
+  const installLog = path.join(layout.logs, "install.log");
   const lines: string[] = [];
   const env: NodeJS.ProcessEnv = {
     ...uvEnvironment(layout, venv),
-    UV_OFFLINE: '1',
-    UV_PYTHON_DOWNLOADS: 'never',
-    UV_PYTHON_PREFERENCE: 'only-system',
+    UV_OFFLINE: "1",
+    UV_PYTHON_DOWNLOADS: "never",
+    UV_PYTHON_PREFERENCE: "only-system",
   };
   const uvRun = (args: string[]) =>
     runCommand(uv.path, args, {
@@ -227,35 +227,35 @@ async function installFromBundle(
     });
   try {
     await appendFile(installLog, `\n# install from ${bundle.root} (${new Date().toISOString()})\n`);
-    await uvRun(['venv', '--python', bundle.python, venv]);
+    await uvRun(["venv", "--python", bundle.python, venv]);
     await writeFile(
-      path.join(await venvSitePackages(venv), 'switch-bundle.pth'),
-      `${bundle.sitePackages}\n`
+      path.join(await venvSitePackages(venv), "switch-bundle.pth"),
+      `${bundle.sitePackages}\n`,
     );
     await uvRun([
-      'pip',
-      'install',
-      '--python',
+      "pip",
+      "install",
+      "--python",
       venvPython(venv),
-      '--no-index',
-      '--find-links',
+      "--no-index",
+      "--find-links",
       bundle.buildWheels,
-      '--no-deps',
-      '-e',
-      path.join(src, 'core'),
+      "--no-deps",
+      "-e",
+      path.join(src, "core"),
     ]);
   } finally {
-    await appendFile(installLog, `${lines.join('\n')}\n`);
+    await appendFile(installLog, `${lines.join("\n")}\n`);
   }
 }
 
 /** The environment's `site-packages` directory. */
 async function venvSitePackages(venv: string): Promise<string> {
-  if (process.platform === 'win32') return path.join(venv, 'Lib', 'site-packages');
-  const lib = path.join(venv, 'lib');
-  const python = (await readdir(lib)).find((entry) => entry.startsWith('python'));
+  if (process.platform === "win32") return path.join(venv, "Lib", "site-packages");
+  const lib = path.join(venv, "lib");
+  const python = (await readdir(lib)).find((entry) => entry.startsWith("python"));
   if (!python) throw new Error(`The environment in ${venv} has no lib/python* directory.`);
-  return path.join(lib, python, 'site-packages');
+  return path.join(lib, python, "site-packages");
 }
 
 /**
@@ -266,24 +266,24 @@ async function venvSitePackages(venv: string): Promise<string> {
 export async function existingSwitchCoreInstall(
   layout: NativeLayout,
   version: string,
-  checkoutRoot: string | null
+  checkoutRoot: string | null,
 ): Promise<SwitchCoreInstall | null> {
   if (checkoutRoot !== null) {
-    const python = venvPython(path.join(layout.switchCore, CHECKOUT_IMAGE_TAG, 'venv'));
+    const python = venvPython(path.join(layout.switchCore, CHECKOUT_IMAGE_TAG, "venv"));
     return (await runs(python))
       ? {
           version: CHECKOUT_IMAGE_TAG,
           sourceRoot: checkoutRoot,
-          projectDir: path.join(checkoutRoot, 'core'),
+          projectDir: path.join(checkoutRoot, "core"),
           python,
         }
       : null;
   }
   const dir = path.join(layout.switchCore, version);
-  const src = path.join(dir, 'src');
-  const python = venvPython(path.join(dir, 'venv'));
+  const src = path.join(dir, "src");
+  const python = venvPython(path.join(dir, "venv"));
   if ((await readMarker(dir))?.version !== version || !(await runs(python))) return null;
-  return { version, sourceRoot: src, projectDir: path.join(src, 'core'), python };
+  return { version, sourceRoot: src, projectDir: path.join(src, "core"), python };
 }
 
 /** Remove installed releases other than `keep`, once a start on it has

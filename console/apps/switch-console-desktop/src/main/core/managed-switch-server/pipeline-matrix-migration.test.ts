@@ -6,10 +6,10 @@
  * rewritten, because the rewrite is what takes the homeserver away — and a
  * copy that fails stops the upgrade rather than being logged and stepped over.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type * as AppIdentity from '@shared/app-identity';
-import type * as DeployedVersion from './deployed-version';
-import type { ServerHost } from './host/types';
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as AppIdentity from "@shared/app-identity";
+import type * as DeployedVersion from "./deployed-version";
+import type { ServerHost } from "./host/types";
 
 const readDeployedVersionMock = vi.hoisted(() => vi.fn());
 const composeUpMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
@@ -17,79 +17,79 @@ const dockerRunOneOffMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 
 const prepareUpgradeMock = vi.hoisted(() => vi.fn(() => Promise.resolve(null)));
 const finishUpgradeMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
-vi.mock('./console-register', () => ({
-  readRegister: vi.fn(async () => ({ self: 'me', consoles: [], activity: [] })),
+vi.mock("./console-register", () => ({
+  readRegister: vi.fn(async () => ({ self: "me", consoles: [], activity: [] })),
 }));
-vi.mock('@shared/app-identity', async (importOriginal) => ({
+vi.mock("@shared/app-identity", async (importOriginal) => ({
   ...(await importOriginal<typeof AppIdentity>()),
-  COMPATIBLE_SWITCH_VERSION: '0.24.0',
-  LAST_MATRIX_VERSION: '0.23.0',
+  COMPATIBLE_SWITCH_VERSION: "0.24.0",
+  LAST_MATRIX_VERSION: "0.23.0",
 }));
-vi.mock('@main/lib/logger', () => ({
+vi.mock("@main/lib/logger", () => ({
   log: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
 }));
-vi.mock('./deployed-version', async (importOriginal) => ({
+vi.mock("./deployed-version", async (importOriginal) => ({
   ...(await importOriginal<typeof DeployedVersion>()),
   readDeployedVersion: readDeployedVersionMock,
 }));
-vi.mock('./compose', () => ({
+vi.mock("./compose", () => ({
   composeUp: composeUpMock,
   dockerRunOneOff: dockerRunOneOffMock,
   composeDown: vi.fn(() => Promise.resolve()),
   runningImages: vi.fn(),
   isStackRunning: vi.fn(),
 }));
-vi.mock('./health', () => ({ waitForHealth: () => Promise.resolve(true) }));
-vi.mock('./bundled-compose', () => ({ bundledComposeYaml: () => 'services: {}' }));
-vi.mock('./secrets', () => ({
-  loadOrCreateSecrets: () => Promise.resolve({ gatewayAdminPassword: 'pw' }),
+vi.mock("./health", () => ({ waitForHealth: () => Promise.resolve(true) }));
+vi.mock("./bundled-compose", () => ({ bundledComposeYaml: () => "services: {}" }));
+vi.mock("./secrets", () => ({
+  loadOrCreateSecrets: () => Promise.resolve({ gatewayAdminPassword: "pw" }),
   clearSecrets: vi.fn(),
 }));
-vi.mock('./ports', () => ({
+vi.mock("./ports", () => ({
   resolvePorts: () =>
     Promise.resolve({ gateway: 3300, api: 8000, mattermost: 8065, postgres: 5432 }),
   clearPorts: vi.fn(),
 }));
-vi.mock('./env-file', () => ({
-  buildEnvFile: () => 'SWITCH_VERSION=0.24.0\n',
+vi.mock("./env-file", () => ({
+  buildEnvFile: () => "SWITCH_VERSION=0.24.0\n",
   readEnvValue: vi.fn(),
-  TELEMETRY_ENABLED_KEY: 'TELEMETRY_ENABLED',
+  TELEMETRY_ENABLED_KEY: "TELEMETRY_ENABLED",
 }));
-vi.mock('./telemetry-consent', () => ({
+vi.mock("./telemetry-consent", () => ({
   telemetryConsent: () => Promise.resolve(false),
   readDeployedTelemetry: vi.fn(),
 }));
-vi.mock('@main/core/telemetry/internal-account', () => ({
-  currentInternalFlag: async () => 'unknown',
+vi.mock("@main/core/telemetry/internal-account", () => ({
+  currentInternalFlag: async () => "unknown",
 }));
-vi.mock('@main/core/switch-servers/servers-store', () => ({
+vi.mock("@main/core/switch-servers/servers-store", () => ({
   assertManagedServerUrlFree: () => Promise.resolve(),
-  ensureManagedServer: () => Promise.resolve({ id: 'srv-1' }),
+  ensureManagedServer: () => Promise.resolve({ id: "srv-1" }),
   setActiveServerId: vi.fn(),
 }));
 // Reads this install's own workspace rows, and through them the database client.
-vi.mock('@main/core/workspaces/reconcile-workspaces', () => ({
+vi.mock("@main/core/workspaces/reconcile-workspaces", () => ({
   reconcileServerWorkspaces: () => Promise.resolve(),
 }));
-vi.mock('@main/core/switch-servers/auth', () => ({
+vi.mock("@main/core/switch-servers/auth", () => ({
   passwordLogin: () => Promise.resolve({ success: true }),
 }));
-vi.mock('./managed-upgrade', () => ({
+vi.mock("./managed-upgrade", () => ({
   prepareUpgrade: prepareUpgradeMock,
   finishUpgrade: finishUpgradeMock,
 }));
 
-const { startStack } = await import('./pipeline');
+const { startStack } = await import("./pipeline");
 
 function options(checkoutRoot: string | null = null) {
   const writeFile = vi.fn<(relPath: string, content: string, mode?: number) => Promise<void>>(() =>
-    Promise.resolve()
+    Promise.resolve(),
   );
   const host = {
-    label: 'this computer',
+    label: "this computer",
     sharedState: null,
     writeFile,
-    detectDocker: () => Promise.resolve({ available: true, version: '27.0.0' }),
+    detectDocker: () => Promise.resolve({ available: true, version: "27.0.0" }),
     checkNetworking: vi.fn(() => Promise.resolve()),
     establishNetworking: vi.fn(() => Promise.resolve()),
   };
@@ -97,8 +97,8 @@ function options(checkoutRoot: string | null = null) {
     writeFile,
     opts: {
       host: host as unknown as ServerHost,
-      ref: { kind: 'local' as const },
-      serverName: 'Local',
+      ref: { kind: "local" as const },
+      serverName: "Local",
       onMessage: vi.fn(),
       onLog: vi.fn(),
       activate: true,
@@ -114,103 +114,103 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('startStack across the Matrix boundary', () => {
-  it('copies the history before rewriting anything', async () => {
+describe("startStack across the Matrix boundary", () => {
+  it("copies the history before rewriting anything", async () => {
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: '0.23.0',
-      source: 'container',
+      kind: "deployed",
+      version: "0.23.0",
+      source: "container",
     });
     const { opts, writeFile } = options();
     const order: string[] = [];
     composeUpMock.mockImplementation(() => {
-      order.push('compose-up');
+      order.push("compose-up");
       return Promise.resolve();
     });
     dockerRunOneOffMock.mockImplementation(() => {
-      order.push('backfill');
+      order.push("backfill");
       return Promise.resolve();
     });
     writeFile.mockImplementation(() => {
-      order.push('write');
+      order.push("write");
       return Promise.resolve();
     });
 
     expect(await startStack(opts)).toEqual({
-      kind: 'started',
-      serverId: 'srv-1',
+      kind: "started",
+      serverId: "srv-1",
       telemetryEnabled: false,
       warning: null,
     });
     // The old stack comes up and is drained before the new compose file lands:
     // that file is what removes the homeserver being read from.
-    expect(order.slice(0, 3)).toEqual(['compose-up', 'backfill', 'write']);
+    expect(order.slice(0, 3)).toEqual(["compose-up", "backfill", "write"]);
     // Pinned to the boundary image, not to whatever the stack is running: the
     // install that needs this most is the one whose own images have no backfill.
     expect(dockerRunOneOffMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        image: 'ghcr.io/sandbox-quantum/switch-core:0.23.0',
+        image: "ghcr.io/sandbox-quantum/switch-core:0.23.0",
         // Migrates before it copies. The stack is on an older release, so its
         // database is at an older revision and the backfill reads a column a
         // later one adds — without this it fails on a missing column before
         // reaching a single room.
         command: [
-          'sh',
-          '-c',
-          'alembic upgrade head && python -m switch_core.cli.backfill --allow-empty',
+          "sh",
+          "-c",
+          "alembic upgrade head && python -m switch_core.cli.backfill --allow-empty",
         ],
       }),
-      expect.anything()
+      expect.anything(),
     );
   });
 
-  it('refuses the upgrade when the copy fails, leaving the stack as it was', async () => {
+  it("refuses the upgrade when the copy fails, leaving the stack as it was", async () => {
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: '0.22.1',
-      source: 'container',
+      kind: "deployed",
+      version: "0.22.1",
+      source: "container",
     });
-    dockerRunOneOffMock.mockRejectedValue(new Error('homeserver unreachable'));
+    dockerRunOneOffMock.mockRejectedValue(new Error("homeserver unreachable"));
     const { opts, writeFile } = options();
 
     const result = await startStack(opts);
 
     expect(result).toMatchObject({
-      kind: 'matrix-migration-failed',
-      deployed: '0.22.1',
-      expected: '0.24.0',
+      kind: "matrix-migration-failed",
+      deployed: "0.22.1",
+      expected: "0.24.0",
     });
     // Nothing rewritten, so the stack is still the one that can be retried.
     expect(writeFile).not.toHaveBeenCalled();
   });
 
-  it('does not copy when the stack is already past the boundary', async () => {
+  it("does not copy when the stack is already past the boundary", async () => {
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: '0.24.0',
-      source: 'container',
+      kind: "deployed",
+      version: "0.24.0",
+      source: "container",
     });
     const { opts } = options();
 
     expect(await startStack(opts)).toEqual({
-      kind: 'started',
-      serverId: 'srv-1',
+      kind: "started",
+      serverId: "srv-1",
       telemetryEnabled: false,
       warning: null,
     });
     expect(dockerRunOneOffMock).not.toHaveBeenCalled();
   });
 
-  it('does not copy for a checkout build', async () => {
+  it("does not copy for a checkout build", async () => {
     // Built from a working tree, so it carries no comparable version — and its
     // data is a developer's, not somebody's install.
     readDeployedVersionMock.mockResolvedValue({
-      kind: 'deployed',
-      version: '0.22.1',
-      source: 'container',
+      kind: "deployed",
+      version: "0.22.1",
+      source: "container",
     });
-    const { opts } = options('/src/switch');
+    const { opts } = options("/src/switch");
 
     await startStack(opts);
     expect(dockerRunOneOffMock).not.toHaveBeenCalled();

@@ -1,17 +1,17 @@
-import { spawn } from 'node:child_process';
-import { closeSync, openSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import { log } from '@main/lib/logger';
-import { waitForHealth } from '../health';
-import type { NativeLayout } from './native-paths';
-import type { SwitchCoreInstall } from './switch-core-install';
+import { spawn } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { log } from "@main/lib/logger";
+import { waitForHealth } from "../health";
+import type { NativeLayout } from "./native-paths";
+import type { SwitchCoreInstall } from "./switch-core-install";
 
-const PID_FILE = 'switch-core.json';
+const PID_FILE = "switch-core.json";
 /** The environment the running switch-core was started with, so what it is
  * doing (its telemetry gate, its version) can be read back off it. */
-export const CORE_ENV_FILE = 'switch-core.env';
+export const CORE_ENV_FILE = "switch-core.env";
 const STOP_GRACE_MS = 20_000;
 
 export type CoreProcessRecord = {
@@ -27,31 +27,31 @@ export type CoreProcessRecord = {
  * only what a process needs to run at all is carried over.
  */
 const PASSTHROUGH = [
-  'PATH',
-  'HOME',
-  'USER',
-  'LOGNAME',
-  'TMPDIR',
-  'TEMP',
-  'TMP',
-  'LANG',
-  'SystemRoot',
-  'SYSTEMROOT',
-  'windir',
-  'COMSPEC',
-  'USERPROFILE',
-  'APPDATA',
-  'LOCALAPPDATA',
-  'ProgramData',
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'NO_PROXY',
-  'http_proxy',
-  'https_proxy',
-  'no_proxy',
-  'SSL_CERT_FILE',
-  'SSL_CERT_DIR',
-  'REQUESTS_CA_BUNDLE',
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "LANG",
+  "SystemRoot",
+  "SYSTEMROOT",
+  "windir",
+  "COMSPEC",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "ProgramData",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "REQUESTS_CA_BUNDLE",
 ];
 
 export function coreProcessEnv(settings: Record<string, string>): NodeJS.ProcessEnv {
@@ -60,16 +60,16 @@ export function coreProcessEnv(settings: Record<string, string>): NodeJS.Process
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
   }
-  return { ...env, PYTHONUNBUFFERED: '1', ...settings };
+  return { ...env, PYTHONUNBUFFERED: "1", ...settings };
 }
 
 /** Render settings as `KEY=value` lines. */
 export function renderEnv(settings: Record<string, string>): string {
   return [
-    '# The environment Switch Console started switch-core with — do not edit.',
+    "# The environment Switch Console started switch-core with — do not edit.",
     ...Object.entries(settings).map(([key, value]) => `${key}=${value}`),
-    '',
-  ].join('\n');
+    "",
+  ].join("\n");
 }
 
 function isAlive(pid: number): boolean {
@@ -84,13 +84,13 @@ function isAlive(pid: number): boolean {
 
 export async function readCoreRecord(layout: NativeLayout): Promise<CoreProcessRecord | null> {
   try {
-    const parsed = JSON.parse(await readFile(path.join(layout.run, PID_FILE), 'utf8')) as unknown;
+    const parsed = JSON.parse(await readFile(path.join(layout.run, PID_FILE), "utf8")) as unknown;
     if (
-      typeof parsed === 'object' &&
+      typeof parsed === "object" &&
       parsed !== null &&
-      typeof (parsed as CoreProcessRecord).pid === 'number' &&
-      typeof (parsed as CoreProcessRecord).version === 'string' &&
-      typeof (parsed as CoreProcessRecord).startedAt === 'string'
+      typeof (parsed as CoreProcessRecord).pid === "number" &&
+      typeof (parsed as CoreProcessRecord).version === "string" &&
+      typeof (parsed as CoreProcessRecord).startedAt === "string"
     ) {
       return parsed as CoreProcessRecord;
     }
@@ -121,24 +121,24 @@ export async function runningCore(layout: NativeLayout): Promise<CoreProcessReco
 export async function startCore(
   layout: NativeLayout,
   install: SwitchCoreInstall,
-  settings: Record<string, string>
+  settings: Record<string, string>,
 ): Promise<CoreProcessRecord> {
   await mkdir(layout.logs, { recursive: true });
   await mkdir(layout.run, { recursive: true });
   await writeFile(path.join(layout.run, CORE_ENV_FILE), renderEnv(settings), { mode: 0o600 });
-  const logFd = openSync(path.join(layout.logs, 'switch-core.log'), 'a', 0o600);
+  const logFd = openSync(path.join(layout.logs, "switch-core.log"), "a", 0o600);
   try {
-    const child = spawn(install.python, ['-m', 'switch_core.main'], {
+    const child = spawn(install.python, ["-m", "switch_core.main"], {
       cwd: install.projectDir,
       env: coreProcessEnv(settings),
       detached: true,
       windowsHide: true,
-      stdio: ['ignore', logFd, logFd],
+      stdio: ["ignore", logFd, logFd],
     });
     const pid = await new Promise<number>((resolve, reject) => {
-      child.once('error', reject);
-      child.once('spawn', () => {
-        if (child.pid === undefined) reject(new Error('switch-core started without a pid.'));
+      child.once("error", reject);
+      child.once("spawn", () => {
+        if (child.pid === undefined) reject(new Error("switch-core started without a pid."));
         else resolve(child.pid);
       });
     });
@@ -157,14 +157,14 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export async function stopCore(layout: NativeLayout): Promise<void> {
   const record = await runningCore(layout);
   if (record !== null) {
-    process.kill(record.pid, 'SIGTERM');
+    process.kill(record.pid, "SIGTERM");
     const deadline = Date.now() + STOP_GRACE_MS;
     while (isAlive(record.pid) && Date.now() < deadline) await sleep(250);
     if (isAlive(record.pid)) {
-      log.warn('local-switch-server: switch-core did not stop in time; killing it', {
+      log.warn("local-switch-server: switch-core did not stop in time; killing it", {
         pid: record.pid,
       });
-      process.kill(record.pid, 'SIGKILL');
+      process.kill(record.pid, "SIGKILL");
       while (isAlive(record.pid)) await sleep(250);
     }
   }
@@ -184,7 +184,7 @@ export async function coreFailureLine(layout: NativeLayout): Promise<string | nu
     if (attempt > 0) await sleep(500);
     let text: string;
     try {
-      text = await readFile(path.join(layout.logs, 'switch-core.log'), 'utf8');
+      text = await readFile(path.join(layout.logs, "switch-core.log"), "utf8");
     } catch {
       continue;
     }
@@ -196,7 +196,7 @@ export async function coreFailureLine(layout: NativeLayout): Promise<string | nu
 
 export function failureLine(log: string): string | null {
   const lines = log
-    .split('\n')
+    .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(-60);
@@ -215,12 +215,12 @@ export function failureLine(log: string): string | null {
 export async function waitForCoreHealth(
   layout: NativeLayout,
   apiUrl: string,
-  signal: AbortSignal
+  signal: AbortSignal,
 ): Promise<boolean> {
   const exited = new AbortController();
   const watch = setInterval(() => {
     void runningCore(layout).then((record) => {
-      if (record === null) exited.abort(new Error('switch-core exited'));
+      if (record === null) exited.abort(new Error("switch-core exited"));
     });
   }, 1000);
   try {

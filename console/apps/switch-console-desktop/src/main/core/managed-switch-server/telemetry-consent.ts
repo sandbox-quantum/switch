@@ -1,10 +1,10 @@
-import { appSettingsService } from '@main/core/settings/settings-service';
-import type { DeployedTelemetry } from '@shared/core/managed-switch-server/managed-switch-server';
-import { runningServiceEnv } from './compose';
-import { CORE_SERVICE, ENV_FILE_NAME } from './constants';
-import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY } from './env-file';
-import { errorText } from './error-text';
-import type { ServerHost } from './host/types';
+import { appSettingsService } from "@main/core/settings/settings-service";
+import type { DeployedTelemetry } from "@shared/core/managed-switch-server/managed-switch-server";
+import { runningServiceEnv } from "./compose";
+import { CORE_SERVICE, ENV_FILE_NAME } from "./constants";
+import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY } from "./env-file";
+import { errorText } from "./error-text";
+import type { ServerHost } from "./host/types";
 
 /**
  * The "Share usage data" answer, as the managed server needs it (CHOO-2890).
@@ -20,7 +20,7 @@ import type { ServerHost } from './host/types';
  * one guess that cannot be defended is the one in favour.
  */
 export async function telemetryConsent(): Promise<boolean> {
-  return (await appSettingsService.get('telemetry')).enabled;
+  return (await appSettingsService.get("telemetry")).enabled;
 }
 
 /**
@@ -55,5 +55,5 @@ export async function readDeployedTelemetry(host: ServerHost): Promise<DeployedT
     failures.push(`${ENV_FILE_NAME}: ${errorText(error)}`);
   }
 
-  return { known: false, reason: failures.join('; ') };
+  return { known: false, reason: failures.join("; ") };
 }

@@ -1,25 +1,25 @@
-import { passwordLogin } from '@main/core/switch-servers/auth';
+import { passwordLogin } from "@main/core/switch-servers/auth";
 import {
   assertManagedServerUrlFree,
   ensureManagedServer,
   setActiveServerId,
-} from '@main/core/switch-servers/servers-store';
-import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
-import { log } from '@main/lib/logger';
-import { COMPATIBLE_SWITCH_VERSION, RELEASE_REPO_OWNER } from '@shared/app-identity';
+} from "@main/core/switch-servers/servers-store";
+import { reconcileServerWorkspaces } from "@main/core/workspaces/reconcile-workspaces";
+import { log } from "@main/lib/logger";
+import { COMPATIBLE_SWITCH_VERSION, RELEASE_REPO_OWNER } from "@shared/app-identity";
 import {
   CHECKOUT_IMAGE_TAG,
   type ConnectRemoteServerResult,
   othersRecentlySeen,
   type StartLocalServerResult,
-} from '@shared/core/managed-switch-server/managed-switch-server';
-import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
-import { currentFlintEnv } from '../telemetry/config';
-import { currentInternalFlag } from '../telemetry/internal-account';
-import { bundledComposeYaml } from './bundled-compose';
-import { checkoutBuildOverrideYaml } from './checkout-build';
-import { composeDown, composeUp } from './compose';
-import { readRegister } from './console-register';
+} from "@shared/core/managed-switch-server/managed-switch-server";
+import type { ManagedServerRef } from "@shared/core/switch-servers/switch-servers";
+import { currentFlintEnv } from "../telemetry/config";
+import { currentInternalFlag } from "../telemetry/internal-account";
+import { bundledComposeYaml } from "./bundled-compose";
+import { checkoutBuildOverrideYaml } from "./checkout-build";
+import { composeDown, composeUp } from "./compose";
+import { readRegister } from "./console-register";
 import {
   BUILD_OVERRIDE_FILE_NAME,
   COMPOSE_FILE_NAME,
@@ -27,18 +27,18 @@ import {
   ENV_STAMP_FILE_NAME,
   GHCR_REGISTRY,
   LOCAL_SERVER_ADMIN_EMAIL,
-} from './constants';
-import { classifyVersionDrift, readDeployedVersion } from './deployed-version';
-import { buildEnvFile, keysDisagreeing, telemetryRequested } from './env-file';
-import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
-import { waitForHealth } from './health';
-import type { ServerHost } from './host/types';
-import { finishUpgrade, type OwedUpgrade, prepareUpgrade } from './managed-upgrade';
-import { crossesMatrixBoundary, runBackfill } from './matrix-migration';
-import { clearPorts, readPersistedPorts, rememberPorts, resolvePorts } from './ports';
-import { type LocalServerSecrets, withNewerSecrets } from './secret-values';
-import { clearSecrets, loadOrCreateSecrets, readSecrets, storeSecrets } from './secrets';
-import type { ServerLease } from './stack-lock';
+} from "./constants";
+import { classifyVersionDrift, readDeployedVersion } from "./deployed-version";
+import { buildEnvFile, keysDisagreeing, telemetryRequested } from "./env-file";
+import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from "./free-port";
+import { waitForHealth } from "./health";
+import type { ServerHost } from "./host/types";
+import { finishUpgrade, type OwedUpgrade, prepareUpgrade } from "./managed-upgrade";
+import { crossesMatrixBoundary, runBackfill } from "./matrix-migration";
+import { clearPorts, readPersistedPorts, rememberPorts, resolvePorts } from "./ports";
+import { type LocalServerSecrets, withNewerSecrets } from "./secret-values";
+import { clearSecrets, loadOrCreateSecrets, readSecrets, storeSecrets } from "./secrets";
+import type { ServerLease } from "./stack-lock";
 import {
   driftOf,
   inspectStack,
@@ -48,8 +48,8 @@ import {
   type StackStateHost,
   unsharedStackMessage,
   withdrawPublishedEnv,
-} from './stack-state';
-import { telemetryConsent } from './telemetry-consent';
+} from "./stack-state";
+import { telemetryConsent } from "./telemetry-consent";
 
 /**
  * The transport-agnostic lifecycle for a Switch Console-managed Switch stack, run
@@ -88,14 +88,14 @@ export type StartStackOptions = {
  * without shared state, or shared state without a lock, throws. */
 function sharedUnderLock(
   host: ServerHost,
-  lease: ServerLease | null
+  lease: ServerLease | null,
 ): { state: StackStateHost; lease: ServerLease } | null {
   if (host.sharedState !== null && lease !== null) return { state: host.sharedState, lease };
   if (host.sharedState === null && lease === null) return null;
   throw new Error(
     host.sharedState !== null
       ? `Refusing to change the shared stack on ${host.label} without holding its lock.`
-      : `The stack on ${host.label} is not shared, so it has no lock to hold.`
+      : `The stack on ${host.label} is not shared, so it has no lock to hold.`,
   );
 }
 
@@ -104,7 +104,7 @@ function sharedUnderLock(
 function requireSharedUnderLock(
   host: ServerHost,
   lease: ServerLease,
-  what: string
+  what: string,
 ): { state: StackStateHost; lease: ServerLease } {
   if (host.sharedState === null) {
     throw new Error(`The stack on ${host.label} is not shared, so there is nothing to ${what}.`);
@@ -137,45 +137,45 @@ function requireSharedUnderLock(
  */
 async function refuseDowngrade(
   host: ServerHost,
-  checkoutRoot: string | null
-): Promise<{ kind: 'version-downgrade'; deployed: string; expected: string } | null> {
+  checkoutRoot: string | null,
+): Promise<{ kind: "version-downgrade"; deployed: string; expected: string } | null> {
   const deployed = await readDeployedVersion(host);
-  if (deployed.kind === 'absent') return null;
+  if (deployed.kind === "absent") return null;
   if (checkoutRoot !== null) {
     log.warn(
       `managed-switch-server: starting ${host.label} from the checkout at ${checkoutRoot} — ` +
         `the downgrade check is skipped, because a working tree carries no comparable version. ` +
-        `If the stack's database is ahead of that checkout, this start may strand it.`
+        `If the stack's database is ahead of that checkout, this start may strand it.`,
     );
     return null;
   }
-  if (deployed.kind === 'deployed' && deployed.version === CHECKOUT_IMAGE_TAG) {
+  if (deployed.kind === "deployed" && deployed.version === CHECKOUT_IMAGE_TAG) {
     log.warn(
       `managed-switch-server: ${host.label} currently runs a local checkout build, so the ` +
-        `downgrade check cannot run; pointing it back at pinned switch-core ${COMPATIBLE_SWITCH_VERSION}.`
+        `downgrade check cannot run; pointing it back at pinned switch-core ${COMPATIBLE_SWITCH_VERSION}.`,
     );
     return null;
   }
-  if (deployed.kind === 'unreadable') {
+  if (deployed.kind === "unreadable") {
     log.warn(`managed-switch-server: starting ${host.label} without a deployed-version check`, {
       reason: deployed.reason,
     });
     return null;
   }
   const drift = classifyVersionDrift(deployed.version, COMPATIBLE_SWITCH_VERSION);
-  if (drift?.direction === 'unknown') {
+  if (drift?.direction === "unknown") {
     log.error(
       `managed-switch-server: starting ${host.label} without proving it is not a downgrade — ` +
         `deployed switch-core ${deployed.version} and pinned ${COMPATIBLE_SWITCH_VERSION} are not comparable. ` +
-        `If the deployed one is in fact newer, its database has already migrated and this start may strand it.`
+        `If the deployed one is in fact newer, its database has already migrated and this start may strand it.`,
     );
     return null;
   }
-  if (drift?.direction !== 'downgrade' || drift.deployed === null) return null;
+  if (drift?.direction !== "downgrade" || drift.deployed === null) return null;
   log.error(
-    `managed-switch-server: refusing to downgrade ${host.label} from switch-core ${drift.deployed} to ${drift.expected}`
+    `managed-switch-server: refusing to downgrade ${host.label} from switch-core ${drift.deployed} to ${drift.expected}`,
   );
-  return { kind: 'version-downgrade', deployed: drift.deployed, expected: drift.expected };
+  return { kind: "version-downgrade", deployed: drift.deployed, expected: drift.expected };
 }
 
 /**
@@ -198,27 +198,27 @@ async function migrateOffMatrix(
   host: ServerHost,
   checkoutRoot: string | null,
   onMessage: (message: string) => void,
-  onLog: (line: string) => void
+  onLog: (line: string) => void,
 ): Promise<StartLocalServerResult | null> {
   if (checkoutRoot !== null) return null;
   const deployed = await readDeployedVersion(host);
-  if (deployed.kind !== 'deployed' || deployed.version === CHECKOUT_IMAGE_TAG) return null;
+  if (deployed.kind !== "deployed" || deployed.version === CHECKOUT_IMAGE_TAG) return null;
   if (!crossesMatrixBoundary(deployed.version, COMPATIBLE_SWITCH_VERSION)) return null;
 
   log.info(
     `managed-switch-server: ${host.label} is crossing the Matrix boundary ` +
-      `(${deployed.version} → ${COMPATIBLE_SWITCH_VERSION}); backfilling first`
+      `(${deployed.version} → ${COMPATIBLE_SWITCH_VERSION}); backfilling first`,
   );
   // Bring the stack up as it stands. The backfill reads the homeserver and the
   // database, and this is the last moment both are still here.
-  onMessage('Starting the current version to copy your room history…');
+  onMessage("Starting the current version to copy your room history…");
   await composeUp(host, onLog, false);
 
-  onMessage('Copying room history out of the message server…');
+  onMessage("Copying room history out of the message server…");
   const backfill = await runBackfill(host, onLog);
   if (backfill.ok) return null;
   return {
-    kind: 'matrix-migration-failed',
+    kind: "matrix-migration-failed",
     deployed: deployed.version,
     expected: COMPATIBLE_SWITCH_VERSION,
     detail: backfill.detail,
@@ -233,43 +233,43 @@ export type StackSettings = { secrets: LocalServerSecrets; ports: LocalServerPor
  * the stack out of the Postgres volume its first credentials created.
  */
 type StartPlan =
-  | { kind: 'adopt'; stack: Extract<StackOnHost, { kind: 'present' }> }
+  | { kind: "adopt"; stack: Extract<StackOnHost, { kind: "present" }> }
   /** Nothing on the host, or the local stack: this desktop's copy, or new
    * credentials when it has none. */
-  | { kind: 'fresh' }
+  | { kind: "fresh" }
   /** The host's settings have gaps, and this desktop's copy agrees with every
    * setting the host does hold, so the copy fills them. */
-  | { kind: 'cached'; reason: string }
+  | { kind: "cached"; reason: string }
   /** Starting could replace the credentials of a stack already there. */
-  | { kind: 'refused'; message: string };
+  | { kind: "refused"; message: string };
 
 async function planStart(host: ServerHost): Promise<StartPlan> {
-  if (host.sharedState === null) return { kind: 'fresh' };
+  if (host.sharedState === null) return { kind: "fresh" };
   const stack = await inspectStack(host.sharedState);
   switch (stack.kind) {
-    case 'present':
-      return { kind: 'adopt', stack };
-    case 'absent':
-      return { kind: 'fresh' };
-    case 'unshared':
-      return { kind: 'refused', message: unsharedStackMessage(host.label, stack.ownerDir) };
-    case 'unreadable':
+    case "present":
+      return { kind: "adopt", stack };
+    case "absent":
+      return { kind: "fresh" };
+    case "unshared":
+      return { kind: "refused", message: unsharedStackMessage(host.label, stack.ownerDir) };
+    case "unreadable":
       // Not answered from this desktop's copy: someone may have reset the stack
       // since, and publishing stale credentials would lock everyone out.
       return {
-        kind: 'refused',
+        kind: "refused",
         message:
           `Could not read the Switch server's settings on ${host.label} (${stack.reason}). ` +
           `Starting from this desktop's copy could put back credentials someone has since ` +
           `replaced, so nothing was changed. Try again once the host answers.`,
       };
-    case 'incomplete': {
-      const reason = `its settings are missing ${stack.missing.join(', ')}`;
+    case "incomplete": {
+      const reason = `its settings are missing ${stack.missing.join(", ")}`;
       const secrets = await readSecrets(host);
       const ports = await readPersistedPorts(host);
       if (secrets === null || ports === null) {
         return {
-          kind: 'refused',
+          kind: "refused",
           message:
             `Could not read the Switch server's settings on ${host.label} (${reason}). ` +
             `Starting without them could replace the credentials of a server that is already ` +
@@ -280,20 +280,20 @@ async function planStart(host: ServerHost): Promise<StartPlan> {
       const disagreeing = keysDisagreeing(stack.raw, { secrets, ports });
       if (disagreeing.length > 0) {
         return {
-          kind: 'refused',
+          kind: "refused",
           message:
             `The Switch server's settings on ${host.label} are missing ` +
-            `${stack.missing.join(', ')}, and this desktop's copy of them is out of date ` +
-            `(${disagreeing.join(', ')} differ from the host's), so it cannot fill the gap. ` +
+            `${stack.missing.join(", ")}, and this desktop's copy of them is out of date ` +
+            `(${disagreeing.join(", ")} differ from the host's), so it cannot fill the gap. ` +
             `Starting from it would lock the server out of its database, so nothing was changed.`,
         };
       }
       log.warn(
         `managed-switch-server: the stack's settings on ${host.label} are partial; ` +
           `filling them from this desktop's copy`,
-        { reason }
+        { reason },
       );
-      return { kind: 'cached', reason };
+      return { kind: "cached", reason };
     }
   }
 }
@@ -301,7 +301,7 @@ async function planStart(host: ServerHost): Promise<StartPlan> {
 /** The host's settings as a full bundle, kept as this desktop's copy. */
 async function adoptSettings(
   host: ServerHost,
-  stack: Extract<StackOnHost, { kind: 'present' }>
+  stack: Extract<StackOnHost, { kind: "present" }>,
 ): Promise<StackSettings> {
   // A `.env` from before the database role split has no runtime password; one
   // is made here, and the next start gives the role it. One from before
@@ -311,10 +311,10 @@ async function adoptSettings(
   const desktop = await readSecrets(host);
   const { secrets } = withNewerSecrets({
     ...stack.env.secrets,
-    dbRuntimePassword: stack.env.secrets.dbRuntimePassword ?? '',
-    secretKeys: stack.env.secrets.secretKeys ?? desktop?.secretKeys ?? '',
+    dbRuntimePassword: stack.env.secrets.dbRuntimePassword ?? "",
+    secretKeys: stack.env.secrets.secretKeys ?? desktop?.secretKeys ?? "",
     controllerTokenSecret:
-      stack.env.secrets.controllerTokenSecret ?? desktop?.controllerTokenSecret ?? '',
+      stack.env.secrets.controllerTokenSecret ?? desktop?.controllerTokenSecret ?? "",
   });
   await storeSecrets(host, secrets);
   await rememberPorts(host, stack.env.ports);
@@ -328,10 +328,10 @@ async function adoptSettings(
  */
 export async function adoptRunningStack(
   host: ServerHost,
-  stack: Extract<StackOnHost, { kind: 'present' }>,
-  lease: ServerLease
+  stack: Extract<StackOnHost, { kind: "present" }>,
+  lease: ServerLease,
 ): Promise<StackSettings> {
-  const shared = requireSharedUnderLock(host, lease, 'adopt');
+  const shared = requireSharedUnderLock(host, lease, "adopt");
   const settings = await adoptSettings(host, stack);
   await bringWorkingDirInStep(host, stack);
   if (!stack.published) await publishEnv(shared.state, stack.raw, shared.lease);
@@ -342,9 +342,9 @@ export async function adoptRunningStack(
  * (version check, upgrade backup, Stop, Restart) reads what the stack runs with. */
 export async function bringWorkingDirInStep(
   host: ServerHost,
-  stack: Extract<StackOnHost, { kind: 'present' }>
+  stack: Extract<StackOnHost, { kind: "present" }>,
 ): Promise<void> {
-  if (stack.source === 'published') {
+  if (stack.source === "published") {
     await host.writeFile(ENV_FILE_NAME, stack.raw, 0o600);
     await writeEnvStamp(host, stack.stamp);
   }
@@ -372,12 +372,12 @@ async function writeEnvStamp(host: ServerHost, stamp: string | null): Promise<vo
 async function shareUsageData(
   host: ServerHost,
   plan: StartPlan,
-  consent: boolean
+  consent: boolean,
 ): Promise<boolean> {
   if (!consent || host.sharedState === null) return consent;
   // The register is read whatever the plan: it outlives a reset, and a stack
   // with partial settings is still someone's.
-  if (plan.kind === 'adopt' && telemetryRequested(plan.stack.raw)) return true;
+  if (plan.kind === "adopt" && telemetryRequested(plan.stack.raw)) return true;
   try {
     const others = othersRecentlySeen(await readRegister(host.sharedState), new Date());
     if (others.length === 0) return true;
@@ -388,16 +388,16 @@ async function shareUsageData(
   }
   log.info(
     `managed-switch-server: the server on ${host.label} does not share usage data and others ` +
-      `use it, so this start keeps it off`
+      `use it, so this start keeps it off`,
   );
   return false;
 }
 
 async function settingsFor(
   host: ServerHost,
-  plan: Exclude<StartPlan, { kind: 'refused' }>
+  plan: Exclude<StartPlan, { kind: "refused" }>,
 ): Promise<StackSettings> {
-  if (plan.kind === 'adopt') return adoptSettings(host, plan.stack);
+  if (plan.kind === "adopt") return adoptSettings(host, plan.stack);
   // `cached` was only chosen because a copy exists, so neither call mints.
   return { secrets: await loadOrCreateSecrets(host), ports: await resolvePorts(host) };
 }
@@ -406,10 +406,10 @@ async function settingsFor(
  * nothing on the host depends on them yet. */
 async function portsReachableHere(
   host: ServerHost,
-  plan: Exclude<StartPlan, { kind: 'refused' }>,
-  settings: StackSettings
+  plan: Exclude<StartPlan, { kind: "refused" }>,
+  settings: StackSettings,
 ): Promise<StackSettings> {
-  if (plan.kind !== 'fresh') return settings;
+  if (plan.kind !== "fresh") return settings;
   try {
     await host.checkNetworking(settings.ports);
     return settings;
@@ -433,7 +433,7 @@ async function registerAndSignIn(
   serverName: string,
   settings: StackSettings,
   activate: boolean,
-  onMessage: (message: string) => void
+  onMessage: (message: string) => void,
 ): Promise<string> {
   return registerManagedServer(
     ref,
@@ -441,7 +441,7 @@ async function registerAndSignIn(
     { gatewayUrl: gatewayUrlFor(settings.ports), apiUrl: apiUrlFor(settings.ports) },
     settings.secrets,
     activate,
-    onMessage
+    onMessage,
   );
 }
 
@@ -454,15 +454,15 @@ export async function registerManagedServer(
   urls: { gatewayUrl: string; apiUrl: string },
   secrets: LocalServerSecrets,
   activate: boolean,
-  onMessage: (message: string) => void
+  onMessage: (message: string) => void,
 ): Promise<string> {
   const server = await ensureManagedServer({ name: serverName, ...urls }, ref);
   if (activate) await setActiveServerId(server.id);
 
-  onMessage('Signing in…');
+  onMessage("Signing in…");
   const login = await passwordLogin(server, LOCAL_SERVER_ADMIN_EMAIL, secrets.gatewayAdminPassword);
   if (!login.success) {
-    log.warn('managed-switch-server: auto sign-in failed; server will show a sign-in prompt', {
+    log.warn("managed-switch-server: auto sign-in failed; server will show a sign-in prompt", {
       error: login.error,
     });
   } else {
@@ -470,7 +470,7 @@ export async function registerManagedServer(
     // sign-in it will ever have — without matching the workspaces here, its
     // placeholder one would stay unmatched until some later launch happened to.
     await reconcileServerWorkspaces(server.id).catch((error: unknown) => {
-      log.warn('managed-switch-server: signed in, but could not read the account’s workspaces', {
+      log.warn("managed-switch-server: signed in, but could not read the account’s workspaces", {
         server: server.id,
         error: String(error),
       });
@@ -516,23 +516,23 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
 
   const docker = await host.detectDocker();
   if (!docker.available) {
-    return { kind: 'docker-unavailable', reason: docker.reason, detail: docker.detail };
+    return { kind: "docker-unavailable", reason: docker.reason, detail: docker.detail };
   }
 
-  if (host.sharedState !== null) onMessage('Reading the server’s settings on the host…');
+  if (host.sharedState !== null) onMessage("Reading the server’s settings on the host…");
   const plan = await planStart(host);
-  if (plan.kind === 'refused') {
+  if (plan.kind === "refused") {
     log.error(`managed-switch-server: refusing to start the stack on ${host.label}`, {
       reason: plan.message,
     });
-    return { kind: 'error', message: plan.message };
+    return { kind: "error", message: plan.message };
   }
 
   // Before anything reads the working dir: another account may have changed
   // the stack since, and the version check below reads this `.env`.
-  if (plan.kind === 'adopt') {
+  if (plan.kind === "adopt") {
     await bringWorkingDirInStep(host, plan.stack);
-  } else if (plan.kind === 'fresh' && host.sharedState !== null) {
+  } else if (plan.kind === "fresh" && host.sharedState !== null) {
     // The working dir belongs to a stack that is gone. Left there, its version
     // would pass for the deployed one: a false downgrade refusal, or a backup
     // of a database that does not exist.
@@ -548,7 +548,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   await host.checkNetworking(settings.ports);
   await assertManagedServerUrlFree(gatewayUrlFor(settings.ports), ref);
 
-  onMessage('Checking the deployed version…');
+  onMessage("Checking the deployed version…");
   const downgrade = await refuseDowngrade(host, checkoutRoot);
   if (downgrade) return downgrade;
 
@@ -566,7 +566,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   const migration = await migrateOffMatrix(host, checkoutRoot, onMessage, onLog);
   if (migration) return migration;
 
-  onMessage('Preparing configuration…');
+  onMessage("Preparing configuration…");
   await host.writeFile(COMPOSE_FILE_NAME, bundledComposeYaml());
   if (checkoutRoot !== null) {
     await host.writeFile(BUILD_OVERRIDE_FILE_NAME, checkoutBuildOverrideYaml(checkoutRoot));
@@ -582,7 +582,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
     secrets: settings.secrets,
     telemetryEnabled,
     telemetryEnvironment: currentFlintEnv(),
-    telemetryInternal: (await currentInternalFlag()) === 'true',
+    telemetryInternal: (await currentInternalFlag()) === "true",
   });
   await host.writeFile(ENV_FILE_NAME, env, 0o600);
 
@@ -591,14 +591,14 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // start: unpublished settings get overwritten by the next Console.
   let publishedStamp: string | null = null;
   if (shared !== null) {
-    onMessage('Sharing the server’s settings on the host…');
+    onMessage("Sharing the server’s settings on the host…");
     publishedStamp = await publishEnv(shared.state, env, shared.lease);
   }
 
   onMessage(
     checkoutRoot !== null
       ? `Building images from ${checkoutRoot} and starting containers…`
-      : 'Starting containers (pulling images if needed)…'
+      : "Starting containers (pulling images if needed)…",
   );
   await composeUp(host, onLog, checkoutRoot !== null);
   // A copy published before its database existed is stamped now. The stack is
@@ -608,7 +608,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
     try {
       await writeEnvStamp(
         host,
-        publishedStamp ?? (await stampPublishedEnv(shared.state, shared.lease))
+        publishedStamp ?? (await stampPublishedEnv(shared.state, shared.lease)),
       );
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -627,15 +627,15 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // the same path clients will.
   await host.establishNetworking(settings.ports);
 
-  onMessage('Waiting for the server to become healthy…');
+  onMessage("Waiting for the server to become healthy…");
   const healthy = await waitForHealth(gatewayUrlFor(settings.ports), { signal });
   if (!healthy) {
-    return { kind: 'error', message: 'The server did not become healthy in time.' };
+    return { kind: "error", message: "The server did not become healthy in time." };
   }
 
   const serverId = await registerAndSignIn(ref, serverName, settings, activate, onMessage);
   if (upgrade) await finishUpgrade(host);
-  return { kind: 'started', serverId, telemetryEnabled, warning };
+  return { kind: "started", serverId, telemetryEnabled, warning };
 }
 
 export type ConnectStackOptions = {
@@ -653,8 +653,8 @@ export type ConnectStackOptions = {
 /** `behind` is a stack at an older switch-core than this build pins, which the
  * caller updates as a start. */
 export type ConnectStackResult =
-  | Exclude<ConnectRemoteServerResult, { kind: 'cancelled' }>
-  | { kind: 'behind'; deployed: string; expected: string };
+  | Exclude<ConnectRemoteServerResult, { kind: "cancelled" }>
+  | { kind: "behind"; deployed: string; expected: string };
 
 /**
  * Join a stack already running on a shared host without running compose, so
@@ -663,47 +663,47 @@ export type ConnectStackResult =
  */
 export async function connectStack(opts: ConnectStackOptions): Promise<ConnectStackResult> {
   const { host, ref, serverName, onMessage, signal, lease } = opts;
-  const shared = requireSharedUnderLock(host, lease, 'connect to');
+  const shared = requireSharedUnderLock(host, lease, "connect to");
 
   const docker = await host.detectDocker();
   if (!docker.available) {
-    return { kind: 'docker-unavailable', reason: docker.reason, detail: docker.detail };
+    return { kind: "docker-unavailable", reason: docker.reason, detail: docker.detail };
   }
 
-  onMessage('Reading the server’s settings on the host…');
+  onMessage("Reading the server’s settings on the host…");
   const stack = await inspectStack(shared.state);
   switch (stack.kind) {
-    case 'absent':
-      return { kind: 'absent' };
-    case 'unshared':
+    case "absent":
+      return { kind: "absent" };
+    case "unshared":
       return {
-        kind: 'unshared',
+        kind: "unshared",
         ownerDir: stack.ownerDir,
         message: unsharedStackMessage(host.label, stack.ownerDir),
       };
-    case 'incomplete':
+    case "incomplete":
       return {
-        kind: 'error',
+        kind: "error",
         message:
           `The Switch server on ${host.label} is set up, but its settings are missing ` +
-          `${stack.missing.join(', ')}, so this Console cannot join it.`,
+          `${stack.missing.join(", ")}, so this Console cannot join it.`,
       };
-    case 'unreadable':
+    case "unreadable":
       return {
-        kind: 'error',
+        kind: "error",
         message: `Could not read the Switch server's settings on ${host.label}: ${stack.reason}`,
       };
-    case 'present':
+    case "present":
       break;
   }
-  if (!stack.running) return { kind: 'not-running' };
+  if (!stack.running) return { kind: "not-running" };
   const drift = driftOf(stack);
-  if (drift?.direction === 'upgrade') {
-    return { kind: 'behind', deployed: drift.deployed, expected: drift.expected };
+  if (drift?.direction === "upgrade") {
+    return { kind: "behind", deployed: drift.deployed, expected: drift.expected };
   }
-  if (drift?.direction === 'downgrade') {
+  if (drift?.direction === "downgrade") {
     return {
-      kind: 'error',
+      kind: "error",
       message:
         `The Switch server on ${host.label} runs switch-core ${drift.deployed}, newer than the ` +
         `${drift.expected} this Console runs, so this Console cannot use it. Update Switch ` +
@@ -711,24 +711,24 @@ export async function connectStack(opts: ConnectStackOptions): Promise<ConnectSt
     };
   }
 
-  onMessage('Preparing this account’s copy of the server’s settings…');
+  onMessage("Preparing this account’s copy of the server’s settings…");
   const settings = await adoptRunningStack(host, stack, lease);
   await lease.release();
 
   await host.establishNetworking(settings.ports);
 
-  onMessage('Waiting for the server to answer…');
+  onMessage("Waiting for the server to answer…");
   const gatewayUrl = gatewayUrlFor(settings.ports);
   if (!(await waitForHealth(gatewayUrl, { signal }))) {
     return {
-      kind: 'error',
+      kind: "error",
       message: `The Switch server on ${host.label} is running, but did not answer at ${gatewayUrl}.`,
     };
   }
 
   const serverId = await registerAndSignIn(ref, serverName, settings, true, onMessage);
   return {
-    kind: 'connected',
+    kind: "connected",
     serverId,
     deployedVersion: stack.runningVersion ?? stack.env.version,
   };
