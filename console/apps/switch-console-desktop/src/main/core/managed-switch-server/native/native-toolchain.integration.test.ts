@@ -10,7 +10,13 @@ import { runningCore, startCore, stopCore } from './core-process';
 import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
 import { nativeLayout } from './native-paths';
 import { resolvePostgres } from './postgres-binaries';
-import { initCluster, startCluster, stopCluster, writeClusterConfig } from './postgres-cluster';
+import {
+  initCluster,
+  startCluster,
+  stopCluster,
+  syncPasswords,
+  writeClusterConfig,
+} from './postgres-cluster';
 import { installSwitchCore } from './switch-core-install';
 import { resolveUv } from './uv';
 
@@ -76,5 +82,29 @@ describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)('native toolchain', () =
       await stopCluster(postgres, layout, () => {});
     }
     expect(await runningCore(layout)).toBeNull();
+
+    // A second start goes through the restart path: passwords re-set with the
+    // cluster stopped, then both processes back up on the same data.
+    await syncPasswords(postgres, layout, passwords, () => {});
+    await startCluster(postgres, layout, () => {});
+    try {
+      await startCore(
+        layout,
+        install,
+        buildNativeCoreSettings({
+          apiPort: ports.api,
+          postgresPort: ports.postgres,
+          callbackPort: ports.gateway,
+          secrets,
+          telemetryEnabled: false,
+          telemetryEnvironment: 'local',
+          telemetryInternal: false,
+        })
+      );
+      expect(await waitForHealth(nativeApiUrl(ports.api), { timeoutMs: 120_000 })).toBe(true);
+    } finally {
+      await stopCore(layout);
+      await stopCluster(postgres, layout, () => {});
+    }
   });
 });
