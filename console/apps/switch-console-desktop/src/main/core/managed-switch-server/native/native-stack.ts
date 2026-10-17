@@ -14,6 +14,7 @@ import {
   type DeployedTelemetry,
   type StartLocalServerResult,
 } from '@shared/core/managed-switch-server/managed-switch-server';
+import { MAX_START_FAILURE_LINE } from '@shared/core/managed-switch-server/start-failure';
 import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
 import { currentFlintEnv } from '../../telemetry/config';
 import { currentInternalFlag } from '../../telemetry/internal-account';
@@ -284,13 +285,17 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<StartL
       const reason = await coreFailureLine(layout);
       // One line, reason first: the server page headlines a failure's first
       // line alone.
-      const logFile = path.join(layout.logs, 'switch-core.log');
-      return {
-        kind: 'error',
-        message:
-          `${alive ? 'switch-core did not become healthy in time' : 'switch-core stopped during startup'}` +
-          `${reason ? `: ${reason}` : ''} (full log: ${logFile})`,
-      };
+      const head = alive
+        ? 'switch-core did not become healthy in time'
+        : 'switch-core stopped during startup';
+      const tail = ` (full log: ${path.join(layout.logs, 'switch-core.log')})`;
+      // The reason is what gets shortened to fit, never the log's path.
+      const room = MAX_START_FAILURE_LINE - head.length - tail.length - 2;
+      const shown =
+        reason === null || room < 20
+          ? ''
+          : `: ${reason.length > room ? `${reason.slice(0, room - 1)}…` : reason}`;
+      return { kind: 'error', message: `${head}${shown}${tail}` };
     }
 
     const serverId = await registerManagedServer(
