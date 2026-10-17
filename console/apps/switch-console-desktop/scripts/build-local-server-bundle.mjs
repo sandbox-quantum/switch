@@ -140,13 +140,22 @@ if (postgres) {
     if (entry.endsWith('.a')) await rm(path.join(dir, 'lib', entry));
   }
   // switch-core creates no extensions. initdb itself needs PL/pgSQL and the
-  // Snowball dictionaries; every other module is dead weight.
+  // Snowball dictionaries; every other module is dead weight. The Unix builds
+  // keep modules in lib/postgresql and extension files in
+  // share/postgresql/extension; the Windows build in lib and share/extension.
   const keepModule = (name) => /^(plpgsql|dict_snowball)\./.test(name);
-  const modules = path.join(dir, 'lib', 'postgresql');
+  const firstDir = (...candidates) => candidates.find((candidate) => existsSync(candidate));
+  const modules = firstDir(path.join(dir, 'lib', 'postgresql'), path.join(dir, 'lib'));
   for (const entry of await readdir(modules)) {
-    if (!keepModule(entry)) await rm(path.join(modules, entry), { recursive: true, force: true });
+    // Windows' lib also holds import libraries (.lib), only for building.
+    if (!/\.(so|dylib|dll|lib)$/.test(entry) || keepModule(entry)) continue;
+    await rm(path.join(modules, entry), { recursive: true, force: true });
   }
-  const extensions = path.join(dir, 'share', 'postgresql', 'extension');
+  const extensions = firstDir(
+    path.join(dir, 'share', 'postgresql', 'extension'),
+    path.join(dir, 'share', 'extension')
+  );
+  if (!extensions) throw new Error(`No extension directory in the PostgreSQL build at ${dir}`);
   for (const entry of await readdir(extensions)) {
     if (!entry.startsWith('plpgsql')) await rm(path.join(extensions, entry));
   }
@@ -281,7 +290,10 @@ for (const entry of await readdir(path.join(stdlib, 'site-packages')).catch(() =
 for (const drop of ['include', 'share', 'tcl', path.join('lib', 'pkgconfig')]) {
   await rm(path.join(pythonRoot, drop), { recursive: true, force: true });
 }
-for (const entry of await readdir(path.join(pythonRoot, 'lib')).catch(() => [])) {
+// macOS and Linux only: on Windows `lib` is the standard library itself (the
+// filesystem ignores case), where these prefixes would match `threading.py`.
+const unixLib = process.platform === 'win32' ? [] : await readdir(path.join(pythonRoot, 'lib'));
+for (const entry of unixLib) {
   // The interpreter is linked statically on macOS and Linux, so the shared
   // libpython beside it is only for embedding, which nothing here does.
   if (/^(tcl|tk|itcl|thread|libtcl|libtk|libpython)/.test(entry)) {
