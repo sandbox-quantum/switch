@@ -1,12 +1,15 @@
 import { realpathSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
-import { hostname } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   cliToolsBase,
   generateSealingKeyPair,
+  isProviderRecheckRequest,
   isStopMessage,
+  PROVIDER_RECHECKED_KIND,
+  type ProviderRecheckReply,
 } from '@switch-console/agent-providers';
 import packageJson from '../package.json' with { type: 'json' };
 import {
@@ -42,8 +45,9 @@ import {
   resolveSharedHostBundle,
 } from './handover';
 import { createLogger, errorMessage } from './log';
-import { loginShellPath } from './login-path';
+import { loginShellPath, withUserBinDirs } from './login-path';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
+import { ProviderRechecks } from './provider-rechecks';
 import { definitionProblem } from './reconcile';
 import { isManagedRelease, readCurrent, throughCurrent } from './releases';
 import { emptyObservation, InProcessRuntime, observeOnDisk, probeProvider } from './runtime';
@@ -406,16 +410,19 @@ async function runCommand(args: string[]): Promise<number> {
     level: process.env.SWITCH_CONTROLLER_LOG_LEVEL,
     write: (line) => process.stderr.write(line),
   });
-  if (process.platform !== 'win32') {
+  // Read again on every provider recheck, so a CLI installed since start is found.
+  const refreshPath = async () => {
+    if (process.platform === 'win32') return;
     const shell = process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
     const path = await loginShellPath(shell, process.env.PATH ?? '');
-    if (path) process.env.PATH = path;
-    else
+    if (path === null)
       log.warn(
         "Could not read the login shell's PATH; provider CLIs, git and gh are looked for on this process's own",
         { shell, path: process.env.PATH }
       );
-  }
+    process.env.PATH = withUserBinDirs(path ?? process.env.PATH ?? '', homedir());
+  };
+  await refreshPath();
   const credential = values['credential-stdin']
     ? await readCredential(process.stdin, CREDENTIAL_STDIN_TIMEOUT_MS)
     : null;
@@ -443,8 +450,28 @@ async function runCommand(args: string[]): Promise<number> {
   for (const signal of SIGNALS) process.once(signal, onSignal);
   // Windows has no signal a parent can send that is caught here, so Console
   // asks over the IPC channel it starts this controller with.
+  const rechecks = new ProviderRechecks();
   const onMessage = (message: unknown) => {
     if (isStopMessage(message)) onSignal('a stop request');
+    if (isProviderRecheckRequest(message)) {
+      const reply = (error: string | null) => {
+        const answer: ProviderRecheckReply = {
+          kind: PROVIDER_RECHECKED_KIND,
+          id: message.id,
+          error,
+        };
+        process.send?.(answer);
+      };
+      rechecks.run().then(
+        () => reply(null),
+        (error: unknown) => {
+          log.warn('Could not check the providers again on request', {
+            error: errorMessage(error),
+          });
+          reply(errorMessage(error));
+        }
+      );
+    }
   };
   process.on('message', onMessage);
   process.channel?.unref();
@@ -532,7 +559,9 @@ async function runCommand(args: string[]): Promise<number> {
                 }),
                 new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
               ),
-        locator: new PathProviderLocator(process.env.PATH, join(dataDir, 'version-probe')),
+        locator: new PathProviderLocator(() => process.env.PATH, join(dataDir, 'version-probe')),
+        rechecks,
+        refreshPath,
         tools: () => toolStatuses(process.env.PATH, process.platform, cliToolsBase()),
         fetch,
         openWebSocket: nodeWebSocket,
@@ -927,7 +956,7 @@ async function doctorCommand(args: string[]): Promise<number> {
   if (values['env-file'])
     Object.assign(process.env, await readEnvFile(resolve(values['env-file'])));
   const { dataDir, store, secrets } = await openState(values['data-dir']);
-  const locator = new PathProviderLocator(process.env.PATH, join(dataDir, 'version-probe'));
+  const locator = new PathProviderLocator(() => process.env.PATH, join(dataDir, 'version-probe'));
   try {
     const separateUsers = await separateUsersConfigHere(dataDir);
     const separateRuntime = separateUsers

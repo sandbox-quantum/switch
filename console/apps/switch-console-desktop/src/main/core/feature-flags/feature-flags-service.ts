@@ -33,6 +33,7 @@ export class FeatureFlagsService {
   private readonly listeners = new Set<(state: ServerFeatureFlags) => void>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private inflight: Promise<void> | null = null;
+  private queued: Promise<void> | null = null;
 
   constructor(private readonly deps: FeatureFlagsServiceDeps) {}
 
@@ -83,12 +84,25 @@ export class FeatureFlagsService {
     return [...this.states.values()].some((state) => state.flags[key]);
   }
 
-  /** Read every server's flags now. Concurrent calls share one pass. */
+  /**
+   * Read every server's flags now. Resolves once a pass that started after the
+   * call has finished: one already under way may have listed the servers, or
+   * read one, before what the caller is asking about changed — a sign-in, a
+   * server just added — and its answer for that server is the one from
+   * before. Calls made while a pass runs share the one after it.
+   */
   refreshAll(): Promise<void> {
-    this.inflight ??= this.readAll().finally(() => {
-      this.inflight = null;
+    if (this.inflight === null) {
+      this.inflight = this.readAll().finally(() => {
+        this.inflight = null;
+      });
+      return this.inflight;
+    }
+    this.queued ??= this.inflight.then(() => {
+      this.queued = null;
+      return this.refreshAll();
     });
-    return this.inflight;
+    return this.queued;
   }
 
   private async readAll(): Promise<void> {

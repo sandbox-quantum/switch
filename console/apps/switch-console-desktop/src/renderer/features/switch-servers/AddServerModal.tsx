@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { NewAgentForm } from '@renderer/features/locations/components/add-agent-modal/new-agent-form';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
+import { UsageDataToggle } from '@renderer/features/telemetry/usage-data-line';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
@@ -596,6 +597,8 @@ export const LocalSetupStep = observer(function LocalSetupStep({
         {!running && (
           <DockerStatus ready={dockerReady} unavailable={dockerUnavailable} checking={!docker} />
         )}
+
+        {idle && <UsageDataToggle />}
 
         {running && (
           <Alert>

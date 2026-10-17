@@ -1014,6 +1014,11 @@ class MemberUpdateRequest(BaseModel):
     role: str
 
 
+class OidcLoginOptionView(BaseModel):
+    id: str
+    label: str
+
+
 class AuthConfigResponse(BaseModel):
     # Read unauthenticated by the login page to decide which login methods to
     # show. `oidc_provider_label` is the button text (e.g. "Okta").
@@ -1025,6 +1030,12 @@ class AuthConfigResponse(BaseModel):
     signup_enabled: bool
     oidc_enabled: bool
     oidc_provider_label: str | None
+    # The sign-in buttons for the OIDC provider (`id`, `label`); empty for one
+    # button labelled `oidc_provider_label`.
+    oidc_login_options: list[OidcLoginOptionView]
+    # Whether `/auth/oidc/login` can hand the sign-in back to an app listening
+    # on this computer (`return_to`), so the app may use the system browser.
+    oidc_browser_handoff: bool
     # Where a first sign-in lands (`SwitchConfig.gateway_signup_mode`), so the
     # page can say whether signing in also creates an account of your own.
     signup_mode: Literal["default_tenant", "invite_only", "open"]

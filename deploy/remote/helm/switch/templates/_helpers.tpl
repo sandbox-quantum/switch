@@ -794,6 +794,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ $oidcScopes | quote }}
 - name: GATEWAY_OIDC_PROVIDER_LABEL
   value: {{ .Values.switchCore.oidc.providerLabel | quote }}
+{{- with .Values.switchCore.oidc.loginOptions }}
+- name: GATEWAY_OIDC_LOGIN_OPTIONS
+  value: {{ toJson . | quote }}
+{{- end }}
 {{- if .Values.switchCore.oidc.redirectUrl }}
 - name: GATEWAY_OIDC_REDIRECT_URL
   value: {{ .Values.switchCore.oidc.redirectUrl | quote }}

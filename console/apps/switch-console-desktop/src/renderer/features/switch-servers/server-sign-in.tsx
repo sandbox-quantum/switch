@@ -7,7 +7,9 @@ import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
 import { Label } from '@renderer/lib/ui/label';
+import { Spinner } from '@renderer/lib/ui/spinner';
 import type { SignupMachine, SwitchAuthConfig } from '@shared/core/switch-servers/switch-servers';
+import { SignInProviderLogo } from './sign-in-provider-logo';
 import { loadSwitchCloudOrigin, managedCloudServerId } from './switch-cloud-origin';
 import { switchServersStore } from './switch-servers-store';
 
@@ -70,7 +72,11 @@ export type ServerSignIn = {
   canSubmitPassword: boolean;
   /** Both resolve true only when the session is live afterwards. */
   signInWithPassword: () => Promise<boolean>;
-  signInWithOidc: () => Promise<boolean>;
+  /** `provider`: one of the server's sign-in options, or null for its one SSO button. */
+  signInWithOidc: (provider: string | null) => Promise<boolean>;
+  /** The sign-in option waiting on the browser, or null; `undefined` for none. */
+  oidcWaiting: string | null | undefined;
+  cancelOidc: () => void;
   /** The email form's action for the current mode; null when not signed in. */
   submitForm: () => Promise<SignedIn | null>;
   /** Whether the email form's button can be pressed in the current mode. */
@@ -116,6 +122,7 @@ export function useServerSignIn(serverId: string): ServerSignIn {
   const [fieldErrors, setFieldErrors] = useState<SignUpFieldErrors>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [oidcWaiting, setOidcWaiting] = useState<string | null | undefined>(undefined);
 
   useEffect(() => {
     void switchServersStore.ensureAuthConfig(serverId);
@@ -175,7 +182,16 @@ export function useServerSignIn(serverId: string): ServerSignIn {
     error,
     canSubmitPassword,
     signInWithPassword,
-    signInWithOidc: () => attempt(() => switchServersStore.oidcLogin(serverId)),
+    signInWithOidc: async (provider) => {
+      setOidcWaiting(provider);
+      try {
+        return await attempt(() => switchServersStore.oidcLogin(serverId, provider));
+      } finally {
+        setOidcWaiting(undefined);
+      }
+    },
+    oidcWaiting,
+    cancelOidc: () => switchServersStore.cancelOidcLogin(serverId),
     submitForm: async () => {
       if (mode === 'signUp') {
         const machine = await signUp();
@@ -205,9 +221,8 @@ function FieldError({ id, message }: { id: string; message: string | undefined }
 }
 
 /**
- * The fields themselves: email and password when the server takes them, the
- * provider button when it speaks OIDC, and both separated by an "or" when it
- * offers the two. When the server allows sign-up, a link switches the email
+ * The fields themselves: the provider buttons when the server speaks OIDC,
+ * and under them, after an "or", email and password when it takes those too. When the server allows sign-up, a link switches the email
  * form to creating an account.
  *
  * `passwordSubmit` is where the caller puts its own submit button. The wizard
@@ -239,10 +254,14 @@ export const ServerSignInFields = observer(function ServerSignInFields({
     if (signedIn) onSignedIn(signedIn);
   };
 
-  const submitOidc = async () => {
+  const submitOidc = async (provider: string | null) => {
     if (signIn.submitting) return;
-    if (await signIn.signInWithOidc()) onSignedIn({ machine: null });
+    if (await signIn.signInWithOidc(provider)) onSignedIn({ machine: null });
   };
+  const oidcButtons: { id: string | null; label: string }[] =
+    config && config.oidcLoginOptions.length > 0
+      ? config.oidcLoginOptions
+      : [{ id: null, label: config?.oidcProviderLabel ?? 'SSO' }];
 
   if (!config) {
     return (
@@ -264,6 +283,46 @@ export const ServerSignInFields = observer(function ServerSignInFields({
           <TriangleAlert className="size-3 shrink-0" />
           Could not check for updated sign-in options — showing what was last known.
         </p>
+      )}
+
+      {showOidc && (
+        <div className="flex flex-col gap-3">
+          {oidcButtons.map((option) => (
+            <Button
+              key={option.id ?? 'sso'}
+              variant="outline"
+              className="w-full justify-center gap-2"
+              disabled={signIn.submitting}
+              onClick={() => void submitOidc(option.id)}
+            >
+              {signIn.oidcWaiting === option.id ? (
+                <Spinner className="size-4" />
+              ) : (
+                <SignInProviderLogo id={option.id} label={option.label} />
+              )}
+              Continue with {option.label}
+            </Button>
+          ))}
+          {signIn.oidcWaiting !== undefined && config.oidcBrowserHandoff && (
+            <p className="flex items-center justify-between gap-3 text-xs text-foreground-muted">
+              <span>Finish signing in in your browser. This page moves on once you're done.</span>
+              <button
+                type="button"
+                className="bg-transparent p-0 font-medium text-foreground underline-offset-2 hover:bg-transparent hover:underline"
+                onClick={signIn.cancelOidc}
+              >
+                Cancel
+              </button>
+            </p>
+          )}
+          {showEmailForm && (
+            <div className="flex items-center gap-3">
+              <span className="h-px flex-1 bg-border" />
+              <span className="text-xs text-foreground-muted">or</span>
+              <span className="h-px flex-1 bg-border" />
+            </div>
+          )}
+        </div>
       )}
 
       {showEmailForm && (
@@ -336,26 +395,6 @@ export const ServerSignInFields = observer(function ServerSignInFields({
             </div>
           )}
           {passwordSubmit}
-        </div>
-      )}
-
-      {showOidc && (
-        <div className="flex flex-col gap-3">
-          {config.passwordLoginEnabled && (
-            <div className="flex items-center gap-3">
-              <span className="h-px flex-1 bg-border" />
-              <span className="text-xs text-foreground-muted">or</span>
-              <span className="h-px flex-1 bg-border" />
-            </div>
-          )}
-          <Button
-            variant="outline"
-            className="w-full"
-            disabled={signIn.submitting}
-            onClick={() => void submitOidc()}
-          >
-            Continue with {config.oidcProviderLabel ?? 'SSO'}
-          </Button>
         </div>
       )}
 

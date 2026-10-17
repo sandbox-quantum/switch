@@ -4,6 +4,7 @@ import { serverAvailability } from '@renderer/features/switch-servers/server-ava
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { events, rpc } from '@renderer/lib/ipc';
+import { chatActivityChannel, chatMessageChannel } from '@shared/core/chats/chatEvents';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { agentMigrationChannel } from '@shared/events/agentMigrationEvents';
 
@@ -16,6 +17,9 @@ export const MANAGED_AGENTS_KEY = 'managed-agents';
  * so this only bounds how long a change made elsewhere takes to show.
  */
 const MANAGED_AGENTS_REFRESH_MS = 30_000;
+
+/** How soon after an agent's activity in a chat the list is read again. */
+const AGENT_ACTIVITY_REFRESH_MS = 1_500;
 
 /**
  * The signed-in user's managed agents on the server, as the server holds them,
@@ -42,6 +46,32 @@ export function useManagedAgents(serverId: string | null) {
       }),
     [queryClient, serverId]
   );
+  // An agent speaking or working in a chat is when the list most likely moved
+  // without this Console doing it: the agent is up (its status), or it just
+  // made an agent for its owner (switch-buddy). Read again then, at most once
+  // a few seconds, rather than at the next half-minute.
+  useEffect(() => {
+    if (serverId === null) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const soon = () => {
+      if (timer !== null) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY, serverId] });
+      }, AGENT_ACTIVITY_REFRESH_MS);
+    };
+    const offMessage = events.on(chatMessageChannel, (event) => {
+      if (event.serverId === serverId && event.message.sender.kind === 'agent') soon();
+    });
+    const offActivity = events.on(chatActivityChannel, (event) => {
+      if (event.serverId === serverId) soon();
+    });
+    return () => {
+      offMessage();
+      offActivity();
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [queryClient, serverId]);
   return useQuery({
     queryKey: [MANAGED_AGENTS_KEY, serverId, workspaceId, user?.id ?? null],
     queryFn: () => rpc.managedAgents.list(serverId!),

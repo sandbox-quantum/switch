@@ -24,6 +24,10 @@ export const embeddedControllerController = createRPCController({
 
   restart: (serverId: string): Promise<void> => embeddedControllerService.restart(serverId),
 
+  /** Checks every provider on this computer again now, and reports it to the server. */
+  recheckProviders: (serverId: string): Promise<void> =>
+    embeddedControllerService.recheckProviders(serverId),
+
   /** Renames this computer as a machine and/or changes its description, on the server. */
   updateDetails: (params: { serverId: string; changes: MachineDetailsChange }): Promise<void> =>
     embeddedControllerService.updateDetails(params.serverId, params.changes),

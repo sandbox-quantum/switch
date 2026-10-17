@@ -35,6 +35,8 @@ export interface MessagePayload {
   timestamp: number;
   thread_id?: string | null;
   attachments?: AttachmentRef[];
+  /** The words the chat opened with, posted in the agent's name as it joined; absent elsewhere. */
+  opening_message?: string | null;
 }
 
 export interface CommandPayload {

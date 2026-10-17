@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from switch_core.feature_flags import (
@@ -99,6 +99,44 @@ class ControllerRelease:
     version: str
     url: str
     sha256: str
+
+
+# Authorization parameters a login option may not set: the gateway's OIDC
+# client owns them, and letting configuration replace one would break the
+# flow or its protections.
+_RESERVED_OIDC_PARAMS = frozenset(
+    {
+        "client_id",
+        "redirect_uri",
+        "response_type",
+        "response_mode",
+        "scope",
+        "state",
+        "nonce",
+        "code_challenge",
+        "code_challenge_method",
+    }
+)
+
+
+class OidcLoginOption(BaseModel):
+    """One sign-in button for the gateway's OIDC provider: what it is called,
+    and the extra authorization parameters that send the person straight to
+    one way of signing in there (WorkOS: `{"provider": "GoogleOAuth"}`)."""
+
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")
+    label: str = Field(min_length=1, max_length=40)
+    params: dict[str, str] = {}
+
+    @model_validator(mode="after")
+    def _no_reserved_params(self) -> "OidcLoginOption":
+        reserved = sorted(set(self.params) & _RESERVED_OIDC_PARAMS)
+        if reserved:
+            raise ValueError(
+                f"login option {self.id!r} may not set {', '.join(reserved)}: "
+                "the gateway's OIDC client sets those"
+            )
+        return self
 
 
 class SwitchConfig(BaseSettings):
@@ -224,6 +262,13 @@ class SwitchConfig(BaseSettings):
     # answer.
     gateway_oidc_scopes: str | None = None
     gateway_oidc_provider_label: str | None = None
+    # The sign-in buttons offered for that provider, as JSON
+    # (`GATEWAY_OIDC_LOGIN_OPTIONS='[{"id": "google", "label": "Google",
+    # "params": {"provider": "GoogleOAuth"}}]'`). Each sends its `params` with
+    # the authorization request, so a provider that understands them (WorkOS's
+    # `provider`) goes straight to that way of signing in. Empty: one button,
+    # labelled by `gateway_oidc_provider_label`.
+    gateway_oidc_login_options: list[OidcLoginOption] = []
     # Absolute callback URL registered with the IdP. Must exactly match the
     # provider registration, e.g.
     # https://switch-gateway.<tailnet>.ts.net/gateway/auth/oidc/callback

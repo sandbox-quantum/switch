@@ -129,6 +129,9 @@ class StagedUpload:
 
 
 RemovalReason = Literal["access", "unlisted"]
+
+# Long enough for a welcome with tips; a greeting is not a document.
+GREETING_MAX_CHARS = 4000
 RoomControl = Literal["interrupt", "reset", "compact"]
 
 
@@ -894,6 +897,7 @@ class ChatService:
         agent_ids: list[str],
         name: str | None,
         request_id: str,
+        greeting: str | None,
     ) -> Room:
         """A private room with the agents, owned by and joined by the user.
 
@@ -904,11 +908,32 @@ class ChatService:
         Retrying with the same request id finishes whatever an earlier attempt
         left undone: the room is found by the operation id stamped on it, and
         the agents' and the user's memberships are re-applied.
+
+        `greeting` is what the agent says as it joins, in place of its usual
+        one-liner: its first words, written for it (switch-buddy's welcome).
+        Only for a direct chat with one of the user's own agents.
         """
         if not agent_ids:
             raise ChatError(422, "AGENTS_REQUIRED", "A chat needs at least one agent.")
+        if greeting is not None:
+            if len(agent_ids) != 1:
+                raise ChatError(
+                    422,
+                    "GREETING_NEEDS_ONE_AGENT",
+                    "Only a chat with one agent opens with its greeting.",
+                )
+            if not greeting.strip():
+                raise ChatError(422, "EMPTY_MESSAGE", "The greeting is empty.")
+            if len(greeting) > GREETING_MAX_CHARS:
+                raise ChatError(
+                    422,
+                    "GREETING_TOO_LONG",
+                    f"A greeting is at most {GREETING_MAX_CHARS} characters.",
+                )
         payload_hash = _hash(
             {"agentId": agent_ids[0], "name": name}
+            if len(agent_ids) == 1 and greeting is None
+            else {"agentId": agent_ids[0], "name": name, "greeting": greeting}
             if len(agent_ids) == 1
             else {"agentIds": agent_ids, "name": name}
         )
@@ -928,6 +953,12 @@ class ChatService:
                     )
                     for agent_id in agent_ids
                 ]
+                if greeting is not None and agents[0].owner_id != user.id:
+                    raise ChatError(
+                        403,
+                        "NOT_AGENT_OWNER",
+                        "Only the agent's owner can give it a greeting.",
+                    )
                 if operation is None:
                     await self._claim(
                         session,
@@ -971,6 +1002,11 @@ class ChatService:
                             acting_user_id=user.id,
                             created_by_kind="user",
                             chat_operation_id=operation_id,
+                            agent_greeting=(
+                                {"agent_id": agents[0].id, "body": greeting}
+                                if greeting is not None
+                                else None
+                            ),
                         )
                     )
                 except ValueError as exc:

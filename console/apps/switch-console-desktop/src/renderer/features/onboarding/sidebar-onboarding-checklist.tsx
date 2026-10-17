@@ -1,6 +1,7 @@
 import { observer } from 'mobx-react-lite';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { appState } from '@renderer/lib/stores/app-state';
+import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import { OnboardingChecklistPanel } from './onboarding-checklist';
 import { useOnboardingChecklist } from './use-onboarding-checklist';
 
@@ -18,7 +19,9 @@ export const SidebarOnboardingChecklist = observer(function SidebarOnboardingChe
 
   // Render nothing until the setting is known, rather than flashing a checklist
   // at someone who dismissed it three launches ago.
-  if (isLoading || !value?.showChecklist) return null;
+  // The first-run flow ends with switch-buddy, which takes the checklist's
+  // place: it does those steps with the person rather than listing them.
+  if (BUILD_FEATURE_FLAGS.onboarding || isLoading || !value?.showChecklist) return null;
 
   return (
     <OnboardingChecklistPanel

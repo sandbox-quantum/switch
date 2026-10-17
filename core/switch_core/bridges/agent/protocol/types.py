@@ -245,6 +245,10 @@ class MessagePayload(BaseModel):
     timestamp: int
     thread_id: str | None = None
     attachments: list[AttachmentRef] = []
+    # The words this chat opened with, posted in the agent's name as it
+    # joined (a Switch Console chat's welcome), so the agent can be told what
+    # it said; None everywhere else.
+    opening_message: str | None = None
 
 
 class CommandPayload(BaseModel):

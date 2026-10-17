@@ -57,11 +57,14 @@ A condition reads one param: "{param}" (true when it has a value) or
   name: identifier               # optional; else derived from display_name.
                                  # Lowercase letters, digits, . - _
   display_name: text             # optional; how people see it
+  icon_url: https URL            # optional; its picture, else one drawn from its name
   description: text              # optional; what it is for
   model: text | "{param}"        # optional; the provider's default if absent
   advanced_config: {key: value}  # optional; see get_advanced_config(provider)
   isolation: shared | isolated   # optional; default shared
   auto_approve: true | false     # optional; default false
+  can_manage_agents: true | false  # optional; default false. It may create
+                                 # agents on the deployer's machines
   addressing: owner | owner-agents | anyone | {anyone_in: [room keys]}
                                  # optional; default owner (only the deployer)
   connections:                   # optional; the deployer's connections it gets

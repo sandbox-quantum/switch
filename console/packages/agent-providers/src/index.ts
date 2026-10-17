@@ -76,6 +76,14 @@ export {
   requestStop,
   STOP_MESSAGE,
 } from './host/stop-request';
+export {
+  isProviderRecheckReply,
+  isProviderRecheckRequest,
+  PROVIDER_RECHECK_KIND,
+  PROVIDER_RECHECKED_KIND,
+  type ProviderRecheckReply,
+  type ProviderRecheckRequest,
+} from './host/provider-recheck';
 export { hostStartSources, type HostStartSource } from './host/session-start';
 export {
   type AgentEventStream,

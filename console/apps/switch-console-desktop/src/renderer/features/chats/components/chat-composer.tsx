@@ -1,6 +1,7 @@
 import { ChevronDown, Minimize2, Plus, RotateCcw, RotateCw, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
+import { reportBuddyMessage } from '@renderer/features/switch-buddy/buddy-telemetry';
 import { isEditableTarget } from '@renderer/lib/hooks/use-arrow-key-navigation';
 import { rpc } from '@renderer/lib/ipc';
 import { modalStore } from '@renderer/lib/modal/modal-store';
@@ -197,6 +198,11 @@ export const ChatComposer = observer(function ChatComposer({
   const send = () => {
     const body = draft.trim();
     if (disabled || (!body && !files.length)) return;
+    reportBuddyMessage(
+      agents,
+      timeline.messages.filter((message) => message.sender.kind === 'human').length +
+        timeline.pending.length
+    );
     timeline.send({
       body,
       threadRootId: replyTo?.messageId ?? null,

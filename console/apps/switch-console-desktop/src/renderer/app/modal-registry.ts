@@ -8,6 +8,7 @@ import { RemoveAgentConfigModal } from '@renderer/features/remote-hosts/remove-a
 import { CreateSessionModal } from '@renderer/features/sessions/create-session-modal/create-session-modal';
 import { DeleteSessionModal } from '@renderer/features/sessions/delete-session-modal';
 import { RenameSessionModal } from '@renderer/features/sessions/rename-session-modal';
+import { BuddySetupModal } from '@renderer/features/switch-buddy/buddy-setup-modal';
 import { AddAgentsToRoomModal } from '@renderer/features/switch-rooms/AddAgentsToRoomModal';
 import { AddAgentToRoomsModal } from '@renderer/features/switch-rooms/AddAgentToRoomsModal';
 import { DeleteRoomModal } from '@renderer/features/switch-rooms/DeleteRoomModal';
@@ -71,6 +72,7 @@ export const modalRegistry = {
   }),
   deleteSessionModal: createModal(DeleteSessionModal, { size: 'sm' }),
   addServerModal: createModal(AddServerModal, { size: 'md', dismissOnOutsideClick: false }),
+  buddySetupModal: createModal(BuddySetupModal, { size: 'lg', dismissOnOutsideClick: false }),
   createWorkspaceModal: createModal(CreateWorkspaceModal, {
     size: 'md',
     dismissOnOutsideClick: false,

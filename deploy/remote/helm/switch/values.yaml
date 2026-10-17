@@ -333,6 +333,13 @@ switchCore:
     clientId: ""
     scopes: "openid profile email"
     providerLabel: "OIDC"
+    # One sign-in button per entry instead of one labelled providerLabel. Each
+    # sends its params with the authorization request, so a provider that
+    # understands them goes straight to that way of signing in. WorkOS:
+    #   loginOptions:
+    #     - { id: google, label: Google, params: { provider: GoogleOAuth } }
+    #     - { id: github, label: GitHub, params: { provider: GitHubOAuth } }
+    loginOptions: []
     # Must exactly match the redirect URI registered with the IdP.
     redirectUrl: ""
     # Refuse a login unless the IdP asserts email_verified. Set false only for a

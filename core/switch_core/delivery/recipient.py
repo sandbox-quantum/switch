@@ -526,7 +526,7 @@ class AgentRecipient:
                 addressed = gate.addressed
                 refusal = gate.refusal
 
-        own_event = _message_own_event(meta, event, thread_id)
+        own_event = _message_own_event(meta, event, thread_id, self.agent.id)
 
         async def after(row: InboundEvent) -> None:
             assert isinstance(row, InboundMessage)
@@ -594,7 +594,9 @@ class AgentRecipient:
             await self._after_follow_up(row)
 
         return Delivery(
-            own_event=_message_own_event(meta, event, event.thread_root_id),
+            own_event=_message_own_event(
+                meta, event, event.thread_root_id, self.agent.id
+            ),
             after=after,
         )
 
@@ -747,6 +749,9 @@ class AgentRecipient:
                 for part in files
             ]
 
+        # Read now: the event is built after the row commits, from the rows alone.
+        opening = opening_message_for(meta, self.agent.id)
+
         def own_event(row: InboundEvent) -> OwnEvent:
             parts = written(row)
             first = _first_file(parts)
@@ -770,6 +775,7 @@ class AgentRecipient:
                 attachments=[
                     attachment_ref(part) for part in sorted(parts, key=file_index)
                 ],
+                opening_message=opening,
             )
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -884,7 +890,9 @@ class AgentRecipient:
         return fallback
 
     async def greet(self) -> None:
-        """Say hello in a room the agent has just arrived in.
+        """Say hello in a room the agent has just arrived in: in the words the
+        room was given for it when there are some (a Switch Console chat's
+        opening message), else its usual line.
 
         The per-agent greeting can be switched off per bridge: on Mattermost,
         for one, whose native "X joined the channel" notice makes it
@@ -900,7 +908,10 @@ class AgentRecipient:
                 self._room.room_id,
             )
             return
-        if meta.channel_type == "direct":
+        opening = opening_message_for(meta, self.agent.id)
+        if opening is not None:
+            greeting = opening
+        elif meta.channel_type == "direct":
             greeting = f"Hi! I'm {name} — how can I help?"
         else:
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
@@ -1742,8 +1753,17 @@ class AgentRecipient:
         return pattern.sub("", text).strip()
 
 
+def opening_message_for(meta: RoomMeta, agent_id: str) -> str | None:
+    """The words the room opened with in this agent's name (its chat's
+    welcome), for the agent to be told what it said; None when there are none."""
+    written = meta.agent_greeting
+    if written is None or written.get("agent_id") != agent_id:
+        return None
+    return written.get("body")
+
+
 def _message_own_event(
-    meta: RoomMeta, event: InboundMessage, thread_id: str | None
+    meta: RoomMeta, event: InboundMessage, thread_id: str | None, agent_id: str
 ) -> Callable[[InboundEvent], OwnEvent]:
     """How an agent's own event for a message is built once the message is
     written."""
@@ -1766,6 +1786,7 @@ def _message_own_event(
             sender_name=sender_name,
             body=row.body,
             thread_id=thread_id,
+            opening_message=opening_message_for(meta, agent_id),
         )
         # Serialising runs once per agent per message, so only when it will
         # be seen.

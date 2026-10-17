@@ -53,6 +53,9 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
     # Self sign-up has no caller either; it writes into tenant zero by name.
     ("POST", "/auth/signup"),
     ("GET", "/auth/oidc/callback"),
+    # The browser sign-in's last step: a one-time code and its verifier,
+    # traded for the session cookie, before there is a session to bind from.
+    ("POST", "/auth/oidc/exchange"),
     ("GET", "/auth/session"),
     ("POST", "/tenants"),
     ("POST", "/tenants/{tenant_id}/switch"),
@@ -88,6 +91,7 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("GET", "/auth/config"),
     ("GET", "/auth/oidc/login"),
     ("GET", "/auth/oidc/callback"),
+    ("POST", "/auth/oidc/exchange"),
     ("POST", "/auth/login"),
     ("POST", "/auth/signup"),
     ("POST", "/auth/logout"),

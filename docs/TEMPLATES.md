@@ -264,6 +264,7 @@ offers to link it.
 agent:
   name:           identifier
   display_name:   text
+  icon_url:       https URL
   description:    text
   instructions:   text
   provider:       claude | codex | opencode | "{param}"
@@ -274,6 +275,7 @@ agent:
   advanced_config: { key: value }
   isolation:      shared | isolated
   auto_approve:   true | false
+  can_manage_agents: true | false
   connections:    [ service, or {service, access, repos} ]
   repo:           URL
   sources:        [ {label, url} or url ]
@@ -373,6 +375,17 @@ controller; `isolated` runs it as a process of its own.
 
 **`auto_approve`**. Whether the agent runs tools without asking for
 approval. Default `false`.
+
+**`icon_url`**. The agent's picture: an absolute `https://` URL, checked as
+an icon set on the agent's page is. Without one it gets the picture drawn
+from its name.
+
+**`can_manage_agents`**. Turns on the agent's "can manage agents"
+capability: it may list the deployer's machines and create managed agents
+on them, acting for the deployer. Default `false`. The deployer owns every
+agent the template creates, so the capability is theirs to give; an agent
+deploying a template already has it, or it could not create agents at all.
+Only on a server with agent management.
 
 **`connections`**. The deployer's own connections (GitHub, Atlassian, and
 the rest of Settings, Connections) granted to the agent once it exists.

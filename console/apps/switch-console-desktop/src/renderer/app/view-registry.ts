@@ -9,6 +9,7 @@ import { templateCaptureView } from '@renderer/features/room-templates/room-temp
 import { templateImportView } from '@renderer/features/room-templates/room-template-import-view';
 import { sessionView } from '@renderer/features/sessions/view';
 import { settingsView } from '@renderer/features/settings/settings-view';
+import { switchBuddyView } from '@renderer/features/switch-buddy/switch-buddy-view';
 import { roomView } from '@renderer/features/switch-rooms/view';
 import { managedServerView } from '@renderer/features/switch-servers/managed-server-view';
 import { serverAgentsView } from '@renderer/features/switch-servers/server-agents-view';
@@ -43,6 +44,7 @@ export const views = {
   templateDetail: templateDetailView,
   templateUse: templateUseView,
   templateCapture: templateCaptureView,
+  switchBuddy: switchBuddyView,
   // oxlint-disable-next-line typescript/no-explicit-any
 } satisfies Record<string, ViewDefinition<any>>;
 

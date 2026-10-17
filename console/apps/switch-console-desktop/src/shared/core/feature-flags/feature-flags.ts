@@ -16,6 +16,7 @@ export const CONSOLE_FEATURE_FLAGS = [
   'agent_management',
   'service_connections',
   'agent_chats',
+  'switch_buddy',
 ] as const;
 
 export type FeatureFlagKey = (typeof CONSOLE_FEATURE_FLAGS)[number];

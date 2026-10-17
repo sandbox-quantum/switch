@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from switch_core.delivery.recipient import AgentRecipient
+from switch_core.delivery.recipient import AgentRecipient, opening_message_for
 
 
 class _Recorder:
@@ -23,6 +23,7 @@ def _fake_self(
     *,
     is_direct: bool = False,
     agent_greetings_enabled: bool = True,
+    agent_greeting: dict[str, str] | None = None,
 ) -> SimpleNamespace:
     """The agent arriving in a room, as the router hands it its arrival."""
     return SimpleNamespace(
@@ -33,6 +34,7 @@ def _fake_self(
             bridge_id="bridge-1",
             agent_greetings_enabled=agent_greetings_enabled,
             channel_type="direct" if is_direct else "channel_private",
+            agent_greeting=agent_greeting,
         ),
         _room=_ROOM,
         actor=SimpleNamespace(send_message=send_message),
@@ -77,3 +79,41 @@ async def test_direct_greeting_sent_when_enabled() -> None:
     )
     assert len(send_message.calls) == 1
     assert send_message.calls[0]["body"].startswith("Hi! I'm cc-bug-fixing")
+
+
+@pytest.mark.asyncio
+async def test_a_greeting_written_for_the_agent_replaces_its_line() -> None:
+    send_message = _Recorder()
+    await AgentRecipient.greet(
+        _fake_self(  # type: ignore[arg-type]
+            send_message,
+            is_direct=True,
+            agent_greeting={
+                "agent_id": "agent-1",
+                "body": "Welcome, I'm here to help.",
+            },
+        )
+    )
+    assert [call["body"] for call in send_message.calls] == [
+        "Welcome, I'm here to help."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_greeting_written_for_another_agent_is_not_said() -> None:
+    send_message = _Recorder()
+    await AgentRecipient.greet(
+        _fake_self(  # type: ignore[arg-type]
+            send_message,
+            is_direct=True,
+            agent_greeting={"agent_id": "someone-else", "body": "Not mine."},
+        )
+    )
+    assert send_message.calls[0]["body"].startswith("Hi! I'm cc-bug-fixing")
+
+
+def test_the_opening_message_is_told_only_to_the_agent_it_was_written_for() -> None:
+    meta = SimpleNamespace(agent_greeting={"agent_id": "agent-1", "body": "Welcome!"})
+    assert opening_message_for(meta, "agent-1") == "Welcome!"  # type: ignore[arg-type]
+    assert opening_message_for(meta, "agent-2") is None  # type: ignore[arg-type]
+    assert opening_message_for(SimpleNamespace(agent_greeting=None), "agent-1") is None  # type: ignore[arg-type]

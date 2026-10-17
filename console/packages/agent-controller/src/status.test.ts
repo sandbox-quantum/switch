@@ -453,7 +453,7 @@ describe('PathProviderLocator', () => {
     const script = await writeNodeCli(dir, 'cursor-agent', 'console.log("2026.01.15-abc")');
     writeFileSync(join(dir, 'claude'), 'not executable');
     const locator = new PathProviderLocator(
-      ['/nonexistent', dir].join(delimiter),
+      () => ['/nonexistent', dir].join(delimiter),
       join(dir, 'probe-home')
     );
     expect(await locator.locate('cursor')).toEqual({
@@ -478,7 +478,7 @@ describe('PathProviderLocator', () => {
     const previous = process.env.HOME;
     process.env.HOME = '/nonexistent';
     try {
-      const located = await new PathProviderLocator(dir, join(dir, 'probe-home')).locate(
+      const located = await new PathProviderLocator(() => dir, join(dir, 'probe-home')).locate(
         'opencode'
       );
       expect(located).toEqual({
@@ -505,7 +505,9 @@ describe('a CLI whose version cannot be read', () => {
       'opencode',
       'console.error("EROFS: read-only file system"); process.exit(1);'
     );
-    const located = await new PathProviderLocator(dir, join(dir, 'probe-home')).locate('opencode');
+    const located = await new PathProviderLocator(() => dir, join(dir, 'probe-home')).locate(
+      'opencode'
+    );
     expect(located).toEqual({
       path: expect.stringMatching(new RegExp(`^${escape(script)}$`, 'i')),
       version: null,

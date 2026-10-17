@@ -1,6 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
-import { STOP_MESSAGE } from '@switch-console/agent-providers';
+import {
+  isProviderRecheckReply,
+  PROVIDER_RECHECK_KIND,
+  type ProviderRecheckRequest,
+  STOP_MESSAGE,
+} from '@switch-console/agent-providers';
 import type { EmbeddedControllerPhase } from '@shared/core/embedded-controller/embedded-controller';
 
 /** The controller's exit codes (see the agent-controller README). */
@@ -29,6 +35,8 @@ export interface ControllerChild {
   kill(signal?: NodeJS.Signals): boolean;
   once(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
   once(event: 'error', listener: (error: Error) => void): this;
+  on(event: 'message', listener: (message: unknown) => void): this;
+  off(event: 'message', listener: (message: unknown) => void): this;
 }
 
 export type SpawnController = (
@@ -138,6 +146,41 @@ export class ControllerSupervisor {
     if (await within(exited, timeoutMs)) return;
     child.kill('SIGKILL');
     await within(exited, 2_000);
+  }
+
+  /**
+   * Asks the running controller to check every provider again now, and
+   * resolves once it has reported the result to Switch. Fails when no
+   * controller is running, it does not answer within `timeoutMs`, or it could
+   * not check or report.
+   */
+  recheckProviders(timeoutMs: number): Promise<void> {
+    const child = this.child;
+    if (!child || !child.connected)
+      return Promise.reject(new Error('The agents controller on this computer is not running.'));
+    const id = randomUUID();
+    return new Promise<void>((resolve, reject) => {
+      const done = () => {
+        clearTimeout(timer);
+        child.off('message', onMessage);
+      };
+      const timer = setTimeout(() => {
+        done();
+        reject(new Error('The agents controller on this computer did not answer in time.'));
+      }, timeoutMs);
+      const onMessage = (message: unknown) => {
+        if (!isProviderRecheckReply(message) || message.id !== id) return;
+        done();
+        if (message.error === null) resolve();
+        else reject(new Error(message.error));
+      };
+      child.on('message', onMessage);
+      const request: ProviderRecheckRequest = { kind: PROVIDER_RECHECK_KIND, id };
+      if (!child.send(request)) {
+        done();
+        reject(new Error('Could not reach the agents controller on this computer.'));
+      }
+    });
   }
 
   /**

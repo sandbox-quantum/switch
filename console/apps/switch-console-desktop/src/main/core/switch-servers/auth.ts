@@ -1,7 +1,9 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createServer, type ServerResponse } from 'node:http';
 import { err, ok, type Result } from '@switch-console/shared';
-import { BrowserWindow, session as electronSession } from 'electron';
+import { BrowserWindow, session as electronSession, shell } from 'electron';
 import { z } from 'zod';
+import { appReturnUrl, bringToFront } from '@main/app/deeplinks';
 import { LOCAL_SERVER_ADMIN_EMAIL } from '@main/core/managed-switch-server/constants';
 import { managedServerSecretsKey } from '@main/core/managed-switch-server/host/host-for-server';
 import { readSecrets } from '@main/core/managed-switch-server/secrets';
@@ -321,7 +323,158 @@ export async function reauthenticateManagedServer(server: SwitchServer): Promise
  * out of the window's isolated session and persist it. httponly does not block
  * `cookies.get` because that is a main-process API, not `document.cookie`.
  */
-export async function oidcLogin(server: SwitchServer): Promise<Result<true, LoginError>> {
+export async function oidcLogin(
+  server: SwitchServer,
+  provider: string | null,
+  browserHandoff: boolean
+): Promise<Result<true, LoginError>> {
+  return browserHandoff ? oidcBrowserLogin(server, provider) : oidcWindowLogin(server, provider);
+}
+
+/** Where the system browser comes back to, on this computer's loopback address. */
+const HANDOFF_PATH = '/switch-sign-in';
+
+/** The browser sign-in under way for each server, so a new attempt or a cancel ends it. */
+const browserLogins = new Map<string, () => void>();
+
+/** Gives up the browser sign-in under way for `server`, if there is one. */
+export function cancelOidcLogin(serverId: string): void {
+  browserLogins.get(serverId)?.();
+}
+
+/**
+ * OIDC login in the system browser: the person signs in where their accounts
+ * already are, rather than in a window of this app with nothing remembered.
+ *
+ * A listener on 127.0.0.1 takes the browser back. The gateway sends it there
+ * with a one-time code instead of a cookie this app could not read, and the
+ * code is traded for the session with the verifier only this attempt holds
+ * (its SHA-256 went out as the challenge), so a code seen by anything else on
+ * the way is no use to it.
+ */
+async function oidcBrowserLogin(
+  server: SwitchServer,
+  provider: string | null
+): Promise<Result<true, LoginError>> {
+  cancelOidcLogin(server.id);
+  const state = randomBytes(24).toString('base64url');
+  const verifier = randomBytes(32).toString('base64url');
+  const challenge = createHash('sha256').update(verifier).digest('base64url');
+
+  return new Promise<Result<true, LoginError>>((resolve) => {
+    let settled = false;
+    let port = 0;
+    const page = (status: number, text: string, res: ServerResponse, returnUrl: string | null) => {
+      res.writeHead(status, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Referrer-Policy': 'no-referrer',
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'",
+      });
+      // The scheme link is what reliably puts the person back in the app: the
+      // OS brings its handler forward, where the app asking for focus may only
+      // flash in the taskbar.
+      const back = returnUrl
+        ? `<meta http-equiv="refresh" content="0;url=${returnUrl}"><p><a href="${returnUrl}" style="display:inline-block;margin-top:1rem;padding:.6rem 1.2rem;border-radius:.5rem;background:#111;color:#fff;text-decoration:none">Open Switch Console</a></p>`
+        : '';
+      res.end(
+        `<!doctype html><meta charset="utf-8"><title>Switch</title><body style="font-family:system-ui;padding:3rem;text-align:center"><p>${text}</p>${back}</body>`
+      );
+    };
+    const listener = createServer((req, res) => {
+      let url: URL;
+      try {
+        url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
+      } catch {
+        page(400, 'Invalid sign-in response.', res, null);
+        return;
+      }
+      const code = url.searchParams.get('code');
+      if (
+        settled ||
+        req.method !== 'GET' ||
+        url.pathname !== HANDOFF_PATH ||
+        url.searchParams.get('state') !== state ||
+        !code ||
+        code.length > 4096
+      ) {
+        page(
+          400,
+          'This sign-in was not started by this Switch Console. Start it again from the app.',
+          res,
+          null
+        );
+        return;
+      }
+      void exchange(code).then((result) => {
+        page(
+          result.success ? 200 : 400,
+          result.success
+            ? 'Signed in. You can close this tab.'
+            : 'Sign-in could not be completed. Go back to Switch Console and try again.',
+          res,
+          appReturnUrl()
+        );
+        bringToFront();
+        finish(result);
+      });
+    });
+
+    const exchange = async (code: string): Promise<Result<true, LoginError>> => {
+      const posted = await postCredentials(server, '/auth/oidc/exchange', { code, verifier });
+      if (!posted.success) return posted;
+      if (!posted.data.ok)
+        return err({
+          kind: 'failed',
+          message: `${server.gatewayUrl} refused the sign-in with HTTP ${posted.data.status}. Try again.`,
+        });
+      return persistSessionCookie(server, posted.data, 'Sign-in');
+    };
+
+    const finish = (result: Result<true, LoginError>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      browserLogins.delete(server.id);
+      listener.close();
+      resolve(result);
+    };
+    const timer = setTimeout(
+      () => finish(err({ kind: 'failed', message: 'Sign-in timed out. Try again.' })),
+      OIDC_LOGIN_TIMEOUT_MS
+    );
+    browserLogins.set(server.id, () =>
+      finish(err({ kind: 'cancelled', message: 'Sign-in was cancelled.' }))
+    );
+
+    listener.on('error', (cause) =>
+      finish(err({ kind: 'failed', message: `Could not wait for the browser: ${cause.message}` }))
+    );
+    listener.listen(0, '127.0.0.1', () => {
+      const address = listener.address();
+      port = typeof address === 'object' && address ? address.port : 0;
+      const query = new URLSearchParams({
+        return_to: `http://127.0.0.1:${port}${HANDOFF_PATH}`,
+        state,
+        challenge,
+      });
+      if (provider !== null) query.set('provider', provider);
+      shell.openExternal(gatewayUrl(server, `/auth/oidc/login?${query}`)).catch((cause) =>
+        finish(
+          err({
+            kind: 'failed',
+            message: `Could not open your browser: ${cause instanceof Error ? cause.message : String(cause)}`,
+          })
+        )
+      );
+    });
+  });
+}
+
+async function oidcWindowLogin(
+  server: SwitchServer,
+  provider: string | null
+): Promise<Result<true, LoginError>> {
   // A per-attempt partition keeps one server's IdP cookies from leaking into
   // another's and starts every login from a clean slate.
   const partition = `switch-oidc:${server.id}:${randomUUID()}`;
@@ -373,7 +526,11 @@ export async function oidcLogin(server: SwitchServer): Promise<Result<true, Logi
       }
     });
 
-    void win.loadURL(gatewayUrl(server, '/auth/oidc/login')).catch((cause) => {
+    const login =
+      provider === null
+        ? '/auth/oidc/login'
+        : `/auth/oidc/login?${new URLSearchParams({ provider })}`;
+    void win.loadURL(gatewayUrl(server, login)).catch((cause) => {
       finish(err({ kind: 'failed', message: `Could not open sign-in page: ${cause.message}` }));
     });
   });

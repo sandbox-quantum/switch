@@ -7,6 +7,7 @@ export type DirectChatStarterDeps = {
     agentIds: string[];
     name: null;
     requestId: string;
+    greeting: null;
   }) => Promise<ChatSummary>;
   created: (serverId: string, chat: ChatSummary) => void;
   opened: (chat: ChatSummary) => void;
@@ -40,7 +41,13 @@ export class DirectChatStarter {
     this.inFlight.add(key);
     const requestId = this.retryIds.get(key) ?? this.deps.newId();
     try {
-      const chat = await this.deps.create({ serverId, agentIds: [agentId], name: null, requestId });
+      const chat = await this.deps.create({
+        serverId,
+        agentIds: [agentId],
+        name: null,
+        requestId,
+        greeting: null,
+      });
       this.retryIds.delete(key);
       this.deps.created(serverId, chat);
       return chat;

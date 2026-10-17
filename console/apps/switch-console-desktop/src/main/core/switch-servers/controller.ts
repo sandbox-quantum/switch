@@ -40,7 +40,14 @@ import type {
 import type { JoinableWorkspaces, PendingInvitations } from '@shared/core/workspaces/invitations';
 import { isWithdrawnWorkspace, type Workspace } from '@shared/core/workspaces/workspaces';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { type LoginError, oidcLogin, passwordLogin, type SignupError, signup } from './auth';
+import {
+  cancelOidcLogin,
+  type LoginError,
+  oidcLogin,
+  passwordLogin,
+  type SignupError,
+  signup,
+} from './auth';
 import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import {
   getConnectionCatalog,
@@ -498,18 +505,26 @@ export const switchServersController = createRPCController({
     return result;
   },
 
-  oidcLogin: async (serverId: string): Promise<Result<true, LoginError>> => {
+  /** `provider`: one of the server's sign-in options, or null for its one SSO button. */
+  oidcLogin: async (
+    serverId: string,
+    provider: string | null
+  ): Promise<Result<true, LoginError>> => {
     const server = await requireServer(serverId);
     const unreachable = hostUnreachable(server);
     if (unreachable) {
       reportSignIn('oidc', server, 'unreachable');
       throw unreachable;
     }
-    const result = await oidcLogin(server);
+    const config = await fetchAuthConfig(server);
+    const result = await oidcLogin(server, provider, config.oidcBrowserHandoff);
     reportSignIn('oidc', server, signInFailureReason(result));
     if (result.success) await adoptWorkspaces(server);
     return result;
   },
+
+  /** Gives up a sign-in waiting on the system browser. */
+  cancelOidcLogin: (serverId: string): void => cancelOidcLogin(serverId),
 
   signup: async (params: SignupParams): Promise<Result<SignupResult, SignupError>> => {
     const server = await requireServer(params.serverId);

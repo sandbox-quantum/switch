@@ -510,6 +510,8 @@ class TemplateAgentBody(BaseModel):
     auto_approve: bool
     directory: str | None
     addressing: Literal["owner", "owner-agents", "anyone"]
+    # Older Consoles do not send it.
+    can_manage_agents: bool = False
     connections: list[TemplateConnectionBody]
 
     def plan(self) -> NewAgentPlan:
@@ -518,6 +520,7 @@ class TemplateAgentBody(BaseModel):
             name=self.name,
             description=self.description,
             display_name=self.display_name,
+            icon_url=None,
             instructions=self.instructions,
             provider=self.provider,
             machine=self.machine,
@@ -527,6 +530,7 @@ class TemplateAgentBody(BaseModel):
             auto_approve=self.auto_approve,
             directory=self.directory,
             addressing=self.addressing,
+            can_manage_agents=self.can_manage_agents,
             connections=[
                 ConnectionPlan(c.service, c.access, list(c.repos))
                 for c in self.connections
