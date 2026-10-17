@@ -115,6 +115,9 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     `${TELEMETRY_ENABLED_KEY}=${telemetryEnabled ? 'true' : 'false'}`,
     `TELEMETRY_ENVIRONMENT=${telemetryEnvironment}`,
     `TELEMETRY_INTERNAL=${telemetryInternal ? 'true' : 'false'}`,
+    // Tells the server's agents that Switch Console runs it, so switch-buddy
+    // can tell this apart from Switch Cloud and a self-hosted server.
+    'MANAGED_BY_CONSOLE=true',
     '',
     'MATTERMOST_ADMIN_USER=admin',
     `MATTERMOST_ADMIN_PASSWORD=${secrets.mattermostAdminPassword}`,

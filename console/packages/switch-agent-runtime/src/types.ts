@@ -37,6 +37,8 @@ export interface MessagePayload {
   attachments?: AttachmentRef[];
   /** The words the chat opened with, posted in the agent's name as it joined; absent elsewhere. */
   opening_message?: string | null;
+  /** The sending person's role in the workspace when the message arrived. */
+  sender_role?: 'owner' | 'admin' | 'member' | null;
 }
 
 export interface CommandPayload {

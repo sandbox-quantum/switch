@@ -230,6 +230,9 @@ class SwitchConfig(BaseSettings):
     # the life of the process; an unknown key is a startup error rather than a
     # silently ignored typo.
     feature_flags_enabled: str = ""
+    # Set by Switch Console on a server it runs for someone (MANAGED_BY_CONSOLE),
+    # so an agent can tell them apart from Switch Cloud and a self-hosted server.
+    managed_by_console: bool = False
 
     # Follow the conversation (feature flag `follow_the_conversation`).
     # How long after an agent's answer a person's next channel message still

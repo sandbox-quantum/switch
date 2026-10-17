@@ -1,8 +1,17 @@
 import type * as React from 'react';
-import { defaultRehypePlugins, Streamdown, type Components, type ExtraProps } from 'streamdown';
+import {
+  defaultRehypePlugins,
+  defaultUrlTransform,
+  Streamdown,
+  type Components,
+  type ExtraProps,
+  type UrlTransform,
+} from 'streamdown';
 import type { PluggableList } from 'unified';
+import { openConsoleLink } from '@renderer/features/deeplinks/open-console-link';
 import { confirmOpenExternalLink } from '@renderer/lib/open-external-link';
 import { cn } from '@renderer/utils/utils';
+import { CONSOLE_LINK_PREFIX, CONSOLE_LINK_SCHEME } from '@shared/core/deeplinks/console-links';
 import { CodeBlock } from './code-block';
 
 const HTTP_URL_PATTERN = /^https?:\/\//i;
@@ -13,7 +22,35 @@ const HTTP_URL_PATTERN = /^https?:\/\//i;
  * removes the raw nodes; without `rehype-raw` nothing would turn them into
  * elements anyway). Sanitize and harden stay.
  */
-const REHYPE_PLUGINS: PluggableList = [defaultRehypePlugins.sanitize, defaultRehypePlugins.harden];
+const REHYPE_PLUGINS: PluggableList = [
+  withConsoleLinks(defaultRehypePlugins.sanitize),
+  defaultRehypePlugins.harden,
+];
+
+type SanitizeSchema = { protocols?: Record<string, string[]> };
+
+/**
+ * The sanitizer, letting links to Console pages keep their `href`: its schema
+ * allows web and mail links only, and a `switchdash:` one would arrive
+ * stripped, as text marked blocked.
+ */
+function withConsoleLinks(sanitize: PluggableList[number]): PluggableList[number] {
+  const [plugin, schema] = sanitize as [unknown, SanitizeSchema];
+  return [
+    plugin,
+    {
+      ...schema,
+      protocols: {
+        ...schema.protocols,
+        href: [...(schema.protocols?.href ?? []), CONSOLE_LINK_SCHEME],
+      },
+    },
+  ] as PluggableList[number];
+}
+
+/** Links to Console pages pass; everything else gets the usual unsafe-protocol filter. */
+const urlTransform: UrlTransform = (url, key, node) =>
+  url.startsWith(CONSOLE_LINK_PREFIX) ? url : defaultUrlTransform(url, key, node);
 
 type WithChildren = { children?: React.ReactNode } & ExtraProps;
 
@@ -26,10 +63,13 @@ function ChatLink({ href, children }: React.ComponentProps<'a'> & ExtraProps) {
       target="_blank"
       rel="noopener noreferrer"
       onClick={(event) => {
-        // Never let a link navigate the app window; only http(s) links leave the
-        // app, and only through the confirm dialog.
+        // Never let a link navigate the app window: a link to a Console page
+        // moves the app there, and only http(s) links leave the app, through
+        // the confirm dialog.
         event.preventDefault();
-        if (isHttp) confirmOpenExternalLink(href);
+        if (typeof href === 'string' && href.startsWith(CONSOLE_LINK_PREFIX))
+          void openConsoleLink(href);
+        else if (isHttp) confirmOpenExternalLink(href);
       }}
     >
       {children}
@@ -115,6 +155,7 @@ export function ChatMarkdown({ children, className }: { children: string; classN
       className={cn('min-w-0 text-sm text-foreground', className)}
       components={COMPONENTS}
       rehypePlugins={REHYPE_PLUGINS}
+      urlTransform={urlTransform}
       skipHtml
       controls={false}
       linkSafety={{ enabled: false }}

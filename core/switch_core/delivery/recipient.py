@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
 
+from sqlalchemy import select
+
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import (
     AGENT_GREETINGS,
@@ -69,7 +71,7 @@ from switch_core.clients.mentions import (
     strip_emphasis as _strip_emphasis,
 )
 from switch_core.clients.room_meta import RoomMeta
-from switch_core.db.models import Agent, CloudMachine
+from switch_core.db.models import Agent, CloudMachine, TenantMember
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_machine_store import owner_stopped
 from switch_core.delivery.addressing import (
@@ -526,7 +528,14 @@ class AgentRecipient:
                 addressed = gate.addressed
                 refusal = gate.refusal
 
-        own_event = _message_own_event(meta, event, thread_id, self.agent.id)
+        sender_role = (
+            await self._sender_role(session, event.sender, event.content)
+            if addressed
+            else None
+        )
+        own_event = _message_own_event(
+            meta, event, thread_id, self.agent.id, sender_role
+        )
 
         async def after(row: InboundEvent) -> None:
             assert isinstance(row, InboundMessage)
@@ -593,9 +602,10 @@ class AgentRecipient:
             assert isinstance(row, InboundMessage)
             await self._after_follow_up(row)
 
+        sender_role = await self._sender_role(session, event.sender, event.content)
         return Delivery(
             own_event=_message_own_event(
-                meta, event, event.thread_root_id, self.agent.id
+                meta, event, event.thread_root_id, self.agent.id, sender_role
             ),
             after=after,
         )
@@ -751,6 +761,11 @@ class AgentRecipient:
 
         # Read now: the event is built after the row commits, from the rows alone.
         opening = opening_message_for(meta, self.agent.id)
+        sender_role = (
+            await self._sender_role(session, anchor.sender, anchor.content)
+            if gate.addressed
+            else None
+        )
 
         def own_event(row: InboundEvent) -> OwnEvent:
             parts = written(row)
@@ -776,6 +791,7 @@ class AgentRecipient:
                     attachment_ref(part) for part in sorted(parts, key=file_index)
                 ],
                 opening_message=opening,
+                sender_role=sender_role,
             )
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -1720,6 +1736,31 @@ class AgentRecipient:
             message=IncomingMessage(sender="", body=text),
         )
 
+    async def _sender_role(
+        self, session: AsyncSession, sender: str, content: Mapping[str, object]
+    ) -> str | None:
+        """The sending person's role in this workspace, read as the message
+        arrives: "owner", "admin" or "member". None for an agent, the
+        platform, or a person no Switch user has claimed.
+
+        Read fresh for every message, so an agent can rely on it over what it
+        was told earlier: a role can change between two messages.
+        """
+        principal = await self._addressing.resolve_sender(session, sender, content)
+        if principal is None or principal.kind != "user" or not principal.user_ids:
+            return None
+        roles = set(
+            await session.scalars(
+                select(TenantMember.role).where(
+                    TenantMember.user_id.in_(principal.user_ids)
+                )
+            )
+        )
+        for role in ("owner", "admin", "member"):
+            if role in roles:
+                return role
+        return None
+
     def _sender_handle(self, event: InboundMessage) -> str:
         """The @-handle to tag the message sender with.
 
@@ -1763,7 +1804,11 @@ def opening_message_for(meta: RoomMeta, agent_id: str) -> str | None:
 
 
 def _message_own_event(
-    meta: RoomMeta, event: InboundMessage, thread_id: str | None, agent_id: str
+    meta: RoomMeta,
+    event: InboundMessage,
+    thread_id: str | None,
+    agent_id: str,
+    sender_role: str | None,
 ) -> Callable[[InboundEvent], OwnEvent]:
     """How an agent's own event for a message is built once the message is
     written."""
@@ -1787,6 +1832,7 @@ def _message_own_event(
             body=row.body,
             thread_id=thread_id,
             opening_message=opening_message_for(meta, agent_id),
+            sender_role=sender_role,
         )
         # Serialising runs once per agent per message, so only when it will
         # be seen.

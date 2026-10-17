@@ -94,7 +94,7 @@ id, no IP field, no Switch identity.
 | `location` | `local`, `remote`, `unknown`. **Never a path, directory or project name.** |
 | `server_kind` | `local`, `remote_managed`, `external`. **Never a server name or URL.** |
 | `bridge_platform` | A platform key the server lists as one of its registered platforms (`slack`, `mattermost`, `discord`, `teams`, `telegram`, and any platform added since), else `other`, or `unknown` when it cannot be read. Always a short lowercase key. **Never a workspace or channel name.** |
-| `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `unknown` |
+| `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `link`, `unknown` |
 | `target` | `local`, `remote`, `unknown` |
 
 ### 3.3 Every event and its fields
