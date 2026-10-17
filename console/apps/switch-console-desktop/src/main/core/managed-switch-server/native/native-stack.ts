@@ -35,7 +35,7 @@ import { clearSecrets, loadOrCreateSecrets } from '../secrets';
 import { telemetryConsent } from '../telemetry-consent';
 import {
   CORE_ENV_FILE,
-  coreLogTail,
+  coreFailureLine,
   runningCore,
   startCore,
   stopCore,
@@ -278,14 +278,14 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<StartL
     const healthy = await waitForCoreHealth(layout, apiUrl, signal);
     if (!healthy) {
       const alive = (await runningCore(layout)) !== null;
-      const tail = await coreLogTail(layout, 3);
+      const reason = await coreFailureLine(layout);
       await stopAfterFailedStart(layout, postgres);
+      // The reason leads, on the first line: the UI headlines that line alone.
       return {
         kind: 'error',
         message:
-          `${alive ? 'switch-core did not become healthy in time' : 'switch-core stopped during startup'}.` +
-          (tail ? ` Its log ends:\n${tail}` : '') +
-          `\nFull log: ${path.join(layout.logs, 'switch-core.log')}`,
+          `${alive ? 'switch-core did not become healthy in time' : 'switch-core stopped during startup'}` +
+          `${reason ? `: ${reason}` : '.'}\nFull log: ${path.join(layout.logs, 'switch-core.log')}`,
       };
     }
 

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, it, vi } from 'vitest';
-import { waitForCoreHealth } from './core-process';
+import { failureLine, waitForCoreHealth } from './core-process';
 import { nativeLayout } from './native-paths';
 
 vi.mock('@main/lib/logger', () => ({
@@ -34,4 +34,18 @@ it('stops waiting as soon as switch-core has exited', async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+it('picks the line that says why switch-core stopped', () => {
+  const log = [
+    '2026-10-17T10:24:32 INFO  [uvicorn.error] Started server process [1]',
+    'Traceback (most recent call last):',
+    '  File "main.py", line 1, in <module>',
+    'sqlalchemy.exc.ProgrammingError: <class \'asyncpg.exceptions.PostgresSyntaxError\'>: syntax error at or near "("',
+    '[SQL: ALTER TABLE agents ADD CONSTRAINT fk_agents_parent_agent]',
+    '(Background on this error at: https://sqlalche.me/e/20/f405)',
+  ].join('\n');
+  expect(failureLine(log)).toMatch(/^sqlalchemy\.exc\.ProgrammingError: .*syntax error/);
+  expect(failureLine('just one line\n')).toBe('just one line');
+  expect(failureLine('')).toBeNull();
 });

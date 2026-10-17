@@ -171,14 +171,31 @@ export async function stopCore(layout: NativeLayout): Promise<void> {
   await rm(path.join(layout.run, PID_FILE), { force: true });
 }
 
-/** The tail of switch-core's log, for an error message. */
-export async function coreLogTail(layout: NativeLayout, lines = 8): Promise<string | null> {
+/**
+ * The line of switch-core's log that says why it stopped, for an error the UI
+ * shows on one line: the last exception or error in the final stretch of the
+ * log, or else its last line.
+ */
+export async function coreFailureLine(layout: NativeLayout): Promise<string | null> {
+  let text: string;
   try {
-    const text = await readFile(path.join(layout.logs, 'switch-core.log'), 'utf8');
-    return text.trim().split('\n').slice(-lines).join('\n') || null;
+    text = await readFile(path.join(layout.logs, 'switch-core.log'), 'utf8');
   } catch {
     return null;
   }
+  return failureLine(text);
+}
+
+export function failureLine(log: string): string | null {
+  const lines = log
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-60);
+  const reason =
+    [...lines].reverse().find((line) => /(Error|Exception|FATAL)\b.*:/.test(line)) ?? lines.at(-1);
+  if (!reason) return null;
+  return reason.length > 400 ? `${reason.slice(0, 399)}…` : reason;
 }
 
 /**
