@@ -348,6 +348,8 @@ const ServerMainPanel = observer(function ServerMainPanel() {
 const SignedInCard = observer(function SignedInCard({ serverId }: { serverId: string }) {
   const store = switchServersStore;
   const user = store.statusFor(serverId)?.user;
+  const showDeleteAccount = useShowModal('deleteAccountModal');
+  const serverName = store.serverById(serverId)?.name ?? 'this server';
   const displayName = user?.name || user?.email || 'Signed in';
   const initial = displayName.trim().charAt(0).toUpperCase() || '?';
 
@@ -369,6 +371,16 @@ const SignedInCard = observer(function SignedInCard({ serverId }: { serverId: st
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {user?.role && <Badge variant="secondary">{user.role}</Badge>}
+        {user?.email && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-destructive hover:text-destructive"
+            onClick={() => showDeleteAccount({ serverId, serverName, email: user.email })}
+          >
+            Delete account
+          </Button>
+        )}
         <Button variant="outline" size="sm" onClick={() => void store.logout(serverId)}>
           Sign out
         </Button>

@@ -507,6 +507,24 @@ export async function fetchFeatureFlags(server: SwitchServer): Promise<RemoteFea
   return featureFlagsResponseSchema.parse(await res.json()).flags;
 }
 
+/**
+ * Delete the signed-in account on this server, confirmed by its email. A
+ * refusal (the only owner of a shared workspace, the server's own admin, …) is
+ * raised with the server's own reason, which says what to do first.
+ */
+export async function deleteMyAccount(server: SwitchServer, email: string): Promise<void> {
+  try {
+    await gatewayFetch(server, '/auth/me', {
+      authenticated: true,
+      method: 'DELETE',
+      body: { email },
+    });
+  } catch (error) {
+    if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
+    throw error;
+  }
+}
+
 export async function fetchMe(server: SwitchServer): Promise<SwitchUser> {
   const res = await gatewayFetch(server, '/auth/me', { authenticated: true });
   return mapUser((await res.json()) as UserResponseJson);

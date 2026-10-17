@@ -66,6 +66,7 @@ import {
   createTenant,
   fetchAuthConfig,
   fetchCanCreateWorkspace,
+  deleteMyAccount,
   fetchMe,
   fetchJoinableWorkspaces,
   fetchPendingInvitations,
@@ -210,6 +211,13 @@ async function registerSwitchCloud({ url }: SwitchCloudEndpoint): Promise<Switch
 /** Whether the server turns cloud machines on (its `hosted_agents` flag). */
 async function hostedAgentsOn(server: SwitchServer): Promise<boolean> {
   return (await featureFlagsService.current(server)).flags['hosted_agents'];
+}
+
+/** What this Console holds of a server session, gone: signing out, or the account deleted. */
+async function forgetSession(serverId: string): Promise<void> {
+  await deleteManagedClaudeCredential(serverId);
+  await deleteSessionCookie(serverId);
+  resetChatStream(serverId);
 }
 
 export const switchServersController = createRPCController({
@@ -555,10 +563,15 @@ export const switchServersController = createRPCController({
     // Read before the cookie goes, so the kind of server is still knowable — and
     // caught, because nobody should be unable to sign out because of it.
     const server = await getServer(serverId).catch(() => null);
-    await deleteManagedClaudeCredential(serverId);
-    await deleteSessionCookie(serverId);
-    resetChatStream(serverId);
+    await forgetSession(serverId);
     if (server) trackEvent('server_sign_out', { server_kind: serverKindOf(server) });
+  },
+
+  /** Delete the signed-in account on the server, then forget its session here. */
+  deleteAccount: async (params: { serverId: string; email: string }): Promise<void> => {
+    const server = await requireReachableServer(params.serverId);
+    await deleteMyAccount(server, params.email);
+    await forgetSession(params.serverId);
   },
 
   /**
