@@ -62,6 +62,7 @@ describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)('native toolchain', () =
         buildNativeCoreSettings({
           apiPort: ports.api,
           postgresPort: ports.postgres,
+          callbackPort: ports.gateway,
           secrets,
           telemetryEnabled: false,
           telemetryEnvironment: 'local',

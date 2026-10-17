@@ -17,6 +17,7 @@ import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { Switch } from '@renderer/lib/ui/switch';
 import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
 import {
   lockHolderSentence,
@@ -532,6 +533,11 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   const dockerReady = docker?.available ?? false;
   const dockerUnavailable = docker && !docker.available ? docker : null;
   const idle = !running && !starting;
+  // A server set up on Docker before native mode existed still needs Docker to
+  // start; a native one (every new install) needs it only for Mattermost.
+  const native = store.runtime === 'native';
+  const needsDocker = store.runtime === 'docker';
+  const canStart = running || (store.runtime !== null && (!needsDocker || dockerReady));
 
   // The pager's back arrow only ever repeats the footer's Back, so the two read
   // one const. Open during the install too: the store is a singleton the main
@@ -550,7 +556,11 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   return (
     <WizardFrame
       title="Set up a server on this computer"
-      subtitle="Switch Console installs the full stack with Docker and keeps it updated."
+      subtitle={
+        needsDocker
+          ? 'Switch Console runs the full stack with Docker and keeps it updated.'
+          : 'Switch Console installs the Switch server on this computer and keeps it updated.'
+      }
       pager={{ pageName: 'Set up a server', onBack: goBack, onNext: null }}
       footer={
         <>
@@ -560,7 +570,7 @@ export const LocalSetupStep = observer(function LocalSetupStep({
             closeDisabled={starting}
             closeLabel={running ? 'Close' : 'Cancel'}
           />
-          <ConfirmButton onClick={onPrimary} disabled={starting || (!running && !dockerReady)}>
+          <ConfirmButton onClick={onPrimary} disabled={starting || !canStart}>
             {starting ? 'Starting…' : primaryLabel}
           </ConfirmButton>
         </>
@@ -574,19 +584,23 @@ export const LocalSetupStep = observer(function LocalSetupStep({
           <div className="min-w-0">
             <p className="text-sm font-medium text-foreground">Switch server · this computer</p>
             <p className="truncate text-xs text-foreground-muted">
-              switch-core {store.status?.version ?? ''} · runs on this computer via Docker
+              switch-core {store.status?.version ?? ''} ·{' '}
+              {needsDocker
+                ? 'runs on this computer via Docker'
+                : 'runs on this computer, no Docker needed'}
             </p>
           </div>
         </div>
 
-        {idle && (
+        {idle && native && (
           <div className="bg-card space-y-2 rounded-lg border border-border p-3">
             <p className="text-xs font-medium text-foreground-muted">Starting will:</p>
             <ul className="space-y-1.5 text-xs text-foreground-muted">
               <SetupStepItem>
-                Pull the Switch images from GHCR (first run downloads a few GB)
+                Download PostgreSQL and Switch if this computer doesn't have them (about 200 MB on
+                the first run)
               </SetupStepItem>
-              <SetupStepItem>Run Postgres, Matrix, Mattermost and Switch in Docker</SetupStepItem>
+              <SetupStepItem>Run them in the background on this computer</SetupStepItem>
               <SetupStepItem>
                 Register it as your active server, ready to onboard an agent
               </SetupStepItem>
@@ -594,11 +608,33 @@ export const LocalSetupStep = observer(function LocalSetupStep({
           </div>
         )}
 
-        {!running && (
+        {idle && needsDocker && (
+          <div className="bg-card space-y-2 rounded-lg border border-border p-3">
+            <p className="text-xs font-medium text-foreground-muted">Starting will:</p>
+            <ul className="space-y-1.5 text-xs text-foreground-muted">
+              <SetupStepItem>Pull the Switch images from GHCR if needed</SetupStepItem>
+              <SetupStepItem>Run Postgres, Mattermost and Switch in Docker</SetupStepItem>
+              <SetupStepItem>
+                Register it as your active server, ready to onboard an agent
+              </SetupStepItem>
+            </ul>
+          </div>
+        )}
+
+        {!running && needsDocker && (
           <DockerStatus ready={dockerReady} unavailable={dockerUnavailable} checking={!docker} />
         )}
 
         {idle && <UsageDataToggle />}
+
+        {!running && native && (
+          <MattermostOption
+            enabled={store.mattermost}
+            docker={docker}
+            disabled={starting}
+            onChange={(enabled) => void store.setMattermost(enabled)}
+          />
+        )}
 
         {running && (
           <Alert>
@@ -610,7 +646,7 @@ export const LocalSetupStep = observer(function LocalSetupStep({
           </Alert>
         )}
 
-        {store.error && !dockerUnavailable && !running && (
+        {store.error && !(needsDocker && dockerUnavailable) && !running && (
           <Alert variant="destructive">
             <AlertTitle>{store.error}</AlertTitle>
             {store.errorDetail && <AlertDescription>{store.errorDetail}</AlertDescription>}
@@ -634,7 +670,13 @@ export const LocalSetupStep = observer(function LocalSetupStep({
             )}
             <LogTail
               lines={store.logs}
-              placeholder={starting ? 'Waiting for Docker to report progress…' : null}
+              placeholder={
+                starting
+                  ? needsDocker
+                    ? 'Waiting for Docker to report progress…'
+                    : 'Waiting for progress…'
+                  : null
+              }
             />
           </div>
         )}
@@ -642,6 +684,45 @@ export const LocalSetupStep = observer(function LocalSetupStep({
     </WizardFrame>
   );
 });
+
+/**
+ * The choice to run Mattermost beside a server that otherwise needs no Docker.
+ * Mattermost only ships as a container image, so it is offered only where
+ * Docker answers; without it the server still works, with no chat bridge.
+ */
+function MattermostOption({
+  enabled,
+  docker,
+  disabled,
+  onChange,
+}: {
+  enabled: boolean;
+  docker: { available: boolean } | null;
+  disabled: boolean;
+  onChange: (enabled: boolean) => void;
+}) {
+  const available = docker?.available ?? false;
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-lg border border-border p-3">
+      <div className="min-w-0 space-y-0.5">
+        <p className="text-sm text-foreground">Also run Mattermost</p>
+        <p className="text-xs text-foreground-muted">
+          {docker === null
+            ? 'Checking for Docker…'
+            : available
+              ? 'Team chat for your rooms, in Switch Console. Runs in Docker.'
+              : 'Team chat for your rooms needs Docker, which is not available here. The server works without it.'}
+        </p>
+      </div>
+      <Switch
+        checked={enabled && available}
+        disabled={disabled || !available}
+        onCheckedChange={onChange}
+        aria-label="Also run Mattermost"
+      />
+    </div>
+  );
+}
 
 /**
  * The button on the left of a wizard's footer.

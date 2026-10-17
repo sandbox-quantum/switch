@@ -176,6 +176,12 @@ export type LocalServerStatus = {
   phase: LocalServerPhase;
   /** How this server runs, once read at boot; null until then. */
   runtime: LocalServerRuntime | null;
+  /** Whether Mattermost is turned on for a native server (it needs Docker).
+   * A Docker server always runs it, so this is false there. */
+  mattermost: boolean;
+  /** Something the last start could not do that did not stop it (Mattermost
+   * skipped or failed, say), for the server page to say; else null. */
+  notice: string | null;
   /** Whether the stack's state has been read since launch. Until it has, a
    * `stopped` phase is only the starting value, not something observed. */
   checked: boolean;

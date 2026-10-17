@@ -184,6 +184,8 @@ const ManagedServerPage = observer(function ManagedServerPage({
   const placement = sshHost ?? 'This computer';
   const deployed = status.deployedVersion ?? status.version;
   const checkout = sshHost ? null : localServerStore.checkoutBuild;
+  const native = sshHost === null && localServerStore.isNative;
+  const localDocker = sshHost ? null : localServerStore.docker;
   const runsCheckout = status.deployedVersion === CHECKOUT_IMAGE_TAG;
   const working = state.tone === 'working';
 
@@ -212,7 +214,7 @@ const ManagedServerPage = observer(function ManagedServerPage({
               <StatusPill state={state} />
             </div>
             <p className="truncate text-[13px] text-[var(--fg-dim)]">
-              {placement} · runs with Docker
+              {placement} · {native ? 'runs without Docker' : 'runs with Docker'}
             </p>
           </div>
         </header>
@@ -300,15 +302,40 @@ const ManagedServerPage = observer(function ManagedServerPage({
           </section>
         )}
 
+        {native && (
+          <div className="flex items-start justify-between gap-3 rounded-[10px] border-[0.5px] border-[var(--hair-strong)] px-[14px] py-3">
+            <div className="min-w-0">
+              <p className="text-[13px] text-foreground">Mattermost</p>
+              <p className="mt-0.5 text-xs text-[var(--fg-dim)]">
+                {localDocker === null
+                  ? 'Checking for Docker…'
+                  : localDocker.available
+                    ? 'Team chat for your rooms, run in Docker beside the server.'
+                    : 'Team chat for your rooms needs Docker, which is not available here. The server works without it.'}
+                {answering && ' Restart the server to apply a change.'}
+              </p>
+            </div>
+            <Switch
+              checked={localServerStore.mattermost}
+              disabled={
+                working || (!localServerStore.mattermost && !(localDocker?.available ?? false))
+              }
+              onCheckedChange={(enabled) => void localServerStore.setMattermost(enabled)}
+              aria-label="Run Mattermost"
+            />
+          </div>
+        )}
+
         {/* Dev builds launched from a Switch checkout only. */}
         {checkout && (
           <div className="flex items-start justify-between gap-3 rounded-[10px] border-[0.5px] border-dashed border-[var(--hair-strong)] px-[14px] py-3">
             <div className="min-w-0">
               <p className="text-[13px] text-foreground">Build switch-core from this checkout</p>
               <p className="mt-0.5 text-xs text-[var(--fg-dim)]">
-                Dev builds only. Builds the images from{' '}
+                Dev builds only. {native ? 'Installs switch-core from' : 'Builds the images from'}{' '}
                 <span className="font-mono break-all">{checkout.root}</span> on every start instead
-                of pulling switch-core {status.version}.
+                of {native ? 'the' : 'pulling'} switch-core {status.version}
+                {native ? ' release' : ''}.
                 {answering && checkout.enabled !== runsCheckout && ' Restart the server to apply.'}
               </p>
             </div>
@@ -628,9 +655,15 @@ const Messages = observer(function Messages({
   // their own: they are about the server, not about its state.
   const remote = sshHost ? remoteServerStore.statusFor(sshHost) : null;
   const working = state.tone === 'working';
+  const localNotice = sshHost ? null : (localServerStore.status?.notice ?? null);
   return (
     <>
       {box}
+      {localNotice && !working && (
+        <MessageBox tone="attention">
+          <p>{localNotice}</p>
+        </MessageBox>
+      )}
       {remote?.notice && !working && (
         <MessageBox tone="stopped">
           <p>{remote.notice}</p>

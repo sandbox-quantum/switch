@@ -17,6 +17,7 @@ import type { ManagedServerRef } from '@shared/core/switch-servers/switch-server
 import { currentFlintEnv } from '../../telemetry/config';
 import { currentInternalFlag } from '../../telemetry/internal-account';
 import { classifyVersionDrift, type DeployedVersion } from '../deployed-version';
+import { detectDocker } from '../docker';
 import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY } from '../env-file';
 import { errorText } from '../error-text';
 import type { LocalServerPorts } from '../free-port';
@@ -34,6 +35,7 @@ import { clearSecrets, loadOrCreateSecrets } from '../secrets';
 import { telemetryConsent } from '../telemetry-consent';
 import { CORE_ENV_FILE, coreLogTail, runningCore, startCore, stopCore } from './core-process';
 import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
+import { startMattermost, stopMattermost } from './mattermost';
 import type { NativeLayout } from './native-paths';
 import { clusterMajor, resolvePostgres, type PostgresBinaries } from './postgres-binaries';
 import {
@@ -65,6 +67,8 @@ export type NativeStartOptions = {
   signal: AbortSignal;
   /** Dev-only: run switch-core from this checkout's `core/`. */
   checkoutRoot: string | null;
+  /** Whether to run Mattermost beside the server (needs Docker). */
+  mattermost: boolean;
 };
 
 export async function readNativeDeployedVersion(layout: NativeLayout): Promise<DeployedVersion> {
@@ -164,6 +168,7 @@ async function stopProcesses(
   binaries: PostgresBinaries | null,
   onLog: (line: string) => void
 ): Promise<void> {
+  await stopMattermost(layout, false);
   await stopCore(layout);
   if (binaries !== null && (await clusterExists(layout))) {
     await stopCluster(binaries, layout, onLog);
@@ -181,7 +186,7 @@ async function stopProcesses(
  */
 export async function startNativeStack(opts: NativeStartOptions): Promise<StartLocalServerResult> {
   const { host, layout, ref, serverName, activate, onMessage, onLog, onUpgrade, signal } = opts;
-  const { checkoutRoot } = opts;
+  const { checkoutRoot, mattermost } = opts;
   await mkdir(layout.run, { recursive: true });
 
   const secrets = await loadOrCreateSecrets(host);
@@ -240,6 +245,9 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<StartL
   const settings = buildNativeCoreSettings({
     apiPort: ports.api,
     postgresPort: ports.postgres,
+    // No dashboard process runs natively, so the port set aside for one
+    // carries the callback listener instead of a fifth port being added.
+    callbackPort: ports.gateway,
     secrets,
     telemetryEnabled,
     telemetryEnvironment: currentFlintEnv(),
@@ -272,6 +280,35 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<StartL
     onMessage
   );
   if (upgrade) await finishUpgrade(host);
+
+  let warning: string | null = null;
+  if (mattermost) {
+    const docker = await detectDocker();
+    if (!docker.available) {
+      warning =
+        'Mattermost is turned on, but Docker is not available, so the server is running ' +
+        `without it. ${docker.detail}`;
+      log.warn(`local-switch-server: ${warning}`);
+    } else {
+      try {
+        await startMattermost({
+          layout,
+          install,
+          secrets,
+          apiUrl,
+          mattermostPort: ports.mattermost,
+          postgresPort: ports.postgres,
+          callbackPort: ports.gateway,
+          onMessage,
+          onLog,
+        });
+      } catch (error) {
+        log.error('local-switch-server: Mattermost did not start', { error: String(error) });
+        warning = `The server is running, but Mattermost could not be set up: ${errorText(error)}`;
+      }
+    }
+  }
+
   if (checkoutRoot === null) {
     await pruneSwitchCoreInstalls(layout, install.version).catch((error: unknown) => {
       log.warn('local-switch-server: could not remove old switch-core installs', {
@@ -279,7 +316,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<StartL
       });
     });
   }
-  return { kind: 'started', serverId, telemetryEnabled, warning: null };
+  return { kind: 'started', serverId, telemetryEnabled, warning };
 }
 
 /** The PostgreSQL the cluster ran with last, without looking for or
@@ -301,6 +338,13 @@ export async function stopNativeStack(layout: NativeLayout): Promise<void> {
  */
 export async function resetNativeStack(host: ServerHost, layout: NativeLayout): Promise<void> {
   await stopNativeStack(layout);
+  // Its schema goes with the cluster below; only its uploaded files are in the
+  // volume. Without Docker they cannot be removed, which is said, not hidden.
+  await stopMattermost(layout, true).catch((error: unknown) => {
+    log.error('local-switch-server: could not remove Mattermost’s files volume', {
+      error: String(error),
+    });
+  });
   for (const dir of [layout.pgdata, `${layout.pgdata}.init`, layout.run, layout.logs]) {
     await rm(dir, { recursive: true, force: true });
   }

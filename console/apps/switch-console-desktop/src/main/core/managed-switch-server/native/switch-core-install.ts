@@ -14,6 +14,8 @@ const MARKER_FILE = 'installed.json';
 export type SwitchCoreInstall = {
   /** What is installed: the release version, or {@link CHECKOUT_IMAGE_TAG}. */
   version: string;
+  /** The root of the Switch source tree the install came from. */
+  sourceRoot: string;
   /** The `core/` project directory: switch-core's working directory. */
   projectDir: string;
   /** The environment's Python interpreter. */
@@ -105,7 +107,12 @@ export async function installSwitchCore(opts: {
     const venv = path.join(layout.switchCore, CHECKOUT_IMAGE_TAG, 'venv');
     onMessage(`Installing switch-core from ${checkoutRoot}…`);
     await uvSync(uv, layout, projectDir, venv, onLog);
-    return { version: CHECKOUT_IMAGE_TAG, projectDir, python: venvPython(venv) };
+    return {
+      version: CHECKOUT_IMAGE_TAG,
+      sourceRoot: checkoutRoot,
+      projectDir,
+      python: venvPython(venv),
+    };
   }
 
   const dir = path.join(layout.switchCore, version);
@@ -114,7 +121,7 @@ export async function installSwitchCore(opts: {
   const venv = path.join(dir, 'venv');
   const python = venvPython(venv);
   if ((await readMarker(dir)) === version && (await exists(python))) {
-    return { version, projectDir, python };
+    return { version, sourceRoot: src, projectDir, python };
   }
 
   onMessage(`Downloading switch-core ${version}…`);
@@ -135,7 +142,7 @@ export async function installSwitchCore(opts: {
     path.join(dir, MARKER_FILE),
     `${JSON.stringify({ version, uv: uv.version }, null, 2)}\n`
   );
-  return { version, projectDir, python };
+  return { version, sourceRoot: src, projectDir, python };
 }
 
 /** Remove installed releases other than `keep`, once a start on it has

@@ -103,6 +103,21 @@ export class LocalServerStore {
     return this.status?.checkoutBuild ?? null;
   }
 
+  /** How the server runs, once the main process has read it. */
+  get runtime(): LocalServerStatus['runtime'] {
+    return this.status?.runtime ?? null;
+  }
+
+  /** Whether this machine's server runs without Docker. */
+  get isNative(): boolean {
+    return this.runtime === 'native';
+  }
+
+  /** Whether Mattermost is turned on for a native server. */
+  get mattermost(): boolean {
+    return this.status?.mattermost ?? false;
+  }
+
   get isTransitioning(): boolean {
     return this.busy || this.phase === 'starting' || this.phase === 'stopping';
   }
@@ -169,6 +184,15 @@ export class LocalServerStore {
       });
     } catch (cause) {
       this.setError(cause, 'Could not check Docker availability.');
+    }
+  }
+
+  /** Turn Mattermost on or off for a native server; applies at the next start. */
+  async setMattermost(enabled: boolean): Promise<void> {
+    try {
+      await rpc.localSwitchServer.setMattermost(enabled);
+    } catch (cause) {
+      this.setError(cause, 'Could not change the Mattermost setting.');
     }
   }
 

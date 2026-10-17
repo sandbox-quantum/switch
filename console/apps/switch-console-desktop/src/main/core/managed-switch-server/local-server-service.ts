@@ -49,6 +49,7 @@ import {
   type UpgradeJournal,
   upgradeState,
 } from './managed-upgrade';
+import { readMattermostEnabled, writeMattermostEnabled } from './native/mattermost';
 import { nativeLayout } from './native/native-paths';
 import {
   nativeStackRunning,
@@ -83,6 +84,8 @@ export class LocalServerService {
   private status: LocalServerStatus = {
     phase: 'stopped',
     runtime: null,
+    mattermost: false,
+    notice: null,
     checked: false,
     upgrade: null,
     serverId: null,
@@ -112,6 +115,21 @@ export class LocalServerService {
 
   detectDocker(): Promise<DockerAvailability> {
     return new LocalServerHost().detectDocker();
+  }
+
+  /**
+   * Turn Mattermost on or off for a native server. Takes effect at the next
+   * start; a running Mattermost is left alone until then, like any setting a
+   * running server read when it started.
+   */
+  async setMattermost(enabled: boolean): Promise<void> {
+    if ((await this.runtime()) !== 'native') {
+      throw new Error(
+        'Mattermost can only be turned on or off for a server that runs without Docker.'
+      );
+    }
+    await writeMattermostEnabled(localServerDir(), enabled);
+    this.setStatus({ mattermost: enabled });
   }
 
   /** How the server runs, read off its directory and recorded on the status. */
@@ -194,6 +212,7 @@ export class LocalServerService {
       this.setStatus({ checkoutBuild: await this.readCheckoutBuild(host) });
       const native = (await this.runtime()) === 'native';
       const layout = nativeLayout(localServerDir());
+      if (native) this.setStatus({ mattermost: await readMattermostEnabled(localServerDir()) });
       const managed = await getManagedServer();
       if (!managed) return;
       const running = native ? await nativeStackRunning(layout) : await isStackRunning(host);
@@ -299,6 +318,7 @@ export class LocalServerService {
       this.setStatus({
         phase: 'starting',
         error: null,
+        notice: null,
         message: native ? 'Preparing the server…' : 'Checking Docker…',
       });
       const common = {
@@ -314,7 +334,11 @@ export class LocalServerService {
       };
       if (native) await writeLocalRuntime(localServerDir(), 'native');
       const result = native
-        ? await startNativeStack({ ...common, layout: nativeLayout(localServerDir()) })
+        ? await startNativeStack({
+            ...common,
+            layout: nativeLayout(localServerDir()),
+            mattermost: await readMattermostEnabled(localServerDir()),
+          })
         : // Nobody else shares the local stack, so there is nothing to lock.
           await startStack({ ...common, lease: null });
       if (result.kind === 'docker-unavailable') {
@@ -353,6 +377,7 @@ export class LocalServerService {
           drift: null,
           upgrade: null,
           deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
+          notice: result.warning,
         });
         if (updatedTo !== null) await recordLocalActivity('updated', updatedTo);
         await recordLocalActivity('started', null);
@@ -404,6 +429,7 @@ export class LocalServerService {
         message: null,
         error: null,
         deployedTelemetry: null,
+        notice: null,
         upgrade: upgrade && upgradeState(upgrade, false),
       });
       await recordLocalActivity('stopped', null);
@@ -434,6 +460,7 @@ export class LocalServerService {
         message: null,
         error: null,
         deployedTelemetry: null,
+        notice: null,
         upgrade: upgrade && upgradeState(upgrade, false),
       });
       await recordLocalActivity('stopped', null);
@@ -477,6 +504,7 @@ export class LocalServerService {
         message: null,
         error: null,
         deployedTelemetry: null,
+        notice: null,
         deployedVersion: null,
         drift: null,
         upgrade: null,

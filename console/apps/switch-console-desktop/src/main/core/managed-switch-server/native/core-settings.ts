@@ -9,6 +9,8 @@ export type NativeCoreSettingsParams = {
    * gateway API — there is no separate dashboard process in native mode. */
   apiPort: number;
   postgresPort: number;
+  /** Where switch-core takes Mattermost's button presses, when it runs one. */
+  callbackPort: number;
   secrets: LocalServerSecrets;
   telemetryEnabled: boolean;
   telemetryEnvironment: TelemetryFlintEnv;
@@ -34,6 +36,7 @@ export function buildNativeCoreSettings(params: NativeCoreSettingsParams): Recor
     // A Mattermost callback listener is only bound when a bridge asks for one;
     // its default is every interface, which nothing here needs.
     COLLABORATION_CALLBACK_HOST: LOCAL_SERVER_BIND_ADDR,
+    COLLABORATION_CALLBACK_PORT: String(params.callbackPort),
     DB_HOST: '127.0.0.1',
     DB_PORT: String(postgresPort),
     DB_USER: RUNTIME_ROLE,
