@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { log } from '@main/lib/logger';
 import type { NativeLayout } from './native-paths';
 import { type PostgresBinaries, postgresBin } from './postgres-binaries';
-import { runCommand } from './run-command';
+import { runCommand, runLeavingProcess } from './run-command';
 
 const execFileAsync = promisify(execFile);
 
@@ -215,14 +215,16 @@ export async function startCluster(
 ): Promise<void> {
   await mkdir(layout.logs, { recursive: true });
   const logFile = path.join(layout.logs, 'postgres.log');
+  const ctlLog = path.join(layout.logs, 'pg_ctl.log');
   try {
-    await runCommand(
+    await runLeavingProcess(
       postgresBin(binaries, 'pg_ctl'),
       ['start', '-D', layout.pgdata, '-l', logFile, '-w', '-t', '90'],
-      { cwd: layout.root, env: pgEnv(binaries), onLine: onLog, timeoutMs: 120_000 }
+      { cwd: layout.root, env: pgEnv(binaries), logFile: ctlLog, timeoutMs: 120_000 }
     );
+    onLog('PostgreSQL started');
   } catch (error) {
-    const detail = await logTail(logFile);
+    const detail = (await logTail(logFile)) ?? (await logTail(ctlLog));
     log.error('local-switch-server: PostgreSQL did not start', { error: String(error), detail });
     throw new Error(
       `PostgreSQL did not start. ${detail ? `Its log ends: ${detail}` : `See ${logFile}.`}`,

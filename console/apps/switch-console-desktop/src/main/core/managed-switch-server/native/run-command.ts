@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { closeSync, openSync } from 'node:fs';
 
 export type RunOptions = {
   cwd: string;
@@ -49,4 +50,43 @@ export function runCommand(command: string, args: string[], opts: RunOptions): P
     });
     if (opts.stdin !== undefined) child.stdin?.end(opts.stdin);
   });
+}
+
+/**
+ * Run a command that leaves a process running behind it (`pg_ctl start`),
+ * with its output appended to `logFile` rather than piped back.
+ *
+ * Pipes would hang the wait: the process left behind inherits them, so they
+ * never close, and on Windows — where pg_ctl starts the server through
+ * cmd.exe — a wait on the pipes closing never ends. A file handle can be
+ * inherited without holding anything up, and the wait is on the command's own
+ * exit.
+ */
+export function runLeavingProcess(
+  command: string,
+  args: string[],
+  opts: { cwd: string; env: NodeJS.ProcessEnv; logFile: string; timeoutMs: number }
+): Promise<void> {
+  const fd = openSync(opts.logFile, 'a', 0o600);
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: opts.cwd,
+      env: opts.env,
+      windowsHide: true,
+      stdio: ['ignore', fd, fd],
+    });
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error(`${command} timed out after ${Math.round(opts.timeoutMs / 1000)}s`));
+    }, opts.timeoutMs);
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`${command} failed (exit ${code}); see ${opts.logFile}`));
+    });
+  }).finally(() => closeSync(fd));
 }
