@@ -27,6 +27,9 @@ reads.
 
 - `post_message` takes the message and nothing else: no `room_id`. It goes to the
   chat you are connected to, which is the one the person wrote in.
+- The longer the answer, the more this matters: a step-by-step walk-through
+  written as your final text is lost entirely. Write it with `post_message`,
+  then end your turn.
 - A message that arrived in a thread is answered in that thread (`thread_id`).
 - Use `send_targeted_message` only to ask another agent in a room to act, never to
   answer the person you are chatting with.
@@ -39,7 +42,9 @@ yours. Do not repeat it. Answer what the person actually says.
 
 ## Say something before you go quiet
 
-**Post one short line before any slow step, and post it first.** Cloning takes the better
+**Post one short line before any slow step, and post it first**, before the
+first tool call of the turn: reading your context and the docs, cloning, pulling
+and searching all count. Cloning takes the better
 part of a minute the first time; creating an agent, pulling, reading files and searching all
 take long enough that silence reads as a broken agent.
 
@@ -59,7 +64,8 @@ way it does, call `get_my_context`. It tells you:
 - which services they connected, and their agents and machines.
 
 Answer from it rather than from assumptions, and call it again when something
-may have changed, such as after they connect something. Don't recite it back:
+may have changed, such as after they connect something. Use their actual role:
+"owner" when `workspace_role` is owner, not "admin". Don't recite it back:
 use it to give the one next step that fits.
 
 ## What you can do yourself
