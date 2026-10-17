@@ -139,6 +139,20 @@ if (postgres) {
   for (const entry of await readdir(path.join(dir, 'lib'))) {
     if (entry.endsWith('.a')) await rm(path.join(dir, 'lib', entry));
   }
+  // switch-core creates no extensions. initdb itself needs PL/pgSQL and the
+  // Snowball dictionaries; every other module is dead weight.
+  const keepModule = (name) => /^(plpgsql|dict_snowball)\./.test(name);
+  const modules = path.join(dir, 'lib', 'postgresql');
+  for (const entry of await readdir(modules)) {
+    if (!keepModule(entry)) await rm(path.join(modules, entry), { recursive: true, force: true });
+  }
+  const extensions = path.join(dir, 'share', 'postgresql', 'extension');
+  for (const entry of await readdir(extensions)) {
+    if (!entry.startsWith('plpgsql')) await rm(path.join(extensions, entry));
+  }
+  for (const drop of ['share/doc', 'share/man', 'share/locale']) {
+    await rm(path.join(dir, drop), { recursive: true, force: true });
+  }
   // Recreate the shared-library links npm packaging cannot carry.
   const linksFile = path.join(dir, 'pg-symlinks.json');
   if (existsSync(linksFile)) {

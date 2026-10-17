@@ -63,9 +63,10 @@ function installedCandidates(env: NodeJS.ProcessEnv): string[] {
 }
 
 /**
- * The uv to install switch-core with: an installed one when it is recent
- * enough, otherwise the pinned release, downloaded into the local server's
- * toolchain directory (and reused from there on later starts).
+ * The uv to install switch-core with: the one the app ships; in a build that
+ * ships none, an installed one when it is recent enough, otherwise the pinned
+ * release, downloaded into the local server's toolchain directory (and reused
+ * from there on later starts).
  */
 export async function resolveUv(
   layout: NativeLayout,
@@ -73,6 +74,16 @@ export async function resolveUv(
   onMessage: (message: string) => void,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<UvBinary> {
+  // The app's own uv first, when it ships one: it is the version this code
+  // was tested with, and an older uv on the machine may not take its flags.
+  if (bundle !== null) {
+    const version = await probeUv(bundle.uv);
+    if (version !== null) return { path: bundle.uv, version, source: 'bundled' };
+    log.warn('local-switch-server: the bundled uv does not run; looking for another', {
+      path: bundle.uv,
+    });
+  }
+
   for (const candidate of installedCandidates(env)) {
     const version = await probeUv(candidate);
     if (version === null) continue;
@@ -81,14 +92,6 @@ export async function resolveUv(
       continue;
     }
     return { path: candidate, version, source: 'installed' };
-  }
-
-  if (bundle !== null) {
-    const version = await probeUv(bundle.uv);
-    if (version !== null) return { path: bundle.uv, version, source: 'bundled' };
-    log.warn('local-switch-server: the bundled uv does not run; downloading one', {
-      path: bundle.uv,
-    });
   }
 
   const platform = currentNativePlatform();

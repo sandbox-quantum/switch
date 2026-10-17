@@ -433,7 +433,7 @@ export const ChooseStep = observer(function ChooseStep({
         <ChoiceCard
           icon={<Laptop className="size-5" />}
           title="Run a server on this computer"
-          description="Switch Console sets up and runs the full Switch stack here with Docker. Best for trying Switch out."
+          description="Switch Console sets up and runs the Switch server here. No Docker needed. Best for trying Switch out."
           onClick={onLocal}
         />
         <ChoiceCard
