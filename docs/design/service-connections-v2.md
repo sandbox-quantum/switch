@@ -374,6 +374,38 @@ To connect: Settings, Connections in Switch Console, then Atlassian. Nothing
 needs configuring on the server. To roll back, add `atlassian` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
+## Airtable
+
+Built like Atlassian, from a sign-in run against a free Airtable account:
+
+- Airtable offers dynamic registration, so Core registers a public client,
+  and its MCP server's 401 names the metadata discovery starts from. Airtable
+  matches the loopback port exactly, so the entry reuses Atlassian's five
+  ports; each vendor registers its own client.
+- Airtable's consent screen chooses bases, interfaces and workspaces, not
+  scopes: a person cannot leave the write scopes out, at sign-in or later. So
+  every connection is granted the write level, and what an agent reaches is
+  narrowed on Airtable's side, by the bases shared and the person's base role.
+- Not asked for: `schema.bases:write`. Without it Airtable refuses creating or
+  changing tables and fields, though its server lists those tools anyway.
+  `data.records:write` includes deleting records.
+- Access tokens live 60 minutes, and no `offline_access` is needed for a
+  refresh token. Each refresh returns a new refresh token and ends the
+  previous access token at once, so a host still holding it is refused once
+  and asks again. whoami (`api.airtable.com/v0/meta/whoami`) accepts the MCP
+  server's token; it returns no email without a scope the server does not
+  offer, so a connection is named by its account id.
+- Airtable has no revocation endpoint. Disconnecting tells the person to
+  remove Switch under Integrations in their Airtable account menu.
+- On Enterprise plans an admin may allowlist third-party clients by client id.
+  Core's registered client differs per deployment; its id is
+  `service_oauth_clients.oauth_client_id` for `airtable`. Not tried: no
+  Enterprise account was at hand.
+
+To connect: Settings, Connections in Switch Console, then Airtable. Nothing
+needs configuring on the server. To roll back, add `airtable` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
 ## Google Workspace
 
 Drive, Docs, Sheets, Slides and Calendar; not Gmail. Google's Workspace MCP

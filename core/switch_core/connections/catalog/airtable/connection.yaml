@@ -1,0 +1,52 @@
+slug: airtable
+name: Airtable
+category: Knowledge base
+description: Read and update records in the Airtable bases you share, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Each refresh returns a new refresh token, and the previous access token
+  # stops working at once.
+  refresh: rotating
+  oauth:
+    # Airtable offers dynamic registration, so Core registers its client. On
+    # Enterprise plans an admin may have to allowlist that client id.
+    registration: dynamic
+    # Airtable matches a loopback redirect exactly, port included.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # Airtable has no revocation endpoint: a disconnect cannot revoke the
+    # sign-in there.
+  identity:
+    url: https://api.airtable.com/v0/meta/whoami
+    account_id: id
+    # Airtable returns the email only with user.email:read, which its MCP
+    # server does not offer, so the connection is named by the account id.
+    label: email
+# Airtable's access tokens live 60 minutes (measured).
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: airtable, url: "https://mcp.airtable.com/mcp" }
+access:
+  # Airtable's consent screen picks bases and workspaces, not scopes, so every
+  # connection is granted the write level. Not asked for: schema.bases:write,
+  # which creates and changes bases, tables, fields and interfaces; without it
+  # Airtable refuses those tools, though the server still lists them.
+  # data.records:write includes deleting records.
+  read:
+    scopes:
+      - data.records:read
+      - schema.bases:read
+      - data.recordComments:read
+      - workspacesAndBases:read
+  write:
+    scopes:
+      - data.records:read
+      - data.records:write
+      - schema.bases:read
+      - data.recordComments:read
+      - data.recordComments:write
+      - workspacesAndBases:read
+tools: { mode: pass_through }
