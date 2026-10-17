@@ -4,6 +4,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { log } from '@main/lib/logger';
+import { waitForHealth } from '../health';
 import type { NativeLayout } from './native-paths';
 import type { SwitchCoreInstall } from './switch-core-install';
 
@@ -177,5 +178,32 @@ export async function coreLogTail(layout: NativeLayout, lines = 8): Promise<stri
     return text.trim().split('\n').slice(-lines).join('\n') || null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Wait for the gateway to answer, giving up as soon as switch-core exits
+ * rather than at the health timeout: a crash during boot (a failed migration,
+ * a port taken) is over in seconds, and three minutes of "waiting" for a
+ * process that is gone tells the user nothing.
+ */
+export async function waitForCoreHealth(
+  layout: NativeLayout,
+  apiUrl: string,
+  signal: AbortSignal
+): Promise<boolean> {
+  const exited = new AbortController();
+  const watch = setInterval(() => {
+    void runningCore(layout).then((record) => {
+      if (record === null) exited.abort(new Error('switch-core exited'));
+    });
+  }, 1000);
+  try {
+    return await waitForHealth(apiUrl, { signal: AbortSignal.any([signal, exited.signal]) });
+  } catch (error) {
+    if (exited.signal.aborted && !signal.aborted) return false;
+    throw error;
+  } finally {
+    clearInterval(watch);
   }
 }

@@ -290,7 +290,8 @@ export async function resolvePostgres(
     );
   }
   const previous = await readChoice(layout);
-  if (previous && (required === null || previous.major === required)) {
+  const supported = (major: number) => major >= MIN_POSTGRES_MAJOR && major <= MAX_POSTGRES_MAJOR;
+  if (previous && supported(previous.major) && (required === null || previous.major === required)) {
     if ((await probeBinDir(previous.binDir)) === previous.major) return previous;
     log.warn('local-switch-server: the PostgreSQL used last time is gone; looking again', {
       binDir: previous.binDir,

@@ -1,3 +1,4 @@
+import { appendFileSync, mkdirSync } from 'node:fs';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import path from 'node:path';
@@ -21,7 +22,6 @@ import { detectDocker } from '../docker';
 import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY } from '../env-file';
 import { errorText } from '../error-text';
 import type { LocalServerPorts } from '../free-port';
-import { waitForHealth } from '../health';
 import type { ServerHost } from '../host/types';
 import {
   finishUpgrade,
@@ -33,7 +33,14 @@ import { registerManagedServer } from '../pipeline';
 import { clearPorts, resolvePorts } from '../ports';
 import { clearSecrets, loadOrCreateSecrets } from '../secrets';
 import { telemetryConsent } from '../telemetry-consent';
-import { CORE_ENV_FILE, coreLogTail, runningCore, startCore, stopCore } from './core-process';
+import {
+  CORE_ENV_FILE,
+  coreLogTail,
+  runningCore,
+  startCore,
+  stopCore,
+  waitForCoreHealth,
+} from './core-process';
 import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
 import { startMattermost, stopMattermost } from './mattermost';
 import type { NativeLayout } from './native-paths';
@@ -225,7 +232,10 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<StartL
   });
 
   onMessage('Stopping the running server…');
-  await stopProcesses(layout, postgres, onLog);
+  // PostgreSQL's own setup output goes to a file: in the UI's log tail it
+  // would push whatever actually went wrong out of sight.
+  const pgLog = fileLogger(path.join(layout.logs, 'postgres-setup.log'));
+  await stopProcesses(layout, postgres, pgLog);
   await assertPortsFree(ports);
 
   const passwords = { owner: secrets.dbPassword, runtime: secrets.dbRuntimePassword };
@@ -235,15 +245,15 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<StartL
       readDeployedVersion: () => readNativeDeployedVersion(layout),
       backupDatabase: (from, message) => backupDataDirectory(layout, from, message),
     });
-    await syncPasswords(postgres, layout, passwords, onLog);
+    await syncPasswords(postgres, layout, passwords, pgLog);
   } else {
     onMessage(`Creating the database (PostgreSQL ${postgres.major})…`);
-    await initCluster(postgres, layout, passwords, onLog);
+    await initCluster(postgres, layout, passwords, pgLog);
     await writeDeployedVersion(layout, install.version);
   }
   await writeClusterConfig(layout, ports.postgres);
   onMessage('Starting PostgreSQL…');
-  await startCluster(postgres, layout, onLog);
+  await startCluster(postgres, layout, pgLog);
   // From here a failure leaves processes behind that nothing would stop; a
   // failed start stops them again, so it does not look half-running.
   try {
@@ -265,7 +275,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<StartL
     log.info(`local-switch-server: started switch-core ${install.version} (pid ${record.pid})`);
 
     onMessage('Waiting for the server to become healthy…');
-    const healthy = await waitForHealth(apiUrl, { signal });
+    const healthy = await waitForCoreHealth(layout, apiUrl, signal);
     if (!healthy) {
       const alive = (await runningCore(layout)) !== null;
       const tail = await coreLogTail(layout, 3);
@@ -329,6 +339,12 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<StartL
     await stopAfterFailedStart(layout, postgres);
     throw error;
   }
+}
+
+/** A logger appending lines to `file`, for output nobody needs on screen. */
+function fileLogger(file: string): (line: string) => void {
+  mkdirSync(path.dirname(file), { recursive: true });
+  return (line) => appendFileSync(file, `${line}\n`);
 }
 
 /** Stop what a failed start left running. Best effort: the start's own
