@@ -1,49 +1,72 @@
-import { deleteAgentsForServer } from '@main/core/switch-servers/delete-server-agents';
-import { getManagedServer } from '@main/core/switch-servers/servers-store';
+import { deleteAgentsForServer } from "@main/core/switch-servers/delete-server-agents";
+import { getManagedServer } from "@main/core/switch-servers/servers-store";
 import {
   reportManagedServerOutcome,
   reportManagedServerStart,
   reportManagedServerStartThrew,
-} from '@main/core/telemetry/managed-server';
-import { events } from '@main/lib/events';
-import { log } from '@main/lib/logger';
-import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
+} from "@main/core/telemetry/managed-server";
+import { events } from "@main/lib/events";
+import { log } from "@main/lib/logger";
+import { COMPATIBLE_SWITCH_VERSION } from "@shared/app-identity";
 import {
   CHECKOUT_IMAGE_TAG,
   type CheckoutBuild,
   type DockerAvailability,
   type LocalActivityEntry,
+  type LocalServerRuntime,
   type LocalServerStatus,
   type StartLocalServerResult,
   managedServerUpgradeBlockedReason,
   matrixMigrationFailedMessage,
   switchVersionDowngradeMessage,
-} from '@shared/core/managed-switch-server/managed-switch-server';
+} from "@shared/core/managed-switch-server/managed-switch-server";
 import {
   localServerLogChannel,
   localServerStatusChannel,
-} from '@shared/events/localSwitchServerEvents';
+} from "@shared/events/localSwitchServerEvents";
 import {
   findCoreCheckout,
   isCheckoutBuildEnabled,
   setCheckoutBuildEnabled,
-} from './checkout-build';
-import { coreStartedAt, isStackRunning, runningImages } from './compose';
-import { CORE_SERVICE, LOCAL_SERVER_NAME } from './constants';
-import { readVersionStatus } from './deployed-version';
-import { findFreePort, type LocalServerPorts } from './free-port';
-import { LocalServerHost } from './host/local-host';
-import type { ServerHost } from './host/types';
-import { readLocalActivity, recordLocalActivity } from './local-activity';
+} from "./checkout-build";
+import { coreStartedAt, isStackRunning, runningImages } from "./compose";
 import {
+  COMPOSE_FILE_NAME,
+  CORE_SERVICE,
+  ENV_FILE_NAME,
+  ENV_STAMP_FILE_NAME,
+  LOCAL_SERVER_NAME,
+} from "./constants";
+import { readVersionStatus, versionStatusOf } from "./deployed-version";
+import { findFreePort, type LocalServerPorts } from "./free-port";
+import { LocalServerHost } from "./host/local-host";
+import type { ServerHost } from "./host/types";
+import { readLocalActivity, recordLocalActivity } from "./local-activity";
+import {
+  type OwedUpgrade,
   owedUpgrade,
   readUpgradeJournal,
   type UpgradeJournal,
   upgradeState,
-} from './managed-upgrade';
-import { resetStack, startStack, stopStack } from './pipeline';
-import { readPersistedPorts, rememberPorts } from './ports';
-import { readDeployedTelemetry } from './telemetry-consent';
+} from "./managed-upgrade";
+import { readMattermostEnabled, stopMattermost, writeMattermostEnabled } from "./native/mattermost";
+import { nativeLayout } from "./native/native-paths";
+import {
+  type NativeStartResult,
+  nativeMattermostLauncher,
+  nativeStackRunning,
+  nativeStartedAt,
+  readNativeDeployedVersion,
+  readNativeTelemetry,
+  resetNativeStack,
+  startNativeStack,
+  stopNativeStack,
+} from "./native/native-stack";
+import { localServerBundleRoot, localServerDir } from "./paths";
+import { resetStack, startStack, stopStack } from "./pipeline";
+import { readPersistedPorts, rememberPorts } from "./ports";
+import { readLocalRuntime, writeLocalRuntime } from "./runtime";
+import { readDeployedTelemetry } from "./telemetry-consent";
 
 /**
  * Supervises the managed local Switch stack via the shared {@link startStack}
@@ -61,7 +84,11 @@ import { readDeployedTelemetry } from './telemetry-consent';
  */
 export class LocalServerService {
   private status: LocalServerStatus = {
-    phase: 'stopped',
+    phase: "stopped",
+    runtime: null,
+    mattermost: null,
+    mattermostState: null,
+    notice: null,
     checked: false,
     upgrade: null,
     serverId: null,
@@ -91,6 +118,81 @@ export class LocalServerService {
 
   detectDocker(): Promise<DockerAvailability> {
     return new LocalServerHost().detectDocker();
+  }
+
+  /** Counts starts and stops, so a Mattermost bring-up that a later stop or
+   * start overtook does not report into the status of a server it is no longer
+   * part of. */
+  private mattermostRun = 0;
+
+  /**
+   * Bring Mattermost up beside a native server that is already running and in
+   * use. Its outcome lands on the status; a failure leaves the server running
+   * and says why, rather than failing a start that has already succeeded.
+   */
+  private async runMattermost(
+    bringUp: NonNullable<NativeStartResult["bringUpMattermost"]>,
+  ): Promise<void> {
+    const run = this.mattermostRun;
+    const current = () => run === this.mattermostRun && this.status.phase === "running";
+    try {
+      await bringUp((message) => log.info(`local-switch-server: ${message}`));
+      if (current()) this.setStatus({ mattermostState: "running" });
+    } catch (error) {
+      log.error("local-switch-server: Mattermost did not start", { error: String(error) });
+      if (!current()) return;
+      this.setStatus({
+        mattermostState: "failed",
+        notice: `The server is running, but Mattermost could not be set up: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      });
+    }
+  }
+
+  /**
+   * Turn Mattermost on or off for a native server. Takes effect at the next
+   * start; a running Mattermost is left alone until then, like any setting a
+   * running server read when it started.
+   */
+  async setMattermost(enabled: boolean): Promise<void> {
+    if ((await this.runtime()) !== "native") {
+      throw new Error(
+        "Mattermost can only be turned on or off for a server that runs without Docker.",
+      );
+    }
+    await writeMattermostEnabled(localServerDir(), enabled);
+    this.setStatus({ mattermost: enabled });
+    // A running server takes the change now: Mattermost runs on its own and
+    // registers itself, so nothing about the server needs restarting.
+    if (this.status.phase !== "running" || this.busy) return;
+    const layout = nativeLayout(localServerDir());
+    this.mattermostRun++;
+    if (!enabled) {
+      this.setStatus({ mattermostState: null, notice: null });
+      await stopMattermost(layout, false);
+      return;
+    }
+    const host: ServerHost = new LocalServerHost();
+    try {
+      const bringUp = await nativeMattermostLauncher(
+        host,
+        layout,
+        this.checkoutRootForStart(),
+        (line) => events.emit(localServerLogChannel, { line }),
+      );
+      this.setStatus({ mattermostState: "starting", notice: null });
+      void this.runMattermost(bringUp);
+    } finally {
+      host.dispose();
+    }
+  }
+
+  /** How the server runs, read off its directory and recorded on the status. */
+  private async runtime(): Promise<LocalServerRuntime> {
+    const runtime = await readLocalRuntime(localServerDir());
+    if (this.status.runtime !== runtime) this.setStatus({ runtime });
+    return runtime;
   }
 
   private setStatus(patch: Partial<LocalServerStatus>): void {
@@ -129,7 +231,7 @@ export class LocalServerService {
     const checkout = this.status.checkoutBuild;
     if (!checkout) {
       throw new Error(
-        'Building from a local checkout is only available in a dev build launched from a Switch checkout.'
+        "Building from a local checkout is only available in a dev build launched from a Switch checkout.",
       );
     }
     const host: ServerHost = new LocalServerHost();
@@ -164,16 +266,29 @@ export class LocalServerService {
     let upgradeNow = false;
     try {
       this.setStatus({ checkoutBuild: await this.readCheckoutBuild(host) });
+      const native = (await this.runtime()) === "native";
+      const layout = nativeLayout(localServerDir());
+      if (native) this.setStatus({ mattermost: await readMattermostEnabled(localServerDir()) });
       const managed = await getManagedServer();
       if (!managed) return;
-      const running = await isStackRunning(host);
+      const running = native ? await nativeStackRunning(layout) : await isStackRunning(host);
       if (running) {
-        this.setStatus({ phase: 'running', serverId: managed.id, message: null, error: null });
+        this.setStatus({ phase: "running", serverId: managed.id, message: null, error: null });
         // Only for a running stack: a stopped one sends nothing, so it cannot
         // be out of step with the user's answer.
-        this.setStatus({ deployedTelemetry: await readDeployedTelemetry(host) });
+        this.setStatus({
+          deployedTelemetry: native
+            ? await readNativeTelemetry(layout)
+            : await readDeployedTelemetry(host),
+        });
       }
-      const version = await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION);
+      const version = native
+        ? versionStatusOf(
+            await readNativeDeployedVersion(layout),
+            COMPATIBLE_SWITCH_VERSION,
+            host.label,
+          )
+        : await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION);
       // A checkout build is deliberately not a comparable version, so the pin
       // comparison has nothing to say about it — the UI reports it as a
       // checkout build instead of as unexplained drift.
@@ -186,8 +301,8 @@ export class LocalServerService {
           ...version,
           drift,
           upgrade: {
-            state: 'failed',
-            from: version.deployedVersion ?? 'an unknown version',
+            state: "failed",
+            from: version.deployedVersion ?? "an unknown version",
             to: COMPATIBLE_SWITCH_VERSION,
             error: error instanceof Error ? error.message : String(error),
           },
@@ -198,7 +313,7 @@ export class LocalServerService {
       upgradeNow = owed !== null && (running || journal !== null);
       this.setStatus({ ...version, drift, upgrade: owed && upgradeState(owed, upgradeNow) });
     } catch (error) {
-      log.warn('local-switch-server: boot status reconcile failed', { error });
+      log.warn("local-switch-server: boot status reconcile failed", { error });
     } finally {
       this.setStatus({ checked: true });
       host.dispose();
@@ -218,7 +333,7 @@ export class LocalServerService {
     while (this.starting) await this.starting;
     const upgrade = this.status.upgrade;
     if (upgrade === null) return;
-    if (upgrade.state === 'updating') {
+    if (upgrade.state === "updating") {
       throw new Error(`${serverName} reports an update in progress, but none is running.`);
     }
     this.refused = true;
@@ -248,56 +363,77 @@ export class LocalServerService {
 
   private async runStart(activate: boolean): Promise<StartLocalServerResult> {
     if (this.busy) {
-      return { kind: 'error', message: 'A local-server operation is already in progress.' };
+      return { kind: "error", message: "A local-server operation is already in progress." };
     }
     this.busy = true;
     this.startAbort = new AbortController();
     const host: ServerHost = new LocalServerHost();
     const checkoutRoot = this.checkoutRootForStart();
     try {
-      this.setStatus({ phase: 'starting', error: null, message: 'Checking Docker…' });
-      const result = await startStack({
+      const native = (await this.runtime()) === "native";
+      this.setStatus({
+        phase: "starting",
+        error: null,
+        notice: null,
+        message: native ? "Preparing the server…" : "Checking Docker…",
+      });
+      const common = {
         host,
-        ref: { kind: 'local' },
+        ref: { kind: "local" } as const,
         serverName: LOCAL_SERVER_NAME,
         activate,
-        onMessage: (message) => this.setStatus({ message }),
-        onLog: (line) => events.emit(localServerLogChannel, { line }),
-        onUpgrade: (owed) => this.setStatus({ upgrade: upgradeState(owed, true) }),
+        onMessage: (message: string) => this.setStatus({ message }),
+        onLog: (line: string) => events.emit(localServerLogChannel, { line }),
+        onUpgrade: (owed: OwedUpgrade) => this.setStatus({ upgrade: upgradeState(owed, true) }),
         signal: this.startAbort.signal,
         checkoutRoot,
+      };
+      if (native) await writeLocalRuntime(localServerDir(), "native");
+      this.mattermostRun++;
+      let bringUpMattermost: NativeStartResult["bringUpMattermost"] = null;
+      let result: StartLocalServerResult;
+      if (native) {
+        const started = await startNativeStack({
+          ...common,
+          layout: nativeLayout(localServerDir()),
+          mattermost: await readMattermostEnabled(localServerDir()),
+          bundleRoot: localServerBundleRoot(),
+        });
+        result = started.result;
+        bringUpMattermost = started.bringUpMattermost;
+      } else {
         // Nobody else shares the local stack, so there is nothing to lock.
-        lease: null,
-      });
-      if (result.kind === 'docker-unavailable') {
-        this.setStatus({ phase: 'error', error: result.detail });
+        result = await startStack({ ...common, lease: null });
+      }
+      if (result.kind === "docker-unavailable") {
+        this.setStatus({ phase: "error", error: result.detail });
         this.failUpgrade(result.detail);
-        await recordLocalActivity('start-failed', result.detail);
-      } else if (result.kind === 'version-downgrade') {
+        await recordLocalActivity("start-failed", result.detail);
+      } else if (result.kind === "version-downgrade") {
         this.setStatus({
-          phase: 'error',
+          phase: "error",
           message: null,
           error: switchVersionDowngradeMessage(result.deployed, result.expected),
           deployedVersion: result.deployed,
-          drift: { deployed: result.deployed, expected: result.expected, direction: 'downgrade' },
+          drift: { deployed: result.deployed, expected: result.expected, direction: "downgrade" },
           upgrade: null,
         });
-        await recordLocalActivity('start-failed', this.status.error);
-      } else if (result.kind === 'matrix-migration-failed') {
+        await recordLocalActivity("start-failed", this.status.error);
+      } else if (result.kind === "matrix-migration-failed") {
         const error = matrixMigrationFailedMessage(result.deployed, result.expected);
-        this.setStatus({ phase: 'error', message: null, error, deployedVersion: result.deployed });
+        this.setStatus({ phase: "error", message: null, error, deployedVersion: result.deployed });
         this.failUpgrade(error);
-        await recordLocalActivity('start-failed', error);
-      } else if (result.kind === 'error') {
-        this.setStatus({ phase: 'error', error: result.message });
+        await recordLocalActivity("start-failed", error);
+      } else if (result.kind === "error") {
+        this.setStatus({ phase: "error", error: result.message });
         this.failUpgrade(result.message);
-        await recordLocalActivity('start-failed', result.message);
+        await recordLocalActivity("start-failed", result.message);
       } else {
         const updatedTo = this.status.upgrade?.to ?? null;
         // The pipeline just wrote this build's pin and converged the containers
         // onto it, so any drift the boot probe found is now resolved.
         this.setStatus({
-          phase: 'running',
+          phase: "running",
           serverId: result.serverId,
           message: null,
           error: null,
@@ -305,24 +441,27 @@ export class LocalServerService {
           drift: null,
           upgrade: null,
           deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
+          notice: result.warning,
+          mattermostState: bringUpMattermost ? "starting" : null,
         });
-        if (updatedTo !== null) await recordLocalActivity('updated', updatedTo);
-        await recordLocalActivity('started', null);
+        if (bringUpMattermost) void this.runMattermost(bringUpMattermost);
+        if (updatedTo !== null) await recordLocalActivity("updated", updatedTo);
+        await recordLocalActivity("started", null);
         if (this.refused) {
           this.refused = false;
           for (const listener of this.upgradeListeners) listener(result.serverId);
         }
       }
-      reportManagedServerStart('local', result);
+      reportManagedServerStart("local", result);
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      log.error('local-switch-server: start failed', { error });
-      this.setStatus({ phase: 'error', error: message });
+      log.error("local-switch-server: start failed", { error });
+      this.setStatus({ phase: "error", error: message });
       this.failUpgrade(message);
-      await recordLocalActivity('start-failed', message);
-      reportManagedServerStartThrew('local');
-      return { kind: 'error', message };
+      await recordLocalActivity("start-failed", message);
+      reportManagedServerStartThrew("local");
+      return { kind: "error", message };
     } finally {
       host.dispose();
       this.busy = false;
@@ -335,53 +474,65 @@ export class LocalServerService {
   private failUpgrade(error: string): void {
     const upgrade = this.status.upgrade;
     if (!upgrade) return;
-    this.setStatus({ upgrade: { state: 'failed', from: upgrade.from, to: upgrade.to, error } });
+    this.setStatus({ upgrade: { state: "failed", from: upgrade.from, to: upgrade.to, error } });
   }
 
   async stop(): Promise<void> {
-    if (this.busy) throw new Error('A local-server operation is already in progress.');
+    if (this.busy) throw new Error("A local-server operation is already in progress.");
     this.busy = true;
     const host: ServerHost = new LocalServerHost();
+    const native = (await this.runtime()) === "native";
     try {
-      this.setStatus({ phase: 'stopping', message: 'Stopping containers…' });
-      await stopStack(host, null);
+      this.setStatus({
+        phase: "stopping",
+        message: native ? "Stopping the server…" : "Stopping containers…",
+      });
+      this.mattermostRun++;
+      if (native) await stopNativeStack(nativeLayout(localServerDir()), localServerBundleRoot());
+      else await stopStack(host, null);
       const upgrade = this.status.upgrade;
       this.setStatus({
-        phase: 'stopped',
+        phase: "stopped",
         message: null,
         error: null,
         deployedTelemetry: null,
+        notice: null,
+        mattermostState: null,
         upgrade: upgrade && upgradeState(upgrade, false),
       });
-      await recordLocalActivity('stopped', null);
-      reportManagedServerOutcome('stop', 'local', 'success');
+      await recordLocalActivity("stopped", null);
+      reportManagedServerOutcome("stop", "local", "success");
     } catch (error) {
-      reportManagedServerOutcome('stop', 'local', 'failure');
+      reportManagedServerOutcome("stop", "local", "failure");
       // A stop that errors may still have stopped the containers. Say what is
       // true rather than what the command reported.
       // Asked so that a failure to ask counts as still running.
-      const stillRunning = await runningImages(host).then(
-        (images) => images.has(CORE_SERVICE),
-        () => true
-      );
+      const stillRunning = native
+        ? await nativeStackRunning(nativeLayout(localServerDir())).catch(() => true)
+        : await runningImages(host).then(
+            (images) => images.has(CORE_SERVICE),
+            () => true,
+          );
       if (stillRunning) {
         this.setStatus({
-          phase: 'error',
-          failedTo: 'stop',
+          phase: "error",
+          failedTo: "stop",
           error: error instanceof Error ? error.message : String(error),
         });
         throw error;
       }
-      log.warn('local-switch-server: stop reported an error, but the stack is down', { error });
+      log.warn("local-switch-server: stop reported an error, but the stack is down", { error });
       const upgrade = this.status.upgrade;
       this.setStatus({
-        phase: 'stopped',
+        phase: "stopped",
         message: null,
         error: null,
         deployedTelemetry: null,
+        notice: null,
+        mattermostState: null,
         upgrade: upgrade && upgradeState(upgrade, false),
       });
-      await recordLocalActivity('stopped', null);
+      await recordLocalActivity("stopped", null);
     } finally {
       host.dispose();
       this.busy = false;
@@ -396,33 +547,48 @@ export class LocalServerService {
    * keeps a dead endpoint and a token for nobody. Doing it behind the reset is
    * what stops a second caller from forgetting. */
   async reset(): Promise<void> {
-    if (this.busy) throw new Error('A local-server operation is already in progress.');
+    if (this.busy) throw new Error("A local-server operation is already in progress.");
     this.busy = true;
     const host: ServerHost = new LocalServerHost();
     try {
-      this.setStatus({ phase: 'stopping', message: 'Removing agents…' });
+      this.setStatus({ phase: "stopping", message: "Removing agents…" });
       const server = await getManagedServer();
       if (server) await deleteAgentsForServer(server.id);
-      this.setStatus({ phase: 'stopping', message: 'Destroying containers and data…' });
-      await resetStack(host, null);
+      if ((await this.runtime()) === "native") {
+        this.setStatus({ phase: "stopping", message: "Deleting the server and its data…" });
+        this.mattermostRun++;
+        await resetNativeStack(host, nativeLayout(localServerDir()), localServerBundleRoot());
+      } else {
+        this.setStatus({ phase: "stopping", message: "Destroying containers and data…" });
+        await resetStack(host, null);
+        // Nothing of the Docker stack is left to keep it on Docker, so the next
+        // start sets the server up natively.
+        for (const file of [COMPOSE_FILE_NAME, ENV_FILE_NAME, ENV_STAMP_FILE_NAME]) {
+          await host.removeFile(file);
+        }
+        await writeLocalRuntime(localServerDir(), "native");
+        this.setStatus({ runtime: "native" });
+      }
       this.setStatus({
-        phase: 'stopped',
+        phase: "stopped",
         message: null,
         error: null,
         deployedTelemetry: null,
+        notice: null,
+        mattermostState: null,
         deployedVersion: null,
         drift: null,
         upgrade: null,
       });
-      await recordLocalActivity('reset', null);
-      reportManagedServerOutcome('reset', 'local', 'success');
+      await recordLocalActivity("reset", null);
+      reportManagedServerOutcome("reset", "local", "success");
     } catch (error) {
       this.setStatus({
-        phase: 'error',
-        failedTo: 'reset',
+        phase: "error",
+        failedTo: "reset",
         error: error instanceof Error ? error.message : String(error),
       });
-      reportManagedServerOutcome('reset', 'local', 'failure');
+      reportManagedServerOutcome("reset", "local", "failure");
       throw error;
     } finally {
       host.dispose();
@@ -433,7 +599,8 @@ export class LocalServerService {
   /** When the running stack's core container started, or null when it is not
    * running. */
   async startedAt(): Promise<string | null> {
-    if (this.status.phase !== 'running') return null;
+    if (this.status.phase !== "running") return null;
+    if ((await this.runtime()) === "native") return nativeStartedAt(nativeLayout(localServerDir()));
     const host: ServerHost = new LocalServerHost();
     try {
       return await coreStartedAt(host);
@@ -454,14 +621,14 @@ export class LocalServerService {
    */
   async useAnotherPort(port: number): Promise<StartLocalServerResult> {
     if (this.busy || this.starting) {
-      throw new Error('A local-server operation is already in progress.');
+      throw new Error("A local-server operation is already in progress.");
     }
     const host: ServerHost = new LocalServerHost();
     try {
       const ports = await readPersistedPorts(host);
-      if (!ports) throw new Error('This server has not chosen its ports yet.');
+      if (!ports) throw new Error("This server has not chosen its ports yet.");
       const service = (Object.keys(ports) as (keyof LocalServerPorts)[]).find(
-        (key) => ports[key] === port
+        (key) => ports[key] === port,
       );
       if (!service) throw new Error(`This server does not publish anything on port ${port}.`);
       const fresh = await findFreePort(new Set(Object.values(ports)));

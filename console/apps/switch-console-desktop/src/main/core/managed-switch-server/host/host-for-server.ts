@@ -1,9 +1,9 @@
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import { localServerDir, remoteServerStateDir } from '../paths';
-import { hostSlug, remoteSecretsKey } from './remote-identity';
+import type { SwitchServer } from "@shared/core/switch-servers/switch-servers";
+import { localServerDir, remoteServerStateDir } from "../paths";
+import { hostSlug, remoteSecretsKey } from "./remote-identity";
 
 /** Local host's fixed secrets-store key. */
-const LOCAL_SECRETS_KEY = 'local-switch-server:secrets';
+const LOCAL_SECRETS_KEY = "local-switch-server:secrets";
 
 /**
  * The encrypted-store key holding a managed server's stack secret bundle.
@@ -14,7 +14,7 @@ const LOCAL_SECRETS_KEY = 'local-switch-server:secrets';
  * constructing a full {@link ServerHost} (which, for remote, would open SSH).
  */
 export function managedServerSecretsKey(server: SwitchServer): string {
-  if (server.managementKind === 'remote' && server.sshHost) {
+  if (server.managementKind === "remote" && server.sshHost) {
     return remoteSecretsKey(server.sshHost);
   }
   return LOCAL_SECRETS_KEY;
@@ -27,7 +27,7 @@ export function managedServerSecretsKey(server: SwitchServer): string {
  * which for a remote server would open an SSH connection.
  */
 export function managedServerStateDir(server: SwitchServer): string {
-  if (server.managementKind === 'remote' && server.sshHost) {
+  if (server.managementKind === "remote" && server.sshHost) {
     return remoteServerStateDir(hostSlug(server.sshHost));
   }
   return localServerDir();

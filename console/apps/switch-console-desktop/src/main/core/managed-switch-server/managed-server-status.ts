@@ -1,9 +1,9 @@
-import { hostReachabilityService } from '@main/core/remote-hosts/production-host-reachability';
-import type { LocalServerPhase } from '@shared/core/managed-switch-server/managed-switch-server';
-import { type HostReachability, isHostBlocked } from '@shared/core/remote-hosts/reachability';
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import { localServerService } from './local-server-service';
-import { remoteServerService } from './remote-server-service';
+import { hostReachabilityService } from "@main/core/remote-hosts/production-host-reachability";
+import type { LocalServerPhase } from "@shared/core/managed-switch-server/managed-switch-server";
+import { type HostReachability, isHostBlocked } from "@shared/core/remote-hosts/reachability";
+import type { SwitchServer } from "@shared/core/switch-servers/switch-servers";
+import { localServerService } from "./local-server-service";
+import { remoteServerService } from "./remote-server-service";
 
 /**
  * Whether a Switch Console-managed server's stack is currently running — i.e. its
@@ -19,7 +19,7 @@ import { remoteServerService } from './remote-server-service';
  */
 export function isManagedServerRunning(server: SwitchServer): boolean {
   if (!server.managed) return false;
-  if (server.managementKind === 'remote') {
+  if (server.managementKind === "remote") {
     if (server.sshHost === null) return false;
     // A `running` phase describes containers we last saw up on the far side of
     // an SSH tunnel. If the host is unreachable that phase is stale — the
@@ -27,9 +27,9 @@ export function isManagedServerRunning(server: SwitchServer): boolean {
     // folded in here rather than persisted as a separate phase, keeping one
     // source of truth and making recovery automatic (CHOO-1780).
     if (hostReachabilityService.isBlocked(server.sshHost)) return false;
-    return remoteServerService.getStatus(server.sshHost).phase === 'running';
+    return remoteServerService.getStatus(server.sshHost).phase === "running";
   }
-  return localServerService.getStatus().phase === 'running';
+  return localServerService.getStatus().phase === "running";
 }
 
 /**
@@ -39,7 +39,7 @@ export function isManagedServerRunning(server: SwitchServer): boolean {
  * error.
  */
 export function managedServerHostBlocked(server: SwitchServer): HostReachability | null {
-  if (!server.managed || server.managementKind !== 'remote' || server.sshHost === null) return null;
+  if (!server.managed || server.managementKind !== "remote" || server.sshHost === null) return null;
   const reachability = hostReachabilityService.get(server.sshHost);
   return isHostBlocked(reachability) ? reachability : null;
 }
@@ -61,13 +61,13 @@ export function managedServerHostBlocked(server: SwitchServer): HostReachability
 export function managedServerStoppedPhase(server: SwitchServer): LocalServerPhase | null {
   if (!server.managed) return null;
   let phase: LocalServerPhase;
-  if (server.managementKind === 'remote') {
+  if (server.managementKind === "remote") {
     if (server.sshHost === null || hostReachabilityService.isBlocked(server.sshHost)) return null;
     phase = remoteServerService.getStatus(server.sshHost).phase;
   } else {
     phase = localServerService.getStatus().phase;
   }
-  return phase === 'stopped' || phase === 'error' ? phase : null;
+  return phase === "stopped" || phase === "error" ? phase : null;
 }
 
 /**
@@ -76,6 +76,6 @@ export function managedServerStoppedPhase(server: SwitchServer): LocalServerPhas
  * (throttled) so that shows as a status rather than a string of failed calls.
  */
 export function noteManagedServerUnanswered(server: SwitchServer): void {
-  if (!server.managed || server.managementKind !== 'remote' || server.sshHost === null) return;
+  if (!server.managed || server.managementKind !== "remote" || server.sshHost === null) return;
   remoteServerService.recheck(server.sshHost);
 }

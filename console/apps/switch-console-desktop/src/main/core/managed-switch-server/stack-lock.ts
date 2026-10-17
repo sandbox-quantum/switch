@@ -1,22 +1,22 @@
-import { randomBytes, randomUUID } from 'node:crypto';
-import { log } from '@main/lib/logger';
+import { randomBytes, randomUUID } from "node:crypto";
+import { log } from "@main/lib/logger";
 import {
   ServerBusyError,
   type ServerLockAction,
   type ServerLockHolder,
-} from '@shared/core/managed-switch-server/managed-switch-server';
+} from "@shared/core/managed-switch-server/managed-switch-server";
 import {
   readStateVolume,
   runStateScript,
   type StackStateHost,
   stateVolumeExists,
-} from './stack-state';
+} from "./stack-state";
 import {
   CONSOLE_ID_PATTERN,
   LOCK_LOST_MESSAGE,
   SERVER_LOCK_FILE,
   UNDER_STATE_MUTEX,
-} from './state-mutex';
+} from "./state-mutex";
 
 /**
  * The lock on a shared remote stack (CHOO-2893), held by whichever Console is
@@ -61,18 +61,18 @@ export type LockClaim = {
 };
 
 const LOCK_ACTIONS: readonly ServerLockAction[] = [
-  'starting',
-  'updating',
-  'connecting',
-  'checking',
-  'stopping',
-  'resetting',
+  "starting",
+  "updating",
+  "connecting",
+  "checking",
+  "stopping",
+  "resetting",
 ];
 
 /** First line of the lock file. A later format must keep the expiry on the
  * third line and the token on the second, which is all an older Console reads
  * of it. */
-const LOCK_MAGIC = 'switch-console-lock v1';
+const LOCK_MAGIC = "switch-console-lock v1";
 
 /**
  * `$10` lists, space-separated, leases this run failed to give back, which it
@@ -82,50 +82,50 @@ const LOCK_MAGIC = 'switch-console-lock v1';
  * Console take it too.
  */
 export const LOCK_SCRIPT = [
-  'set -u',
-  'op=$1 token=$2 console=$3 instance=$4 action=$5 ttl=$6 max=$7 name=$8 account=$9 stale=${10:-}',
-  'umask 077',
+  "set -u",
+  "op=$1 token=$2 console=$3 instance=$4 action=$5 ttl=$6 max=$7 name=$8 account=$9 stale=${10:-}",
+  "umask 077",
   UNDER_STATE_MUTEX,
   `lock=${SERVER_LOCK_FILE}`,
-  'now=$(date +%s)',
+  "now=$(date +%s)",
   'line() { sed -n "$1p" "$lock" 2>/dev/null; }',
   'number() { case $1 in ""|*[!0-9]*) return 1;; esac; }',
-  'held=$(line 2) expires=$(line 3) since=$(line 4)',
+  "held=$(line 2) expires=$(line 3) since=$(line 4)",
   'report() { printf "%s\\n%s\\n" "$1" "$now"; [ -f "$lock" ] && cat "$lock"; exit 0; }',
   'until_for() { u=$((now + ttl)); c=$(($1 + max)); [ "$u" -gt "$c" ] && u=$c; echo "$u"; }',
-  'case $op in',
-  '  take)',
+  "case $op in",
+  "  take)",
   '    if [ -f "$lock" ] && number "$expires" && [ "$expires" -gt "$now" ]; then',
   // Taken over when this Console's crashed previous run left it, or this run
   // failed to give it back.
   '      if [ "$(line 5)" = "$console" ] && [ "$(line 6)" != "$instance" ] && [ "$(line 8)" = "$name" ]; then :',
   '      else case " $stale " in *" $held "*) ;; *) report held ;; esac',
-  '      fi',
-  '    fi',
+  "      fi",
+  "    fi",
   `    printf "%s\\n" "${LOCK_MAGIC}" "$token" "$(until_for "$now")" "$now" "$console" "$instance" "$action" "$name" "$account" > /state/.lock.tmp || exit 1`,
   '    mv /state/.lock.tmp "$lock" || exit 1',
-  '    report taken ;;',
-  '  renew)',
+  "    report taken ;;",
+  "  renew)",
   '    [ -n "$held" ] && [ "$held" = "$token" ] && number "$since" || report lost',
   '    u=$(until_for "$since")',
   '    [ "$u" -gt "$now" ] || report lost',
   '    sed "3s/.*/$u/" "$lock" > /state/.lock.tmp || exit 1',
   '    mv /state/.lock.tmp "$lock" || exit 1',
-  '    report renewed ;;',
-  '  release)',
+  "    report renewed ;;",
+  "  release)",
   '    if [ -n "$held" ] && [ "$held" = "$token" ]; then rm -f "$lock" || exit 1; report released; fi',
-  '    report other ;;',
+  "    report other ;;",
   '  *) echo "unknown lock operation: $op" >&2; exit 2 ;;',
-  'esac',
-].join('\n');
+  "esac",
+].join("\n");
 
 const PEEK_SCRIPT = [
   'printf "%s\\n%s\\n" peek "$(date +%s)"',
   `[ -f ${SERVER_LOCK_FILE} ] && cat ${SERVER_LOCK_FILE}`,
-  'true',
-].join('\n');
+  "true",
+].join("\n");
 
-type LockStatus = 'taken' | 'held' | 'renewed' | 'lost' | 'released' | 'other' | 'peek';
+type LockStatus = "taken" | "held" | "renewed" | "lost" | "released" | "other" | "peek";
 
 export type LockReply = {
   status: LockStatus;
@@ -134,36 +134,36 @@ export type LockReply = {
 };
 
 const STATUSES: readonly LockStatus[] = [
-  'taken',
-  'held',
-  'renewed',
-  'lost',
-  'released',
-  'other',
-  'peek',
+  "taken",
+  "held",
+  "renewed",
+  "lost",
+  "released",
+  "other",
+  "peek",
 ];
 
 /** Throws on anything unrecognized: a lock that cannot be understood must not
  * be taken for one that is free. */
 export function parseLockReply(stdout: string): LockReply {
-  const [status = '', clock = '', ...file] = stdout.split('\n');
+  const [status = "", clock = "", ...file] = stdout.split("\n");
   const now = Number(clock);
   if (!(STATUSES as readonly string[]).includes(status) || !Number.isFinite(now)) {
     throw new Error(`Unexpected answer from the server lock: ${stdout.trim().slice(0, 200)}`);
   }
-  if (file.length < 9 || file[1] === '') return { status: status as LockStatus, holder: null };
+  if (file.length < 9 || file[1] === "") return { status: status as LockStatus, holder: null };
   const expires = Number(file[2]);
   const since = Number(file[3]);
   const action = file[6]!;
   const known = (LOCK_ACTIONS as readonly string[]).includes(action);
   if (!known)
-    log.warn('stack-lock: the lock names an action this Console does not know', { action });
+    log.warn("stack-lock: the lock names an action this Console does not know", { action });
   return {
     status: status as LockStatus,
     holder: {
-      name: file[7] || 'unknown',
-      hostAccount: file[8] || 'unknown',
-      action: known ? (action as ServerLockAction) : 'checking',
+      name: file[7] || "unknown",
+      hostAccount: file[8] || "unknown",
+      action: known ? (action as ServerLockAction) : "checking",
       heldForSeconds: Number.isFinite(since) ? Math.max(0, now - since) : 0,
       expiresInSeconds: Number.isFinite(expires) ? Math.max(0, expires - now) : 0,
       live: Number.isFinite(expires) && expires > now,
@@ -184,12 +184,12 @@ function shownHolder(holder: ServerLockHolder & { live: boolean }): ServerLockHo
 
 /** One line each in the lock file, which is read line by line. */
 function oneLine(text: string): string {
-  let printable = '';
+  let printable = "";
   for (let i = 0; i < text.length; i++) {
     const code = text.charCodeAt(i);
-    printable += code < 0x20 || code === 0x7f ? ' ' : text[i];
+    printable += code < 0x20 || code === 0x7f ? " " : text[i];
   }
-  return printable.trim().slice(0, 200) || 'unknown';
+  return printable.trim().slice(0, 200) || "unknown";
 }
 
 /** Leases this run failed to give back, by host, so its next take there takes
@@ -197,11 +197,11 @@ function oneLine(text: string): string {
 const unreleased = new Map<string, Set<string>>();
 
 function scriptArgs(
-  op: 'take' | 'renew' | 'release',
+  op: "take" | "renew" | "release",
   token: string,
   claim: LockClaim,
   timing: LockTiming,
-  stale: Iterable<string>
+  stale: Iterable<string>,
 ): string[] {
   return [
     op,
@@ -213,7 +213,7 @@ function scriptArgs(
     String(timing.maxHoldSeconds),
     oneLine(claim.name),
     oneLine(claim.hostAccount),
-    [...stale].join(' '),
+    [...stale].join(" "),
   ];
 }
 
@@ -221,14 +221,14 @@ function scriptArgs(
 export class ServerLockLostError extends Error {
   constructor(readonly holder: ServerLockHolder | null) {
     super(LOCK_LOST_MESSAGE);
-    this.name = 'ServerLockLostError';
+    this.name = "ServerLockLostError";
   }
 }
 
 export class ServerLockWaitCancelled extends Error {
   constructor(readonly holder: ServerLockHolder | null) {
-    super('Stopped waiting for the server, so nothing was changed.');
-    this.name = 'ServerLockWaitCancelled';
+    super("Stopped waiting for the server, so nothing was changed.");
+    this.name = "ServerLockWaitCancelled";
   }
 }
 
@@ -245,7 +245,7 @@ export class ServerLease {
     private readonly host: StackStateHost,
     readonly token: string,
     private readonly claim: LockClaim,
-    private readonly timing: LockTiming
+    private readonly timing: LockTiming,
   ) {
     this.timer = setInterval(() => this.renewInBackground(), timing.renewEveryMs);
     this.timer.unref?.();
@@ -261,10 +261,10 @@ export class ServerLease {
       await runStateScript(
         this.host,
         LOCK_SCRIPT,
-        scriptArgs('renew', this.token, this.claim, this.timing, [])
-      )
+        scriptArgs("renew", this.token, this.claim, this.timing, []),
+      ),
     );
-    if (reply.status === 'renewed') return;
+    if (reply.status === "renewed") return;
     const holder = reply.holder?.live ? shownHolder(reply.holder) : null;
     this.lostTo = { holder };
     log.error(`stack-lock: lost the lock on ${this.host.label} while holding it`, {
@@ -294,7 +294,7 @@ export class ServerLease {
   /** Renew now, and throw {@link ServerLockLostError} if the lock is no longer
    * this lease's. Called before anything that cannot check it in the same step. */
   async assertHeld(): Promise<void> {
-    if (this.released) throw new Error('This server lock was already released.');
+    if (this.released) throw new Error("This server lock was already released.");
     if (this.lostTo) throw new ServerLockLostError(this.lostTo.holder);
     await this.renew();
   }
@@ -311,7 +311,7 @@ export class ServerLease {
       await runStateScript(
         this.host,
         LOCK_SCRIPT,
-        scriptArgs('release', this.token, this.claim, this.timing, [])
+        scriptArgs("release", this.token, this.claim, this.timing, []),
       );
     } catch (error) {
       const left = unreleased.get(this.host.label) ?? new Set<string>();
@@ -320,7 +320,7 @@ export class ServerLease {
       log.warn(
         `stack-lock: could not release the lock on ${this.host.label}; it lapses by itself ` +
           `within ${this.timing.ttlSeconds}s`,
-        { error }
+        { error },
       );
     }
   }
@@ -334,14 +334,14 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
       return;
     }
     const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
+      signal.removeEventListener("abort", onAbort);
       resolve();
     }, ms);
     const onAbort = () => {
       clearTimeout(timer);
       reject(signal.reason);
     };
-    signal.addEventListener('abort', onAbort, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -349,41 +349,41 @@ export type AcquireOptions =
   /** Wait until free or `signal` aborts, telling `onWaiting` the holder each
    * time the lock is found held. */
   | {
-      mode: 'wait';
+      mode: "wait";
       timing: LockTiming;
       signal: AbortSignal;
       onWaiting: (holder: ServerLockHolder) => void;
     }
   /** Throw `ServerBusyError` at once if someone else holds it. */
-  | { mode: 'refuse'; timing: LockTiming };
+  | { mode: "refuse"; timing: LockTiming };
 
 export async function acquireServerLock(
   host: StackStateHost,
   claim: LockClaim,
-  opts: AcquireOptions
+  opts: AcquireOptions,
 ): Promise<ServerLease> {
   if (!CONSOLE_ID_PATTERN.test(claim.consoleId)) {
     throw new Error(
-      `Refusing to take a server lock for a console id that is not one: ${claim.consoleId}`
+      `Refusing to take a server lock for a console id that is not one: ${claim.consoleId}`,
     );
   }
-  const token = randomBytes(16).toString('hex');
+  const token = randomBytes(16).toString("hex");
   let last: ServerLockHolder | null = null;
   for (;;) {
-    if (opts.mode === 'wait' && opts.signal.aborted) throw new ServerLockWaitCancelled(last);
+    if (opts.mode === "wait" && opts.signal.aborted) throw new ServerLockWaitCancelled(last);
     const stale = unreleased.get(host.label) ?? new Set<string>();
     const reply = parseLockReply(
-      await runStateScript(host, LOCK_SCRIPT, scriptArgs('take', token, claim, opts.timing, stale))
+      await runStateScript(host, LOCK_SCRIPT, scriptArgs("take", token, claim, opts.timing, stale)),
     );
-    if (reply.status === 'taken') {
+    if (reply.status === "taken") {
       unreleased.delete(host.label);
       return new ServerLease(host, token, claim, opts.timing);
     }
-    if (reply.status !== 'held' || reply.holder === null) {
+    if (reply.status !== "held" || reply.holder === null) {
       throw new Error(`Unexpected answer from the server lock on ${host.label}: ${reply.status}`);
     }
     last = shownHolder(reply.holder);
-    if (opts.mode === 'refuse') throw new ServerBusyError(last, host.label);
+    if (opts.mode === "refuse") throw new ServerBusyError(last, host.label);
     opts.onWaiting(last);
     try {
       await sleep(opts.timing.pollEveryMs, opts.signal);

@@ -1,4 +1,4 @@
-import { createServer } from 'node:net';
+import { createServer } from "node:net";
 
 /**
  * Host ports the managed stack publishes. The compose binds these to 127.0.0.1
@@ -28,10 +28,10 @@ export async function findFreePort(taken: Set<number>): Promise<number> {
   for (let attempt = 0; attempt < 50; attempt++) {
     const port = await new Promise<number>((resolve, reject) => {
       const srv = createServer();
-      srv.on('error', reject);
-      srv.listen(0, '127.0.0.1', () => {
+      srv.on("error", reject);
+      srv.listen(0, "127.0.0.1", () => {
         const addr = srv.address();
-        const p = typeof addr === 'object' && addr ? addr.port : 0;
+        const p = typeof addr === "object" && addr ? addr.port : 0;
         srv.close(() => resolve(p));
       });
     });
@@ -40,7 +40,7 @@ export async function findFreePort(taken: Set<number>): Promise<number> {
       return port;
     }
   }
-  throw new Error('Could not find a free local port after 50 attempts.');
+  throw new Error("Could not find a free local port after 50 attempts.");
 }
 
 /** Pick a distinct free port for each service the stack publishes. */
@@ -55,13 +55,13 @@ export async function pickFreePorts(): Promise<LocalServerPorts> {
 }
 
 export function isPorts(value: unknown): value is LocalServerPorts {
-  if (typeof value !== 'object' || value === null) return false;
+  if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
   return (
-    typeof v.gateway === 'number' &&
-    typeof v.api === 'number' &&
-    typeof v.mattermost === 'number' &&
-    typeof v.postgres === 'number'
+    typeof v.gateway === "number" &&
+    typeof v.api === "number" &&
+    typeof v.mattermost === "number" &&
+    typeof v.postgres === "number"
   );
 }
 

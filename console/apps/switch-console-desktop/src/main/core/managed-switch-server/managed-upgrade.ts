@@ -1,18 +1,22 @@
-import { randomUUID } from 'node:crypto';
-import { join, posix } from 'node:path';
-import { z } from 'zod';
-import { log } from '@main/lib/logger';
-import { compareVersions } from '@main/lib/semver';
-import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
+import { randomUUID } from "node:crypto";
+import { join, posix } from "node:path";
+import { z } from "zod";
+import { log } from "@main/lib/logger";
+import { compareVersions } from "@main/lib/semver";
+import { COMPATIBLE_SWITCH_VERSION } from "@shared/app-identity";
 import {
   CHECKOUT_IMAGE_TAG,
   type ManagedServerUpgrade,
   type SwitchVersionDrift,
-} from '@shared/core/managed-switch-server/managed-switch-server';
-import { composeUpService, runDocker, serviceContainerId } from './compose';
-import { COMPOSE_FILE_NAME, ENV_FILE_NAME } from './constants';
-import { classifyVersionDrift, readDeployedVersion } from './deployed-version';
-import type { ServerHost } from './host/types';
+} from "@shared/core/managed-switch-server/managed-switch-server";
+import { composeUpService, runDocker, serviceContainerId } from "./compose";
+import { COMPOSE_FILE_NAME, ENV_FILE_NAME } from "./constants";
+import {
+  classifyVersionDrift,
+  type DeployedVersion,
+  readDeployedVersion,
+} from "./deployed-version";
+import type { ServerHost } from "./host/types";
 
 /**
  * Moving a managed stack forward onto this build's switch-core pin.
@@ -27,9 +31,9 @@ import type { ServerHost } from './host/types';
  */
 
 /** Journal of an upgrade in progress, in the host working dir. */
-export const UPGRADE_JOURNAL_FILE = 'upgrade.json';
-const BACKUPS_DIR = 'backups';
-const DATABASE_SERVICE = 'postgres';
+export const UPGRADE_JOURNAL_FILE = "upgrade.json";
+const BACKUPS_DIR = "backups";
+const DATABASE_SERVICE = "postgres";
 /** A dump of a large install over a slow disk can take a while. */
 const DUMP_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -40,7 +44,7 @@ export type UpgradeJournal = z.infer<typeof journalSchema>;
 export type OwedUpgrade = { from: string; to: string };
 
 function hostPath(host: ServerHost, relPath: string): string {
-  return host.kind === 'local'
+  return host.kind === "local"
     ? join(host.workingDir, relPath)
     : posix.join(host.workingDir, relPath);
 }
@@ -64,7 +68,7 @@ export async function readUpgradeJournal(host: ServerHost): Promise<UpgradeJourn
     throw new Error(
       `An earlier switch-core update on ${host.label} was interrupted and its journal ` +
         `(${hostPath(host, UPGRADE_JOURNAL_FILE)}) cannot be read. Its database backup is under ` +
-        `${hostPath(host, BACKUPS_DIR)}. Check the stack, then delete the journal to update again.`
+        `${hostPath(host, BACKUPS_DIR)}. Check the stack, then delete the journal to update again.`,
     );
   }
   return journal.data;
@@ -77,16 +81,16 @@ export async function readUpgradeJournal(host: ServerHost): Promise<UpgradeJourn
  */
 export function owedUpgrade(
   drift: SwitchVersionDrift | null,
-  journal: UpgradeJournal | null
+  journal: UpgradeJournal | null,
 ): OwedUpgrade | null {
   if (journal) return { from: journal.from, to: COMPATIBLE_SWITCH_VERSION };
-  if (drift?.direction === 'upgrade') return { from: drift.deployed, to: drift.expected };
+  if (drift?.direction === "upgrade") return { from: drift.deployed, to: drift.expected };
   return null;
 }
 
 /** The status of an owed upgrade: running now, or waiting for the next start. */
 export function upgradeState(owed: OwedUpgrade, running: boolean): ManagedServerUpgrade {
-  return { state: running ? 'updating' : 'pending', from: owed.from, to: owed.to };
+  return { state: running ? "updating" : "pending", from: owed.from, to: owed.to };
 }
 
 /**
@@ -100,11 +104,34 @@ export function upgradeState(owed: OwedUpgrade, running: boolean): ManagedServer
  * sessions for the whole of it. Any failure throws, leaving the stack's
  * configuration untouched.
  */
-export async function prepareUpgrade(
+export function prepareUpgrade(
   host: ServerHost,
   checkoutRoot: string | null,
   onMessage: (message: string) => void,
-  onUpgrade: (upgrade: OwedUpgrade) => void
+  onUpgrade: (upgrade: OwedUpgrade) => void,
+): Promise<UpgradeJournal | null> {
+  return prepareUpgradeFrom(host, checkoutRoot, onMessage, onUpgrade, {
+    readDeployedVersion: () => readDeployedVersion(host),
+    backupDatabase: (from, message) => backupDatabase(host, from, message),
+  });
+}
+
+/** Where an upgrade reads the deployed version from and how it backs the
+ * database up: the Docker stack's containers, or a native server's files. */
+export type UpgradeSource = {
+  readDeployedVersion: () => Promise<DeployedVersion>;
+  /** Back the database up before it is migrated past `from`; returns where. */
+  backupDatabase: (from: string, onMessage: (message: string) => void) => Promise<string>;
+};
+
+/** {@link prepareUpgrade} against an explicit {@link UpgradeSource}. The
+ * journal is kept in `host`'s working directory either way. */
+export async function prepareUpgradeFrom(
+  host: ServerHost,
+  checkoutRoot: string | null,
+  onMessage: (message: string) => void,
+  onUpgrade: (upgrade: OwedUpgrade) => void,
+  source: UpgradeSource,
 ): Promise<UpgradeJournal | null> {
   const pending = await readUpgradeJournal(host);
   if (pending) {
@@ -114,13 +141,13 @@ export async function prepareUpgrade(
         `An interrupted update on ${host.label} was moving switch-core to ${pending.to}, which ` +
           `this app (switch-core ${COMPATIBLE_SWITCH_VERSION}) cannot finish. Install a Switch ` +
           `Console with switch-core ${pending.to} or newer. The database backup taken before ` +
-          `that update is in ${pending.backup}.`
+          `that update is in ${pending.backup}.`,
       );
     }
     onUpgrade({ from: pending.from, to: COMPATIBLE_SWITCH_VERSION });
     log.warn(
       `managed-switch-server: resuming the interrupted switch-core update on ${host.label} ` +
-        `(${pending.from} → ${COMPATIBLE_SWITCH_VERSION}); backup in ${pending.backup}`
+        `(${pending.from} → ${COMPATIBLE_SWITCH_VERSION}); backup in ${pending.backup}`,
     );
     if (pending.to === COMPATIBLE_SWITCH_VERSION) return pending;
     const resumed = { ...pending, to: COMPATIBLE_SWITCH_VERSION };
@@ -128,13 +155,13 @@ export async function prepareUpgrade(
     return resumed;
   }
   if (checkoutRoot !== null) return null;
-  const deployed = await readDeployedVersion(host);
-  if (deployed.kind !== 'deployed' || deployed.version === CHECKOUT_IMAGE_TAG) return null;
-  if (classifyVersionDrift(deployed.version, COMPATIBLE_SWITCH_VERSION)?.direction !== 'upgrade') {
+  const deployed = await source.readDeployedVersion();
+  if (deployed.kind !== "deployed" || deployed.version === CHECKOUT_IMAGE_TAG) return null;
+  if (classifyVersionDrift(deployed.version, COMPATIBLE_SWITCH_VERSION)?.direction !== "upgrade") {
     return null;
   }
   onUpgrade({ from: deployed.version, to: COMPATIBLE_SWITCH_VERSION });
-  const backup = await backupDatabase(host, deployed.version, onMessage);
+  const backup = await source.backupDatabase(deployed.version, onMessage);
   const journal = { from: deployed.version, to: COMPATIBLE_SWITCH_VERSION, backup };
   await writeJournal(host, journal);
   return journal;
@@ -162,12 +189,12 @@ async function writeJournal(host: ServerHost, journal: UpgradeJournal): Promise<
 async function backupDatabase(
   host: ServerHost,
   from: string,
-  onMessage: (message: string) => void
+  onMessage: (message: string) => void,
 ): Promise<string> {
   onMessage(
-    `Backing up the database before updating switch-core ${from} → ${COMPATIBLE_SWITCH_VERSION}…`
+    `Backing up the database before updating switch-core ${from} → ${COMPATIBLE_SWITCH_VERSION}…`,
   );
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const directory = `${BACKUPS_DIR}/${stamp}-switch-core-${from}`;
   await host.writeFile(`${directory}/README.txt`, backupReadme(from), 0o600);
   await host.restrictMode(directory, 0o700);
@@ -175,7 +202,7 @@ async function backupDatabase(
     const content = await host.readFile(file);
     if (content === null) {
       throw new Error(
-        `Cannot back up the Switch server on ${host.label} before updating it: ${file} is missing from ${host.workingDir}.`
+        `Cannot back up the Switch server on ${host.label} before updating it: ${file} is missing from ${host.workingDir}.`,
       );
     }
     await host.writeFile(`${directory}/${file}`, content, 0o600);
@@ -189,25 +216,25 @@ async function backupDatabase(
     await runDocker(
       host,
       [
-        'exec',
+        "exec",
         container,
-        'sh',
-        '-c',
+        "sh",
+        "-c",
         'umask 077 && pg_dumpall -U "$POSTGRES_USER" -f "$1" && test -s "$1"',
-        'sh',
+        "sh",
         inContainer,
       ],
-      DUMP_TIMEOUT_MS
+      DUMP_TIMEOUT_MS,
     );
-    await runDocker(host, ['cp', `${container}:${inContainer}`, destination], DUMP_TIMEOUT_MS);
+    await runDocker(host, ["cp", `${container}:${inContainer}`, destination], DUMP_TIMEOUT_MS);
   } finally {
-    await runDocker(host, ['exec', container, 'rm', '-f', inContainer], 60_000).catch(
+    await runDocker(host, ["exec", container, "rm", "-f", inContainer], 60_000).catch(
       (error: unknown) => {
         log.warn(
           `managed-switch-server: could not remove the temporary dump ${inContainer} from the database container on ${host.label}`,
-          { error: String(error) }
+          { error: String(error) },
         );
-      }
+      },
     );
   }
   await host.restrictMode(destination, 0o600);
@@ -219,15 +246,15 @@ async function backupDatabase(
 function backupReadme(from: string): string {
   return [
     `Switch Console took this backup before updating the Switch server from switch-core ${from} to ${COMPATIBLE_SWITCH_VERSION}.`,
-    '',
-    'database.sql                   pg_dumpall of every database in the stack',
+    "",
+    "database.sql                   pg_dumpall of every database in the stack",
     `${COMPOSE_FILE_NAME}  the compose file the stack ran with`,
     `${ENV_FILE_NAME}                           its environment, including credentials`,
-    '',
-    'Keep these files private. switch-core migrates its database forward and cannot run',
+    "",
+    "Keep these files private. switch-core migrates its database forward and cannot run",
     `against it at ${from} again once the update has started. To go back, stop the stack and`,
     `restore database.sql into a fresh database volume with switch-core ${from}.`,
-    'Uploaded files stay in the Docker volumes; this dump does not copy them.',
-    '',
-  ].join('\n');
+    "Uploaded files stay in the Docker volumes; this dump does not copy them.",
+    "",
+  ].join("\n");
 }

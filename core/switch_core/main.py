@@ -1462,30 +1462,41 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     server = uvicorn.Server(server_config)
 
     loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(
-            sig,
-            lambda: asyncio.create_task(
-                _shutdown(
-                    server,
-                    draining.set,
-                    lambda: _release_process(
-                        ownership, shared_connections, management, process_lease
-                    ),
-                    _DRAIN_SECONDS if config.core_replicas > 1 else 0.0,
-                    connections.controllers,
-                    client_lifecycle,
-                    collab_lifecycle,
-                    connector_lifecycle,
-                    provisioning,
-                    discord_gateway,
-                    discord_gateway_task,
-                    teams_app,
-                    telegram_app,
-                    telegram_app_task,
-                )
-            ),
+
+    def _begin_shutdown() -> None:
+        asyncio.create_task(
+            _shutdown(
+                server,
+                draining.set,
+                lambda: _release_process(
+                    ownership, shared_connections, management, process_lease
+                ),
+                _DRAIN_SECONDS if config.core_replicas > 1 else 0.0,
+                connections.controllers,
+                client_lifecycle,
+                collab_lifecycle,
+                connector_lifecycle,
+                provisioning,
+                discord_gateway,
+                discord_gateway_task,
+                teams_app,
+                telegram_app,
+                telegram_app_task,
+            )
         )
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _begin_shutdown)
+        except NotImplementedError:
+            # Windows' event loops take no signal handlers. Ctrl-C still
+            # arrives as SIGINT through the signal module, outside the loop,
+            # so it is handed back to the loop; SIGTERM is never delivered
+            # there, a stop being a process kill instead.
+            signal.signal(
+                sig,
+                lambda _signum, _frame: loop.call_soon_threadsafe(_begin_shutdown),
+            )
 
     await server.serve()
 

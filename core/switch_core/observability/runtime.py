@@ -17,7 +17,6 @@ import asyncio
 import gc
 import logging
 import os
-import resource
 import sys
 import threading
 import time
@@ -188,9 +187,11 @@ class RuntimeMetrics:
     def __init__(self, lag: EventLoopLag, gc_pauses: GcPauses) -> None:
         self._lag = lag
         self._gc_pauses = gc_pauses
-        usage = resource.getrusage(resource.RUSAGE_SELF)
-        self._last_user = usage.ru_utime
-        self._last_system = usage.ru_stime
+        # os.times rather than resource.getrusage: the same two figures, and
+        # available on Windows, where the resource module does not exist.
+        usage = os.times()
+        self._last_user = usage.user
+        self._last_system = usage.system
         self._last_collections = self._collection_counts()
 
     def install(self, registry: MetricsRegistry) -> None:
@@ -204,16 +205,16 @@ class RuntimeMetrics:
     def _record_cumulative(self) -> None:
         registry = metrics()
 
-        usage = resource.getrusage(resource.RUSAGE_SELF)
+        usage = os.times()
         for mode, previous, current in (
-            ("user", self._last_user, usage.ru_utime),
-            ("system", self._last_system, usage.ru_stime),
+            ("user", self._last_user, usage.user),
+            ("system", self._last_system, usage.system),
         ):
             delta = current - previous
             if delta > 0:
                 registry.increment(RUNTIME_CPU_SECONDS, {"mode": mode}, delta)
-        self._last_user = usage.ru_utime
-        self._last_system = usage.ru_stime
+        self._last_user = usage.user
+        self._last_system = usage.system
 
         counts = self._collection_counts()
         for generation, current in enumerate(counts):

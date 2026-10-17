@@ -424,8 +424,10 @@ pnpm run lint
   other Console has been seen on it lately (`shareUsageData` in `pipeline.ts`), so one
   user's yes never turns sharing on over the others; a "no" is always written. The
   scope note in `telemetry-copy.ts` and `docs/TELEMETRY.md` §4.1 state this to the
-  user, and change with it. Adding a variable to that contract needs both edits: `deploy/local/standalone-docker-compose.yml`
-  plus `pnpm run sync:compose`, and `env-file.ts`. The server reads the gate once at
+  user, and change with it. Adding a variable to that contract needs three edits: `deploy/local/standalone-docker-compose.yml`
+  plus `pnpm run sync:compose`, `env-file.ts`, and `native/core-settings.ts` — a native
+  local server (no Docker) gets the same settings as its process environment, and the
+  copy it was started with is what is read back. The server reads the gate once at
   boot, so a running stack can be out of step; that is surfaced on the server's page with
   a restart offered, never applied by restarting the user's server for them. Whether it
   is out of step is read off the running container, not inferred from what we last wrote —

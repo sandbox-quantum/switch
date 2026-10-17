@@ -2,28 +2,28 @@ import {
   buildSshCommand,
   exitDescription,
   SshExecutionContext,
-} from '@main/core/execution-context/ssh-execution-context';
-import type { IExecutionContext } from '@main/core/execution-context/types';
-import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
-import { FileSystemError, FileSystemErrorCodes } from '@main/core/fs/types';
-import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
-import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
-import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
-import { log } from '@main/lib/logger';
-import type { DockerAvailability } from '@shared/core/managed-switch-server/managed-switch-server';
-import { REMOTE_SERVER_PROJECT_NAME } from '../constants';
-import type { LocalServerPorts } from '../free-port';
-import { remoteServerStateDir } from '../paths';
-import type { StackStateHost } from '../stack-state';
-import { PortForwarder } from './port-forward';
-import { pickRemoteFreePorts } from './remote-free-port';
-import { hostSlug, remoteSecretsKey } from './remote-identity';
-import type { ServerHost } from './types';
+} from "@main/core/execution-context/ssh-execution-context";
+import type { IExecutionContext } from "@main/core/execution-context/types";
+import { SshFileSystem } from "@main/core/fs/impl/ssh-fs";
+import { FileSystemError, FileSystemErrorCodes } from "@main/core/fs/types";
+import { sshConnectionIdForHost } from "@main/core/locations/location-transport";
+import { ensureSshConnected } from "@main/core/ssh/connect/connect-agent-ssh";
+import type { SshClientProxy } from "@main/core/ssh/lifecycle/ssh-client-proxy";
+import { log } from "@main/lib/logger";
+import type { DockerAvailability } from "@shared/core/managed-switch-server/managed-switch-server";
+import { REMOTE_SERVER_PROJECT_NAME } from "../constants";
+import type { LocalServerPorts } from "../free-port";
+import { remoteServerStateDir } from "../paths";
+import type { StackStateHost } from "../stack-state";
+import { PortForwarder } from "./port-forward";
+import { pickRemoteFreePorts } from "./remote-free-port";
+import { hostSlug, remoteSecretsKey } from "./remote-identity";
+import type { ServerHost } from "./types";
 
 /** Ports mirrored into a desktop-side forward so a single `localhost:<port>`
  * URL reaches the stack from both the desktop and the remote host. Postgres is
  * intentionally not forwarded — nothing on the desktop talks to it directly. */
-const FORWARDED_SERVICES: (keyof LocalServerPorts)[] = ['gateway', 'api', 'mattermost'];
+const FORWARDED_SERVICES: (keyof LocalServerPorts)[] = ["gateway", "api", "mattermost"];
 
 type RemoteHostDeps = {
   sshHost: string;
@@ -42,8 +42,8 @@ type RemoteHostDeps = {
  * stack's own loopback.
  */
 export class RemoteServerHost implements ServerHost {
-  readonly kind = 'remote' as const;
-  readonly dockerBin = 'docker';
+  readonly kind = "remote" as const;
+  readonly dockerBin = "docker";
   readonly composeProjectName = REMOTE_SERVER_PROJECT_NAME;
   readonly workingDir: string;
   readonly stateDir: string;
@@ -74,12 +74,12 @@ export class RemoteServerHost implements ServerHost {
   }
 
   async removeFile(relPath: string): Promise<void> {
-    await this.ctx.exec('rm', ['-f', relPath]);
+    await this.ctx.exec("rm", ["-f", relPath]);
   }
 
   async restrictMode(relPath: string, mode: number): Promise<void> {
     // ctx is rooted at workingDir, so the relative path resolves there.
-    await this.ctx.exec('chmod', [mode.toString(8).padStart(3, '0'), relPath]);
+    await this.ctx.exec("chmod", [mode.toString(8).padStart(3, "0"), relPath]);
   }
 
   async readFile(relPath: string): Promise<string | null> {
@@ -98,7 +98,7 @@ export class RemoteServerHost implements ServerHost {
     command: string,
     args: string[],
     onLine: (line: string) => void,
-    opts: { timeoutMs?: number } = {}
+    opts: { timeoutMs?: number } = {},
   ): Promise<void> {
     return this.runOverSsh(command, args, { onLine, timeoutMs: opts.timeoutMs });
   }
@@ -112,7 +112,7 @@ export class RemoteServerHost implements ServerHost {
     command: string,
     args: string[],
     input: string,
-    opts: { timeoutMs: number }
+    opts: { timeoutMs: number },
   ): Promise<void> {
     return this.runOverSsh(command, args, { input, timeoutMs: opts.timeoutMs });
   }
@@ -125,7 +125,7 @@ export class RemoteServerHost implements ServerHost {
   private runOverSsh(
     command: string,
     args: string[],
-    opts: { onLine?: (line: string) => void; input?: string; timeoutMs?: number }
+    opts: { onLine?: (line: string) => void; input?: string; timeoutMs?: number },
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       this.proxy
@@ -137,12 +137,12 @@ export class RemoteServerHost implements ServerHost {
               reject(execErr);
               return;
             }
-            let stderrTail = '';
+            let stderrTail = "";
             let settled = false;
             const emit = (buf: Buffer) => {
               if (!opts.onLine) return;
-              for (const raw of buf.toString('utf8').split('\n')) {
-                const line = raw.replace(/\r$/, '');
+              for (const raw of buf.toString("utf8").split("\n")) {
+                const line = raw.replace(/\r$/, "");
                 if (line.length > 0) opts.onLine(line);
               }
             };
@@ -161,25 +161,25 @@ export class RemoteServerHost implements ServerHost {
                     });
                   }, opts.timeoutMs)
                 : undefined;
-            stream.on('data', emit);
-            stream.stderr.on('data', (buf: Buffer) => {
-              stderrTail = (stderrTail + buf.toString('utf8')).slice(-4000);
+            stream.on("data", emit);
+            stream.stderr.on("data", (buf: Buffer) => {
+              stderrTail = (stderrTail + buf.toString("utf8")).slice(-4000);
               emit(buf);
             });
             // Only an exit status of 0 is a success: see SshExecutionContext.exec.
-            stream.on('close', (code: number | null | undefined, signal?: string) => {
+            stream.on("close", (code: number | null | undefined, signal?: string) => {
               settle(() => {
                 const tail = stderrTail.trim();
                 if (code === 0) resolve();
-                else if (typeof code === 'number') {
+                else if (typeof code === "number") {
                   reject(new Error(`${command} failed (exit ${code}): ${tail}`));
                 } else {
                   const why = exitDescription(code, signal);
-                  reject(new Error(`${command} failed: ${why}${tail ? ` (${tail})` : ''}`));
+                  reject(new Error(`${command} failed: ${why}${tail ? ` (${tail})` : ""}`));
                 }
               });
             });
-            stream.on('error', (err: Error) => settle(() => reject(err)));
+            stream.on("error", (err: Error) => settle(() => reject(err)));
             if (opts.input !== undefined) stream.end(opts.input);
           });
         })
@@ -190,15 +190,15 @@ export class RemoteServerHost implements ServerHost {
   async detectDocker(): Promise<DockerAvailability> {
     try {
       const { stdout } = await this.ctx.exec(
-        'docker',
-        ['version', '--format', '{{.Server.Version}}'],
-        { timeout: 20_000 }
+        "docker",
+        ["version", "--format", "{{.Server.Version}}"],
+        { timeout: 20_000 },
       );
       const version = stdout.trim();
       if (!version) {
         return {
           available: false,
-          reason: 'daemon-down',
+          reason: "daemon-down",
           detail: `Docker on ${this.label} reported no server version.`,
         };
       }
@@ -208,22 +208,22 @@ export class RemoteServerHost implements ServerHost {
       if (/not found|command not found|no such file/i.test(message)) {
         return {
           available: false,
-          reason: 'not-installed',
+          reason: "not-installed",
           detail: `The Docker CLI was not found on ${this.label}.`,
         };
       }
       if (
         /cannot connect to the docker daemon|is the docker daemon running|permission denied/i.test(
-          message
+          message,
         )
       ) {
         return {
           available: false,
-          reason: 'daemon-down',
+          reason: "daemon-down",
           detail: `Docker is installed on ${this.label} but its daemon is not reachable (start it, or add your user to the docker group).`,
         };
       }
-      return { available: false, reason: 'daemon-down', detail: message };
+      return { available: false, reason: "daemon-down", detail: message };
     }
   }
 
@@ -234,7 +234,7 @@ export class RemoteServerHost implements ServerHost {
   async checkNetworking(ports: LocalServerPorts): Promise<void> {
     await PortForwarder.check(
       FORWARDED_SERVICES.map((s) => ports[s]),
-      this.label
+      this.label,
     );
   }
 
@@ -244,7 +244,7 @@ export class RemoteServerHost implements ServerHost {
     await forwarder.start(FORWARDED_SERVICES.map((s) => ports[s]));
     this.forwarder = forwarder;
     log.info(
-      `remote-switch-server: forwarding ${FORWARDED_SERVICES.join(', ')} from ${this.label}`
+      `remote-switch-server: forwarding ${FORWARDED_SERVICES.join(", ")} from ${this.label}`,
     );
   }
 
@@ -270,13 +270,13 @@ export class RemoteServerHost implements ServerHost {
 export async function createRemoteServerHost(sshHost: string): Promise<RemoteServerHost> {
   const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
   const probe = new SshExecutionContext(proxy);
-  const { stdout } = await probe.exec('sh', ['-c', 'printf %s "$HOME"']);
+  const { stdout } = await probe.exec("sh", ["-c", 'printf %s "$HOME"']);
   const home = stdout.trim();
   if (!home) {
     throw new Error(`Could not resolve the home directory on ${sshHost}.`);
   }
   const workingDir = `${home}/.switchdash/switch-server`;
-  await probe.exec('mkdir', ['-p', workingDir]);
+  await probe.exec("mkdir", ["-p", workingDir]);
   probe.dispose();
   const ctx = new SshExecutionContext(proxy, { root: workingDir });
   return new RemoteServerHost({ sshHost, proxy, ctx, workingDir });

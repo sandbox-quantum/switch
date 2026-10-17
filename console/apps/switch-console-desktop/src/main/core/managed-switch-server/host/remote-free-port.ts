@@ -1,7 +1,7 @@
-import type { IExecutionContext } from '@main/core/execution-context/types';
-import { listManagedServers } from '@main/core/switch-servers/servers-store';
-import { log } from '@main/lib/logger';
-import { findFreePort, type LocalServerPorts } from '../free-port';
+import type { IExecutionContext } from "@main/core/execution-context/types";
+import { listManagedServers } from "@main/core/switch-servers/servers-store";
+import { log } from "@main/lib/logger";
+import { findFreePort, type LocalServerPorts } from "../free-port";
 
 /**
  * TCP ports currently in LISTEN state on the remote host, so a stack we bring up
@@ -12,11 +12,11 @@ import { findFreePort, type LocalServerPorts } from '../free-port';
 export async function listRemoteListeningPorts(ctx: IExecutionContext): Promise<Set<number>> {
   const ports = new Set<number>();
   try {
-    const { stdout } = await ctx.exec('sh', [
-      '-c',
-      'ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null',
+    const { stdout } = await ctx.exec("sh", [
+      "-c",
+      "ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null",
     ]);
-    for (const line of stdout.split('\n')) {
+    for (const line of stdout.split("\n")) {
       // Grab every `:<port>` on the line (the local address is `…:<port>`; the
       // peer column is `*`/`:::*` with no bare number, so over-collection is
       // harmless — it only makes us skip a few extra ports).
@@ -26,7 +26,7 @@ export async function listRemoteListeningPorts(ctx: IExecutionContext): Promise<
       }
     }
   } catch (error) {
-    log.warn('remote-switch-server: could not list remote listening ports', { error });
+    log.warn("remote-switch-server: could not list remote listening ports", { error });
   }
   return ports;
 }

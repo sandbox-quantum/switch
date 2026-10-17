@@ -4,10 +4,10 @@ import type {
   RemoteStackProbe,
   StackRegister,
   StartRemoteServerResult,
-} from '@shared/core/managed-switch-server/managed-switch-server';
-import type { RemoteServerStatus } from '@shared/events/remoteSwitchServerEvents';
-import { createRPCController } from '@shared/lib/ipc/rpc';
-import { remoteServerService } from './remote-server-service';
+} from "@shared/core/managed-switch-server/managed-switch-server";
+import type { RemoteServerStatus } from "@shared/events/remoteSwitchServerEvents";
+import { createRPCController } from "@shared/lib/ipc/rpc";
+import { remoteServerService } from "./remote-server-service";
 
 export const remoteSwitchServerController = createRPCController({
   getStatuses: (): Promise<RemoteServerStatus[]> =>

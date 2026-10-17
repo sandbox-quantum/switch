@@ -1,33 +1,33 @@
-import { log } from '@main/lib/logger';
+import { log } from "@main/lib/logger";
 import {
   BUILD_OVERRIDE_FILE_NAME,
   COMPOSE_FILE_NAME,
   CORE_SERVICE,
   ENV_FILE_NAME,
   LOCAL_SERVER_PROFILES,
-} from './constants';
-import { commandFailure } from './error-text';
-import type { ServerHost } from './host/types';
+} from "./constants";
+import { commandFailure } from "./error-text";
+import type { ServerHost } from "./host/types";
 
 /** Pulls can take minutes on a cold machine; give compose a generous ceiling. */
 const COMPOSE_TIMEOUT_MS = 20 * 60 * 1000;
 
 function profileArgs(): string[] {
-  return LOCAL_SERVER_PROFILES.flatMap((p) => ['--profile', p]);
+  return LOCAL_SERVER_PROFILES.flatMap((p) => ["--profile", p]);
 }
 
 /** Base args that scope every invocation to the managed project + env file.
  * Relative file names resolve against the host working dir (the ctx root). */
 function baseArgs(host: ServerHost, globalFlags: string[], extraFiles: string[] = []): string[] {
   return [
-    'compose',
+    "compose",
     ...globalFlags,
-    '-f',
+    "-f",
     COMPOSE_FILE_NAME,
-    ...extraFiles.flatMap((file) => ['-f', file]),
-    '--env-file',
+    ...extraFiles.flatMap((file) => ["-f", file]),
+    "--env-file",
     ENV_FILE_NAME,
-    '--project-name',
+    "--project-name",
     host.composeProjectName,
     ...profileArgs(),
   ];
@@ -36,7 +36,7 @@ function baseArgs(host: ServerHost, globalFlags: string[], extraFiles: string[] 
 export async function runDocker(
   host: ServerHost,
   args: string[],
-  timeout: number
+  timeout: number,
 ): Promise<string> {
   const full = [host.dockerBin, ...args];
   try {
@@ -46,7 +46,7 @@ export async function runDocker(
     });
     return stdout;
   } catch (error) {
-    throw new Error(`${full.join(' ')} failed: ${commandFailure(error)}`);
+    throw new Error(`${full.join(" ")} failed: ${commandFailure(error)}`);
   }
 }
 
@@ -63,10 +63,10 @@ export async function runDocker(
 export function composeUp(
   host: ServerHost,
   onLog: (line: string) => void,
-  fromCheckout: boolean
+  fromCheckout: boolean,
 ): Promise<void> {
   log.info(
-    `local-switch-server: docker compose up (${host.label})${fromCheckout ? ' from local checkout' : ''}`
+    `local-switch-server: docker compose up (${host.label})${fromCheckout ? " from local checkout" : ""}`,
   );
   // Compose already falls back to plain, line-per-event output when it is not
   // attached to a TTY, which is how we always run it — so this pins the
@@ -76,13 +76,13 @@ export function composeUp(
   return host.streamCommand(
     host.dockerBin,
     [
-      ...baseArgs(host, ['--progress', 'plain'], overrides),
-      'up',
-      '-d',
-      ...(fromCheckout ? ['--build'] : []),
+      ...baseArgs(host, ["--progress", "plain"], overrides),
+      "up",
+      "-d",
+      ...(fromCheckout ? ["--build"] : []),
     ],
     onLog,
-    { timeoutMs: COMPOSE_TIMEOUT_MS }
+    { timeoutMs: COMPOSE_TIMEOUT_MS },
   );
 }
 
@@ -107,36 +107,36 @@ export function composeUp(
 export function dockerRunOneOff(
   host: ServerHost,
   spec: { image: string; command: string[]; env: Record<string, string> },
-  onLog: (line: string) => void
+  onLog: (line: string) => void,
 ): Promise<void> {
   log.info(`local-switch-server: docker run ${spec.image} (${host.label})`);
-  const env = Object.entries(spec.env).flatMap(([key, value]) => ['-e', `${key}=${value}`]);
+  const env = Object.entries(spec.env).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
   return host.streamCommand(
     host.dockerBin,
     [
-      'run',
-      '--rm',
-      '--network',
+      "run",
+      "--rm",
+      "--network",
       `${host.composeProjectName}_default`,
-      '--env-file',
+      "--env-file",
       ENV_FILE_NAME,
       ...env,
       spec.image,
       ...spec.command,
     ],
     onLog,
-    { timeoutMs: COMPOSE_TIMEOUT_MS }
+    { timeoutMs: COMPOSE_TIMEOUT_MS },
   );
 }
 
 /** Stop and remove the stack's containers. `removeVolumes` also destroys the
  * data volumes (the reset path) — irreversible. */
 export async function composeDown(host: ServerHost, removeVolumes: boolean): Promise<void> {
-  log.info(`local-switch-server: docker compose down${removeVolumes ? ' -v' : ''} (${host.label})`);
+  log.info(`local-switch-server: docker compose down${removeVolumes ? " -v" : ""} (${host.label})`);
   await runDocker(
     host,
-    [...baseArgs(host, []), 'down', ...(removeVolumes ? ['-v'] : [])],
-    5 * 60 * 1000
+    [...baseArgs(host, []), "down", ...(removeVolumes ? ["-v"] : [])],
+    5 * 60 * 1000,
   );
 }
 
@@ -149,14 +149,14 @@ export async function composeUpService(host: ServerHost, service: string): Promi
   log.info(`local-switch-server: docker compose up ${service} (${host.label})`);
   await runDocker(
     host,
-    [...baseArgs(host, []), 'up', '-d', '--no-deps', '--wait', service],
-    5 * 60 * 1000
+    [...baseArgs(host, []), "up", "-d", "--no-deps", "--wait", service],
+    5 * 60 * 1000,
   );
 }
 
 /** Id of the container running `service`. Throws when there is none. */
 export async function serviceContainerId(host: ServerHost, service: string): Promise<string> {
-  const stdout = await runDocker(host, [...baseArgs(host, []), 'ps', '-q', service], 60_000);
+  const stdout = await runDocker(host, [...baseArgs(host, []), "ps", "-q", service], 60_000);
   const id = stdout.trim();
   if (!/^[a-f0-9]+$/.test(id)) {
     throw new Error(`Could not identify the ${service} container on ${host.label}.`);
@@ -171,11 +171,11 @@ export async function serviceContainerId(host: ServerHost, service: string): Pro
 export async function coreStartedAt(host: ServerHost): Promise<string | null> {
   if (!(await isStackRunning(host))) return null;
   const id = await serviceContainerId(host, CORE_SERVICE);
-  const stdout = await runDocker(host, ['inspect', '--format', '{{.State.StartedAt}}', id], 30_000);
+  const stdout = await runDocker(host, ["inspect", "--format", "{{.State.StartedAt}}", id], 30_000);
   const startedAt = stdout.trim();
   if (Number.isNaN(Date.parse(startedAt))) {
     throw new Error(
-      `Docker reported an unreadable start time for the core container: ${startedAt}`
+      `Docker reported an unreadable start time for the core container: ${startedAt}`,
     );
   }
   return new Date(startedAt).toISOString();
@@ -186,15 +186,15 @@ export async function runningServices(host: ServerHost): Promise<string[]> {
   try {
     const stdout = await runDocker(
       host,
-      [...baseArgs(host, []), 'ps', '--status', 'running', '--services'],
-      60_000
+      [...baseArgs(host, []), "ps", "--status", "running", "--services"],
+      60_000,
     );
     return stdout
-      .split('\n')
+      .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);
   } catch (error) {
-    log.warn('local-switch-server: `compose ps` failed; treating stack as down', { error });
+    log.warn("local-switch-server: `compose ps` failed; treating stack as down", { error });
     return [];
   }
 }
@@ -216,8 +216,8 @@ export async function isStackRunning(host: ServerHost): Promise<boolean> {
 export async function runningImages(host: ServerHost): Promise<Map<string, string>> {
   const stdout = await runDocker(
     host,
-    [...baseArgs(host, []), 'ps', '--status', 'running', '--format', 'json'],
-    60_000
+    [...baseArgs(host, []), "ps", "--status", "running", "--format", "json"],
+    60_000,
   );
   const images = new Map<string, string>();
   for (const entry of parseComposePs(stdout)) {
@@ -241,20 +241,20 @@ export async function runningImages(host: ServerHost): Promise<Map<string, strin
  */
 export async function runningServiceEnv(
   host: ServerHost,
-  service: string
+  service: string,
 ): Promise<Map<string, string> | null> {
   const listed = await runDocker(
     host,
-    [...baseArgs(host, []), 'ps', '--status', 'running', '--format', 'json'],
-    60_000
+    [...baseArgs(host, []), "ps", "--status", "running", "--format", "json"],
+    60_000,
   );
   const id = parseComposePs(listed).find((entry) => entry.Service === service)?.ID;
   if (!id) return null;
 
   const inspected = await runDocker(
     host,
-    ['inspect', '--format', '{{json .Config.Env}}', id],
-    60_000
+    ["inspect", "--format", "{{json .Config.Env}}", id],
+    60_000,
   );
   const parsed: unknown = JSON.parse(inspected.trim());
   if (!Array.isArray(parsed)) {
@@ -262,8 +262,8 @@ export async function runningServiceEnv(
   }
   const env = new Map<string, string>();
   for (const entry of parsed) {
-    if (typeof entry !== 'string') continue;
-    const split = entry.indexOf('=');
+    if (typeof entry !== "string") continue;
+    const split = entry.indexOf("=");
     if (split > 0) env.set(entry.slice(0, split), entry.slice(split + 1));
   }
   return env;
@@ -276,13 +276,13 @@ type ComposePsEntry = { Service?: string; Image?: string; ID?: string };
 function parseComposePs(stdout: string): ComposePsEntry[] {
   const trimmed = stdout.trim();
   if (!trimmed) return [];
-  if (trimmed.startsWith('[')) {
+  if (trimmed.startsWith("[")) {
     const parsed: unknown = JSON.parse(trimmed);
     return Array.isArray(parsed) ? (parsed as ComposePsEntry[]) : [];
   }
   return trimmed
-    .split('\n')
+    .split("\n")
     .map((line) => line.trim())
-    .filter((line) => line.startsWith('{'))
+    .filter((line) => line.startsWith("{"))
     .map((line) => JSON.parse(line) as ComposePsEntry);
 }

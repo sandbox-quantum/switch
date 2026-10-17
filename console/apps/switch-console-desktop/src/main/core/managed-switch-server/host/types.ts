@@ -1,7 +1,7 @@
-import type { IExecutionContext } from '@main/core/execution-context/types';
-import type { DockerAvailability } from '@shared/core/managed-switch-server/managed-switch-server';
-import type { LocalServerPorts } from '../free-port';
-import type { StackStateHost } from '../stack-state';
+import type { IExecutionContext } from "@main/core/execution-context/types";
+import type { DockerAvailability } from "@shared/core/managed-switch-server/managed-switch-server";
+import type { LocalServerPorts } from "../free-port";
+import type { StackStateHost } from "../stack-state";
 
 /**
  * A host that runs a Switch Console-managed Switch stack via `docker compose`.
@@ -22,7 +22,7 @@ import type { StackStateHost } from '../stack-state';
  * One host instance backs one start/stop/reset operation and is disposed after.
  */
 export interface ServerHost {
-  readonly kind: 'local' | 'remote';
+  readonly kind: "local" | "remote";
 
   /** Execution context rooted at {@link workingDir}. */
   readonly ctx: IExecutionContext;
@@ -84,7 +84,7 @@ export interface ServerHost {
     command: string,
     args: string[],
     onLine: (line: string) => void,
-    opts?: { timeoutMs?: number }
+    opts?: { timeoutMs?: number },
   ): Promise<void>;
 
   /** Whether Docker is usable on the host (CLI resolves AND daemon answers). */

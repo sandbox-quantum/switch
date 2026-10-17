@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes } from "node:crypto";
 
 /** The randomly-generated secrets the local stack needs. These are the source of
  * truth (kept in the OS-encrypted app-secrets store); the on-disk `.env` docker
@@ -32,7 +32,7 @@ export type LocalServerSecrets = {
 };
 
 function token(bytes = 24): string {
-  return randomBytes(bytes).toString('base64url');
+  return randomBytes(bytes).toString("base64url");
 }
 
 /** Generate a fresh, all-distinct secret bundle. Pure apart from CSPRNG input,
@@ -43,8 +43,8 @@ export function generateSecrets(): LocalServerSecrets {
     dbRuntimePassword: token(),
     agentRegistrationToken: token(),
     jwtSecretKey: token(32),
-    secretKeys: `console:${randomBytes(32).toString('hex')}`,
-    controllerTokenSecret: randomBytes(32).toString('hex'),
+    secretKeys: `console:${randomBytes(32).toString("hex")}`,
+    controllerTokenSecret: randomBytes(32).toString("hex"),
     gatewayAdminPassword: token(),
     mattermostAdminPassword: token(),
     mattermostUserPassword: token(),

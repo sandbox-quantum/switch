@@ -4,7 +4,7 @@
  * paths/keys. (Aliases can contain characters not safe in a path or key.)
  */
 export function hostSlug(sshHost: string): string {
-  return sshHost.replace(/[^A-Za-z0-9_.-]/g, '_');
+  return sshHost.replace(/[^A-Za-z0-9_.-]/g, "_");
 }
 
 /** Encrypted-store key holding a remote host's stack secret bundle. */

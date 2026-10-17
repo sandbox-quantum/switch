@@ -80,10 +80,10 @@ services:
       POSTGRES_PASSWORD: ${DB_OWNER_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
     volumes:
-  # Kept deliberately after Tuwunel was removed. It still holds every media
-  # blob and the raw history, and it is the only copy — the backfill moved the
-  # messages into Postgres but not the files. Dropping it belongs to a later
-  # release than the one that stops reading it.
+      # Kept deliberately after Tuwunel was removed. It still holds every media
+      # blob and the raw history, and it is the only copy — the backfill moved the
+      # messages into Postgres but not the files. Dropping it belongs to a later
+      # release than the one that stops reading it.
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_OWNER_USER}"]
@@ -158,10 +158,10 @@ services:
     ports:
       - "${SWITCH_BIND_ADDR:-127.0.0.1}:${MATTERMOST_HOST_PORT:-8065}:8065"
     volumes:
-  # Kept deliberately after Tuwunel was removed. It still holds every media
-  # blob and the raw history, and it is the only copy — the backfill moved the
-  # messages into Postgres but not the files. Dropping it belongs to a later
-  # release than the one that stops reading it.
+      # Kept deliberately after Tuwunel was removed. It still holds every media
+      # blob and the raw history, and it is the only copy — the backfill moved the
+      # messages into Postgres but not the files. Dropping it belongs to a later
+      # release than the one that stops reading it.
       - mmdata:/mattermost/data
     environment:
       MM_SQLSETTINGS_DRIVERNAME: postgres

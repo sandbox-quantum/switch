@@ -1,4 +1,4 @@
-import { USER_DATA_DIR_NAME } from '@shared/app-identity';
+import { USER_DATA_DIR_NAME } from "@shared/app-identity";
 
 /**
  * Fixed coordinates for the managed local stack. These mirror the ports and
@@ -20,14 +20,14 @@ import { USER_DATA_DIR_NAME } from '@shared/app-identity';
  * existing installs stay attached to the stack they already have.
  */
 export const LOCAL_SERVER_PROJECT_NAME =
-  USER_DATA_DIR_NAME === 'switchdash' ? 'switchdash-local' : `${USER_DATA_DIR_NAME}-local`;
+  USER_DATA_DIR_NAME === "switchdash" ? "switchdash-local" : `${USER_DATA_DIR_NAME}-local`;
 
 /** `docker compose --project-name` for a managed stack on a remote host. Each
  * remote host runs its own Docker daemon, so one name per build is enough to
  * isolate + rediscover the stack there — per build for the same reason as
  * {@link LOCAL_SERVER_PROJECT_NAME}, since two builds can target one host. */
 export const REMOTE_SERVER_PROJECT_NAME =
-  USER_DATA_DIR_NAME === 'switchdash' ? 'switchdash-remote' : `${USER_DATA_DIR_NAME}-remote`;
+  USER_DATA_DIR_NAME === "switchdash" ? "switchdash-remote" : `${USER_DATA_DIR_NAME}-remote`;
 
 /**
  * The volume holding what every Console sharing a remote stack must agree on:
@@ -35,29 +35,29 @@ export const REMOTE_SERVER_PROJECT_NAME =
  * {@link STACK_STATE_LABEL} rather than compose's project label, so compose
  * never removes it and a reset keeps the record of who reset the stack.
  */
-export const STACK_STATE_VOLUME_SUFFIX = 'console-state';
-export const STACK_STATE_LABEL = 'com.switch-console.stack-state';
+export const STACK_STATE_VOLUME_SUFFIX = "console-state";
+export const STACK_STATE_LABEL = "com.switch-console.stack-state";
 
 /** For the throwaway containers that reach the state volume. The stack's own
  * Postgres image, so any host that has run the stack already has it;
  * `stack-state.test.ts` holds it to the bundled compose file. */
-export const STACK_HELPER_IMAGE = 'postgres:16-alpine';
+export const STACK_HELPER_IMAGE = "postgres:16-alpine";
 
 /** File names of the compose file and generated `.env` inside the host working
  * dir. Kept relative so `docker compose -f <name>` resolves against the working
  * dir on either host, independent of its absolute path. */
-export const COMPOSE_FILE_NAME = 'standalone-docker-compose.yml';
-export const ENV_FILE_NAME = '.env';
+export const COMPOSE_FILE_NAME = "standalone-docker-compose.yml";
+export const ENV_FILE_NAME = ".env";
 /** The database volume the `.env` beside it was written for, like the
  * published copy's stamp. */
-export const ENV_STAMP_FILE_NAME = '.env.db';
+export const ENV_STAMP_FILE_NAME = ".env.db";
 
 /** File name of the dev-only build override layered on top of the compose file
  * when the stack is built from a local checkout (see checkout-build.ts). */
-export const BUILD_OVERRIDE_FILE_NAME = 'standalone-docker-compose.build.yml';
+export const BUILD_OVERRIDE_FILE_NAME = "standalone-docker-compose.build.yml";
 
 /** Display name of the auto-registered server record. */
-export const LOCAL_SERVER_NAME = 'Local Switch server';
+export const LOCAL_SERVER_NAME = "Local Switch server";
 
 // The managed server's API and gateway URLs are NOT fixed constants: their host
 // ports are chosen from whatever is free on the machine (see ports.ts) so the
@@ -67,33 +67,33 @@ export const LOCAL_SERVER_NAME = 'Local Switch server';
 /** Compose profiles Switch Console enables: `collab` (Mattermost bridge + seeder) so
  * the stack has a working collaboration bridge, and `gateway` so the operator
  * web dashboard is available. */
-export const LOCAL_SERVER_PROFILES = ['collab', 'gateway'] as const;
+export const LOCAL_SERVER_PROFILES = ["collab", "gateway"] as const;
 
 /** Registry the release images are published to and pulled from. */
-export const GHCR_REGISTRY = 'ghcr.io';
+export const GHCR_REGISTRY = "ghcr.io";
 
 /** The gateway admin account the stack seeds (GATEWAY_ADMIN_EMAIL). Switch Console
  * generates its password, so it also auto-signs-in with these on start rather
  * than making the user type a secret they never saw. */
-export const LOCAL_SERVER_ADMIN_EMAIL = 'admin@switch.local';
+export const LOCAL_SERVER_ADMIN_EMAIL = "admin@switch.local";
 
 /** Host interface the managed stack's published ports bind to, fed to the
  * compose `${SWITCH_BIND_ADDR}` interpolation. Loopback so the single-user local
  * stack is never exposed to the LAN (the standalone compose defaults to all
  * interfaces for repo users who may want remote access). */
-export const LOCAL_SERVER_BIND_ADDR = '127.0.0.1';
+export const LOCAL_SERVER_BIND_ADDR = "127.0.0.1";
 
 /** Mattermost team the stack's seeder creates (MATTERMOST_TEAM_NAME). Named
  * rather than inlined because it is also what a link into the bundled
  * Mattermost has to path through — the two must not drift. */
-export const LOCAL_SERVER_MATTERMOST_TEAM = 'switch';
+export const LOCAL_SERVER_MATTERMOST_TEAM = "switch";
 
 /** The human account the stack's seeder creates (MATTERMOST_USER), paired with
  * the generated `mattermostUserPassword`. Three places depend on it being the
  * name the seeder actually used — the generated env, the embed's silent login,
  * and the sign-in Switch Console shows the user — so it is named once here. */
-export const LOCAL_SERVER_MATTERMOST_USER = 'user';
+export const LOCAL_SERVER_MATTERMOST_USER = "user";
 
 /** Its container stands for "the stack is up", its image tag is the stack's
  * version, and its environment carries the server's settings. */
-export const CORE_SERVICE = 'switch';
+export const CORE_SERVICE = "switch";

@@ -17,12 +17,12 @@
  * so a stack that crosses the line having already been backfilled by hand pays
  * one no-op container.
  */
-import { log } from '@main/lib/logger';
-import { LAST_MATRIX_VERSION, RELEASE_REPO_OWNER } from '@shared/app-identity';
-import { dockerRunOneOff } from './compose';
-import { GHCR_REGISTRY } from './constants';
-import { classifyVersionDrift } from './deployed-version';
-import type { ServerHost } from './host/types';
+import { log } from "@main/lib/logger";
+import { LAST_MATRIX_VERSION, RELEASE_REPO_OWNER } from "@shared/app-identity";
+import { dockerRunOneOff } from "./compose";
+import { GHCR_REGISTRY } from "./constants";
+import { classifyVersionDrift } from "./deployed-version";
+import type { ServerHost } from "./host/types";
 
 /**
  * Where the other containers are, from inside the stack's network.
@@ -34,9 +34,9 @@ import type { ServerHost } from './host/types';
  * across every version this runs against.
  */
 const STACK_ADDRESSES = {
-  DB_HOST: 'postgres',
-  DB_PORT: '5432',
-  MATRIX_SERVER: 'http://tuwunel:8008',
+  DB_HOST: "postgres",
+  DB_PORT: "5432",
+  MATRIX_SERVER: "http://tuwunel:8008",
 };
 
 /**
@@ -53,9 +53,9 @@ const STACK_ADDRESSES = {
  * has to be fatal.
  */
 const BACKFILL_COMMAND = [
-  'sh',
-  '-c',
-  'alembic upgrade head && python -m switch_core.cli.backfill --allow-empty',
+  "sh",
+  "-c",
+  "alembic upgrade head && python -m switch_core.cli.backfill --allow-empty",
 ];
 
 /**
@@ -72,15 +72,15 @@ const BACKFILL_COMMAND = [
 export function crossesMatrixBoundary(deployed: string, pinned: string): boolean {
   const deployedIsPast = classifyVersionDrift(LAST_MATRIX_VERSION, deployed);
   const pinnedIsPast = classifyVersionDrift(LAST_MATRIX_VERSION, pinned);
-  if (deployedIsPast?.direction === 'unknown' || pinnedIsPast?.direction === 'unknown') {
+  if (deployedIsPast?.direction === "unknown" || pinnedIsPast?.direction === "unknown") {
     return false;
   }
   // `classifyVersionDrift(a, b)` reads as "going from a to b": an upgrade means
   // b is newer. So the pinned version is past the boundary when moving from the
   // boundary to it is an upgrade, and the deployed one is at or below it when
   // that same move is not.
-  const pinnedIsAfter = pinnedIsPast?.direction === 'upgrade';
-  const deployedIsAfter = deployedIsPast?.direction === 'upgrade';
+  const pinnedIsAfter = pinnedIsPast?.direction === "upgrade";
+  const deployedIsAfter = deployedIsPast?.direction === "upgrade";
   return pinnedIsAfter && !deployedIsAfter;
 }
 
@@ -102,7 +102,7 @@ export type BackfillOutcome = { ok: true } | { ok: false; detail: string };
  */
 export async function runBackfill(
   host: ServerHost,
-  onLog: (line: string) => void
+  onLog: (line: string) => void,
 ): Promise<BackfillOutcome> {
   log.info(`managed-switch-server: backfilling room history before the upgrade (${host.label})`);
   try {
@@ -113,7 +113,7 @@ export async function runBackfill(
         command: BACKFILL_COMMAND,
         env: STACK_ADDRESSES,
       },
-      onLog
+      onLog,
     );
     return { ok: true };
   } catch (error) {

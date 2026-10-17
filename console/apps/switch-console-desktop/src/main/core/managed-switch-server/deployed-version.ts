@@ -1,14 +1,14 @@
-import { log } from '@main/lib/logger';
-import { compareVersions } from '@main/lib/semver';
+import { log } from "@main/lib/logger";
+import { compareVersions } from "@main/lib/semver";
 import type {
   SwitchVersionDrift,
   SwitchVersionDriftDirection,
-} from '@shared/core/managed-switch-server/managed-switch-server';
-import { runningImages } from './compose';
-import { CORE_SERVICE, ENV_FILE_NAME } from './constants';
-import { readEnvValue } from './env-file';
-import { errorText } from './error-text';
-import type { ServerHost } from './host/types';
+} from "@shared/core/managed-switch-server/managed-switch-server";
+import { runningImages } from "./compose";
+import { CORE_SERVICE, ENV_FILE_NAME } from "./constants";
+import { readEnvValue } from "./env-file";
+import { errorText } from "./error-text";
+import type { ServerHost } from "./host/types";
 
 /**
  * What switch-core version a managed stack is actually deployed at.
@@ -23,13 +23,13 @@ export type DeployedVersion =
   /** Read successfully. `source` records how, since the two differ in strength:
    * `container` is what is running right now; `env-file` is what the last start
    * asked for, which is the only signal available while the stack is stopped. */
-  | { kind: 'deployed'; version: string; source: 'container' | 'env-file' }
+  | { kind: "deployed"; version: string; source: "container" | "env-file" }
   /** Nothing has ever been deployed here — no running core container and no
    * `.env`. A first start, not a drift. */
-  | { kind: 'absent' }
+  | { kind: "absent" }
   /** Neither source could be read. Distinct from `absent` on purpose: an
    * unreachable daemon must not be mistaken for an empty host. */
-  | { kind: 'unreadable'; reason: string };
+  | { kind: "unreadable"; reason: string };
 
 /**
  * Read the switch-core version deployed on `host`.
@@ -45,7 +45,7 @@ export async function readDeployedVersion(host: ServerHost): Promise<DeployedVer
   try {
     const image = (await runningImages(host)).get(CORE_SERVICE);
     const tag = image ? imageTag(image) : null;
-    if (tag) return { kind: 'deployed', version: tag, source: 'container' };
+    if (tag) return { kind: "deployed", version: tag, source: "container" };
   } catch (error) {
     failures.push(`container image: ${errorText(error)}`);
   }
@@ -54,18 +54,18 @@ export async function readDeployedVersion(host: ServerHost): Promise<DeployedVer
     const env = await host.readFile(ENV_FILE_NAME);
     if (env === null) {
       // No `.env` and no running container: nothing was ever deployed here.
-      if (failures.length === 0) return { kind: 'absent' };
+      if (failures.length === 0) return { kind: "absent" };
     } else {
-      const version = readEnvValue(env, 'SWITCH_VERSION');
-      if (version) return { kind: 'deployed', version, source: 'env-file' };
+      const version = readEnvValue(env, "SWITCH_VERSION");
+      if (version) return { kind: "deployed", version, source: "env-file" };
       failures.push(`${ENV_FILE_NAME}: no SWITCH_VERSION entry`);
     }
   } catch (error) {
     failures.push(`${ENV_FILE_NAME}: ${errorText(error)}`);
   }
 
-  if (failures.length === 0) return { kind: 'absent' };
-  return { kind: 'unreadable', reason: failures.join('; ') };
+  if (failures.length === 0) return { kind: "absent" };
+  return { kind: "unreadable", reason: failures.join("; ") };
 }
 
 /**
@@ -76,13 +76,13 @@ export async function readDeployedVersion(host: ServerHost): Promise<DeployedVer
  */
 export function classifyVersionDrift(
   deployed: string,
-  expected: string
+  expected: string,
 ): SwitchVersionDrift | null {
   if (deployed === expected) return null;
   const order = compareVersions(deployed, expected);
   if (order === 0) return null;
   const direction: SwitchVersionDriftDirection =
-    order === null ? 'unknown' : order < 0 ? 'upgrade' : 'downgrade';
+    order === null ? "unknown" : order < 0 ? "upgrade" : "downgrade";
   return { deployed, expected, direction };
 }
 
@@ -105,25 +105,32 @@ export function classifyVersionDrift(
  */
 export async function readVersionStatus(
   host: ServerHost,
-  expected: string
+  expected: string,
 ): Promise<{ deployedVersion: string | null; drift: SwitchVersionDrift | null }> {
-  const deployed = await readDeployedVersion(host);
-  if (deployed.kind === 'unreadable') {
-    log.warn(
-      `managed-switch-server: could not read the deployed switch-core version on ${host.label}`,
-      { reason: deployed.reason }
-    );
+  return versionStatusOf(await readDeployedVersion(host), expected, host.label);
+}
+
+/** {@link readVersionStatus} for a deployed version already read. */
+export function versionStatusOf(
+  deployed: DeployedVersion,
+  expected: string,
+  label: string,
+): { deployedVersion: string | null; drift: SwitchVersionDrift | null } {
+  if (deployed.kind === "unreadable") {
+    log.warn(`managed-switch-server: could not read the deployed switch-core version on ${label}`, {
+      reason: deployed.reason,
+    });
     return {
       deployedVersion: null,
       drift: {
         deployed: null,
         expected,
-        direction: 'unreadable',
+        direction: "unreadable",
         reason: deployed.reason,
       },
     };
   }
-  if (deployed.kind === 'absent') return { deployedVersion: null, drift: null };
+  if (deployed.kind === "absent") return { deployedVersion: null, drift: null };
   return {
     deployedVersion: deployed.version,
     drift: classifyVersionDrift(deployed.version, expected),
@@ -134,10 +141,10 @@ export async function readVersionStatus(
  * carries no tag (an implicit `latest`, or a `@sha256:` digest pin — neither
  * names a version we can compare). */
 export function imageTag(image: string): string | null {
-  const lastSlash = image.lastIndexOf('/');
+  const lastSlash = image.lastIndexOf("/");
   const name = lastSlash === -1 ? image : image.slice(lastSlash + 1);
-  if (name.includes('@')) return null;
-  const colon = name.lastIndexOf(':');
+  if (name.includes("@")) return null;
+  const colon = name.lastIndexOf(":");
   if (colon === -1) return null;
   const tag = name.slice(colon + 1).trim();
   return tag.length > 0 ? tag : null;
