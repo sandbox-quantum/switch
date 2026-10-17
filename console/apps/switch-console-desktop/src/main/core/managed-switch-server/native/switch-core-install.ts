@@ -79,7 +79,11 @@ async function uvSync(
   }
 }
 
-type Marker = { version?: unknown; source?: unknown; bundleRoot?: unknown };
+type Marker = { version?: unknown; source?: unknown; bundleRoot?: unknown; format?: unknown };
+
+/** Raised when how an install from the bundle is laid out changes, so one made
+ * the old way is redone (2: the bundle is reached as a site directory). */
+const BUNDLE_INSTALL_FORMAT = '2';
 
 /** What the install in `dir` was made from, or null when there is none. */
 async function readMarker(dir: string): Promise<Marker | null> {
@@ -99,7 +103,11 @@ function markerMatches(
 ): boolean {
   if (marker?.version !== version) return false;
   if (bundle === null) return true;
-  return marker.source === 'bundle' && marker.bundleRoot === bundle.root;
+  return (
+    marker.source === 'bundle' &&
+    marker.bundleRoot === bundle.root &&
+    marker.format === BUNDLE_INSTALL_FORMAT
+  );
 }
 
 /**
@@ -150,7 +158,12 @@ export async function installSwitchCore(opts: {
   if (bundle !== null) {
     onMessage(`Installing switch-core ${version}…`);
     await installFromBundle(layout, uv, bundle, src, venv);
-    await writeMarker(dir, { version, source: 'bundle', bundleRoot: bundle.root });
+    await writeMarker(dir, {
+      version,
+      source: 'bundle',
+      bundleRoot: bundle.root,
+      format: BUNDLE_INSTALL_FORMAT,
+    });
     return { version, sourceRoot: src, projectDir, python };
   }
 
@@ -230,7 +243,7 @@ async function installFromBundle(
     await uvRun(['venv', '--python', bundle.python, venv]);
     await writeFile(
       path.join(await venvSitePackages(venv), 'switch-bundle.pth'),
-      `${bundle.sitePackages}\n`
+      bundlePthLine(bundle.sitePackages)
     );
     await uvRun([
       'pip',
@@ -247,6 +260,17 @@ async function installFromBundle(
   } finally {
     await appendFile(installLog, `${lines.join('\n')}\n`);
   }
+}
+
+/**
+ * The `.pth` line that puts the bundled packages on the path as a site
+ * directory, not a bare path: some packages (pywin32, which mcp needs on
+ * Windows) add their own directories through `.pth` files of their own, and
+ * Python reads those only in a site directory. The path is written as a JSON
+ * string, which is also a valid Python string literal.
+ */
+export function bundlePthLine(sitePackages: string): string {
+  return `import site; site.addsitedir(${JSON.stringify(sitePackages)})\n`;
 }
 
 /** The environment's `site-packages` directory. */

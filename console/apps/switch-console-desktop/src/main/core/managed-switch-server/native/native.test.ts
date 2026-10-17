@@ -12,6 +12,7 @@ import { downloadFile } from './download';
 import { mattermostCallbackBaseUrl, mattermostComposeYaml, mattermostImage } from './mattermost';
 import { nativeLayout } from './native-paths';
 import { parsePostgresMajor, resolvePostgres } from './postgres-binaries';
+import { bundlePthLine } from './switch-core-install';
 import { currentNativePlatform, postgresArchive, uvArchive } from './toolchain-pins';
 import { parseUvVersion } from './uv';
 
@@ -203,5 +204,19 @@ describe('resolvePostgres', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('bundlePthLine', () => {
+  it('adds the bundled packages as a site directory, so their own .pth files are read', () => {
+    expect(bundlePthLine('/app/local-server/switch/site-packages')).toBe(
+      'import site; site.addsitedir("/app/local-server/switch/site-packages")\n'
+    );
+  });
+
+  it('writes a Windows path as a valid Python string', () => {
+    expect(bundlePthLine('C:\\Users\\a b\\site-packages')).toBe(
+      'import site; site.addsitedir("C:\\\\Users\\\\a b\\\\site-packages")\n'
+    );
   });
 });
