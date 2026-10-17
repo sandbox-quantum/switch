@@ -653,6 +653,10 @@ export const LocalSetupStep = observer(function LocalSetupStep({
           </Alert>
         )}
 
+        {store.phase === 'error' && !starting && (
+          <StartOver disabled={starting} onConfirm={() => void store.reset()} />
+        )}
+
         {(starting || store.logs.length > 0) && !running && (
           <div className="space-y-1.5">
             {store.message && starting && (
@@ -684,6 +688,48 @@ export const LocalSetupStep = observer(function LocalSetupStep({
     </WizardFrame>
   );
 });
+
+/**
+ * The way out of a setup that failed partway: delete what it made and begin
+ * again. Without it a setup whose data cannot be started from has no exit in
+ * the UI — the setup page is all a failed local server opens to. Asks once
+ * more before deleting, since a server that ran before keeps its data until
+ * then.
+ */
+function StartOver({ disabled, onConfirm }: { disabled: boolean; onConfirm: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+      <p className="min-w-0 text-xs text-foreground-muted">
+        {confirming
+          ? 'This stops the server and deletes its data and agents. Set it up from scratch?'
+          : "If trying again doesn't help, start over: delete what this setup made and begin again."}
+      </p>
+      <div className="flex shrink-0 gap-2">
+        {confirming && (
+          <Button variant="outline" size="sm" onClick={() => setConfirming(false)}>
+            Keep it
+          </Button>
+        )}
+        <Button
+          variant={confirming ? 'destructive' : 'outline'}
+          size="sm"
+          disabled={disabled}
+          onClick={() => {
+            if (!confirming) {
+              setConfirming(true);
+              return;
+            }
+            setConfirming(false);
+            onConfirm();
+          }}
+        >
+          {confirming ? 'Delete and start over' : 'Start over'}
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * The choice to run Mattermost beside a server that otherwise needs no Docker.
