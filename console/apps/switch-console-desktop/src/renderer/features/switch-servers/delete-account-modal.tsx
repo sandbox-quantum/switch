@@ -1,7 +1,7 @@
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
-import { failureText } from '@renderer/lib/errors/describe-failure';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { Button } from '@renderer/lib/ui/button';
@@ -45,7 +45,9 @@ export const DeleteAccountModal = observer(function DeleteAccountModal({
       await switchServersStore.deleteAccount(serverId, typed.trim());
       setDeleted(true);
     } catch (cause) {
-      setError(failureText(cause, 'Could not delete your account.'));
+      // The server's refusal is already a sentence saying what to do first.
+      const { headline, detail } = describeFailure(cause, 'Could not delete your account.');
+      setError(detail ?? headline);
     } finally {
       setDeleting(false);
     }
@@ -60,7 +62,7 @@ export const DeleteAccountModal = observer(function DeleteAccountModal({
         <DialogContentArea className="pt-0">
           <p className="text-sm text-foreground-muted">
             {email} no longer has an account on {serverName}. Signing in again with it creates a new
-            one.
+            one. Files your agents kept on this computer stay in their folders.
           </p>
         </DialogContentArea>
         <DialogFooter>

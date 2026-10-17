@@ -101,7 +101,9 @@ describe('DeleteAccountModal', () => {
     await render();
     await type('ada@example.test');
     await act(async () => button('Delete my account').click());
-    expect(document.querySelector('[role="alert"]')?.textContent).toContain('only owner of Acme');
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+      "You're the only owner of Acme, which has other members."
+    );
   });
 
   it('offers to start over once the account is gone', async () => {
