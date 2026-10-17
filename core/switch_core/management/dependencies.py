@@ -37,6 +37,11 @@ def get_management() -> ManagementService:
     return _state["service"]  # type: ignore[no-any-return]
 
 
+def get_management_if_installed() -> ManagementService | None:
+    """The management service, or None on a server that does not run it."""
+    return _state.get("service")
+
+
 def get_authenticator() -> ManagementAuthenticator:
     return _state["authenticator"]  # type: ignore[no-any-return]
 

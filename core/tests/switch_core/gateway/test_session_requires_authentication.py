@@ -62,6 +62,9 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
     # Locks the caller's `users` row, which has no tenant, while it creates a
     # workspace that has none yet either.
     ("POST", "/tenants"),
+    # Deletes the caller's `users` row and sign-in identities, which belong to
+    # no workspace; each workspace is left in a `tenant_session` of its own.
+    ("DELETE", "/auth/me"),
 }
 
 # Every route that does not resolve a tenant, for any reason. `get_current_user`
@@ -95,6 +98,9 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("POST", "/auth/login"),
     ("POST", "/auth/signup"),
     ("POST", "/auth/logout"),
+    # Deleting your account acts on every workspace you are in, each in a
+    # `tenant_session` of its own (`accounts/deletion.py`).
+    ("DELETE", "/auth/me"),
     # What a signed-in caller's session resolves to — including that it
     # resolves to no workspace, which is the answer a caller with none needs.
     ("GET", "/auth/session"),
