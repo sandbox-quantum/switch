@@ -53,6 +53,7 @@ export class Fixtures {
   ): Promise<RegisteredAgent> {
     const name = this.names.name(role);
     const agent = await this.switchClient.registerKnownAgent({
+      registrationToken: this.switchClient.registrationToken,
       agentType: options.agentType ?? 'opencode',
       name,
       description: `Switch end-to-end harness agent (run ${this.names.runId}). Safe to delete.`,

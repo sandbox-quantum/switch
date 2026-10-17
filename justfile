@@ -168,6 +168,14 @@ e2e-follow-ups *args:
 e2e-fast *args:
     console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
 
+# ── End-to-end harness, provider lane, on a throwaway stack ────────────────────
+# As e2e-fast, plus a headless agent controller that runs the agent's sessions
+# with a real provider CLI (installed and signed in, or its key in the file
+# SWITCH_E2E_PROVIDER_ENV_FILE names). SWITCH_E2E_AGENT_TYPE picks the provider.
+# Spends real model calls.
+e2e-provider *args:
+    SWITCH_E2E_LANE=provider console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
+
 # ── Run integration tests (real Postgres via testcontainers) ───────────────────
 # DOCKER_HOST is auto-resolved from the active docker context in conftest, so this
 # works under Docker Desktop / OrbStack / colima without extra setup.

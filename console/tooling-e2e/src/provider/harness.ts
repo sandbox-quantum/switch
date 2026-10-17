@@ -6,6 +6,7 @@ import type {
 } from '../clients/mattermost-client.ts';
 import {
   sleep,
+  SwitchHttpError,
   type RegisteredAgent,
   type RoomDetail,
   type SwitchClient,
@@ -31,6 +32,13 @@ export interface Harness {
   switch: SwitchClient;
   mattermost: MattermostClient;
   agent: RegisteredAgent;
+  /**
+   * A silent second agent in the room, registered with the deployment key and
+   * run by nobody. The bridge-readiness probe reads the room through it,
+   * because an agent run by a controller cannot use its own key: the server
+   * refuses it while the controller acts for the agent.
+   */
+  witness: RegisteredAgent;
   /** The agent's Mattermost bot account — `username === agent.name`. */
   bot: MattermostUser;
   channel: MattermostChannel;
@@ -54,6 +62,102 @@ const ROLE_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
   'claude-code': 'claude',
   codex: 'codex',
 };
+
+// "Do exactly what you are asked" is load-bearing, and so is the second
+// sentence: told merely to answer briefly, the agent declined the `interrupt`
+// scenario's task on the grounds that 200 messages would spam the room — a
+// refusal the scenario reads as a session that never started.
+const AGENT_INSTRUCTIONS =
+  'You are a Switch end-to-end test agent. Do exactly what you are asked in the ' +
+  'room, and post your answer back to the room you were addressed in. Never ' +
+  'decline or shorten a task on the grounds that it is repetitive or long: the ' +
+  'requests you get here are deliberate tests of exactly that.';
+
+/** Cheap on purpose: a run spends a real subscription. */
+const CLAUDE_MODEL = 'claude-sonnet-5';
+
+/** The management API's provider id for each harness agent type. */
+const PROVIDER_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
+  opencode: 'opencode',
+  'claude-code': 'claude',
+  codex: 'codex',
+  antigravity: 'antigravity',
+  cursor: 'cursor',
+};
+
+/** How long to keep asking a controller to take the agent while it comes up. */
+const PLACEMENT_DEADLINE_MS = 120_000;
+
+/**
+ * Register the agent. For a controller it is registered with a key the admin
+ * mints for the purpose and deletes straight after, because the management API
+ * only places agents their caller owns, and the deployment-wide key registers
+ * them to a bootstrap account.
+ */
+async function registerAgent(
+  switchClient: SwitchClient,
+  env: HarnessEnv,
+  name: string,
+  runId: string,
+  forController: boolean
+): Promise<RegisteredAgent> {
+  // `ClaudeCodeOptions` and `OpencodeOptions` agree on the two keys used here
+  // (`auto_session`, `repo_dir`), so the payload is the same for both types.
+  const params = {
+    agentType: env.provider.agentType,
+    name,
+    description: `Switch end-to-end harness agent (run ${runId}). Safe to delete.`,
+    options: {
+      auto_session: true,
+      ...(env.provider.agentRepoDir ? { repo_dir: env.provider.agentRepoDir } : {}),
+    },
+  };
+  if (!forController) {
+    return switchClient.registerKnownAgent({
+      ...params,
+      registrationToken: switchClient.registrationToken,
+    });
+  }
+  const key = await switchClient.createRegistrationKey(`e2e harness run ${runId}`);
+  try {
+    return await switchClient.registerKnownAgent({ ...params, registrationToken: key.key });
+  } finally {
+    await switchClient.deleteApiKey(key.id);
+  }
+}
+
+/**
+ * Hand the agent to the controller, retrying while the server answers 409:
+ * the controller has not connected yet, or has not yet reported the provider
+ * installed and signed in. Any other refusal is final.
+ */
+async function placeOnController(
+  switchClient: SwitchClient,
+  env: HarnessEnv,
+  agent: RegisteredAgent,
+  controllerId: string
+): Promise<void> {
+  const provider = PROVIDER_BY_AGENT_TYPE[env.provider.agentType];
+  const definition = {
+    provider,
+    model: provider === 'claude' ? CLAUDE_MODEL : null,
+    instructions: AGENT_INSTRUCTIONS,
+    // The `approval` scenario needs the session to ask before running a tool.
+    auto_approve: false,
+    directory: env.provider.agentRepoDir,
+  };
+  const until = Date.now() + PLACEMENT_DEADLINE_MS;
+  for (;;) {
+    try {
+      await switchClient.placeAgent({ agentId: agent.id, controllerId, definition });
+      return;
+    } catch (error) {
+      const notReady = error instanceof SwitchHttpError && error.status === 409;
+      if (!notReady || Date.now() > until) throw error;
+      await sleep(3_000);
+    }
+  }
+}
 
 /**
  * Register a throwaway agent, create a room on the Mattermost bridge for it,
@@ -89,31 +193,31 @@ export async function setupHarness(target: LaneTarget): Promise<Harness> {
   // and clearly when MATTERMOST_TEAM names a team that does not exist.
   await mattermost.findTeam(env.mattermost.team);
 
-  // `ClaudeCodeOptions` and `OpencodeOptions` agree on the two keys used here
-  // (`auto_session`, `repo_dir`), so the payload is the same for both types.
-  const agent = await switchClient.registerKnownAgent({
-    agentType: env.provider.agentType,
-    name: agentName,
-    description: `Switch Console end-to-end harness agent (run ${runId}). Safe to delete.`,
-    options: {
-      auto_session: true,
-      ...(env.provider.agentRepoDir ? { repo_dir: env.provider.agentRepoDir } : {}),
-    },
-  });
+  const controllerId = env.provider.controllerId;
+  const agent = await registerAgent(switchClient, env, agentName, runId, controllerId !== null);
 
   // Owner-only by default, and the human the harness posts as is an unclaimed
   // Mattermost identity, so its messages would be refused rather than delivered.
   await switchClient.openAddressing(agent.id);
 
-  // Registration is what mints the bot; wait for it so a later `@name` mention
-  // has something to resolve to.
+  const witness = await switchClient.registerKnownAgent({
+    registrationToken: switchClient.registrationToken,
+    agentType: 'opencode',
+    name: names.name('witness'),
+    description: `Switch end-to-end harness bridge witness (run ${runId}). Safe to delete.`,
+    options: { auto_session: false },
+  });
+
+  // Registration is what mints the bots; wait for them so the room has them
+  // as members and a later `@name` mention has something to resolve to.
   const bot = await mattermost.waitForBotUser(agent.name, 60_000);
+  await mattermost.waitForBotUser(witness.name, 60_000);
 
   const room = await switchClient.createRoom({
     name: names.name('room'),
-    description: `Switch Console end-to-end harness (run ${runId}). Safe to delete.`,
+    description: `Switch end-to-end harness (run ${runId}). Safe to delete.`,
     bridgeId,
-    agentNames: [agent.name],
+    agentNames: [agent.name, witness.name],
     userNames: [human.username],
   });
 
@@ -130,6 +234,7 @@ export async function setupHarness(target: LaneTarget): Promise<Harness> {
     switch: switchClient,
     mattermost,
     agent,
+    witness,
     bot,
     channel,
     room,
@@ -137,10 +242,12 @@ export async function setupHarness(target: LaneTarget): Promise<Harness> {
     runId,
   };
 
-  // With SWITCH_E2E_AGENT_DIR set, provision the agent's identity into that
-  // working directory so a session started there IS this agent. Without it the
-  // operator has to add the agent in Switch Console by hand before the run.
-  if (env.provider.agentRepoDir) {
+  if (controllerId !== null) {
+    await placeOnController(switchClient, env, agent, controllerId);
+  } else if (env.provider.agentRepoDir) {
+    // Provision the agent's identity into that working directory so a Console
+    // session started there IS this agent. Without it the operator has to add
+    // the agent in Switch Console by hand before the run.
     harness.credentialsPath = await writeAgentCredentials({
       workingDir: env.provider.agentRepoDir,
       agent,
@@ -153,24 +260,14 @@ export async function setupHarness(target: LaneTarget): Promise<Harness> {
         workingDir: env.provider.agentRepoDir,
         agentName: agent.name,
         description: `Switch Console end-to-end harness agent (run ${runId}).`,
-        // "Do exactly what you are asked" is load-bearing, and so is the second
-        // sentence: told merely to answer briefly, the agent declined the
-        // `interrupt` scenario's task on the grounds that 200 messages would
-        // spam the room — a refusal the scenario reads as a session that never
-        // started.
-        instructions:
-          'You are a Switch end-to-end test agent. Do exactly what you are asked in the ' +
-          'room, and post your answer back to the room you were addressed in. Never ' +
-          'decline or shorten a task on the grounds that it is repetitive or long: the ' +
-          'requests you get here are deliberate tests of exactly that.',
-        // Cheap on purpose: this spends a real subscription on every run.
-        model: 'claude-sonnet-5',
+        instructions: AGENT_INSTRUCTIONS,
+        model: CLAUDE_MODEL,
         effort: 'low',
       });
     }
   }
 
-  await waitForBridgeReady({ switchClient, mattermost, agent, room, channel, runId });
+  await waitForBridgeReady({ switchClient, mattermost, agent: witness, room, channel, runId });
   await writeManifest(env.provider.manifestPath, harness);
   return harness;
 }
@@ -188,6 +285,7 @@ export async function setupHarness(target: LaneTarget): Promise<Harness> {
 export interface HarnessManifest {
   runId: string;
   agent: RegisteredAgent;
+  witness: RegisteredAgent;
   roomId: string;
   channelId: string;
 }
@@ -197,6 +295,7 @@ async function writeManifest(path: string | null, harness: Harness): Promise<voi
   const manifest: HarnessManifest = {
     runId: harness.runId,
     agent: harness.agent,
+    witness: harness.witness,
     roomId: harness.room.id,
     channelId: harness.channel.id,
   };
@@ -228,6 +327,7 @@ async function reuseHarness(
     switch: switchClient,
     mattermost,
     agent: manifest.agent,
+    witness: manifest.witness,
     bot: await mattermost.waitForBotUser(manifest.agent.name, 30_000),
     channel: await mattermost.getChannel(manifest.channelId),
     room: await switchClient.getRoom(manifest.roomId),
@@ -238,7 +338,7 @@ async function reuseHarness(
   await waitForBridgeReady({
     switchClient,
     mattermost,
-    agent: harness.agent,
+    agent: harness.witness,
     room: harness.room,
     channel: harness.channel,
     runId: harness.runId,
@@ -317,13 +417,17 @@ export async function teardownHarness(
     );
   }
 
-  try {
-    await harness.switch.deleteAgent(harness.agent);
-  } catch (error) {
-    log(
-      `teardown: failed to delete agent ${harness.agent.name} (${harness.agent.id}) — ` +
-        `delete it by hand: ${error instanceof Error ? error.message : String(error)}`
-    );
+  // By name, as the admin: an agent run by a controller cannot delete itself
+  // with its own key, which the server refuses while the controller acts for it.
+  for (const agent of [harness.agent, harness.witness]) {
+    try {
+      await harness.switch.deleteAgentByName(agent.name);
+    } catch (error) {
+      log(
+        `teardown: failed to delete agent ${agent.name} (${agent.id}) — ` +
+          `delete it by hand: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   // Deleting the room usually takes the channel with it; archive is a no-op

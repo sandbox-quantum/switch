@@ -76,6 +76,12 @@ export interface ProviderEnv {
   agentType: HarnessAgentType;
   /** How `question` expects the clarifying question to arrive. */
   questionMode: QuestionMode;
+  /**
+   * A headless agent controller to run the agent on. When set, setup places
+   * the agent on it through the management API and writes no Switch Console
+   * files; when not, a Console session for the agent is expected instead.
+   */
+  controllerId: string | null;
 }
 
 export interface HarnessEnv {
@@ -242,6 +248,7 @@ export function loadEnv(
       manifestPath: get('SWITCH_E2E_MANIFEST') ?? null,
       agentType: agentTypeFrom(get('SWITCH_E2E_AGENT_TYPE')),
       questionMode: questionModeFrom(get('SWITCH_E2E_QUESTION_MODE')),
+      controllerId: get('SWITCH_E2E_CONTROLLER_ID') ?? null,
     },
   };
 }

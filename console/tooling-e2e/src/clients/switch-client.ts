@@ -38,6 +38,15 @@ export interface RoomDetail extends RoomSummary {
   agentIds: string[];
 }
 
+/** The management API's agent definition (v1), as much of it as the harness sets. */
+export interface ManagedAgentDefinition {
+  provider: string;
+  model: string | null;
+  instructions: string;
+  auto_approve: boolean;
+  directory: string | null;
+}
+
 export interface AgentSummary {
   id: string;
   name: string;
@@ -113,7 +122,8 @@ interface SwitchRequest {
 
 export class SwitchClient {
   private readonly apiUrl: string;
-  private readonly registrationToken: string;
+  /** The deployment-wide registration key; agents it registers belong to a bootstrap account. */
+  readonly registrationToken: string;
   private readonly adminEmail: string;
   private readonly adminPassword: string;
   private readonly environment: Environment;
@@ -264,6 +274,42 @@ export class SwitchClient {
   }
 
   /**
+   * `POST /gateway/api-keys` — a registration key belonging to the signed-in
+   * admin. Agents registered with it are owned by the admin, which the
+   * management API requires of an agent it is asked to place on a controller;
+   * agents registered with the deployment-wide key belong to a bootstrap
+   * account instead.
+   */
+  async createRegistrationKey(label: string): Promise<{ id: string; key: string }> {
+    const body = await this.gateway<{ id: string; key: string }>('POST', '/api-keys', { label });
+    return { id: body.id, key: body.key };
+  }
+
+  async deleteApiKey(keyId: string): Promise<void> {
+    await this.gateway('DELETE', `/api-keys/${keyId}`);
+  }
+
+  /**
+   * `PUT /gateway/management/agents/{id}` — place an agent the admin owns on a
+   * controller and set it running. The controller then runs its sessions.
+   *
+   * Answers 409 until the controller has connected and reported the provider
+   * installed and signed in; the caller retries on {@link SwitchHttpError}
+   * status 409 while the controller comes up.
+   */
+  async placeAgent(params: {
+    agentId: string;
+    controllerId: string;
+    definition: ManagedAgentDefinition;
+  }): Promise<void> {
+    await this.gateway('PUT', `/management/agents/${params.agentId}`, {
+      controller_id: params.controllerId,
+      desired_state: 'running',
+      definition: params.definition,
+    });
+  }
+
+  /**
    * `PUT /gateway/agents/{id}/addressing-policy` with `{policy: null}` — clear
    * the agent's scoped addressing policy, so anyone may address it.
    *
@@ -362,6 +408,8 @@ export class SwitchClient {
    * be added to a channel.
    */
   async registerKnownAgent(params: {
+    /** {@link registrationToken}, or a personal key from {@link createRegistrationKey}. */
+    registrationToken: string;
     agentType: 'opencode' | 'codex' | 'claude-code' | 'antigravity' | 'cursor';
     name: string;
     description: string;
@@ -371,7 +419,7 @@ export class SwitchClient {
       'POST',
       '/agents/register-known',
       {
-        token: this.registrationToken,
+        token: params.registrationToken,
         body: {
           agent_type: params.agentType,
           name: params.name,

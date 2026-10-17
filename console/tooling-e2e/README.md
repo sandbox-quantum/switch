@@ -155,15 +155,61 @@ beside this file. Never commit one. `just e2e-fast` sets all of them itself.
 | `SWITCH_E2E_SESSION_TIMEOUT_MS` | provider lane | How long setup waits for a live session (default 2 min). |
 | `SWITCH_E2E_AGENT_TYPE` | provider lane | `opencode` (default), `claude-code`, `codex`, `antigravity` or `cursor` — which provider's runtime is under test. |
 | `SWITCH_E2E_QUESTION_MODE` | provider lane | `numbered` (default) or `prose`; see the `question` row below. |
+| `SWITCH_E2E_CONTROLLER_ID` | provider lane | An agent controller to run the agent on. `just e2e-provider` sets it. Unset, a Switch Console session is expected instead. |
+| `SWITCH_E2E_PROVIDER_ENV_FILE` | `just e2e-provider` | A file of provider keys, handed to the controller as `--env-file`. Leave it unset to use the CLI's own sign-in. |
 
 Mattermost is all or nothing: none of its three variables means "no Mattermost
 here"; some of them is reported as a mistake.
 
 # The provider lane
 
-## What must be running
+The provider lane needs Mattermost and something that runs a real session for
+the agent it registers. There are two ways to provide one.
 
-The provider lane needs Mattermost and a **Switch Console session for the agent
+## On a headless agent controller (`just e2e-provider`)
+
+The unattended way, and the one CI will use. `just e2e-provider` does
+everything `just e2e-fast` does, and also:
+
+1. turns on `agent_management` and sets `CONTROLLER_TOKEN_SECRET` for the stack;
+2. builds `console/packages` and starts the agent controller
+   (`console/packages/agent-controller`) on the host. Its credential comes from
+   `POST /gateway/management/controllers` and goes in on stdin, never to disk;
+3. runs the provider lane with `SWITCH_E2E_CONTROLLER_ID` set. Setup then
+   registers the agent with a registration key the admin mints for the purpose
+   and deletes straight away, because the management API only places agents
+   their caller owns, and the deployment-wide key registers agents to a
+   bootstrap account. Setup places the agent on the controller with
+   `auto_approve: false`, retrying while the controller reports itself not
+   ready, and writes no Switch Console files.
+
+```bash
+SWITCH_E2E_AGENT_TYPE=claude-code just e2e-provider
+SWITCH_E2E_PROVIDER_ENV_FILE=~/e2e-keys.env just e2e-provider   # an API key instead of a signed-in CLI
+```
+
+The provider CLI (`claude`, `opencode`, …) must be installed and signed in for
+the user running it, or its key must be in the file `SWITCH_E2E_PROVIDER_ENV_FILE`
+names, which the controller gets as `--env-file`. Sessions only inherit the
+variables on the allow-list in
+`console/packages/agent-providers/src/host/agent-env.ts`. `node
+console/packages/agent-controller/dist/cli.mjs doctor` shows what the controller
+sees. A run spends real model calls.
+
+Two things differ from a Console session:
+- **The agent's own key stops working.** While a controller acts for an agent,
+  the server refuses requests made with the agent's own key. So the
+  bridge-readiness probe reads the room through a silent second agent, the
+  *witness*, and teardown deletes agents by name as the admin.
+- **`live` comes early.** Switch reports the agent `live` as soon as the
+  controller is connected, before any session exists. The first scenario
+  therefore absorbs the session's start-up time.
+
+The controller's log goes to `build/e2e/ephemeral/controller.log`.
+
+## With a Switch Console session
+
+The provider lane can also run against a **Switch Console session for the agent
 it just registered**. Setup polls the agent's status in the room and refuses to run the
 scenarios until Switch reports it `live` (a session is attending the room) or
 `dormant` (an auto-session watcher is running and will spawn one on demand) —
@@ -243,7 +289,7 @@ agent, and deletes it during teardown — so a manifest never outlives its room.
 | --- | --- | --- |
 | `greet` | An addressed message reaches a session and its answer comes back. | The bot posts `SWITCH_E2E_OK`. |
 | `question` | Two turns: the agent asks, the human answers in the channel, the agent uses the answer. | The bot offers `red`/`green`/`blue`, then replies `green` after the answer. |
-| `approval` | A tool call the session is not pre-authorised to make. | The bot surfaces an approval prompt, `@agent 1` allows it, the bot replies `done`. |
+| `approval` | A tool call the session is not pre-authorised to make. | The bot posts an approval card, answering it with `<handle> 1` allows the call, the bot replies `done`. |
 | `interrupt` | `!interrupt @agent-name` cancels a running local shell command after its start marker is verified. | No completion marker appears after the command’s 90-second lifetime (observed for 95 seconds). Requires `SWITCH_E2E_AGENT_DIR` on this machine. |
 
 `question` is the one a one-shot reply cannot fake: it only passes if the session
@@ -251,9 +297,10 @@ is still alive and still connected when the second message arrives.
 
 It has two modes, because the relay it exercises needs a native ask-the-user
 tool and not every provider offers one. In `numbered` mode the agent must use
-that tool, the console relays it into the room as a numbered list, and the
-answer goes back as `@agent 2` — the numbering is what proves the relay path was
-taken. In `prose` mode the agent asks in an ordinary message and is answered
+that tool, and Switch relays it into the room as a request card numbering the
+options (`… request \`A1\` … 2. green …`). The answer goes back as `A1 2`, a
+plain message naming the card's handle, and the card is what proves the relay
+path was taken. In `prose` mode the agent asks in an ordinary message and is answered
 with `@agent green`; the two-turn round trip is still proved, the relay is not.
 Every agent type defaults to `numbered` — both providers offer the tool — and
 `prose` is an explicit override for a provider or CLI version that does not.

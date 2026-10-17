@@ -4,8 +4,15 @@
 # host, then the chosen lane, then teardown.
 #
 #   just e2e-fast                 the fast lane (no provider, no Console)
+#   just e2e-provider             the provider lane, on a headless agent controller
 #   just e2e-fast --keep          leave the stack running afterwards
 #   just e2e-fast -- <vitest args> pass arguments through to vitest
+#
+# The provider lane also builds console/packages and starts an agent controller
+# on the host, which runs the agent's sessions with a real provider CLI. The CLI
+# must be installed and signed in for the user running this, or its key given in
+# the file SWITCH_E2E_PROVIDER_ENV_FILE names (passed to the controller as
+# --env-file). SWITCH_E2E_AGENT_TYPE picks the provider (default opencode).
 #
 # Secrets are generated per run into a temporary env file. The repository's
 # own .env is never read or written, so this cannot rotate a developer's live
@@ -44,6 +51,12 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 ENV_FILE="$OUT/stack.env"
 cp "$REPO/.env.example" "$ENV_FILE"
 "$REPO/deploy/local/generate-env-secrets.sh" "$ENV_FILE" e2e
+if [ "$LANE" = provider ]; then
+  # Agent management, and the key controllers' access tokens are signed with.
+  sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=agent_management|" \
+             -e "s|^CONTROLLER_TOKEN_SECRET=.*|CONTROLLER_TOKEN_SECRET=$(openssl rand -hex 32)|" "$ENV_FILE"
+  rm -f "$ENV_FILE.bak"
+fi
 chmod 600 "$ENV_FILE"
 set -a; source "$ENV_FILE"; set +a
 
@@ -51,16 +64,18 @@ cd "$REPO"
 COMPOSE=(docker compose -p switch-e2e-ephemeral -f deploy/local/docker-compose.yml
          --env-file "$ENV_FILE" --project-directory .)
 SERVER_PID=""
+CONTROLLER_PID=""
 cleanup() {
   local status=$?
   if [ "$KEEP" = 0 ]; then
+    [ -n "$CONTROLLER_PID" ] && kill "$CONTROLLER_PID" 2>/dev/null && wait "$CONTROLLER_PID" 2>/dev/null
     [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null && wait "$SERVER_PID" 2>/dev/null
     "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
     rm -f "$ENV_FILE"
   else
-    echo "Left running: switch-core :8000 (pid $SERVER_PID), Mattermost :8065."
+    echo "Left running: switch-core :8000 (pid $SERVER_PID), Mattermost :8065${CONTROLLER_PID:+, agent controller (pid $CONTROLLER_PID)}."
     echo "Secrets for this stack: $ENV_FILE. Tear down with:"
-    echo "  kill $SERVER_PID; ${COMPOSE[*]} down -v"
+    echo "  kill $SERVER_PID $CONTROLLER_PID; ${COMPOSE[*]} down -v"
   fi
   exit "$status"
 }
@@ -101,10 +116,49 @@ MATTERMOST_TOKEN="$(curl -sf -D - -o /dev/null -H 'Content-Type: application/jso
   http://localhost:8065/api/v4/users/login | tr -d '\r' | awk -F': ' 'tolower($1)=="token" {print $2}')"
 [ -n "$MATTERMOST_TOKEN" ] || { echo "could not log in to Mattermost as $MATTERMOST_USER" >&2; exit 1; }
 
+PROVIDER_ENV=()
+if [ "$LANE" = provider ]; then
+  echo "Building the agent controller…"
+  (cd "$REPO/console" && pnpm -r --filter './packages/**' run build) >"$OUT/console-build.log" 2>&1 \
+    || { echo "console package build failed; see $OUT/console-build.log" >&2; exit 1; }
+
+  JAR="$OUT/gateway.cookies"
+  curl -sf -c "$JAR" -o /dev/null -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg e "$GATEWAY_ADMIN_EMAIL" --arg p "$GATEWAY_ADMIN_PASSWORD" '{email: $e, password: $p}')" \
+    http://localhost:8000/gateway/auth/login \
+    || { echo "could not sign in to the gateway as $GATEWAY_ADMIN_EMAIL" >&2; exit 1; }
+  CONTROLLER="$(curl -sf -b "$JAR" -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg os "$(uname -s | tr '[:upper:]' '[:lower:]')" --arg arch "$(uname -m)" \
+             --arg osv "$(uname -r)" \
+             '{name: "e2e-controller", kind: "console", version: "e2e",
+               platform: {os: $os, arch: $arch, os_version: $osv}}')" \
+    http://localhost:8000/gateway/management/controllers)" \
+    || { echo "could not create an agent controller (is agent_management on?)" >&2; exit 1; }
+  rm -f "$JAR"
+  CONTROLLER_ID="$(jq -r .controller_id <<<"$CONTROLLER")"
+
+  echo "Starting the agent controller…"
+  CONTROLLER_ARGS=(run --data-dir "$OUT/controller" --controller-id "$CONTROLLER_ID"
+                   --server http://localhost:8000 --credential-stdin)
+  if [ -n "${SWITCH_E2E_PROVIDER_ENV_FILE:-}" ]; then
+    CONTROLLER_ARGS+=(--env-file "$SWITCH_E2E_PROVIDER_ENV_FILE")
+  fi
+  # The credential goes in on stdin and is never written to disk.
+  jq -r .credential <<<"$CONTROLLER" | SWITCH_CONTROLLER_LOG_LEVEL=info \
+    node "$REPO/console/packages/agent-controller/dist/cli.mjs" "${CONTROLLER_ARGS[@]}" \
+    >"$OUT/controller.log" 2>&1 &
+  CONTROLLER_PID=$!
+  unset CONTROLLER
+
+  mkdir -p "$OUT/agent-dir"
+  PROVIDER_ENV=(SWITCH_E2E_CONTROLLER_ID="$CONTROLLER_ID" SWITCH_E2E_AGENT_DIR="$OUT/agent-dir")
+fi
+
 echo "Running the $LANE lane…"
 status=0
 (
   cd "$HARNESS"
+  export ${PROVIDER_ENV[@]+"${PROVIDER_ENV[@]}"}
   SWITCH_E2E_LANE="$LANE" \
   SWITCH_E2E_ENVIRONMENT=ephemeral \
   SWITCH_E2E_STRICT=1 \
@@ -121,5 +175,6 @@ status=0
 
 if [ "$status" != 0 ]; then
   echo "The $LANE lane failed. switch-core log: $OUT/switch-core.log" >&2
+  [ "$LANE" = provider ] && echo "Agent controller log: $OUT/controller.log" >&2
 fi
 exit "$status"

@@ -132,6 +132,24 @@ async function scenario(
   }
 }
 
+/**
+ * The handle a request card answers to: `A1` in "request `A1`". Switch renders
+ * every relayed question and permission prompt as such a card, and an answer
+ * is the handle followed by the option's number, typed as a plain message.
+ */
+export function requestHandle(text: string): string | null {
+  return /request `([A-Za-z]+\d+)`/.exec(text)?.[1] ?? null;
+}
+
+/** Answer a request card, and return the moment just before the answer was posted. */
+async function answerCard(harness: Harness, card: MattermostPost, option: number): Promise<number> {
+  const handle = requestHandle(card.message);
+  if (handle === null) throw new Error(`Post ${card.id} is not a request card: «${card.message}»`);
+  const sinceMs = Date.now() - 1;
+  await harness.mattermost.post({ channelId: harness.channel.id, message: `${handle} ${option}` });
+  return sinceMs;
+}
+
 /** Post `@agent <text>` and return the moment just before it was posted. */
 async function ask(harness: Harness, text: string): Promise<number> {
   const sinceMs = Date.now() - 1;
@@ -234,27 +252,31 @@ export const question: Scenario = (harness) =>
     const asked = await expectBotPost(harness, {
       since,
       record,
-      // The console relays a native question into the room as a numbered list;
-      // a plain-prose question also lists the three options, so the numbering is
+      // A native question is relayed as a request card numbering the options;
+      // a plain-prose question also lists the three options, so the card is
       // what proves the relay path was taken — and is exactly what cannot be
       // required of a provider that offers SDK sessions no such tool.
       predicate: (post) =>
         CHOICES.every((choice) => lower(post).includes(choice)) &&
-        (prose || /\b2\.\s/.test(post.message)),
+        (prose || (requestHandle(post.message) !== null && /\b2\.\s/.test(post.message))),
       describe: prose
         ? `a question listing the options ${CHOICES.join('/')}`
         : `a relayed question numbering the options ${CHOICES.join('/')}`,
     });
 
-    // By number where the relay is what reads the answer; by word where the
-    // agent itself is. The relay's acknowledgement names the choice too, so the
-    // agent's own reply must be told apart from it either way.
-    const answeredAt = await ask(harness, prose ? CHOSEN : '2');
+    // On the card where the relay is what reads the answer; by word where the
+    // agent itself is. The card and the relay's acknowledgement name the choice
+    // too, so the agent's own reply must be told apart from them either way.
+    const answeredAt = prose
+      ? await ask(harness, CHOSEN)
+      : await answerCard(harness, asked, CHOICES.indexOf(CHOSEN) + 1);
     const answer = await expectBotPost(harness, {
       since: answeredAt,
       record,
       predicate: (post) =>
-        lower(post).includes(CHOSEN) && !post.message.trimStart().startsWith('✅'),
+        lower(post).includes(CHOSEN) &&
+        requestHandle(post.message) === null &&
+        !post.message.trimStart().startsWith('✅'),
       describe: `a reply naming my choice '${CHOSEN}'`,
     });
 
@@ -288,12 +310,12 @@ export const approval: Scenario = (harness) =>
       since,
       record,
       predicate: (post) =>
-        APPROVAL_HINTS.some((hint) => lower(post).includes(hint)) ||
-        /(^|\n)\s*1[.)]/.test(post.message),
-      describe: 'an approval prompt for the shell command',
+        requestHandle(post.message) !== null &&
+        APPROVAL_HINTS.some((hint) => lower(post).includes(hint)),
+      describe: 'an approval card for the shell command',
     });
 
-    const approvedAt = await ask(harness, '1');
+    const approvedAt = await answerCard(harness, prompt, 1);
     const done = await expectBotPost(harness, {
       since: approvedAt,
       record,
@@ -334,13 +356,15 @@ export const interrupt: Scenario = (harness) =>
       harness,
       `Run this exact shell command for a bounded cancellation test: \`${command}\`. Wait for completion before replying. Do not create these files with another tool.`
     );
-    await expectBotPost(harness, {
+    const permission = await expectBotPost(harness, {
       since,
       record,
-      predicate: (post) => APPROVAL_HINTS.some((hint) => lower(post).includes(hint)),
-      describe: 'permission to run the cancellation command',
+      predicate: (post) =>
+        requestHandle(post.message) !== null &&
+        APPROVAL_HINTS.some((hint) => lower(post).includes(hint)),
+      describe: 'an approval card for the cancellation command',
     });
-    await ask(harness, '1');
+    await answerCard(harness, permission, 1);
     const deadline = Date.now() + 60_000;
     while (!isStartMarker((await markerContents(startedFile)) ?? '')) {
       if (Date.now() > deadline)
