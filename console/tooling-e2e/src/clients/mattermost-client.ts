@@ -1,3 +1,6 @@
+import type { Environment, MattermostEnv } from '../core/env.ts';
+import { assertAllowed } from '../core/guard.ts';
+
 /**
  * Mattermost REST client for the harness — the *human* half of the loop.
  *
@@ -25,6 +28,10 @@ export interface MattermostChannel {
   name: string;
   display_name: string;
   team_id: string;
+  /** Epoch milliseconds. */
+  create_at: number;
+  /** Non-zero once the channel is archived. */
+  delete_at?: number;
 }
 
 export interface MattermostUser {
@@ -56,18 +63,15 @@ export class MattermostHttpError extends Error {
   }
 }
 
-/** Mattermost usernames: lowercase, 3-22 chars, `[a-z0-9._-]`, must start alphanumeric. */
-export function isValidMattermostUsername(name: string): boolean {
-  return /^[a-z0-9][a-z0-9._-]{2,21}$/.test(name);
-}
-
 export class MattermostClient {
   private readonly baseUrl: string;
   private readonly token: string;
+  private readonly environment: Environment;
 
-  constructor(params: { url: string; token: string }) {
-    this.baseUrl = params.url.endsWith('/') ? params.url.slice(0, -1) : params.url;
-    this.token = params.token;
+  constructor(env: MattermostEnv, environment: Environment) {
+    this.baseUrl = env.url.endsWith('/') ? env.url.slice(0, -1) : env.url;
+    this.token = env.token;
+    this.environment = environment;
   }
 
   private async request<T>(
@@ -76,6 +80,7 @@ export class MattermostClient {
     body?: unknown,
     options: { allow404?: boolean } = {}
   ): Promise<T> {
+    assertAllowed(this.environment, method, `/api/v4${path}`);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.token}`,
       Accept: 'application/json',
@@ -137,10 +142,7 @@ export class MattermostClient {
 
   /** `GET /api/v4/teams/{team_id}/channels` — the team's public channels. */
   async listTeamChannels(teamId: string): Promise<MattermostChannel[]> {
-    return this.request<MattermostChannel[]>(
-      'GET',
-      `/teams/${teamId}/channels?per_page=200`
-    );
+    return this.request<MattermostChannel[]>('GET', `/teams/${teamId}/channels?per_page=200`);
   }
 
   /** `GET /api/v4/channels/{id}`. */
@@ -267,11 +269,7 @@ export class MattermostClient {
    * scenario, which asserts the *absence* of further output rather than the
    * presence of a reply.
    */
-  async postsFrom(
-    channelId: string,
-    userId: string,
-    sinceMs: number
-  ): Promise<MattermostPost[]> {
+  async postsFrom(channelId: string, userId: string, sinceMs: number): Promise<MattermostPost[]> {
     const posts = await this.postsSince(channelId, sinceMs);
     return posts.filter((post) => post.user_id === userId && !post.type?.startsWith('system_'));
   }

@@ -850,7 +850,10 @@ async def claim_bridge_identity(
             )
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
-        session.expire_all()
+        # Provisioning wrote the row in its own session. This session committed
+        # before it and its lookup found nothing, so a fresh query sees the
+        # row; expiring the session instead would also expire `user` and
+        # `bridge`, which cannot lazy-load here.
         external_user = await external_user_store.get_by_external_id(
             session, bridge_id, payload.external_user_id
         )

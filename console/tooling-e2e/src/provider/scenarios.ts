@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { sleep, type MattermostPost } from '../clients/mattermost-client.ts';
+import type { ScenarioHeader } from '../core/scenario.ts';
 import type { Harness } from './harness.ts';
-import { sleep, type MattermostPost } from './mattermost-client.ts';
 
 /**
  * The scenarios. Each one drives the full path
@@ -218,7 +219,7 @@ const CHOSEN = 'green';
  */
 export const question: Scenario = (harness) =>
   scenario('question', async (record) => {
-    const prose = harness.env.questionMode === 'prose';
+    const prose = harness.env.provider.questionMode === 'prose';
     const since = await ask(
       harness,
       prose
@@ -322,7 +323,7 @@ async function markerContents(file: string): Promise<string | null> {
 /** A real local command must start and then be cancelled before its final write. */
 export const interrupt: Scenario = (harness) =>
   scenario('interrupt', async (record) => {
-    const dir = harness.env.agentRepoDir;
+    const dir = harness.env.provider.agentRepoDir;
     if (!dir)
       throw new Error('The interrupt scenario requires SWITCH_E2E_AGENT_DIR on this machine.');
     const stem = `interrupt-${harness.runId}-${Date.now()}`;
@@ -365,7 +366,47 @@ export const interrupt: Scenario = (harness) =>
     return 'command start confirmed; completion marker absent after 95s';
   });
 
-export const SCENARIOS: Scenario[] = [greet, question, approval, interrupt];
+/**
+ * A provider-lane scenario: its header, and the function that drives it. All of
+ * them share one agent and one channel, set up once per run.
+ */
+export interface ProviderScenario {
+  header: ScenarioHeader;
+  run: Scenario;
+}
+
+/** Writes to a room, so never prod. */
+const PROVIDER_ENVIRONMENTS: ScenarioHeader['environments'] = [
+  'ephemeral',
+  'local',
+  'dev',
+  'staging',
+];
+
+function providerHeader(
+  id: string,
+  covers: string[],
+  requires: ScenarioHeader['requires']
+): ScenarioHeader {
+  return {
+    id,
+    covers,
+    needsProvider: true,
+    environments: PROVIDER_ENVIRONMENTS,
+    owner: 'console',
+    requires: ['mattermost', ...requires],
+  };
+}
+
+export const SCENARIOS: readonly ProviderScenario[] = [
+  { header: providerHeader('greet', ['connect_to_room', 'post_message'], []), run: greet },
+  { header: providerHeader('question', ['connect_to_room', 'post_message'], []), run: question },
+  { header: providerHeader('approval', ['connect_to_room', 'post_message'], []), run: approval },
+  {
+    header: providerHeader('interrupt', ['connect_to_room', 'post_message'], ['agent-dir']),
+    run: interrupt,
+  },
+];
 
 /** Fixed-width summary of a run, printed at the end of the suite. */
 export function formatResultsTable(results: ScenarioResult[]): string {

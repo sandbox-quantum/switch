@@ -145,3 +145,84 @@ async def test_admin_can_claim_an_identity_for_a_member(
         assert await _EXTERNAL_USERS.claimant_ids(session, external_user.id) == [
             member.id
         ]
+
+
+class _Candidate:
+    def __init__(self, external_user_id: str) -> None:
+        self.external_user_id = external_user_id
+
+
+class _DirectoryAdapter:
+    def __init__(self, external_user_id: str) -> None:
+        self._external_user_id = external_user_id
+
+    async def search_directory_users(self, username: str) -> list[_Candidate]:
+        return [_Candidate(self._external_user_id)]
+
+
+class _ProvisioningCore:
+    """Provisions the identity in its own session, as the bridge's core does."""
+
+    def __init__(
+        self, session_factory: async_sessionmaker[AsyncSession], bridge_id: str
+    ) -> None:
+        self._session_factory = session_factory
+        self._bridge_id = bridge_id
+
+    async def ensure_external_user(
+        self, *, external_user_id: str, external_username: str
+    ) -> ExternalUser:
+        async with self._session_factory() as session:
+            external_user = ExternalUser(
+                bridge_id=self._bridge_id,
+                external_user_id=external_user_id,
+                external_username=external_username,
+                client_id=await _make_client(session, "external_user"),
+            )
+            session.add(external_user)
+            await session.commit()
+            return external_user
+
+
+class _Lifecycle:
+    def __init__(self, adapter: _DirectoryAdapter, core: _ProvisioningCore) -> None:
+        self._adapter = adapter
+        self._core = core
+
+    def get_adapter(self, bridge_id: str) -> _DirectoryAdapter:
+        return self._adapter
+
+    def get(self, bridge_id: str) -> _ProvisioningCore:
+        return self._core
+
+
+async def test_claiming_an_unseen_identity_answers_with_the_claim(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The caller is loaded in the request's own session, as `get_current_user`
+    loads it, so provisioning the unseen identity must not leave the handler
+    reading an expired caller afterwards."""
+    bridge_id, _seen, admin, _member, _outsider = await _setup(session_factory)
+    external_user_id = f"U{uuid.uuid4().hex[:8]}"
+    lifecycle = _Lifecycle(
+        _DirectoryAdapter(external_user_id),
+        _ProvisioningCore(session_factory, bridge_id),
+    )
+
+    async with session_factory() as session:
+        caller = await session.get(User, admin.id)
+        assert caller is not None
+        summary = await claim_bridge_identity(
+            bridge_id,
+            ClaimIdentityRequest(external_user_id=external_user_id, username="bob"),
+            session,
+            CollaborationBridgeStore(),
+            _EXTERNAL_USERS,
+            UserStore(),
+            lifecycle,  # type: ignore[arg-type]
+            caller,
+            True,
+        )
+
+    assert summary.external_user_id == external_user_id
+    assert [claimant.user_id for claimant in summary.claimed_by] == [admin.id]

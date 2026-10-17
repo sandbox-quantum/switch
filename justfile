@@ -21,19 +21,8 @@ init-env:
       echo "   Delete it first if you really want to regenerate every secret." >&2
       exit 1
     fi
-    if ! command -v openssl >/dev/null 2>&1; then
-      echo "openssl is required to generate secrets but was not found on PATH." >&2
-      exit 1
-    fi
     cp .env.example .env
-    for key in DB_PASSWORD DB_OWNER_PASSWORD \
-               AGENT_REGISTRATION_TOKEN GATEWAY_ADMIN_PASSWORD \
-               MATTERMOST_ADMIN_PASSWORD MATTERMOST_USER_PASSWORD; do
-      secret="$(openssl rand -hex 24)"
-      sed -i.bak "s|^${key}=.*|${key}=${secret}|" .env
-    done
-    sed -i.bak "s|^SECRET_KEYS=.*|SECRET_KEYS=local:$(openssl rand -hex 32)|" .env
-    rm -f .env.bak
+    deploy/local/generate-env-secrets.sh .env local
     echo "✅ Wrote .env with freshly generated secrets."
     echo "   Gateway admin login: $(grep '^GATEWAY_ADMIN_EMAIL=' .env | cut -d= -f2-) / $(grep '^GATEWAY_ADMIN_PASSWORD=' .env | cut -d= -f2-)"
     echo "   The stack binds to 127.0.0.1 only (set SWITCH_BIND_ADDR to expose it)."
@@ -170,6 +159,14 @@ test *args:
 # `--keep` leaves it running to try by hand. Output: build/e2e/follow-the-conversation.
 e2e-follow-ups *args:
     core/tests/e2e/follow_the_conversation/run.sh {{ args }}
+
+# ── End-to-end harness, fast lane, on a throwaway stack ────────────────────────
+# Fresh Postgres and Mattermost, switch-core from this checkout, then the
+# provider-free scenarios in console/tooling-e2e, then teardown. Needs Docker
+# and your local stack stopped. `--keep` leaves it running; arguments after
+# `--` go to vitest. Output: build/e2e/ephemeral.
+e2e-fast *args:
+    console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
 
 # ── Run integration tests (real Postgres via testcontainers) ───────────────────
 # DOCKER_HOST is auto-resolved from the active docker context in conftest, so this

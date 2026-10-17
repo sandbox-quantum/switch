@@ -9,10 +9,10 @@
  * has to be up before the first scenario posts. Splitting setup out gives the
  * three steps somewhere to happen in:
  *
- *     SWITCH_E2E=1 SWITCH_E2E_MANIFEST=… SWITCH_E2E_AGENT_DIR=… \
- *       node --experimental-strip-types src/seed.ts
+ *     SWITCH_E2E_LANE=provider SWITCH_E2E_MANIFEST=… SWITCH_E2E_AGENT_DIR=… \
+ *       node --experimental-strip-types src/provider/seed.ts
  *     # seed the console's database from the manifest, start the console
- *     SWITCH_E2E=1 SWITCH_E2E_MANIFEST=… … vitest run src/run.integration.test.ts
+ *     SWITCH_E2E_LANE=provider SWITCH_E2E_MANIFEST=… … vitest run src/provider
  *
  * The scenario run finds the manifest, reuses what is in it rather than
  * registering a second agent, and deletes it during teardown.
@@ -26,23 +26,25 @@
  * `provider_id` `'opencode'` / `'claude'` and a `provider_config` of
  * `{"version":"2","providerId":"<that>","values":{},"runtime":"provider"}`.
  */
-import { loadEnv } from './env.ts';
+import { resolveLane } from '../core/suite.ts';
 import { setupHarness } from './harness.ts';
 
 export async function seed(log: (message: string) => void = console.log): Promise<void> {
-  const env = loadEnv();
-  if (!env.manifestPath) {
+  const lane = await resolveLane('provider');
+  if (!lane.target) throw new Error(`Cannot seed: ${lane.skip}`);
+  const env = lane.target.env;
+  if (!env.provider.manifestPath) {
     throw new Error('SWITCH_E2E_MANIFEST must name the file to record the agent and room in.');
   }
-  const harness = await setupHarness(env);
+  const harness = await setupHarness(lane.target);
   log(
     [
-      `type     ${env.agentType} (question mode: ${env.questionMode})`,
+      `type     ${env.provider.agentType} (question mode: ${env.provider.questionMode})`,
       `agent    ${harness.agent.name} (${harness.agent.id})`,
       `bot      @${harness.bot.username} (${harness.bot.id})`,
       `channel  ${harness.channel.name} (${harness.channel.id})`,
       `room     ${harness.room.name} (${harness.room.id})`,
-      `manifest ${env.manifestPath}`,
+      `manifest ${env.provider.manifestPath}`,
     ].join('\n')
   );
 }

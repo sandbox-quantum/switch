@@ -1,3 +1,6 @@
+import type { Environment, SwitchEnv } from '../core/env.ts';
+import { assertAllowed } from '../core/guard.ts';
+
 /**
  * Thin client for the two Switch HTTP surfaces the harness talks to, both served
  * by the same origin (`SWITCH_API_URL`):
@@ -5,8 +8,10 @@
  * - the **agent bridge** at `/agents/...`, authenticated with either the
  *   registration token (to mint an agent) or an agent's own API key (to act as
  *   that agent);
- * - the **gateway** at `/gateway/...`, authenticated with an admin bearer token
+ * - the **gateway** at `/gateway/...`, authenticated with the session cookie
  *   from `POST /gateway/auth/login`.
+ *
+ * Every request passes the read-only guard first (`core/guard.ts`).
  *
  * Only endpoints this harness has actually exercised against a live server are
  * modelled here; see README.md for the verified request/response shapes.
@@ -21,6 +26,7 @@ export interface RegisteredAgent {
 export interface RoomSummary {
   id: string;
   name: string;
+  createdAt: string;
   bridgeId: string | null;
   bridgeType: string | null;
   archived: boolean;
@@ -35,6 +41,7 @@ export interface RoomDetail extends RoomSummary {
 export interface AgentSummary {
   id: string;
   name: string;
+  createdAt: string;
 }
 
 /**
@@ -97,11 +104,11 @@ function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-export interface SwitchClientOptions {
-  apiUrl: string;
-  registrationToken: string;
-  gatewayAdminEmail: string;
-  gatewayAdminPassword: string;
+interface SwitchRequest {
+  token?: string;
+  cookie?: string;
+  body?: unknown;
+  timeoutMs?: number;
 }
 
 export class SwitchClient {
@@ -109,30 +116,29 @@ export class SwitchClient {
   private readonly registrationToken: string;
   private readonly adminEmail: string;
   private readonly adminPassword: string;
+  private readonly environment: Environment;
   private gatewayCookie: string | null = null;
 
-  constructor(options: SwitchClientOptions) {
-    this.apiUrl = options.apiUrl;
-    this.registrationToken = options.registrationToken;
-    this.adminEmail = options.gatewayAdminEmail;
-    this.adminPassword = options.gatewayAdminPassword;
+  constructor(env: SwitchEnv, environment: Environment) {
+    this.apiUrl = env.apiUrl;
+    this.registrationToken = env.agentRegistrationToken;
+    this.adminEmail = env.gatewayAdminEmail;
+    this.adminPassword = env.gatewayAdminPassword;
+    this.environment = environment;
   }
 
   // ── plumbing ──────────────────────────────────────────────────────────────
 
-  private async request<T>(
-    method: string,
-    path: string,
-    init: { token?: string; cookie?: string; body?: unknown; timeoutMs?: number } = {}
-  ): Promise<T> {
+  private async request<T>(method: string, path: string, init: SwitchRequest = {}): Promise<T> {
     return (await this.rawRequest(method, path, init)).parsed as T;
   }
 
   private async rawRequest(
     method: string,
     path: string,
-    init: { token?: string; cookie?: string; body?: unknown; timeoutMs?: number }
+    init: SwitchRequest
   ): Promise<{ parsed: unknown; response: Response }> {
+    assertAllowed(this.environment, method, path);
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (init.token) headers.Authorization = `Bearer ${init.token}`;
     if (init.cookie) headers.Cookie = init.cookie;
@@ -204,13 +210,7 @@ export class SwitchClient {
   }
 
   async getRoom(roomId: string): Promise<RoomDetail> {
-    const row = await this.gateway<RawRoom>('GET', `/rooms/${roomId}`);
-    return {
-      ...toRoomSummary(row),
-      externalChannelId: row.external_channel_id ?? null,
-      matrixRoomId: row.matrix_room_id ?? null,
-      agentIds: row.agent_ids ?? [],
-    };
+    return toRoomDetail(await this.gateway<RawRoom>('GET', `/rooms/${roomId}`));
   }
 
   /**
@@ -227,29 +227,27 @@ export class SwitchClient {
    *
    * `userNames` are platform usernames added to the channel — the harness adds
    * itself, since it has to be a channel member to post as the human.
+   *
+   * `bridgeId: null` makes an internal-only room: no platform channel, so the
+   * only participants are agents and the fast lane needs no bridge at all.
    */
   async createRoom(params: {
     name: string;
     description: string;
-    bridgeId: string;
+    bridgeId: string | null;
     agentNames: string[];
-    userNames?: string[];
+    userNames: string[];
   }): Promise<RoomDetail> {
     const row = await this.gateway<RawRoom>('POST', '/rooms', {
       name: params.name,
       description: params.description,
-      bridge_id: params.bridgeId,
+      ...(params.bridgeId === null
+        ? { internal_only: true }
+        : { bridge_id: params.bridgeId, internal_only: false, channel_type: 'channel_public' }),
       agent_names: params.agentNames,
-      user_names: params.userNames ?? [],
-      channel_type: 'channel_public',
-      internal_only: false,
+      user_names: params.userNames,
     });
-    return {
-      ...toRoomSummary(row),
-      externalChannelId: row.external_channel_id ?? null,
-      matrixRoomId: row.matrix_room_id ?? null,
-      agentIds: row.agent_ids ?? [],
-    };
+    return toRoomDetail(row);
   }
 
   async deleteRoom(roomId: string): Promise<void> {
@@ -266,6 +264,19 @@ export class SwitchClient {
   }
 
   /**
+   * `PUT /gateway/agents/{id}/addressing-policy` with `{policy: null}` — clear
+   * the agent's scoped addressing policy, so anyone may address it.
+   *
+   * Agents are created owner-only: only their owner, or agents and identities
+   * the owner has claimed, may address them, and anything else is answered with
+   * a refusal instead of delivered. The harness's senders are other throwaway
+   * agents and an unclaimed platform user, so its agents are opened explicitly.
+   */
+  async openAddressing(agentId: string): Promise<void> {
+    await this.gateway('PUT', `/agents/${agentId}/addressing-policy`, { policy: null });
+  }
+
+  /**
    * The status Switch reports for one agent in one room. `live` means a session
    * is attending the room; `dormant` means an auto-session connector is watching
    * and would spawn one; `no_session` / `disconnected` mean nothing is there.
@@ -279,8 +290,11 @@ export class SwitchClient {
   }
 
   async listAgents(): Promise<AgentSummary[]> {
-    const rows = await this.gateway<{ id: string; name: string }[]>('GET', '/agents');
-    return rows.map((row) => ({ id: row.id, name: row.name }));
+    const rows = await this.gateway<{ id: string; name: string; created_at: string }[]>(
+      'GET',
+      '/agents'
+    );
+    return rows.map((row) => ({ id: row.id, name: row.name, createdAt: row.created_at }));
   }
 
   /** The bridge id of the default collaboration bridge of `type`. */
@@ -468,6 +482,40 @@ export class SwitchClient {
     return body.event_id;
   }
 
+  // ── agent bridge: the operations front door ───────────────────────────────
+
+  /**
+   * `GET /agents/{id}/ops` — every operation the registry defines, with its
+   * parameters, keyed by name. The same registry serves the MCP server, so what this lists is
+   * what an agent's session sees as tools.
+   */
+  async listOperations(agent: RegisteredAgent): Promise<string[]> {
+    const body = await this.request<{ operations: Record<string, unknown> }>(
+      'GET',
+      `/agents/${agent.id}/ops`,
+      { token: agent.apiKey }
+    );
+    return Object.keys(body.operations);
+  }
+
+  /**
+   * `POST /agents/{id}/ops/{operation}` — run one registry operation as the
+   * agent, with `args` as its arguments, and return its `result`. Operations that act on "the room you
+   * are connected to" need a live connection and fail without one; the fast
+   * lane calls those that take the room as an argument.
+   */
+  async callOperation<T>(
+    agent: RegisteredAgent,
+    operation: string,
+    args: Record<string, unknown>
+  ): Promise<T> {
+    const body = await this.request<{ result: T }>('POST', `/agents/${agent.id}/ops/${operation}`, {
+      token: agent.apiKey,
+      body: args,
+    });
+    return body.result;
+  }
+
   /**
    * `POST /agents/{id}/watch/heartbeat` — the room-agnostic "an operator
    * connector is watching this agent" beat. Switch Console pings it while its
@@ -485,6 +533,7 @@ export class SwitchClient {
 interface RawRoom {
   id: string;
   name: string;
+  created_at: string;
   bridge_id?: string | null;
   bridge_type?: string | null;
   archived?: boolean;
@@ -494,10 +543,20 @@ interface RawRoom {
   agent_statuses?: Record<string, unknown>;
 }
 
+function toRoomDetail(row: RawRoom): RoomDetail {
+  return {
+    ...toRoomSummary(row),
+    externalChannelId: row.external_channel_id ?? null,
+    matrixRoomId: row.matrix_room_id ?? null,
+    agentIds: row.agent_ids ?? [],
+  };
+}
+
 function toRoomSummary(row: RawRoom): RoomSummary {
   return {
     id: row.id,
     name: row.name,
+    createdAt: row.created_at,
     bridgeId: row.bridge_id ?? null,
     bridgeType: row.bridge_type ?? null,
     archived: row.archived ?? false,

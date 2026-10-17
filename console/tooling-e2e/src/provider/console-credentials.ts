@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { RegisteredAgent } from './switch-client.ts';
+import type { RegisteredAgent } from '../clients/switch-client.ts';
 
 /**
  * Write the harness's throwaway agent into a working directory the way Switch
