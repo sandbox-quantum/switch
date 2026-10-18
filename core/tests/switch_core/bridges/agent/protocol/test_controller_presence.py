@@ -624,6 +624,11 @@ def _addressing_client(
     ns._compute_addressed = _addressed
     ns._fresh_agent = _fresh_agent
     ns._gate_addressed = _gate_addressed
+
+    async def _sender_role(*_args: Any) -> str | None:
+        return None
+
+    ns._sender_role = _sender_role
     ns._report_addressed = lambda *_a, **_k: None
     ns._triggered_by_auto_reply = AgentRecipient._triggered_by_auto_reply
     ns.actor = SimpleNamespace(send_message=sent)

@@ -32,6 +32,7 @@ export const roomMessageSchema = z.object({
       )
       .default([]),
     opening_message: z.string().nullish(),
+    sender_role: z.enum(['owner', 'admin', 'member']).nullish(),
   }),
   missed: z
     .object({ count: z.number().int().nonnegative().nullable(), reason: z.string().nullable() })
@@ -182,11 +183,13 @@ export function roomCommand(input: {
   // they cannot predict.
   const marker = randomBytes(8).toString('hex');
   const senderName = payload.sender_name.split(/\s+/).filter(Boolean).join(' ');
+  // Read by the server as the message arrived, so it outranks anything said earlier.
+  const senderRole = payload.sender_role ? ` (workspace ${payload.sender_role})` : '';
   const opening = input.firstOfConversation ? (payload.opening_message ?? null) : null;
   const text =
     (input.preface === null ? '' : `${input.preface}\n\n`) +
     (opening === null ? '' : `${openingNote(opening)}\n\n`) +
-    `[Switch] ${senderName} addressed you in room ${input.roomId} (message_id ${payload.message_id}, thread_id ${payload.thread_id ?? 'none'}):\n` +
+    `[Switch] ${senderName}${senderRole} addressed you in room ${input.roomId} (message_id ${payload.message_id}, thread_id ${payload.thread_id ?? 'none'}):\n` +
     `BEGIN SWITCH MESSAGE ${marker}\n` +
     `${payload.body}\n` +
     `END SWITCH MESSAGE ${marker}\n` +

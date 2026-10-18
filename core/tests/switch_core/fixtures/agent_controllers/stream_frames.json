@@ -54,7 +54,8 @@
           "timestamp": 1767225600000,
           "thread_id": null,
           "attachments": [],
-          "opening_message": null
+          "opening_message": null,
+          "sender_role": null
         },
         "sequence": 1,
         "missed": {

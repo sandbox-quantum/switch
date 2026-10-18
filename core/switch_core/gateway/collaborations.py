@@ -5,6 +5,7 @@ import math
 from collections.abc import Iterable
 from typing import Annotated, Literal
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +26,12 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     BridgeStartRefused,
     DirectoryUser,
+)
+from switch_core.bridges.collaboration.own_app_setup import (
+    SetupCheckError,
+    check_slack,
+    slack_create_url,
+    slack_manifest,
 )
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
@@ -64,6 +71,9 @@ from switch_core.gateway.schemas import (
     DirectoryUserSummary,
     ExternalUserSummary,
     IdentityClaimant,
+    SlackOwnAppSetup,
+    SlackTokensCheck,
+    SlackTokensChecked,
 )
 from switch_core.room_service import RoomService
 
@@ -277,6 +287,37 @@ async def list_bridge_types(
             )
         )
     return types
+
+
+@router.get("/setup/slack")
+async def slack_own_app_setup(
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> SlackOwnAppSetup:
+    """The Slack app this server needs, and Slack's create-app page filled in
+    with it, for someone connecting a Slack app of their own."""
+    manifest = slack_manifest()
+    return SlackOwnAppSetup(manifest=manifest, create_url=slack_create_url(manifest))
+
+
+@router.post("/setup/slack/check")
+async def check_slack_tokens(
+    req: SlackTokensCheck,
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> SlackTokensChecked:
+    """Whether both tokens of a Slack app work, and the workspace they are for,
+    so nobody has to look its id up."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            checked = await check_slack(
+                http, bot_token=req.bot_token.strip(), app_token=req.app_token.strip()
+            )
+    except SetupCheckError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return SlackTokensChecked(
+        workspace_id=checked.workspace_id,
+        workspace_name=checked.workspace_name,
+        bot_name=checked.bot_name,
+    )
 
 
 @router.post("")

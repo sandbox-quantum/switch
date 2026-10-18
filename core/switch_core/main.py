@@ -1299,6 +1299,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     if config.service_connections_enabled:
         protocol.service_broker = service_broker
+    protocol.install_service = install_service
 
     snapshot_reporter = SnapshotReporter(
         telemetry=telemetry,

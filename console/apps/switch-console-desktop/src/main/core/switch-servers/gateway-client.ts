@@ -45,6 +45,10 @@ import {
   gitHubConnectionSchema,
   gitHubFlowSchema,
 } from '@shared/core/switch-servers/github-connection';
+import type {
+  SlackOwnAppSetup,
+  SlackTokensChecked,
+} from '@shared/core/switch-servers/own-app-setup';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
 import {
   SERVICE_CALLBACK_PATH,
@@ -1632,6 +1636,49 @@ export async function fetchBridgeTypes(server: SwitchServer): Promise<RemoteBrid
  * it to the renderer, and do not fold it into an error message: `GatewayError`
  * quotes the *response* body only, never the request.
  */
+/** Slack's create-app page, filled in with the app this server needs. */
+export async function fetchSlackOwnAppSetup(server: SwitchServer): Promise<SlackOwnAppSetup> {
+  const res = await gatewayFetch(server, '/collaborations/setup/slack', { authenticated: true });
+  const body = z.object({ create_url: z.string() }).parse(await res.json());
+  return { createUrl: body.create_url };
+}
+
+/**
+ * Whether a Slack app's two tokens work, and its workspace. A refusal is raised
+ * with the server's own sentence, which says which token is wrong. The tokens
+ * are not logged nor quoted in errors.
+ */
+export async function checkSlackTokens(
+  server: SwitchServer,
+  tokens: { botToken: string; appToken: string }
+): Promise<SlackTokensChecked> {
+  const res = await ownAppCheck(server, '/collaborations/setup/slack/check', {
+    bot_token: tokens.botToken,
+    app_token: tokens.appToken,
+  });
+  const body = z
+    .object({ workspace_id: z.string(), workspace_name: z.string(), bot_name: z.string() })
+    .parse(await res.json());
+  return {
+    workspaceId: body.workspace_id,
+    workspaceName: body.workspace_name,
+    botName: body.bot_name,
+  };
+}
+
+async function ownAppCheck(
+  server: SwitchServer,
+  path: string,
+  body: Record<string, string>
+): Promise<Response> {
+  try {
+    return await gatewayFetch(server, path, { authenticated: true, method: 'POST', body });
+  } catch (error) {
+    if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
+    throw error;
+  }
+}
+
 export async function createBridge(
   server: SwitchServer,
   params: {

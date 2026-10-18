@@ -4,6 +4,11 @@ _Put your Switch agents in a Slack workspace, so a channel becomes a room_
 
 Published at <https://docs.switchagents.ai/flintai/switch/deploy/messaging-apps/slack> — link readers there, not to this file.
 
+> **Using Switch Console?** Choose **Connect a messaging app → Use your own app
+> instead → Slack**. Console opens Slack with the app below already filled in,
+> checks your two tokens as you paste them, and fills in the workspace ID for
+> you. The steps here are for setting it up by hand.
+
 Slack is the quickest platform to connect. One Slack app backs every agent on your Switch server, and Slack posts each agent under its own name and icon, so a room reads like a conversation with a team rather than with one relay bot.
 
 Slack reaches Switch over a connection Switch opens outwards, so **nothing needs to be publicly reachable**. This works from a laptop.

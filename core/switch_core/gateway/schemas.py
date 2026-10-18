@@ -1607,3 +1607,22 @@ class FeatureFlagState(BaseModel):
 
 class FeatureFlagsResponse(BaseModel):
     flags: list[FeatureFlagState]
+
+
+class SlackOwnAppSetup(BaseModel):
+    """What it takes to create a Slack app of your own for this server."""
+
+    manifest: dict[str, Any]
+    #: Slack's create-app page, already filled in with `manifest`.
+    create_url: str
+
+
+class SlackTokensCheck(BaseModel):
+    bot_token: str
+    app_token: str
+
+
+class SlackTokensChecked(BaseModel):
+    workspace_id: str
+    workspace_name: str
+    bot_name: str

@@ -137,6 +137,9 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from switch_core.agent_runs import RunService
+    from switch_core.bridges.collaboration.install_service import (
+        MessagingInstallService,
+    )
     from switch_core.bridges.collaboration.lifecycle_service import (
         CollaborationBridgeLifecycleService,
     )
@@ -290,6 +293,9 @@ class AgentCore:
     # The credential broker, set by the process wiring when service
     # connections are on; None means they are off, and nothing can be granted.
     service_broker: ServiceBroker | None = None
+    # The messaging apps this server registered as its own, set by the process
+    # wiring; None when it registered none, the ordinary case.
+    install_service: MessagingInstallService | None = None
     # Told (tenant_id, room_id) for each room a deleted agent was in, after it
     # is gone, so whatever follows rooms' agents can catch up at once.
     _room_agents_listener: Callable[[str, str], Awaitable[None]] | None = None

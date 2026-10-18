@@ -1692,7 +1692,9 @@ COMMANDS: list[Command] = [
         # not an address — so it doesn't pull in whoever else holds that role.
         addressed=_addressed_by_first_mention,
     ),
-    Command("admin", "", handler=None, hidden=True),
+    Command(
+        "admin", "Toggle admin mode on/off for this room.", handler=None, hidden=True
+    ),
 ]
 
 COMMANDS_BY_NAME: dict[str, Command] = {cmd.name: cmd for cmd in COMMANDS}

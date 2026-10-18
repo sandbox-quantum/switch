@@ -45,4 +45,10 @@ describe('a room command', () => {
     // Later messages are not told again.
     expect(text(opened, false)).not.toContain('Hi, I am your buddy.');
   });
+
+  it("says the sender's role in the workspace, as the server read it", () => {
+    const fromMember = { ...event, payload: { ...event.payload, sender_role: 'member' } };
+    expect(text(fromMember)).toContain('[Switch] Owner (workspace member) addressed you');
+    expect(text(event)).toContain('[Switch] Owner addressed you');
+  });
 });
