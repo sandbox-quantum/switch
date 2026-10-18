@@ -140,6 +140,12 @@ export async function composeDown(host: ServerHost, removeVolumes: boolean): Pro
   );
 }
 
+/** Stop the stack's containers without removing them or anything else. */
+export async function composeStop(host: ServerHost): Promise<void> {
+  log.info(`local-switch-server: docker compose stop (${host.label})`);
+  await runDocker(host, [...baseArgs(host, []), 'stop'], 5 * 60 * 1000);
+}
+
 /**
  * Bring up one service of the stack as it is currently configured on the host
  * — the compose file and `.env` already there, not this build's — without its

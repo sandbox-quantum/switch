@@ -101,7 +101,7 @@ export function HowToRunPage({
           <SmallCard
             icon={<Laptop className="size-5" />}
             title="On this computer"
-            description="Switch Console installs the full stack with Docker and keeps it updated. Open source, no Switch account needed."
+            description="Switch Console installs the Switch server on this computer and keeps it updated."
             selected={chosen === 'local'}
             disabled={connecting}
             onSelect={() => setPicked('local')}

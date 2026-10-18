@@ -17,6 +17,7 @@ import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { Switch } from '@renderer/lib/ui/switch';
 import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
 import {
   lockHolderSentence,
@@ -432,7 +433,7 @@ export const ChooseStep = observer(function ChooseStep({
         <ChoiceCard
           icon={<Laptop className="size-5" />}
           title="Run a server on this computer"
-          description="Switch Console sets up and runs the full Switch stack here with Docker. Best for trying Switch out."
+          description="Switch Console sets up and runs the Switch server here. No Docker needed. Best for trying Switch out."
           onClick={onLocal}
         />
         <ChoiceCard
@@ -532,6 +533,11 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   const dockerReady = docker?.available ?? false;
   const dockerUnavailable = docker && !docker.available ? docker : null;
   const idle = !running && !starting;
+  // A server set up on Docker before native mode existed still needs Docker to
+  // start; a native one (every new install) needs it only for Mattermost.
+  const native = store.runtime === 'native';
+  const needsDocker = store.runtime === 'docker';
+  const canStart = running || (store.runtime !== null && (!needsDocker || dockerReady));
 
   // The pager's back arrow only ever repeats the footer's Back, so the two read
   // one const. Open during the install too: the store is a singleton the main
@@ -541,7 +547,9 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   // dismissed with Escape.
   const goBack = onBack ?? null;
 
-  const primaryLabel = running ? 'Done' : store.phase === 'error' ? 'Retry' : 'Start';
+  // The first run goes on to the workspace; the dialog is finished.
+  const finished = onClose === null ? 'Continue' : 'Done';
+  const primaryLabel = running ? finished : store.phase === 'error' ? 'Retry' : 'Start';
   const onPrimary = () => {
     if (running) onDone(store.status?.serverId ?? null);
     else void store.start();
@@ -550,7 +558,11 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   return (
     <WizardFrame
       title="Set up a server on this computer"
-      subtitle="Switch Console installs the full stack with Docker and keeps it updated."
+      subtitle={
+        needsDocker
+          ? 'Switch Console runs the full stack with Docker and keeps it updated.'
+          : 'Switch Console installs the Switch server on this computer and keeps it updated.'
+      }
       pager={{ pageName: 'Set up a server', onBack: goBack, onNext: null }}
       footer={
         <>
@@ -560,7 +572,7 @@ export const LocalSetupStep = observer(function LocalSetupStep({
             closeDisabled={starting}
             closeLabel={running ? 'Close' : 'Cancel'}
           />
-          <ConfirmButton onClick={onPrimary} disabled={starting || (!running && !dockerReady)}>
+          <ConfirmButton onClick={onPrimary} disabled={starting || !canStart}>
             {starting ? 'Starting…' : primaryLabel}
           </ConfirmButton>
         </>
@@ -572,21 +584,21 @@ export const LocalSetupStep = observer(function LocalSetupStep({
             <Laptop className="size-5" />
           </div>
           <div className="min-w-0">
-            <p className="text-sm font-medium text-foreground">Switch server · this computer</p>
-            <p className="truncate text-xs text-foreground-muted">
-              switch-core {store.status?.version ?? ''} · runs on this computer via Docker
-            </p>
+            <p className="text-sm font-medium text-foreground">Switch server</p>
+            {store.status?.version && (
+              <p className="truncate text-xs text-foreground-muted">
+                Version {store.status.version}
+              </p>
+            )}
           </div>
         </div>
 
-        {idle && (
+        {idle && native && (
           <div className="bg-card space-y-2 rounded-lg border border-border p-3">
             <p className="text-xs font-medium text-foreground-muted">Starting will:</p>
             <ul className="space-y-1.5 text-xs text-foreground-muted">
-              <SetupStepItem>
-                Pull the Switch images from GHCR (first run downloads a few GB)
-              </SetupStepItem>
-              <SetupStepItem>Run Postgres, Matrix, Mattermost and Switch in Docker</SetupStepItem>
+              <SetupStepItem>Set up PostgreSQL and the Switch server</SetupStepItem>
+              <SetupStepItem>Run them in the background on this computer</SetupStepItem>
               <SetupStepItem>
                 Register it as your active server, ready to onboard an agent
               </SetupStepItem>
@@ -594,27 +606,50 @@ export const LocalSetupStep = observer(function LocalSetupStep({
           </div>
         )}
 
-        {!running && (
+        {idle && needsDocker && (
+          <div className="bg-card space-y-2 rounded-lg border border-border p-3">
+            <p className="text-xs font-medium text-foreground-muted">Starting will:</p>
+            <ul className="space-y-1.5 text-xs text-foreground-muted">
+              <SetupStepItem>Pull the Switch images from GHCR if needed</SetupStepItem>
+              <SetupStepItem>Run Postgres, Mattermost and Switch in Docker</SetupStepItem>
+              <SetupStepItem>
+                Register it as your active server, ready to onboard an agent
+              </SetupStepItem>
+            </ul>
+          </div>
+        )}
+
+        {!running && needsDocker && (
           <DockerStatus ready={dockerReady} unavailable={dockerUnavailable} checking={!docker} />
         )}
 
         {idle && <UsageDataToggle />}
 
-        {running && (
-          <Alert>
-            <CircleCheck className="size-4" />
-            <AlertTitle>Local server is running</AlertTitle>
-            <AlertDescription>
-              It's now in your servers list — open it to onboard an agent.
-            </AlertDescription>
-          </Alert>
+        {!running && native && (
+          <MattermostOption
+            enabled={store.mattermost}
+            docker={docker}
+            disabled={starting}
+            onChange={(enabled) => void store.setMattermost(enabled)}
+          />
         )}
 
-        {store.error && !dockerUnavailable && !running && (
+        {running && (
+          <p className="flex items-center gap-2 text-sm text-foreground">
+            <CircleCheck className="size-4 text-green-500" />
+            Local server is running
+          </p>
+        )}
+
+        {store.error && !(needsDocker && dockerUnavailable) && !running && (
           <Alert variant="destructive">
             <AlertTitle>{store.error}</AlertTitle>
             {store.errorDetail && <AlertDescription>{store.errorDetail}</AlertDescription>}
           </Alert>
+        )}
+
+        {store.phase === 'error' && !starting && (
+          <StartOver disabled={starting} onConfirm={() => void store.reset()} />
         )}
 
         {(starting || store.logs.length > 0) && !running && (
@@ -632,16 +667,103 @@ export const LocalSetupStep = observer(function LocalSetupStep({
                 </p>
               </div>
             )}
-            <LogTail
-              lines={store.logs}
-              placeholder={starting ? 'Waiting for Docker to report progress…' : null}
-            />
+            {/* Docker reports its pulls line by line; the native setup has no
+                log to tail, and its step shows beside the spinner above. */}
+            {(needsDocker || store.logs.length > 0) && (
+              <LogTail
+                lines={store.logs}
+                placeholder={
+                  starting && needsDocker ? 'Waiting for Docker to report progress…' : null
+                }
+              />
+            )}
           </div>
         )}
       </div>
     </WizardFrame>
   );
 });
+
+/**
+ * The way out of a setup that failed partway: delete what it made and begin
+ * again. Without it a setup whose data cannot be started from has no exit in
+ * the UI — the setup page is all a failed local server opens to. Asks once
+ * more before deleting, since a server that ran before keeps its data until
+ * then.
+ */
+function StartOver({ disabled, onConfirm }: { disabled: boolean; onConfirm: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+      <p className="min-w-0 text-xs text-foreground-muted">
+        {confirming
+          ? 'This stops the server and deletes its data and agents. Set it up from scratch?'
+          : "If trying again doesn't help, start over: delete what this setup made and begin again."}
+      </p>
+      <div className="flex shrink-0 gap-2">
+        {confirming && (
+          <Button variant="outline" size="sm" onClick={() => setConfirming(false)}>
+            Keep it
+          </Button>
+        )}
+        <Button
+          variant={confirming ? 'destructive' : 'outline'}
+          size="sm"
+          disabled={disabled}
+          onClick={() => {
+            if (!confirming) {
+              setConfirming(true);
+              return;
+            }
+            setConfirming(false);
+            onConfirm();
+          }}
+        >
+          {confirming ? 'Delete and start over' : 'Start over'}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The choice to run Mattermost beside a server that otherwise needs no Docker.
+ * Mattermost only ships as a container image, so it is offered only where
+ * Docker answers; without it the server still works, with no chat bridge.
+ */
+function MattermostOption({
+  enabled,
+  docker,
+  disabled,
+  onChange,
+}: {
+  enabled: boolean;
+  docker: { available: true } | { available: false; detail: string } | null;
+  disabled: boolean;
+  onChange: (enabled: boolean) => void;
+}) {
+  const available = docker?.available ?? false;
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-lg border border-border p-3">
+      <div className="min-w-0 space-y-0.5">
+        <p className="text-sm text-foreground">Also run Mattermost</p>
+        <p className="text-xs text-foreground-muted">
+          {docker === null
+            ? 'Checking for Docker…'
+            : available
+              ? 'Team chat for your rooms, in Switch Console. Runs in Docker.'
+              : `Team chat for your rooms needs Docker. ${docker.available ? '' : docker.detail} The server works without it.`}
+        </p>
+      </div>
+      <Switch
+        checked={enabled && available}
+        disabled={disabled || !available}
+        onCheckedChange={onChange}
+        aria-label="Also run Mattermost"
+      />
+    </div>
+  );
+}
 
 /**
  * The button on the left of a wizard's footer.

@@ -159,7 +159,8 @@ export function managedServerState(server: SwitchServer): ManagedServerState | n
     upgrade: status.upgrade,
     drift: status.drift,
     waiting: false,
-    dockerUnavailable: docker !== null && !docker.available,
+    // A native server needs Docker only for Mattermost, which it starts without.
+    dockerUnavailable: status.runtime === 'docker' && docker !== null && !docker.available,
     failedTo: status.failedTo,
   });
 }

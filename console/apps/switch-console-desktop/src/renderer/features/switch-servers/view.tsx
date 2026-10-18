@@ -176,6 +176,10 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   // button asks for, so the page should not look idle while one is in flight.
   const busy = refreshingPage || store.refreshing.has(serverId);
   const unreachable = store.isUnreachable(serverId);
+  // A local server run without Docker has no dashboard process: its gateway
+  // URL is switch-core itself, which serves the API and no pages.
+  const servesNoDashboard =
+    server.managed && server.managementKind === 'local' && localServerStore.isNative;
   const PlacementIcon = serverIcon(server);
   const title = workspaceTitle(server);
 
@@ -309,7 +313,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
           </>
         )}
 
-        {detailsVisible && !unreachable && (
+        {detailsVisible && !unreachable && !servesNoDashboard && (
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0 space-y-0.5">
               <h3 className="text-sm font-medium text-foreground">Full admin interface</h3>
