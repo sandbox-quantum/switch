@@ -60,6 +60,8 @@ beforeEach(() => {
     passwordLoginEnabled: true,
     oidcEnabled: false,
     oidcProviderLabel: null,
+    oidcLoginOptions: [],
+    oidcBrowserHandoff: false,
     signupEnabled: true,
   });
   switchServers.getConnectionStatus.mockResolvedValue({

@@ -130,6 +130,11 @@ export type SwitchAuthConfig = {
   oidcEnabled: boolean;
   /** Button label for the OIDC provider (e.g. "Okta"), or null. */
   oidcProviderLabel: string | null;
+  /** One sign-in button each (Google, GitHub…); empty for one button labelled as above. */
+  oidcLoginOptions: { id: string; label: string }[];
+  /** Whether the server can hand a sign-in back to this computer, so the
+   * system browser can be used; false for a server predating it. */
+  oidcBrowserHandoff: boolean;
   /** Whether anyone may create an account with an email and password. False
    * for a server predating the field. */
   signupEnabled: boolean;

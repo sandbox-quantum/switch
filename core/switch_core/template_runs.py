@@ -79,12 +79,15 @@ class NewAgentPlan:
     `{$agents_dir}`, the directory the machine keeps agents' workspaces in;
     None is the machine's own workspace for the agent. `addressing` is a
     template's word for it (`owner`, `owner-agents`, `anyone`).
+    `can_manage_agents` turns on the agent's "can manage agents" capability;
+    the run's owner owns every agent it creates, so it is theirs to give.
     """
 
     slot: str
     name: str
     description: str
     display_name: str | None
+    icon_url: str | None
     instructions: str
     provider: str
     machine: str
@@ -94,6 +97,7 @@ class NewAgentPlan:
     auto_approve: bool
     directory: str | None
     addressing: str
+    can_manage_agents: bool
     connections: list[ConnectionPlan] = field(default_factory=list)
     # Rooms that already exist, by name, the agent is added to once created.
     joins: list[str] = field(default_factory=list)
@@ -438,7 +442,7 @@ class TemplateAgents:
             name=plan.name,
             description=plan.description,
             display_name=plan.display_name,
-            icon_url=None,
+            icon_url=plan.icon_url,
             machine=machine,
             provider=plan.provider,
             model=plan.model,
@@ -520,11 +524,14 @@ class TemplateAgents:
     async def _finish(
         self, tenant_id: str, owner_id: str, agent_id: str, agent: CheckedAgent
     ) -> None:
-        """Set what creating the managed agent does not: who may address it
-        and the connections it is granted."""
+        """Set what creating the managed agent does not: who may address it,
+        whether it can manage agents, and the connections it is granted."""
         async with tenant_session(self._protocol.session_factory, tenant_id) as session:
             await self._protocol.agent_store.update(
-                session, agent_id, addressing_policy=agent.addressing_policy
+                session,
+                agent_id,
+                addressing_policy=agent.addressing_policy,
+                can_manage_agents=agent.plan.can_manage_agents,
             )
             await session.commit()
         if not agent.grants:

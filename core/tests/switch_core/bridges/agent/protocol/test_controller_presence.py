@@ -390,7 +390,9 @@ class TestTheAgentClientsReplies:
         registry = AgentConnectionRegistry()
         _bind(registry, "auto")
         conn = _go_live(registry, ("auto", {ROOM}))
-        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
         auto = _client(registry, "auto")
         agent = _agent("auto", "auto_session")
 
@@ -433,7 +435,9 @@ class TestTheAgentClientsReplies:
         _go_live(registry, ("passive", {ROOM}))
         client = _client(registry, "passive")
         agent = _agent("passive", "session_passive")
-        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
 
         assert not await client._is_available(object(), agent, ROOM)
         assert (
@@ -446,7 +450,9 @@ class TestTheAgentClientsReplies:
         _bind(registry, "auto", running=False)
         _bind(registry, "always", running=False)
         _go_live(registry, ("auto", {ROOM}), ("always", {ROOM}))
-        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
         client = _client(registry, "auto")
         agent = _agent("auto", "auto_session")
 
@@ -491,7 +497,9 @@ class TestTheAgentClientsReplies:
     async def test_a_sleeping_cloud_machine_is_woken_and_says_so_once(self) -> None:
         registry = AgentConnectionRegistry()
         _bind(registry, "auto")
-        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
         agent = _agent("auto", "auto_session")
         client = _client(
             registry,
@@ -511,7 +519,9 @@ class TestTheAgentClientsReplies:
     async def test_a_cloud_machine_its_owner_stopped_stays_stopped(self) -> None:
         registry = AgentConnectionRegistry()
         _bind(registry, "auto")
-        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
         client = _client(
             registry,
             "auto",
@@ -530,7 +540,9 @@ class TestTheAgentClientsReplies:
     ) -> None:
         registry = AgentConnectionRegistry()
         _bind(registry, "auto")
-        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
         client = _client(registry, "auto")
         agent = _agent("auto", "auto_session")
 
@@ -581,7 +593,11 @@ def _addressing_client(
     """An agent recipient deciding a message addressed to it in ROOM, its
     availability and replies the real ones over `registry`."""
     meta = SimpleNamespace(
-        room_id=ROOM, name="Room", bridge_id=None, channel_type="channel_private"
+        room_id=ROOM,
+        name="Room",
+        bridge_id=None,
+        channel_type="channel_private",
+        agent_greeting=None,
     )
     sent = _Sent()
     enqueued: list[str] = []

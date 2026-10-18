@@ -140,11 +140,13 @@ export const chatsController = createRPCController({
     return { userId: me.id, tenantId: workspace.tenantId };
   },
   list: (serverId: string): Promise<ChatSummary[]> => onServer(serverId, listChats),
+  /** `greeting`: what the chat's one agent, the caller's own, says as it joins, in place of its usual line. */
   create: (params: {
     serverId: string;
     agentIds: string[];
     name: string | null;
     requestId: string;
+    greeting: string | null;
   }): Promise<ChatSummary> => onServer(params.serverId, (server) => createChat(server, params)),
   messages: (params: {
     serverId: string;
@@ -207,6 +209,7 @@ export const chatsController = createRPCController({
   /** Start the agent's session for the chat while its user types, if the agent is theirs. */
   warm: (params: { serverId: string; agentId: string; roomId: string }): Promise<void> =>
     warmChat(params),
+
   /** The room's turn steps and approval requests; changes follow on the activity channels. */
   roomActivity: (serverId: string, roomId: string): Promise<RoomActivity> =>
     onServer(serverId, (server) => fetchRoomActivity(server, roomId)),

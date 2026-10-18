@@ -53,7 +53,8 @@
           "body": "@reviewer can you look at this?",
           "timestamp": 1767225600000,
           "thread_id": null,
-          "attachments": []
+          "attachments": [],
+          "opening_message": null
         },
         "sequence": 1,
         "missed": {

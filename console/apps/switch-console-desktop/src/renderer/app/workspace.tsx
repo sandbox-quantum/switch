@@ -1,8 +1,9 @@
 import { observer } from 'mobx-react-lite';
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { OnboardingFlow } from '@renderer/features/onboarding/onboarding-flow';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { LeftSidebar } from '@renderer/features/sidebar/left-sidebar';
+import { BuddyIntroDialog } from '@renderer/features/switch-buddy/buddy-intro-dialog';
 import { RoomEmbedLayer } from '@renderer/features/switch-rooms/room-embed-layer';
 import { FrozenBanner, frozenServer } from '@renderer/features/switch-servers/frozen-workspace';
 import { FROZEN } from '@renderer/features/switch-servers/managed-server-state';
@@ -10,6 +11,7 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { CommandShortcutBinder } from '@renderer/lib/commands/command-shortcut-binder';
 import { AppKeyboardShortcuts } from '@renderer/lib/components/app-keyboard-shortcuts';
 import { MonacoKeyboardBridge } from '@renderer/lib/components/monaco-keyboard-bridge';
+import { preloadFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useTheme } from '@renderer/lib/hooks/useTheme';
 import { useCurrentViewId, useWorkspaceWrapParams } from '@renderer/lib/layout/navigation-provider';
 import { WorkspaceContentLayout, WorkspaceLayout } from '@renderer/lib/layout/workspace-layout';
@@ -60,8 +62,36 @@ export const Workspace = observer(function Workspace() {
   );
 });
 
+/** How long the window waits for the servers' feature flags before drawing without them. */
+const FLAGS_WAIT_MS = 3_000;
+
+/**
+ * Whether the servers' feature flags have been read, or waited for long
+ * enough: until then the workspace is not drawn, since what it shows — the
+ * sidebar's sections, an agent's tabs — depends on them, and drawing it
+ * first redraws it a moment later.
+ */
+function useFlagsReady(): boolean {
+  const ids = switchServersStore.loaded ? switchServersStore.servers.map((s) => s.id) : null;
+  const key = ids?.join(',') ?? null;
+  const [readyFor, setReadyFor] = useState<string | null>(null);
+  useEffect(() => {
+    if (key === null) return;
+    let live = true;
+    void preloadFeatureFlags(key ? key.split(',') : [], FLAGS_WAIT_MS).finally(() => {
+      if (live) setReadyFor(key);
+    });
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  // A server added later is read as it is added; only the first wait holds the window.
+  return readyFor !== null || key === '';
+}
+
 const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode }) {
   const currentViewId = useCurrentViewId();
+  const flagsReady = useFlagsReady();
   const shape = shellShape({
     loaded: switchServersStore.loaded,
     listError: switchServersStore.listError,
@@ -87,17 +117,21 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
     case 'onboarding':
       return <OnboardingFlow />;
     case 'workspace': {
+      if (!flagsReady) return null;
       // A workspace whose server can't answer stays where it was, under a
       // banner, rather than filling with errors from every call that fails.
       const frozen = frozenServer(currentViewId);
       return (
-        <WorkspaceLayout
-          leftSidebar={<LeftSidebar />}
-          mainContent={mainContent}
-          persistentLayer={<RoomEmbedLayer />}
-          banner={frozen && <FrozenBanner server={frozen} />}
-          contentClassName={frozen ? FROZEN : undefined}
-        />
+        <>
+          <WorkspaceLayout
+            leftSidebar={<LeftSidebar />}
+            mainContent={mainContent}
+            persistentLayer={<RoomEmbedLayer />}
+            banner={frozen ? <FrozenBanner server={frozen} /> : null}
+            contentClassName={frozen ? FROZEN : undefined}
+          />
+          {!frozen && <BuddyIntroDialog />}
+        </>
       );
     }
   }

@@ -93,7 +93,8 @@ export interface ProviderLocator {
 
 /**
  * Looks each provider's CLI up on `PATH` under the names its plugin declares,
- * as Console's dependency detection does, and asks it for its version.
+ * as Console's dependency detection does, and asks it for its version. `path`
+ * is read on every lookup, so a PATH refreshed since start is the one used.
  */
 export class PathProviderLocator implements ProviderLocator {
   /**
@@ -103,7 +104,7 @@ export class PathProviderLocator implements ProviderLocator {
    * its first run is unpacked once.
    */
   constructor(
-    private readonly path: string | undefined,
+    private readonly path: () => string | undefined,
     private readonly probeHome: string
   ) {}
 
@@ -113,7 +114,7 @@ export class PathProviderLocator implements ProviderLocator {
     const dependency = plugin.capabilities.hostDependency;
     if (providerUnsupportedReason(provider, process.platform) !== null) return null;
     for (const name of dependency.binaryNames) {
-      const candidate = await findOnPath(name, this.path);
+      const candidate = await findOnPath(name, this.path());
       if (candidate === null) continue;
       if (dependency.skipVersionProbe)
         return { path: candidate, version: null, versionProblem: null };
@@ -385,6 +386,11 @@ export class ProviderStatuses {
       });
       return null;
     }
+  }
+
+  /** Checks every provider now, whatever its last check, all at once. */
+  async checkAll(): Promise<void> {
+    await Promise.all(PROVIDERS.map((provider) => this.check(provider)));
   }
 
   /** Checks every provider whose last check is older than the TTL, all at once. */

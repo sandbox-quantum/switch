@@ -56,6 +56,13 @@ FOLLOW_THE_CONVERSATION = "follow_the_conversation"
 # off, owning an agent gives no room membership.
 AGENT_CHATS = "agent_chats"
 
+# switch-buddy: each person's own assistant, which Switch Console creates on
+# their computer at the end of its first run. Core serves the built-in
+# switch-buddy template only with it on (and agent management, which the
+# buddy runs as), and Console offers the buddy only on a server that turns it
+# on, so a server without the template is never asked to make one.
+SWITCH_BUDDY = "switch_buddy"
+
 # Every flag the server recognises.
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
     {
@@ -66,5 +73,6 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         SERVICE_CONNECTIONS,
         FOLLOW_THE_CONVERSATION,
         AGENT_CHATS,
+        SWITCH_BUDDY,
     }
 )

@@ -6,6 +6,7 @@ import { sealProviderLogin } from '@switch-console/agent-providers';
 import { afterAll, describe, expect, it } from 'vitest';
 import { type ControllerExit, runController } from './controller';
 import { silentLogger } from './log';
+import { ProviderRechecks } from './provider-rechecks';
 import type { AgentAssignment, StatusReport } from './schemas';
 import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
 import {
@@ -133,6 +134,8 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
               ? { path: fakeClaude, version: '2.0.0', versionProblem: null }
               : null,
         },
+        rechecks: new ProviderRechecks(),
+        refreshPath: async () => {},
         tools: async () => [],
         fetch,
         openWebSocket: core.openWebSocket,

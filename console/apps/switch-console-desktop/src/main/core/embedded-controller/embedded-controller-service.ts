@@ -92,6 +92,9 @@ export type EmbeddedControllerDeps = {
 
 const SUPPORTED_PLATFORMS: readonly NodeJS.Platform[] = ['darwin', 'linux', 'win32'];
 
+/** Every provider's sign-in check runs at once; the slowest allows itself 15 seconds. */
+const RECHECK_TIMEOUT_MS = 60_000;
+
 /** Why managed agents cannot run on `platform`, or null when they can. */
 export function unsupportedPlatformReason(platform: NodeJS.Platform): string | null {
   return SUPPORTED_PLATFORMS.includes(platform)
@@ -248,6 +251,17 @@ export class EmbeddedControllerService {
       this.phases.delete(serverId);
       this.startRunner(serverId);
     });
+  }
+
+  /**
+   * Has this computer's controller for `serverId` check every provider again
+   * now and report it, after the user installed or signed in to one. Resolves
+   * once Switch holds the fresh report.
+   */
+  async recheckProviders(serverId: string): Promise<void> {
+    const runner = this.runners.get(serverId);
+    if (!runner) throw new Error('This computer does not run managed agents for this server.');
+    await runner.supervisor.recheckProviders(RECHECK_TIMEOUT_MS);
   }
 
   /**

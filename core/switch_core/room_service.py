@@ -139,6 +139,9 @@ class RoomCreateConfig(BaseModel):
     # The Switch Console chat creation this room is for, stamped into the
     # room's metadata in the same insert so a retried creation finds it.
     chat_operation_id: str | None = None
+    # `{agent_id, body}`: what that agent says as it joins, in place of its
+    # usual line. Stamped with the room, so it is there before the agent is.
+    agent_greeting: dict[str, str] | None = None
 
 
 class RoomCreateResult(BaseModel):
@@ -631,6 +634,11 @@ class RoomService:
                     **(
                         {"chat_operation_id": config.chat_operation_id}
                         if config.chat_operation_id is not None
+                        else {}
+                    ),
+                    **(
+                        {"agent_greeting": config.agent_greeting}
+                        if config.agent_greeting is not None
                         else {}
                     ),
                 },

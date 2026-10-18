@@ -1,4 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query';
+import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import { AgentCrudEvents } from './app/agent-crud-events';
 import { AppMenuEvents } from './app/app-menu-events';
 import { Workspace } from './app/workspace';
@@ -25,7 +26,8 @@ function AppContent() {
           <RightSidebarProvider>
             <ThemeProvider>
               <ModalRenderer />
-              <TelemetryConsentGate />
+              {/* The first-run pages say it themselves when they are on. */}
+              {!BUILD_FEATURE_FLAGS.onboarding && <TelemetryConsentGate />}
               <Workspace />
             </ThemeProvider>
           </RightSidebarProvider>

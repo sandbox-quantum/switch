@@ -1724,7 +1724,23 @@ describe('sign-up support', () => {
       oidcEnabled: false,
       oidcProviderLabel: null,
       signupEnabled: true,
+      oidcLoginOptions: [],
+      oidcBrowserHandoff: false,
     });
+  });
+
+  it('reads the sign-in buttons and whether the browser can be used', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...config,
+        oidc_enabled: true,
+        oidc_login_options: [{ id: 'google', label: 'Google' }],
+        oidc_browser_handoff: true,
+      })
+    );
+    const read = await fetchAuthConfig(SERVER);
+    expect(read.oidcLoginOptions).toEqual([{ id: 'google', label: 'Google' }]);
+    expect(read.oidcBrowserHandoff).toBe(true);
   });
 
   it('treats a server predating sign-up as not offering it', async () => {

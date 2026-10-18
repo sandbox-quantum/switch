@@ -16,6 +16,7 @@ import {
 import { ConfigurationError } from './errors';
 import { adoptIdentity } from './handover';
 import { silentLogger } from './log';
+import { ProviderRechecks } from './provider-rechecks';
 import type { LocalRelay } from './relay';
 import type { AgentAssignment, StatusReport } from './schemas';
 import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
@@ -76,6 +77,8 @@ function deps(server = core.url): ControllerDeps {
     secrets,
     runtime: runtime.build,
     locator: new FakeLocator(),
+    rechecks: new ProviderRechecks(),
+    refreshPath: async () => {},
     tools: async () => [],
     fetch,
     openWebSocket: core.openWebSocket,
@@ -419,6 +422,39 @@ describe('runController', () => {
     });
     expect(await running).toBe('taken_over');
     expect(runtime.calls.filter((call) => call.kind === 'stop')).toEqual([]);
+  });
+
+  it('checks every provider again on request, with a fresh PATH, and reports it before answering', async () => {
+    const locator = new FakeLocator();
+    locator.missing.add('codex');
+    const rechecks = new ProviderRechecks();
+    let pathRefreshes = 0;
+    core.setAssignment({ revision: 1, agents: [] });
+    running = runController(
+      {
+        ...deps(),
+        locator,
+        rechecks,
+        refreshPath: async () => {
+          pathRefreshes += 1;
+        },
+      },
+      stop.signal
+    );
+    const codexIn = (report: StatusReport | undefined) =>
+      report?.providers.find((entry) => entry.provider === 'codex')?.installed;
+    await waitFor(() => codexIn(core.statusReports.at(-1)) === false, 'codex reported missing');
+
+    // Installed since: only a recheck finds it before the check goes stale.
+    locator.missing.delete('codex');
+    await rechecks.run();
+
+    expect(pathRefreshes).toBe(1);
+    expect(codexIn(core.statusReports.at(-1))).toBe(true);
+  });
+
+  it('refuses a recheck while the controller is not running', async () => {
+    await expect(new ProviderRechecks().run()).rejects.toThrow(/not connected/);
   });
 
   it('runs pending operations when nudged', async () => {

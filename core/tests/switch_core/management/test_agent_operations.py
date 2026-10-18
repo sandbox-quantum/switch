@@ -1066,7 +1066,10 @@ class _NoRooms:
 
 async def _template(harness: Harness, owner: User, content: str) -> str:
     harness.protocol.config.template_max_bytes = 64 * 1024  # type: ignore[attr-defined]
-    harness.protocol.config.feature_flags = {"agent_management": True}  # type: ignore[attr-defined]
+    harness.protocol.config.feature_flags = {
+        "agent_management": True,
+        "switch_buddy": False,
+    }  # type: ignore[attr-defined]
     harness.protocol.room_yaml_service = _NoRooms  # type: ignore[assignment,method-assign]
     async with harness.session_factory() as session:
         template = Template(

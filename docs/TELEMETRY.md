@@ -123,6 +123,9 @@ id, no IP field, no Switch identity.
 | `onboarding_checklist_dismissed` | *(no fields)* |
 | `onboarding_completed` | *(no fields)* |
 | `add_server_step` | `step`: `choose` / `managedGitHub` / `managedAgent` / `local` / `remoteHost` / `external` / `signIn` / `linkAccounts` · `choice`: `none` / `local` / `remoteHost` / `external` / `cloud` · `first_run`: `true` / `false` — whether the same step was reached on a fresh install rather than from the Add server dialog |
+| `onboarding_page` | `page`: `welcome` / `how_to_run` / `local_setup` / `server_address` / `sign_in` / `choose_workspace` / `create_workspace` / `meet_buddy` / `provider_setup` · `path`: `none` / `cloud` / `local` / `external` — which page of the first run opened, and how the install is running Switch once chosen |
+| `buddy_step` | `action`: `start` / `skip` / `setup_opened` / `install` / `sign_in` / `check_again` / `created` / `create_failed` / `opened_existing` / `intro_opened` / `intro_dismissed` · `provider`: `claude` / `codex` / `opencode` / `cursor` / `antigravity` / `none` — a step on the way to switch-buddy, the first agent, from the first run or from the pop-up that introduces it to people who have none |
+| `buddy_message_sent` | `nth`: `1` / `2` / `3` / `4` / `5` / `6+` — the how-manyth message sent to one's own switch-buddy. **The message is never sent.** |
 
 **Agents and sessions**
 

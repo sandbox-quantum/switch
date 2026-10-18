@@ -1,4 +1,5 @@
 import type { AgentInstallationStatus } from '@shared/core/providers/agent-payload';
+import type { ProviderLoginExit, ProviderLoginLine } from '@shared/core/providers/provider-login';
 import { defineEvent } from '@shared/lib/ipc/events';
 import type { TabNavigationDirection } from '@shared/shortcuts';
 
@@ -47,6 +48,12 @@ export const notificationFocusSessionChannel = defineEvent<{
   agentId: string;
   sessionId: string;
 }>('notification:focus-session');
+
+/** A line a provider's sign-in command wrote. */
+export const providerLoginLineChannel = defineEvent<ProviderLoginLine>('provider-login:line');
+
+/** A provider's sign-in command ended. */
+export const providerLoginExitChannel = defineEvent<ProviderLoginExit>('provider-login:exit');
 
 /** Emitted when an agent installation status changes (probe, install, update, or selection change). */
 export const agentInstallationStatusUpdatedChannel = defineEvent<AgentInstallationStatus>(

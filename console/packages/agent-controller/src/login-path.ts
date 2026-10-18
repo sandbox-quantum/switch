@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { delimiter } from 'node:path';
+import { statSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
 
 const MARKER = '__SWITCH_LOGIN_PATH__';
 
@@ -78,4 +79,26 @@ function merged(shellPath: string, current: string): string | null {
       : [currentEntries, shellEntries];
   const seen = new Set(first);
   return [...first, ...then.filter((entry) => !seen.has(entry))].join(delimiter);
+}
+
+/**
+ * `path` with the folders provider installers put CLIs in that it lacks, added
+ * after it: `~/.local/bin`, where Claude Code's and OpenCode's installers
+ * write, is often missing from a shell profile. Switch Console adds the same
+ * folder to its own PATH, so what it installed is found here too.
+ */
+export function withUserBinDirs(path: string, home: string): string {
+  const entries = path.split(delimiter).filter(Boolean);
+  const additions = [join(home, '.local', 'bin')].filter(
+    (dir) => !entries.includes(dir) && isDirectory(dir)
+  );
+  return [...entries, ...additions].join(delimiter);
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }

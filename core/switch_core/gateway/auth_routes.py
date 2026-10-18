@@ -53,6 +53,7 @@ from switch_core.gateway.schemas import (
     CreateUserRequest,
     LinkedIdentity,
     LoginRequest,
+    OidcLoginOptionView,
     ServerDeclaration,
     SessionStateResponse,
     SessionUserResponse,
@@ -305,6 +306,11 @@ async def auth_config(
         signup_enabled=config.gateway_signup_open,
         oidc_enabled=config.gateway_oidc_enabled,
         oidc_provider_label=config.gateway_oidc_provider_label,
+        oidc_login_options=[
+            OidcLoginOptionView(id=option.id, label=option.label)
+            for option in config.gateway_oidc_login_options
+        ],
+        oidc_browser_handoff=config.gateway_oidc_enabled,
         signup_mode=config.gateway_signup_mode,
     )
 

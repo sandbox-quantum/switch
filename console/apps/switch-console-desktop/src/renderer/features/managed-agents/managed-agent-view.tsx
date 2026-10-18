@@ -76,16 +76,21 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
       crumbs={[
         {
           key: 'agent',
-          icon: (
+          // Nothing until the agent is read: a stand-in drawn from its name
+          // would be replaced by its own picture a moment later.
+          icon: agent ? (
             <AgentAvatar
               name={label}
-              iconUrl={agent?.iconUrl ?? null}
+              iconUrl={agent.iconUrl}
               serverId={params.serverId}
               size={16}
               className="bg-transparent"
             />
+          ) : (
+            <span className="inline-block size-4 shrink-0" aria-hidden />
           ),
           label,
+          maxWidthClassName: 'max-w-40',
         },
       ]}
     />

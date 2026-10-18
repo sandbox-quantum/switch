@@ -27,6 +27,7 @@ export const VIEW_IDS = [
   'templateDetail',
   'templateUse',
   'templateCapture',
+  'switchBuddy',
   'admin',
 ] as const;
 

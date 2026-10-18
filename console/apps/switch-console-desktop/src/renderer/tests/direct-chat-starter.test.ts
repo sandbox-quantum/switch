@@ -29,6 +29,7 @@ describe('DirectChatStarter', () => {
       agentIds: ['a1'],
       name: null,
       requestId: 'req-1',
+      greeting: null,
     });
     expect(deps.created).toHaveBeenCalledWith('s1', chat);
   });

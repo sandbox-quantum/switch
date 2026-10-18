@@ -1316,23 +1316,18 @@ it('posts for a room turn that ended without the agent posting, and not for one 
   try {
     const silent = await turn(1);
     host.emit({
-      type: 'item.completed',
+      type: 'turn.completed',
       turnId: silent,
-      item: {
-        id: 'a',
-        type: 'assistant_message',
-        status: 'completed',
-        title: '',
-        text: 'Hello there',
-      },
+      outcome: 'error',
+      message: 'Not signed in.',
+      usage: [],
     });
-    host.emit({ type: 'turn.completed', turnId: silent, outcome: 'completed', usage: [] });
     await vi.waitFor(() => expect(asks()).toHaveLength(1), { timeout: 5000 });
     expect(asks()[0]!.ask).toEqual({
       type: 'room-reply',
       roomId: 'room',
       threadId: null,
-      body: 'I finished without posting a reply. My last words were:\n\nHello there',
+      body: 'I finished without replying. The turn failed: Not signed in.',
     });
     answer(asks()[0]!.id, null);
 

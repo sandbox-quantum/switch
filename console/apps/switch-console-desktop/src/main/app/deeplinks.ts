@@ -61,9 +61,40 @@ function parseSessionDeeplink(rawUrl: string): ParsedDeeplink | null {
   return { server, agentId, roomId, sessionId };
 }
 
+/** Deeplink target that only brings the app forward: where a sign-in in the browser hands back. */
+const FOCUS_TARGET = 'focus';
+
+/**
+ * Bring the window in front of whatever has focus, as after a sign-in that
+ * finished in the browser. macOS only lets an app that is not frontmost do so
+ * when it asks to steal focus; Windows may still only flash it in the taskbar,
+ * which is what `appReturnUrl` is for.
+ */
+export function bringToFront(): void {
+  if (process.platform === 'darwin') app.focus({ steal: true });
+  focusMainWindow();
+}
+
+/**
+ * The link a browser page can open to put the person back in this app, or
+ * null when this build is not the scheme's handler — an un-packaged dev build
+ * that did not opt in — and the link would open nothing, or something else.
+ */
+export function appReturnUrl(): string | null {
+  if (!app.isPackaged && process.env[DEV_REGISTER_DEEPLINK_ENV] !== '1') return null;
+  return `${DEEPLINK_SCHEME}://${FOCUS_TARGET}`;
+}
+
 /** Parse, focus the app, and hand the deeplink to the renderer (or buffer it
  * when the renderer isn't up yet). */
 export function handleDeeplinkUrl(rawUrl: string): void {
+  if (
+    rawUrl === `${DEEPLINK_SCHEME}://${FOCUS_TARGET}` ||
+    rawUrl === `${DEEPLINK_SCHEME}://${FOCUS_TARGET}/`
+  ) {
+    focusMainWindow();
+    return;
+  }
   const parsed = parseSessionDeeplink(rawUrl);
   if (!parsed) return;
   focusMainWindow();

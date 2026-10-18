@@ -669,9 +669,10 @@ export class SwitchServersStore {
     return result.data.machine;
   }
 
-  async oidcLogin(serverId: string): Promise<boolean> {
+  /** `provider`: one of the server's sign-in options, or null for its one SSO button. */
+  async oidcLogin(serverId: string, provider: string | null): Promise<boolean> {
     this.clearError();
-    const result = await rpc.switchServers.oidcLogin(serverId);
+    const result = await rpc.switchServers.oidcLogin(serverId, provider);
     if (!result.success) {
       // A user-cancelled window is not an error worth shouting about.
       if (result.error.kind !== 'cancelled') {
@@ -684,6 +685,11 @@ export class SwitchServersStore {
     }
     await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
     return true;
+  }
+
+  /** Gives up a sign-in waiting on the system browser; its `oidcLogin` resolves as cancelled. */
+  cancelOidcLogin(serverId: string): void {
+    void rpc.switchServers.cancelOidcLogin(serverId);
   }
 
   async logout(serverId: string): Promise<void> {

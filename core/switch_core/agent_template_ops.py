@@ -100,12 +100,19 @@ def _params(content: str) -> list[dict[str, Any]]:
 
 class AgentTemplates:
     def __init__(
-        self, store: TemplateStore, *, max_bytes: int, agent_management: bool
+        self,
+        store: TemplateStore,
+        *,
+        max_bytes: int,
+        agent_management: bool,
+        switch_buddy: bool,
     ) -> None:
         self._store = store
         self._max_bytes = max_bytes
         # Which document an official template that comes in two is served as.
         self._agent_management = agent_management
+        # Whether switch-buddy is among the official templates.
+        self._switch_buddy = switch_buddy
 
     # ── Reading ───────────────────────────────────────────────────────────
 
@@ -130,7 +137,7 @@ class AgentTemplates:
                 "saved_by": "Switch",
                 "can_edit": False,
             }
-            for t in official_templates(self._agent_management)
+            for t in official_templates(self._agent_management, self._switch_buddy)
             if matches(t, query, kind)
         ]
         return official + [
@@ -153,7 +160,9 @@ class AgentTemplates:
         read does not exist for it, as for a person. An ``official:`` id is
         one that comes with Switch."""
         if is_official(template_id):
-            official = official_template(template_id, self._agent_management)
+            official = official_template(
+                template_id, self._agent_management, self._switch_buddy
+            )
             if official is None:
                 raise AgentRefused(
                     "not_found",

@@ -6,7 +6,6 @@ import {
   liveSessionStartingNotices,
   SESSION_STARTING_MESSAGE,
   TURN_FAILED_PHRASE,
-  TURN_INTERRUPTED_PHRASE,
   turnEndNotice,
   UNPOSTED_REPLY_MESSAGE,
 } from '@shared/core/chats/chats';
@@ -112,10 +111,9 @@ describe('turn-end notices', () => {
       join(__dirname, '../../../../../packages/agent-providers/src/host/session-host.ts'),
       'utf8'
     );
-    expect(source).toContain(`'${UNPOSTED_REPLY_MESSAGE}'`);
-    expect(source).toContain(`\`${UNPOSTED_REPLY_MESSAGE} \${failure}\``);
-    expect(source).toContain(`\`${TURN_FAILED_PHRASE}\${reason}\``);
-    expect(source).toContain(`\`${TURN_INTERRUPTED_PHRASE}\${reason}\``);
+    // The host posts only a failed turn now; the others are still read, for
+    // the notices older hosts left in a chat's history.
+    expect(source).toContain(`\`${UNPOSTED_REPLY_MESSAGE} ${TURN_FAILED_PHRASE}\${reason}\``);
     expect(source).toContain("? `: ${cap(detail.trim(), 1000)}` : '.'");
   });
 });

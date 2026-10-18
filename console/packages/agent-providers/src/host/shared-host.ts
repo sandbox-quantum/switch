@@ -753,6 +753,7 @@ export async function runSharedHost(
           surface: 'switch-web',
           attachments,
           preface: instructionsNote,
+          firstOfConversation: host!.snapshot().turns.length === 0,
         });
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once

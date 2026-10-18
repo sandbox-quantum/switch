@@ -91,7 +91,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -140,7 +140,7 @@ class TestOidcCallback:
         async with session_factory() as session:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
-                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                     config=_config(),
                     session=session,
                     session_factory=session_factory,
@@ -171,7 +171,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                 config=_config(gateway_oidc_require_email_verified=False),
                 session=session,
                 session_factory=session_factory,
@@ -198,7 +198,7 @@ class TestOidcCallback:
         async with session_factory() as session:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
-                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                     config=_config(gateway_oidc_require_email_verified=False),
                     session=session,
                     session_factory=session_factory,
@@ -237,7 +237,7 @@ class TestOidcCallback:
         async with session_factory() as session:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
-                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                     config=_config(gateway_oidc_require_email_verified=False),
                     session=session,
                     session_factory=session_factory,
@@ -277,7 +277,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -316,7 +316,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             first = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -341,7 +341,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -390,7 +390,7 @@ class TestOidcCallback:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                 config=_config(gateway_oidc_require_email_verified=False),
                 session=session,
                 session_factory=session_factory,
@@ -429,7 +429,7 @@ class TestOidcCallback:
         async with session_factory() as session:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
-                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                     config=_config(),
                     session=session,
                     session_factory=session_factory,
@@ -450,7 +450,7 @@ class TestOidcCallback:
         async with session_factory() as session:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
-                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                     config=_config(),
                     session=session,
                     session_factory=session_factory,
@@ -477,7 +477,7 @@ class TestOidcCallback:
         async with session_factory() as session:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
-                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                     config=_config(),
                     session=session,
                     session_factory=session_factory,
@@ -505,7 +505,7 @@ class TestOidcCallback:
         async with session_factory() as session:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
-                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                     config=_config(),
                     session=session,
                     session_factory=session_factory,
@@ -535,7 +535,7 @@ class TestOidcCallback:
         async with session_factory() as session:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
-                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                     config=_config(),
                     session=session,
                     session_factory=session_factory,
@@ -582,7 +582,7 @@ class TestTheCallbackPlacesTheUserInATenant:
 
         async with session_factory() as session:
             await oidc_routes.oidc_callback(
-                request=SimpleNamespace(),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -626,7 +626,7 @@ class TestTheCallbackPlacesTheUserInATenant:
 
         async with session_factory() as session:
             await oidc_routes.oidc_callback(
-                request=SimpleNamespace(),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -665,7 +665,7 @@ class TestTheCallbackPlacesTheUserInATenant:
 
         async with session_factory() as session:
             await oidc_routes.oidc_callback(
-                request=SimpleNamespace(),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
@@ -712,7 +712,7 @@ class TestSignUpWithoutADefaultTenant:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                 config=_config(gateway_signup_mode=mode),
                 session=session,
                 session_factory=session_factory,
@@ -749,7 +749,7 @@ class TestSignUpWithoutADefaultTenant:
 
         async with session_factory() as session:
             await oidc_routes.oidc_callback(
-                request=SimpleNamespace(),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                 config=_config(gateway_signup_mode="open"),
                 session=session,
                 session_factory=session_factory,
@@ -795,7 +795,7 @@ class TestSignUpWithoutADefaultTenant:
 
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(),  # type: ignore[arg-type]
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
                 config=_config(gateway_signup_mode="open"),
                 session=session,
                 session_factory=session_factory,
@@ -830,3 +830,147 @@ class TestAuthConfigEndpoint:
     async def test_reports_the_signup_mode(self) -> None:
         result = await auth_config(config=_config(gateway_signup_mode="invite_only"))
         assert result.signup_mode == "invite_only"
+
+
+_GOOGLE = {"id": "google", "label": "Google", "params": {"provider": "GoogleOAuth"}}
+_VERIFIER = "v" * 43
+
+
+class _FakeAuthorizeClient:
+    """Records what the login route asks the provider for."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def authorize_redirect(
+        self, _request: object, redirect_uri: str, **params: str
+    ) -> str:
+        self.calls.append({"redirect_uri": redirect_uri, **params})
+        return "redirected"
+
+
+def _login_request() -> SimpleNamespace:
+    return SimpleNamespace(session={}, url_for=lambda _name: "https://gw/callback")
+
+
+class TestLoginOptionsAndHandoff:
+    async def test_auth_config_lists_the_login_options(self) -> None:
+        result = await auth_config(config=_config(gateway_oidc_login_options=[_GOOGLE]))
+        assert [(o.id, o.label) for o in result.oidc_login_options] == [
+            ("google", "Google")
+        ]
+        assert result.oidc_browser_handoff is True
+
+    def test_an_option_may_not_set_the_clients_own_parameters(self) -> None:
+        with pytest.raises(ValueError, match="redirect_uri"):
+            _config(
+                gateway_oidc_login_options=[
+                    {
+                        "id": "x",
+                        "label": "X",
+                        "params": {"redirect_uri": "https://evil"},
+                    }
+                ]
+            )
+
+    async def test_an_option_sends_its_parameters_to_the_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _FakeAuthorizeClient()
+        monkeypatch.setattr(oidc_routes, "_client", lambda: client)
+        await oidc_routes.oidc_login(
+            request=_login_request(),  # type: ignore[arg-type]
+            config=_config(gateway_oidc_login_options=[_GOOGLE]),
+            provider="google",
+        )
+        assert client.calls == [
+            {"redirect_uri": "https://gw/callback", "provider": "GoogleOAuth"}
+        ]
+
+    async def test_an_unknown_option_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeAuthorizeClient())
+        with pytest.raises(HTTPException) as exc:
+            await oidc_routes.oidc_login(
+                request=_login_request(),  # type: ignore[arg-type]
+                config=_config(),
+                provider="google",
+            )
+        assert exc.value.status_code == 400
+
+    @pytest.mark.parametrize(
+        "return_to",
+        [
+            "https://127.0.0.1:5000/switch-sign-in",
+            "http://evil.example:5000/switch-sign-in",
+            "http://127.0.0.1/switch-sign-in",
+            "http://127.0.0.1:5000/elsewhere",
+            "http://user@127.0.0.1:5000/switch-sign-in",
+            "http://127.0.0.1:5000/switch-sign-in?next=x",
+        ],
+    )
+    async def test_the_code_only_goes_back_to_this_computer(
+        self, monkeypatch: pytest.MonkeyPatch, return_to: str
+    ) -> None:
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeAuthorizeClient())
+        with pytest.raises(HTTPException) as exc:
+            await oidc_routes.oidc_login(
+                request=_login_request(),  # type: ignore[arg-type]
+                config=_config(),
+                return_to=return_to,
+                state="s" * 32,
+                challenge=oidc_routes._challenge_of(_VERIFIER),
+            )
+        assert exc.value.status_code == 400
+
+    async def test_a_handed_back_sign_in_trades_its_code_for_a_session(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        config = _config()
+        request = _login_request()
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeAuthorizeClient())
+        await oidc_routes.oidc_login(
+            request=request,  # type: ignore[arg-type]
+            config=config,
+            return_to="http://127.0.0.1:5000/switch-sign-in",
+            state="s" * 32,
+            challenge=oidc_routes._challenge_of(_VERIFIER),
+        )
+        token = _verified_token("hand@example.com", "okta|hand")
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+        async with session_factory() as session:
+            response = await oidc_routes.oidc_callback(
+                request=request,  # type: ignore[arg-type]
+                config=config,
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+            )
+            # No cookie in the browser: the code goes back to the app.
+            assert response.headers.get("set-cookie") is None
+            location = response.headers["location"]
+            assert location.startswith("http://127.0.0.1:5000/switch-sign-in?code=")
+            assert f"state={'s' * 32}" in location
+            code = httpx.URL(location).params["code"]
+
+            wrong = oidc_routes.HandoffExchange(code=code, verifier="w" * 43)
+            with pytest.raises(HTTPException):
+                await oidc_routes.oidc_exchange(
+                    req=wrong,
+                    config=config,
+                    session=session,
+                    session_factory=session_factory,
+                    user_store=UserStore(),
+                )
+            exchanged = await oidc_routes.oidc_exchange(
+                req=oidc_routes.HandoffExchange(code=code, verifier=_VERIFIER),
+                config=config,
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+            )
+        set_cookie = exchanged.headers.get("set-cookie")
+        assert set_cookie is not None and "switch_auth=" in set_cookie
