@@ -2,7 +2,7 @@
 
 _The developer's view of the resource model and the room lifecycle — what's scoped where, and the ordering that matters_
 
-Published at <https://docs.flintai.dev/flintai/switch/internals/rooms-and-resources> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/internals/rooms-and-resources> — link readers there, not to this file.
 
 A Switch room carries metadata, a position in a group tree, links to other rooms, roles its members can hold, and attached resources drawn from a library that exists outside any one room. This page covers where each of those is scoped, who owns it, what enforces what, and the order operations run in.
 

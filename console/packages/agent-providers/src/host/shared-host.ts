@@ -11,7 +11,11 @@ import { cliToolsBase, pinnedBinary } from './cli-binaries';
 import { HostWaker } from './handoff';
 import { agentHasOwnUser } from './host-permissions';
 import { Redactions } from './redaction';
-import { followupCommandId, roomControlFollowup } from './room-control-followup';
+import {
+  followupCommandId,
+  roomControlFollowup,
+  roomControlRefusal,
+} from './room-control-followup';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
   planAttachments,
@@ -22,7 +26,11 @@ import {
 } from './room-prompt';
 import { type ServiceEndpointServer, startServiceEndpoint } from './service-endpoint';
 import { githubRepositoryVisible } from './service-github';
-import { serviceFallbackNotice, ServiceNotices } from './service-notices';
+import {
+  CONNECTOR_APPROVAL_NOTICE,
+  serviceFallbackNotice,
+  ServiceNotices,
+} from './service-notices';
 import {
   connectParent,
   type BusyReason,
@@ -379,6 +387,7 @@ export async function runSharedHost(
         resumeOperationId: options.resumeOperationId,
         authenticate: options.authenticate,
         redactions: options.redactions,
+        connectorApproval: () => options.serviceNotices.raise(CONNECTOR_APPROVAL_NOTICE),
         stageAttachments: (attachments) =>
           Promise.all(
             attachments.map((attachment) =>
@@ -670,6 +679,9 @@ export async function runSharedHost(
       const owed = followupFor(command, requesterName);
       if (owed && !followups().some((record) => record.commandId === command.commandId))
         await state.journal.append(owed);
+      const repeated = host!
+        .snapshot()
+        .commandStatuses.some((entry) => entry.commandId === command.commandId);
       try {
         await host!.command(command);
       } catch (error) {
@@ -679,6 +691,26 @@ export async function runSharedHost(
         .snapshot()
         .commandStatuses.find((entry) => entry.commandId === command.commandId);
       if (owed && status?.status === 'applied') await sendFollowup(owed);
+      // Switch already told the room the control is under way; a refusal is answered there too.
+      if (
+        owed &&
+        status?.status === 'rejected' &&
+        !repeated &&
+        parentChannel &&
+        options.roomConnection
+      )
+        void parentChannel
+          .ask({
+            type: 'room-reply',
+            roomId: owed.roomId,
+            threadId: owed.threadId,
+            body: roomControlRefusal(owed.action, status.message),
+          })
+          .catch((error: unknown) =>
+            console.warn(
+              `Could not tell room ${owed.roomId} that its ${owed.action} was refused: ${String(error)}`
+            )
+          );
       // A fresh conversation starts with the instructions this host was given.
       if (command.body.type === 'session.reset' && status?.status === 'applied')
         await instructionsTold();
@@ -721,6 +753,7 @@ export async function runSharedHost(
           surface: 'switch-web',
           attachments,
           preface: instructionsNote,
+          firstOfConversation: host!.snapshot().turns.length === 0,
         });
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
@@ -792,6 +825,7 @@ export async function runSharedHost(
         return { accepted: true };
       },
       snapshot: async () => host!.snapshot(),
+      reasoning: async ({ turnIds }) => host!.reasoning(turnIds),
       approvals: async () => {
         active();
         waker.approvalsWaiting();
@@ -957,6 +991,11 @@ export async function hostSessionProcess(input: {
   authenticate: ((input: ProviderSessionStartInput) => Promise<void>) | null;
   /** The agent's service grants, as this session starts. */
   services: SessionServices;
+  /**
+   * What the session is told about services that went or came since its
+   * previous host (`servicesChangeSince`); null for nothing.
+   */
+  servicesChange: string | null;
   /** This host's bundle, which the session's service helpers run from. */
   entrypoint: string;
   signal: AbortSignal;
@@ -1030,6 +1069,15 @@ export async function hostSessionProcess(input: {
       { ...vendors.specs, ...clis.specs }
     );
     for (const notice of prepared.notices) serviceNotices.raise(notice);
+    // The people watching see it as a notice; the agent reads it with the
+    // context it resumes under, so it does not go looking for tools it no
+    // longer has.
+    if (input.servicesChange !== null) {
+      serviceNotices.raise(input.servicesChange);
+      prepared.input.systemContext = [prepared.input.systemContext, input.servicesChange]
+        .filter(Boolean)
+        .join('\n\n');
+    }
     const authenticate = input.authenticate;
     await runSharedHost(
       {

@@ -87,6 +87,7 @@ from switch_core.db.models import (
     Tool,
     User,
     require_tenant_id,
+    room_agents,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import (
@@ -136,12 +137,16 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from switch_core.agent_runs import RunService
+    from switch_core.bridges.collaboration.install_service import (
+        MessagingInstallService,
+    )
     from switch_core.bridges.collaboration.lifecycle_service import (
         CollaborationBridgeLifecycleService,
     )
     from switch_core.clients.actor import Actor
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.config import SwitchConfig
+    from switch_core.connections.broker import ServiceBroker
     from switch_core.db.stores.agent_session_store import AgentSessionStore
     from switch_core.db.stores.agent_store import AgentStore
     from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -162,6 +167,7 @@ logger = logging.getLogger(__name__)
 # \A and \Z rather than ^ and $: Python's $ also matches before a single
 # trailing newline, which would let an identifier carry a line break.
 _VALID_NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9._-]*\Z")
+VALID_AGENT_NAME_RE = _VALID_NAME_RE
 
 # A hard ceiling on one read_context call, whatever limit the caller asks for.
 # History comes from a single indexed query now, so the only thing this guards
@@ -284,6 +290,18 @@ class AgentCore:
     # still exists. Set by the process wiring when something outside Core keeps
     # state about agents that a cascade alone would drop without telling anyone.
     _agent_removal_listener: Callable[[str, str], Awaitable[None]] | None = None
+    # The credential broker, set by the process wiring when service
+    # connections are on; None means they are off, and nothing can be granted.
+    service_broker: ServiceBroker | None = None
+    # The messaging apps this server registered as its own, set by the process
+    # wiring; None when it registered none, the ordinary case.
+    install_service: MessagingInstallService | None = None
+    # Told (tenant_id, room_id) for each room a deleted agent was in, after it
+    # is gone, so whatever follows rooms' agents can catch up at once.
+    _room_agents_listener: Callable[[str, str], Awaitable[None]] | None = None
+    # Told (tenant_id, agent_id) after an agent's icon or display name changes,
+    # so whatever shows them can refresh.
+    _agent_profile_listener: Callable[[str, str], Awaitable[None]] | None = None
 
     def __init__(
         self,
@@ -717,6 +735,7 @@ class AgentCore:
 
         await session.commit()
         self.client_lifecycle.start_client(client_record)
+        self.client_lifecycle.announce(client_record.tenant_id)
         return agent.id
 
     async def _reregister_agent(
@@ -749,6 +768,9 @@ class AgentCore:
         await self.api_key_store.create(session, new_api_key_record)
 
         old_api_key_id = existing.api_key_id
+        profile_changed = (icon_url is not None and icon_url != existing.icon_url) or (
+            display_name is not None and display_name != existing.display_name
+        )
         # An omitted icon keeps whatever the agent already has: re-registration
         # rotates credentials and rebuilds the profile, and callers that know
         # nothing about icons must not wipe one the owner chose.
@@ -801,12 +823,28 @@ class AgentCore:
 
         await session.commit()
         self.api_key_cache.invalidate_agent(existing.id)
+        if profile_changed:
+            await self._agent_profile_changed(existing.id)
         return existing.id
 
     def set_agent_removal_listener(
         self, listener: Callable[[str, str], Awaitable[None]]
     ) -> None:
         self._agent_removal_listener = listener
+
+    def set_room_agents_listener(
+        self, listener: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        self._room_agents_listener = listener
+
+    def set_agent_profile_listener(
+        self, listener: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        self._agent_profile_listener = listener
+
+    async def _agent_profile_changed(self, agent_id: str) -> None:
+        if self._agent_profile_listener is not None:
+            await self._agent_profile_listener(require_tenant_id(), agent_id)
 
     async def _create_bridge_identities(
         self, tenant_id: str, agent_name: str, description: str
@@ -998,20 +1036,46 @@ class AgentCore:
             "had_parent": agent.parent_agent_id is not None,
         }
         removed["room_count"] = await self._room_count_for(resolved_id)
+        room_ids: list[str] = []
+        if self._room_agents_listener is not None:
+            async with self.session_factory() as session:
+                room_ids = list(
+                    (
+                        await session.execute(
+                            select(room_agents.c.room_id).where(
+                                room_agents.c.agent_id == resolved_id
+                            )
+                        )
+                    ).scalars()
+                )
         if self._agent_removal_listener is not None:
             await self._agent_removal_listener(tenant_id, resolved_id)
         await self.client_lifecycle.stop(client_id)
-        self.event_buffer.remove(resolved_id)
+        try:
+            self.event_buffer.remove(resolved_id)
 
-        await self._remove_bridge_identities(tenant_id, resolved_name)
+            await self._remove_bridge_identities(tenant_id, resolved_name)
 
-        # One transaction for the agent and its client, stopped above; see
-        # `ClientLifecycleService.delete_record`.
-        async with self.session_factory() as session:
-            await self.agent_store.delete(session, resolved_id)
-            await self.client_lifecycle.delete_record(session, client_id)
-            await session.commit()
+            # One transaction for the agent and its client, stopped above; see
+            # `ClientLifecycleService.delete_record`.
+            async with self.session_factory() as session:
+                await self.agent_store.delete(session, resolved_id)
+                await self.client_lifecycle.delete_record(session, client_id)
+                await session.commit()
+        except BaseException:
+            # A deletion that did not commit leaves the agent in place, and
+            # its client must not stay stopped here.
+            self.client_lifecycle.deletion_failed(client_id)
+            raise
+        self.client_lifecycle.announce(tenant_id)
         self.api_key_cache.invalidate_agent(resolved_id)
+        # Its connections end with it, here and in whichever process holds
+        # one: their rows went with its row. After its key is dropped, so a
+        # client told cannot open another.
+        await self.connections.agent_deleted(resolved_id)
+        if self._room_agents_listener is not None:
+            for room_id in room_ids:
+                await self._room_agents_listener(tenant_id, room_id)
 
         emit_safely(self.telemetry, "agent_deleted", removed)
 
@@ -2340,15 +2404,16 @@ class AgentCore:
         without the same check this call would hand over events from a room
         the agent has since been removed from.
 
-        `AgentConsumer.on_removed` already empties the buffer of a removed
-        room's events, so this is the second of two answers. It is the
-        authoritative one: that signal is in-process, and this reads the table
-        the removal wrote.
+        The removal deletes the agent's events in the room it left
+        (`MessageRouter.remove`), so this is the second of two answers, and
+        the one that holds whatever wrote the events, an older release's
+        consumer included: it reads the membership the removal wrote.
         """
         async with self.session_factory() as session:
             await self.agent_session_store.touch_heartbeat(session, agent_id, None)
             await session.commit()
         return await self.event_buffer.poll(
+            require_tenant_id(),
             agent_id,
             timeout=timeout,
             rooms=await self._rooms_agent_is_in(agent_id),
@@ -2372,6 +2437,7 @@ class AgentCore:
         agent.
         """
         return await self.event_buffer.poll_notifications(
+            require_tenant_id(),
             agent_id,
             timeout=timeout,
             rooms=await self._rooms_agent_is_in(agent_id),
@@ -2401,7 +2467,9 @@ class AgentCore:
         the long-poll cadence so the TTL can stay short.
         """
         await self.require_room_member(agent_id, room_id)
-        return await self.event_buffer.poll_room(agent_id, room_id, timeout=timeout)
+        return await self.event_buffer.poll_room(
+            require_tenant_id(), agent_id, room_id, timeout=timeout
+        )
 
     async def report_events(
         self,
@@ -3796,11 +3864,17 @@ class AgentCore:
             target = await self.agent_store.get(session, target_agent_id)
             if target is None:
                 raise ValueError(f"Agent not found: {target_agent_id}")
+            profile_changed = any(
+                key in update.columns and update.columns[key] != getattr(target, key)
+                for key in ("icon_url", "display_name")
+            )
             if update.columns:
                 await self.agent_store.update(
                     session, target_agent_id, **update.columns
                 )
                 await session.commit()
+            if profile_changed:
+                await self._agent_profile_changed(target_agent_id)
 
             refreshed = await self.agent_store.get(session, target_agent_id)
             assert refreshed is not None

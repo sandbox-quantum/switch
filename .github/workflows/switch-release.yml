@@ -41,6 +41,13 @@ name: switch release
 # whose charts were partly pushed. Dev chart builds also move a `main` tag
 # that development follows.
 #
+# Every release, release candidate and dev build also publishes the agents
+# controller at its version as the `switch-agent-controller-v<version>` GitHub
+# release (a prerelease for an RC or a dev build; switch-dev-cleanup.yml prunes
+# only the dev ones), and pins
+# that package into the switch chart's switchCore.controllerRelease, so Core
+# tells controllers to run the controller of the Switch they talk to.
+#
 # Artifacts go to GHCR by default, and the packages are public alongside the
 # repo. REGISTRY / IMAGE_NAMESPACE are the only things to change to retarget
 # another registry (e.g. ECR) — a config flip, not a rewrite.
@@ -299,13 +306,162 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The agents controller (console/packages/agent-controller) at this release's
+  # version, published as the `switch-agent-controller-v<version>` GitHub
+  # release that `install.sh` and `switch-agent-controller update` already read.
+  # The chart below is pinned to it (switchCore.controllerRelease), so Core
+  # tells every controller to run the controller of the Switch it talks to.
+  # A release candidate and a dev build of main publish theirs too, as a GitHub
+  # prerelease (which `install.sh` and `update` leave out), so the controllers
+  # of a deployment running an RC, or the dev environment, follow it. A dry run
+  # builds, tests and packs the controller but publishes nothing.
+  controller:
+    name: Package & publish agents controller
+    needs: prep
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      url: ${{ steps.version.outputs.url }}
+      sha256: ${{ steps.sha256.outputs.sha256 }}
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - name: Resolve version
+        id: version
+        working-directory: .
+        env:
+          VERSION: ${{ needs.prep.outputs.version }}
+        run: |
+          tag="switch-agent-controller-v$VERSION"
+          {
+            echo "version=$VERSION"
+            echo "tag=$tag"
+            echo "url=https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/switch-agent-controller-$VERSION.tgz"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.5.3
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: console/.nvmrc
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+
+      - name: Stamp the version
+        # On the runner, not committed: the CLI reports the version it was built with.
+        working-directory: console/packages/agent-controller
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: npm pkg set version="$VERSION"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the workspace packages
+        run: pnpm -r --filter './packages/**' run build
+
+      - name: Test the controller
+        run: pnpm --filter @switch-console/agent-controller run test
+
+      - name: Package
+        run: pnpm --filter @switch-console/agent-controller run package
+
+      - name: Smoke-test the package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          prefix="$(mktemp -d)"
+          npm install --global --prefix "$prefix" "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz"
+          test "$("$prefix/bin/switch-agent-controller" --version)" = "$VERSION"
+          "$prefix/bin/switch-agent-controller" --help > /dev/null
+
+      - name: Hash the package
+        id: sha256
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sha256="$(sha256sum "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz" | cut -d' ' -f1)"
+          echo "sha256=$sha256" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Release
+        # The tag is created from this commit by the release itself. A tag
+        # pushed with the workflow token starts no workflow, so
+        # agent-controller-release.yml does not publish it a second time.
+        if: needs.prep.outputs.push == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          SHA256: ${{ steps.sha256.outputs.sha256 }}
+          CHANNEL: ${{ needs.prep.outputs.channel }}
+        run: |
+          package="packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # A re-run of this release: the package already published must be
+            # the one just built, or the chart would pin a hash nothing serves.
+            existing="$(mktemp -d)"
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "switch-agent-controller-$VERSION.tgz" --dir "$existing"
+            published="$(sha256sum "$existing/switch-agent-controller-$VERSION.tgz" | cut -d' ' -f1)"
+            if [ "$published" != "$SHA256" ]; then
+              echo "::error::$TAG is already released with a different package (sha256 $published, this build $SHA256). Delete that release and its tag, then re-run."
+              exit 1
+            fi
+            echo "$TAG is already released with this package."
+            exit 0
+          fi
+          if [ "$CHANNEL" = rc ]; then
+            gh release create "$TAG" "$package" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "switch-agent-controller $VERSION (release candidate)" \
+              --notes "The Switch agents controller built for the release candidate Switch $VERSION, at $GITHUB_SHA. Controllers connected to a Switch running that candidate update to it on their own once idle; bake it into a machine image for that candidate. \`install.sh\` and \`switch-agent-controller update\` leave it out.
+
+            SHA-256: \`$SHA256\`" \
+              --prerelease \
+              --latest=false
+            exit 0
+          fi
+          if [ "$CHANNEL" = dev ]; then
+            gh release create "$TAG" "$package" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "switch-agent-controller $VERSION (dev build of main)" \
+              --notes "The Switch agents controller built from main at $GITHUB_SHA, for the dev environment, whose controllers update to it on their own. Not for installing by hand; switch-dev-cleanup prunes it.
+
+            SHA-256: \`$SHA256\`" \
+              --prerelease \
+              --latest=false
+            exit 0
+          fi
+          gh release create "$TAG" "$package" packages/agent-controller/install.sh \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "switch-agent-controller $VERSION" \
+            --notes "The Switch agents controller $VERSION, released with Switch $VERSION, for running managed agents on your own Linux or macOS machines.
+
+          SHA-256: \`$SHA256\`
+
+          Install (Node 22.13 or later): \`npm install --global https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/switch-agent-controller-$VERSION.tgz\`, or run \`install.sh\`. Then enroll with a code from the Machines page and run \`switch-agent-controller install-service\`. A controller connected to Switch $VERSION updates to this release on its own once it is idle." \
+            --latest=false
+
   chart:
     name: Package & publish Helm charts
     # After the images: each chart carries its images' digests, so it cannot be
     # packaged before they exist, and a chart is never published pointing at an
     # image that failed to push. The charts come from
     # scripts/pin_chart_images.py (`charts`), like the image matrix.
-    needs: [prep, images]
+    needs: [prep, images, controller]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -346,6 +502,38 @@ jobs:
           for file in "$RUNNER_TEMP"/digests/*; do
             docker buildx imagetools inspect "$REGISTRY/$NAMESPACE/$(basename "$file")@$(cat "$file")" >/dev/null
           done
+
+      - name: Pin the controller release
+        # Written into the switch chart's default values on the runner, never
+        # committed, before the chart is pinned and packaged.
+        if: ${{ needs.controller.outputs.version != '' }}
+        env:
+          CONTROLLER_VERSION: ${{ needs.controller.outputs.version }}
+          CONTROLLER_URL: ${{ needs.controller.outputs.url }}
+          CONTROLLER_SHA256: ${{ needs.controller.outputs.sha256 }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          path = "deploy/remote/helm/switch/values.yaml"
+          text = open(path).read()
+          block = re.search(r"(?m)^  controllerRelease:\n(?:(?:    .*)?\n)+", text)
+          if block is None:
+              raise SystemExit(f"no switchCore.controllerRelease block in {path}")
+          pinned = block.group(0)
+          for key, env in (("version", "CONTROLLER_VERSION"), ("url", "CONTROLLER_URL"), ("sha256", "CONTROLLER_SHA256")):
+              value = os.environ[env]
+              if not value:
+                  raise SystemExit(f"{env} is empty")
+              pinned, n = re.subn(rf'(?m)^    {key}: ""$', lambda _: f'    {key}: "{value}"', pinned, count=1)
+              if n != 1:
+                  raise SystemExit(f'no empty `{key}: ""` under switchCore.controllerRelease in {path}')
+          open(path, "w").write(text[: block.start()] + pinned + text[block.end() :])
+          PY
+          sed -n '/^  controllerRelease:/,/^  [a-zA-Z]/p' deploy/remote/helm/switch/values.yaml
+          # The check is only that switch-core gets the release.
+          helm template switch deploy/remote/helm/switch \
+            -f deploy/remote/helm/render-check-values.yaml \
+            | grep -A1 -E 'name: CONTROLLER_RELEASE_(VERSION|URL|SHA256)$'
 
       - name: Pin, lint, package and check each chart
         # A dry run pushed no images, so it pins placeholder digests: the pin

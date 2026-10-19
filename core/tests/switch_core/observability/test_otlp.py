@@ -33,6 +33,7 @@ RESOURCE = OtlpResource(
     deployment_id="0e5d1b3a-6c1f-4c22-9a4c-3a9f5a2b7d10",
     commit_sha=None,
     repository_url=None,
+    instance_id=None,
 )
 
 START_NANOS = 1_700_000_000_000_000_000
@@ -81,6 +82,7 @@ def test_unknown_version_is_omitted_rather_than_placeheld():
         deployment_id=RESOURCE.deployment_id,
         commit_sha=None,
         repository_url=None,
+        instance_id=None,
     )
     attributes = resource.attributes()
 
@@ -88,6 +90,21 @@ def test_unknown_version_is_omitted_rather_than_placeheld():
     assert "deployment.environment" not in attributes
     assert "git.commit.sha" not in attributes
     assert "git.repository_url" not in attributes
+    assert "service.instance.id" not in attributes
+
+
+def test_resource_names_the_process_so_pods_report_apart():
+    resource = OtlpResource(
+        service_name="switch-core",
+        service_version="1.2.3",
+        environment="pilot",
+        deployment_id=RESOURCE.deployment_id,
+        commit_sha=None,
+        repository_url=None,
+        instance_id="switch-core-7d9f-abcd1234",
+    )
+
+    assert resource.attributes()["service.instance.id"] == "switch-core-7d9f-abcd1234"
 
 
 def test_resource_names_the_commit_it_was_built_from():
@@ -98,6 +115,7 @@ def test_resource_names_the_commit_it_was_built_from():
         deployment_id=RESOURCE.deployment_id,
         commit_sha="0123456789abcdef0123456789abcdef01234567",
         repository_url="https://github.com/example/switch",
+        instance_id=None,
     )
     attributes = resource.attributes()
 

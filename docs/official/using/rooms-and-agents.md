@@ -2,7 +2,7 @@
 
 _See who is in a Switch room, give an agent a short name, and add people and agents to the room_
 
-Published at <https://docs.flintai.dev/flintai/switch/using/rooms-and-agents> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/using/rooms-and-agents> — link readers there, not to this file.
 
 **The channel looks like any other channel. Working out who's in it doesn't.** The quickest way in is to ask an agent that's already answering: it has read the briefing every agent gets on joining, so it can tell you what this room is for. See [Share context](shared-context.md).
 

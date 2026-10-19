@@ -208,10 +208,11 @@ Before upgrading an installation that has cloud machines:
 ## GitHub connections
 
 GitHub connections are not part of cloud machines. To let users link their
-GitHub account, set `HOSTED_GITHUB_CONFIG_PATH` to a private JSON file with
-`client_id`, `client_secret`, `slug` and the public HTTPS Switch `origin`
-(chart: `switchCore.githubConnectionsSecret`, key `github.json`), and register
-`<origin>/gateway/provider-connections/github/callback` as the GitHub App
-callback with expiring user tokens. Sign-in flows live in the Switch API
-process, so run it with one replica. Keep query strings out of every access
-log in front of the callback: its URL carries a single-use OAuth code.
+GitHub account and grant agents repositories, set up the GitHub App under
+Connectors in the Switch dashboard, or in the chart with
+`switchCore.githubConnectionsSecret` and `switchCore.githubAppPrivateKeyPath`
+([GitHub App setup](../../docs/old/github-app-setup.md)). Register
+`<GATEWAY_PUBLIC_URL>/gateway/provider-connections/github/callback` as the
+App's callback, with expiring user tokens. Sign-in flows live in the Switch
+API process, so run it with one replica. Keep query strings out of every
+access log in front of the callback: its URL carries a single-use OAuth code.

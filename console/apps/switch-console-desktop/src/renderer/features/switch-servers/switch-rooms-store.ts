@@ -17,6 +17,25 @@ function key(workspaceId: string, switchAgentId: string): string {
 }
 
 /**
+ * The messaging-app values worth offering as a room filter for these rooms:
+ * the bridge types actually in use, plus the unbridged sentinel when some room
+ * has no messaging app. Offering a platform with no rooms behind it would be a
+ * filter that can only ever empty the list.
+ */
+export function bridgeFilterValues(rooms: readonly RemoteRoomSummary[]): string[] {
+  const present = new Set<string>();
+  for (const room of rooms) {
+    present.add(room.bridgeType ?? UNBRIDGED_FILTER_VALUE);
+  }
+  // The sentinel sorts last so the real platforms lead the menu.
+  return [...present].sort((a, b) => {
+    if (a === UNBRIDGED_FILTER_VALUE) return 1;
+    if (b === UNBRIDGED_FILTER_VALUE) return -1;
+    return a.localeCompare(b);
+  });
+}
+
+/**
  * Renderer cache of per-agent room membership, queried live from the gateway
  * (the server is the source of truth — we do not mirror rooms into SQLite).
  * Entries are cached in memory and re-fetched on demand or on window focus, so
@@ -191,25 +210,6 @@ export class SwitchRoomsStore {
     return listed.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  /**
-   * The messaging-app values worth offering as a room filter in the active
-   * workspace: the bridge types actually in use, plus the unbridged sentinel
-   * when some room has no messaging app. Offering a platform with no rooms
-   * behind it would be a filter that can only ever empty the list.
-   */
-  get bridgeFilterValuesInActiveScope(): string[] {
-    const present = new Set<string>();
-    for (const room of this.listedRoomsInActiveScope) {
-      present.add(room.bridgeType ?? UNBRIDGED_FILTER_VALUE);
-    }
-    // The sentinel sorts last so the real platforms lead the menu.
-    return [...present].sort((a, b) => {
-      if (a === UNBRIDGED_FILTER_VALUE) return 1;
-      if (b === UNBRIDGED_FILTER_VALUE) return -1;
-      return a.localeCompare(b);
-    });
-  }
-
   /** Full detail for a room, when its workspace's room list has been loaded. */
   roomSummaryById(roomId: string): RemoteRoomSummary | null {
     const workspaceId = this.roomWorkspaceById.get(roomId);
@@ -367,13 +367,13 @@ export class SwitchRoomsStore {
    * Not a fault and not retryable — the user has to sign in. Reporting it as a
    * failure with a retry button offers an action that cannot work.
    */
-  get workspacesNotSignedIn(): { id: string; name: string }[] {
-    return this.namedWorkspacesInScope(
-      this.unreachableWorkspaceIds.filter((id) => {
-        const serverId = workspacesStore.serverIdFor(id);
-        return serverId !== null && serverAvailability(serverId) === 'signed-out';
-      })
-    );
+  get workspacesNotSignedIn(): { id: string; name: string; serverId: string }[] {
+    return this.namedWorkspacesInScope(this.unreachableWorkspaceIds).flatMap((workspace) => {
+      const serverId = workspacesStore.serverIdFor(workspace.id);
+      return serverId !== null && serverAvailability(serverId) === 'signed-out'
+        ? [{ ...workspace, serverId }]
+        : [];
+    });
   }
 
   private namedWorkspacesInScope(workspaceIds: string[]): { id: string; name: string }[] {

@@ -26,6 +26,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
     Closure,
 )
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 
 AGENT = "agent-1"
 ROOM = "room-1"
@@ -49,7 +50,7 @@ def _open(registry: AgentConnectionRegistry, connection_id: str) -> Any:
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )

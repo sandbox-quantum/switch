@@ -3,8 +3,10 @@
 `tests/switch_core/management/harness.py` wires the agent bridge behind the
 real bearer middleware and controller authenticator, with the gateway mounted
 at `/gateway` behind real cookie sign-in. This adds the service-token agent
-routes and the gateway's connection and grant API, on a broker whose only
-adapter is a fake vendor standing in for GitHub.
+routes, the gateway's connection and grant API and the workspace's service
+switches, on a broker whose only adapter is a fake vendor standing in for
+GitHub. `workspace_gate` is the `service_connections` flag as the broker
+sees it: whether an admin's switch applies.
 """
 
 from __future__ import annotations
@@ -25,8 +27,12 @@ from switch_core.connections.loader import CATALOG
 from switch_core.db.models import Agent, ApiKey, Client, ServiceGrant, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway.service_connections import (
     router as service_connections_router,
+)
+from switch_core.gateway.workspace_services import (
+    router as workspace_services_router,
 )
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
@@ -45,7 +51,10 @@ RESOURCES = {"installation_id": 7, "repository_ids": [70, 71]}
 
 
 def build_service_harness(
-    session_factory: async_sessionmaker[AsyncSession], vendor: FakeVendor
+    session_factory: async_sessionmaker[AsyncSession],
+    vendor: FakeVendor,
+    *,
+    workspace_gate: bool,
 ) -> tuple[Harness, ServiceBroker]:
     harness = build_harness(session_factory)
     broker = ServiceBroker(
@@ -56,9 +65,12 @@ def build_service_harness(
         disabled={},
         store=STORE,
         token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=workspace_gate,
     )
     harness.app.include_router(service_router, prefix="/agents")
     harness.gateway_app.include_router(service_connections_router)
+    harness.gateway_app.include_router(workspace_services_router)
     harness.app.state.service_broker = broker
     harness.gateway_app.state.service_broker = broker
     return harness, broker
@@ -134,6 +146,7 @@ async def connect(
                     }
                 )
             ),
+            oauth_client_id=None,
         )
         await session.commit()
 

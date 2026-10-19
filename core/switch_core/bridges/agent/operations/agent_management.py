@@ -246,6 +246,7 @@ async def create_agent(
             instructions=instructions,
             directory=directory,
             auto_approve=auto_approve,
+            isolation="shared",
             start=start,
         ),
         get_protocol(),

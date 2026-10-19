@@ -2,7 +2,7 @@
 
 _How Switch relays a messaging app into a Switch room, and the contract you implement to add one it doesn't support_
 
-Published at <https://docs.flintai.dev/flintai/switch/internals/collaboration-bridge> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/internals/collaboration-bridge> — link readers there, not to this file.
 
 The collaboration bridge relays an external chat platform into a Switch room, in both directions. One adapter per platform.
 

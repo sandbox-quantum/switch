@@ -19,6 +19,7 @@ from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.keys import Keyring
 from switch_core.management.controller_routes import router as controller_router
 from switch_core.trust.client import NullTrustClient
+from tests.db_buffer import QuietRooms
 
 _CHART = Path(__file__).resolve().parents[3] / "deploy/remote/helm/switch"
 
@@ -53,7 +54,7 @@ def _served_prefixes() -> set[str]:
         room_service=object(),  # type: ignore[arg-type]
         client_lifecycle=object(),  # type: ignore[arg-type]
         collab_lifecycle=object(),  # type: ignore[arg-type]
-        event_buffer=EventBuffer(sequence_base=0),
+        event_buffer=EventBuffer(object(), sequence_base=0, rooms=QuietRooms()),  # type: ignore[arg-type]
         task_store=object(),  # type: ignore[arg-type]
         resource_service=object(),  # type: ignore[arg-type]
         api_key_store=object(),  # type: ignore[arg-type]

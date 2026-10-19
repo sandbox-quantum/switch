@@ -13,6 +13,9 @@ request has to show. The technical details are in
   for testing a tunnel such as ngrok is enough.
 - **Have a test account on the platform** where you can create a bot or app
   and add it to a chat. You'll need it to test.
+- **Make it work on several pods.** switch-core can run as several pods; read
+  [Works on several pods](add-a-messaging-platform.md#works-on-several-pods)
+  before you write the adapter.
 
 ## 1. Write the code
 

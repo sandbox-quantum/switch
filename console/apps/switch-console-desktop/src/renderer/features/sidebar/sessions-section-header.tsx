@@ -9,7 +9,8 @@ import {
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
-import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { bridgeFilterValues } from '@renderer/features/switch-servers/switch-rooms-store';
+import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
@@ -33,6 +34,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/toolti
 import { cn } from '@renderer/utils/utils';
 import type { AgentConnectionKind } from '@shared/core/agents/agent-connection';
 import { getProvider } from '@shared/core/providers/agent-provider-registry';
+import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 import { type SidebarGrouping, UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
 import { listedRoomKeys } from './room-tree';
 import { agentExpandKey, roomViewGroupKey } from './sidebar-store';
@@ -54,9 +56,9 @@ const GROUPING_OPTIONS: { value: SidebarGrouping; label: string }[] = [
  * looked at is named: collapsing the other one would be a change the user never
  * asked for and would not see until they switched.
  */
-function topLevelGroupKeys(): string[] {
+function topLevelGroupKeys(listedRooms: RemoteRoomSummary[]): string[] {
   if (sidebarStore.grouping === 'room') {
-    return listedRoomKeys().map(roomViewGroupKey);
+    return listedRoomKeys(listedRooms).map(roomViewGroupKey);
   }
   return scopedAgents().map((entry) => agentExpandKey(entry.agent.id));
 }
@@ -97,7 +99,7 @@ function bridgeLabel(value: string): string {
  * members, under a control that looks like it filters rooms.
  */
 const RoomFilterSections = observer(function RoomFilterSections() {
-  const bridgeValues = switchRoomsStore.bridgeFilterValuesInActiveScope;
+  const bridgeValues = bridgeFilterValues(useListedRoomsInActiveScope());
 
   return (
     <>
@@ -219,6 +221,7 @@ export const SessionsSectionHeader = observer(function SessionsSectionHeader({
   const showAddLocationModal = useShowModal('addAgentModal');
   const showCreateRoomModal = useShowModal('createRoomModal');
   const showCreateSessionModal = useShowModal('sessionModal');
+  const listedRooms = useListedRoomsInActiveScope();
   const [optionsOpen, setOptionsOpen] = useState(false);
   // The add actions offer both rather than the one matching the current view.
   // Which grouping you are looking at says how you want the list arranged, not
@@ -332,7 +335,9 @@ export const SessionsSectionHeader = observer(function SessionsSectionHeader({
                 </DropdownMenuCheckboxItem>
               </DropdownMenuGroup>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => sidebarStore.collapseAll(topLevelGroupKeys())}>
+              <DropdownMenuItem
+                onClick={() => sidebarStore.collapseAll(topLevelGroupKeys(listedRooms))}
+              >
                 <ChevronsDownUp className="mr-1.5 h-4 w-4" />
                 Collapse all
               </DropdownMenuItem>

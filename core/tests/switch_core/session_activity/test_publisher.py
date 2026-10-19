@@ -15,6 +15,7 @@ from switch_core.db.models import (
     BridgeMessageMap,
     TurnStatusPost,
 )
+from switch_core.session_activity import publisher as publisher_module
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.publisher import (
     AgentSessionActivityPublisher,
@@ -598,3 +599,39 @@ async def test_a_restart_redraws_running_turns_but_not_ones_already_shown_ended(
         ]
     finally:
         await publisher.stop()
+
+
+# ── Stopping ─────────────────────────────────────────────────────────────────
+
+
+async def test_a_task_that_died_is_logged_on_stopping_and_not_raised(
+    service, session_factory, bridged, listener, platform, monkeypatch, caplog
+):
+    """The tick has no guard of its own, so an online check that raises ends
+    it. Stopping logs what ended it rather than raising it, so the bridge
+    stopping the publisher goes on to close its connection, and a second stop
+    has nothing left to raise."""
+    monkeypatch.setattr(publisher_module, "_TICK_SECONDS", 0.01)
+    answering = True
+    refused = asyncio.Event()
+
+    def online(_agent_id: str) -> bool:
+        if answering:
+            return True
+        refused.set()
+        raise RuntimeError("the connection registry is gone")
+
+    publisher = _publisher(session_factory, bridged, listener, platform, online)
+    publisher.start()
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    answering = False
+    await asyncio.wait_for(refused.wait(), 5)
+
+    with caplog.at_level("ERROR"):
+        await publisher.stop()
+        await publisher.stop()
+
+    died = [r for r in caplog.records if "stopped on an error" in r.getMessage()]
+    assert len(died) == 1
+    assert "tick" in died[0].getMessage()

@@ -837,7 +837,7 @@ failure-mode tools are covered in the sections just above.
 - `get_template_guide`: how to write a template, and the schema it is checked against.
 - `list_templates`: the saved templates you can use.
 - `get_template`: one template's document, inputs and agent slots.
-- `run_template`: create the rooms a saved template describes.
+- `run_template`: create the agents and rooms a saved template describes.
 - `save_template`: save a template, private or shared.
 - `update_template`: change a template you saved.
 - `delete_template`: delete a template you saved.

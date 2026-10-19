@@ -83,7 +83,13 @@ export interface AgentStatus {
 export interface StatusReport {
   seq: number;
   observed_at: string;
-  controller: { version: string; protocol: number; assignment_revision: number };
+  controller: {
+    version: string;
+    protocol: number;
+    assignment_revision: number;
+    /** Who moves it onto another release; absent from older controllers. */
+    updated_by?: "self" | "console";
+  };
   machine: {
     platform: Platform;
     disk_free_bytes: number;
@@ -96,6 +102,23 @@ export interface StatusReport {
   providers: ProviderStatus[];
   tools: { tool: string; state: string; reason?: string | null }[];
   agents: AgentStatus[];
+  /** Why the controller does not run the release Switch names yet; absent when it does, and from older controllers. */
+  update?: ControllerUpdate | null;
+}
+
+export interface ControllerUpdate {
+  /** The version it is moving to. */
+  target: string;
+  state: "waiting_idle" | "failed" | "restart_needed";
+  problem?: string | null;
+}
+
+/** The controller release Switch tells a machine to run, and whether it runs it. */
+export interface ControllerReleaseState {
+  wanted: string;
+  /** The version it last reported; null before it has reported one. */
+  running: string | null;
+  current: boolean;
 }
 
 export interface Controller {
@@ -112,6 +135,8 @@ export interface Controller {
   /** Null when it has never connected. */
   connection: ControllerConnection | null;
   status: StatusReport | null;
+  /** Null when Switch names no release for it, as for a Switch Console machine, which updates with Console. */
+  release: ControllerReleaseState | null;
   assignment_revision: number;
   created_at: string;
   revoked_at: string | null;

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -39,6 +40,7 @@ from switch_core.db.stores.task_store import TaskStore
 from switch_core.gateway.ui import GatewayUi, GatewayUiMiddleware
 from switch_core.logging_context import log_context
 from switch_core.observability.http import MetricsMiddleware
+from switch_core.refusal_breaker import RefusalBreaker
 from switch_core.request_context import RequestContextMiddleware
 from switch_core.room_service import RoomService
 from switch_core.session_activity.outcomes import ApprovalOutcomes
@@ -177,8 +179,11 @@ def create_agent_bridge_app(
         session_factory=session_factory,  # type: ignore[arg-type]
         controller_auth=controller_auth,
     )
-    # Outside the bearer middleware, because a page load carries a cookie and
-    # no agent key; inside the metrics, so page loads are counted.
+    # Outside the bearer middleware, so a caller that keeps repeating a refused
+    # request is answered before its credential is looked up again.
+    app.add_middleware(RefusalBreaker, clock=time.monotonic)
+    # Outside the bearer middleware and the breaker, because a page load carries
+    # a cookie and no agent key; inside the metrics, so page loads are counted.
     if gateway_ui is not None:
         app.add_middleware(GatewayUiMiddleware, ui=gateway_ui, router=app.router)
     # Outside the bearer middleware, so a request rejected for bad credentials

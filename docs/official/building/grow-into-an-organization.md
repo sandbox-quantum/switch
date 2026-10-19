@@ -2,7 +2,7 @@
 
 _What changes when one room isn't enough — more rooms, links between them, material you stop attaching by hand, and a shape the next team can reuse_
 
-Published at <https://docs.flintai.dev/flintai/switch/building/grow-into-an-organization> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/building/grow-into-an-organization> — link readers there, not to this file.
 
 No team runs out of one channel. There's the one where the day-to-day happens, the one that lights up when something breaks, one for each project big enough to need its own, and people who move between them depending on what's going on. That isn't disorganization — it's how the work stays findable.
 

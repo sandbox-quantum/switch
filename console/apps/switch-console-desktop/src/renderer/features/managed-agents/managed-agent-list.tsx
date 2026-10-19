@@ -1,5 +1,7 @@
 import { Cloud, CloudOff, Server, ServerOff } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
+import { byLatestDirectChat } from '@renderer/features/chats/agent-conversations';
+import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -34,9 +36,14 @@ export const ManagedAgentList = observer(function ManagedAgentList() {
       </div>
     );
   if (!agents.data?.length) return null;
+  // The chats store follows one server, and only while agent_chats is on there.
+  const chats =
+    chatsStore.serverId === serverId && chatsStore.userId !== null
+      ? chatsStore.chats.values()
+      : null;
   return (
     <div className="flex flex-col gap-[2px]" aria-label="Managed agents">
-      {disconnectedLast(agents.data).map((agent) => (
+      {disconnectedLast(byLatestDirectChat(agents.data, chats)).map((agent) => (
         <ManagedAgentRow key={agent.agentId} agent={agent} />
       ))}
     </div>

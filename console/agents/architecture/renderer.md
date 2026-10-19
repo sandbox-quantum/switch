@@ -27,6 +27,7 @@ All paths are relative to `apps/switch-console-desktop/`.
   host setup
 - `switch-rooms/` — Switch room membership and the inline bridge pane
   (`room-embed-layer.tsx`)
+- `chats/` — direct chats with agents: timeline, composer and agent activity
 - `switch-servers/` — Switch server connections, including a Switch Console-managed server
 - `sidebar/` — app sidebar
 - `settings/` — settings view

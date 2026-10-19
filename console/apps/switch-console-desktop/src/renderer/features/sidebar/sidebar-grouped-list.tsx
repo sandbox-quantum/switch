@@ -5,10 +5,12 @@ import { useEffect, useRef } from 'react';
 import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
+import { useBuddyPending } from '@renderer/features/switch-buddy/buddy-pending';
 import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
 import { isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
@@ -19,7 +21,7 @@ import { RoomTree } from './room-tree';
 import { SessionDiscoveryStatus } from './session-discovery-status';
 import { SessionsSectionHeader } from './sessions-section-header';
 import { useScrollSelectionIntoView } from './sidebar-auto-scroll';
-import { sidebarEmptyState } from './sidebar-empty-state';
+import { showsAgentsAndRooms, sidebarEmptyState } from './sidebar-empty-state';
 import { agentsInActiveScope, refreshSidebarRoomState } from './sidebar-tree-data';
 
 /**
@@ -97,6 +99,8 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
   const managedAgents = useManagedAgents(switchServersStore.activeServerId);
   const activeServerId = switchServersStore.activeServerId;
   const managementMode = useAgentManagementMode();
+  const buddyPending = useBuddyPending(activeServerId);
+  const listedRooms = useListedRoomsInActiveScope();
   const managedAgentCount = activeServerId && managedAgents.data ? managedAgents.data.length : 0;
   const emptyState = sidebarEmptyState({
     grouping: sidebarStore.grouping,
@@ -104,7 +108,7 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
     filteredLocationCount: sidebarStore.filteredLocations.length,
     activeServerId: switchServersStore.activeServerId,
     locationCount: sidebarStore.orderedLocations.length,
-    roomCount: switchRoomsStore.listedRoomsInActiveScope.length,
+    roomCount: listedRooms.length,
     serverListedAgentCount: managedAgentCount,
   });
 
@@ -119,10 +123,13 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
         className="flex min-h-0 flex-1 flex-col gap-[2px] overflow-y-auto px-2.5 pt-0 pb-3"
       >
         <RoomStateDisclosure />
-        {/* Agents / Rooms once anything is managed, or on an install with no
-            agents yet, where there is nothing legacy to show. Sessions only
-            while some agent still runs the old way, and gone once none does. */}
-        {(managedAgentCount > 0 || legacyCount === 0) && <SidebarMainSection />}
+        {/* Sessions only while some agent still runs the old way, and gone
+            once none does. */}
+        {showsAgentsAndRooms({
+          managedAgentCount,
+          buddyPending,
+          legacyAgentCount: legacyCount,
+        }) && <SidebarMainSection />}
         {legacyCount > 0 && (
           <>
             <SessionsSectionHeader legacy />
@@ -189,7 +196,7 @@ const RoomStateDisclosure = observer(function RoomStateDisclosure() {
       <DisclosureBar>
         Sign in to {signedOut.map((s) => s.name).join(', ')} to see{' '}
         {signedOut.length === 1 ? 'its' : 'their'} rooms.{' '}
-        <DisclosureAction onClick={() => navigate('server', { serverId: signedOut[0].id })}>
+        <DisclosureAction onClick={() => navigate('server', { serverId: signedOut[0].serverId })}>
           Sign in
         </DisclosureAction>
       </DisclosureBar>

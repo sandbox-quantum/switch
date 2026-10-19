@@ -10,8 +10,6 @@ nothing is inferred from in-process state.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
@@ -50,12 +48,12 @@ class _FailingTrustClient:
 async def _wait_joined(
     client: object, transport_room_id: str, timeout: float = 30
 ) -> None:
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        if transport_room_id in client.room_join_times:  # type: ignore[attr-defined]
-            return
-        await asyncio.sleep(0.25)
-    raise AssertionError(f"client never joined {transport_room_id} within {timeout}s")
+    """Block until the agent is a member of the room: its membership is a
+    row, written when it was invited (`Actor.wait_joined` reads it). An
+    agent reads no room, so it does not hear its own join."""
+    assert await client.wait_joined(transport_room_id, timeout), (  # type: ignore[attr-defined]
+        f"client never joined {transport_room_id} within {timeout}s"
+    )
 
 
 async def _timeline_messages(
@@ -84,12 +82,14 @@ async def _wire_admin_client(harness: Harness, session_env: SessionEnv) -> None:
         agent_store=session_env.agent_store,
         room_store=session_env.room_store,
         room_role_store=session_env.room_role_store,
+        external_user_store=session_env.external_user_store,
         document_store=session_env.document_store,
         reference_store=session_env.reference_store,
         agent_session_store=session_env.agent_session_store,
         room_service=harness.room_service,
         connections=AgentConnectionRegistry(),
         frontend_base_url=session_env.config.dashboard_base_url,
+        follow_the_conversation_enabled=False,
     )
     await harness.client_lifecycle.ensure_system_client("admin")
 

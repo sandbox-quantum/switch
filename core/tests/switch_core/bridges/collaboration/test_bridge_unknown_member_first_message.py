@@ -47,6 +47,7 @@ class _FakeHumanActor:
     """Stands in for a Actor human actor whose join lands after the invite."""
 
     def __init__(self) -> None:
+        self.client_id = "alice-client"
         self.transport_user_id = "@ext_alice:switch.local"
         self._joined = asyncio.Event()
         self.sent: list[tuple[str, str]] = []
@@ -194,6 +195,7 @@ async def test_first_message_from_app_sender_is_relayed() -> None:
         return await CollaborationCore._ensure_human_in_room(inner, **kwargs)  # type: ignore[arg-type]
 
     bridge = SimpleNamespace(
+        _bridge_id="bridge-1",
         _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
         _ensure_human_in_room=_ensure_human_in_room,
@@ -240,6 +242,7 @@ async def test_first_message_from_unknown_member_is_relayed() -> None:
         relayed.append((kwargs["transport_event_id"], kwargs["external_post_id"]))
 
     bridge = SimpleNamespace(
+        _bridge_id="bridge-1",
         _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
         _ensure_human_in_room=_ensure_human_in_room,

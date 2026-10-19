@@ -9,7 +9,7 @@ import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
-import type { RoomEmbed } from '@shared/core/switch-rooms/room-embed';
+import { embedIsStale, type RoomEmbed } from '@shared/core/switch-rooms/room-embed';
 import { openRoomChannel } from './room-links';
 import { roomTabStore } from './room-tab-store';
 import { currentMattermostTheme } from './theme-tokens';
@@ -24,7 +24,8 @@ const MAX_LIVE_EMBEDS = 4;
 
 type EmbedState =
   | { phase: 'resolving' }
-  | { phase: 'ready'; embed: RoomEmbed }
+  /** `channelUrl`: the room's channel link the embed was decided with. */
+  | { phase: 'ready'; embed: RoomEmbed; channelUrl: string | null }
   | { phase: 'error'; message: string };
 
 function RoomNotice({
@@ -90,14 +91,15 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
         return;
       }
 
+      const channelUrl = switchRoomsStore.roomChannelUrl(roomId);
       try {
         const embed = await rpc.switchRooms.resolveRoomEmbed({
           serverId,
           bridgeType: switchRoomsStore.roomBridgeTypeById(roomId),
-          externalChannelUrl: switchRoomsStore.roomChannelUrl(roomId),
+          externalChannelUrl: channelUrl,
           theme: currentMattermostTheme(effectiveTheme),
         });
-        setStates((prev) => new Map(prev).set(roomId, { phase: 'ready', embed }));
+        setStates((prev) => new Map(prev).set(roomId, { phase: 'ready', embed, channelUrl }));
       } catch (cause) {
         setStates((prev) =>
           new Map(prev).set(roomId, {
@@ -133,6 +135,16 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
 
     if (!startedRef.current.has(activeRoomId)) void resolve(activeRoomId);
   }, [activeRoomId, resolve]);
+
+  // The room list is read again every little while; a room whose channel link
+  // has come back since it was opened is opened again.
+  const activeState = activeRoomId ? states.get(activeRoomId) : undefined;
+  const activeChannelUrl = activeRoomId ? switchRoomsStore.roomChannelUrl(activeRoomId) : null;
+  useEffect(() => {
+    if (!activeRoomId || activeState?.phase !== 'ready') return;
+    if (embedIsStale(activeState.embed, activeState.channelUrl, activeChannelUrl))
+      void resolve(activeRoomId);
+  }, [activeRoomId, activeState, activeChannelUrl, resolve]);
 
   /*
    * A theme switch needs the guest reloaded, not just re-pushed.
@@ -170,7 +182,7 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
   // just not on screen.
   const visible =
     isRoomView && activeRoomId !== null && roomTabStore.tabFor(activeRoomId) === 'chat';
-  const active = activeRoomId ? states.get(activeRoomId) : undefined;
+  const active = activeState;
 
   return (
     <div
@@ -205,7 +217,24 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
       ) : null}
 
       {visible && active?.phase === 'ready' && active.embed.kind === 'unavailable' ? (
-        <RoomNotice icon={<MessagesSquare className="size-6" />} title={active.embed.reason} />
+        <RoomNotice
+          icon={<MessagesSquare className="size-6" />}
+          title={active.embed.reason}
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              // The link comes from the room list, so it is read again first.
+              onClick={() => {
+                if (!activeRoomId) return;
+                void switchRoomsStore.loadRoomNames().then(() => resolve(activeRoomId));
+              }}
+            >
+              <RefreshCw className="size-3" />
+              Retry
+            </Button>
+          }
+        />
       ) : null}
 
       {visible && active?.phase === 'ready' && active.embed.kind === 'unlinked' ? (

@@ -2,20 +2,16 @@ import {
   Bot,
   Boxes,
   CircleAlert,
-  Clock,
   DoorOpen,
   FileText,
   Loader2,
-  Save,
+  MoreVertical,
+  Trash2,
   Upload,
   UserRound,
-  Users,
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { TemplateKind } from '@main/core/agent-templates/template-document';
-import type { TemplateSummary } from '@main/core/agent-templates/template-summary';
-import type { RecentTemplate } from '@main/core/room-templates/controller';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
@@ -31,14 +27,15 @@ import { useAgentTypeAvailability } from '@renderer/lib/stores/use-agent-type-av
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@renderer/lib/ui/dropdown-menu';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Toggle } from '@renderer/lib/ui/toggle';
-import { cn } from '@renderer/utils/utils';
-import { prefillForSave } from './agent-template-data';
-import { bundledTemplates } from './bundled-templates';
-import { formatTimeAgo, runMatches } from './template-runs';
-import { RECENT_ACTION, RECENT_ROW, TemplateRunRow, useTemplateRuns } from './template-runs-list';
 
 function useServerId(): string {
   return useParams('templates').params.serverId;
@@ -68,17 +65,13 @@ const KIND_ICON: Record<Kind, typeof Bot> = {
   group: Boxes,
 };
 
-/** One card in the listing: a bundled template, or a template saved on the workspace. */
+/** One card in the listing: a template on the workspace, official or saved by someone. */
 type TemplateListEntry = {
-  /** The id the card opens: a bundled id, or a workspace template id. */
   id: string;
   kind: Kind;
   name: string;
   description: string;
-  bundled: boolean;
-  server: StoredTemplateSummary | null;
-  /** The document text, when it is available without a request (a bundled template). */
-  content: string | null;
+  server: StoredTemplateSummary;
 };
 
 function kindOf(kind: string): Kind {
@@ -98,71 +91,6 @@ function hasFiles(e: React.DragEvent): boolean {
   return Array.from(e.dataTransfer.types).includes('Files');
 }
 
-function plural(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? '' : 's'}`;
-}
-
-/** The card's summary line, for example "Creates 1 room and 2 agents · 4 inputs".
- * An agent template's room is optional, so its card names the agent alone. */
-function summaryLine(s: TemplateSummary): string {
-  const parts: string[] = [];
-  if (s.rooms > 0 && s.kind !== 'agent') parts.push(plural(s.rooms, 'room'));
-  if (s.agents > 0) parts.push(s.kind === 'agent' ? 'an agent' : plural(s.agents, 'agent'));
-  const creates = parts.length > 0 ? `Creates ${parts.join(' and ')}` : 'Creates nothing yet';
-  const inputs = s.inputs === 0 ? 'nothing to fill in' : plural(s.inputs, 'input');
-  return `${creates} · ${inputs}`;
-}
-
-// The listing endpoint returns no document text, and the summary line
-// needs the document. Each card fetches its own once per version of the
-// template and keeps it for the session.
-const summaryCache = new Map<string, Promise<TemplateSummary>>();
-
-function fetchSummary(workspaceId: string, item: TemplateListEntry): Promise<TemplateSummary> {
-  // The version is part of the key, so an edit made elsewhere refreshes the
-  // card as soon as the listing reports it.
-  const key = `${workspaceId}:${item.id}:${item.server?.version ?? 0}`;
-  let pending = summaryCache.get(key);
-  if (!pending) {
-    pending = (async () => {
-      const yamlText =
-        item.content ??
-        (
-          await rpc.workspaces.getTemplateDetail({
-            workspaceId,
-            templateId: item.id,
-          })
-        ).definition;
-      return rpc.agentTemplates.summarize({ yamlText });
-    })();
-    pending.catch(() => summaryCache.delete(key));
-    summaryCache.set(key, pending);
-  }
-  return pending;
-}
-
-function useTemplateSummary(
-  workspaceId: string | null,
-  item: TemplateListEntry
-): TemplateSummary | null {
-  const [summary, setSummary] = useState<TemplateSummary | null>(null);
-  useEffect(() => {
-    if (workspaceId === null) return;
-    let cancelled = false;
-    fetchSummary(workspaceId, item)
-      .then((s) => {
-        if (!cancelled) setSummary(s);
-      })
-      .catch(() => {
-        // The card renders without the summary line when the document cannot be fetched.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [workspaceId, item]);
-  return summary;
-}
-
 function OwnerRow({ name, mine }: { name: string; mine: boolean }) {
   const initial = (name.trim()[0] ?? '?').toUpperCase();
   return (
@@ -179,23 +107,24 @@ function OwnerRow({ name, mine }: { name: string; mine: boolean }) {
 }
 
 function TemplateCard({
-  workspaceId,
   item,
   meId,
   busy,
   onOpen,
   onUse,
+  onDelete,
 }: {
-  workspaceId: string | null;
   item: TemplateListEntry;
   meId: string | null;
   busy: boolean;
   onOpen: () => void;
   onUse: () => void;
+  /** Null when the signed-in user may not delete it. */
+  onDelete: (() => void) | null;
 }) {
   const Icon = KIND_ICON[item.kind];
-  const summary = useTemplateSummary(workspaceId, item);
-  const mine = item.server !== null && meId !== null && item.server.ownerId === meId;
+  const official = item.server.official;
+  const mine = !official && meId !== null && item.server.ownerId === meId;
   return (
     <div className="group relative flex min-h-[168px] flex-col rounded-[11px] border border-border bg-background transition-colors hover:border-border-1">
       <button
@@ -205,32 +134,47 @@ function TemplateCard({
         onClick={onOpen}
       />
       <div className="pointer-events-none flex flex-1 flex-col gap-2 p-4">
-        <div className="flex items-center gap-2">
+        <div className={`flex items-center gap-2${onDelete ? ' pr-7' : ''}`}>
           <Icon className="size-4.5 shrink-0 text-foreground-muted" />
           <h3 className="min-w-0 truncate font-medium text-foreground">{item.name}</h3>
-          {item.bundled && (
-            <Badge variant="outline" title="Shipped with Switch">
+          {official && (
+            <Badge variant="outline" title="Comes with Switch">
               Official
             </Badge>
           )}
-          {item.server && mine && !item.bundled && <Badge variant="secondary">Yours</Badge>}
-          {item.bundled && item.server && (
-            <Badge variant="secondary" title="A copy is saved on this workspace; it lists below">
-              <Users />
-              Saved
-            </Badge>
-          )}
+          {mine && <Badge variant="secondary">Yours</Badge>}
         </div>
         <p className="line-clamp-3 text-sm text-foreground-muted">
           {item.description || <span className="italic">No description.</span>}
         </p>
         <div className="mt-auto flex flex-col gap-1.5 pt-1 pr-16">
-          <span className="text-xs text-foreground-passive">
-            {summary ? summaryLine(summary) : ' '}
-          </span>
-          {item.server && !item.bundled && <OwnerRow name={item.server.creator} mine={mine} />}
+          {!official && <OwnerRow name={item.server.creator} mine={mine} />}
         </div>
       </div>
+      {onDelete && (
+        <div className="absolute top-2.5 right-2.5">
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="size-7 p-0"
+                  aria-label={`${item.name} actions`}
+                >
+                  <MoreVertical className="size-4" />
+                </Button>
+              }
+            />
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem variant="destructive" onClick={onDelete}>
+                <Trash2 className="size-4" />
+                Delete template…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
       {/* On top of the overlay: the one action that does not need the page. */}
       <div className="absolute right-3 bottom-3">
         <Button size="sm" variant="outline" onClick={onUse} disabled={busy}>
@@ -241,191 +185,9 @@ function TemplateCard({
   );
 }
 
-function Section({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string;
-  subtitle: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section>
-      <h3 className="text-sm font-semibold text-foreground">{title}</h3>
-      <p className="mt-0.5 mb-3 text-xs text-foreground-muted">{subtitle}</p>
-      {children}
-    </section>
-  );
-}
-
-/**
- * What was used lately: the template runs the server records for this
- * workspace, newest first, then the documents used from this Console, kept
- * locally per workspace. A run opens to show the rooms it made; a document can
- * be used again or saved to the workspace, where everyone can find it.
- */
-function RecentsSection({
-  serverId,
-  workspaceId,
-  serverName,
-  onWorkspace,
-  kind,
-  query,
-  onSaved,
-}: {
-  serverId: string;
-  workspaceId: string | null;
-  serverName: string | null;
-  /** Names of templates saved on the workspace. A recent with one of these names gets no Save button. */
-  onWorkspace: ReadonlySet<string>;
-  /** The listing's kind filter and search text. They apply to the recents too. Only mine does not: every recent is the user's own. */
-  kind: KindFilter;
-  query: string;
-  onSaved: () => void;
-}) {
-  const { navigate } = useNavigate();
-  const showSaveModal = useShowModal('saveTemplateModal');
-  // Each recent with its kind, classified by the same parser as the listing.
-  const [recents, setRecents] = useState<(RecentTemplate & { kind: TemplateKind })[] | null>(null);
-  const [saving, setSaving] = useState<string | null>(null);
-  const { runs, replace: replaceRun } = useTemplateRuns(workspaceId);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const list = await rpc.roomTemplates.getRecents(serverId);
-        // One row per name. The same template used before and after an edit is two
-        // documents with one name, and only the newest use is offered.
-        const newest = list.filter((r, i) => list.findIndex((o) => o.name === r.name) === i);
-        const classified = await Promise.all(
-          newest.map(async (r) => ({
-            ...r,
-            kind: await rpc.agentTemplates
-              .kind({ yamlText: r.yamlText })
-              .catch(() => 'room' as const),
-          }))
-        );
-        if (!cancelled) setRecents(classified);
-      } catch {
-        if (!cancelled) setRecents([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [serverId]);
-
-  const saveToWorkspace = async (recent: RecentTemplate) => {
-    setSaving(recent.yamlText);
-    try {
-      const prefill = await prefillForSave(recent.yamlText, recent.name);
-      showSaveModal({
-        serverId,
-        serverName,
-        content: recent.yamlText,
-        ...prefill,
-        onSuccess: onSaved,
-      });
-    } catch (error) {
-      toast({
-        title: `Could not read "${recent.name}"`,
-        description: failureText(error, 'The document did not parse.'),
-        variant: 'destructive',
-      });
-    } finally {
-      setSaving(null);
-    }
-  };
-
-  const needle = query.trim().toLowerCase();
-  const shown = (recents ?? []).filter(
-    (r) =>
-      (kind === 'all' || r.kind === kind) &&
-      (needle.length === 0 || r.name.toLowerCase().includes(needle))
-  );
-  // A run creates rooms, so an agents-only listing leaves them out.
-  const shownRuns = kind === 'agent' ? [] : runs.filter((r) => runMatches(r, needle));
-  if (shown.length === 0 && shownRuns.length === 0) return null;
-
-  return (
-    <section>
-      <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
-        <Clock className="size-3.5 text-foreground-muted" />
-        Recently used
-      </h3>
-      <p className="mt-0.5 mb-3 text-xs text-foreground-muted">
-        Template runs on this workspace, and documents you used from this Console. Documents are
-        kept here only; Save to workspace makes one a template everyone on the workspace can find.
-      </p>
-      <div className="divide-y divide-border rounded-md border border-border">
-        <div className={cn(RECENT_ROW, 'text-[11px] font-medium text-foreground-passive')}>
-          <span>Name</span>
-          <span>Status</span>
-          <span>Size</span>
-          <span>When</span>
-          <span />
-        </div>
-        {workspaceId !== null &&
-          shownRuns.map((run) => (
-            <TemplateRunRow
-              key={run.rootRoomId}
-              workspaceId={workspaceId}
-              run={run}
-              onChanged={replaceRun}
-            />
-          ))}
-        {shown.map((r) => {
-          const Icon = KIND_ICON[r.kind];
-          const saved = onWorkspace.has(r.name);
-          return (
-            <div key={r.yamlText} className={RECENT_ROW}>
-              <button
-                type="button"
-                onClick={() =>
-                  navigate('templateImport', {
-                    serverId,
-                    yamlText: r.yamlText,
-                    sourceName: r.name,
-                  })
-                }
-                className="flex min-w-0 cursor-pointer items-center gap-2 text-left hover:underline"
-              >
-                <Icon className="size-3.5 shrink-0 text-foreground-muted" />
-                <span className="truncate">{r.name}</span>
-              </button>
-              <span className="text-xs text-foreground-passive">{saved ? 'Saved' : ''}</span>
-              <span />
-              <span className="text-xs text-foreground-passive">{formatTimeAgo(r.usedAt)}</span>
-              <span className="flex justify-end">
-                {!saved && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className={RECENT_ACTION}
-                    title="Save to the workspace, so everyone on it can use it"
-                    disabled={saving === r.yamlText}
-                    onClick={() => void saveToWorkspace(r)}
-                  >
-                    <Save className="size-3.5" />
-                    Save to workspace
-                  </Button>
-                )}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
 const TemplatesPanel = observer(function TemplatesPanel() {
   const serverId = useServerId();
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
-  const server = switchServersStore.servers.find((s) => s.id === serverId);
   const meId = switchServersStore.statusFor(serverId)?.user?.id ?? null;
   const { navigate } = useNavigate();
 
@@ -442,9 +204,8 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const [dragging, setDragging] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
-  // The server searches name and description. The full listing stays loaded
-  // for the recents and for marking a built-in as saved; the search results
-  // replace it only for the workspace cards.
+  // The server searches name and description; its hits replace the listing
+  // while there is a search.
   const [searchHits, setSearchHits] = useState<StoredTemplateSummary[] | null>(null);
   useEffect(() => {
     const q = query.trim();
@@ -478,8 +239,8 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const noProvider = availability !== undefined && !availability.some((a) => a.available);
 
   useEffect(() => {
-    // No workspace is an answer, not a wait. The bundled templates below still
-    // render; leaving the spinner up would claim a list is on its way.
+    // No workspace is an answer, not a wait: leaving the spinner up would
+    // claim a list is on its way.
     if (workspaceId === null) {
       setTemplates([]);
       setListError('This server has no workspace yet, so its templates cannot be read.');
@@ -495,8 +256,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
         if (!cancelled) setTemplates(result);
       })
       .catch((e: unknown) => {
-        // The bundled templates render either way. A failed request is shown as a
-        // failure, not as an empty workspace.
+        // A failed request is shown as a failure, not as an empty workspace.
         if (!cancelled) {
           setTemplates([]);
           setListError(failureText(e, 'Could not read this workspace’s templates.'));
@@ -510,31 +270,13 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     };
   }, [workspaceId, reloadKey]);
 
-  const { builtIn, onWorkspace } = useMemo(() => {
-    // A bundled card is always the bundled document. Saving it creates a
-    // workspace template, listed below as the user's own; the bundled card
-    // only marks that a copy exists. Names are unique per owner, so only the
-    // user's own template of that name counts as the copy.
-    const byName = new Map(
-      templates.filter((t) => meId !== null && t.ownerId === meId).map((t) => [t.name, t])
-    );
-    const builtIn: TemplateListEntry[] = bundledTemplates.map((b) => ({
-      id: b.id,
-      kind: kindOf(b.kind),
-      name: b.name,
-      description: b.description,
-      bundled: true,
-      server: byName.get(b.name) ?? null,
-      content: b.yamlText,
-    }));
+  const templatesShown = useMemo(() => {
     const onWorkspace: TemplateListEntry[] = (searchHits ?? templates).map((t) => ({
       id: t.id,
       kind: kindOf(t.kind),
       name: t.name,
       description: t.description,
-      bundled: false,
       server: t,
-      content: null,
     }));
     const needle = query.trim().toLowerCase();
     const matches = (t: TemplateListEntry) =>
@@ -542,13 +284,42 @@ const TemplatesPanel = observer(function TemplatesPanel() {
       (needle.length === 0 ||
         t.name.toLowerCase().includes(needle) ||
         t.description.toLowerCase().includes(needle) ||
-        (t.server?.creator ?? '').toLowerCase().includes(needle));
-    const mine = (t: TemplateListEntry) => meId !== null && t.server?.ownerId === meId;
-    return {
-      builtIn: onlyMine ? [] : builtIn.filter(matches),
-      onWorkspace: onWorkspace.filter((t) => matches(t) && (!onlyMine || mine(t))),
-    };
+        t.server.creator.toLowerCase().includes(needle));
+    const mine = (t: TemplateListEntry) => meId !== null && t.server.ownerId === meId;
+    // One list: the badges on each card (Official, Yours, who saved it) say
+    // where it comes from.
+    return onWorkspace.filter((t) => matches(t) && (!onlyMine || mine(t)));
   }, [templates, searchHits, query, kind, onlyMine, meId]);
+
+  const confirm = useShowModal('confirmActionModal');
+  const me = switchServersStore.statusFor(serverId)?.user ?? null;
+  // The server says who may delete; an older server leaves it out, and the owner-or-admin guess stands in.
+  const canDelete = (item: TemplateListEntry) =>
+    !item.server.official &&
+    (item.server.canManage ??
+      ((meId !== null && item.server.ownerId === meId) || me?.role === 'admin'));
+  const deleteTemplate = (item: TemplateListEntry) =>
+    confirm({
+      title: `Delete ${item.name}?`,
+      description: 'It is removed from this workspace for everyone. This cannot be undone.',
+      confirmLabel: 'Delete',
+      onSuccess: () => {
+        if (workspaceId === null) return;
+        rpc.workspaces
+          .deleteTemplate({ workspaceId, templateId: item.id })
+          .then(() => {
+            toast({ title: `"${item.name}" deleted` });
+            reload();
+          })
+          .catch((e: unknown) =>
+            toast({
+              title: `Could not delete "${item.name}"`,
+              description: failureText(e, 'Check the server connection and try again.'),
+              variant: 'destructive',
+            })
+          );
+      },
+    });
 
   const handleUse = (item: TemplateListEntry) =>
     navigate('templateUse', { serverId, templateId: item.id });
@@ -573,12 +344,12 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const card = (item: TemplateListEntry) => (
     <TemplateCard
       key={item.id}
-      workspaceId={workspaceId}
       item={item}
       meId={meId}
       busy={false}
       onOpen={() => open(item)}
       onUse={() => handleUse(item)}
+      onDelete={canDelete(item) ? () => deleteTemplate(item) : null}
     />
   );
 
@@ -586,7 +357,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     <ServerPage
       width={1000}
       title="Templates"
-      description="A template is one YAML document that creates a room, an agent, or a group of them. Use one, fill in its inputs, and everything it describes appears on this workspace."
+      description="Templates create agents and rooms on this workspace. Pick one, fill in what it asks, and everything it describes is created in one go, or nothing is."
       action={
         <Button size="sm" onClick={() => navigate('templateImport', { serverId })}>
           <Upload className="size-4" />
@@ -678,65 +449,36 @@ const TemplatesPanel = observer(function TemplatesPanel() {
               </Toggle>
             </div>
 
-            {!onlyMine && (
-              <Section
-                title="Built in"
-                subtitle="Shipped with Switch. Use one to see how a template is put together."
-              >
-                {builtIn.length > 0 ? (
-                  <div className={grid}>{builtIn.map(card)}</div>
-                ) : (
-                  <p className="text-sm text-foreground-muted">No built-in template matches.</p>
-                )}
-              </Section>
-            )}
-
-            <Section
-              title="On this workspace"
-              subtitle="Saved here. Each one says who can use it and who can change it."
-            >
-              {onWorkspace.length > 0 ? (
-                <div className={grid}>{onWorkspace.map(card)}</div>
-              ) : listError ? (
-                <div className="flex flex-col items-start gap-2 rounded-[11px] border border-border px-4 py-4">
-                  <p className="text-sm text-foreground-muted">{listError}</p>
-                  <Button size="sm" variant="outline" onClick={reload}>
-                    Try again
-                  </Button>
-                </div>
-              ) : filtering ? (
+            {templatesShown.length > 0 ? (
+              <div className={grid}>{templatesShown.map(card)}</div>
+            ) : listError ? (
+              <div className="flex flex-col items-start gap-2 rounded-[11px] border border-border px-4 py-4">
+                <p className="text-sm text-foreground-muted">{listError}</p>
+                <Button size="sm" variant="outline" onClick={reload}>
+                  Try again
+                </Button>
+              </div>
+            ) : filtering ? (
+              <p className="text-sm text-foreground-muted">
+                {onlyMine
+                  ? 'None of yours match. Import a template and it shows up here as yours.'
+                  : 'No template matches.'}
+              </p>
+            ) : (
+              <div className="flex flex-col items-start gap-3 rounded-[11px] border border-dashed border-border px-4 py-5">
                 <p className="text-sm text-foreground-muted">
-                  {onlyMine
-                    ? 'None of yours match. Save a template you used, or import one, and it shows up here as yours.'
-                    : 'No template on this workspace matches.'}
+                  No template here yet. Import one, and everyone on this workspace finds it here.
                 </p>
-              ) : (
-                <div className="flex flex-col items-start gap-3 rounded-[11px] border border-dashed border-border px-4 py-5">
-                  <p className="text-sm text-foreground-muted">
-                    Nothing saved here yet. Import a template, or save one you have used, and
-                    everyone on this workspace finds it here.
-                  </p>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => navigate('templateImport', { serverId })}
-                  >
-                    <Upload className="size-3.5" />
-                    Import a template
-                  </Button>
-                </div>
-              )}
-            </Section>
-
-            <RecentsSection
-              serverId={serverId}
-              workspaceId={workspaceId}
-              serverName={server?.name ?? null}
-              onWorkspace={new Set(templates.map((t) => t.name))}
-              kind={kind}
-              query={query}
-              onSaved={reload}
-            />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => navigate('templateImport', { serverId })}
+                >
+                  <Upload className="size-3.5" />
+                  Import a template
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </div>

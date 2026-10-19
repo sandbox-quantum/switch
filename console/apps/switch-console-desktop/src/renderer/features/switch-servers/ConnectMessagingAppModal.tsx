@@ -19,6 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
+import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import {
@@ -33,6 +34,12 @@ import type { CreateBridgeResult } from '@shared/core/switch-servers/switch-serv
 import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
 import { ConnectChatPanel } from './ConnectChatPanel';
 import { InstallMessagingAppPanel } from './InstallMessagingAppPanel';
+import {
+  GUIDE_FILLED_FIELDS,
+  GUIDE_REQUIRED_FIELDS,
+  isGuidedPlatform,
+  OwnAppGuide,
+} from './own-app-guide';
 import { switchServersStore } from './switch-servers-store';
 import { WebhookAddressStep } from './webhook-address-step';
 import { administersWorkspaceInScope } from './workspace-admin';
@@ -79,6 +86,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   // Typed by the schema, not all strings: a boolean field posts a real boolean,
   // since the server rejects an empty string as one.
   const [config, setConfig] = useState<Record<string, string | boolean>>({});
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [setAsDefault, setSetAsDefault] = useState(false);
   // Defaults on: most platforms can create channels, and the server rejects
   // this staying true for one that can't rather than us guessing wrong.
@@ -119,6 +127,30 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
 
   const types = useMemo(() => typesQuery.data ?? [], [typesQuery.data]);
   const selectedType = types.find((t) => t.key === typeKey) ?? null;
+  // What the guide works out itself (the Slack workspace, the Discord server)
+  // is filled in for the person, not asked of them.
+  // The guide asks for its tokens as required, whatever the schema says (a
+  // token a shared app leaves optional is not, on a server's own app).
+  const guidedFields = (selectedType?.fields ?? []).map((field) =>
+    isGuidedPlatform(selectedType?.key) &&
+    GUIDE_REQUIRED_FIELDS[selectedType.key].includes(field.key)
+      ? { ...field, required: true }
+      : field
+  );
+  const visibleFields = guidedFields.filter(
+    (field) =>
+      !isGuidedPlatform(selectedType?.key) ||
+      !GUIDE_FILLED_FIELDS[selectedType.key].includes(field.key)
+  );
+  const setGuideField = useCallback((key: string, value: string | null) => {
+    setConfig((prev) => {
+      if ((prev[key] ?? null) === value) return prev;
+      const next = { ...prev };
+      if (value === null) delete next[key];
+      else next[key] = value;
+      return next;
+    });
+  }, []);
   // Unknown until the type list has loaded; assume supported so the checkbox
   // isn't forced off while that request is in flight.
   const channelCreationSupported = selectedType?.channelCreationSupported ?? true;
@@ -144,7 +176,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   );
 
   const trimmedName = displayName.trim();
-  const missingRequired = (selectedType?.fields ?? []).some((f) => {
+  const missingRequired = guidedFields.some((f) => {
     if (!f.required) return false;
     const value = config[f.key];
     // `false` is an answer, not an omission — only a blank string is missing.
@@ -385,12 +417,21 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
                     </p>
                   </Field>
 
+                  {isGuidedPlatform(selectedType.key) && workspaceId !== null && (
+                    <OwnAppGuide
+                      platform={selectedType.key}
+                      workspaceId={workspaceId}
+                      config={config}
+                      setField={setGuideField}
+                    />
+                  )}
+
                   {/* The fields below are asked for without explanation — what a
                   "bot token" is, and where to get one, lives in the platform's
                   setup guide. Link to it at the point the question arises. */}
                   <button
                     type="button"
-                    className="-mt-2 flex w-fit items-center gap-1 text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
+                    className="flex w-fit items-center gap-1 text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
                     onClick={() =>
                       void openExternalUrl(
                         bridgeSetupDocsUrl(selectedType.key),
@@ -402,30 +443,9 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
                     <ExternalLink className="size-3" />
                   </button>
 
-                  {selectedType.fields.map((field) =>
-                    field.kind === 'boolean' ? (
-                      <label
-                        key={field.key}
-                        className="group/field flex cursor-pointer items-start gap-2.5"
-                      >
-                        <Checkbox
-                          checked={config[field.key] === true}
-                          onCheckedChange={(checked) => {
-                            setConfig((prev) => ({ ...prev, [field.key]: checked === true }));
-                            setError(null);
-                          }}
-                          className="mt-0.5"
-                        />
-                        <span className="flex flex-col gap-0.5">
-                          <span className="text-sm font-medium">{field.label}</span>
-                          {field.description && (
-                            <span className="text-xs text-foreground-muted">
-                              {field.description}
-                            </span>
-                          )}
-                        </span>
-                      </label>
-                    ) : (
+                  {visibleFields
+                    .filter((field) => field.kind !== 'boolean')
+                    .map((field) => (
                       <Field key={field.key}>
                         <FieldLabel>
                           {field.label}
@@ -456,47 +476,81 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
                           <p className="mt-1 text-xs text-foreground-muted">{field.description}</p>
                         )}
                       </Field>
-                    )
+                    ))}
+
+                  <DisclosureRow
+                    open={advancedOpen}
+                    title="Advanced configuration"
+                    onToggle={() => setAdvancedOpen((open) => !open)}
+                  />
+                  {advancedOpen && (
+                    <div className="flex flex-col gap-4">
+                      {visibleFields
+                        .filter((field) => field.kind === 'boolean')
+                        .map((field) => (
+                          <label
+                            key={field.key}
+                            className="group/field flex cursor-pointer items-start gap-2.5"
+                          >
+                            <Checkbox
+                              checked={config[field.key] === true}
+                              onCheckedChange={(checked) => {
+                                setConfig((prev) => ({ ...prev, [field.key]: checked === true }));
+                                setError(null);
+                              }}
+                              className="mt-0.5"
+                            />
+                            <span className="flex flex-col gap-0.5">
+                              <span className="text-sm font-medium">{field.label}</span>
+                              {field.description && (
+                                <span className="text-xs text-foreground-muted">
+                                  {field.description}
+                                </span>
+                              )}
+                            </span>
+                          </label>
+                        ))}
+
+                      <label
+                        className={cn(
+                          'group/field flex items-start gap-2.5',
+                          channelCreationSupported ? 'cursor-pointer' : 'cursor-not-allowed'
+                        )}
+                      >
+                        <Checkbox
+                          checked={channelCreationSupported && channelCreationEnabled}
+                          disabled={!channelCreationSupported}
+                          onCheckedChange={(checked) => setChannelCreationEnabled(checked === true)}
+                          className="mt-0.5"
+                        />
+                        <span className="flex flex-col gap-0.5">
+                          <span className="text-sm font-medium">
+                            Allow creating channels from Switch
+                          </span>
+                          <span className="text-xs text-foreground-muted">
+                            {channelCreationSupported
+                              ? `Allows Switch users and agents to create channels in ${bridgePlatformLabel(selectedType.key)} from Switch. Turn it off to only ever use channels made in the app.`
+                              : `${bridgePlatformLabel(selectedType.key)} has no way to create channels from Switch, so this connection can only be used with channels made in the app.`}
+                          </span>
+                        </span>
+                      </label>
+
+                      <label className="group/field flex cursor-pointer items-start gap-2.5">
+                        <Checkbox
+                          checked={setAsDefault}
+                          onCheckedChange={(checked) => setSetAsDefault(checked === true)}
+                          className="mt-0.5"
+                        />
+                        <span className="flex flex-col gap-0.5">
+                          <span className="text-sm font-medium">Use for new rooms by default</span>
+                          <span className="text-xs text-foreground-muted">
+                            Rooms created without naming a messaging app will land here. Replaces
+                            the server’s current default; existing rooms are unaffected.
+                          </span>
+                        </span>
+                      </label>
+                    </div>
                   )}
-
-                  <label
-                    className={cn(
-                      'group/field flex items-start gap-2.5',
-                      channelCreationSupported ? 'cursor-pointer' : 'cursor-not-allowed'
-                    )}
-                  >
-                    <Checkbox
-                      checked={channelCreationSupported && channelCreationEnabled}
-                      disabled={!channelCreationSupported}
-                      onCheckedChange={(checked) => setChannelCreationEnabled(checked === true)}
-                      className="mt-0.5"
-                    />
-                    <span className="flex flex-col gap-0.5">
-                      <span className="text-sm font-medium">
-                        Allow creating channels from Switch
-                      </span>
-                      <span className="text-xs text-foreground-muted">
-                        {channelCreationSupported
-                          ? `Allows Switch users and agents to create channels in ${bridgePlatformLabel(selectedType.key)} from Switch. Turn it off to only ever use channels made in the app.`
-                          : `${bridgePlatformLabel(selectedType.key)} has no way to create channels from Switch, so this connection can only be used with channels made in the app.`}
-                      </span>
-                    </span>
-                  </label>
-
-                  <label className="group/field flex cursor-pointer items-start gap-2.5">
-                    <Checkbox
-                      checked={setAsDefault}
-                      onCheckedChange={(checked) => setSetAsDefault(checked === true)}
-                      className="mt-0.5"
-                    />
-                    <span className="flex flex-col gap-0.5">
-                      <span className="text-sm font-medium">Use for new rooms by default</span>
-                      <span className="text-xs text-foreground-muted">
-                        Rooms created without naming a messaging app will land here. Replaces the
-                        server’s current default; existing rooms are unaffected.
-                      </span>
-                    </span>
-                  </label>
                 </>
               )}
 

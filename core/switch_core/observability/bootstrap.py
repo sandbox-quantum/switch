@@ -34,11 +34,13 @@ from switch_core.observability.db_server import DbServerSampler
 from switch_core.observability.exporter import MetricsExporter
 from switch_core.observability.health import (
     HealthMonitor,
+    agent_event_listener_check,
     bridges_check,
     connectors_check,
     database_check,
     message_listener_check,
     session_activity_listener_check,
+    signal_bus_check,
 )
 from switch_core.observability.logs import (
     DEFAULT_BATCH_SIZE,
@@ -59,6 +61,7 @@ from switch_core.observability.runtime import (
     GcPauses,
     RuntimeMetrics,
     log_unreadable_sources,
+    watch_event_loop,
 )
 from switch_core.transport.room_cache import RoomCacheStats
 from switch_core.version import switch_core_commit, switch_core_repository_url
@@ -84,6 +87,8 @@ class RuntimeProbes:
 
     listener_connected: Callable[[], bool]
     session_activity_listener_connected: Callable[[], bool]
+    agent_event_listener_connected: Callable[[], bool]
+    signal_bus_connected: Callable[[], bool]
     bridges_running: Callable[[], int]
     bridges_running_by_platform: Callable[[], Mapping[str, int]]
     bridges_configured: Callable[[], int]
@@ -172,19 +177,30 @@ def start_observability(
     version: str | None,
     session_factory: async_sessionmaker,
     probes: RuntimeProbes,
+    process_id: str,
     db_server_engine: Callable[[], AsyncEngine] | None = None,
 ) -> Observability:
     """Install the registry, start the loops, and hand back the handle.
 
     Called once, from the server's lifespan. `db_server_engine` builds the
     engine the database sampler takes its one connection from; it must not be
-    the application's pooled engine.
+    the application's pooled engine. `process_id` names this process on
+    everything it reports (`process_identity.py`).
     """
+    # With another replica to take the traffic, a process that would answer
+    # late is better out of service; with one, it is the only one there is.
+    listeners_gate = config.core_replicas > 1
     monitor = HealthMonitor(
         checks=[
             database_check(session_factory),
-            message_listener_check(probes.listener_connected),
-            session_activity_listener_check(probes.session_activity_listener_connected),
+            message_listener_check(probes.listener_connected, listeners_gate),
+            session_activity_listener_check(
+                probes.session_activity_listener_connected, listeners_gate
+            ),
+            agent_event_listener_check(
+                probes.agent_event_listener_connected, listeners_gate
+            ),
+            signal_bus_check(probes.signal_bus_connected, listeners_gate),
             bridges_check(probes.bridges_running, probes.bridges_configured),
             connectors_check(probes.connectors_running, probes.connectors_configured),
         ],
@@ -217,6 +233,7 @@ def start_observability(
     gc_pauses = GcPauses()
     gc_pauses.install()
     RuntimeMetrics(lag, gc_pauses).install(registry)
+    tasks.append(asyncio.create_task(watch_event_loop(lag), name="event-loop-probe"))
     registry.register_observer(_state_readings(probes))
     log_unreadable_sources()
 
@@ -234,6 +251,7 @@ def start_observability(
         deployment_id=str(config.deployment_id),
         commit_sha=switch_core_commit(),
         repository_url=switch_core_repository_url(),
+        instance_id=process_id,
     )
 
     if config.otlp_metrics_enabled:

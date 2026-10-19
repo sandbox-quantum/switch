@@ -2,7 +2,7 @@
 
 A controller's state is read from its connection's recorded transitions
 (`connection_ledger.py`) and the lease of the switch-core process holding it
-(`process_lease.py`), so every process answers alike and a restart changes
+(`switch_core/process_lease.py`), so every process answers alike and a restart changes
 nothing:
 
 - `revoked`: its credential is gone.
@@ -35,7 +35,7 @@ from typing import Any, Literal
 from switch_core.db.models import AgentController
 from switch_core.management import reason_codes
 from switch_core.management.errors import ManagementError
-from switch_core.management.process_lease import ProcessLeases
+from switch_core.process_lease import ProcessLeases
 
 ControllerState = Literal["online", "offline", "unknown", "revoked"]
 

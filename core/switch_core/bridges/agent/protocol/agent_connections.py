@@ -15,9 +15,16 @@ Two properties matter most:
   sleeping laptop leaves one behind for minutes. A connection is alive while
   its client keeps ticking, and dead when it stops, whatever the socket says.
 
-Connections live in memory only. They cannot outlive the process (their
-sockets and buffers cannot), so persisting them would recreate the stale-state
-bug this design removes.
+A connection lives in the memory of the process holding its socket: the
+socket, its heartbeat and the frames it is owed cannot be anywhere else. What
+the other switch-core processes need to know about it is recorded as rows
+(`connection_rows.py`), on transitions only and never per heartbeat, and each
+process keeps a copy of every other process's live connections here, so the
+presence readers below answer for every process without a query. A copy is
+an `AgentConnection` whose `held_by` names the process holding it. Rows count
+only while the holding process's lease is held, so a connection never
+outlives its process, which is what keeping connections in memory alone used
+to guarantee.
 """
 
 from __future__ import annotations
@@ -26,10 +33,15 @@ import asyncio
 import logging
 import secrets
 import time
-from collections.abc import AsyncIterator, Callable, Iterable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
+from contextlib import (
+    AbstractAsyncContextManager,
+    asynccontextmanager,
+    contextmanager,
+    nullcontext,
+)
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, cast
 
 from switch_core.artifacts import ARTIFACT_VERSIONS, contract_range
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
@@ -45,6 +57,8 @@ from switch_core.bridges.agent.protocol.liveness import (
 from switch_core.bridges.agent.protocol.liveness import TAKEN_OVER as TAKEN_OVER
 from switch_core.bridges.agent.protocol.liveness import CloseCode as CloseCode
 from switch_core.bridges.agent.protocol.liveness import Closure as Closure
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS, Position
+from switch_core.db.stores.agent_connection_store import AgentSlotRows, ConnectionRow
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
     AGENT_CONNECTIONS_EXPIRED,
@@ -93,9 +107,21 @@ SESSION_COMMAND_PROTOCOL_REVISION = 5
 # or session placement on its connection was taken over by another connection.
 ROOM_RELEASED_PROTOCOL_REVISION = 6
 
+# From this agent-protocol revision a client tracks a position (one number per
+# source, see `positions.py`) instead of a single number. It opens with
+# `start_at` and reads `position` from each event. A client on an older
+# revision is sent a single number.
+POSITIONS_PROTOCOL_REVISION = 9
+
 # Upper bound on simultaneous connections per agent. Runaway growth becomes a
 # visible error instead of quiet resource creep.
 MAX_CONNECTIONS_PER_AGENT = 32
+
+# The longest connection id or session id a client may choose; clients use
+# UUIDs, which are 36. Both travel in the signals switch-core processes send
+# each other (`connection_rows.py`), and Postgres refuses one of 8000 bytes or
+# more, so an id with no bound could make a signal that cannot be sent.
+MAX_ID_LENGTH = 64
 
 
 class ConnectionError_(Exception):
@@ -114,7 +140,7 @@ class UnknownConnectionError(ConnectionError_):
     def __init__(self, connection_id: str) -> None:
         super().__init__(
             f"connection {connection_id} is not open; reconnect and resume from "
-            "your cursor"
+            "where you got to"
         )
         self.connection_id = connection_id
 
@@ -156,7 +182,7 @@ class SupersededConnectionError(ConnectionError_):
         super().__init__(
             f"connection {connection_id} was reopened since incarnation "
             f"{presented} and is now at {current}; another client holds it, so "
-            "this heartbeat was refused and its cursor was not applied"
+            "this heartbeat was refused"
         )
         self.connection_id = connection_id
         self.presented = presented
@@ -391,7 +417,10 @@ class AgentConnection:
     scope: Scope
     delivery_filter: DeliveryFilter
     spawn_capable: bool
-    cursor: int
+    # How far the server has sent events to this connection, as a position
+    # (`positions.py`). It holds the agent's own events (`agent_events`) and,
+    # for a connection that receives every room message, each room it covers.
+    position: Position
     last_beat: float
     opened_at: float
     # Rooms this connection has subscribed to. A `single` connection holds at
@@ -423,9 +452,58 @@ class AgentConnection:
     # Rooms another connection took off this one, not yet written to its
     # stream, with the session of this connection that was placed there.
     released_rooms: dict[str, str | None] = field(default_factory=dict)
+    # The ticket last sent to this connection's client. Only a client that
+    # receives every room message but holds a single number is sent tickets. A
+    # ticket is the id of a row in `agent_position_tickets` that stores a full
+    # position, so the client can resume from it by sending back one number.
+    ticket: int = 0
+    # True when the client asked to resume from a ticket the server does not
+    # have, because it expired or never existed. The stream then opens with a
+    # gap frame, and `resume_requested` holds the number the client sent so the
+    # gap can report it.
+    resume_lost: bool = False
+    resume_requested: int = 0
+    # The switch-core process holding this connection, when it is another
+    # one: this is then a copy of that process's row, kept so presence, room
+    # claims and fences read the same here as there. A copy has no socket and
+    # no heartbeat of its own; it is live for as long as the row is, and is
+    # replaced whenever the row is read again.
+    held_by: str | None = None
+    # The tenant the connection's row is recorded in. Set once the row is
+    # written or read; None on a registry that records nothing.
+    tenant_id: str | None = None
 
     def is_alive(self, now: float) -> bool:
+        if self.held_by is not None:
+            return self.closure is None
         return self.closure is None and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
+
+    @property
+    def reads_conversation(self) -> bool:
+        """Whether this connection asked for every room message (`filter=all`),
+        read from `messages`, as well as the agent's own events."""
+        return self.delivery_filter == "all"
+
+    @property
+    def speaks_positions(self) -> bool:
+        """Whether the client is on agent-protocol revision 9 or later, and so
+        sends and receives positions instead of a single number."""
+        speaks = self.declaration.speaks
+        return speaks is not None and speaks >= POSITIONS_PROTOCOL_REVISION
+
+    @property
+    def cursor(self) -> int:
+        """The single number sent in `cursor` fields, for clients that predate
+        positions.
+
+        A client that receives every room message and does not speak positions
+        is given the ticket last sent to it, because one number cannot hold its
+        place in several rooms. Every other client is given its place in the
+        agent's own events, the `s` entry of its position.
+        """
+        if self.reads_conversation and not self.speaks_positions:
+            return self.ticket
+        return self.position.get(OWN_EVENTS, 0)
 
 
 # The `(transport, client)` an agent run by an agents controller counts under:
@@ -440,8 +518,62 @@ def connection_transport(conn: AgentConnection) -> str:
     return conn.stream_transport if conn.stream_attached else "detached"
 
 
+#: How a deleted agent's connections end, in whichever process holds them. A
+#: client that reopens is refused: its key names no agent any more.
+AGENT_DELETED = Closure(code="closed", message="the agent was deleted", room_id=None)
+
+
+class ConnectionRows(Protocol):
+    """Where a registry records its connections, so that every switch-core
+    process sees them (`connection_rows.SharedConnections`).
+
+    A registry without one records nothing and sees only its own process,
+    which is all a single process needs.
+    """
+
+    def next_incarnation(self) -> int:
+        """An incarnation no process has handed out, from the shared
+        sequence."""
+        ...
+
+    def recorded(self, agent_id: str) -> AbstractAsyncContextManager[None]:
+        """Make the agent's slot moves in the block on what every process has
+        recorded, and record them."""
+        ...
+
+    async def refresh(self, agent_id: str) -> None:
+        """Read the agent's connections again from the rows."""
+        ...
+
+    async def agent_deleted(self, agent_id: str) -> None:
+        """The agent was deleted, and its rows with it: end what this process
+        holds of it, and have every other process read its rows again."""
+        ...
+
+    def closed(self, conn: AgentConnection) -> None:
+        """A connection held here closed. Must not block."""
+        ...
+
+    def forward_beat(self, conn: AgentConnection, generation: int | None) -> None:
+        """A beat for a connection another process holds. Must not block."""
+        ...
+
+    def relay_session_command(
+        self, tenant_id: str, agent_id: str, process_id: str, frame: dict[str, Any]
+    ) -> None:
+        """A session command for a stream another process holds. Must not
+        block."""
+        ...
+
+    def relay_warm(self, agent_id: str, process_id: str, room_id: str) -> None:
+        """A warm for a controller whose stream another process holds. Must
+        not block."""
+        ...
+
+
 class AgentConnectionRegistry:
-    """The live set of agent connections. Authoritative, in memory."""
+    """The live set of agent connections: those this process holds,
+    authoritative, and a copy of every other process's (`held_by`)."""
 
     def __init__(self) -> None:
         # Called with every AgentConnection this registry closes, whoever closed it.
@@ -479,14 +611,30 @@ class AgentConnectionRegistry:
         # be counted as a return after a lapse rather than a first connect.
         # Insertion-ordered and capped: only the counter reads it.
         self._recently_closed: dict[str, str] = {}
+        # Where connections are recorded for the other processes, once wired.
+        self._rows: ConnectionRows | None = None
+        # The rooms taken off other connections while a recorded move runs,
+        # so the processes holding them can be told (`collect_released`).
+        self._released: list[Released] | None = None
+        # The tenant each agent's connections are recorded in, as last read
+        # or written, so a pass over one tenant's rows can find the agents it
+        # no longer names.
+        self._agent_tenants: dict[str, str] = {}
+
+    def use_rows(self, rows: ConnectionRows) -> None:
+        """Record connections for every process, and see theirs."""
+        self._rows = rows
 
     def _new_incarnation(self) -> int:
         """The next never-before-used incarnation number.
 
-        Monotonic so it is readable in a log and orderable in a comparison, and
-        registry-wide rather than per-connection so that closing an id and
-        opening it again cannot reissue a number a departed client still holds.
+        Registry-wide rather than per-connection so that closing an id and
+        opening it again cannot reissue a number a departed client still
+        holds. With rows wired it comes from the shared sequence, so no two
+        processes hand out the same number and any of them can check a fence.
         """
+        if self._rows is not None:
+            return self._rows.next_incarnation()
         incarnation = self._next_incarnation
         self._next_incarnation += 1
         return incarnation
@@ -503,7 +651,7 @@ class AgentConnectionRegistry:
         scope: Scope,
         delivery_filter: DeliveryFilter,
         spawn_capable: bool,
-        cursor: int,
+        position: Position,
         declaration: ClientDeclaration,
         expected_generation: int | None,
         transport: Transport = "websocket",
@@ -558,10 +706,13 @@ class AgentConnectionRegistry:
                     presented=expected_generation,
                     current=existing.stream_generation,
                 )
+            moved_from = existing.held_by
+            existing.held_by = None
             existing.scope = scope
             existing.delivery_filter = delivery_filter
             existing.spawn_capable = spawn_capable
-            existing.cursor = cursor
+            existing.position = dict(position)
+            existing.ticket = 0
             existing.last_beat = time.monotonic()
             existing.closure = None
             existing.stream_attached = True
@@ -577,12 +728,13 @@ class AgentConnectionRegistry:
             metrics().increment(AGENT_CONNECTIONS_OPENED, {"kind": "reattach"})
             logger.info(
                 "[CONN] reattached agent=%s connection=%s scope=%s generation=%s "
-                "transport=%s",
+                "transport=%s%s",
                 agent_id,
                 connection_id,
                 scope,
                 existing.stream_generation,
                 transport,
+                f" from process={moved_from}" if moved_from is not None else "",
             )
             return existing
 
@@ -597,7 +749,7 @@ class AgentConnectionRegistry:
             scope=scope,
             delivery_filter=delivery_filter,
             spawn_capable=spawn_capable,
-            cursor=cursor,
+            position=dict(position),
             last_beat=now,
             opened_at=now,
             stream_attached=True,
@@ -653,7 +805,7 @@ class AgentConnectionRegistry:
         """
         self._on_close = listener
 
-    def close(self, connection_id: str, closure: Closure) -> AgentConnection | None:
+    def _forget(self, connection_id: str) -> AgentConnection | None:
         conn = self._by_id.pop(connection_id, None)
         if conn is None:
             return None
@@ -662,6 +814,16 @@ class AgentConnectionRegistry:
             owned.discard(connection_id)
             if not owned:
                 self._by_agent.pop(conn.agent_id, None)
+        return conn
+
+    def close(self, connection_id: str, closure: Closure) -> AgentConnection | None:
+        held = self._by_id.get(connection_id)
+        if held is not None and held.held_by is not None:
+            # Another process holds it, and only that process can close it.
+            return None
+        conn = self._forget(connection_id)
+        if conn is None:
+            return None
         conn.closure = closure
         conn.stream_attached = False
         conn.wake.set()
@@ -695,6 +857,8 @@ class AgentConnectionRegistry:
                 conn.beats,
                 time.monotonic() - conn.last_beat,
             )
+        if self._rows is not None:
+            self._rows.closed(conn)
         # After the bookkeeping and the log, so an observer sees the closed
         # state. Guarded because the registry's own contract — the connection
         # is closed and the caller gets it back — must not depend on whoever
@@ -711,7 +875,10 @@ class AgentConnectionRegistry:
         return conn
 
     def _close_for_controller(self, agent_id: str) -> None:
-        """An agent now run by a controller keeps no connection of its own."""
+        """An agent now run by a controller keeps no connection of its own.
+
+        Only the connections held here: every process is told of the binding,
+        and each closes its own."""
         for cid in list(self._by_agent.get(agent_id, ())):
             self.close(
                 cid,
@@ -735,7 +902,7 @@ class AgentConnectionRegistry:
         stale = [
             conn
             for conn in self._by_id.values()
-            if (now - conn.last_beat) >= HEARTBEAT_TTL_SECONDS
+            if conn.held_by is None and (now - conn.last_beat) >= HEARTBEAT_TTL_SECONDS
         ]
         closed = []
         for conn in stale:
@@ -752,10 +919,13 @@ class AgentConnectionRegistry:
         self,
         agent_id: str,
         connection_id: str,
-        cursor: int,
         generation: int | None,
     ) -> AgentConnection:
-        """Record a client tick and its cursor.
+        """Record a client tick: the client is still there.
+
+        A tick says nothing about how far the client has read. The connection's
+        position is moved only by the stream, as it sends, and a client that
+        drops resumes from the position it sends when it reopens.
 
         Rejects a tick for a connection with no stream: the client is alive but
         receiving nothing, and must be told to reopen rather than left believing
@@ -765,9 +935,9 @@ class AgentConnectionRegistry:
         actually attached to. Sharing an id is what makes takeover work, and it
         is also what makes a displaced client's tick indistinguishable from the
         winner's — same id, same token. Unfenced, the loser keeps the
-        connection alive on the winner's behalf and, because a higher cursor is
-        adopted, drags the winner past events it was never sent. Nothing is
-        mutated before the check, so a refused tick costs the winner nothing.
+        connection alive on the winner's behalf, so the winner is never told it
+        was dropped. Nothing is mutated before the check, so a refused tick
+        costs the winner nothing.
 
         `None` is a tick that cannot be fenced, and it is accepted only from a
         connection whose holder is a client built before the fence existed.
@@ -791,10 +961,15 @@ class AgentConnectionRegistry:
             )
         if not conn.stream_attached:
             raise NoStreamAttachedError(connection_id)
+        if conn.held_by is not None:
+            # An old event-stream client's beat that reached a process other
+            # than the one holding its stream. Fenced here on the row, and
+            # handed on to the holder, which is the one that counts it.
+            if self._rows is not None:
+                self._rows.forward_beat(conn, generation)
+            return conn
         conn.last_beat = time.monotonic()
         conn.beats += 1
-        if cursor > conn.cursor:
-            conn.cursor = cursor
         return conn
 
     def require(self, agent_id: str, connection_id: str) -> AgentConnection:
@@ -967,15 +1142,21 @@ class AgentConnectionRegistry:
         self._notify_released(loser, room_id, session_id)
         return Released(connection_id=loser.id, room_id=room_id, session_id=session_id)
 
-    @staticmethod
     def _notify_released(
-        conn: AgentConnection, room_id: str, session_id: str | None
+        self, conn: AgentConnection, room_id: str, session_id: str | None
     ) -> None:
         """Queue a `room_released` frame for a client that can take one.
 
         A room released twice before the stream writes it is reported once,
-        naming the session when either release knew it.
+        naming the session when either release knew it. A connection another
+        process holds is told by that process, from what was collected here.
         """
+        if self._released is not None:
+            self._released.append(
+                Released(connection_id=conn.id, room_id=room_id, session_id=session_id)
+            )
+        if conn.held_by is not None:
+            return
         if (conn.declaration.speaks or 0) < ROOM_RELEASED_PROTOCOL_REVISION:
             return
         if session_id is not None or room_id not in conn.released_rooms:
@@ -1031,21 +1212,74 @@ class AgentConnectionRegistry:
         Not stored anywhere else: a command relayed to nobody is refused to
         whoever sent it, rather than held for a watcher that may not return.
         A controller-backed agent's command goes to its controller's stream.
+        A stream another process holds is handed the command through that
+        process (`ConnectionRows.relay_session_command`).
         """
         if self.controllers.is_bound(agent_id):
-            return self.controllers.relay_session_command(agent_id, frame)
-        else:
-            watchers = [
-                conn
-                for conn in self.for_agent(agent_id)
-                if conn.scope == "all"
-                and conn.stream_attached
-                and (conn.declaration.speaks or 0) >= SESSION_COMMAND_PROTOCOL_REVISION
-            ]
+            if self.controllers.relay_session_command(agent_id, frame):
+                return True
+            holder = self.controllers.process_holding(agent_id)
+            binding = self.controllers.binding(agent_id)
+            if holder is None or binding is None or self._rows is None:
+                return False
+            self._rows.relay_session_command(binding.tenant_id, agent_id, holder, frame)
+            return True
+        watchers = self._watchers(agent_id)
+        relayed_to: set[str] = set()
         for conn in watchers:
-            conn.session_commands.append(frame)
-            conn.wake.set()
+            if conn.held_by is None:
+                self.deliver_session_command(conn, frame)
+            elif (
+                self._rows is not None
+                and conn.tenant_id is not None
+                and conn.held_by not in relayed_to
+            ):
+                relayed_to.add(conn.held_by)
+                self._rows.relay_session_command(
+                    conn.tenant_id, agent_id, conn.held_by, frame
+                )
         return bool(watchers)
+
+    def deliver_relayed(self, agent_id: str, frame: dict[str, Any]) -> bool:
+        """A session command another process relayed to the streams held here.
+        False when none of them is still here to take it."""
+        if self.controllers.is_bound(agent_id):
+            return self.controllers.relay_session_command(agent_id, frame)
+        delivered = False
+        for conn in self._watchers(agent_id):
+            if conn.held_by is None:
+                self.deliver_session_command(conn, frame)
+                delivered = True
+        return delivered
+
+    def relay_warm(self, agent_id: str, room_id: str) -> bool:
+        """Ask the controller running the agent to start the session a message
+        to `room_id` would start. False when no process holds that controller's
+        live socket or the agent is stopped. A controller another process
+        holds is asked through that process (`ConnectionRows.relay_warm`),
+        which hands the warm to its `ControllerPresence.relay_warm`."""
+        if self.controllers.relay_warm(agent_id, room_id):
+            return True
+        holder = self.controllers.process_holding(agent_id)
+        if holder is None or self._rows is None:
+            return False
+        self._rows.relay_warm(agent_id, holder, room_id)
+        return True
+
+    def _watchers(self, agent_id: str) -> list[AgentConnection]:
+        return [
+            conn
+            for conn in self.for_agent(agent_id)
+            if conn.scope == "all"
+            and conn.stream_attached
+            and (conn.declaration.speaks or 0) >= SESSION_COMMAND_PROTOCOL_REVISION
+        ]
+
+    @staticmethod
+    def deliver_session_command(conn: AgentConnection, frame: dict[str, Any]) -> None:
+        """Queue a relayed session command on a watcher held here."""
+        conn.session_commands.append(frame)
+        conn.wake.set()
 
     # ------------------------------------------------------------------
     # Room slots
@@ -1078,6 +1312,239 @@ class AgentConnectionRegistry:
                 del self._slot_locks[agent_id]
             else:
                 self._slot_locks[agent_id] = (lock, remaining - 1)
+
+    def holds_slots(self, agent_id: str) -> bool:
+        """Whether something holds this agent's slots (`slots`) right now."""
+        held = self._slot_locks.get(agent_id)
+        return held is not None and held[0].locked()
+
+    def recorded(self, agent_id: str) -> AbstractAsyncContextManager[None]:
+        """Make the slot moves inside the block on what every process holds.
+
+        Taken inside `slots`, around moves only: the block must not await. On
+        entry the agent's connections, claims and placements are read again
+        under a lock every process takes, so a fence, a claimant or a cap is
+        judged on what is recorded rather than on a copy that may be a moment
+        old. On exit what the block changed is written under the same lock,
+        and the processes holding the connections it touched are told. A
+        registry that records nothing makes this a no-op.
+        """
+        if self._rows is None:
+            return nullcontext()
+        return self._rows.recorded(agent_id)
+
+    async def refresh(self, agent_id: str) -> None:
+        """Read this agent's connections again from what every process has
+        recorded. For a caller that named a connection or a session this
+        process has no copy of yet: its row may have been written a moment
+        ago by another process."""
+        if self._rows is not None:
+            await self._rows.refresh(agent_id)
+
+    async def agent_deleted(self, agent_id: str) -> None:
+        """End a deleted agent's connections, here and in every other process.
+
+        Deleting the agent deleted its connections' rows. Each process makes
+        the agent's connections what the rows now say, which closes those it
+        holds (`apply_rows`): this one at once, and the others when told. A
+        registry that records nothing closes the connections it holds.
+        """
+        if self._rows is not None:
+            await self._rows.agent_deleted(agent_id)
+            return
+        for cid in list(self._by_agent.get(agent_id, ())):
+            self.close(cid, AGENT_DELETED)
+
+    # ------------------------------------------------------------------
+    # Keeping the copies of other processes' connections
+    # ------------------------------------------------------------------
+
+    def held_here(self, agent_id: str) -> list[AgentConnection]:
+        """The agent's connections this process holds, live or lapsed."""
+        return [
+            conn
+            for cid in self._by_agent.get(agent_id, ())
+            if (conn := self._by_id.get(cid)) is not None and conn.held_by is None
+        ]
+
+    def agents_recorded_in(self, tenant_id: str) -> set[str]:
+        """The agents this process keeps anything of from the tenant's rows,
+        so a pass over those rows judges each, the ones they no longer name
+        included: those `apply_rows` last set from them, and those with a
+        connection recorded in the tenant (`tenant_id`), whose row this
+        process may have written since."""
+        return {
+            agent_id
+            for agent_id, tenant in self._agent_tenants.items()
+            if tenant == tenant_id
+        } | {
+            conn.agent_id
+            for conn in self._by_id.values()
+            if conn.tenant_id == tenant_id
+        }
+
+    def held_by_processes(self) -> set[str]:
+        """Every other process this registry knows to hold an agent's or a
+        controller's connection."""
+        return {
+            conn.held_by for conn in self._by_id.values() if conn.held_by is not None
+        } | self.controllers.processes_elsewhere()
+
+    def slot_state(
+        self, agent_id: str
+    ) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
+        """The agent's claims (room to connection) and placements (session to
+        room and the connection that placed it), as they stand here."""
+        claims: dict[str, str] = {}
+        now = time.monotonic()
+        # A live claimant first, so that a room a lapsed connection still
+        # holds and a live one has since claimed is recorded as the live
+        # one's: at most one connection of an agent may hold a room.
+        conns = sorted(
+            (
+                conn
+                for cid in self._by_agent.get(agent_id, ())
+                if (conn := self._by_id.get(cid)) is not None
+            ),
+            key=lambda conn: (not conn.is_alive(now), conn.id),
+        )
+        for conn in conns:
+            for room_id in sorted(conn.rooms):
+                if room_id in claims:
+                    conn.rooms.discard(room_id)
+                else:
+                    claims[room_id] = conn.id
+        owners = self._placement_owners.get(agent_id, {})
+        placements = {
+            session_id: (room_id, owners[session_id])
+            for session_id, room_id in self._session_rooms.get(agent_id, {}).items()
+            if session_id in owners
+        }
+        return claims, placements
+
+    def incarnations_held_here(self, agent_id: str) -> dict[str, int]:
+        return {conn.id: conn.stream_generation for conn in self.held_here(agent_id)}
+
+    @contextmanager
+    def collect_released(self) -> Iterator[list[Released]]:
+        """Collect every room taken off a connection inside the block."""
+        released: list[Released] = []
+        self._released = released
+        try:
+            yield released
+        finally:
+            self._released = None
+
+    def apply_rows(
+        self, agent_id: str, tenant_id: str, rows: AgentSlotRows, process_id: str
+    ) -> list[AgentConnection]:
+        """Make this agent's connections what the rows say.
+
+        A connection held here that another process (or a later incarnation)
+        has taken over is closed `taken_over`, so its stream tells its client.
+        One whose row was written and is gone is closed too: deleting the
+        agent deletes its rows. Copies of other processes' connections are
+        replaced by what is live now. Claims and placements are set from the
+        rows, and a connection held here whose rooms changed is woken, so its
+        stream reports the change and a session waiting for its first room
+        starts reading. Returns the connections closed as taken over.
+
+        The rows are never older than what this process holds of the agent
+        (`connection_rows.py` reads them under its slots, or leaves an agent
+        moved since its read alone), so a connection opened after the read is
+        not here to be judged on them.
+        """
+        self._agent_tenants[agent_id] = tenant_id
+        closed: list[AgentConnection] = []
+        for conn in self.held_here(agent_id):
+            row = rows.connections.get(conn.id)
+            if row is None:
+                # Recorded once (`tenant_id` is set when its row is written),
+                # and the row is gone since.
+                if conn.tenant_id is not None:
+                    self.close(conn.id, AGENT_DELETED)
+                continue
+            if row.closed:
+                continue
+            if (
+                row.process_id != process_id
+                or row.incarnation != conn.stream_generation
+            ):
+                gone = self.close(conn.id, TAKEN_OVER)
+                if gone is not None:
+                    closed.append(gone)
+        for cid in list(self._by_agent.get(agent_id, ())):
+            copy = self._by_id.get(cid)
+            if copy is not None and copy.held_by is not None:
+                self._forget(cid)
+        for row in rows.live_connections():
+            if row.process_id == process_id or row.id in self._by_id:
+                continue
+            self._add_copy(row, tenant_id)
+
+        claims = rows.claims()
+        for cid in self._by_agent.get(agent_id, ()):
+            conn = self._by_id[cid]
+            rooms = {room for room, holder in claims.items() if holder == cid}
+            if conn.rooms != rooms:
+                conn.rooms = rooms
+                conn.wake.set()
+
+        placements = rows.placements()
+        if placements:
+            self._session_rooms[agent_id] = {
+                session_id: room_id for session_id, (room_id, _) in placements.items()
+            }
+            self._placement_owners[agent_id] = {
+                session_id: owner for session_id, (_, owner) in placements.items()
+            }
+        else:
+            self._session_rooms.pop(agent_id, None)
+            self._placement_owners.pop(agent_id, None)
+        if not self._by_agent.get(agent_id) and not placements:
+            self._agent_tenants.pop(agent_id, None)
+        return closed
+
+    def _add_copy(self, row: ConnectionRow, tenant_id: str) -> None:
+        now = time.monotonic()
+        copy = AgentConnection(
+            id=row.id,
+            agent_id=row.agent_id,
+            scope=cast(Scope, row.scope),
+            delivery_filter=cast(DeliveryFilter, row.delivery_filter),
+            spawn_capable=row.spawn_capable,
+            position={},
+            last_beat=now,
+            opened_at=now,
+            stream_attached=True,
+            stream_transport=cast(Transport, row.transport),
+            stream_generation=row.incarnation,
+            declaration=ClientDeclaration(speaks=row.speaks, accepts=row.accepts),
+            held_by=row.process_id,
+            tenant_id=tenant_id,
+        )
+        self._by_id[row.id] = copy
+        self._by_agent.setdefault(row.agent_id, set()).add(row.id)
+
+    def drop_copies_held_by(self, process_ids: set[str]) -> set[str]:
+        """Forget the connections these processes held, agents' and
+        controllers': their leases lapsed. Returns the agents that lost one."""
+        agents: set[str] = set()
+        for conn in list(self._by_id.values()):
+            if conn.held_by in process_ids:
+                self._forget(conn.id)
+                agents.add(conn.agent_id)
+        for controller_id in self.controllers.forget_processes(process_ids):
+            agents |= self.controllers.agents_of(controller_id)
+        return agents
+
+    def notify_released(self, released: Iterable[Released]) -> None:
+        """Tell the connections held here that another process took a room
+        off them."""
+        for lost in released:
+            conn = self._by_id.get(lost.connection_id)
+            if conn is not None and conn.held_by is None:
+                self._notify_released(conn, lost.room_id, lost.session_id)
 
     def claim_room(
         self, conn: AgentConnection, room_id: str, *, takeover: bool = False
@@ -1128,6 +1595,19 @@ class AgentConnectionRegistry:
             if conn is not None and room_id in conn.rooms:
                 conn.rooms.discard(room_id)
                 conn.wake.set()
+
+    def claims_held_here(self) -> dict[str, set[str]]:
+        """The rooms each agent's connections held by this process have
+        claimed, lapsed ones included, for checking them against the agents'
+        memberships. A copy of another process's connection is left out: that
+        process checks the connections it holds."""
+        claims: dict[str, set[str]] = {}
+        for agent_id, ids in self._by_agent.items():
+            for cid in ids:
+                conn = self._by_id.get(cid)
+                if conn is not None and conn.held_by is None and conn.rooms:
+                    claims.setdefault(agent_id, set()).update(conn.rooms)
+        return claims
 
     def claimant_of(self, agent_id: str, room_id: str) -> AgentConnection | None:
         """The connection that has explicitly claimed this room, if any.
@@ -1230,11 +1710,15 @@ class AgentConnectionRegistry:
         against one agent is twenty connections and one agent. Telemetry
         reports sessions, and a session is a connection. A controller's
         stream is one connection, however many agents it carries.
+
+        Counted across every process: those held here, the copies of the
+        others', and the controllers whose socket another process holds.
         """
         now = time.monotonic()
         return (
             sum(1 for conn in self._by_id.values() if conn.is_alive(now))
             + self.controllers.live_connection_count()
+            + self.controllers.held_elsewhere_count()
         )
 
     def live_agent_ids(self) -> set[str]:
@@ -1252,14 +1736,18 @@ class AgentConnectionRegistry:
         once under each, so the labels can sum to more than the agent count.
         An agent run by an agents controller has no connection of its own and
         counts under `CONTROLLER_LABEL` while its controller is live.
+
+        Only what this process holds: each process reports its own, so the
+        gauge sums across processes rather than counting every agent once per
+        process.
         """
         now = time.monotonic()
         agents: dict[tuple[str, str], set[str]] = {}
         for conn in self._by_id.values():
-            if conn.is_alive(now):
+            if conn.held_by is None and conn.is_alive(now):
                 key = (connection_transport(conn), client_label(conn.declaration))
                 agents.setdefault(key, set()).add(conn.agent_id)
-        controlled = self.controllers.live_agent_ids()
+        controlled = self.controllers.live_agent_ids_held_here()
         if controlled:
             agents.setdefault(CONTROLLER_LABEL, set()).update(controlled)
         return {key: len(ids) for key, ids in agents.items()}

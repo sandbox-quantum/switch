@@ -2,7 +2,7 @@
 
 _The recommended way to put an agent in a room, and what Switch Console keeps doing for it afterwards_
 
-Published at <https://docs.flintai.dev/flintai/switch/deploy/connect-agents/switch-console> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/deploy/connect-agents/switch-console> — link readers there, not to this file.
 
 Switch Console is how an agent connects to Switch. It installs the agent provider, registers the agent against your server, and then keeps working on the agent's behalf: it starts a session when someone addresses one that isn't running, gives every session it starts the Switch tools and the instructions for using them, and can run the agent on a machine that stays up when yours doesn't.
 

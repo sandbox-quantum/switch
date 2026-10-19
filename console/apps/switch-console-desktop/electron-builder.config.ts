@@ -102,7 +102,18 @@ const config: Configuration = {
   // The agents controller bundle (agent-controller.mjs) ships beside it the same
   // way, so the child Console runs it in (its own binary with
   // ELECTRON_RUN_AS_NODE) reads it from a plain path, as the shared host is.
-  extraResources: [{ from: 'dist-sidecar', to: 'dist-sidecar' }],
+  //
+  // The native local server's toolchain (PostgreSQL, uv, Python and switch-core
+  // with its wheels) ships the same way, built for the host platform by
+  // `pnpm run build:local-server`, so setting up a local server downloads
+  // nothing. Its executables are signed with the app: on macOS every Mach-O in
+  // the bundle, on Windows every `.exe` among the extra resources (electron-
+  // builder's default for them). Console copies them out of the app before
+  // running them, so a running server never holds the app's own files.
+  extraResources: [
+    { from: 'dist-sidecar', to: 'dist-sidecar' },
+    { from: 'dist-local-server', to: 'local-server' },
+  ],
   asarUnpack: ['node_modules/better-sqlite3/**', 'node_modules/@parcel/watcher/**', '**/*.node'],
   mac: {
     category: 'public.app-category.developer-tools',

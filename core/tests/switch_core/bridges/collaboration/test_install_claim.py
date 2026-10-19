@@ -851,6 +851,81 @@ class TestProposals:
             )
 
 
+class TestAnsweredThroughAnotherProcess:
+    """A claim's proposal is posted by whichever switch-core process the claim
+    reached, and the admin's answer may reach any other: which chat it was put
+    to is read from the state's row, not held by the process that put it."""
+
+    def _another_process(
+        self, harness: RLSHarness, fixture: _Fixture
+    ) -> MessagingInstallService:
+        installers = MessagingInstallerRegistry()
+        installers.register(fixture.installer)
+        return MessagingInstallService(
+            session_factory=harness.restricted,
+            store=MessagingInstallStore(),
+            receipts=MessagingEventReceiptStore(),
+            installers=installers,
+            lifecycle=fixture.lifecycle,  # type: ignore[arg-type]
+            users=UserStore(),
+            rooms=fixture.rooms,
+            public_origin=_ORIGIN,
+            keyring=_KEYRING,
+        )
+
+    async def test_connect_reaching_another_process_installs_the_chat(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+        await _ask(fixture, token, "-1001")
+
+        installed = await self._another_process(rls_harness, fixture).connect(
+            platform=_PLATFORM,
+            claim=InstallClaim(token=token, grant=_grant("-1001"), claimant="42"),
+        )
+
+        assert installed.external_workspace_id == "-1001"
+        assert [
+            i.external_workspace_id for i in await _active_installs(rls_harness)
+        ] == ["-1001"]
+
+    async def test_an_answer_from_another_chat_is_refused_there_too(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+        await _ask(fixture, token, "-1001")
+
+        with pytest.raises(MessagingInstallStateError):
+            await self._another_process(rls_harness, fixture).connect(
+                platform=_PLATFORM,
+                claim=InstallClaim(token=token, grant=_grant("-1002"), claimant="42"),
+            )
+        assert await _active_installs(rls_harness) == []
+
+    async def test_a_repeated_claim_is_recognised_by_another_process(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Telegram sends the claim twice and the copies land on different
+        processes: the second is the same question, not an expired link."""
+        fixture = await _fixture(rls_harness)
+        token = await _link(
+            rls_harness.restricted, fixture, fixture.tenant_a, fixture.admin_a
+        )
+        await _ask(fixture, token, "-1001")
+
+        with pytest.raises(install_service_module.InstallClaimRepeated):
+            await self._another_process(rls_harness, fixture).propose(
+                platform=_PLATFORM,
+                claim=InstallClaim(token=token, grant=_grant("-1001"), claimant="42"),
+            )
+
+
 class TestTheRoute:
     """A claim arrives as an ordinary event and only asks; an admin's answer,
     another event, is what connects the chat, and is then delivered as one."""

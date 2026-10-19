@@ -71,6 +71,8 @@ def _probes(**overrides) -> RuntimeProbes:
     defaults = dict(
         listener_connected=lambda: True,
         session_activity_listener_connected=lambda: True,
+        agent_event_listener_connected=lambda: True,
+        signal_bus_connected=lambda: True,
         bridges_running=lambda: 2,
         bridges_running_by_platform=lambda: {"slack": 1, "mattermost": 1},
         bridges_configured=lambda: 2,
@@ -100,6 +102,7 @@ async def test_health_runs_even_with_nothing_configured(monkeypatch):
         config=_config(monkeypatch),
         version="1.0.0",
         session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
         probes=_probes(),
     )
     try:
@@ -117,6 +120,7 @@ async def test_a_dead_database_fails_readiness(monkeypatch):
         config=_config(monkeypatch),
         version="1.0.0",
         session_factory=_session_factory(fail=True),
+        process_id="core-0-abcd1234",
         probes=_probes(),
     )
     try:
@@ -135,6 +139,7 @@ async def test_a_crashed_bridge_is_reported_without_taking_the_server_down(
         config=_config(monkeypatch),
         version="1.0.0",
         session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
         probes=_probes(bridges_running=lambda: 1, bridges_configured=lambda: 3),
     )
     try:
@@ -158,6 +163,7 @@ async def test_an_endpoint_installs_the_registry_and_reports_state(monkeypatch):
         ),
         version="1.0.0",
         session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
         probes=_probes(),
     )
     try:
@@ -207,6 +213,7 @@ async def test_the_room_cache_reports_what_it_holds(monkeypatch):
         config=config,
         version="1.0.0",
         session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
         probes=_probes(
             room_cache_stats=lambda: RoomCacheStats(bytes=4096, rooms=3, rows=12)
         ),
@@ -230,6 +237,7 @@ async def test_a_start_is_counted_once_so_restarts_line_up(monkeypatch):
         ),
         version="1.0.0",
         session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
         probes=_probes(),
     )
     try:
@@ -253,6 +261,7 @@ async def test_a_pool_that_reports_nothing_produces_no_reading(monkeypatch):
         ),
         version="1.0.0",
         session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
         probes=_probes(pool_stats=lambda: None),
     )
     try:
@@ -280,6 +289,7 @@ async def test_metrics_reach_the_collector(monkeypatch):
         ),
         version="9.9.9",
         session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
         probes=_probes(),
     )
     try:
@@ -312,6 +322,7 @@ async def test_closing_stops_the_loops_and_uninstalls(monkeypatch):
         ),
         version="1.0.0",
         session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
         probes=_probes(),
     )
     monkeypatch.setattr(
@@ -343,6 +354,7 @@ async def test_the_database_sampler_starts_with_the_metrics_exporter(monkeypatch
         ),
         version="1.0.0",
         session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
         probes=_probes(),
         db_server_engine=engine,
     )
@@ -369,6 +381,7 @@ async def test_a_connection_kind_that_empties_out_is_reported_as_zero(monkeypatc
         ),
         version="1.0.0",
         session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
         probes=_probes(agents_connected=lambda: dict(connected)),
     )
     try:
@@ -389,5 +402,56 @@ async def test_a_connection_kind_that_empties_out_is_reported_as_zero(monkeypatc
             ("detached", "agent-runtime"): 0.0,
             ("websocket", "unknown"): 0.0,
         }
+    finally:
+        await observability.aclose()
+
+
+@pytest.mark.asyncio
+async def test_one_replica_stays_in_service_with_a_listener_down(monkeypatch):
+    """With nowhere else to send the traffic, late is better than none."""
+    observability = start_observability(
+        config=_config(monkeypatch),
+        version="1.0.0",
+        session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
+        probes=_probes(
+            agent_event_listener_connected=lambda: False,
+            signal_bus_connected=lambda: False,
+        ),
+    )
+    try:
+        report = await observability.monitor.refresh()
+        assert report.ready is True
+        checks = report.as_response()["checks"]
+        assert checks["agent_event_listener"]["healthy"] is False
+        assert checks["signal_bus"]["healthy"] is False
+    finally:
+        await observability.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "dead",
+    [
+        "listener_connected",
+        "session_activity_listener_connected",
+        "agent_event_listener_connected",
+        "signal_bus_connected",
+    ],
+)
+async def test_with_several_replicas_a_dead_listener_takes_the_pod_out(
+    monkeypatch, dead
+):
+    """Another replica can take the traffic this one would answer late."""
+    observability = start_observability(
+        config=_config(monkeypatch, CORE_REPLICAS="2"),
+        version="1.0.0",
+        session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
+        probes=_probes(**{dead: lambda: False}),
+    )
+    try:
+        report = await observability.monitor.refresh()
+        assert report.ready is False
     finally:
         await observability.aclose()

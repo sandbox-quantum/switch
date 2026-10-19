@@ -14,9 +14,12 @@ unreadable by the pods the release then rolls.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import tomllib
 from pathlib import Path
+
+from switch_core import main
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATE_JOB = (
@@ -69,3 +72,34 @@ def test_the_entry_point_resolves_to_a_callable() -> None:
     module = __import__(module_path, fromlist=[attribute])
 
     assert callable(getattr(module, attribute))
+
+
+async def test_an_older_release_finds_nothing_to_migrate_on_a_newer_schema(
+    monkeypatch,
+) -> None:
+    """During a rolling deploy or a rollback, the older release's migrate step
+    meets a head it has no file for. When only expand-only revisions lie
+    between, it exits cleanly instead of failing the pod's init container."""
+    calls: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def no_lock(config):
+        yield
+
+    async def ahead(config, alembic_cfg) -> bool:
+        return True
+
+    def upgrade(*args) -> None:
+        calls.append("upgrade")
+
+    async def grant(config) -> None:
+        calls.append("grant")
+
+    monkeypatch.setattr(main, "boot_lock", no_lock)
+    monkeypatch.setattr(main, "_schema_ahead", ahead)
+    monkeypatch.setattr(main.alembic_command, "upgrade", upgrade)
+    monkeypatch.setattr(main, "_prepare_database", grant)
+
+    await main._migrate_and_grant(object())  # type: ignore[arg-type]
+
+    assert calls == []

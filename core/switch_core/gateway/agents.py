@@ -27,12 +27,14 @@ from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     TaskProtocolConfig,
 )
+from switch_core.chats.service import ChatService
 from switch_core.config import SwitchConfig
-from switch_core.db.models import User
+from switch_core.db.models import User, require_tenant_id
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
+from switch_core.gateway.chats import get_chat_service
 from switch_core.gateway.dependencies import (
     get_agent_store,
     get_config,
@@ -417,6 +419,7 @@ async def update_agent_icon(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ) -> AgentSummary:
     """Set, change, or clear an agent's icon (CHOO-2171).
 
@@ -459,6 +462,7 @@ async def update_agent_icon(
     await agent_store.update(session, agent_id, icon_url=icon_url)
     await session.commit()
     await session.refresh(agent)
+    await chat_service.agent_changed(require_tenant_id(), agent_id)
 
     logger.info(
         "%s agent %s icon by user %s",
@@ -479,6 +483,7 @@ async def update_agent_display_name(
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ) -> AgentSummary:
     """Set, change, or clear an agent's human display name.
 
@@ -513,6 +518,7 @@ async def update_agent_display_name(
     await agent_store.update(session, agent_id, display_name=display_name)
     await session.commit()
     await session.refresh(agent)
+    await chat_service.agent_changed(require_tenant_id(), agent_id)
 
     logger.info(
         "%s agent %s display name by user %s",

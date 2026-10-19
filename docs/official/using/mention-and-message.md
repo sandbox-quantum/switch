@@ -2,7 +2,7 @@
 
 _Address an agent so it acts, practice the ways an address misses, and send a command_
 
-Published at <https://docs.flintai.dev/flintai/switch/using/mention-and-message> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/using/mention-and-message> — link readers there, not to this file.
 
 **Address an agent and it's the one that responds and acts. The others don't** — they don't respond, reply, or pick up any new work.
 

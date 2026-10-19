@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Literal
 
 import discord
+from discord.http import Route
 from pydantic import Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
@@ -101,6 +102,13 @@ _PUBLICATION_WEBHOOK_NAME = "Switch Sessions"
 ALLOWED_MESSAGE_TYPES = frozenset(
     {discord.MessageType.default, discord.MessageType.reply}
 )
+
+# The one shared Gateway connection, as owned work (`ownership.py`): it runs
+# in one switch-core process, and every shared-delivery bridge is held beside
+# it (`DiscordAdapter.held_with`), since the events it receives reach a bridge
+# in-process. One key, for the deployment's one Discord app.
+DISCORD_GATEWAY = "discord-gateway"
+DISCORD_GATEWAY_KEY = "app"
 
 # Put on the message an agent is working on for as long as its turn lasts.
 _REACTION: dict[ActivityMark, str] = {"working": "👀", "queued": "⏳"}
@@ -506,6 +514,16 @@ class DiscordAdapter(PlatformAdapter):
 
     display_name: ClassVar[str] = "Discord"
     docs_slug: ClassVar[str | None] = "discord"
+    # Quiet, a bridge with its own token logs in for the API alone and opens
+    # no Gateway socket. A shared-delivery bridge opens none either way: it
+    # listens where the shared connection runs (`held_with`).
+    keeps_quiet_unless_listening: ClassVar[bool] = True
+
+    @classmethod
+    def held_with(cls, connection_config: dict[str, object]) -> tuple[str, str] | None:
+        if connection_config.get("event_delivery") == "shared":
+            return (DISCORD_GATEWAY, DISCORD_GATEWAY_KEY)
+        return None
 
     @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
@@ -657,10 +675,22 @@ class DiscordAdapter(PlatformAdapter):
             )
             return
 
+        conn = self._require_connection()
+        if not self._listening:
+            # Another process holds the bridge and listens for it. This copy
+            # serves the requests that reach it, over the API alone.
+            await conn.login()
+            logger.info(
+                "Discord adapter logged in as %s (guild %s), quiet: another "
+                "process listens",
+                conn.client.user,
+                self._config.guild_id,
+            )
+            return
+
         # One guild, one handler; the DM handler is the same adapter so direct
         # messages still reach it. The connection routes each message by guild
         # id, which for a single-guild bridge is exactly the old filter.
-        conn = self._require_connection()
         conn.register_message_handler(self._guild_id, self._handle_message)
         conn.set_dm_handler(self._handle_message)
         conn.set_interaction_handler(self._make_on_interaction())
@@ -2287,6 +2317,10 @@ class DiscordAdapter(PlatformAdapter):
         term = query.strip()
         if not term:
             return []
+        if not self._listening:
+            results = await self._search_members_by_api(term)
+            results.sort(key=lambda u: u.display_name.lower())
+            return results
 
         self._require_connection().take_member_search()
         guild = await self._get_guild()
@@ -2312,6 +2346,41 @@ class DiscordAdapter(PlatformAdapter):
             if not getattr(member, "bot", False)
         ]
         results.sort(key=lambda u: u.display_name.lower())
+        return results
+
+    async def _search_members_by_api(self, term: str) -> list[DirectoryUser]:
+        """The member search of a quiet copy, which has no Gateway socket to
+        query members over: Discord's search endpoint, matching the same
+        prefix of a username or nickname. discord.py has no call for it."""
+        client = self._require_client()
+        try:
+            found = await client.http.request(
+                Route(
+                    "GET",
+                    "/guilds/{guild_id}/members/search",
+                    guild_id=self._guild_id,
+                ),
+                params={"query": term, "limit": 100},
+            )
+        except discord.HTTPException as e:
+            raise RuntimeError(f"Discord member search failed: {e}") from e
+        results: list[DirectoryUser] = []
+        for member in found:
+            user = member.get("user") or {}
+            if user.get("bot"):
+                continue
+            username = str(user.get("username", ""))
+            results.append(
+                DirectoryUser(
+                    external_user_id=str(user.get("id", "")),
+                    username=username,
+                    # Discord's own order for a member's display name.
+                    display_name=str(
+                        member.get("nick") or user.get("global_name") or username
+                    ),
+                    email=None,
+                )
+            )
         return results
 
     async def create_dm_channel(
@@ -2465,6 +2534,14 @@ class DiscordAdapter(PlatformAdapter):
             return
 
         guild = await self._get_guild()
+        if not self._listening:
+            # The process listening for the bridge makes the role. Two making
+            # it at once would make two, so this copy only learns it, for
+            # rendering the agent's mentions.
+            existing = discord.utils.get(guild.roles, name=agent_name)
+            if existing is not None:
+                self._agent_role_ids[agent_name.casefold()] = existing.id
+            return
         # A role whose name is exactly the agent's is taken to be that agent's,
         # so a role made by hand — the only way to use this where the bot may
         # not manage roles — is adopted rather than duplicated. The match has to
@@ -2514,6 +2591,11 @@ class DiscordAdapter(PlatformAdapter):
         alone and said so, since an agent's own role never has any.
         """
         if not self._agent_roles_available():
+            return
+        if not self._listening:
+            # Deleted by the process listening for the bridge, which alone can
+            # see who holds the role: this copy has no member list to check.
+            self._agent_role_ids.pop(agent_name.casefold(), None)
             return
 
         guild = await self._get_guild()

@@ -50,16 +50,21 @@ const {
   cloudMachineLifecycle,
   listCloudMachines,
   getConnectionCatalog,
+  fetchConnectionAgents,
   fetchServiceGrants,
+  fetchWorkspaceServices,
+  setWorkspaceService,
+  fetchConnectorApps,
+  saveConnectorApp,
+  fetchConnectorAppImpact,
+  removeConnectorApp,
   removeServiceGrant,
   setServiceGrant,
   getGitHubConnection,
   startGitHubConnection,
   completeGitHubConnection,
-  confirmGitHubConnection,
   startServiceConnection,
   completeServiceConnection,
-  confirmServiceConnection,
   connectServiceWithKey,
   disconnectService,
   acceptInvitation,
@@ -133,7 +138,7 @@ const MANAGED = {
  * means it cannot be spread. Used where a test needs several distinct servers
  * (e.g. the per-server avatar-settings cache) without redeclaring every field. */
 function serverWithId(id: string): typeof SERVER {
-  return { id, name: 'S', gatewayUrl: 'https://switch.example.com', managed: false } as never;
+  return { id, name: 'S', url: 'https://switch.example.com', managed: false } as never;
 }
 
 /** A structurally-valid JWT whose payload `exp` is `secondsFromNow` in the
@@ -172,6 +177,33 @@ function cookieHeaderOf(call: unknown[]): string {
 }
 
 const fetchMock = vi.fn(async () => okMeResponse());
+
+const CONNECTOR_APP = {
+  slug: 'github',
+  name: 'GitHub',
+  kind: 'github_app',
+  source: 'saved',
+  configuration_variables: ['GITHUB_CONNECTIONS_CONFIG_PATH'],
+  deprecated: false,
+  client_id: 'Iv1',
+  saved_client_id: 'Iv1',
+  fields: { slug: 'switch-example' },
+  secrets: {
+    client_secret: { set: true, last4: 'ab12' },
+    private_key: { set: true, fingerprint: 'SHA256:abc' },
+  },
+  saved_ignored: false,
+  unreadable: false,
+  load_error: null,
+  redirect_uri: 'https://switch.example.com/gateway/provider-connections/github/callback',
+  setup_blocked: null,
+  install_url: 'https://github.com/apps/switch-example/installations/new',
+  updated_by_name: 'Ada',
+  updated_at: '2026-10-16T09:00:00+00:00',
+  connected_members: 3,
+  workspaces: 1,
+  stale_connections: 0,
+};
 
 describe('gatewayFetch proactive session renewal', () => {
   beforeEach(() => {
@@ -587,7 +619,26 @@ describe('room creation', () => {
     expect(slack).toMatchObject({ channelCreationSupported: true, canCreateChannels: false });
   });
 
-  it('always names a bridge and a channel type, never the internal-only escape hatch', async () => {
+  it('makes a room with no bridge internal, not one on the default app', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 'room-1',
+        name: 'design',
+        description: 'd',
+        channel_type: 'channel_public',
+        agent_count: 0,
+        bridge_display_name: null,
+        archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+      }) as never
+    );
+
+    await createRoom(SERVER, { name: 'design', description: 'd', bridgeId: null, agentIds: [] });
+
+    expect(bodyOf(fetchMock.mock.calls[0])).toMatchObject({ bridge_id: null, internal_only: true });
+  });
+
+  it('names a chosen bridge and a channel type, never the internal-only escape hatch', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({
         id: 'room-1',
@@ -1033,7 +1084,7 @@ describe('GitHub connection transport', () => {
     getSessionCookie.mockResolvedValue(makeJwt(7200));
   });
   afterEach(() => vi.unstubAllGlobals());
-  it('sends objects, encoded once, for start, complete and confirm', async () => {
+  it('sends objects, encoded once, for start and complete, and reads the account back', async () => {
     const state = 'a'.repeat(43);
     const input = { port: 12345, state, completion_secret: 'b'.repeat(43) };
     fetchMock.mockResolvedValueOnce(
@@ -1045,17 +1096,18 @@ describe('GitHub connection transport', () => {
       )
     );
     await startGitHubConnection(SERVER, input);
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await completeGitHubConnection(SERVER, state, 'SYNTHETIC-CODE', input.completion_secret);
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await confirmGitHubConnection(SERVER, state, input.completion_secret);
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ warning: null, login: 'example-user' }))
+    );
+    expect(
+      await completeGitHubConnection(SERVER, state, 'SYNTHETIC-CODE', input.completion_secret)
+    ).toEqual({ warning: null, login: 'example-user' });
     const bodies = (fetchMock.mock.calls as unknown[][]).map((call) =>
       JSON.parse((call[1] as RequestInit).body as string)
     );
     expect(bodies).toEqual([
       input,
       { code: 'SYNTHETIC-CODE', completion_secret: input.completion_secret },
-      { completion_secret: input.completion_secret },
     ]);
   });
   it('only accepts authorization URLs on the authenticated server', async () => {
@@ -1158,6 +1210,9 @@ describe('GitHub connection transport', () => {
         loopback_ports: null,
         key: null,
         external_identity: 'ada-gh',
+        consent: 'write',
+        // A server without the workspace switch: no workspace layer.
+        workspace_enabled: null,
       },
       expect.objectContaining({ slug: 'jira', status: 'coming_soon', unavailable_reason: null }),
       expect.objectContaining({
@@ -1193,6 +1248,8 @@ describe('GitHub connection transport', () => {
         loopback_ports: null,
         key: null,
         external_identity: null,
+        consent: null,
+        workspace_enabled: null,
       },
     ]);
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
@@ -1203,6 +1260,212 @@ describe('GitHub connection transport', () => {
         new Response(JSON.stringify({ connections: [{ ...github, status: 'pending' }] }))
       );
     await expect(getConnectionCatalog(SERVER)).rejects.toThrow();
+  });
+  it('reads whether the workspace has each service switched on', async () => {
+    const entry = {
+      slug: 'example',
+      name: 'Example',
+      category: 'Observability',
+      description: 'Metrics.',
+      enabled: true,
+      auth_type: 'oauth',
+      connectable: true,
+      configured: true,
+      unavailable_reason: null,
+      status: 'not_connected',
+      consent: null,
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          connections: [
+            { ...entry, workspace_enabled: false },
+            { ...entry, slug: 'other', workspace_enabled: true, status: 'active', consent: 'read' },
+          ],
+        })
+      )
+    );
+    expect(
+      (await getConnectionCatalog(SERVER)).map(({ slug, workspace_enabled, consent }) => ({
+        slug,
+        workspace_enabled,
+        consent,
+      }))
+    ).toEqual([
+      { slug: 'example', workspace_enabled: false, consent: null },
+      { slug: 'other', workspace_enabled: true, consent: 'read' },
+    ]);
+  });
+  it("reads the person's own agents for a service", async () => {
+    const agents = [
+      { agent_id: 'a1', name: 'Helper', granted: true, addressing_open: false },
+      { agent_id: 'a2', name: 'Open one', granted: false, addressing_open: true },
+    ];
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(agents)));
+    expect(await fetchConnectionAgents(SERVER, 'google workspace')).toEqual(agents);
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/service-connections/google%20workspace/agents'
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify([{ agent_id: 'a1', name: 'Helper', granted: 'yes' }]))
+    );
+    await expect(fetchConnectionAgents(SERVER, 'example')).rejects.toThrow();
+
+    // A server from before the list: the page says it cannot list them.
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }));
+    expect(await fetchConnectionAgents(SERVER, 'example')).toBeNull();
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"boom"}', { status: 500 }));
+    await expect(fetchConnectionAgents(SERVER, 'example')).rejects.toMatchObject({ status: 500 });
+  });
+  it("reads the workspace's switches, and none from a server without them", async () => {
+    const services = [
+      {
+        slug: 'example',
+        name: 'Example',
+        enabled: false,
+        updated_by_name: 'Ada',
+        updated_at: '2026-01-02T03:04:05+00:00',
+        connected_members: 3,
+        granted_agents: 5,
+      },
+      {
+        slug: 'other',
+        name: 'Other',
+        enabled: true,
+        updated_by_name: null,
+        updated_at: null,
+        connected_members: 0,
+        granted_agents: 0,
+      },
+    ];
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ services })));
+    expect(await fetchWorkspaceServices(SERVER)).toEqual(services);
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/workspace/services'
+    );
+
+    // No workspace switch on this server: the page shows no workspace layer.
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }));
+    expect(await fetchWorkspaceServices(SERVER)).toBeNull();
+  });
+  it('raises a refusal or a failure of the switches, never an empty list', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ detail: 'Workspace admins only.', code: 'forbidden', retryable: false }),
+        { status: 403 }
+      )
+    );
+    await expect(fetchWorkspaceServices(SERVER)).rejects.toMatchObject({
+      status: 403,
+      detail: 'Workspace admins only.',
+    });
+
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"boom"}', { status: 500 }));
+    await expect(fetchWorkspaceServices(SERVER)).rejects.toMatchObject({ status: 500 });
+  });
+  it('switches a service for the workspace and keeps the warning', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ slug: 'github', enabled: false, warning: 'Access stays a while.' })
+      )
+    );
+    expect(await setWorkspaceService(SERVER, 'github', false)).toEqual({
+      slug: 'github',
+      enabled: false,
+      warning: 'Access stays a while.',
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/workspace/services/github');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ enabled: false });
+  });
+  it("reads the server's connector apps, and none from a server without them", async () => {
+    const apps = { public_url: 'https://switch.example.com', apps: [CONNECTOR_APP] };
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...apps, registered: [{ slug: 'linear' }] }))
+    );
+    expect(await fetchConnectorApps(SERVER)).toEqual(apps);
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/connector-apps'
+    );
+
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }));
+    expect(await fetchConnectorApps(SERVER)).toBeNull();
+
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Admins only."}', { status: 403 }));
+    await expect(fetchConnectorApps(SERVER)).rejects.toMatchObject({ status: 403 });
+  });
+  it("answers a vendor's refusal of a save with the value to look at, and throws the rest", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(CONNECTOR_APP)));
+    expect(await saveConnectorApp(SERVER, 'github', { client_id: 'Iv1', replace: false })).toEqual({
+      kind: 'saved',
+      app: CONNECTOR_APP,
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/connector-apps/github');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ client_id: 'Iv1', replace: false });
+
+    const check = {
+      name: 'secret',
+      ok: false,
+      message: 'GitHub refused the secret.',
+      field: 'client_secret',
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          detail: 'GitHub refused the secret.',
+          field: 'client_secret',
+          checks: [check],
+        }),
+        { status: 422 }
+      )
+    );
+    expect(
+      await saveConnectorApp(SERVER, 'github', {
+        client_id: 'Iv1',
+        client_secret: 'x',
+        replace: false,
+      })
+    ).toEqual({
+      kind: 'refused',
+      message: 'GitHub refused the secret.',
+      field: 'client_secret',
+      checks: [check],
+    });
+
+    // A 422 that is not the vendor's (a missing secret) is a failure like any other.
+    fetchMock.mockResolvedValueOnce(
+      new Response('{"detail":"Enter the client secret."}', { status: 422 })
+    );
+    await expect(
+      saveConnectorApp(SERVER, 'github', { client_id: 'Iv1', replace: false })
+    ).rejects.toMatchObject({ status: 422, detail: 'Enter the client secret.' });
+  });
+  it('asks who would reconnect, and who was connected through a removed app', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ connected_members: 4, workspaces: 2 }))
+    );
+    expect(await fetchConnectorAppImpact(SERVER, 'google-workspace', 'a b')).toEqual({
+      connected_members: 4,
+      workspaces: 2,
+    });
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/connector-apps/google-workspace/impact?client_id=a+b'
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ connected_members: 0, workspaces: 0 }))
+    );
+    expect(await removeConnectorApp(SERVER, 'github')).toEqual({
+      connected_members: 0,
+      workspaces: 0,
+    });
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit])[1].method).toBe(
+      'DELETE'
+    );
   });
   it("reads someone else's agent's grants as none, and any other failure as one", async () => {
     fetchMock.mockResolvedValueOnce(new Response('{"detail":"Agent not found."}', { status: 404 }));
@@ -1300,29 +1563,22 @@ describe('a service sign-in', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it('starts, completes and confirms on the service’s own routes', async () => {
+  it('starts and completes on the service’s own routes, and reads the account back', async () => {
     answer({
       id: state,
       mode: 'loopback',
       url: vendor({ state, redirect_uri: 'http://127.0.0.1:12345/switch-services/callback' }),
     });
     expect((await startServiceConnection(SERVER, 'example', input)).mode).toBe('loopback');
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await completeServiceConnection(SERVER, 'example', state, 'SYNTHETIC-CODE', 'b'.repeat(43));
-    answer({ warning: null, consent: 'write' });
-    expect(await confirmServiceConnection(SERVER, 'example', state, 'b'.repeat(43))).toEqual({
-      warning: null,
-    });
+    answer({ warning: null, consent: 'write', account: 'ada@example.test' });
+    expect(
+      await completeServiceConnection(SERVER, 'example', state, 'SYNTHETIC-CODE', 'b'.repeat(43))
+    ).toEqual({ warning: null, consent: 'write', account: 'ada@example.test' });
     const calls = fetchMock.mock.calls as unknown as [string, RequestInit][];
-    expect(calls.map(([url]) => url)).toEqual([
-      flows,
-      `${flows}/${state}/complete`,
-      `${flows}/${state}/confirm`,
-    ]);
+    expect(calls.map(([url]) => url)).toEqual([flows, `${flows}/${state}/complete`]);
     expect(calls.map(([, init]) => JSON.parse(init.body as string))).toEqual([
       input,
       { code: 'SYNTHETIC-CODE', completion_secret: 'b'.repeat(43) },
-      { completion_secret: 'b'.repeat(43) },
     ]);
   });
 
@@ -1473,7 +1729,23 @@ describe('sign-up support', () => {
       oidcEnabled: false,
       oidcProviderLabel: null,
       signupEnabled: true,
+      oidcLoginOptions: [],
+      oidcBrowserHandoff: false,
     });
+  });
+
+  it('reads the sign-in buttons and whether the browser can be used', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...config,
+        oidc_enabled: true,
+        oidc_login_options: [{ id: 'google', label: 'Google' }],
+        oidc_browser_handoff: true,
+      })
+    );
+    const read = await fetchAuthConfig(SERVER);
+    expect(read.oidcLoginOptions).toEqual([{ id: 'google', label: 'Google' }]);
+    expect(read.oidcBrowserHandoff).toBe(true);
   });
 
   it('treats a server predating sign-up as not offering it', async () => {

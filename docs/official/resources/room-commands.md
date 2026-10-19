@@ -2,7 +2,7 @@
 
 _Every command you can run in a Switch room, and when to reach for it_
 
-Published at <https://docs.flintai.dev/flintai/switch/resources/room-commands> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/resources/room-commands> — link readers there, not to this file.
 
 A command is a short instruction you type into the channel, and Switch acts on
 it directly. Use one to see what is in a room, bring an agent in, or take hold

@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.operations import definitions
 from switch_core.bridges.agent.operations.callctx import (
@@ -37,7 +38,10 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer, Reader
-from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
+from switch_core.db.models import TENANT_ZERO_ID
+from switch_core.tenant_context import tenant_scope
+from tests.db_buffer import say, seed_member
 
 AGENT = "agent-1"
 CONNECTION = "connection-1"
@@ -94,7 +98,7 @@ def _open(registry: AgentConnectionRegistry) -> Any:
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
@@ -161,21 +165,9 @@ async def test_a_caller_with_no_session_still_reads_its_connection(registry) -> 
 
 
 # ── moving a session between rooms ───────────────────────────────────────────
-
-
-def _chatter(room_id: str, index: int) -> AgentEvent:
-    return AgentEvent(
-        type="message",
-        room_id=room_id,
-        payload=MessagePayload(
-            addressed=False,
-            sender="@u:s",
-            sender_name="u",
-            message_id=f"$m-{index}",
-            body="chatter",
-            timestamp=0,
-        ),
-    )
+#
+# Connecting runs inside the agent's tenant, which authenticating it binds for
+# a request; each call below binds it the same way.
 
 
 @pytest.mark.asyncio
@@ -198,7 +190,7 @@ async def test_connecting_vacates_only_the_callers_own_room(
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 
-    with call_context(_caller("session-a", ROOM_A)):
+    with tenant_scope(TENANT_ZERO_ID), call_context(_caller("session-a", ROOM_A)):
         await definitions.connect_to_room("room-c", include_general_instructions=False)
 
     assert registry.session_room(AGENT, "session-a") == "room-c"
@@ -225,7 +217,7 @@ async def test_a_room_a_sibling_has_taken_is_not_vacated(
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 
-    with call_context(_caller("session-a", ROOM_A)):
+    with tenant_scope(TENANT_ZERO_ID), call_context(_caller("session-a", ROOM_A)):
         await definitions.connect_to_room("room-c", include_general_instructions=False)
 
     assert connection.rooms == {ROOM_A, "room-c"}
@@ -248,7 +240,7 @@ async def test_displacing_a_sibling_names_it_in_the_warning(
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 
-    with call_context(_caller("session-a", None)):
+    with tenant_scope(TENANT_ZERO_ID), call_context(_caller("session-a", None)):
         result = await definitions.connect_to_room(
             "room-c", include_general_instructions=False
         )
@@ -258,7 +250,10 @@ async def test_displacing_a_sibling_names_it_in_the_warning(
 
 @pytest.mark.asyncio
 async def test_connecting_takes_the_rooms_unread_count(
-    registry, monkeypatch: pytest.MonkeyPatch
+    registry,
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: async_sessionmaker[AsyncSession],
+    db_buffer: EventBuffer,
 ) -> None:
     """Whose reading clears a room follows who is in it.
 
@@ -269,25 +264,30 @@ async def test_connecting_takes_the_rooms_unread_count(
     _open(registry)
     registry.place_session(AGENT, "session-b", "room-c", CONNECTION)
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
-    protocol = _protocol_for(registry, "room-c")
+    await seed_member(session_factory, AGENT, "room-c")
+    protocol = _protocol_for(registry, "room-c", event_buffer=db_buffer)
     init_operations_protocol(protocol)
     buffer = protocol.event_buffer
-    buffer.hand_counting_to(AGENT, Reader(id="session-b", is_session=True), "room-c")
+    await buffer.hand_counting_to(
+        TENANT_ZERO_ID, AGENT, Reader(id="session-b", is_session=True), "room-c"
+    )
     for index in range(2):
-        buffer.enqueue(AGENT, "room-c", _chatter("room-c", index))
+        said = await say(session_factory, "room-c", f"chatter {index}")
 
-    with call_context(_caller("session-a", None)):
+    with tenant_scope(TENANT_ZERO_ID), call_context(_caller("session-a", None)):
         await definitions.connect_to_room("room-c", include_general_instructions=False)
 
-    buffer.caught_up(
+    # A read session-b began before it lost the room, landing after it did.
+    await buffer.caught_up(
+        TENANT_ZERO_ID,
         AGENT,
         Reader(id="session-b", is_session=True),
         "room-c",
-        buffer.head(AGENT),
+        said.seq,
         CONNECTION,
     )
 
-    assert buffer.unread(AGENT, "room-c", buffer.head(AGENT)).count == 2
+    assert (await buffer.unread(TENANT_ZERO_ID, AGENT, "room-c", said.seq)).count == 2
 
 
 @pytest.mark.asyncio
@@ -299,7 +299,7 @@ async def test_displacing_nobody_warns_about_nothing(
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 
-    with call_context(_caller("session-a", None)):
+    with tenant_scope(TENANT_ZERO_ID), call_context(_caller("session-a", None)):
         result = await definitions.connect_to_room(
             "room-c", include_general_instructions=False
         )
@@ -324,7 +324,7 @@ async def test_one_eviction_is_reported_once_and_names_the_session(
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
@@ -334,7 +334,7 @@ async def test_one_eviction_is_reported_once_and_names_the_session(
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 
-    with call_context(_caller("session-a", None)):
+    with tenant_scope(TENANT_ZERO_ID), call_context(_caller("session-a", None)):
         result = await definitions.connect_to_room(
             "room-c", include_general_instructions=False
         )
@@ -359,7 +359,7 @@ async def test_evicting_another_connection_still_names_the_connection(
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
@@ -368,7 +368,7 @@ async def test_evicting_another_connection_still_names_the_connection(
     monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
     init_operations_protocol(_protocol_for(registry, "room-c"))
 
-    with call_context(_caller("session-a", None)):
+    with tenant_scope(TENANT_ZERO_ID), call_context(_caller("session-a", None)):
         result = await definitions.connect_to_room(
             "room-c", include_general_instructions=False
         )
@@ -376,7 +376,27 @@ async def test_evicting_another_connection_still_names_the_connection(
     assert "connection connection-old" in result["warning"]
 
 
-def _protocol_for(registry: AgentConnectionRegistry, room_id: str) -> Any:
+class _UncountedBuffer:
+    """Takes the hand-over of a room's unread count and keeps none of it."""
+
+    async def hand_counting_to(
+        self, tenant_id: str, agent_id: str, reader: Reader, room_id: str
+    ) -> None:
+        return None
+
+
+def _protocol_for(
+    registry: AgentConnectionRegistry,
+    room_id: str,
+    *,
+    event_buffer: EventBuffer | None = None,
+) -> Any:
+    """Just enough protocol to connect to `room_id`.
+
+    Connecting hands the room's unread count over, and the count is kept in
+    the database: a test about the count passes a db-buffer, and every other
+    one gets a stand-in that keeps nothing.
+    """
     room = SimpleNamespace(id=room_id, name="Room C", description="A room")
     profile = {
         "connection_model": "session_addressable",
@@ -402,7 +422,7 @@ def _protocol_for(registry: AgentConnectionRegistry, room_id: str) -> Any:
 
     return SimpleNamespace(
         connections=registry,
-        event_buffer=EventBuffer(sequence_base=0),
+        event_buffer=event_buffer or _UncountedBuffer(),
         agent_session_store=_AbsentSessionStore(),
         session_factory=session_factory,
         agent_store=SimpleNamespace(

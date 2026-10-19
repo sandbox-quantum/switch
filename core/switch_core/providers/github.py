@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import json
 import re
-import secrets
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
@@ -97,28 +95,14 @@ class GitHubReach:
     sso_hidden: list[int]
 
 
-@dataclass
-class GitHubFlow:
-    tenant_id: str
-    user_id: str
-    expires_at: float
-    verifier: str
-    browser_nonce: str
-    port: int
-    completion_secret: str
-    owner_label: str
-    status: str = "pending"
-    login: str = ""
-    credentials: dict = field(default_factory=dict)
-
-
 class GitHubConnections:
-    def __init__(self, config_path: str):
-        config = json.loads(Path(config_path).read_text())
-        self.client_id = config["client_id"]
-        self.client_secret = config["client_secret"]
-        self.slug = config["slug"]
-        self.origin = config["origin"].rstrip("/")
+    def __init__(
+        self, *, client_id: str, client_secret: str, slug: str, origin: str
+    ) -> None:
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.slug = slug
+        self.origin = origin.rstrip("/")
         url = urlsplit(self.origin)
         if (
             url.scheme != "https"
@@ -135,7 +119,16 @@ class GitHubConnections:
             raise ValueError("GitHub connection configuration is invalid")
         self.callback = self.origin + "/gateway/provider-connections/github/callback"
         self.install_url = f"https://github.com/apps/{self.slug}/installations/new"
-        self.flows: dict[str, GitHubFlow] = {}
+
+    @classmethod
+    def from_file(cls, config_path: str) -> GitHubConnections:
+        config = json.loads(Path(config_path).read_text())
+        return cls(
+            client_id=config["client_id"],
+            client_secret=config["client_secret"],
+            slug=config["slug"],
+            origin=config["origin"],
+        )
 
     async def revoke(self, token: str) -> None:
         try:
@@ -152,56 +145,10 @@ class GitHubConnections:
         except httpx.HTTPError:
             raise GitHubError("Could not reach GitHub to revoke the sign-in.") from None
 
-    def start(
-        self,
-        tenant_id: str,
-        user_id: str,
-        port: int,
-        completion_secret: str,
-        flow_id: str,
-        owner_label: str,
-    ) -> str:
-        self.flows = {k: v for k, v in self.flows.items() if v.expires_at > time.time()}
-        if flow_id in self.flows:
-            raise GitHubError(
-                "This authorization has already been used. Connect again."
-            )
-        for key in list(self.flows):
-            flow = self.flows[key]
-            if (flow.tenant_id, flow.user_id) == (tenant_id, user_id):
-                del self.flows[key]
-        if len(self.flows) >= 256:
-            raise GitHubError("GitHub connection is busy. Please try again shortly.")
-        self.flows[flow_id] = GitHubFlow(
-            tenant_id,
-            user_id,
-            time.time() + 600,
-            secrets.token_urlsafe(48),
-            secrets.token_urlsafe(32),
-            port,
-            completion_secret,
-            owner_label,
-        )
-        return flow_id
-
-    def flow(self, flow_id: str) -> GitHubFlow:
-        flow = self.flows.get(flow_id)
-        if flow is None or flow.expires_at <= time.time():
-            self.flows.pop(flow_id, None)
-            raise GitHubError(
-                "Sign-in was interrupted. Start it again from Switch Console."
-            )
-        return flow
-
-    def authorize_url(self, flow_id: str) -> str:
-        flow = self.flow(flow_id)
-        if flow.status != "pending":
-            raise GitHubError(
-                "This authorization has already been used. Connect again."
-            )
-        flow.status = "authorizing"
+    def authorize_url(self, state: str, verifier: str) -> str:
+        """Where the browser signs in at GitHub for the flow under `state`."""
         challenge = (
-            base64.urlsafe_b64encode(hashlib.sha256(flow.verifier.encode()).digest())
+            base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
             .decode()
             .rstrip("=")
         )
@@ -209,7 +156,7 @@ class GitHubConnections:
             {
                 "client_id": self.client_id,
                 "redirect_uri": self.callback,
-                "state": flow_id,
+                "state": state,
                 "code_challenge": challenge,
                 "code_challenge_method": "S256",
                 "prompt": "select_account",
@@ -299,44 +246,27 @@ class GitHubConnections:
             "refresh_expires_at": time.time() + result["refresh_token_expires_in"],
         }
 
-    async def complete(self, flow_id: str, completion_secret: str, code: str) -> None:
-        flow = self.flow(flow_id)
-        if (
-            not secrets.compare_digest(flow.completion_secret, completion_secret)
-            or flow.status != "delivered"
-        ):
-            raise GitHubError(
-                "GitHub authorization could not be verified. Connect again."
-            )
-        flow.status = "checking"
-        try:
-            credentials = await self.exchange(
-                {
-                    "code": code,
-                    "redirect_uri": self.callback,
-                    "code_verifier": flow.verifier,
-                }
-            )
-            user = await self.request(
-                "GET",
-                "https://api.github.com/user",
-                token=credentials["access_token"],
-                data=None,
-            )
-            if not isinstance(user.get("login"), str) or not isinstance(
-                user.get("id"), int
-            ):
-                raise GitHubError("GitHub did not return a valid account.")
-            flow.login = user["login"]
-            flow.credentials = {
-                **credentials,
-                "login": user["login"],
-                "user_id": user["id"],
+    async def sign_in(self, code: str, verifier: str) -> dict:
+        """Exchange the code the browser brought back, and read whose account
+        it signed in to: the credentials a connection stores."""
+        credentials = await self.exchange(
+            {
+                "code": code,
+                "redirect_uri": self.callback,
+                "code_verifier": verifier,
             }
-            flow.status = "ready"
-        except (GitHubError, asyncio.CancelledError):
-            flow.status = "failed"
-            raise
+        )
+        user = await self.request(
+            "GET",
+            "https://api.github.com/user",
+            token=credentials["access_token"],
+            data=None,
+        )
+        if not isinstance(user.get("login"), str) or not isinstance(
+            user.get("id"), int
+        ):
+            raise GitHubError("GitHub did not return a valid account.")
+        return {**credentials, "login": user["login"], "user_id": user["id"]}
 
     async def pages(self, path: str, key: str, token: str) -> list[dict]:
         values = []

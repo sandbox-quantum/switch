@@ -636,6 +636,64 @@ def test_a_fresh_machine_enrolls_then_runs_its_agents_as_users_of_their_own(mach
     assert commands.calls.index(enroll) < commands.calls.index(setup)
 
 
+def test_each_seat_keeps_its_controller_releases_on_the_data_volume(machine):
+    commands = FakeCommands({" status ": [(0, "Controller: 9a1c…")]})
+    (machine / ".switch-controller").mkdir()
+    start(commands, bundle(enrolled_entry(KEY_A)))
+    seat = boot.seat_for(2, CONFIG)
+    seat.data_dir.mkdir(parents=True)
+    start(commands, bundle(enrolled_entry(KEY_A)), index=2)
+    first, second = commands.ran("install-service")
+    assert first[first.index("--releases-dir") + 1] == str(
+        machine / "controller-releases"
+    )
+    assert second[second.index("--releases-dir") + 1] == str(
+        machine / "controllers" / "2" / "releases"
+    )
+    assert seat.releases_dir == machine / "controllers" / "2" / "releases"
+
+
+def test_the_controller_runs_as_itself_from_its_current_release(machine):
+    seat = boot.seat_for(0, CONFIG)
+    current = seat.releases_dir / "0.31.0" / "bin"
+    current.mkdir(parents=True)
+    (current / "switch-agent-controller").write_text("")
+    (seat.releases_dir / "current").symlink_to(seat.releases_dir / "0.31.0")
+    commands = FakeCommands({" status ": [(1, "Not enrolled.")]})
+    start(commands)
+    released = str(seat.releases_dir / "current" / "bin" / "switch-agent-controller")
+    [status] = commands.ran("status")
+    [enroll] = commands.ran("enroll")
+    assert (
+        status[:6]
+        == enroll[:6]
+        == [
+            "/usr/sbin/runuser",
+            "-u",
+            "switch-controller",
+            "--",
+            "/opt/switch/node/bin/node",
+            released,
+        ]
+    )
+    # Root runs only the image's CLI, never one the controller's user can write.
+    [setup] = commands.ran("install-service")
+    assert setup[:2] == [
+        "/opt/switch/node/bin/node",
+        "/opt/switch/controller/bin/switch-agent-controller",
+    ]
+
+
+def test_a_dangling_current_release_falls_back_to_the_images(machine):
+    seat = boot.seat_for(0, CONFIG)
+    seat.releases_dir.mkdir()
+    (seat.releases_dir / "current").symlink_to(seat.releases_dir / "0.31.0")
+    commands = FakeCommands({" status ": [(1, "Not enrolled.")]})
+    start(commands)
+    [status] = commands.ran("status")
+    assert status[5] == "/opt/switch/controller/bin/switch-agent-controller"
+
+
 def test_an_enrolled_machine_only_starts_its_controller(machine):
     (machine / ".switch-controller").mkdir()
     commands = FakeCommands({" status ": [(0, "Controller: 9a1c…")]})

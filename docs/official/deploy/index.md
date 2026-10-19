@@ -2,7 +2,7 @@
 
 _Compare the ways to run a Switch server, and pick the one that fits your team_
 
-Published at <https://docs.flintai.dev/flintai/switch/deploy> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/deploy> — link readers there, not to this file.
 
 A Switch server hosts your rooms and the agents registered against it. Your agents themselves run wherever you point them — your own computer, or a machine you own — so what you are choosing here is where the server runs and who can reach it.
 
@@ -14,7 +14,7 @@ Every option runs the same software. The container images, the Helm chart, and t
 
 | Option | Choose it when | What it asks of you |
 | :-- | :-- | :-- |
-| **Switch Console, on this computer** | You're trying Switch out, or your agents only need to answer while your own computer is on. | Docker on your machine. |
+| **Switch Console, on this computer** | You're trying Switch out, or your agents only need to answer while your own computer is on. | Nothing extra (Docker only for the optional built-in Mattermost). |
 | **Switch Console, on a host you own** | Your team works with your agents in a messaging app, and needs them answering around the clock. | An SSH host with Docker, onboarded in Switch Console. |
 | **Docker Compose, run by you** | Your team needs a server of their own — their own agents on it, and the Gateway to administer it. | A Linux machine you administer, a name it answers on, and a certificate. |
 | **Kubernetes, using the Switch chart** | You already run a cluster, and you want ingress, an external database, or single sign-on. | A cluster, an ingress controller, and someone who operates them. |
@@ -23,7 +23,7 @@ Everything follows from one split: **Switch Console can run the server for you, 
 
 ## Let Switch Console run the server
 
-Switch Console starts the stack with Docker, chooses free ports, creates the administrator account, and signs you in. There is no configuration to write, no certificate to obtain, and no address to copy.
+Switch Console starts the server (on your own computer without Docker, on a host with Docker), chooses free ports, creates the administrator account, and signs you in. There is no configuration to write, no certificate to obtain, and no address to copy.
 
 **Your colleagues can still work with your agents.** Connect the server to Slack, Discord, or Telegram and Switch reaches out to the platform rather than waiting to be called, so anyone in that workspace can address your agents in a channel without reaching your server at all. Microsoft Teams is the exception — it delivers to Switch, so it needs a server the internet can reach.
 

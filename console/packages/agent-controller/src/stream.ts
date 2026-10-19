@@ -26,6 +26,8 @@ import {
   agentRoomsFrameSchema,
   type AgentSessionCommandFrame,
   agentSessionCommandFrameSchema,
+  type AgentWarmFrame,
+  agentWarmFrameSchema,
   assignmentChangedSchema,
   type ConnectionState,
   connectionStateSchema,
@@ -44,6 +46,7 @@ export const STREAM_FRAME_SCHEMAS = {
   'agent.event': agentEventFrameSchema,
   'agent.gap': agentGapFrameSchema,
   'agent.session_command': agentSessionCommandFrameSchema,
+  'agent.warm': agentWarmFrameSchema,
   'agent.approval_outcome': agentApprovalOutcomeFrameSchema,
   'agent.attached': agentAttachedFrameSchema,
   'agent.detached': agentDetachedFrameSchema,
@@ -59,6 +62,7 @@ export type ControllerFrame =
   | { type: 'agent.event'; data: AgentEventFrame }
   | { type: 'agent.gap'; data: AgentGapFrame }
   | { type: 'agent.session_command'; data: AgentSessionCommandFrame }
+  | { type: 'agent.warm'; data: AgentWarmFrame }
   | { type: 'agent.approval_outcome'; data: AgentApprovalOutcomeFrame }
   | { type: 'agent.attached'; data: AgentAttachedFrame }
   | { type: 'agent.detached'; data: AgentDetachedFrame }

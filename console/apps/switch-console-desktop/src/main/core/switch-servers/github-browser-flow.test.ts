@@ -1,23 +1,23 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { focusMainWindow } from '@main/app/window';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
   cancelGitHubConnection,
   completeGitHubConnection,
-  confirmGitHubConnection,
+  getGitHubFlow,
   startGitHubConnection,
 } from './gateway-client';
 import {
   startGitHubBrowserFlow,
   cancelGitHubBrowserFlow,
-  confirmGitHubBrowserFlow,
   getGitHubBrowserFlow,
 } from './github-browser-flow';
 
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn() } }));
+vi.mock('@main/app/window', () => ({ focusMainWindow: vi.fn() }));
 vi.mock('./gateway-client', () => ({
   cancelGitHubConnection: vi.fn(),
   completeGitHubConnection: vi.fn(),
-  confirmGitHubConnection: vi.fn(),
   getGitHubFlow: vi.fn(),
   startGitHubConnection: vi.fn(),
 }));
@@ -29,7 +29,8 @@ afterEach(async () => {
   vi.resetAllMocks();
 });
 async function start() {
-  vi.mocked(completeGitHubConnection).mockResolvedValue(undefined);
+  vi.mocked(cancelGitHubConnection).mockResolvedValue(undefined);
+  vi.mocked(completeGitHubConnection).mockResolvedValue({ warning: null, login: 'example-user' });
   vi.mocked(startGitHubConnection).mockImplementation(async (_server, input) => ({
     id: input.state,
     url: 'https://switch.example.test/authorize',
@@ -46,26 +47,35 @@ it('accepts only this Console state and keeps its secret out of the browser URL'
   expect(open.mock.calls[0]![0]).not.toContain(input.completion_secret);
   expect((await fetch(url + '?state=unknown&code=SYNTHETIC')).status).toBe(400);
   expect(completeGitHubConnection).not.toHaveBeenCalled();
+  expect(focusMainWindow).not.toHaveBeenCalled();
   const response = await fetch(url + `?state=${id}&code=SYNTHETIC`);
   expect(response.status).toBe(200);
   expect(response.headers.get('referrer-policy')).toBe('no-referrer');
-  expect(await response.text()).toContain('Return to Switch Console');
+  expect(await response.text()).toContain('Signed in to GitHub, and connected to Switch.');
+  expect(focusMainWindow).toHaveBeenCalledOnce();
   expect(completeGitHubConnection).toHaveBeenCalledExactlyOnceWith(
     server,
     id,
     'SYNTHETIC',
     input.completion_secret
   );
-  await confirmGitHubBrowserFlow(server, id);
-  expect(confirmGitHubConnection).toHaveBeenCalledExactlyOnceWith(
-    server,
-    id,
-    input.completion_secret
-  );
+});
+
+it('ends the flow once it reads connected, and tells the server to drop it', async () => {
+  const { id } = await start();
+  vi.mocked(getGitHubFlow).mockResolvedValue({
+    status: 'connected',
+    login: 'example-user',
+    error: null,
+    warning: null,
+  });
+  expect((await getGitHubBrowserFlow(server, id)).login).toBe('example-user');
+  expect(cancelGitHubConnection).toHaveBeenCalledWith(server, id);
+  await expect(getGitHubBrowserFlow(server, id)).rejects.toThrow('Sign-in was interrupted');
 });
 
 it('refuses unknown local flows and displays a failed completion', async () => {
-  await expect(confirmGitHubBrowserFlow(server, 'unknown')).rejects.toThrow(
+  await expect(getGitHubBrowserFlow(server, 'unknown')).rejects.toThrow(
     'Sign-in was interrupted. Start it again from Switch Console.'
   );
   const { id, url } = await start();
@@ -104,14 +114,6 @@ it('expires the local secret even after the callback was received', async () => 
   const { id, url } = await start();
   expect((await fetch(url + `?state=${id}&code=SYNTHETIC`)).status).toBe(200);
   await vi.advanceTimersByTimeAsync(600_000);
-  await expect(confirmGitHubBrowserFlow(server, id)).rejects.toThrow('Sign-in was interrupted');
-  expect(confirmGitHubConnection).not.toHaveBeenCalled();
-});
-
-it('keeps a failed confirmation available for retry until its deadline', async () => {
-  const { id } = await start();
-  vi.mocked(confirmGitHubConnection).mockRejectedValueOnce(new Error('Temporary failure'));
-  await expect(confirmGitHubBrowserFlow(server, id)).rejects.toThrow('Temporary failure');
-  await confirmGitHubBrowserFlow(server, id);
-  expect(confirmGitHubConnection).toHaveBeenCalledTimes(2);
+  await expect(getGitHubBrowserFlow(server, id)).rejects.toThrow('Sign-in was interrupted');
+  expect(getGitHubFlow).not.toHaveBeenCalled();
 });

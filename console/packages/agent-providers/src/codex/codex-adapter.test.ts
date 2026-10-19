@@ -37,7 +37,9 @@ function eventsOf<T extends ProviderRuntimeEventType>(
   );
 }
 
-async function start(runtimeMode: 'full-access' | 'approval-required' = 'full-access') {
+async function start(
+  runtimeMode: 'full-access' | 'approval-required' | 'auto-accept-edits' = 'full-access'
+) {
   const adapter = createCodexAdapter();
   const events: ProviderRuntimeEvent[] = [];
   adapter.subscribe((event) => events.push(event));
@@ -47,6 +49,7 @@ async function start(runtimeMode: 'full-access' | 'approval-required' = 'full-ac
     runtimeMode,
     env: { PATH: '/usr/bin' },
     mcpServers: {},
+    connectorMcpServers: [],
   });
   const server = servers.at(-1);
   if (!server) throw new Error('fake app-server was not spawned');
@@ -101,6 +104,7 @@ describe('CodexAdapter', () => {
         runtimeMode: 'full-access',
         env: { PATH: '/usr/bin', CODEX_HOME: home },
         mcpServers: {},
+        connectorMcpServers: [],
         resume: { nativeSessionId: THREAD },
       });
       const server = servers.at(-1)!;
@@ -126,6 +130,7 @@ describe('CodexAdapter', () => {
       runtimeMode: 'approval-required',
       env: { PATH: '/usr/bin' },
       mcpServers: {},
+      connectorMcpServers: [],
       resume: { nativeSessionId: 'missing' },
     });
     const server = servers.at(-1)!;
@@ -146,6 +151,7 @@ describe('CodexAdapter', () => {
       runtimeMode: 'approval-required',
       env: { PATH: '/usr/bin' },
       mcpServers: {},
+      connectorMcpServers: [],
       resume: { nativeSessionId: 'missing' },
     });
     const server = servers.at(-1)!;
@@ -164,13 +170,30 @@ describe('CodexAdapter', () => {
     expect(adapter.hasSession('resume')).toBe(false);
   });
 
-  it('asks for approvals in approval-required mode', async () => {
+  it('marks the working directory untrusted in approval-required mode, not a retired policy', async () => {
     const { server } = await start('approval-required');
     const threadStart = server.received.find((message) => message.method === 'thread/start');
     expect(threadStart?.params).not.toHaveProperty('sandbox');
-    expect(threadStart?.params).toMatchObject({
-      approvalPolicy: 'untrusted',
-    });
+    expect(threadStart?.params).not.toHaveProperty('approvalPolicy');
+    const args = (server as unknown as { spawnArgs: string[] }).spawnArgs;
+    const override = args.indexOf('-c');
+    expect(args.slice(override, override + 2)).toEqual([
+      '-c',
+      'projects={"/work"={trust_level="untrusted"}}',
+    ]);
+  });
+
+  it('sends on-request for auto-accept-edits and never for full access, with no project override', async () => {
+    for (const [mode, approvalPolicy] of [
+      ['auto-accept-edits', 'on-request'],
+      ['full-access', 'never'],
+    ] as const) {
+      const { server } = await start(mode);
+      const threadStart = server.received.find((message) => message.method === 'thread/start');
+      expect(threadStart?.params).toMatchObject({ approvalPolicy });
+      const args = (server as unknown as { spawnArgs: string[] }).spawnArgs;
+      expect(args.some((arg) => arg.startsWith('projects='))).toBe(false);
+    }
   });
 
   it('carries systemContext as developer instructions', async () => {
@@ -181,6 +204,7 @@ describe('CodexAdapter', () => {
       runtimeMode: 'full-access',
       env: {},
       mcpServers: {},
+      connectorMcpServers: [],
       systemContext: 'you are in a Switch room',
     });
     const server = servers.at(-1);
@@ -197,6 +221,7 @@ describe('CodexAdapter', () => {
       runtimeMode: 'full-access',
       env: { PATH: '/usr/bin' },
       mcpServers: {},
+      connectorMcpServers: [],
       model: { id: 'start-model', options: { effort: 'low' } },
     });
     const server = servers.at(-1)!;
@@ -303,6 +328,10 @@ describe('CodexAdapter', () => {
         },
       ],
     ]);
+    await expect(adapter.contextUsage('session-1')).resolves.toEqual({
+      usedTokens: 164,
+      windowTokens: null,
+    });
   });
 
   it("counts a resumed thread from its first report, not from the thread's history", async () => {
@@ -649,4 +678,149 @@ describe('CodexAdapter', () => {
     const adapter = createCodexAdapter();
     await expect(adapter.interruptTurn('nope')).rejects.toThrow(/unknown or stopped session/);
   });
+});
+
+describe('CodexAdapter connector tools', () => {
+  const META = {
+    codex_approval_kind: 'mcp_tool_call',
+    persist: ['session', 'always'],
+    tool_description: 'Search issues.',
+    tool_params: { jql: 'project = DEMO' },
+    tool_params_display: [{ name: 'jql', value: 'project = DEMO', display_name: 'JQL' }],
+  };
+
+  async function startWithConnector(
+    runtimeMode: 'full-access' | 'approval-required' | 'auto-accept-edits'
+  ) {
+    const adapter = createCodexAdapter();
+    const events: ProviderRuntimeEvent[] = [];
+    adapter.subscribe((event) => events.push(event));
+    await adapter.startSession({
+      sessionId: 'session-1',
+      cwd: '/work',
+      runtimeMode,
+      env: { PATH: '/usr/bin' },
+      mcpServers: {
+        switch: { transport: 'http', url: 'http://127.0.0.1:4000/mcp' },
+        atlassian: { transport: 'http', url: 'http://127.0.0.1:4100/mcp' },
+      },
+      connectorMcpServers: ['atlassian'],
+    });
+    const server = servers.at(-1)!;
+    server.replyAlways('turn/start', () => ({ turn: { id: 'native-a', status: 'inProgress' } }));
+    await adapter.sendTurn({ sessionId: 'session-1', turnId: 'caller-1', text: 'search' });
+    server.notify('turn/started', turnNotification('native-a', 'inProgress'));
+    return { adapter, events, server };
+  }
+
+  function elicit(server: FakeAppServer, id: number, meta: Record<string, unknown> | null) {
+    server.send({
+      id,
+      method: 'mcpServer/elicitation/request',
+      params: {
+        threadId: THREAD,
+        turnId: 'native-a',
+        serverName: 'atlassian',
+        mode: 'form',
+        ...(meta ? { _meta: meta } : {}),
+        message: 'Allow the atlassian MCP server to run tool "search"?',
+        requestedSchema: { type: 'object', properties: {} },
+      },
+    });
+  }
+
+  async function answer(
+    adapter: Awaited<ReturnType<typeof startWithConnector>>['adapter'],
+    events: ProviderRuntimeEvent[],
+    server: FakeAppServer,
+    id: number,
+    decision: 'accept' | 'acceptForSession' | 'decline'
+  ) {
+    await vi.waitFor(() => expect(eventsOf(events, 'request.opened')).toHaveLength(1));
+    const opened = eventsOf(events, 'request.opened')[0]!;
+    await adapter.respondToRequest('session-1', opened.requestId, decision);
+    await vi.waitFor(() =>
+      expect(server.received.some((message) => message.id === id && message.result)).toBe(true)
+    );
+    return server.received.find((message) => message.id === id)?.result;
+  }
+
+  it('opens a card naming the server and tool, with the arguments as the detail', async () => {
+    const { events, server } = await startWithConnector('approval-required');
+    elicit(server, 71, META);
+    await vi.waitFor(() => expect(eventsOf(events, 'request.opened')).toHaveLength(1));
+    const opened = eventsOf(events, 'request.opened')[0]!;
+    expect(opened).toMatchObject({
+      requestType: 'mcp_tool_approval',
+      turnId: 'caller-1',
+      title: 'atlassian wants to run search',
+      detail: 'JQL: project = DEMO',
+      connector: 'atlassian',
+    });
+    expect(opened.options.map((option) => option.decision)).toEqual([
+      'accept',
+      'acceptForSession',
+      'decline',
+      'cancel',
+    ]);
+  });
+
+  it('answers accept for this one call', async () => {
+    const { adapter, events, server } = await startWithConnector('approval-required');
+    elicit(server, 72, META);
+    expect(await answer(adapter, events, server, 72, 'accept')).toEqual({
+      action: 'accept',
+      content: {},
+      _meta: null,
+    });
+  });
+
+  it('keeps an accept for the session in _meta, where Codex reads it', async () => {
+    const { adapter, events, server } = await startWithConnector('auto-accept-edits');
+    elicit(server, 73, META);
+    expect(await answer(adapter, events, server, 73, 'acceptForSession')).toEqual({
+      action: 'accept',
+      content: {},
+      _meta: { persist: 'session' },
+    });
+  });
+
+  it('answers decline so Codex fails the call without running it', async () => {
+    const { adapter, events, server } = await startWithConnector('approval-required');
+    elicit(server, 74, META);
+    expect(await answer(adapter, events, server, 74, 'decline')).toMatchObject({
+      action: 'decline',
+      content: null,
+    });
+  });
+
+  it("opens a server's own elicitation as the generic card", async () => {
+    const { events, server } = await startWithConnector('approval-required');
+    elicit(server, 75, null);
+    await vi.waitFor(() => expect(eventsOf(events, 'request.opened')).toHaveLength(1));
+    const opened = eventsOf(events, 'request.opened')[0]!;
+    expect(opened.title).toBe('atlassian needs a decision');
+    expect(opened.detail).toBe('Allow the atlassian MCP server to run tool "search"?');
+    expect(opened.options.map((option) => option.decision)).toEqual([
+      'accept',
+      'decline',
+      'cancel',
+    ]);
+  });
+
+  it.each([
+    ['approval-required', false],
+    ['auto-accept-edits', false],
+    ['full-access', true],
+  ] as const)(
+    'in %s Switch keeps the approve key and the connector keeps it: %s',
+    async (mode, approved) => {
+      await startWithConnector(mode);
+      const args = (servers.at(-1) as unknown as { spawnArgs: string[] }).spawnArgs;
+      expect(args).toContain('mcp_servers.switch.default_tools_approval_mode="approve"');
+      expect(args.includes('mcp_servers.atlassian.default_tools_approval_mode="approve"')).toBe(
+        approved
+      );
+    }
+  );
 });

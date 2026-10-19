@@ -1229,6 +1229,31 @@ def test_start_raises_when_gateway_connection_fails() -> None:
     _run(scenario())
 
 
+def test_a_quiet_copy_logs_in_for_the_api_and_opens_no_socket() -> None:
+    """Another process holds the bridge and listens for it. Discord delivers
+    every event to every socket, so this copy opens none, and leaves the
+    commands to the one that does."""
+    adapter = DiscordAdapter(
+        config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
+    )
+    adapter.set_listening(False)
+    fake = _FakeGatewayClient()
+
+    async def scenario() -> None:
+        with patch.object(adapter_module.discord, "Client", lambda **kw: fake):
+            await adapter.start(*_noop_callbacks())
+            assert fake.logged_in
+            assert adapter._connection._connect_task is None
+            assert fake.registered_events == []
+            assert fake.http.bulk_upserts == []
+            assert adapter._require_client() is fake
+
+            await adapter.stop()
+            assert fake.closed
+
+    _run(scenario())
+
+
 def test_start_times_out_when_never_ready_and_stops() -> None:
     adapter = DiscordAdapter(
         config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))

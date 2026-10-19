@@ -36,6 +36,17 @@ function roomDetailKey(workspaceId: string, roomId: string) {
   return ['remote-room-detail', workspaceId, roomId] as const;
 }
 
+/** One room read from its server; `workspaceId` is null until the room list has loaded. */
+export function useRoomDetail(roomId: string) {
+  const workspaceId = switchRoomsStore.roomWorkspaceId(roomId);
+  const query = useQuery({
+    queryKey: roomDetailKey(workspaceId ?? '', roomId),
+    queryFn: () => rpc.workspaces.getRoomDetail({ workspaceId: workspaceId as string, roomId }),
+    enabled: workspaceId !== null,
+  });
+  return { workspaceId, query };
+}
+
 /**
  * A room's settings: what it is for, what it tells agents on arrival, and who is
  * in it.
@@ -49,12 +60,7 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
 }: {
   roomId: string;
 }) {
-  const workspaceId = switchRoomsStore.roomWorkspaceId(roomId);
-  const query = useQuery({
-    queryKey: roomDetailKey(workspaceId ?? '', roomId),
-    queryFn: () => rpc.workspaces.getRoomDetail({ workspaceId: workspaceId as string, roomId }),
-    enabled: workspaceId !== null,
-  });
+  const { workspaceId, query } = useRoomDetail(roomId);
 
   if (workspaceId === null) {
     return <PanelNotice title="This room’s workspace is still loading." />;
@@ -335,12 +341,6 @@ const ParticipantsSection = observer(function ParticipantsSection({
   const [adding, setAdding] = useState(false);
   const showAddAgentsToRoomModal = useShowModal('addAgentsToRoomModal');
 
-  // Names for agents belonging to other installs, which this computer has no
-  // local record of. Shares its key with the rest of the app, so it is usually
-  // already in hand.
-  const remoteAgents = useWorkspaceAgents(workspaceId);
-  const remoteById = new Map((remoteAgents.data ?? []).map((a) => [a.id, a]));
-
   async function refresh() {
     await queryClient.invalidateQueries({ queryKey: roomDetailKey(workspaceId, room.id) });
     await switchRoomsStore.refreshRoomState();
@@ -376,37 +376,51 @@ const ParticipantsSection = observer(function ParticipantsSection({
         </div>
       </div>
 
-      {room.agentIds.length === 0 && room.connectedUserNames.length === 0 ? (
-        <p className="text-sm text-foreground-muted">Nobody is in this room yet.</p>
-      ) : (
-        <div className="grid grid-cols-2 gap-2.5">
-          {room.agentIds.map((agentId) => (
-            <ParticipantCard
-              key={agentId}
-              mark={
-                <AgentMark agentId={agentId} workspaceId={workspaceId} remoteById={remoteById} />
-              }
-              name={agentNameFor(agentId, workspaceId, remoteById)}
-              detail={agentKindFor(agentId, workspaceId, remoteById)}
-            />
-          ))}
-          {room.connectedUserNames.map((name) => (
-            <ParticipantCard
-              key={`user:${name}`}
-              mark={
-                <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] text-xs font-medium text-foreground">
-                  {name.charAt(0).toUpperCase()}
-                </span>
-              }
-              name={name}
-              detail="person"
-            />
-          ))}
-        </div>
-      )}
+      <ParticipantList workspaceId={workspaceId} room={room} />
 
       {adding && <AddAgentPanel workspaceId={workspaceId} room={room} onAdded={refresh} />}
     </section>
+  );
+});
+
+/** The room's members as cards, agents first. */
+export const ParticipantList = observer(function ParticipantList({
+  workspaceId,
+  room,
+}: {
+  workspaceId: string;
+  room: Pick<RemoteRoomDetail, 'agentIds' | 'connectedUserNames'>;
+}) {
+  // Names for agents belonging to other installs, which this computer has no
+  // local record of. Shares its key with the rest of the app, so it is usually
+  // already in hand.
+  const remoteAgents = useWorkspaceAgents(workspaceId);
+  const remoteById = new Map((remoteAgents.data ?? []).map((a) => [a.id, a]));
+  return room.agentIds.length === 0 && room.connectedUserNames.length === 0 ? (
+    <p className="text-sm text-foreground-muted">Nobody is in this room yet.</p>
+  ) : (
+    <div className="grid grid-cols-2 gap-2.5">
+      {room.agentIds.map((agentId) => (
+        <ParticipantCard
+          key={agentId}
+          mark={<AgentMark agentId={agentId} workspaceId={workspaceId} remoteById={remoteById} />}
+          name={agentNameFor(agentId, workspaceId, remoteById)}
+          detail={agentKindFor(agentId, workspaceId, remoteById)}
+        />
+      ))}
+      {room.connectedUserNames.map((name) => (
+        <ParticipantCard
+          key={`user:${name}`}
+          mark={
+            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] text-xs font-medium text-foreground">
+              {name.charAt(0).toUpperCase()}
+            </span>
+          }
+          name={name}
+          detail="person"
+        />
+      ))}
+    </div>
   );
 });
 

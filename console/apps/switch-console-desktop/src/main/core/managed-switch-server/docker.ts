@@ -113,10 +113,37 @@ export async function detectDocker(): Promise<DockerAvailability> {
         detail: 'Docker daemon reported no version.',
       };
     }
+    const compose = await detectCompose();
+    if (compose !== null) return compose;
     return { available: true, version };
   } catch (error) {
     const { reason, detail } = classifyDockerError(error);
     log.info(`local-switch-server: docker unavailable (${reason})`);
     return { available: false, reason, detail };
+  }
+}
+
+/**
+ * Everything here runs `docker compose`, which is a plugin: Docker Desktop
+ * always ships it, a bare Linux Docker Engine install may not. Checked up
+ * front so a missing plugin is reported as such before anything is started,
+ * rather than as a failed `compose up` afterwards. Null when it is there.
+ *
+ * Reported as `not-installed`, the reason it amounts to, so the closed set of
+ * reasons (and the telemetry built on it) is unchanged; the detail names it.
+ */
+async function detectCompose(): Promise<DockerAvailability | null> {
+  try {
+    await execFileAsync(dockerExecutable(), ['compose', 'version'], { timeout: 15_000 });
+    return null;
+  } catch (error) {
+    log.info('local-switch-server: docker compose unavailable', { error: String(error) });
+    return {
+      available: false,
+      reason: 'not-installed',
+      detail:
+        'Docker is installed, but its Compose plugin is not (`docker compose version` failed). ' +
+        'Install the Docker Compose plugin, then try again.',
+    };
   }
 }

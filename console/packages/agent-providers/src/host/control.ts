@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import type { Duplex } from 'node:stream';
@@ -42,10 +42,7 @@ import {
 
 export const CONTROL_FILE = 'control.json';
 
-/**
- * One message Console sends a sidecar or a watcher, whether over the loopback
- * socket or relayed through Switch: the one vocabulary both paths answer.
- */
+/** One message Console sends a sidecar or a watcher over the loopback socket. */
 export const controlMessageSchema = z.union([
   z.object({ sessionId: z.string().min(1), request: sessionRequestSchema }),
   z.object({ subscribe: z.string().min(1) }),
@@ -66,6 +63,22 @@ export const controlMessageSchema = z.union([
   /** Console's "Reconnect to room": move a room's messages to this session. */
   z.object({ place: z.object({ sessionId: z.string().min(1), roomId: z.string().min(1) }) }),
   z.object({ forget: z.string().min(1) }),
+  /** Start the session a message to this room would start, before the message is sent. */
+  z.object({ warm: z.object({ roomId: z.string().min(1) }) }),
+  /**
+   * A session's buffered reasoning, from its host. It rides on a `health`
+   * message because a sidecar that predates it closes the connection on any
+   * message it cannot parse, while it reads this one as `health` — dropping
+   * the key it does not know — and answers with its health, which the asker
+   * reads as no reasoning. Must stay ahead of the plain `health` below.
+   */
+  z.object({
+    health: z.literal(true),
+    reasoning: z.object({
+      sessionId: z.string().min(1),
+      turnIds: z.array(z.string().min(1)).nullable(),
+    }),
+  }),
   /** The room watcher's connection state and placements, as it holds them now. */
   z.object({ health: z.literal(true) }),
   /** Start or stop pushing `{health}` to this connection whenever the watcher's changes. */
@@ -74,10 +87,6 @@ export const controlMessageSchema = z.union([
   z.object({ list: z.literal(true) }),
   /** A session read from its journal, whether or not its host is running. */
   z.object({ journal: z.string().min(1) }),
-  /** One page of a paged answer; only the relay pages its answers. */
-  z.object({
-    page: z.object({ snapshotId: z.string().min(1), index: z.number().int().nonnegative() }),
-  }),
   z.object({ attachment: attachmentChunkSchema }),
   z.object({ attachmentCancel: z.string().min(1) }),
 ]);
@@ -125,7 +134,7 @@ const sentAttachmentsSchema = z.object({
 });
 
 /**
- * Answer one control message; a refusal throws. `page` is the relay's.
+ * Answer one control message; a refusal throws.
  * `dispatching` is called just before a session request is sent to its host.
  */
 export async function handleControlMessage(
@@ -135,8 +144,17 @@ export async function handleControlMessage(
   dispatching: () => void
 ): Promise<unknown> {
   const { links, watcher } = context;
+  // The sessions directory is shared by every agent on the machine.
+  const named = namedSession(message);
+  const owner = named === null ? null : await sessionOwner(named);
+  // A session with no config yet may be waited on or forgotten, nothing else.
+  const unconfigured = owner === null && ('subscribe' in message || 'forget' in message);
+  if (named !== null && !unconfigured && owner !== context.agentId)
+    throw notOwnSession(context.agentId, named);
   if ('request' in message) {
     const sessionRoot = sharedSessionRoot(message.sessionId);
+    if (message.request.type === 'reasoning')
+      return links.reasoning(sessionRoot, message.request.turnIds);
     if (message.request.type === 'command') {
       const sent = sentAttachmentsSchema.safeParse(message.request.command);
       if (sent.success)
@@ -150,13 +168,20 @@ export async function handleControlMessage(
     const sessionId = message.subscribe;
     const sessionRoot = sharedSessionRoot(sessionId);
     if (!peer.subscriptions.has(sessionId)) {
-      const offEvents = links.subscribe(sessionRoot, (event) => peer.send({ sessionId, event }));
+      const unsubscribe = () => {
+        peer.subscriptions.get(sessionId)?.();
+        peer.subscriptions.delete(sessionId);
+      };
+      const send = unconfigured
+        ? ownedSender(context.agentId, sessionId, peer.send, unsubscribe)
+        : peer.send;
+      const offEvents = links.subscribe(sessionRoot, (event) => send({ sessionId, event }));
       const offFailure = links.onFailure((failed, failure) => {
-        if (failed === sessionRoot) peer.send({ sessionId, failure });
+        if (failed === sessionRoot) send({ sessionId, failure });
       });
       // A host that comes up again has put its failure behind it.
       const offReady = links.onReady((ready) => {
-        if (ready === sessionRoot) peer.send({ sessionId, failure: null });
+        if (ready === sessionRoot) send({ sessionId, failure: null });
       });
       peer.subscriptions.set(sessionId, () => {
         offEvents();
@@ -166,7 +191,7 @@ export async function handleControlMessage(
     }
     // Answered with the failure already recorded, so a subscriber that
     // arrives after the host stopped still hears why.
-    return { failure: links.failure(sessionRoot) };
+    return { failure: unconfigured ? null : links.failure(sessionRoot) };
   }
   if ('unsubscribe' in message) {
     peer.subscriptions.get(message.unsubscribe)?.();
@@ -175,6 +200,12 @@ export async function handleControlMessage(
   }
   if ('place' in message) return watcher.place(message.place.sessionId, message.place.roomId);
   if ('forget' in message) return watcher.forget(message.forget);
+  if ('warm' in message) return watcher.warm(message.warm.roomId);
+  if ('reasoning' in message)
+    return links.reasoning(
+      sharedSessionRoot(message.reasoning.sessionId),
+      message.reasoning.turnIds
+    );
   if ('health' in message) return watcher.health();
   if ('watchHealth' in message) {
     if (message.watchHealth)
@@ -187,8 +218,6 @@ export async function handleControlMessage(
   }
   if ('list' in message) return listSessions(context.agentId);
   if ('journal' in message) return readJournalSnapshot(message.journal);
-  if ('page' in message)
-    throw new ControlError('refused_message', 'Pages are served only to relayed answers.');
   if ('attachment' in message) return context.transfers.receive(message.attachment);
   if ('attachmentCancel' in message) return context.transfers.cancel(message.attachmentCancel);
   return context.ensure(message.ensure);
@@ -218,6 +247,75 @@ export function ensureSessions(supervision: Supervision): EnsureSession {
       supervision,
       startSource: input.startSource ?? null,
     });
+  };
+}
+
+/** The session a message names, if it names one. */
+function namedSession(message: ControlMessage): string | null {
+  if ('request' in message) return message.sessionId;
+  if ('subscribe' in message) return message.subscribe;
+  if ('place' in message) return message.place.sessionId;
+  if ('forget' in message) return message.forget;
+  if ('journal' in message) return message.journal;
+  if ('reasoning' in message) return message.reasoning.sessionId;
+  if ('attachment' in message) return message.attachment.sessionId;
+  return null;
+}
+
+/** The agent a session's saved configuration names, or null while it has none. */
+async function sessionOwner(sessionId: string): Promise<unknown> {
+  try {
+    const text = await readFile(join(sharedSessionRoot(sessionId), 'config.json'), 'utf8');
+    const owner = (JSON.parse(text) as { session?: { agentId?: unknown } } | null)?.session
+      ?.agentId;
+    return owner ?? undefined;
+  } catch (error) {
+    // A config being written can read as truncated JSON.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError)
+      return null;
+    throw error;
+  }
+}
+
+function notOwnSession(agentId: string, sessionId: string): ControlError {
+  return new ControlError(
+    'not_own_session',
+    `Session ${sessionId} is not a session of agent ${agentId}.`
+  );
+}
+
+/**
+ * `send` for a subscription made before the session had a config: holds
+ * every push until a config names `agentId`, and ends the subscription with
+ * a failure once one names another agent. Pushes keep their order.
+ */
+function ownedSender(
+  agentId: string,
+  sessionId: string,
+  send: (push: ControlPush) => void,
+  unsubscribe: () => void
+): (push: ControlPush) => void {
+  let state: 'unknown' | 'own' | 'foreign' = 'unknown';
+  let chain = Promise.resolve();
+  return (push) => {
+    chain = chain
+      .then(async () => {
+        if (state === 'unknown') {
+          const owner = await sessionOwner(sessionId);
+          if (owner === null) return;
+          state = owner === agentId ? 'own' : 'foreign';
+          if (state === 'foreign') {
+            unsubscribe();
+            send({ sessionId, failure: notOwnSession(agentId, sessionId).message });
+          }
+        }
+        if (state === 'own') send(push);
+      })
+      .catch((error: unknown) => {
+        state = 'foreign';
+        unsubscribe();
+        send({ sessionId, failure: `Session ${sessionId} could not be checked: ${String(error)}` });
+      });
   };
 }
 
@@ -379,7 +477,14 @@ export class ControlClient {
     stream.on('error', (error: Error) => fail(error));
     stream.on('close', () => fail(new SidecarConnectionClosedError()));
     lines(stream, (line) => {
-      const message = serverMessageSchema.safeParse(JSON.parse(line));
+      let json: unknown;
+      try {
+        json = JSON.parse(line);
+      } catch {
+        stream.destroy(new Error('The control port sent a line that is not JSON.'));
+        return;
+      }
+      const message = serverMessageSchema.safeParse(json);
       if (!message.success) return;
       const data = message.data;
       if ('authenticated' in data) authenticate();
@@ -421,6 +526,14 @@ export class ControlClient {
     return this.call({ sessionId, request });
   }
 
+  /**
+   * A session's buffered reasoning, or what an older sidecar answers instead
+   * (its health): parse the answer, and read anything else as no reasoning.
+   */
+  reasoning(sessionId: string, turnIds: string[] | null): Promise<unknown> {
+    return this.call({ health: true, reasoning: { sessionId, turnIds } });
+  }
+
   ensure(input: {
     config: unknown;
     resuming: boolean;
@@ -438,6 +551,14 @@ export class ControlClient {
   /** Tell the sidecar's room watcher a session was deleted. */
   async forget(sessionId: string): Promise<void> {
     await this.call({ forget: sessionId });
+  }
+
+  /** Start the session a message to this room would start, through the sidecar's room watcher. */
+  async warm(roomId: string): Promise<string | null> {
+    return z
+      .string()
+      .nullable()
+      .parse(await this.call({ warm: { roomId } }));
   }
 
   /** The sidecar's room watcher: its connection state and placements. */

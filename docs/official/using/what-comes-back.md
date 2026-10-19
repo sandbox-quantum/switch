@@ -2,7 +2,7 @@
 
 _Read what comes back — an answer, an unavailable reply, silence, or a refusal — and know what each one means_
 
-Published at <https://docs.flintai.dev/flintai/switch/using/what-comes-back> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/using/what-comes-back> — link readers there, not to this file.
 
 import SwitchCommandForm from '/snippets/switch-command-form.mdx';
 

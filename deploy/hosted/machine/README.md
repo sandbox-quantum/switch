@@ -61,10 +61,10 @@ the workspace gives the machine.
      linked the controller.
    - Then, on every boot, it runs `switch-agent-controller install-service
      --separate-users --no-block` for each seat, with the seat's agents'
-     directory. That command is idempotent, and the root volume can be new
-     after an image change. It queues the controller's start: each
-     controller's unit is ordered after the boot service, so systemd starts it
-     once the boot completes.
+     directory and its releases directory. That command is idempotent, and the
+     root volume can be new after an image change. It queues the controller's
+     start: each controller's unit is ordered after the boot service, so
+     systemd starts it once the boot completes.
    - A controller that fails to enroll or start does not keep the others from
      starting. The boot tries it again 4 times, 30 s apart, then logs the
      failure and completes anyway: failing the boot would stop the other
@@ -106,6 +106,7 @@ Index `k`'s ids are fixed, because the data volume outlives the root volume:
 | data directory | `/data/.switch-controller` | `/data/controllers/<k>/data` |
 | code file | `/data/.switch-controller-code` | `/data/controllers/<k>/code` |
 | agents' directories | `/data/agents` | `/data/controllers/<k>/agents` |
+| controller releases | `/data/controller-releases` | `/data/controllers/<k>/releases` |
 
 The image bakes index 0's users (`install.sh`). For an index k ≥ 1, the boot
 creates the users and groups that are missing with these ids, as `install.sh`
@@ -114,6 +115,24 @@ exists with another id is refused. It also writes the drop-in that orders the
 seat's controller unit after the boot service
 (`/etc/systemd/system/switch-agent-controller-<uid>.service.d/after-boot.conf`)
 on every boot, since the root volume can be new.
+
+## Controller updates
+
+The image carries one release of the controller, at `/opt/switch/controller`.
+Each controller then runs the release Switch names for it, installing it into its
+releases directory on the data volume when no session runs and restarting into it
+(see "Updates" in the controller's README). An update survives a replaced root
+volume, and a controller fix needs no new image.
+
+`install-service --releases-dir` makes the seat's releases directory, owned by
+the seat's controller user and readable by everyone, and runs the controller and
+its agents through its `current` link. At each boot it points `current` at the
+image's release only when `current` is missing, names no readable release, or
+names one older than the image's: a boot keeps an update applied since, and an
+image with a newer release wins. The boot runs `install-service` (as root) with
+the image's CLI only. It runs `status` and `enroll`, as the seat's controller
+user, with the release `current` names when there is one, since that release
+may have moved the data directory's store on past what the image's reads.
 
 A seat that is in `/data/.switch-controllers.json` but not in the bundle (its
 workspace left the machine) has its controller stopped and disabled, and any

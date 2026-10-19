@@ -36,12 +36,6 @@ from switch_core.bridges.agent.protocol.presence import (
 )
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import AgentStatus
-from switch_core.clients.agent_consumer import (
-    _STARTING_SESSION_MESSAGE,
-    AgentConsumer,
-    CloudMachineState,
-    _GateOutcome,
-)
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
@@ -55,6 +49,12 @@ from switch_core.db.models import (
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.delivery.recipient import (
+    _STARTING_SESSION_MESSAGE,
+    AgentRecipient,
+    CloudMachineState,
+    _GateOutcome,
+)
 from switch_core.transport import InboundMessage, RoomRef
 
 CONTROLLER = "controller-1"
@@ -373,12 +373,12 @@ def _client(
         _wake_cloud_machine=_wake_cloud_machine,
         _cloud_waking_notices=set(),
     )
-    ns._is_available = AgentConsumer._is_available.__get__(ns)
+    ns._is_available = AgentRecipient._is_available.__get__(ns)
     ns._reply_when_unavailable_here = (
-        AgentConsumer._reply_when_unavailable_here.__get__(ns)
+        AgentRecipient._reply_when_unavailable_here.__get__(ns)
     )
     ns._controller_unavailable_reply = (
-        AgentConsumer._controller_unavailable_reply.__get__(ns)
+        AgentRecipient._controller_unavailable_reply.__get__(ns)
     )
     return ns
 
@@ -390,7 +390,9 @@ class TestTheAgentClientsReplies:
         registry = AgentConnectionRegistry()
         _bind(registry, "auto")
         conn = _go_live(registry, ("auto", {ROOM}))
-        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
         auto = _client(registry, "auto")
         agent = _agent("auto", "auto_session")
 
@@ -433,7 +435,9 @@ class TestTheAgentClientsReplies:
         _go_live(registry, ("passive", {ROOM}))
         client = _client(registry, "passive")
         agent = _agent("passive", "session_passive")
-        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
 
         assert not await client._is_available(object(), agent, ROOM)
         assert (
@@ -446,7 +450,9 @@ class TestTheAgentClientsReplies:
         _bind(registry, "auto", running=False)
         _bind(registry, "always", running=False)
         _go_live(registry, ("auto", {ROOM}), ("always", {ROOM}))
-        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
         client = _client(registry, "auto")
         agent = _agent("auto", "auto_session")
 
@@ -491,7 +497,9 @@ class TestTheAgentClientsReplies:
     async def test_a_sleeping_cloud_machine_is_woken_and_says_so_once(self) -> None:
         registry = AgentConnectionRegistry()
         _bind(registry, "auto")
-        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
         agent = _agent("auto", "auto_session")
         client = _client(
             registry,
@@ -511,7 +519,9 @@ class TestTheAgentClientsReplies:
     async def test_a_cloud_machine_its_owner_stopped_stays_stopped(self) -> None:
         registry = AgentConnectionRegistry()
         _bind(registry, "auto")
-        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
         client = _client(
             registry,
             "auto",
@@ -530,7 +540,9 @@ class TestTheAgentClientsReplies:
     ) -> None:
         registry = AgentConnectionRegistry()
         _bind(registry, "auto")
-        meta = SimpleNamespace(room_id=ROOM, name="Room", bridge_id=None)
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
         client = _client(registry, "auto")
         agent = _agent("auto", "auto_session")
 
@@ -578,16 +590,17 @@ class _Sent:
 def _addressing_client(
     registry: AgentConnectionRegistry, agent_id: str, connection_model: str
 ) -> tuple[SimpleNamespace, _Sent, list[str]]:
-    """An agent client for `on_message`, addressed in ROOM, its availability
-    and replies the real ones over `registry`."""
+    """An agent recipient deciding a message addressed to it in ROOM, its
+    availability and replies the real ones over `registry`."""
     meta = SimpleNamespace(
-        room_id=ROOM, name="Room", bridge_id=None, channel_type="channel_private"
+        room_id=ROOM,
+        name="Room",
+        bridge_id=None,
+        channel_type="channel_private",
+        agent_greeting=None,
     )
     sent = _Sent()
     enqueued: list[str] = []
-
-    async def _resolve_room_meta(_transport_room_id: str) -> SimpleNamespace:
-        return meta
 
     async def _addressed(*_args: Any) -> bool:
         return True
@@ -605,22 +618,37 @@ def _addressing_client(
         integration_profile={"connection_model": connection_model},
     )
     ns.session_factory = _no_session
-    ns._resolve_room_meta = _resolve_room_meta
+    ns._meta = meta
+    ns._room = RoomRef(room_id="!room:test")
     ns._addressed_without_lookup = lambda _event, _meta: True
     ns._compute_addressed = _addressed
     ns._fresh_agent = _fresh_agent
     ns._gate_addressed = _gate_addressed
+
+    async def _sender_role(*_args: Any) -> str | None:
+        return None
+
+    ns._sender_role = _sender_role
     ns._report_addressed = lambda *_a, **_k: None
-    ns._triggered_by_auto_reply = AgentConsumer._triggered_by_auto_reply
+    ns._triggered_by_auto_reply = AgentRecipient._triggered_by_auto_reply
     ns.actor = SimpleNamespace(send_message=sent)
-    ns._event_buffer = SimpleNamespace(
-        enqueue=lambda _agent_id, _room_id, event: enqueued.append(
-            event.payload.message_id
-        )
-    )
-    ns._sender_handle = AgentConsumer._sender_handle.__get__(ns)
-    ns._post_auto_reply = AgentConsumer._post_auto_reply.__get__(ns)
+
+    ns.tenant_id = TENANT_ZERO_ID
+    ns.enqueued = enqueued
+    ns._sender_handle = AgentRecipient._sender_handle.__get__(ns)
+    ns._post_auto_reply = AgentRecipient._post_auto_reply.__get__(ns)
+    ns._after_message = AgentRecipient._after_message.__get__(ns)
     return ns, sent, enqueued
+
+
+async def _deliver(client: SimpleNamespace, event: InboundMessage) -> None:
+    """Decide the message for the agent as the router does: what is stored
+    for it is recorded, and what it is left to say is said."""
+    delivery = await AgentRecipient.decide_message(client, None, event)  # type: ignore[arg-type]
+    if delivery.own_event is not None:
+        client.enqueued.append(delivery.own_event(event).event.payload.message_id)
+    if delivery.after is not None:
+        await delivery.after(event)
 
 
 def _addressing(message_id: str) -> InboundMessage:
@@ -648,11 +676,7 @@ class TestAddressingAControllerBackedAgent:
             _go_live(registry, ("agent", {ROOM}))
             client, sent, enqueued = _addressing_client(registry, "agent", model)
 
-            await AgentConsumer.on_message(
-                client,  # type: ignore[arg-type]
-                RoomRef(room_id="!room:test"),
-                _addressing("$asked"),
-            )
+            await _deliver(client, _addressing("$asked"))
 
             assert enqueued == ["$asked"], model
             assert sent.bodies == [], model
@@ -674,11 +698,7 @@ class TestAddressingAControllerBackedAgent:
                 registry, "agent", "auto_session"
             )
 
-            await AgentConsumer.on_message(
-                client,  # type: ignore[arg-type]
-                RoomRef(room_id="!room:test"),
-                _addressing("$asked"),
-            )
+            await _deliver(client, _addressing("$asked"))
 
             assert len(sent.bodies) == 1, case
             assert expected in sent.bodies[0], (case, sent.bodies[0])

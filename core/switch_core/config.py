@@ -2,6 +2,7 @@ import os
 import re
 import ssl
 import uuid
+from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 from typing import Literal
@@ -10,11 +11,13 @@ from urllib.parse import urlsplit
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from switch_core.feature_flags import (
+    AGENT_CHATS,
     AGENT_MANAGEMENT,
+    FOLLOW_THE_CONVERSATION,
     HOSTED_AGENTS,
     KNOWN_FEATURE_FLAGS,
     SERVICE_CONNECTIONS,
@@ -80,6 +83,60 @@ def _require_matching_keypair(
 
 # A connection catalog slug (`connections/loader.py`, SLUG_PATTERN).
 _SERVICE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+
+# The version shape the controller's package script accepts: a release's
+# x.y.z, or a dev build's x.y.z-<prerelease> (0.31.1-dev.412.gabc1234).
+_CONTROLLER_RELEASE_VERSION_RE = re.compile(
+    r"\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?"
+)
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class ControllerRelease:
+    """The agents controller package every controller is told to run."""
+
+    version: str
+    url: str
+    sha256: str
+
+
+# Authorization parameters a login option may not set: the gateway's OIDC
+# client owns them, and letting configuration replace one would break the
+# flow or its protections.
+_RESERVED_OIDC_PARAMS = frozenset(
+    {
+        "client_id",
+        "redirect_uri",
+        "response_type",
+        "response_mode",
+        "scope",
+        "state",
+        "nonce",
+        "code_challenge",
+        "code_challenge_method",
+    }
+)
+
+
+class OidcLoginOption(BaseModel):
+    """One sign-in button for the gateway's OIDC provider: what it is called,
+    and the extra authorization parameters that send the person straight to
+    one way of signing in there (WorkOS: `{"provider": "GoogleOAuth"}`)."""
+
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")
+    label: str = Field(min_length=1, max_length=40)
+    params: dict[str, str] = {}
+
+    @model_validator(mode="after")
+    def _no_reserved_params(self) -> "OidcLoginOption":
+        reserved = sorted(set(self.params) & _RESERVED_OIDC_PARAMS)
+        if reserved:
+            raise ValueError(
+                f"login option {self.id!r} may not set {', '.join(reserved)}: "
+                "the gateway's OIDC client sets those"
+            )
+        return self
 
 
 class SwitchConfig(BaseSettings):
@@ -173,6 +230,14 @@ class SwitchConfig(BaseSettings):
     # the life of the process; an unknown key is a startup error rather than a
     # silently ignored typo.
     feature_flags_enabled: str = ""
+    # Set by Switch Console on a server it runs for someone (MANAGED_BY_CONSOLE),
+    # so an agent can tell them apart from Switch Cloud and a self-hosted server.
+    managed_by_console: bool = False
+
+    # Follow the conversation (feature flag `follow_the_conversation`).
+    # How long after an agent's answer a person's next channel message still
+    # counts as a follow-up to it.
+    follow_the_conversation_window_seconds: int = Field(default=300, ge=1, le=3600)
 
     # Gateway admin seed
     gateway_admin_email: str
@@ -200,6 +265,13 @@ class SwitchConfig(BaseSettings):
     # answer.
     gateway_oidc_scopes: str | None = None
     gateway_oidc_provider_label: str | None = None
+    # The sign-in buttons offered for that provider, as JSON
+    # (`GATEWAY_OIDC_LOGIN_OPTIONS='[{"id": "google", "label": "Google",
+    # "params": {"provider": "GoogleOAuth"}}]'`). Each sends its `params` with
+    # the authorization request, so a provider that understands them (WorkOS's
+    # `provider`) goes straight to that way of signing in. Empty: one button,
+    # labelled by `gateway_oidc_provider_label`.
+    gateway_oidc_login_options: list[OidcLoginOption] = []
     # Absolute callback URL registered with the IdP. Must exactly match the
     # provider registration, e.g.
     # https://switch-gateway.<tailnet>.ts.net/gateway/auth/oidc/callback
@@ -338,6 +410,18 @@ class SwitchConfig(BaseSettings):
     # (pilot, development, demo, public), not the machine.
     service_name: str = "switch-core"
     environment: str | None = None
+    # The Kubernetes pod this process runs in, from the downward API. It names
+    # the process everywhere one process has to be told from another: its
+    # lease row, the controller connections it holds, the signals it sends,
+    # its log lines and its metrics (`process_identity.py`). Unset outside
+    # Kubernetes, where the host name stands in.
+    pod_name: str | None = None
+    # How many switch-core processes the deployment runs against this
+    # database. Read for the connection budget checked at boot
+    # (`db/connection_budget.py`) and for whether a dead LISTEN connection
+    # takes this process out of service: with one replica there is no other
+    # to send traffic to, so it does not.
+    core_replicas: int = Field(default=1, ge=1)
 
     # The placeholder a log line carries when no tenant is bound at all —
     # deliberately not a tenant id, and it must not be set to one. An
@@ -408,7 +492,7 @@ class SwitchConfig(BaseSettings):
     # convention `otlp_endpoint` above follows. Defaults to the company relay,
     # which is where Switch Console already reports, so one pipeline carries
     # both. Override to point a development run at a local sink.
-    telemetry_endpoint: str = "https://telemetry.flintai.dev"
+    telemetry_endpoint: str = "https://telemetry.switchagents.ai"
 
     # How long to wait on the relay before giving up on a single event.
     # Telemetry is never worth delaying real work for, and a send that is
@@ -664,6 +748,11 @@ class SwitchConfig(BaseSettings):
     # controller access token's reads (its controller row, and the agent row
     # it acts as), which a revocation or binding change also drops at once.
     agent_auth_cache_ttl_seconds: float = 5.0
+    # How long a row in `agent_events` (one of an agent's own events) is kept
+    # before the retention loop deletes it. An agent that reconnects within
+    # this window resumes without a gap; one away for longer is told it missed
+    # events.
+    agent_event_retention_seconds: float = Field(default=24 * 60 * 60, gt=0)
     # Bound on the memo. One entry per distinct live token; the oldest is
     # evicted past this, so a flood of tokens cannot grow the process.
     agent_auth_cache_max_entries: int = 4096
@@ -682,6 +771,15 @@ class SwitchConfig(BaseSettings):
     # `report_within_s`; a controller that has not reported for three of these
     # is shown as unknown and refused new placements.
     controller_status_interval_seconds: int = 60
+    # The agents controller release every controller is told to run, in
+    # answer to its status report. Set all three or none: with none, no
+    # controller is told anything and each keeps the version it has. A
+    # controller downloads the package from the URL, refuses it unless its
+    # SHA-256 matches, and installs it once no agent session is running.
+    # Switch Console's own controller is told nothing: it updates with Console.
+    controller_release_version: str | None = None
+    controller_release_url: str | None = None
+    controller_release_sha256: str | None = None
     # Share one read of a room's new messages between every client in it
     # (`transport/room_cache.py`). Without it, a room of N agents reads each
     # new page N times, which is what exhausted the pool in a restart burst.
@@ -798,6 +896,57 @@ class SwitchConfig(BaseSettings):
                 f"{len(self.controller_token_secret)}."
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_controller_release(self) -> "SwitchConfig":
+        settings = {
+            "CONTROLLER_RELEASE_VERSION": self.controller_release_version,
+            "CONTROLLER_RELEASE_URL": self.controller_release_url,
+            "CONTROLLER_RELEASE_SHA256": self.controller_release_sha256,
+        }
+        given = sorted(name for name, value in settings.items() if value)
+        if not given:
+            return self
+        if len(given) != len(settings):
+            missing = sorted(set(settings) - set(given))
+            raise ValueError(
+                "The controller release is set all together or not at all: "
+                f"{', '.join(given)} is set but {', '.join(missing)} is not."
+            )
+        version = self.controller_release_version or ""
+        if not _CONTROLLER_RELEASE_VERSION_RE.fullmatch(version):
+            raise ValueError(
+                "CONTROLLER_RELEASE_VERSION must be x.y.z or x.y.z-<prerelease>, got "
+                f"{version!r}."
+            )
+        url = self.controller_release_url or ""
+        parts = urlsplit(url)
+        if parts.scheme != "https" or not parts.netloc or url != url.strip():
+            raise ValueError(
+                f"CONTROLLER_RELEASE_URL must be an https URL with a host, got {url!r}."
+            )
+        sha256 = self.controller_release_sha256 or ""
+        if not _SHA256_HEX_RE.fullmatch(sha256):
+            raise ValueError(
+                "CONTROLLER_RELEASE_SHA256 must be 64 lowercase hex characters, "
+                f"got {sha256!r}."
+            )
+        return self
+
+    @property
+    def controller_release(self) -> ControllerRelease | None:
+        """The release controllers are told to run, or None when not set."""
+        if not (
+            self.controller_release_version
+            and self.controller_release_url
+            and self.controller_release_sha256
+        ):
+            return None
+        return ControllerRelease(
+            version=self.controller_release_version,
+            url=self.controller_release_url,
+            sha256=self.controller_release_sha256,
+        )
 
     @model_validator(mode="after")
     def _validate_logging(self) -> "SwitchConfig":
@@ -1112,6 +1261,14 @@ class SwitchConfig(BaseSettings):
     @property
     def service_connections_enabled(self) -> bool:
         return self.feature_flags[SERVICE_CONNECTIONS]
+
+    @property
+    def follow_the_conversation_enabled(self) -> bool:
+        return self.feature_flags[FOLLOW_THE_CONVERSATION]
+
+    @property
+    def agent_chats_enabled(self) -> bool:
+        return self.feature_flags[AGENT_CHATS]
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":

@@ -329,6 +329,7 @@ def _resource_from(record: TelemetryRecord) -> OtlpResource:
         deployment_id=record.resource["flint.client_id"],
         commit_sha=None,
         repository_url=None,
+        instance_id=None,
     )
 
 

@@ -14,7 +14,7 @@ operation layer reports (see ``agent_refusals``).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
@@ -24,6 +24,13 @@ from switch_core.agent_templates import agent_slots, template_kind
 from switch_core.authz import Principal, can
 from switch_core.db.models import Agent, Template, User
 from switch_core.db.stores.template_store import TemplateNameTaken, TemplateStore
+from switch_core.official_templates import (
+    OfficialTemplate,
+    is_official,
+    matches,
+    official_template,
+    official_templates,
+)
 from switch_core.template_lint import lint_template
 
 if TYPE_CHECKING:
@@ -57,6 +64,8 @@ def _visibility(template: Template | Any) -> str:
 
 
 async def _saved_by(session: AsyncSession, template: Template | Any) -> str:
+    if isinstance(template, OfficialTemplate):
+        return "Switch"
     if template.created_by_agent_id:
         agent = await session.get(Agent, template.created_by_agent_id)
         return f"agent {agent.name}" if agent else "an agent that no longer exists"
@@ -82,6 +91,7 @@ def _params(content: str) -> list[dict[str, Any]]:
             "description": spec.get("description"),
             "default": spec.get("default"),
             "required": spec.get("required"),
+            "if": spec.get("if"),
         }
         for name, spec in raw.items()
         if isinstance(spec, dict)
@@ -89,9 +99,20 @@ def _params(content: str) -> list[dict[str, Any]]:
 
 
 class AgentTemplates:
-    def __init__(self, store: TemplateStore, *, max_bytes: int) -> None:
+    def __init__(
+        self,
+        store: TemplateStore,
+        *,
+        max_bytes: int,
+        agent_management: bool,
+        switch_buddy: bool,
+    ) -> None:
         self._store = store
         self._max_bytes = max_bytes
+        # Which document an official template that comes in two is served as.
+        self._agent_management = agent_management
+        # Whether switch-buddy is among the official templates.
+        self._switch_buddy = switch_buddy
 
     # ── Reading ───────────────────────────────────────────────────────────
 
@@ -106,7 +127,20 @@ class AgentTemplates:
         rows = await self._store.list_all(
             session, viewer_id=acting.owner.id, is_admin=False, query=query, kind=kind
         )
-        return [
+        official = [
+            {
+                "id": t.id,
+                "name": t.name,
+                "description": t.description,
+                "kind": t.kind,
+                "visibility": "shared",
+                "saved_by": "Switch",
+                "can_edit": False,
+            }
+            for t in official_templates(self._agent_management, self._switch_buddy)
+            if matches(t, query, kind)
+        ]
+        return official + [
             {
                 "id": row.id,
                 "name": row.name,
@@ -121,9 +155,21 @@ class AgentTemplates:
 
     async def load(
         self, session: AsyncSession, acting: ActingFor, template_id: str
-    ) -> Template:
+    ) -> Template | OfficialTemplate:
         """A template the agent may read, or ``not_found``: one it may not
-        read does not exist for it, as for a person."""
+        read does not exist for it, as for a person. An ``official:`` id is
+        one that comes with Switch."""
+        if is_official(template_id):
+            official = official_template(
+                template_id, self._agent_management, self._switch_buddy
+            )
+            if official is None:
+                raise AgentRefused(
+                    "not_found",
+                    f"No template with id {template_id}. list_templates shows the "
+                    "ones you can use.",
+                )
+            return official
         template = await self._store.get(session, template_id)
         if template is None or not can(acting.reader, "read", template):
             raise AgentRefused(
@@ -138,10 +184,7 @@ class AgentTemplates:
     ) -> dict[str, Any]:
         template = await self.load(session, acting, template_id)
         try:
-            slots = [
-                {"name": s.name, "description": s.description}
-                for s in agent_slots(template.content)
-            ]
+            slots = [asdict(s) for s in agent_slots(template.content)]
         except ValueError:
             slots = []
         return {
@@ -159,7 +202,12 @@ class AgentTemplates:
 
     # ── Writing ───────────────────────────────────────────────────────────
 
-    def _check_content(self, content: str) -> str:
+    def _check_content(
+        self, content: str, *, bypass_warnings: bool
+    ) -> tuple[str, list[str]]:
+        """The document's kind and its lint warnings, refusing a document no
+        consumer could provision, and one with warnings unless the agent has
+        seen them and chosen to save anyway."""
         size = len(content.encode("utf-8"))
         if size > self._max_bytes:
             raise AgentRefused(
@@ -175,9 +223,19 @@ class AgentTemplates:
                 + "; ".join(f.message for f in lint.errors if f.blocking),
             )
         try:
-            return template_kind(content)
+            kind = template_kind(content)
         except ValueError as e:
             raise AgentRefused("invalid", str(e)) from e
+        warnings = [f.message for f in lint.warnings]
+        if warnings and not bypass_warnings:
+            raise AgentRefused(
+                "has_warnings",
+                "The template was not saved, because of these warnings: "
+                + " ".join(f"({i}) {w}" for i, w in enumerate(warnings, 1))
+                + " Fix them, or tell whoever asked for the template what they "
+                "mean and save again with bypass_warnings=true.",
+            )
+        return kind, warnings
 
     @staticmethod
     def _pair(visibility: str) -> tuple[str, str]:
@@ -209,9 +267,10 @@ class AgentTemplates:
         description: str,
         content: str,
         visibility: str,
-    ) -> Template:
+        bypass_warnings: bool,
+    ) -> tuple[Template, list[str]]:
         read, write = self._pair(visibility)
-        kind = self._check_content(content)
+        kind, warnings = self._check_content(content, bypass_warnings=bypass_warnings)
         try:
             template = await self._store.create(
                 session,
@@ -228,12 +287,18 @@ class AgentTemplates:
             )
         except TemplateNameTaken as e:
             raise self._name_taken(name) from e
-        return template
+        return template, warnings
 
     async def _own(
         self, session: AsyncSession, acting: ActingFor, template_id: str
     ) -> Template:
         template = await self.load(session, acting, template_id)
+        if isinstance(template, OfficialTemplate):
+            raise AgentRefused(
+                "not_yours",
+                f"'{template.name}' comes with Switch, so nobody can change or "
+                "delete it. Save your own version under another name instead.",
+            )
         if template.created_by_agent_id != acting.agent.id:
             raise AgentRefused(
                 "not_yours",
@@ -254,13 +319,18 @@ class AgentTemplates:
         description: str | None,
         content: str | None,
         visibility: str | None,
-    ) -> Template:
+        bypass_warnings: bool,
+    ) -> tuple[Template, list[str]]:
         template = await self._own(session, acting, template_id)
         label = name or template.name
         read, write = self._pair(visibility) if visibility is not None else (None, None)
-        kind = self._check_content(content) if content is not None else None
+        kind, warnings = (
+            self._check_content(content, bypass_warnings=bypass_warnings)
+            if content is not None
+            else (None, [])
+        )
         try:
-            return await self._store.update_fields(
+            updated = await self._store.update_fields(
                 session,
                 template.id,
                 name=name,
@@ -273,6 +343,7 @@ class AgentTemplates:
             )
         except TemplateNameTaken as e:
             raise self._name_taken(label) from e
+        return updated, warnings
 
     @staticmethod
     def _still_own(acting: ActingFor, locked: Template) -> None:

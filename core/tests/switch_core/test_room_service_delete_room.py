@@ -46,9 +46,14 @@ class _FakeCollaborationCore:
 class _FakeLifecycle:
     def __init__(self, bridges: dict[str, Any]) -> None:
         self._bridges = bridges
+        # Bridges whose rooms changed, announced for the other processes.
+        self.rooms_changed_for: list[str] = []
 
     def get(self, bridge_id: str) -> Any:
         return self._bridges.get(bridge_id)
+
+    def rooms_changed(self, bridge_id: str) -> None:
+        self.rooms_changed_for.append(bridge_id)
 
 
 class _FakeClientLifecycle:
@@ -121,6 +126,8 @@ class TestDeleteRoom:
         assert room_store.deleted == ["room-1"]
         assert ("delete_room", "!mx:switch.local") in events
         assert ("remove_room_mapping", "room-1", "!mx:switch.local") in events
+        # And every other process unmaps it too.
+        assert svc._collab_lifecycle.rooms_changed_for == ["bridge-x"]  # type: ignore[attr-defined]
 
     async def test_non_bridged_room_does_not_touch_collaboration_core(self) -> None:
         events: list[Any] = []

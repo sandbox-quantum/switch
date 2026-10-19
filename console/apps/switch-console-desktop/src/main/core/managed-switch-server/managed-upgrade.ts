@@ -11,7 +11,11 @@ import {
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { composeUpService, runDocker, serviceContainerId } from './compose';
 import { COMPOSE_FILE_NAME, ENV_FILE_NAME } from './constants';
-import { classifyVersionDrift, readDeployedVersion } from './deployed-version';
+import {
+  classifyVersionDrift,
+  type DeployedVersion,
+  readDeployedVersion,
+} from './deployed-version';
 import type { ServerHost } from './host/types';
 
 /**
@@ -100,11 +104,34 @@ export function upgradeState(owed: OwedUpgrade, running: boolean): ManagedServer
  * sessions for the whole of it. Any failure throws, leaving the stack's
  * configuration untouched.
  */
-export async function prepareUpgrade(
+export function prepareUpgrade(
   host: ServerHost,
   checkoutRoot: string | null,
   onMessage: (message: string) => void,
   onUpgrade: (upgrade: OwedUpgrade) => void
+): Promise<UpgradeJournal | null> {
+  return prepareUpgradeFrom(host, checkoutRoot, onMessage, onUpgrade, {
+    readDeployedVersion: () => readDeployedVersion(host),
+    backupDatabase: (from, message) => backupDatabase(host, from, message),
+  });
+}
+
+/** Where an upgrade reads the deployed version from and how it backs the
+ * database up: the Docker stack's containers, or a native server's files. */
+export type UpgradeSource = {
+  readDeployedVersion: () => Promise<DeployedVersion>;
+  /** Back the database up before it is migrated past `from`; returns where. */
+  backupDatabase: (from: string, onMessage: (message: string) => void) => Promise<string>;
+};
+
+/** {@link prepareUpgrade} against an explicit {@link UpgradeSource}. The
+ * journal is kept in `host`'s working directory either way. */
+export async function prepareUpgradeFrom(
+  host: ServerHost,
+  checkoutRoot: string | null,
+  onMessage: (message: string) => void,
+  onUpgrade: (upgrade: OwedUpgrade) => void,
+  source: UpgradeSource
 ): Promise<UpgradeJournal | null> {
   const pending = await readUpgradeJournal(host);
   if (pending) {
@@ -128,13 +155,13 @@ export async function prepareUpgrade(
     return resumed;
   }
   if (checkoutRoot !== null) return null;
-  const deployed = await readDeployedVersion(host);
+  const deployed = await source.readDeployedVersion();
   if (deployed.kind !== 'deployed' || deployed.version === CHECKOUT_IMAGE_TAG) return null;
   if (classifyVersionDrift(deployed.version, COMPATIBLE_SWITCH_VERSION)?.direction !== 'upgrade') {
     return null;
   }
   onUpgrade({ from: deployed.version, to: COMPATIBLE_SWITCH_VERSION });
-  const backup = await backupDatabase(host, deployed.version, onMessage);
+  const backup = await source.backupDatabase(deployed.version, onMessage);
   const journal = { from: deployed.version, to: COMPATIBLE_SWITCH_VERSION, backup };
   await writeJournal(host, journal);
   return journal;

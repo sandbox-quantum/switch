@@ -53,12 +53,18 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
     # Self sign-up has no caller either; it writes into tenant zero by name.
     ("POST", "/auth/signup"),
     ("GET", "/auth/oidc/callback"),
+    # The browser sign-in's last step: a one-time code and its verifier,
+    # traded for the session cookie, before there is a session to bind from.
+    ("POST", "/auth/oidc/exchange"),
     ("GET", "/auth/session"),
     ("POST", "/tenants"),
     ("POST", "/tenants/{tenant_id}/switch"),
     # Locks the caller's `users` row, which has no tenant, while it creates a
     # workspace that has none yet either.
     ("POST", "/tenants"),
+    # Deletes the caller's `users` row and sign-in identities, which belong to
+    # no workspace; each workspace is left in a `tenant_session` of its own.
+    ("DELETE", "/auth/me"),
 }
 
 # Every route that does not resolve a tenant, for any reason. `get_current_user`
@@ -76,21 +82,24 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
 # than a route nobody counted. `_ROUTES_WITH_NO_TENANT_BOUND` is a strict subset.
 _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # Browser handoff uses a short-lived flow, browser cookie and PKCE; saving
-    # credentials requires the initiating user to confirm via the authenticated API.
+    # credentials requires the initiating user to hand the code back through
+    # the authenticated API.
     ("GET", "/provider-connections/github/authorize"),
     ("GET", "/provider-connections/github/callback"),
-    ("POST", "/provider-connections/github/callback"),
     # The same handoff for every other service's sign-in (`connections/flows.py`).
     ("GET", "/service-connections/{service}/flows/authorize"),
     ("GET", "/service-connections/{service}/flows/callback"),
-    ("POST", "/service-connections/{service}/flows/callback"),
     # No caller yet: the sign-in surface and what it hands back.
     ("GET", "/auth/config"),
     ("GET", "/auth/oidc/login"),
     ("GET", "/auth/oidc/callback"),
+    ("POST", "/auth/oidc/exchange"),
     ("POST", "/auth/login"),
     ("POST", "/auth/signup"),
     ("POST", "/auth/logout"),
+    # Deleting your account acts on every workspace you are in, each in a
+    # `tenant_session` of its own (`accounts/deletion.py`).
+    ("DELETE", "/auth/me"),
     # What a signed-in caller's session resolves to — including that it
     # resolves to no workspace, which is the answer a caller with none needs.
     ("GET", "/auth/session"),

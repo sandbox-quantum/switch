@@ -1,9 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { packageDir } from './releases';
 import {
   agentPath,
   agentUnitTemplate,
   controllerSystemUnit,
+  defaultReleasesDir,
+  ensureReleases,
   homeRootOf,
+  planReleases,
   parsePasswd,
   polkitRule,
   type SeparateUsersConfig,
@@ -23,6 +38,7 @@ const config: SeparateUsersConfig = {
   agentUsers: 4,
   node: '/usr/bin/node',
   bundle: '/usr/lib/node_modules/switch-agent-controller/shared-host.mjs',
+  releasesDir: null,
 };
 
 function lines(text: string): string[] {
@@ -130,5 +146,162 @@ describe.skipIf(process.platform === 'win32')('separate users', () => {
       separateUsersConfigSchema.safeParse({ ...config, agentsDir: '/var/lib/with space' }).success
     ).toBe(false);
     expect(separateUsersConfigSchema.safeParse({ ...config, agentUsers: 100 }).success).toBe(false);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('releases directory', () => {
+  const baked = {
+    cli: '/opt/switch/controller/lib/node_modules/switch-agent-controller/cli.mjs',
+    bundle: '/opt/switch/controller/lib/node_modules/switch-agent-controller/shared-host.mjs',
+    uid: 2000,
+    dataDir: '/data/.switch-controller',
+    agentsDir: '/data/agents',
+    homes: ['/nonexistent'],
+  };
+
+  it('runs the controller and its agents through current', () => {
+    const plan = planReleases({ ...baked, releasesDir: '/data/controller-releases' });
+    expect(plan).toEqual({
+      dir: '/data/controller-releases',
+      prefix: '/opt/switch/controller',
+      cli: '/data/controller-releases/current/lib/node_modules/switch-agent-controller/cli.mjs',
+      bundle:
+        '/data/controller-releases/current/lib/node_modules/switch-agent-controller/shared-host.mjs',
+    });
+    expect(planReleases({ ...baked, releasesDir: null })?.dir).toBe(
+      '/var/lib/switch-agent-controller-2000/releases'
+    );
+    expect(defaultReleasesDir(2000)).toBe('/var/lib/switch-agent-controller-2000/releases');
+
+    const unitConfig: SeparateUsersConfig = {
+      ...config,
+      dataDir: baked.dataDir,
+      agentsDir: baked.agentsDir,
+      bundle: plan!.bundle,
+      releasesDir: plan!.dir,
+    };
+    const agentUnit = lines(
+      agentUnitTemplate(unitConfig, {
+        sh: '/bin/sh',
+        find: '/usr/bin/find',
+        chown: '/usr/bin/chown',
+        path: '/usr/bin:/bin',
+      })
+    );
+    expect(agentUnit).toContain(
+      'ExecStart=/usr/bin/node /data/controller-releases/current/lib/node_modules/switch-agent-controller/shared-host.mjs /data/agents/agent/watcher /data/agents/agent/watcher/config.json --watch-worker'
+    );
+    const controllerUnit = lines(
+      controllerSystemUnit(unitConfig, { cli: plan!.cli, envFile: null, path: '/usr/bin:/bin' })
+    );
+    const exec = controllerUnit.find((line) => line.startsWith('ExecStart='))!;
+    expect(exec).toContain(
+      '"/usr/bin/node" "/data/controller-releases/current/lib/node_modules/switch-agent-controller/cli.mjs" "run"'
+    );
+    expect(exec).toContain(
+      '"--shared-host-bundle" "/data/controller-releases/current/lib/node_modules/switch-agent-controller/shared-host.mjs"'
+    );
+    // 7 is restarting into an update: systemd must start it again.
+    expect(controllerUnit).toContain('Restart=on-failure');
+    const prevented = controllerUnit.find((line) => line.startsWith('RestartPreventExitStatus='))!;
+    expect(prevented.split('=')[1]!.split(' ')).not.toContain('7');
+  });
+
+  it('keeps a bundle named outside the controller’s install where it is', () => {
+    expect(
+      planReleases({ ...baked, bundle: '/opt/shared-host.mjs', releasesDir: null })?.bundle
+    ).toBe('/opt/shared-host.mjs');
+  });
+
+  it('has none for a controller that is not an npm install, and refuses one named for it', () => {
+    const checkout = {
+      ...baked,
+      cli: '/srv/switch/console/packages/agent-controller/dist/cli.mjs',
+    };
+    expect(planReleases({ ...checkout, releasesDir: null })).toBeNull();
+    expect(() => planReleases({ ...checkout, releasesDir: '/srv/releases' })).toThrow(
+      /--releases-dir needs the controller installed with npm/
+    );
+  });
+
+  it('refuses a directory agents cannot read', () => {
+    for (const releasesDir of [
+      '/data/.switch-controller/releases',
+      '/data/agents/releases',
+      '/home/builder/releases',
+      '/nonexistent/releases',
+      '/data',
+      '/srv/with space',
+    ])
+      expect(() => planReleases({ ...baked, releasesDir }), releasesDir).toThrow(/--releases-dir/);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('ensureReleases', () => {
+  let dir: string;
+  let releases: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'ensure-releases-'));
+    releases = join(dir, 'var', 'releases');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function release(prefix: string, version: string): string {
+    mkdirSync(packageDir(prefix), { recursive: true });
+    writeFileSync(join(packageDir(prefix), 'package.json'), JSON.stringify({ version }));
+    return prefix;
+  }
+
+  const ensure = (prefix: string, version: string) =>
+    ensureReleases({ releasesDir: releases, prefix, version, owner: null });
+
+  it('makes the directory, readable by all, and points current at the installing release', async () => {
+    const baked = release(join(dir, 'opt'), '0.30.0');
+    await ensure(baked, '0.30.0');
+    expect(statSync(releases).mode & 0o777).toBe(0o755);
+    expect(readlinkSync(join(releases, 'current'))).toBe(baked);
+  });
+
+  it('replaces a dangling current, and one older than the installing release', async () => {
+    const baked = release(join(dir, 'opt'), '0.30.0');
+    mkdirSync(releases, { recursive: true });
+    symlinkSync(join(releases, '0.29.0'), join(releases, 'current'));
+    await ensure(baked, '0.30.0');
+    expect(readlinkSync(join(releases, 'current'))).toBe(baked);
+
+    rmSync(join(releases, 'current'));
+    symlinkSync(release(join(releases, '0.29.0'), '0.29.0'), join(releases, 'current'));
+    await ensure(baked, '0.30.0');
+    expect(readlinkSync(join(releases, 'current'))).toBe(baked);
+  });
+
+  it('keeps a current as new as the installing release, or newer: an update applied since', async () => {
+    const baked = release(join(dir, 'opt'), '0.30.0');
+    mkdirSync(releases, { recursive: true });
+    const updated = release(join(releases, '0.31.0'), '0.31.0');
+    symlinkSync(updated, join(releases, 'current'));
+    const note = await ensure(baked, '0.30.0');
+    expect(readlinkSync(join(releases, 'current'))).toBe(updated);
+    expect(note).toContain('0.31.0');
+    // A newer image wins.
+    const newer = release(join(dir, 'opt-new'), '0.32.0');
+    await ensure(newer, '0.32.0');
+    expect(readlinkSync(join(releases, 'current'))).toBe(newer);
+    await ensure(newer, '0.32.0');
+    expect(readlinkSync(join(releases, 'current'))).toBe(newer);
+  });
+
+  it('refuses a current that is not a link, and a directory that is a link', async () => {
+    const baked = release(join(dir, 'opt'), '0.30.0');
+    mkdirSync(join(releases, 'current'), { recursive: true });
+    await expect(ensure(baked, '0.30.0')).rejects.toThrow(/is not a link/);
+    rmSync(releases, { recursive: true });
+    mkdirSync(join(dir, 'elsewhere'));
+    symlinkSync(join(dir, 'elsewhere'), releases);
+    await expect(ensure(baked, '0.30.0')).rejects.toThrow(/is not a directory/);
   });
 });

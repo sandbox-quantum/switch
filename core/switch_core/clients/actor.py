@@ -23,6 +23,8 @@ from switch_core.clients.admin_messages import (
     OnBehalfOf,
     admin_extra_content,
 )
+from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.transport import MessageTransport, TransportError
 
@@ -125,6 +127,18 @@ class Actor[ConfigT: ClientConfig]:
     async def wait_ready(self) -> None:
         await self._ready.wait()
 
+    async def wait_receiving(self, timeout: float) -> bool:
+        """Block until this actor's client is taking events, so a room it is
+        added to from now on is one it reads from the start, up to `timeout`
+        seconds. False on timeout."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout)
+        except TimeoutError:
+            return False
+        return await self._transport.wait_receiving(max(0.0, deadline - loop.time()))
+
     async def set_display_name(self, display_name: str) -> None:
         """Change the name this actor shows under.
 
@@ -196,9 +210,12 @@ class Actor[ConfigT: ClientConfig]:
                 self.mark_joined(room_id, self._connected_at)
                 return True
 
-    async def join_room(self, room_id: str) -> None:
+    async def join_room(self, room_id: str, joined_at_ms: int) -> None:
+        """Join, and filter the room's rows from `joined_at_ms` on: when the
+        invitation came, or, for a membership another process wrote, the
+        membership row's own time."""
         if await self._transport.join_room(room_id):
-            self.mark_joined(room_id, int(time.time() * 1000))
+            self.mark_joined(room_id, joined_at_ms)
             logger.info("Actor %s joined %s", self.transport_user_id, room_id)
 
     # ── Writing ────────────────────────────────────────────────────────────────
@@ -317,8 +334,9 @@ class AgentActor(Actor[ClientConfig]):
     """An agent, as a member of Switch rooms (client type `agent`).
 
     Carries the agent row it stands for: the bridge writes the agent's replies
-    through it, found by agent id. The row is loaded by the agent's consumer
-    when it starts, and refreshed there when it may have been edited.
+    through it, found by agent id. An agent reads no room, so it has no
+    consumer: what is for it is decided as each row is written
+    (`delivery/router.py`). The row is loaded when the actor connects.
     """
 
     role: ClassVar[ActorRole] = "agent"
@@ -327,10 +345,40 @@ class AgentActor(Actor[ClientConfig]):
         super().__init__(**kwargs)
         self._agent: Agent | None = None
 
+    async def connect(self) -> None:
+        """Load the agent this actor is, then open the transport.
+
+        This runs at the top of the client's own task, which binds nothing, so
+        the tenant is carried rather than inherited: it comes from the
+        `clients` row this actor was built from. A guessed tenant would turn
+        "this client is an agent" into "no agent found for client" and fail
+        the client at boot over a row that exists, which is why nothing here
+        falls back to whatever is ambient.
+        """
+        if self._agent is None:
+            async with tenant_session(self.session_factory, self.tenant_id) as session:
+                agent = await AgentStore().get_by_client_id(session, self.client_id)
+            if agent is None:
+                raise RuntimeError(f"No agent found for client: {self.client_id}")
+            self._agent = agent
+        await super().connect()
+
+    def preload_agent(self, agent: Agent) -> None:
+        """Hand `connect` the agent row read in bulk at boot, so it needs no
+        query of its own."""
+        self._agent = agent
+
+    async def wait_receiving(self, timeout: float) -> bool:
+        """True at once. An agent reads no room: each row written to a room it
+        is in is decided for it as the row is written, whether or not its
+        client has started, so a room it is added to is one it hears from the
+        start (`delivery/router.py`)."""
+        return True
+
     @property
     def agent(self) -> Agent:
         if self._agent is None:
-            raise RuntimeError("Agent not loaded — its consumer has not started")
+            raise RuntimeError("Agent not loaded: the actor has not connected")
         return self._agent
 
     @property

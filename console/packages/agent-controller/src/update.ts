@@ -41,20 +41,56 @@ const releaseSchema = z.object({
 
 export type ControllerRelease = { version: string; packageUrl: string };
 
-type Version = [number, number, number];
+/**
+ * A controller release version: `x.y.z`, or `x.y.z-<pre>` with dot-separated
+ * alphanumeric identifiers, as a dev build of main publishes
+ * (`0.31.1-dev.412.gabc1234`). Build metadata (`+…`) is not used.
+ */
+export const RELEASE_VERSION = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*))?$/;
+
+type Version = { core: [number, number, number]; pre: string[] };
 
 function parseVersion(value: string): Version | null {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value);
-  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+  const match = RELEASE_VERSION.exec(value);
+  if (!match) return null;
+  return {
+    core: [Number(match[1]), Number(match[2]), Number(match[3])],
+    pre: match[4] ? match[4].split('.') : [],
+  };
 }
 
-/** Whether `candidate` is a later release than `current`; versions not plain x.y.z never are. */
+/** Whether `value` is a plain `x.y.z` release, not a prerelease. */
+export function isPlainVersion(value: string): boolean {
+  const parsed = parseVersion(value);
+  return parsed !== null && parsed.pre.length === 0;
+}
+
+/** Semver precedence of two prerelease identifiers. */
+function compareIdentifier(a: string, b: string): number {
+  const numericA = /^\d+$/.test(a);
+  const numericB = /^\d+$/.test(b);
+  if (numericA && numericB) return Number(a) - Number(b);
+  if (numericA !== numericB) return numericA ? -1 : 1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Whether `candidate` is a later release than `current`, by semver precedence:
+ * `0.31.0-dev.3` < `0.31.0-dev.12` < `0.31.0`. A version that is neither form
+ * never is.
+ */
 export function isNewer(candidate: string, current: string): boolean {
   const a = parseVersion(candidate);
   const b = parseVersion(current);
   if (!a || !b) return false;
-  for (let index = 0; index < 3; index++) if (a[index] !== b[index]) return a[index] > b[index];
-  return false;
+  for (let index = 0; index < 3; index++)
+    if (a.core[index] !== b.core[index]) return a.core[index]! > b.core[index]!;
+  if (a.pre.length === 0 || b.pre.length === 0) return a.pre.length === 0 && b.pre.length > 0;
+  for (let index = 0; index < Math.min(a.pre.length, b.pre.length); index++) {
+    const order = compareIdentifier(a.pre[index]!, b.pre[index]!);
+    if (order !== 0) return order > 0;
+  }
+  return a.pre.length > b.pre.length;
 }
 
 /**
@@ -79,7 +115,7 @@ export async function latestRelease(
     if (release.draft || release.prerelease || !release.tag_name.startsWith(RELEASE_TAG_PREFIX))
       continue;
     const version = release.tag_name.slice(RELEASE_TAG_PREFIX.length);
-    if (!parseVersion(version)) continue;
+    if (!isPlainVersion(version)) continue;
     const asset = release.assets.find((candidate) => candidate.name === packageAssetName(version));
     if (!asset) continue;
     if (!best || isNewer(version, best.version))

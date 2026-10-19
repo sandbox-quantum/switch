@@ -1,4 +1,10 @@
-import type { ProviderReadiness, SharedHostConfig } from '@switch-console/agent-providers';
+import { join } from 'node:path';
+import {
+  CONTROL_FILE,
+  type ProviderReadiness,
+  type SharedHostConfig,
+} from '@switch-console/agent-providers';
+import { warmOverControlPort } from './control-port';
 import type {
   AgentObservation,
   AgentRunner,
@@ -77,6 +83,12 @@ export class AgentRuntimes implements AgentRuntime {
     login: GivenLogin | null
   ): Promise<ProviderReadiness> {
     return this.shared.probe(provider, binaryPath, cwd, login);
+  }
+
+  /** In this process when it runs here; otherwise on the control port its own process opens. */
+  async warm(agentId: string, roomId: string): Promise<void> {
+    if (await this.shared.warmHere(agentId, roomId)) return;
+    await warmOverControlPort(join(this.agentStateRoot(agentId), CONTROL_FILE), roomId);
   }
 
   /** The same for both: moving an agent between them keeps its root. */

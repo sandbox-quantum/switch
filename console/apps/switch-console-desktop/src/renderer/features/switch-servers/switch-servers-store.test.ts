@@ -387,7 +387,7 @@ describe('adding the first server', () => {
     addServer.mockResolvedValue(server('a'));
     listServers.mockResolvedValue([server('a')]);
     installIsEmpty.mockResolvedValue(false);
-    await store.addServer('a', 'https://a.example.com', null);
+    await store.addServer('a', 'https://a.example.com');
 
     expect(store.installIsEmpty).toBe(false);
   });
@@ -413,7 +413,7 @@ describe('signing in through the browser', () => {
     oidcLogin.mockResolvedValue({ success: true, data: true });
     listServers.mockResolvedValue([server('a', { dashboardUrl: 'https://a.example.com' })]);
 
-    expect(await store.oidcLogin('a')).toBe(true);
+    expect(await store.oidcLogin('a', null)).toBe(true);
 
     expect(store.servers[0]?.dashboardUrl).toBe('https://a.example.com');
   });
@@ -708,26 +708,9 @@ describe('keeping a server active', () => {
     addServer.mockResolvedValue(created);
     listServers.mockResolvedValue([created]);
 
-    await store.addServer('New', created.url, null);
+    await store.addServer('New', created.url);
 
     expect(store.activeServerId).toBe('srv-new');
-  });
-
-  it('passes on where the server’s dashboard was reached, for the main process to check', async () => {
-    listServers.mockResolvedValue([]);
-    const store = new SwitchServersStore();
-    await store.init();
-    const created = server('srv-new');
-    addServer.mockResolvedValue(created);
-    listServers.mockResolvedValue([created]);
-
-    await store.addServer('New', 'https://switch-api.example.com', 'https://switch.example.com');
-
-    expect(addServer).toHaveBeenCalledWith({
-      name: 'New',
-      url: 'https://switch-api.example.com',
-      dashboardUrl: 'https://switch.example.com',
-    });
   });
 
   it('does not move the workspace when a second server is added', async () => {
@@ -740,7 +723,7 @@ describe('keeping a server active', () => {
     addServer.mockResolvedValue(created);
     listServers.mockResolvedValue([server('srv-a'), created]);
 
-    await store.addServer('B', created.url, null);
+    await store.addServer('B', created.url);
 
     expect(store.activeServerId).toBe('srv-a');
   });

@@ -65,8 +65,8 @@ AuthorizationParam = Literal["access_type", "include_granted_scopes"]
 class OAuthClient(BaseModel):
     """How Core has its OAuth client at the vendor, and where a sign-in returns.
 
-    `registration`: `static`, a client the operator registers and names in
-    `<client_settings>_CLIENT_CONFIG_PATH`; or `dynamic`, one Core registers
+    `registration`: `static`, a client the operator registers and saves from
+    the dashboard or names in `<client_settings>_CLIENT_CONFIG_PATH`; or `dynamic`, one Core registers
     itself on first connect and stores. `redirect`: where the browser may come
     back with the code, `core` (Core's own callback) or `loopback` (Switch
     Console's listener on 127.0.0.1), in the order offered. Without
@@ -74,8 +74,6 @@ class OAuthClient(BaseModel):
     server's metadata. `revocation_url` is where a disconnect revokes the
     sign-in, where the vendor has one; `revocation_discovered` revokes at the
     authorization server's advertised revocation endpoint instead.
-    `setup_note` tells people what a server without the client's settings
-    lacks.
 
     `loopback_ports`: the only ports Switch Console's listener may use, for a
     vendor that matches a loopback redirect exactly, port included; without
@@ -106,9 +104,6 @@ class OAuthClient(BaseModel):
     token_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_discovered: bool = False
-    setup_note: str | None = Field(
-        default=None, min_length=1, max_length=200, pattern=r"^[^\n]+$"
-    )
 
     @model_validator(mode="after")
     def _consistent(self) -> "OAuthClient":

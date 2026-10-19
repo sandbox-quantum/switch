@@ -9,6 +9,7 @@ relies on a primary-key collision being the guard.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import uuid
@@ -434,3 +435,105 @@ class TestTheSnapshotSchedule:
             await session.commit()
 
         assert await reporter.run_once_if_due() is True
+
+
+class TestOneProcessSendsTheSnapshot:
+    """Every switch-core process runs the snapshot loop. The watermark is
+    claimed before anything is sent, so two processes due at the same moment
+    send one snapshot between them."""
+
+    def _reporter(
+        self, sink: _RecordingSink, session_factory: async_sessionmaker[AsyncSession]
+    ) -> SnapshotReporter:
+        return TestTheSnapshotSchedule()._reporter(sink, session_factory)
+
+    async def _sent(self, sink: _RecordingSink) -> int:
+        return len([r for r in sink.sent if r.name == "switch_core.usage_snapshot"])
+
+    @pytest.mark.parametrize("watermark_days_ago", [None, 2])
+    async def test_two_processes_due_together_send_one_snapshot(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        watermark_days_ago: int | None,
+    ) -> None:
+        async with session_factory() as session:
+            await session.execute(delete(TelemetrySnapshotWatermark))
+            if watermark_days_ago is not None:
+                session.add(
+                    TelemetrySnapshotWatermark(
+                        id=1,
+                        last_sent_at=datetime.now(UTC)
+                        - timedelta(days=watermark_days_ago),
+                    )
+                )
+            await session.commit()
+        first_sink, second_sink = _RecordingSink(), _RecordingSink()
+        first = self._reporter(first_sink, session_factory)
+        second = self._reporter(second_sink, session_factory)
+
+        # Both read the watermark as due before either claims it: the window
+        # the claim exists to close.
+        read_both = asyncio.Barrier(2)
+        for reporter in (first, second):
+            original = reporter._read_watermark
+
+            async def read_then_wait(original=original) -> datetime | None:
+                value = await original()
+                await read_both.wait()
+                return value
+
+            reporter._read_watermark = read_then_wait  # type: ignore[method-assign]
+
+        results = await asyncio.gather(
+            first.run_once_if_due(), second.run_once_if_due()
+        )
+
+        assert sorted(results) == [False, True]
+        assert await self._sent(first_sink) + await self._sent(second_sink) == 1
+
+    async def test_a_pass_that_fails_before_sending_hands_the_claim_back(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Otherwise one failed count would skip the day for every process."""
+        before = datetime.now(UTC) - timedelta(days=2)
+        async with session_factory() as session:
+            await session.execute(delete(TelemetrySnapshotWatermark))
+            session.add(TelemetrySnapshotWatermark(id=1, last_sent_at=before))
+            await session.commit()
+
+        async def broken(*args: object, **kwargs: object) -> object:
+            raise RuntimeError("the count fell over")
+
+        monkeypatch.setattr("switch_core.telemetry.reporter.collect_usage", broken)
+        sink = _RecordingSink()
+        reporter = self._reporter(sink, session_factory)
+
+        with pytest.raises(RuntimeError, match="the count fell over"):
+            await reporter.run_once_if_due()
+
+        assert await reporter._read_watermark() == before
+        monkeypatch.undo()
+        assert await reporter.run_once_if_due() is True
+        assert await self._sent(sink) == 1
+
+    async def test_a_first_pass_that_fails_leaves_no_watermark(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async with session_factory() as session:
+            await session.execute(delete(TelemetrySnapshotWatermark))
+            await session.commit()
+
+        async def broken(*args: object, **kwargs: object) -> object:
+            raise RuntimeError("the count fell over")
+
+        monkeypatch.setattr("switch_core.telemetry.reporter.collect_usage", broken)
+        reporter = self._reporter(_RecordingSink(), session_factory)
+
+        with pytest.raises(RuntimeError):
+            await reporter.run_once_if_due()
+
+        assert await reporter._read_watermark() is None

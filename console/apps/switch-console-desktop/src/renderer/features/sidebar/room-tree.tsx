@@ -2,8 +2,10 @@ import { observer } from 'mobx-react-lite';
 import { Fragment } from 'react';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
+import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 import { RoomAgentRow } from './room-agent-row';
 import { filterRoomGroups, sortRoomGroups } from './room-tree-data';
 import { SidebarSessionItem } from './session-item';
@@ -73,11 +75,8 @@ function membersByRoom(): Map<string, AgentEntry[]> {
  * Shared with Collapse all, which needs the same set of rows without the tree
  * being on screen to ask.
  */
-export function listedRoomKeys(): string[] {
-  const keys = new Set<string>([
-    ...switchRoomsStore.listedRoomsInActiveScope.map((room) => room.id),
-    ...membersByRoom().keys(),
-  ]);
+export function listedRoomKeys(listedRooms: RemoteRoomSummary[]): string[] {
+  const keys = new Set<string>([...listedRooms.map((room) => room.id), ...membersByRoom().keys()]);
   for (const entry of scopedAgents()) {
     for (const session of agentSessions(entry)) {
       const roomKey = sessionRoomId(session);
@@ -90,6 +89,7 @@ export function listedRoomKeys(): string[] {
 export const RoomTree = observer(function RoomTree() {
   const showAddAgentsToRoomModal = useShowModal('addAgentsToRoomModal');
   const showDeleteRoomModal = useShowModal('deleteRoomModal');
+  const listedRooms = useListedRoomsInActiveScope();
 
   // Tag every visible session with the agent it belongs to, then group by room.
   const bySession = new Map<string, AgentEntry>();
@@ -102,7 +102,7 @@ export const RoomTree = observer(function RoomTree() {
   }
 
   const members = membersByRoom();
-  const alwaysShow = listedRoomKeys();
+  const alwaysShow = listedRoomKeys(listedRooms);
 
   const sorted = sortRoomGroups(
     filterRoomGroups(

@@ -92,6 +92,12 @@ class ServiceAdapter(Protocol):
     # nothing can be granted.
     can_issue: bool
 
+    def current_client_id(self) -> str | None:
+        """The vendor client this adapter signs in through, where it knows it
+        without asking anyone; None for a service with no client, or one not
+        yet known. A connection signed in through another must reconnect."""
+        ...
+
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
         """The secret with a fresh access token, and a new refresh token where
         the vendor rotates them."""

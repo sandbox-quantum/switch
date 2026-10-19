@@ -11,12 +11,14 @@ export const VIEW_IDS = [
   'home',
   'location',
   'session',
+  'chat',
   'managedAgent',
   'room',
   'settings',
   'server',
   'managedServer',
   'serverAgents',
+  'connectors',
   'serverRooms',
   'remoteHosts',
   'remoteHost',
@@ -25,6 +27,8 @@ export const VIEW_IDS = [
   'templateDetail',
   'templateUse',
   'templateCapture',
+  'switchBuddy',
+  'admin',
 ] as const;
 
 export type ViewIdName = (typeof VIEW_IDS)[number];

@@ -14,7 +14,7 @@ describe('replaying the first-run pages', () => {
 
   it('survives walking back to the welcome page', () => {
     onboardingStore.rehearse();
-    onboardingStore.goTo('whoRuns');
+    onboardingStore.goTo('howToRun');
     onboardingStore.goTo('welcome');
 
     expect(onboardingStore.inProgress).toBe(true);

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Delete old dev builds from GHCR.
+"""Delete old dev builds from GHCR, and the dev controller releases.
 
 Every push to main publishes the images and chart under `<owner>/dev/…`
-(see .github/workflows/switch-release.yml). Those packages hold nothing but dev
+(see .github/workflows/switch-release.yml), and the agents controller as a
+GitHub prerelease tagged `switch-agent-controller-v<x.y.z>-dev.<n>.g<sha>`. Those packages hold nothing but dev
 builds, so pruning them cannot touch a release. A version is deleted when it is
 older than `--max-age-days` AND older than the `--keep` newest tagged builds,
 so a quiet month does not empty the package and leave the dev environment
@@ -14,11 +15,19 @@ moments before it. The cutoff is set an hour before the oldest kept build, so a
 kept index keeps its platform manifests; untagged manifests older than that
 belong to builds being deleted anyway.
 
+The dev controller releases are pruned by the same rule: a prerelease whose
+tag names a `-dev.` version is deleted, with its tag, when it is older than
+`--max-age-days` and outside the `--keep` newest. Nothing else in the
+repository's releases is touched: a release or an RC is never a prerelease
+with a dev version.
+
 Needs `gh` authenticated with a token that may delete the packages' versions
-(the publishing repository's GITHUB_TOKEN with `packages: write`).
+and the repository's releases and tags (the publishing repository's
+GITHUB_TOKEN with `packages: write` and `contents: write`).
 
 Usage:
-    python scripts/prune_dev_packages.py --owner <org> --max-age-days 30 --keep 20 [--dry-run]
+    python scripts/prune_dev_packages.py --owner <org> --repository <org>/<repo> \\
+        --max-age-days 30 --keep 20 [--dry-run]
 """
 
 from __future__ import annotations
@@ -81,11 +90,57 @@ def doomed(
     ]
 
 
+CONTROLLER_TAG_PREFIX = "switch-agent-controller-v"
+
+
+def is_dev_controller_release(release: dict) -> bool:
+    tag = release["tag_name"]
+    return (
+        bool(release.get("prerelease"))
+        and tag.startswith(CONTROLLER_TAG_PREFIX)
+        and "-dev." in tag[len(CONTROLLER_TAG_PREFIX) :]
+    )
+
+
+def doomed_controller_releases(
+    releases: list[dict], now: datetime, max_age: timedelta, keep: int
+) -> list[dict]:
+    dev = sorted(
+        (r for r in releases if is_dev_controller_release(r)),
+        key=_created,
+        reverse=True,
+    )
+    return [r for r in dev[keep:] if _created(r) < now - max_age]
+
+
+def _prune_controller_releases(
+    repository: str, now: datetime, max_age: timedelta, keep: int, dry_run: bool
+) -> None:
+    pages = _gh("--paginate", "--slurp", f"/repos/{repository}/releases?per_page=100")
+    releases = [release for page in json.loads(pages) for release in page]
+    delete = doomed_controller_releases(releases, now, max_age, keep)
+    dev = sum(1 for r in releases if is_dev_controller_release(r))
+    print(f"{repository} dev controller releases: {dev}, deleting {len(delete)}")
+    for release in delete:
+        tag = release["tag_name"]
+        print(
+            f"  {'would delete' if dry_run else 'delete'} {tag} {release['created_at']}"
+        )
+        if not dry_run:
+            _gh("--method", "DELETE", f"/repos/{repository}/releases/{release['id']}")
+            _gh(
+                "--method",
+                "DELETE",
+                f"/repos/{repository}/git/refs/tags/{quote(tag, safe='')}",
+            )
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--owner", required=True)
+    parser.add_argument("--repository", required=True)
     parser.add_argument("--max-age-days", type=int, required=True)
     parser.add_argument("--keep", type=int, required=True)
     parser.add_argument("--dry-run", action="store_true")
@@ -119,6 +174,13 @@ def main(argv: list[str]) -> int:
                     "DELETE",
                     f"/orgs/{args.owner}/packages/container/{quote(package, safe='')}/versions/{version['id']}",
                 )
+    _prune_controller_releases(
+        args.repository,
+        now,
+        timedelta(days=args.max_age_days),
+        args.keep,
+        args.dry_run,
+    )
     return 0
 
 

@@ -445,20 +445,10 @@ export class SwitchServersStore {
     }
   }
 
-  /** `dashboardHint` is where the server's dashboard was reached, when that is
-   * known: the origin of the invite link it was added from. */
-  async addServer(
-    name: string,
-    url: string,
-    dashboardHint: string | null
-  ): Promise<SwitchServer | null> {
+  async addServer(name: string, url: string): Promise<SwitchServer | null> {
     this.clearError();
     try {
-      const created = await rpc.switchServers.addServer({
-        name,
-        url,
-        dashboardUrl: dashboardHint,
-      });
+      const created = await rpc.switchServers.addServer({ name, url, dashboardUrl: null });
       const [servers, installIsEmpty] = await Promise.all([
         rpc.switchServers.listServers(),
         rpc.onboarding.installIsEmpty(),
@@ -674,9 +664,10 @@ export class SwitchServersStore {
     return result.data.machine;
   }
 
-  async oidcLogin(serverId: string): Promise<boolean> {
+  /** `provider`: one of the server's sign-in options, or null for its one SSO button. */
+  async oidcLogin(serverId: string, provider: string | null): Promise<boolean> {
     this.clearError();
-    const result = await rpc.switchServers.oidcLogin(serverId);
+    const result = await rpc.switchServers.oidcLogin(serverId, provider);
     if (!result.success) {
       // A user-cancelled window is not an error worth shouting about.
       if (result.error.kind !== 'cancelled') {
@@ -700,6 +691,11 @@ export class SwitchServersStore {
     return true;
   }
 
+  /** Gives up a sign-in waiting on the system browser; its `oidcLogin` resolves as cancelled. */
+  cancelOidcLogin(serverId: string): void {
+    void rpc.switchServers.cancelOidcLogin(serverId);
+  }
+
   async logout(serverId: string): Promise<void> {
     this.clearError();
     try {
@@ -708,6 +704,15 @@ export class SwitchServersStore {
     } catch (cause) {
       this.setError(cause, 'Could not sign out of the server.');
     }
+  }
+
+  /**
+   * Delete the signed-in account on `serverId`, confirmed by its email. Throws
+   * with the server's reason when it refuses, for the dialog that asked to say.
+   */
+  async deleteAccount(serverId: string, email: string): Promise<void> {
+    await rpc.switchServers.deleteAccount({ serverId, email });
+    await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
   }
 
   private clearError(): void {

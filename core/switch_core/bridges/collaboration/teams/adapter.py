@@ -767,6 +767,12 @@ class TeamsAdapter(PlatformAdapter):
 
     display_name: ClassVar[str] = "Microsoft Teams"
     docs_slug: ClassVar[str | None] = "microsoft-teams"
+    # Graph delivers a channel's messages to every subscription made for it,
+    # so only the process holding the bridge makes, adopts and renews them.
+    # A quiet copy still receives activities and notifications, which reach
+    # whichever process the load balancer picks, and relays to the holder
+    # what would change its subscriptions (`receive_relayed`).
+    keeps_quiet_unless_listening: ClassVar[bool] = True
 
     # Teams keeps only http(s) anchors: a link on any other scheme is stripped
     # whole, label and all, so a `switchdash://` deeplink left the literal
@@ -1162,9 +1168,12 @@ class TeamsAdapter(PlatformAdapter):
             # Only once there is something to answer with: an activity taken
             # before then is acknowledged and lost, and Teams does not resend.
             await self._open_listener()
+        # The approval is checked everywhere, so any copy can say it is gone.
+        self._renewal_task = asyncio.create_task(self._renewal_loop())
+        if not self._listening:
+            return
         async with self._sub_lock:
             await self._adopt_existing_subscriptions()
-        self._renewal_task = asyncio.create_task(self._renewal_loop())
         self._repair_task = asyncio.create_task(self._repair_loop())
 
     async def _open_listener(self) -> None:
@@ -1200,6 +1209,10 @@ class TeamsAdapter(PlatformAdapter):
         This is also why one Entra app must never serve two environments: each
         would read the other's subscriptions as stale and delete them.
 
+        A quiet copy only learns which subscriptions are this bridge's, to
+        check the notifications that reach it, and deletes none: they are the
+        holder's to manage.
+
         Until this has succeeded once, no subscription is made: one made for a
         channel whose live subscription could not be seen would be a second,
         delivering every message twice until the first runs out. A failure here
@@ -1232,7 +1245,7 @@ class TeamsAdapter(PlatformAdapter):
                     self._subscription_expiry[channel_id] = expiry
                 continue
             stale_id = str(sub.get("id", ""))
-            if not stale_id:
+            if not stale_id or not self._listening:
                 continue
             try:
                 await self._graph.delete_subscription(subscription_id=stale_id)
@@ -1286,7 +1299,8 @@ class TeamsAdapter(PlatformAdapter):
             # with it renewal, silently and for good.
             try:
                 await self._check_approval()
-                await self._renew_due_subscriptions()
+                if self._listening:
+                    await self._renew_due_subscriptions()
             except Exception:
                 logger.exception(
                     "Teams subscription renewal failed this round; trying again in %ss",
@@ -3206,6 +3220,9 @@ class TeamsAdapter(PlatformAdapter):
 
     async def _switch_joined_team(self, team_id: str) -> None:
         """Switch is in a team now: capture the channels waiting on that."""
+        if not self._listening:
+            self._hand_to_holder({"action": "team_joined", "team_id": team_id})
+            return
         self._team_has_switch[team_id] = (True, time.monotonic())
         waiting = [c for c, t in self._capture_parked.items() if t == team_id]
         for channel_id in waiting:
@@ -3214,6 +3231,9 @@ class TeamsAdapter(PlatformAdapter):
 
     async def _switch_left_team(self, team_id: str) -> None:
         """Switch is out of a team: stop capturing it, ready to resume on return."""
+        if not self._listening:
+            self._hand_to_holder({"action": "team_left", "team_id": team_id})
+            return
         self._team_has_switch[team_id] = (False, time.monotonic())
         known = (
             self._capture_wanted | set(self._subscriptions) | set(self._team_of_channel)
@@ -4032,7 +4052,19 @@ class TeamsAdapter(PlatformAdapter):
 
         Wanted before it is checked for, so a channel whose subscription was
         adopted at start, and later lost, is still one the repair loop owes.
+
+        A quiet copy hands the channel, and the team it knows it is in, to the
+        process holding the bridge, which makes the subscription.
         """
+        if not self._listening:
+            self._hand_to_holder(
+                {
+                    "action": "capture",
+                    "channel_id": channel_id,
+                    "team_id": self._capture_team(channel_id) or "",
+                }
+            )
+            return
         self._capture_wanted.add(channel_id)
         if self._graph is None or self._withdrawing:
             return
@@ -4254,7 +4286,11 @@ class TeamsAdapter(PlatformAdapter):
         answered, so they would be lost until the repair loop next reads them.
         An unknown one is a reason to read them now.
         """
-        if self._owns_subscription(subscription_id) or self._adopted:
+        # A quiet copy reads them again for one it does not know, cooldown
+        # permitting: the holder may have made it since this copy last read.
+        if self._owns_subscription(subscription_id) or (
+            self._adopted and self._listening
+        ):
             return self._owns_subscription(subscription_id)
         async with self._sub_lock:
             now = time.monotonic()
@@ -4262,7 +4298,7 @@ class TeamsAdapter(PlatformAdapter):
                 self._adopt_on_demand_at is None
                 or now - self._adopt_on_demand_at >= _ADOPT_ON_DEMAND_COOLDOWN_SECONDS
             )
-            if not self._adopted and due:
+            if (not self._adopted or not self._listening) and due:
                 # Spaced out, so a run of unknown ones — Graph failing, or
                 # someone holding the organisation's clientState — is not one
                 # listing each.
@@ -4273,6 +4309,15 @@ class TeamsAdapter(PlatformAdapter):
     async def _handle_lifecycle_event(self, item: dict[str, Any]) -> None:
         event = item.get("lifecycleEvent")
         subscription_id = str(item.get("subscriptionId", ""))
+        if not self._listening:
+            self._hand_to_holder(
+                {
+                    "action": "lifecycle",
+                    "event": str(event),
+                    "subscription_id": subscription_id,
+                }
+            )
+            return
         if event == "reauthorizationRequired":
             await self._renew_subscription(
                 self._channel_of_subscription(subscription_id), subscription_id
@@ -4288,6 +4333,32 @@ class TeamsAdapter(PlatformAdapter):
                 subscription_id,
                 event,
             )
+
+    async def receive_relayed(self, request: Mapping[str, str]) -> None:
+        """What a quiet copy in another process relayed here, the holder:
+        each the same call the quiet copy would have made had it held the
+        bridge. Checked there as it would have been here: the activity's
+        token, or the notification's `clientState` and subscription."""
+        action = request.get("action")
+        if action == "capture":
+            channel_id = request["channel_id"]
+            team_id = request.get("team_id")
+            if team_id:
+                await self._learn_channel_team(channel_id, team_id)
+            await self._ensure_channel_subscription(channel_id)
+        elif action == "team_joined":
+            await self._switch_joined_team(request["team_id"])
+        elif action == "team_left":
+            await self._switch_left_team(request["team_id"])
+        elif action == "lifecycle":
+            await self._handle_lifecycle_event(
+                {
+                    "lifecycleEvent": request["event"],
+                    "subscriptionId": request["subscription_id"],
+                }
+            )
+        else:
+            logger.warning("Ignoring a relayed Teams request %r", request)
 
     def _channel_of_subscription(self, subscription_id: str) -> str | None:
         return next(

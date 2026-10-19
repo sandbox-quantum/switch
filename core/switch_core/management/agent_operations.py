@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_management import (
     AgentManagementRefused,
+    CheckedPlacement,
     ManagedAgentChanges,
     NewManagedAgent,
 )
@@ -30,15 +31,16 @@ from switch_core.management import reason_codes
 from switch_core.management.advanced_config import provider_fields
 from switch_core.management.errors import ManagementError
 from switch_core.management.placement import is_revoked, provider_auth
-from switch_core.management.process_lease import ProcessLeases
 from switch_core.management.schemas import (
     CreateManagedAgentRequest,
     DefinitionV1,
     PatchManagedAgentRequest,
     agent_status_from,
     wire_time_or_none,
+    workspaces_dir_of,
 )
 from switch_core.management.service import ManagementService
+from switch_core.process_lease import ProcessLeases
 
 NOTHING_CREATED = "Nothing was created"
 NOTHING_CHANGED = "Nothing was changed"
@@ -202,6 +204,65 @@ class ManagementAgentOperations:
             "`machine`.",
         )
 
+    @staticmethod
+    def _create_request(
+        spec: NewManagedAgent, controller: AgentController
+    ) -> CreateManagedAgentRequest:
+        try:
+            return CreateManagedAgentRequest(
+                name=spec.name,
+                description=spec.description,
+                display_name=spec.display_name,
+                icon_url=spec.icon_url,
+                controller_id=controller.id,
+                desired_state="running" if spec.start else "stopped",
+                definition=DefinitionV1(
+                    provider=spec.provider,  # type: ignore[arg-type]
+                    model=spec.model,
+                    advanced_config=spec.advanced_config,
+                    instructions=spec.instructions,
+                    auto_approve=spec.auto_approve,
+                    directory=spec.directory,
+                    isolation=spec.isolation,  # type: ignore[arg-type]
+                ),
+            )
+        except ValidationError as exc:
+            raise AgentManagementRefused(
+                reason_codes.VALIDATION_ERROR,
+                f"{NOTHING_CREATED}: {_validation_message(exc)}.",
+            ) from exc
+
+    @staticmethod
+    def _refusal(
+        exc: ManagementError, controller: AgentController, provider: str
+    ) -> AgentManagementRefused:
+        sentence = _placement_sentence(exc.code, controller.name, provider)
+        return AgentManagementRefused(
+            exc.code,
+            f"{NOTHING_CREATED}: {sentence or exc.message} ({exc.code}).",
+        )
+
+    async def check_new_agent(
+        self, tenant_id: str, owner_id: str, spec: NewManagedAgent
+    ) -> CheckedPlacement:
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            controller = await self._resolve_machine(
+                session, tenant_id, owner_id, spec.machine, NOTHING_CREATED
+            )
+            request = self._create_request(spec, controller)
+            try:
+                await self._service.check_new_managed_agent(
+                    session, tenant_id, owner_id, request
+                )
+            except ManagementError as exc:
+                raise self._refusal(exc, controller, spec.provider) from exc
+            await session.commit()
+        return CheckedPlacement(
+            machine_id=controller.id,
+            machine_name=controller.name,
+            workspaces_dir=workspaces_dir_of(controller),
+        )
+
     async def create_agent(
         self,
         tenant_id: str,
@@ -213,38 +274,13 @@ class ManagementAgentOperations:
             controller = await self._resolve_machine(
                 session, tenant_id, owner_id, spec.machine, NOTHING_CREATED
             )
-            try:
-                request = CreateManagedAgentRequest(
-                    name=spec.name,
-                    description=spec.description,
-                    display_name=spec.display_name,
-                    icon_url=spec.icon_url,
-                    controller_id=controller.id,
-                    desired_state="running" if spec.start else "stopped",
-                    definition=DefinitionV1(
-                        provider=spec.provider,  # type: ignore[arg-type]
-                        model=spec.model,
-                        advanced_config=spec.advanced_config,
-                        instructions=spec.instructions,
-                        auto_approve=spec.auto_approve,
-                        directory=spec.directory,
-                    ),
-                )
-            except ValidationError as exc:
-                raise AgentManagementRefused(
-                    reason_codes.VALIDATION_ERROR,
-                    f"{NOTHING_CREATED}: {_validation_message(exc)}.",
-                ) from exc
+            request = self._create_request(spec, controller)
             try:
                 view = await self._service.create_managed_agent(
                     session, tenant_id, owner_id, request, protocol
                 )
             except ManagementError as exc:
-                sentence = _placement_sentence(exc.code, controller.name, spec.provider)
-                raise AgentManagementRefused(
-                    exc.code,
-                    f"{NOTHING_CREATED}: {sentence or exc.message} ({exc.code}).",
-                ) from exc
+                raise self._refusal(exc, controller, spec.provider) from exc
         return {
             "agent_id": view["agent_id"],
             "name": view["name"],

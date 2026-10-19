@@ -1,40 +1,38 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import {
+  type GitHubGrantChoice,
+  connectedGitHub,
+  emptyGitHubGrant,
+  githubGrantResources,
+} from '@renderer/features/connectors/github-grant';
+import { GitHubGrantPicker } from '@renderer/features/connectors/github-grant-picker';
+import {
+  ownerOnlyRequest,
+  ownerOnlyWarningText,
+} from '@renderer/features/managed-agents/agent-connections';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
-import { Checkbox } from '@renderer/lib/ui/checkbox';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/lib/ui/select';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Switch } from '@renderer/lib/ui/switch';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import type { GitHubConnection } from '@shared/core/switch-servers/github-connection';
-import { OWNER_ONLY_POLICY, type ServiceGrant } from '@shared/core/switch-servers/service-grants';
+import type { ServiceGrant } from '@shared/core/switch-servers/service-grants';
 import {
   CLOUD_GITHUB_GRANT_NOTES,
   GITHUB_GRANT_NOTES,
   REMOVED_GRANT_NOTE,
   grantedRepositoryIds,
   grantedRepositoryNames,
+  onOffGrantBlock,
   onOffGrantNote,
 } from './service-grants';
 
 type Access = 'read' | 'write';
-
-const ACCESS_OPTIONS = [
-  { value: 'read', label: 'Read' },
-  { value: 'write', label: 'Read and push' },
-] as const;
 
 /**
  * What the agent may use of its owner's service connections: its grants, who
@@ -159,23 +157,19 @@ export function ServiceGrantsRow({
         <span className="text-sm font-medium">Service access</span>
         <p className="text-sm text-foreground-muted">
           What {agentName} may use of your own connections. Its sessions are given short-lived
-          access for what you grant, and nothing else.
+          access for what you turn on, and nothing else.
         </p>
       </div>
       {change.isError && (
         <span className="text-xs text-destructive">
-          {failureText(change.error, 'Could not change the grant.')}
+          {failureText(change.error, 'Could not change its access.')}
         </span>
       )}
       {notice && <span className="text-xs text-foreground-muted">{notice}</span>}
 
       {grants.data.addressing_open && grants.data.grants.length > 0 && (
         <Alert variant="warning">
-          <AlertDescription>
-            Anyone who can address {agentName} can have it use these grants. Owner-only stops that,
-            but it still reads what others write in shared rooms, can be reached through your other
-            agents that are open, and posts results to shared rooms.
-          </AlertDescription>
+          <AlertDescription>{ownerOnlyWarningText(agentName)}</AlertDescription>
           <AlertAction>
             <Button
               size="sm"
@@ -183,11 +177,9 @@ export function ServiceGrantsRow({
               disabled={change.isPending}
               onClick={() =>
                 change.mutate(async () => {
-                  await rpc.workspaces.updateAddressingPolicy({
-                    workspaceId,
-                    agentId,
-                    policy: OWNER_ONLY_POLICY,
-                  });
+                  await rpc.workspaces.updateAddressingPolicy(
+                    ownerOnlyRequest(workspaceId, agentId)
+                  );
                   await queryClient.invalidateQueries({
                     queryKey: ['agent-addressing-policy', workspaceId, agentId],
                   });
@@ -235,6 +227,7 @@ export function ServiceGrantsRow({
         <GitHubGrantForm
           github={github}
           current={githubGrant}
+          agentName={agentName}
           busy={change.isPending}
           onCancel={githubGrant ? () => setEditing(false) : null}
           onSave={(access, resources) => set('github', access, resources)}
@@ -254,7 +247,7 @@ export function ServiceGrantsRow({
  * A service whose agents use the owner's own token: the grant is on or off,
  * at the connection's level, and says what that means.
  */
-function OnOffGrant({
+export function OnOffGrant({
   service,
   grant,
   agentName,
@@ -269,9 +262,7 @@ function OnOffGrant({
   onTurnOn: () => void;
   onTurnOff: () => void;
 }) {
-  const connected = service.status === 'connected';
-  // A grant can be turned off whatever the server's state; on needs a usable connection.
-  const blocked = grant === null && (!connected || service.unavailable_reason !== null);
+  const block = onOffGrantBlock(service, grant !== null);
   return (
     <div className="rounded-lg border border-border p-3">
       <div className="flex items-center gap-2">
@@ -280,25 +271,18 @@ function OnOffGrant({
         <Switch
           aria-label={`${service.name} for ${agentName}`}
           checked={grant !== null}
-          disabled={busy || blocked}
+          disabled={busy || block?.blocksOn === true}
           onCheckedChange={(on) => (on ? onTurnOn() : onTurnOff())}
         />
       </div>
       {grant && <p className="mt-1 text-sm text-foreground-muted">{grant.summary}</p>}
-      {service.unavailable_reason && (
-        <p className="mt-1 text-sm text-foreground-muted">{service.unavailable_reason}</p>
-      )}
-      {!grant && !connected && !service.unavailable_reason && (
-        <p className="mt-1 text-sm text-foreground-muted">
-          To turn {service.name} on, first connect it from the server&apos;s Connections.
-        </p>
-      )}
+      {block && <p className="mt-1 text-sm text-foreground-muted">{block.reason}</p>}
       <p className="mt-1 text-xs text-foreground-muted">{onOffGrantNote(agentName, service)}</p>
     </div>
   );
 }
 
-function GrantCard({
+export function GrantCard({
   grant,
   github,
   busy,
@@ -342,27 +326,32 @@ function GrantCard({
   );
 }
 
-function GitHubGrantForm({
+export function GitHubGrantForm({
   github,
   current,
+  agentName,
   busy,
   onCancel,
   onSave,
 }: {
   github: { data: GitHubConnection | undefined; isError: boolean; error: unknown };
   current: ServiceGrant | null;
+  agentName: string;
   busy: boolean;
   onCancel: (() => void) | null;
   onSave: (access: Access, resources: Record<string, unknown>) => void;
 }) {
-  const [access, setAccess] = useState<Access>(current?.access ?? 'read');
-  const [installationId, setInstallationId] = useState<number | null>(
-    typeof current?.resources.installation_id === 'number'
-      ? current.resources.installation_id
-      : null
-  );
-  const [selected, setSelected] = useState<number[]>(
-    current ? grantedRepositoryIds(current.resources) : []
+  const [choice, setChoice] = useState<GitHubGrantChoice>(() =>
+    current
+      ? {
+          access: current.access ?? 'read',
+          installationId:
+            typeof current.resources.installation_id === 'number'
+              ? current.resources.installation_id
+              : null,
+          repositoryIds: grantedRepositoryIds(current.resources),
+        }
+      : emptyGitHubGrant(github.data)
   );
 
   if (github.isError)
@@ -375,67 +364,28 @@ function GitHubGrantForm({
   if (github.data.status === 'not_connected')
     return (
       <p className="text-sm text-foreground-muted">
-        To grant GitHub, first connect your GitHub account from the server&apos;s Connections.
+        To turn GitHub on, first connect your GitHub account from Connectors.
       </p>
     );
 
-  const installations = github.data.installations;
-  const installation = installations.find((candidate) => candidate.id === installationId);
-  const toggle = (id: number) =>
-    setSelected((now) => (now.includes(id) ? now.filter((other) => other !== id) : [...now, id]));
+  const reach = connectedGitHub(github.data);
+  const resources = githubGrantResources(choice);
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
       <span className="text-sm font-medium">
-        {current ? 'Change the GitHub grant' : 'Grant GitHub'}
+        {current
+          ? `Change which repositories ${agentName} reaches`
+          : `Turn GitHub on for ${agentName}`}
       </span>
-      <Select
-        value={installationId === null ? null : String(installationId)}
-        onValueChange={(value) => {
-          setInstallationId(value ? Number(value) : null);
-          setSelected([]);
-        }}
-      >
-        <SelectTrigger aria-label="GitHub account" className="w-full">
-          <SelectValue placeholder="Choose a GitHub account">{installation?.account}</SelectValue>
-        </SelectTrigger>
-        <SelectContent>
-          {installations.map((candidate) => (
-            <SelectItem key={candidate.id} value={String(candidate.id)}>
-              {candidate.account}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      {installation && (
-        <div role="group" aria-label="Repositories" className="max-h-48 space-y-1 overflow-auto">
-          {installation.repositories.map((repository) => (
-            <label key={repository.id} className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={selected.includes(repository.id)}
-                onCheckedChange={() => toggle(repository.id)}
-              />
-              {repository.name}
-            </label>
-          ))}
-        </div>
-      )}
-      <SegmentedControl
-        ariaLabel="Access"
-        value={access}
-        onChange={setAccess}
-        options={ACCESS_OPTIONS}
-      />
+      {reach && <GitHubGrantPicker github={reach} value={choice} onChange={setChoice} />}
       <div className="flex gap-2">
         <Button
           size="sm"
-          disabled={busy || !installation || selected.length === 0}
-          onClick={() =>
-            installation &&
-            onSave(access, { installation_id: installation.id, repository_ids: selected })
-          }
+          disabled={busy || resources === null}
+          onClick={() => resources && onSave(choice.access, resources)}
         >
-          {current ? 'Save' : 'Grant'}
+          {current ? 'Save' : 'Turn on'}
         </Button>
         {onCancel && (
           <Button size="sm" variant="ghost" onClick={onCancel}>

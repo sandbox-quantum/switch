@@ -4,7 +4,7 @@ Unlike the unit suite (which fakes the transport), these fixtures boot a real
 database and wire up the subset of `switch_core.main:run()` the feature under
 test needs, in-process. Messaging, membership and provisioning all run against
 that database, so a test drives the genuine path RoomService → provisioning →
-AgentConsumer receive loop → EventBuffer.
+MessageRouter → EventBuffer (the agent_events tables).
 
 The container mirrors the `postgres` service in
 `deploy/local/docker-compose.yml` (see constants below — keep in sync). It gets
@@ -51,7 +51,6 @@ from switch_core.bridges.collaboration.lifecycle_service import (
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import Actor, AgentActor, HumanActor
-from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
@@ -67,37 +66,48 @@ from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
+from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
+from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.delivery.conversation import ConversationRules, ConversationSettings
+from switch_core.delivery.recipient import RecipientServices
+from switch_core.delivery.router import MessageRouter
 from switch_core.main import _seed_agent_registration_bootstrap_key
 from switch_core.messages.notify import MessageListener
+from switch_core.ownership import Ownership
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.service import AgentSessionActivityService
+from switch_core.signals import SignalBus
 from switch_core.telemetry.messages import MessageTelemetry
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import NullSink
 from switch_core.tenant_context import tenant_scope
+from switch_core.transport.cursors import CursorWriter
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.trust.client import NullTrustClient
+from tests.ownership import process_lease_on
 
 # ── Mirrors deploy/local/docker-compose.yml — keep in sync ──────────────────────
 POSTGRES_IMAGE = "postgres:16-alpine"
@@ -269,8 +279,12 @@ class Harness:
         owner_id: str,
         session_factory: object,
         collab_lifecycle: object,
+        ownership: Ownership,
     ) -> None:
         self.protocol = protocol
+        # Which work this one process owns: all of it, as with one process
+        # in production, once `start_clients` has balanced.
+        self.ownership = ownership
         # The real lifecycle under the `collaboration_bridges` marker, the
         # no-bridges stand-in otherwise.
         self.collab_lifecycle = collab_lifecycle
@@ -325,16 +339,17 @@ class Harness:
     async def start_clients(self, timeout: float = 20.0) -> None:
         """Start every registered agent's client and await readiness.
 
-        `start_all` launches each client's receive loop as a background task; the
-        client only loads its Agent (so `get_by_agent_id` resolves) once that
-        task has run. Poll until each is present and ready before returning.
+        `start_all` connects each client's actor as a background task; the actor
+        only loads its Agent (so `get_by_agent_id` resolves) once that task has
+        run. Poll until each is present and ready before returning.
         """
         await self.client_lifecycle.start_all()
+        await self.ownership.start()
         for agent_id in self._registered:
             client = await self._await_client(agent_id, timeout)
             await client.wait_ready()
 
-    async def _await_client(self, agent_id: str, timeout: float) -> AgentConsumer:
+    async def _await_client(self, agent_id: str, timeout: float) -> AgentActor:
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
             client = self.client_lifecycle.get_by_agent_id(agent_id)
@@ -343,7 +358,7 @@ class Harness:
             await asyncio.sleep(0.1)
         raise AssertionError(f"No running client for agent {agent_id} after {timeout}s")
 
-    def client_for(self, agent_id: str) -> AgentConsumer:
+    def client_for(self, agent_id: str) -> AgentActor:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise AssertionError(f"No running client for agent {agent_id}")
@@ -547,9 +562,21 @@ async def harness(
             config,
         )
 
-        # Per-test in-memory wiring: a fresh EventBuffer / client registry so queued
-        # events and client registrations never leak across tests.
-        event_buffer = EventBuffer(sequence_base=0)
+        # Per-test wiring: a fresh EventBuffer / client registry so the readers'
+        # bookkeeping and client registrations never leak across tests. The
+        # queued events themselves are rows, cleared by the truncation above.
+        # No `AgentEventListener`: it wakes readers for rows another process
+        # wrote, and everything here runs in this one.
+        # The transport's wake-up path: rows are announced over LISTEN/NOTIFY, so
+        # nothing is delivered to a client until this connection is up.
+        message_listener = MessageListener(lambda: create_unpooled_engine(config))
+        await message_listener.start()
+        event_buffer = EventBuffer(
+            session_factory,  # type: ignore[arg-type]
+            sequence_base=0,
+            rooms=message_listener,
+            retention_seconds=config.agent_event_retention_seconds,
+        )
         connections = AgentConnectionRegistry()
         collab_lifecycle: object = _NoBridges()
         real_bridges = (
@@ -559,10 +586,6 @@ async def harness(
             lambda: create_unpooled_engine(config)
         )
 
-        # The transport's wake-up path: rows are announced over LISTEN/NOTIFY, so
-        # nothing is delivered to a client until this connection is up.
-        message_listener = MessageListener(lambda: create_unpooled_engine(config))
-        await message_listener.start()
         invites = InviteBus()
         ephemeral = EphemeralBus()
 
@@ -573,25 +596,6 @@ async def harness(
             package_store=session_env.package_store,
             room_link_store=session_env.room_link_store,
             session_factory=session_factory,
-        )
-
-        provisioning: Provisioning = PostgresProvisioning(
-            session_factory=session_factory,
-            room_store=session_env.room_store,
-            client_store=session_env.client_store,
-            message_store=session_env.message_store,
-            invites=invites,
-        )
-
-        room_cache = RoomDeliveryCache(
-            session_factory=session_factory,
-            message_store=session_env.message_store,
-            limits=RoomCacheLimits(
-                max_bytes=config.room_delivery_cache_max_bytes,
-                max_rooms=config.room_delivery_cache_max_rooms,
-                max_rows_per_room=config.room_delivery_cache_max_rows_per_room,
-                max_age_seconds=config.room_delivery_cache_max_age_seconds,
-            ),
         )
 
         # Telemetry off: these flows are not about reporting, but the
@@ -608,6 +612,52 @@ async def harness(
             session_factory=session_factory,
         )
 
+        router = MessageRouter(
+            services=RecipientServices(
+                session_factory=session_factory,  # type: ignore[arg-type]
+                event_buffer=event_buffer,
+                agent_store=session_env.agent_store,
+                room_store=session_env.room_store,
+                document_store=session_env.document_store,
+                reference_store=session_env.reference_store,
+                agent_session_store=session_env.agent_session_store,
+                room_role_store=session_env.room_role_store,
+                external_user_store=session_env.external_user_store,
+                connections=connections,
+                frontend_base_url=config.dashboard_base_url,
+                message_telemetry=message_telemetry,
+            ),
+            message_store=session_env.message_store,
+            client_store=session_env.client_store,
+            budget_store=BudgetStore(),
+            conversation=ConversationRules(
+                settings=ConversationSettings.from_config(config),
+                message_store=session_env.message_store,
+                room_store=session_env.room_store,
+                agent_store=session_env.agent_store,
+                room_role_store=session_env.room_role_store,
+            ),
+        )
+
+        provisioning: Provisioning = PostgresProvisioning(
+            session_factory=session_factory,
+            room_store=session_env.room_store,
+            client_store=session_env.client_store,
+            router=router,
+            invites=invites,
+        )
+
+        room_cache = RoomDeliveryCache(
+            session_factory=session_factory,
+            message_store=session_env.message_store,
+            limits=RoomCacheLimits(
+                max_bytes=config.room_delivery_cache_max_bytes,
+                max_rooms=config.room_delivery_cache_max_rooms,
+                max_rows_per_room=config.room_delivery_cache_max_rows_per_room,
+                max_age_seconds=config.room_delivery_cache_max_age_seconds,
+            ),
+        )
+
         client_factory = ClientFactory(
             client_store=session_env.client_store,
             session_factory=session_factory,
@@ -621,26 +671,33 @@ async def harness(
             ephemeral=ephemeral,
             room_cache=room_cache,
             message_observer=message_telemetry,
+            router=router,
         )
-        client_factory.register(
-            "agent",
-            AgentActor,
-            AgentConsumer,
-            event_buffer=event_buffer,
-            agent_store=session_env.agent_store,
-            room_store=session_env.room_store,
-            bridge_store=session_env.bridge_store,
-            document_store=session_env.document_store,
-            reference_store=session_env.reference_store,
-            agent_session_store=session_env.agent_session_store,
-            room_role_store=session_env.room_role_store,
-            external_user_store=session_env.external_user_store,
-            connections=connections,
-            frontend_base_url=config.dashboard_base_url,
-            message_telemetry=message_telemetry,
-        )
+        client_factory.register("agent", AgentActor)
         client_factory.register("user", HumanActor)
         client_factory.register("bridge", Actor)
+
+        # This process's lease and what it owns, as `main` wires them. The
+        # signal bus is never started: there is no other process to tell.
+        lease = process_lease_on(session_factory)  # type: ignore[arg-type]
+        ownership = Ownership(
+            lease=lease,
+            session_factory=session_factory,  # type: ignore[arg-type]
+            bus=SignalBus(
+                session_factory,  # type: ignore[arg-type]
+                lambda: create_unpooled_engine(config),
+                process_id=lease.process_id,
+            ),
+            store=OwnershipLeaseStore(),
+            processes=SwitchCoreProcessStore(),
+        )
+        cursor_writer = CursorWriter(
+            session_factory=session_factory,  # type: ignore[arg-type]
+            cursors=DeliveryCursorStore(),
+            leases=OwnershipLeaseStore(),
+            process_id=lease.process_id,
+        )
+        cursor_writer_task = asyncio.create_task(cursor_writer.run())
 
         client_lifecycle = ClientLifecycleService(
             provisioning=provisioning,
@@ -650,6 +707,8 @@ async def harness(
             session_factory=session_factory,
             config=config,
             tenants_isolated=True,
+            ownership=ownership,
+            cursor_writer=cursor_writer,
         )
 
         if real_bridges:
@@ -669,6 +728,8 @@ async def harness(
                 session_activity_listener=session_activity_listener,
                 session_activity_service=AgentSessionActivityService(session_factory),
                 connections=connections,
+                ownership=ownership,
+                cursor_writer=cursor_writer,
             )
 
         room_service = RoomService(
@@ -720,10 +781,13 @@ async def harness(
             owner_id=owner_id,
             session_factory=session_factory,
             collab_lifecycle=collab_lifecycle,
+            ownership=ownership,
         )
         try:
             yield h
         finally:
+            await ownership.stop()
+            cursor_writer_task.cancel()
             if isinstance(collab_lifecycle, CollaborationBridgeLifecycleService):
                 await collab_lifecycle.stop_all()
             # Stop the agents' receive loops before the next test truncates, so none

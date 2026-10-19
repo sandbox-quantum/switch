@@ -14,8 +14,10 @@ global:
   # the endpoint and any load balancer stop routing to it while its replacement
   # is already serving, and the roll answers no requests with 502/503s. Only
   # rendered on Kubernetes 1.30+ (the native `sleep` lifecycle action); 0 turns
-  # it off. switch-core and Mattermost roll with Recreate, where there is no
-  # replacement to drain to, so they get no hook.
+  # it off. Mattermost rolls with Recreate, where there is no replacement to
+  # drain to, so it gets no hook. switch-core gets none either: with more than
+  # one replica it drains itself after SIGTERM, leaving readiness and serving
+  # on for a few seconds once it has handed its work over.
   preStopSleepSeconds: 5
 
 # ── Ingress ─────────────────────────────────────────────────────────────────
@@ -120,6 +122,10 @@ secrets:
   # each secret at least 32 characters. Every signing and encryption key is
   # derived from these. To rotate, put a new entry first and keep the old one
   # until a boot has re-encrypted stored values (docs/old/key-rotation.md).
+  # With more than one replica, rotate in two upgrades: first add the new entry
+  # last, then once every pod runs with it, move it first. A pod whose first
+  # key a running pod lacks refuses to start, since that pod could not read
+  # what it writes.
   # Generate one with: echo "$(date +%Y%m):$(openssl rand -hex 32)"
   secretKeys: ""
   # Legacy: the single secret used before secretKeys. Keep it set through the
@@ -139,8 +145,13 @@ secrets:
   # Gateway OIDC client secret (required when switchCore.oidc.enabled).
   gatewayOidcClientSecret: ""
   # SMTP relay password for invitation e-mails (required when
-  # switchCore.smtp.enabled and switchCore.smtp.username is set).
+  # switchCore.smtp.enabled and a username is set, either way below).
   gatewaySmtpPassword: ""
+  # SMTP relay username, for switchCore.smtp.usernameFromSecret. Some relays
+  # issue usernames that are themselves credentials (an SES SMTP username is
+  # an access key id). With existingSecret, that Secret carries it as
+  # GATEWAY_SMTP_USERNAME instead.
+  gatewaySmtpUsername: ""
   # `key=value` pairs, comma-separated, sent on every OTLP request. Here rather
   # than beside the other observability settings because the documented use for
   # it is a collector's API key, and every other credential in this chart comes
@@ -178,6 +189,10 @@ secrets:
 
 # ── Switch Core (FastAPI) ─────────────────────────────────────────────────────
 switchCore:
+  # The GitHub App and Google's client below are optional: the server's
+  # operator can set them up under Connectors in the dashboard instead
+  # (docs/old/github-app-setup.md, docs/old/google-workspace-setup.md). Set
+  # here, they win over what is saved there.
   # Existing Secret with github.json (client_id, client_secret, slug, origin).
   githubConnectionsSecret: ""
   # Absolute path to the GitHub App's signing key inside a Secret this chart
@@ -190,7 +205,8 @@ switchCore:
   # Existing Secret with client.json ({"client_id", "client_secret"}): the
   # Web OAuth client of an internal Google app, for the Google Workspace
   # connection. Register <gatewayPublicUrl>/gateway/service-connections/google-workspace/flows/callback
-  # as its redirect URI. Without it, Google Workspace shows as not set up.
+  # as its redirect URI. Without it or one saved under Connectors, Google
+  # Workspace shows as not set up.
   googleWorkspaceClientSecret: ""
   hostedControllerSecret: ""
   # How many cloud machines may run at once; 0 means this server cannot run
@@ -272,7 +288,7 @@ switchCore:
     enabled: false
     # Base URL, no path — `/v1/logs` is appended, the same
     # convention otlpEndpoint follows.
-    endpoint: https://telemetry.flintai.dev
+    endpoint: https://telemetry.switchagents.ai
     # How often the usage snapshot is collected and sent.
     snapshotIntervalHours: 24
     # Which Amplitude project the usage lands in: prod, staging, dev or local.
@@ -331,6 +347,13 @@ switchCore:
     clientId: ""
     scopes: "openid profile email"
     providerLabel: "OIDC"
+    # One sign-in button per entry instead of one labelled providerLabel. Each
+    # sends its params with the authorization request, so a provider that
+    # understands them goes straight to that way of signing in. WorkOS:
+    #   loginOptions:
+    #     - { id: google, label: Google, params: { provider: GoogleOAuth } }
+    #     - { id: github, label: GitHub, params: { provider: GitHubOAuth } }
+    loginOptions: []
     # Must exactly match the redirect URI registered with the IdP.
     redirectUrl: ""
     # Refuse a login unless the IdP asserts email_verified. Set false only for a
@@ -366,6 +389,22 @@ switchCore:
     # How often a controller must report; one silent for three of these is
     # shown as unknown and gets no new placements.
     statusIntervalSeconds: 60
+  # The agents controller release switch-core tells every controller to run
+  # (CONTROLLER_RELEASE_VERSION / _URL / _SHA256), except Switch Console's own,
+  # which updates with Console. A controller that runs
+  # another version downloads the package from `url`, refuses it unless its
+  # SHA-256 is `sha256`, and installs it and restarts once no agent session
+  # is running on it. Set all three or none; with none, controllers are told
+  # nothing and keep the version they have. A chart from a Switch release
+  # ships with that release's controller package filled in here. To roll
+  # controllers back, point these at the previous release's package.
+  controllerRelease:
+    # x.y.z, or a dev build's x.y.z-<prerelease>.
+    version: ""
+    # An https URL to the switch-agent-controller-<version>.tgz package.
+    url: ""
+    # The package's SHA-256, 64 lowercase hex characters.
+    sha256: ""
   # Private hosts switch-core may reach at a URL a tenant or agent supplied —
   # a Mattermost server, an OpenCode server, an agent icon. Hostnames or CIDRs.
   # Anything else that is not a public address is refused, and link-local and
@@ -377,7 +416,7 @@ switchCore:
   # ["ecosystem.show_owners"]. Every other flag is off, and no one can change
   # them while the server runs. An unknown flag stops switch-core at startup.
   # Known flags: ecosystem.show_owners, agent_management, switch_cloud,
-  # hosted_agents, service_connections.
+  # hosted_agents, service_connections, agent_chats.
   featureFlags:
     enabled: []
   # Invitation e-mails. When enabled, an invitation addressed to an e-mail is
@@ -394,6 +433,11 @@ switchCore:
     # Leave empty for a relay that needs no login; set it and
     # secrets.gatewaySmtpPassword otherwise.
     username: ""
+    # Read the username from the Secret (secrets.gatewaySmtpUsername, or
+    # GATEWAY_SMTP_USERNAME in secrets.existingSecret) rather than from
+    # `username` above, for a relay whose username should not sit in values.
+    # Mutually exclusive with `username`.
+    usernameFromSecret: false
     # The From address, e.g. "Switch <invites@your-domain>".
     from: ""
     # Addressed invitations one workspace may send per 24 hours. With sign-up
@@ -597,13 +641,52 @@ switchCore:
     # for it, so this must match switch-core's own COLLABORATION_CALLBACK_PORT
     # default.
     port: 8081
-  # switch-core MUST run as a single replica. Live state stays in the process
-  # rather than the database: GitHub sign-in flows, the per-agent event buffer,
-  # the invite and presence buses, and the message listener's subscriber registry. A
-  # second replica would hold its own copy of each, so a signal raised in one
-  # would never reach a client attached to the other. This is enforced at
-  # render time; do not raise it.
+  # How many switch-core pods to run. Every pod serves the API and holds client
+  # connections. Each bridge's listener and outbound relay, each server
+  # connector and each command reader runs on one pod at a time, through
+  # leases in the database, and each message is routed to its agents as it is
+  # written, so any pod can take any request. So does the deployment's shared
+  # Discord gateway connection (the distributed Discord app), with its Discord
+  # bridges on the same pod, and each Teams bridge's Graph subscriptions, made
+  # and renewed by the pod that holds the bridge.
+  #
+  # One replica is replaced (Recreate): the old pod stops before the new one
+  # starts, so an upgrade has a short outage. More than one rolls (see
+  # `rollingUpdate`), and also gets a PodDisruptionBudget and a spread across
+  # nodes, below.
   replicaCount: 1
+  # How a deployment of more than one replica rolls. switch-core sizes its
+  # database connection budget for at most one pod beyond `replicaCount` during
+  # a roll, so `maxSurge` must be 0 or 1. The default starts a new pod, waits
+  # for it to be ready, then stops an old one, so capacity never drops.
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+  # With more than one replica, keep voluntary disruptions (a node drain, a
+  # cluster upgrade) to one switch-core pod at a time. Set `minAvailable`
+  # instead to bound it from below; it wins when set. Never rendered at one
+  # replica, where any budget would either block every drain or allow nothing.
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+    minAvailable: ""
+  # With more than one replica, prefer to put the pods on different nodes, so
+  # losing a node does not take every pod with it. Soft by default
+  # (ScheduleAnyway): a cluster with one node still schedules them all.
+  topologySpread:
+    enabled: true
+    maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+  # How long the kubelet waits after SIGTERM before killing the pod. On SIGTERM
+  # switch-core hands the bridges, connectors and readers it owns to the other
+  # pods (up to 10s), releases its lease (up to 1s), keeps serving for 5s while
+  # the Service stops routing to it (only with more than one replica), stops
+  # the bridges it still runs (giving one still starting up to 5s) and gives
+  # its teardown 3s. That is about 24s plus the time the bridges take to
+  # close; Kubernetes' default of 30s leaves too little margin, and a pod
+  # killed mid-hand-over leaves its work unowned until its 15s lease lapses.
+  terminationGracePeriodSeconds: 45
   # Run DB migrations (alembic upgrade head) as a pre-upgrade hook Job, before
   # the new pods roll, so a failed migration blocks the upgrade instead of
   # crash-looping the new pods. The switch-core pod also migrates in an init
@@ -751,7 +834,12 @@ postgresql:
   # past the server's TTL loses its connection — so under-sizing this shows up
   # as fleet-wide agent disconnects, not as database errors.
   # size + maxOverflow must stay under Postgres max_connections, remembering
-  # Mattermost and Keycloak share the same instance.
+  # Mattermost and Keycloak share the same instance. The pool is per pod: every
+  # replica holds its own, plus four LISTEN connections (and one for the
+  # database sampler when metrics are exported), and a rolling deploy of
+  # several replicas runs one extra pod. switch-core adds this up at boot
+  # against max_connections; over budget, several replicas refuse to start and
+  # one replica logs a warning.
   pool:
     size: 30
     maxOverflow: 10

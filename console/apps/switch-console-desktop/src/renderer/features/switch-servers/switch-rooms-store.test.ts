@@ -218,6 +218,20 @@ describe('listed rooms', () => {
     serversStore.isConnected = () => true;
   });
 
+  it('names the server to sign in to, not the workspace', async () => {
+    // The sidebar's "Sign in" link opens this server's page; handed the
+    // workspace id instead, it opened nothing.
+    workspaces.activeId = 'ws-b';
+    serversStore.isConnected = (serverId: string) => serverId !== 'srv-b';
+    listRooms.mockImplementation(async () => []);
+
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+
+    expect(store.workspacesNotSignedIn).toEqual([{ id: 'ws-b', name: 'Beta', serverId: 'srv-b' }]);
+    serversStore.isConnected = () => true;
+  });
+
   it('marks a room’s name as blocked on sign-in when its server is signed out', async () => {
     workspaces.activeId = 'ws-a';
     serversStore.isConnected = () => false;

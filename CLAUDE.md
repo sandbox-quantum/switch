@@ -77,7 +77,8 @@ just test -k "test_name"         # run specific test
   - `stores/` — query methods and domain-specific data access
 - `migrations/` — Alembic migrations (`env.py`, `versions/`)
 - `room_service.py` / `rooms_yaml.py` — Room lifecycle, configuration, provisioning
-- `clients/` — room participants: `actor.py` (identity, membership, writes: `HumanActor`, `AgentActor`, `SystemActor`) and `consumer.py` (the delivery loop and hooks: `AgentConsumer`, `CommandConsumer`, `WorkspaceConsumer`)
+- `clients/` — room participants: `actor.py` (identity, membership, writes: `HumanActor`, `AgentActor`, `SystemActor`) and `consumer.py` (the delivery loop and hooks: `CommandConsumer`, `WorkspaceConsumer`)
+- `delivery/` decides who a row is for: `addressing.py` (the rules), `router.py` (`MessageRouter`, which decides every row for every agent in its room as the row is written, in the same transaction) and `recipient.py` (`AgentRecipient`, one agent's decisions and the replies posted on its behalf)
 - `bridges/` — External integrations
   - `agent/` — Agent Bridge (HTTP API, MCP server, server-side connectors); `protocol/agent_core.py` is `AgentCore`, `protocol/agent_connections.py` holds each `AgentConnection`
   - `collaboration/` — Collaboration Bridge: one `CollaborationCore` per workspace, driving a `PlatformAdapter` (Slack, Mattermost, Discord, Teams, Telegram)
@@ -88,19 +89,24 @@ just test -k "test_name"         # run specific test
 - Async throughout: all I/O is async (DB, external APIs)
 - Dependency injection: stores and services are injected, not global singletons
 - Session management: API endpoints use middleware-provided sessions; background work creates sessions explicitly
-- Every room participant is an actor writing to the `messages` table through the transport port; only a participant that reads the room has a consumer. Human actors (one `HumanActor` per platform user) read nothing, because the bridge's `WorkspaceConsumer` reads for the whole workspace
+- Every room participant is an actor writing to the `messages` table through the transport port; only a participant that reads the room has a consumer. Human actors (one `HumanActor` per platform user) read nothing, because the bridge's `WorkspaceConsumer` reads for the whole workspace. Agents read nothing either: the router decides, as each row is written, which agents it is for and stores their own events with it
 
 **The message bus is PostgreSQL** (`transport/postgres.py`). Switch once ran on a
 Matrix homeserver; that is gone, and no Matrix server or client library is
 involved. A send is an `INSERT` into `messages`, with a per-room advisory lock
 assigning `seq` (`db/stores/message_store.py`). The `messages_notify` trigger
 calls `pg_notify('switch_message', …)` with the room, `seq` and row id, delivered
-on commit (`db/notify_ddl.py`). One `MessageListener` (`messages/notify.py`)
-holds a dedicated `LISTEN` connection and wakes the subscribers for that room;
-each client then reads the rows after its own cursor, 200 at a time. The
-notification is a wake-up, never the payload. Invites and presence travel over
-in-process buses (`transport/invites.py`, `transport/ephemeral.py`), which is
-part of why switch-core runs as a single replica. Names such as
+on commit (`db/notify_ddl.py`). Every row is written by the router
+(`delivery/router.py`), which decides in the same transaction which agents in
+the room it is for and stores their own events (`agent_events`) with it. One
+`MessageListener` (`messages/notify.py`) holds a dedicated `LISTEN` connection
+and wakes the subscribers for that room; each client then reads the rows after
+its own cursor, 200 at a time. The notification is a wake-up, never the
+payload. Membership changes reach every
+process through a `NOTIFY` trigger on `client_rooms` and the signal bus
+(`signals.py`, `transport/membership_signals.py`); presence still travels over
+an in-process bus (`transport/ephemeral.py`), which is part of why switch-core
+runs as a single replica. Names such as
 the `matrix_room_id` / `matrix_user_id` columns and wire fields, the
 `@localpart:server` id shape and `m.room.message` content types are kept as
 stable identifiers and wire shapes, not as a sign that Matrix is in use. In
@@ -112,12 +118,17 @@ Matrix homeserver; that is gone, and no Matrix server or client library is
 involved. A send is an `INSERT` into `messages`, with a per-room advisory lock
 assigning `seq` (`db/stores/message_store.py`). The `messages_notify` trigger
 calls `pg_notify('switch_message', …)` with the room, `seq` and row id, delivered
-on commit (`db/notify_ddl.py`). One `MessageListener` (`messages/notify.py`)
-holds a dedicated `LISTEN` connection and wakes the subscribers for that room;
-each client then reads the rows after its own cursor, 200 at a time. The
-notification is a wake-up, never the payload. Invites and presence travel over
-in-process buses (`transport/invites.py`, `transport/ephemeral.py`), which is
-part of why switch-core runs as a single replica. Names such as
+on commit (`db/notify_ddl.py`). Every row is written by the router
+(`delivery/router.py`), which decides in the same transaction which agents in
+the room it is for and stores their own events (`agent_events`) with it. One
+`MessageListener` (`messages/notify.py`) holds a dedicated `LISTEN` connection
+and wakes the subscribers for that room; each client then reads the rows after
+its own cursor, 200 at a time. The notification is a wake-up, never the
+payload. Membership changes reach every
+process through a `NOTIFY` trigger on `client_rooms` and the signal bus
+(`signals.py`, `transport/membership_signals.py`); presence still travels over
+an in-process bus (`transport/ephemeral.py`), which is part of why switch-core
+runs as a single replica. Names such as
 `matrix_room_id`, `matrix_user_id`, `MATRIX_SERVER_NAME`, the `@localpart:server`
 id shape and `m.room.message` content types are kept as stable identifiers and
 wire shapes, not as a sign that Matrix is in use.
@@ -176,7 +187,7 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
 ## Reference Documentation
 
 - `docs/official/` — the published user-facing documentation
-  (docs.flintai.dev) synced into the repo. Generated — edit the source in the
+  (docs.switchagents.ai) synced into the repo. Generated — edit the source in the
   docs repository, never here. Start at `docs/README.md` for how the sync
   works; `docs/official/internals/` covers architecture and the agent
   protocol for readers of this repo.
@@ -191,8 +202,12 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
 - `docs/old/GATEWAY_OIDC_SETUP.md` — configuring the gateway's bring-your-own
   OIDC browser sign-in (variables, redirect URI, WorkOS Connect setup)
 - `docs/old/google-workspace-setup.md` — offering Google Workspace on a
-  self-hosted server: registering the internal Google app, its redirect URI,
+  self-hosted server: registering the Google app (Internal or External), its
+  redirect URI, saving it under Connectors or in
   `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`, and switching it off
+- `docs/old/github-app-setup.md` — offering GitHub on a self-hosted server:
+  creating the GitHub App, saving it under Connectors or in configuration,
+  which wins, rotating its secret or key, and replacing it
 - `docs/old/LOCAL_DEVELOPMENT.md` — running Switch locally for development:
   `just` recipes, which port serves what, connecting Switch Console to a
   local server

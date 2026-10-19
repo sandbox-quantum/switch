@@ -34,6 +34,7 @@ class _FakeHumanActor:
     the join race `test_bridge_unknown_member_first_message.py` covers."""
 
     def __init__(self, *, fail_send: bool = False) -> None:
+        self.client_id = "alice-client"
         self.transport_user_id = "@ext_alice:switch.local"
         self.sent: list[tuple[str, str]] = []
         self._fail_send = fail_send
@@ -97,6 +98,7 @@ def _bridge(
         relayed.append((kwargs["transport_event_id"], kwargs["external_post_id"]))
 
     bridge = SimpleNamespace(
+        _bridge_id="bridge-1",
         _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
         _ensure_human_in_room=_ensure_human_in_room,

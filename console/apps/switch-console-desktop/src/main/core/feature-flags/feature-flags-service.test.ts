@@ -136,4 +136,35 @@ describe('FeatureFlagsService', () => {
       vi.useRealTimers();
     }
   });
+
+  it('answers a refresh with a pass that started after it was asked', async () => {
+    const h = harness([server('a')]);
+    let release: () => void = () => {};
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reads = 0;
+    const service = new FeatureFlagsService({
+      listServers: async () => h.servers,
+      fetchFlags: async () => {
+        reads += 1;
+        // The first pass reads before the sign-in the caller is waiting on.
+        if (reads === 1) {
+          await blocked;
+          return [];
+        }
+        return [{ key: 'ecosystem.show_owners', enabled: true }];
+      },
+      onChange: () => {},
+      warn: h.warn,
+      intervalMs: 60_000,
+    });
+    const first = service.refreshAll();
+    const second = service.refreshAll();
+    const third = service.refreshAll();
+    release();
+    await Promise.all([first, second, third]);
+    expect(reads).toBe(2);
+    expect(service.get('a').flags['ecosystem.show_owners']).toBe(true);
+  });
 });

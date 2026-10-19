@@ -16,6 +16,14 @@ revision: str = ${repr(up_revision)}
 down_revision: Union[str, None] = ${repr(down_revision)}
 branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
 depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
+# True only when a switch-core release from before this revision can go on
+# serving on the schema it leaves: it adds tables, nullable or defaulted
+# columns, or indexes, and drops, renames or tightens nothing an older release
+# reads or writes. During a rolling deploy both releases serve at once, and an
+# older one restarted after this ran accepts it only if this is True
+# (`db/schema_version.py`). A contracting change ships as its own revision, a
+# release after the code stopped using what it removes.
+expand_only: bool = False
 
 
 def upgrade() -> None:

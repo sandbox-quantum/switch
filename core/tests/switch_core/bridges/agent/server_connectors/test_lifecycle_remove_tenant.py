@@ -41,6 +41,7 @@ from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.keys import Keyring
 from switch_core.outbound import OutboundPolicy
 from switch_core.tenant_context import tenant_scope
+from tests.ownership import SoleOwner
 
 pytestmark = pytest.mark.no_ambient_tenant
 
@@ -109,6 +110,7 @@ def _service(
         session_factory=session_factory,
         keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None),
         outbound_policy=OutboundPolicy.parse(""),
+        ownership=SoleOwner(),
     )
 
 

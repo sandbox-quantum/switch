@@ -142,13 +142,13 @@ class ConnectionBeatRequest(BaseModel):
     """The heartbeat of a connection held over the event stream (CHOO-1857).
 
     Kept for clients built before the WebSocket, whose socket carries the
-    heartbeat itself, for a compatibility window. Proves the client is alive
-    *and* consuming, and reports how far it has read so the event buffer knows
-    what has been seen.
+    heartbeat itself, for a compatibility window. Proves the client is alive.
+    Clients also send how far they have read (`cursor`, `position`); the
+    server does not read it, because a client resumes from the position it
+    sends when it reopens.
     """
 
     connection_id: str
-    cursor: int = 0
     #: The incarnation of the connection this client is attached to, as the
     #: server told it on `connection_state`. Fences the tick: a client that has
     #: been displaced still holds the id and the token, and is otherwise

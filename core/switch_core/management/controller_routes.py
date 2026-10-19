@@ -43,6 +43,7 @@ from switch_core.bridges.agent.dependencies import get_protocol, get_session
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.controller_presence import (
     ControllerConnectionError,
+    ControllerRevokedError,
 )
 from switch_core.bridges.agent.protocol.controller_stream import (
     IDLE,
@@ -270,7 +271,7 @@ async def put_status(
     principal: PathController,
     management: Management,
     session: Session,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     if len(await request.body()) > MAX_STATUS_BYTES:
         raise ManagementError(
             413,
@@ -351,19 +352,38 @@ async def open_connection(
     body: ControllerConnectionRequest,
     principal: PathController,
     protocol: Protocol,
+    management: Management,
+    session: Session,
 ) -> dict[str, Any]:
     """Open the controller's connection, taking over any it had.
 
     The agents bound to it are attached on the stream, each from its cursor
     here; the response names them. Opening again is a takeover: the earlier
-    connection's socket ends with `taken_over`, and its beats are refused.
+    connection's socket ends with `taken_over`, and its beats are refused,
+    whichever process held it. The connection is recorded before the answer,
+    so its socket can attach through any process.
     """
     presence = protocol.connections.controllers
+    resume_cursors = body.resume_cursors()
+    if presence.is_revoked(principal.controller_id):
+        raise _connection_refusal(ControllerRevokedError(principal.controller_id))
+    # Recorded before it is held: a read of the row in between would find the
+    # connection this one replaces still named there, and close this one.
+    identity = presence.new_connection()
+    connection_id, generation = identity
+    await management.record_opened(
+        session,
+        principal,
+        connection_id=connection_id,
+        generation=generation,
+        resume_cursors=resume_cursors,
+    )
     try:
         conn = presence.open(
             controller_id=principal.controller_id,
             tenant_id=principal.tenant_id,
-            resume_cursors=body.resume_cursors(),
+            resume_cursors=resume_cursors,
+            identity=identity,
         )
     except ControllerConnectionError as exc:
         raise _connection_refusal(exc) from exc
@@ -401,9 +421,18 @@ async def attach_stream(
     presence = protocol.connections.controllers
     nudges = management.notifier.subscribe(principal.controller_id)
     try:
-        conn = presence.require(principal.controller_id, connection_id, generation)
         async with tenant_session(session_factory, principal.tenant_id) as session:
+            # Wherever it was opened or last held: decided on the
+            # controller's row, which says whether it is still the one the
+            # controller opened last.
+            conn = await management.hold_connection(
+                session, principal, connection_id, generation
+            )
             state = await management.connection_state(session, principal)
+        # Attached once nothing more is awaited, and refused if the connection
+        # stopped being the controller's current one while the reads above
+        # waited.
+        token = presence.attach_stream(conn)
     except ControllerConnectionError as exc:
         nudges.close()
         raise _connection_refusal(exc) from exc
@@ -416,7 +445,6 @@ async def attach_stream(
         "generation": conn.generation,
         "heartbeat_interval_s": HEARTBEAT_INTERVAL_SECONDS,
     }
-    token = presence.attach_stream(conn)
     return controller_event_stream(
         conn=conn,
         stream_token=token,
@@ -430,7 +458,7 @@ async def attach_stream(
     )
 
 
-def record_beat(
+async def record_beat(
     *,
     principal: ControllerPrincipal,
     protocol: AgentCore,
@@ -454,11 +482,16 @@ def record_beat(
         binding = presence.binding(agent_id)
         if agent_id not in agents or binding is None:
             continue
-        # Clamped to the head, as an agent's own beat is: a higher number
-        # belongs to a previous life of this process.
-        confirmed = min(cursor, protocol.event_buffer.head(agent_id))
-        protocol.event_buffer.confirm(agent_id, presence.holder_id(binding), confirmed)
-        presence.resume_from(conn, agent_id, confirmed)
+        sent = conn.sent_cursors.get(agent_id)
+        if sent is None:
+            continue
+        # The controller reports how far it has read each agent's own events.
+        # It cannot have read further than this connection has sent it. A
+        # larger number comes from another history, a database restored from a
+        # backup or another server, and keeping it would make the next stream
+        # on this connection resume past events the agent never received. The
+        # bound is kept in memory, so a beat costs no database query.
+        presence.resume_from(conn, agent_id, min(cursor, sent))
     return sorted(agents)
 
 
@@ -627,7 +660,7 @@ async def _receive_pongs(
         if not isinstance(message, dict) or message.get("type") != "pong":
             continue
         try:
-            record_beat(
+            await record_beat(
                 principal=principal,
                 protocol=protocol,
                 connection_id=connection_id,

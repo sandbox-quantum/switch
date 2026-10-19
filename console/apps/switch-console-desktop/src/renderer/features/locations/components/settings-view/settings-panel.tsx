@@ -8,6 +8,8 @@ import { AutoApproveSettingsSection } from '@renderer/features/locations/compone
 import { CanManageAgentsSettingsSection } from '@renderer/features/locations/components/settings-view/sections/can-manage-agents-settings-section';
 import { ProviderSignInSettingsSection } from '@renderer/features/locations/components/settings-view/sections/provider-sign-in-settings-section';
 import { ServiceGrantsSettingsSection } from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
+import { useLocalAgentTab } from '@renderer/features/locations/hooks/use-local-agent-tab';
+import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import {
   asMounted,
   getLocationStore,
@@ -21,6 +23,8 @@ export const SettingsPanel = observer(function SettingsPanel() {
     params: { locationId, agentName },
   } = useParams('location');
   const mounted = asMounted(getLocationStore(locationId));
+  // With a Connections tab, the agent's grants are there and not here.
+  const { tabs } = useLocalAgentTab(agentsStore.agentAtLocation(locationId, agentName));
 
   // Resolve the specific agent the page is scoped to (by its definition name),
   // so its settings render through the normal per-agent sections. Switch Console has
@@ -50,7 +54,9 @@ export const SettingsPanel = observer(function SettingsPanel() {
         <AutoApproveSettingsSection locationId={locationId} agentId={agentId} />
         <AddressingPolicySettingsSection locationId={locationId} agentId={agentId} />
         <CanManageAgentsSettingsSection locationId={locationId} agentId={agentId} />
-        <ServiceGrantsSettingsSection locationId={locationId} agentId={agentId} />
+        {tabs === null && (
+          <ServiceGrantsSettingsSection locationId={locationId} agentId={agentId} />
+        )}
       </section>
       <AgentAdvancedSettingsSection locationId={locationId} agentId={agentId} />
     </div>

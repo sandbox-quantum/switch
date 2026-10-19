@@ -25,8 +25,12 @@ import {
   parseTemplateAgents,
   substituteAgentSlots,
   type TemplateAgents,
+  isVersion2,
+  parseYaml,
   templateKind,
   type TemplateKind,
+  type Version2Rooms,
+  version2Rooms,
 } from './template-document';
 import { summarizeTemplate, type TemplateSummary } from './template-summary';
 
@@ -125,6 +129,10 @@ export const agentTemplatesController = createRPCController({
 
   /** Classify a document as an agent, room or group template. */
   kind: (params: { yamlText: string }): TemplateKind => templateKind(params.yamlText),
+
+  /** A version 2 document's rooms and group; null for a version 1 document. */
+  version2Rooms: (params: { yamlText: string }): Version2Rooms | null =>
+    isVersion2(parseYaml(params.yamlText)) ? version2Rooms(params.yamlText) : null,
 
   /** The agents a document creates. Empty for a room template. */
   parseAgents: (params: { yamlText: string; instructions?: string | null }): TemplateAgents =>

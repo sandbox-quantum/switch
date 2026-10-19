@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from switch_core.db.models import Agent, AgentSessionActivityItem, ApprovalRequest
@@ -79,6 +79,22 @@ class ApprovalRequestStore:
             select(ApprovalRequest)
             .join(Agent, Agent.id == ApprovalRequest.agent_id)
             .where(Agent.owner_id == owner_id, ApprovalRequest.state == "open")
+            .order_by(ApprovalRequest.created_at)
+        )
+        return list(result.scalars())
+
+    async def for_room(
+        self, session: AsyncSession, room_id: str, since: datetime
+    ) -> list[ApprovalRequest]:
+        """Open requests in `room_id` plus closed ones changed since `since`; oldest first."""
+        result = await session.execute(
+            select(ApprovalRequest)
+            .where(
+                ApprovalRequest.room_id == room_id,
+                or_(
+                    ApprovalRequest.state == "open", ApprovalRequest.updated_at >= since
+                ),
+            )
             .order_by(ApprovalRequest.created_at)
         )
         return list(result.scalars())
@@ -196,6 +212,38 @@ class AgentSessionActivityStore:
                 AgentSessionActivityItem.item_id == TURN_ITEM_ID,
             )
             .order_by(AgentSessionActivityItem.created_at)
+        )
+        return list(result.scalars())
+
+    async def newest_running_turn(
+        self, session: AsyncSession, agent_id: str
+    ) -> AgentSessionActivityItem | None:
+        """The agent's most recently reported running turn row; queued turns wait behind it."""
+        result = await session.execute(
+            select(AgentSessionActivityItem)
+            .where(
+                AgentSessionActivityItem.agent_id == agent_id,
+                AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+                AgentSessionActivityItem.status == "running",
+            )
+            .order_by(AgentSessionActivityItem.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def for_room(
+        self, session: AsyncSession, room_id: str, since: datetime
+    ) -> list[AgentSessionActivityItem]:
+        """Steps placed in `room_id` changed since `since`, in first-reported order."""
+        result = await session.execute(
+            select(AgentSessionActivityItem)
+            .where(
+                AgentSessionActivityItem.room_id == room_id,
+                AgentSessionActivityItem.updated_at >= since,
+            )
+            .order_by(
+                AgentSessionActivityItem.created_at, AgentSessionActivityItem.item_id
+            )
         )
         return list(result.scalars())
 

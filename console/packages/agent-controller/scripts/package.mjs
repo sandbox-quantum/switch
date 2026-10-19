@@ -19,8 +19,12 @@ const out = join(root, 'dist-package');
 const stage = join(out, 'package');
 const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const { version } = manifest;
-if (!/^\d+\.\d+\.\d+$/.test(version))
-  throw new Error(`The package version must be x.y.z to be released, not '${version}'.`);
+// The versions the controller follows (RELEASE_VERSION in src/update.ts): a
+// release's x.y.z, or a dev build's x.y.z-<prerelease>.
+if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$/.test(version))
+  throw new Error(
+    `The package version must be x.y.z or x.y.z-<prerelease> to be released, not '${version}'.`
+  );
 
 /** Kept out, as in Switch Console's own bundle: the controller must stay headless. */
 const FORBIDDEN = ['electron', 'better-sqlite3', 'drizzle-orm'];

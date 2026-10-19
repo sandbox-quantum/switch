@@ -2,7 +2,14 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { buildEnvFile, keysDisagreeing, readStackEnv, telemetryRequested } from './env-file';
+import {
+  buildEnvFile,
+  keysDisagreeing,
+  MANAGED_SERVER_FEATURE_FLAGS,
+  managedServerFeatureFlags,
+  readStackEnv,
+  telemetryRequested,
+} from './env-file';
 import type { LocalServerSecrets } from './secret-values';
 
 const secrets: LocalServerSecrets = {
@@ -75,8 +82,19 @@ describe('buildEnvFile', () => {
     expect(vars.MATTERMOST_USER_PASSWORD).toBe('mm-user');
   });
 
-  it('starts a managed stack with no feature flags (agent management off)', () => {
-    expect(vars.FEATURE_FLAGS_ENABLED).toBe('');
+  it("starts a managed stack with this build's feature flags", () => {
+    expect(vars.FEATURE_FLAGS_ENABLED).toBe(MANAGED_SERVER_FEATURE_FLAGS.join(','));
+  });
+
+  it('turns on what switch-buddy needs only in a build with the new first run', () => {
+    expect(managedServerFeatureFlags(true)).toEqual([
+      'agent_management',
+      'agent_chats',
+      'switch_buddy',
+      'follow_the_conversation',
+      'service_connections',
+    ]);
+    expect(managedServerFeatureFlags(false)).toEqual([]);
   });
 
   it('runs switch-core as the restricted runtime role, not the schema owner', () => {
@@ -155,8 +173,8 @@ describe('buildEnvFile', () => {
       'TEAMS_APP_PRIVACY_URL',
       'TEAMS_APP_TERMS_URL',
       'TEAMS_APP_NAME',
-      // Written, but empty on purpose: a managed stack starts with no feature
-      // flag on (MANAGED_SERVER_FEATURE_FLAGS).
+      // Written, and empty on purpose in a build without the new first run
+      // (MANAGED_SERVER_FEATURE_FLAGS).
       'FEATURE_FLAGS_ENABLED',
     ]);
 

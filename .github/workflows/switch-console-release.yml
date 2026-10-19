@@ -389,10 +389,28 @@ jobs:
             exit 1
           fi
           app="${apps[0]}"
+          # These two verifications reach Apple's servers, so a transient runner
+          # network drop (seen as NSURLError -1005 from `stapler validate`) fails
+          # the whole release even though the bundle is correctly signed, notarized
+          # and stapled. Retry the network step with backoff before giving up; a
+          # real validation failure still fails after the retries are spent.
+          retry() {
+            local n=1 max=5 delay=15
+            until "$@"; do
+              if [ "$n" -ge "$max" ]; then
+                echo "::error::'$*' still failing after $max attempts"
+                return 1
+              fi
+              echo "attempt $n/$max failed; retrying in ${delay}s" >&2
+              sleep "$delay"
+              n=$((n + 1))
+              delay=$((delay * 2))
+            done
+          }
           codesign --verify --deep --strict --verbose=2 "$app"
           # The stapled ticket is what lets a Mac clear the app offline; without it
           # the first launch is a Gatekeeper prompt however well-signed the bundle is.
-          xcrun stapler validate "$app"
+          retry xcrun stapler validate "$app"
           # `spctl --assess` reports a rejected build as accepted when assessment is
           # switched off on the machine, so the assessment is worth nothing until
           # this says it is on.
@@ -402,7 +420,7 @@ jobs:
             *"assessments enabled"*) ;;
             *) echo "::error::Gatekeeper assessment is off on this runner ($status) — spctl --assess cannot be trusted here"; exit 1 ;;
           esac
-          spctl --assess --type execute --verbose=4 "$app"
+          retry spctl --assess --type execute --verbose=4 "$app"
 
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')

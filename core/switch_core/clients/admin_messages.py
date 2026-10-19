@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import NamedTuple
 
 # Content flag stamped on the no-session / busy-elsewhere auto-reply (see
-# AgentConsumer.on_message). Its first job is to mark a message as itself an
+# AgentRecipient.decide_message). Its first job is to mark a message as itself an
 # auto-reply so that another offline agent addressed by it does NOT emit a
 # second auto-reply — two session-less agents tagging each other would
 # otherwise ping-pong identical "no session" replies forever. It also lets the
@@ -41,6 +41,12 @@ ADMIN_MARKER = "com.switch.admin"
 # arrives, and nothing is granted beyond it. Only server-side code writes
 # the marker.
 PLATFORM_MARKER = "com.switch.platform"
+
+# Set by the collaboration bridge on a message the platform reported as posted
+# by an app (a workflow, an integration) rather than a person. Only the bridge
+# writes it, and only Slack reports it today. Following the conversation
+# (`delivery/conversation.py`) never delivers such a message.
+SENDER_IS_APP_MARKER = "com.switch.sender_is_app"
 
 
 class OnBehalfOf(NamedTuple):

@@ -1,9 +1,10 @@
 name: switch dev cleanup
 
 # Prunes old dev builds — the images and chart every push to main publishes
-# under ghcr.io/<owner>/dev/ (see switch-release.yml) — so the dev packages do
-# not grow without bound. Only the dev/ packages are touched; releases and RCs
-# live in packages of their own. A build is deleted once it is older than 30
+# under ghcr.io/<owner>/dev/, and the agents controller it publishes as a
+# GitHub prerelease (see switch-release.yml) — so they do not grow without
+# bound. Only the dev/ packages and the dev controller prereleases are
+# touched; releases and RCs live apart. A build is deleted once it is older than 30
 # days and outside the 20 newest, so the dev environment's pin always has
 # something recent to point at. See scripts/prune_dev_packages.py.
 
@@ -18,7 +19,8 @@ on:
         default: true
 
 permissions:
-  contents: read
+  # To delete the dev controller prereleases and their tags.
+  contents: write
   packages: write
 
 concurrency:
@@ -38,6 +40,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
-          args=(--owner "${{ github.repository_owner }}" --max-age-days 30 --keep 20)
+          args=(--owner "${{ github.repository_owner }}" --repository "${{ github.repository }}" --max-age-days 30 --keep 20)
           [ "$DRY_RUN" != true ] || args+=(--dry-run)
           python3 scripts/prune_dev_packages.py "${args[@]}"

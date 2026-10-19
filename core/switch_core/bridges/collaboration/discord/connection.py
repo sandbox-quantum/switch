@@ -178,6 +178,23 @@ class DiscordConnection:
             )
         self._member_searches.append(now)
 
+    async def login(self) -> None:
+        """Log in for Discord's API alone, opening no Gateway socket.
+
+        For a switch-core process that serves requests touching Discord (post,
+        make a channel, search members by API) while another process holds the
+        socket: Discord delivers events to each socket opened, so only one
+        process opens it. No handler is called and no command is synced here.
+        `close` ends it as it ends a connection.
+        """
+        client = discord.Client(
+            intents=self._intents, allowed_mentions=NO_MASS_MENTIONS
+        )
+        self._client = client
+        await client.login(self._bot_token)
+        assert client.user is not None
+        self._bot_user_id = client.user.id
+
     async def connect(
         self,
         *,

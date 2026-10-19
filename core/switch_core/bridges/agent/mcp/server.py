@@ -9,18 +9,27 @@ Switch hosting an MCP server is the legacy path: the supported direction is a
 local runtime that serves the tool surface next to the agent and translates
 each call onto its own connection. Because operations live in the registry
 rather than here, retiring this door is removing a file, not a refactor.
+
+It holds no session in memory, so any switch-core process can answer any
+request of a client's. The MCP transport runs stateless, and `SessionIds`
+gives the client a session id of Switch's own on its first request, which the
+client sends back on every later one (the transport's `Mcp-Session-Id`). That
+id is all an operation needs to find the room the client connected to, and
+the binding it names is in Postgres (`operations/context.py`), not here.
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_request
-from fastmcp.server.middleware import Middleware, MiddlewareContext, PingMiddleware
-from starlette.types import ASGIApp
+from fastmcp.server.middleware import Middleware, MiddlewareContext
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from switch_core.bridges.agent.auth import BearerAuthMiddleware, OIDCTokenValidator
 from switch_core.bridges.agent.operations import (
@@ -56,6 +65,10 @@ class CallContextMiddleware(Middleware):
     each front door is responsible for binding it. Here that means the agent
     from the authenticated request scope and the MCP transport session as the
     key that owns the room binding.
+
+    The session id comes from the client (`SessionIds`), so the key is the
+    agent's id and the session's together: an agent naming another's session
+    id reaches only a binding of its own.
     """
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):  # type: ignore[no-untyped-def]
@@ -69,7 +82,9 @@ class CallContextMiddleware(Middleware):
             CallContext(
                 agent_id=agent_id,
                 session_key=(
-                    fastmcp_context.session_id if fastmcp_context is not None else None
+                    session_key(agent_id, fastmcp_context.session_id)
+                    if fastmcp_context is not None
+                    else None
                 ),
                 # An MCP transport session is not an SDK session: there is no
                 # host lease behind it, so it has no fenced room binding of its
@@ -78,6 +93,47 @@ class CallContextMiddleware(Middleware):
             )
         ):
             return await call_next(context)
+
+
+def session_key(agent_id: str, session_id: str) -> str:
+    """The key an MCP session's room binding is kept under."""
+    return f"{agent_id}/{session_id}"
+
+
+SESSION_HEADER = b"mcp-session-id"
+
+
+class SessionIds:
+    """Give each MCP client a session id that any switch-core process honours.
+
+    The transport runs stateless, so it issues no `Mcp-Session-Id` and checks
+    none. A request that arrives without one is given a fresh id here, both on
+    the request (where the call context reads it) and on the response, and a
+    client following the transport sends it on every later request, whichever
+    process those reach. A request that brings one keeps it.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or any(
+            name == SESSION_HEADER for name, _ in scope["headers"]
+        ):
+            await self.app(scope, receive, send)
+            return
+        minted = uuid.uuid4().hex
+        scope = {
+            **scope,
+            "headers": [*scope["headers"], (SESSION_HEADER, minted.encode())],
+        }
+
+        async def send_with_id(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message).append("Mcp-Session-Id", minted)
+            await send(message)
+
+        await self.app(scope, receive, send_with_id)
 
 
 class ExistingOperationsOnly(Middleware):
@@ -115,6 +171,12 @@ for _op in declared_operations().values():
 logger.debug("Registered %d operations as MCP tools", len(declared_operations()))
 
 
+def mcp_http_app() -> Any:
+    """The MCP transport, stateless: no session lives in this process, so no
+    keepalive ping either, since there is no long-lived stream to keep."""
+    return mcp.http_app(path="/", stateless_http=True)
+
+
 def create_mcp_app(
     *,
     agent_store: AgentStore,
@@ -124,8 +186,6 @@ def create_mcp_app(
 ) -> tuple[ASGIApp, Any]:
     """Returns (asgi_app, lifespan). The lifespan must be wired into the parent app."""
     init_mcp_protocol(protocol)
-
-    mcp.add_middleware(PingMiddleware(interval_ms=30000))
 
     oidc_validator = None
     if config.oauth_issuer_url:
@@ -137,9 +197,9 @@ def create_mcp_app(
         )
         logger.info("OIDC auth enabled for MCP (issuer: %s)", config.oauth_issuer_url)
 
-    starlette_app = mcp.http_app(path="/")
+    starlette_app = mcp_http_app()
     app = BearerAuthMiddleware(
-        starlette_app,
+        SessionIds(starlette_app),
         agent_store=agent_store,
         api_key_store=api_key_store,
         api_key_cache=protocol.api_key_cache,

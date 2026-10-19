@@ -45,6 +45,33 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **The server's operator sets up connector apps from the dashboard.** A
+  Connectors page, beside Users and for the operator alone, sets up the
+  GitHub App and Google Workspace's OAuth client (and any static client the
+  catalog adds) with no restart. Each save is checked with the vendor first,
+  and stored, encrypted, only if the vendor accepts it; GitHub's App name is
+  read from GitHub. A secret or private key can be rotated without
+  disconnecting anyone; switching to a different app says first how many
+  people in how many workspaces must reconnect. The variables that set them
+  today (`GITHUB_APP_CONFIG_PATH` and `GITHUB_APP_PRIVATE_KEY_PATH`,
+  `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`) keep working and win over a saved
+  app, and **Copy into Switch** moves one into the dashboard with nothing
+  retyped. Changes are recorded in a new server-wide audit log
+  (`server_audit_events`). Members of a server without an app are told to ask
+  whoever runs it to add it under Connectors; `GET /service-connections`
+  gains `server_setup_needed`. The page and its routes are there only with
+  the `service_connections` flag on, like the rest of service connections;
+  without it the page says what to turn on. A connection made under an app since removed
+  can still be disconnected; the disconnect then says Switch could not revoke
+  the sign-in and where to revoke it. A change reaches every switch-core
+  replica within seconds, and one that missed it within half a minute. See
+  `docs/old/github-app-setup.md` and `docs/old/google-workspace-setup.md`.
+- **A connection knows the app it signed in through.** A connection made
+  through an app the operator has since replaced shows as needing
+  reconnection, and an agent asking for its token is told to reconnect
+  rather than handed the vendor's refusal. A sign-in that started before the
+  app was replaced is asked to start again. Connections made before this
+  release are unaffected.
 - **Confluence through the Atlassian connection.** Connecting Atlassian now
   also asks for Confluence's read, search and (for writing) write scopes, so a
   granted agent reaches Confluence pages beside Jira issues. People who
@@ -80,6 +107,45 @@ version of their own to them without also giving them a release of their own.
   stored to never show. `GET /agents/icon-choices` offers none and says why, and
   `GET /agents/avatar-settings` tells Switch Console the setting. The default is
   unchanged. A server Switch Console runs for you always uses the default.
+- **The Helm chart can take the invitation SMTP username from its Secret.**
+  Some relays issue usernames that are credentials in their own right (an
+  Amazon SES SMTP username is an access key id). With
+  `switchCore.smtp.usernameFromSecret: true`, the chart reads it from
+  `secrets.gatewaySmtpUsername`, or from `GATEWAY_SMTP_USERNAME` in
+  `secrets.existingSecret`, instead of `switchCore.smtp.username`. Setting
+  both is refused at render time.
+- **Agents controllers update to the release Core names.** With
+  `CONTROLLER_RELEASE_VERSION`, `CONTROLLER_RELEASE_URL` and
+  `CONTROLLER_RELEASE_SHA256` (Helm `switchCore.controllerRelease`; all three or
+  none, refused at startup and at render otherwise), the status answer carries
+  `controller_release: {version, url, sha256}` (null for a Switch Console
+  controller, which updates with Console), and a controller on another
+  version fetches that package, checks its SHA-256 and installs it once idle.
+  `GET /gateway/management/controllers` shows each controller's `release`
+  (`{wanted, running, current}`, null when none is named), and its status keeps
+  the `update` the controller reports. A Switch release now also
+  publishes the controller at its version as `switch-agent-controller-v<version>`,
+  and its chart names that package; a release candidate and a dev build of main
+  do the same as a prerelease, so the controllers of a deployment running an RC,
+  and the dev environment's, follow it. A controller
+  run as a service installs a release beside the one it runs and keeps the one
+  before. Roll back by pointing the values at the previous release.
+- **Workspace admins can switch each service off for their workspace.** With
+  the `service_connections` flag on, `GET /gateway/workspace/services` lists
+  every connectable service with whether the workspace has it on, who last
+  changed it and when, and how many members are connected and agents granted;
+  `PUT /gateway/workspace/services/{service}` with `{"enabled": false}` switches
+  it off (workspace admins and owners, audited). Off, nobody in the workspace
+  can start a sign-in, paste a key, connect, grant or be issued a token for it,
+  and the refusal says who can turn it back on and where. A running session
+  loses the service within half a minute: its grants list leaves it out, and
+  its host restarts it without the service. A token already handed out may be
+  used until then, except GitHub's, which is revoked before the switch
+  answers. Grants are kept, so switching it on again needs no re-grant. A
+  service with no setting is on, so an upgraded server behaves as before. The
+  service list now says `workspace_enabled` for each service, and
+  `GET /gateway/service-connections/{service}/agents` lists the caller's own
+  agents with whether each holds a grant and whether others can address it.
 
 #### Changed
 - **GET `/agents` and `/agents/<id>` answer with the dashboard's page** rather
@@ -90,7 +156,33 @@ version of their own to them without also giving them a release of their own.
   `GATEWAY_OIDC_REDIRECT_URL` first, so its state cookie is there when the
   provider comes back. Afterwards it lands on `FRONTEND_BASE_URL` when that is
   set, and otherwise on the host that set the session cookie.
+- **Usage telemetry goes to `telemetry.switchagents.ai` by default.** The
+  default `TELEMETRY_ENDPOINT` (Helm `switchCore.telemetry.endpoint`) was
+  `https://telemetry.flintai.dev`, an older name for the same relay that is
+  being retired. A deployment that sets the endpoint explicitly is unaffected;
+  one relying on the default moves to the new host on upgrade. Nothing is sent
+  unless `TELEMETRY_ENABLED=true`.
+- **Documentation links point at `docs.switchagents.ai`.** Links in the docs
+  and the synced `docs/official` pages used `docs.flintai.dev`, the older name
+  for the same site. Old links still redirect.
+- **A sign-in that returns through the server goes straight back to Switch
+  Console.** Google Workspace and GitHub send the browser back to the server
+  rather than to the computer it left from. The server used to stop there on
+  a page naming the Switch account and asking the person to continue; it now
+  sends the browser on to Switch Console at once. The page remains only when
+  the return cannot be verified or the consent was cancelled. What ties a
+  sign-in to the browser and the Console that started it is unchanged.
 
+- **Signing in to a service connects it without a confirm step.** Once the
+  browser returns, the server exchanges the code, reads the account and keeps
+  the connection in one step, and Switch Console shows the result. It used to
+  hold the sign-in until the person confirmed the account in Console. The
+  account is chosen at the vendor, and Disconnect undoes a wrong one. The
+  flow's `complete` route now answers with the account and any warning, its
+  status reads `connected` or `failed` with the reason, and the `confirm`
+  route is gone, for GitHub's flow as well; a Switch Console from before this
+  release cannot finish a sign-in against this server, so update both
+  together. Migration `bf016e18bc16`, expand-only.
 #### Security
 - **An agent icon URL must spell its host plainly.** A link with a backslash,
   or a host with percent-encoding or non-ASCII characters, is refused: browsers
@@ -98,6 +190,13 @@ version of their own to them without also giving them a release of their own.
   could not tell where the image would be loaded from.
 
 #### Fixed
+- **A controller Switch Console runs on an SSH host is no longer shown as behind.**
+  It enrolls like a standalone controller, so Core named it the release and the
+  Machines page marked it behind, though it runs Console's bundle and cannot
+  follow Core. Console now starts it with `--updated-by-console`; it follows no
+  release, reports `controller.updated_by: "console"` in its status, and Core
+  names it none, as for Console's own controller. One started from an older
+  Console bundle shows behind until Console replaces that bundle.
 - **Usage telemetry no longer carries the `ENVIRONMENT` or `SERVICE_NAME`
   settings.** From 0.28.0 through 0.30.0, with `TELEMETRY_ENABLED=true`, every
   event sent to the Flint relay carried both, as `deployment.environment`,
@@ -138,6 +237,15 @@ version of their own to them without also giving them a release of their own.
   rather than per-capability environment variables. Known flags:
   `agent_management`, `hosted_agents`, `switch_cloud`, and
   `ecosystem.show_owners`.
+- **An agent or controller that keeps repeating a refused request is answered
+  429 from memory.** After 8 identical refusals (401, 403, 404 or 426 for the
+  same bearer token, or the same controller credential, on the same method and
+  path of an agent or controller route) within two minutes, Switch answers that request 429 with
+  `Retry-After` for a minute without looking up its credential or touching
+  the database. One request goes through when the wait is over; refused
+  again, the wait doubles, up to 15 minutes, and any other answer clears it.
+  It protects the server from old clients that retry a refusal forever. New
+  metric `switch.http.refusals_throttled`, with a panel on the dashboard.
 - **Switch cloud machines that run the agents controller sleep when idle,
   and wake on a message.** Such a machine is stopped once its status reports
   say no session has run for `HOSTED_IDLE_STOP_MINUTES` (released, as before,
@@ -1679,6 +1787,18 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **The server's operator sets up connector apps in Console.** For the
+  operator, the Admin page has a Connector apps section under Server, below
+  the workspace's switches: the GitHub App and Google Workspace's OAuth
+  client as tiles, the
+  ones needing attention first, each with its state and the one thing to do
+  next. A tile opens the app's page, with its client, its secret's last four
+  characters or its key's fingerprint, who uses it and a check with the
+  vendor; updating a secret, switching to a different app and removing it are
+  in its menu. Setting one up walks through creating it at the vendor, with
+  the values to paste and copy buttons, then checks and saves it in one step,
+  marking the value the vendor refused. It is the dashboard's Connectors page,
+  which stays for now. Needs a server from this release.
 - **Console follows a server that keeps names away from avatar services.** On a
   server with `THIRD_PARTY_AVATARS_ENABLED=false`, Console no longer loads
   DiceBear or ui-avatars.com images for that server's agents and shows their
@@ -1691,6 +1811,87 @@ version of their own to them without also giving them a release of their own.
   picker says so and offers to ask again, and a new agent is still created,
   without a generated icon. Agents on servers that leave the setting on look as
   before. Older versions of Console load those images whatever the server says.
+
+#### Changed
+- **Usage data goes to `telemetry.switchagents.ai`.** Console reported to
+  `telemetry.flintai.dev`, an older name for the same relay that is being
+  retired. Only where it is sent changes; what is sent, and the opt-out, do not.
+- **A sign-in comes back to Console on its own.** When the browser returns
+  from a service's sign-in, Console comes to the front with the next step
+  showing, and the browser's page says the sign-in is done and the tab can be
+  closed. It used to stay behind the browser, with a page telling the person
+  to return to it and confirm. Services whose sign-in returns through the
+  server (Google Workspace, GitHub) also no longer stop on the server's
+  "Continue in Switch Console" page, with a server from the same release.
+- **A sign-in connects without a confirm step.** Once the browser returns,
+  the server keeps the connection and Console shows the result: a service
+  whose agents are added from its page opens that page with the search ready,
+  and any other shows "connected" in the dialog. Console no longer asks to
+  confirm the account first; the account is chosen at the vendor, and
+  Disconnect undoes a wrong one. A sign-in the server refuses, such as an
+  account already linked to someone else in the workspace, shows the reason in
+  the dialog, and the browser's page says to look there. GitHub's sign-in
+  works the same way. Needs a server from this release.
+- **A connector's agents are managed on its page, the way a room's
+  participants are.** The connector's page lists the agents using it as
+  cards, with each agent's avatar and what runs it, under an "Agents" heading
+  with the count. "Add agent" opens a search of your other agents under the
+  cards, and choosing one turns the service on for it at once. Connecting a
+  service now lands on its page with that search open, instead of a checklist
+  in the connect dialog. An agent others can address is offered with a note
+  that it would act as you. A cross on a card, shown on hover, turns the
+  service off for that agent again, so one agent's access can be taken away
+  without disconnecting from every agent.
+- **GitHub is connected, and handed to agents, from its page like any other
+  connector.** Its page has a Repositories section: one card per account the
+  App is installed on, with its count, opening to a directory of names in
+  columns that is searched rather than scrolled once it is long, re-read as
+  the window regains focus. The section's "Choose repositories", "Change
+  repositories" once there are some, goes straight to GitHub. The connect
+  dialog ends with Done once GitHub is connected, the page behind already
+  current; it no longer offers Back or Disconnect, which the page has. "Add
+  agent" is offered for GitHub too: what every added agent gets is chosen
+  above the search, and the page says so while nothing is chosen, since no
+  agent can be added until something is. "Choose repositories" opens the
+  choice in place: the account where there are several, the repositories as
+  chips, added one by one from a search or all at once and removed with a
+  cross, and whether the agent may push. An agent's own choice is changed on
+  its Connections tab, whose form is the same choice in place of the account
+  dropdown and checkbox list.
+- **A workspace's service switches are on an Admin page.** They were a
+  "Workspace" tab on the Connectors page, beside Yours and Discover. An Admin
+  entry in the sidebar, shown to the workspace's admins and the server's
+  operator where service connections are on, opens a page laid out like
+  Settings: its sections down the side, grouped under what they reach
+  ("Workspace" and the workspace's name). Its Connectors section shows the
+  switches as tiles like Discover's: each service with its category, how many
+  members have connected it and agents use it, and who last changed it, with
+  its switch. A tile keeps its place when it flips, and switching one off
+  still asks first when anyone uses it. The Connectors page has Yours and
+  Discover again, with "Manage in Admin" in its header for an admin, and its
+  search now fills the row.
+- **Connector tools ask in approval-required and auto-accept-edits mode.**
+  Calls to a granted service's tools (Jira and Confluence through Atlassian,
+  Datadog, Google Workspace) used to run without asking in every mode. They now
+  follow the agent's mode, as its other tools do: an approval card asks first,
+  and declining tells the agent the call was refused. Full access still allows
+  them, and Switch's own room tools never ask. The first such card in a session
+  comes with a notice saying why. Claude Code, Codex and OpenCode cards name the
+  server and tool and show what the call will send, so the text of a comment
+  can be read before it is posted; a long input is cut and the card says how
+  much is not shown. Codex cards can be approved for the rest of the session. A
+  session started before the update keeps allowing them until it restarts.
+- **A Console session in "approval required" no longer inherits your own
+  Claude Code default mode.** Console now starts a Claude Code session in that
+  mode with Claude Code's `default` permission mode. It used to leave the mode
+  unset, so a `defaultMode` such as `auto` in your own Claude Code settings
+  applied, and tools, connector tools among them, could run without the
+  approval card the mode promises.
+- **A session says which services it lost or gained.** When a running session
+  restarts because its agent's services changed, it shows a notice naming
+  them, for example "Datadog was removed from this agent's tools: it was
+  switched off for the workspace, or its grant was removed." The agent is told
+  the same as it resumes, so it does not look for tools it no longer has.
 
 #### Fixed
 - **Signing in to a service through Core works on a server whose gateway and
@@ -3519,6 +3720,26 @@ tags; see RELEASING.md.
   can run (16 by default).
 
 #### Fixed
+- **A controller updates to the release Switch names while sessions sit idle.**
+  It waited until no session existed on the machine, and a session connected to
+  a room counted even with nothing to do, so a machine with long-lived sessions
+  stayed `waiting_idle` for good. It now waits only until no session is in the
+  middle of a turn. Each agent host reports which of its sessions are busy (one
+  that has not said yet counts as busy), and the controller looks again every
+  few seconds while it waits rather than at the next status report. Idle
+  sessions in the controller's own process are restarted with it and resume
+  their conversations; agents running in a process of their own keep running
+  through it. An agent host too old to report busy sessions still holds the
+  update while it has any session.
+- **Agents running in a process of their own move onto the release the
+  controller updated to.** Such an agent host (detached, or a systemd unit with
+  separate users, as on Switch cloud machines) outlives the controller and kept
+  the shared-host bundle it started with, so a fix in it reached the agent only
+  when the agent was restarted by hand. Each agent host now records the bundle
+  it runs (by SHA-256) in its `health.json`, and the controller restarts one on
+  another bundle, or too old to say, once none of its sessions is mid-turn;
+  idle sessions resume their conversations. A host that comes back still
+  outdated is tried again after 10 minutes.
 - **A refusal that cannot pass stops the controller instead of retrying it
   forever.** The server answers `protocol_unsupported` when it no longer speaks
   the controller's protocol and `invalid_credential` when it knows no controller

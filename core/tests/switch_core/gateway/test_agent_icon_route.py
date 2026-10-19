@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -32,6 +33,7 @@ _OTHER_ICON = "https://cdn.example.com/9.x/shapes/png?seed=switch-worker"
 
 _AVATARS_ON: Any = SimpleNamespace(third_party_avatars_enabled=True)
 _AVATARS_OFF: Any = SimpleNamespace(third_party_avatars_enabled=False)
+_CHATS: Any = SimpleNamespace(agent_changed=AsyncMock())
 
 
 class TestUpdateAgentIcon:
@@ -50,6 +52,7 @@ class TestUpdateAgentIcon:
                 owner,
                 await is_admin(session, owner),
                 _AVATARS_ON,
+                _CHATS,
             )
 
             assert summary.icon_url == _ICON
@@ -77,6 +80,7 @@ class TestUpdateAgentIcon:
                 owner,
                 await is_admin(session, owner),
                 _AVATARS_ON,
+                _CHATS,
             )
 
             assert summary.icon_url == generated_icon_url("a1")
@@ -101,6 +105,7 @@ class TestUpdateAgentIcon:
                 owner,
                 await is_admin(session, owner),
                 _AVATARS_ON,
+                _CHATS,
             )
 
             assert summary.icon_url == _OTHER_ICON
@@ -124,6 +129,7 @@ class TestUpdateAgentIcon:
                 owner,
                 await is_admin(session, owner),
                 _AVATARS_ON,
+                _CHATS,
             )
 
             assert summary.icon_url is None
@@ -148,6 +154,7 @@ class TestUpdateAgentIcon:
                 owner,
                 await is_admin(session, owner),
                 _AVATARS_ON,
+                _CHATS,
             )
 
             assert summary.icon_url is None
@@ -169,6 +176,7 @@ class TestUpdateAgentIcon:
                     other,
                     await is_admin(session, other),
                     _AVATARS_ON,
+                    _CHATS,
                 )
 
             assert exc.value.status_code == 403
@@ -192,6 +200,7 @@ class TestUpdateAgentIcon:
                 admin,
                 await is_admin(session, admin),
                 _AVATARS_ON,
+                _CHATS,
             )
 
             assert summary.icon_url == _ICON
@@ -211,6 +220,7 @@ class TestUpdateAgentIcon:
                     owner,
                     await is_admin(session, owner),
                     _AVATARS_ON,
+                    _CHATS,
                 )
 
             assert exc.value.status_code == 404
@@ -246,6 +256,7 @@ class TestUpdateAgentIcon:
                     owner,
                     await is_admin(session, owner),
                     _AVATARS_ON,
+                    _CHATS,
                 )
 
             assert exc.value.status_code == 400
@@ -271,6 +282,7 @@ class TestUpdateAgentIcon:
                     owner,
                     await is_admin(session, owner),
                     _AVATARS_ON,
+                    _CHATS,
                 )
 
             stored = await _AGENT_STORE.get(session, agent.id)
@@ -298,6 +310,7 @@ class TestWithThirdPartyAvatarsOff:
                     owner,
                     await is_admin(session, owner),
                     _AVATARS_OFF,
+                    _CHATS,
                 )
 
             assert refused.value.status_code == 400
@@ -321,6 +334,7 @@ class TestWithThirdPartyAvatarsOff:
                 owner,
                 await is_admin(session, owner),
                 _AVATARS_OFF,
+                _CHATS,
             )
 
             assert summary.icon_url == _ICON

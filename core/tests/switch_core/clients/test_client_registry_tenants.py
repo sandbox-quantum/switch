@@ -31,6 +31,7 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import TENANT_ZERO_ID, Client, Tenant
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.tenant_store import TenantStore
+from tests.ownership import NeverOwned
 
 TENANT_B = "11111111-1111-1111-1111-111111111111"
 
@@ -39,7 +40,7 @@ class _StubClient:
     """A client that stays running until stopped, and touches nothing else.
 
     It has to actually stay running: `_start_task` puts every client in a task
-    that removes it from all three registries if `start` returns or raises, so
+    that removes it from all three registries if `connect` returns or raises, so
     a stub that finished immediately would empty the very dicts under test.
     """
 
@@ -49,18 +50,25 @@ class _StubClient:
         self.display_name = record.display_name
         self._stopped = asyncio.Event()
 
-    async def start(self) -> None:
+    async def connect(self) -> None:
         await self._stopped.wait()
 
-    async def stop(self) -> None:
+    async def close(self) -> None:
         self._stopped.set()
 
 
 class _StubFactory:
-    def create(self, record: Client) -> Any:
-        # The stub reads for itself: it is the actor and its own consumer.
-        client = _StubClient(record)
-        return client, client
+    """The stub reads for itself: it is the actor and its own consumer, and
+    runs in every process."""
+
+    def create_actor(self, record: Client) -> Any:
+        return _StubClient(record)
+
+    def create_consumer(self, client_type: str, actor: Any) -> Any:
+        return actor
+
+    def has_consumer(self, client_type: str) -> bool:
+        return False
 
 
 def _service(
@@ -74,6 +82,8 @@ def _service(
         session_factory=session_factory,
         config=SimpleNamespace(id_server_name="test"),  # type: ignore[arg-type]
         tenants_isolated=True,
+        ownership=NeverOwned(),  # type: ignore[arg-type]
+        cursor_writer=MagicMock(),
     )
 
 

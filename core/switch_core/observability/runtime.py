@@ -13,10 +13,10 @@ fabricated memory figure on a developer's laptop is worse than a missing one.
 
 from __future__ import annotations
 
+import asyncio
 import gc
 import logging
 import os
-import resource
 import sys
 import threading
 import time
@@ -26,6 +26,7 @@ from collections.abc import Iterator
 from switch_core.observability.catalogue import (
     RUNTIME_CPU_SECONDS,
     RUNTIME_EVENT_LOOP_LAG,
+    RUNTIME_EVENT_LOOP_STALLS,
     RUNTIME_GC_COLLECTIONS,
     RUNTIME_GC_PAUSE,
     RUNTIME_MEMORY_RSS,
@@ -117,6 +118,35 @@ class GcPauses:
                 return drained
 
 
+# How often the probe wakes. A stall is seen only while it overlaps a wake-up,
+# so the interval bounds how much of a stall the reading can miss: at 100 ms a
+# 300 ms freeze is always caught, and read to within 100 ms. The cost is ten
+# timer callbacks a second.
+LOOP_PROBE_INTERVAL_SECONDS = 0.1
+
+# Oversleep below this is scheduling jitter, not a stall.
+LOOP_STALL_THRESHOLD_SECONDS = 0.05
+
+
+async def watch_event_loop(
+    lag: EventLoopLag, interval_seconds: float = LOOP_PROBE_INTERVAL_SECONDS
+) -> None:
+    """Sleep in short steps and record how late each wake-up was.
+
+    Lateness is time the loop could not run anything, which is the thing to
+    measure. A long sleep would only see the part of a stall that overlaps its
+    own deadline: a 420 ms freeze during a 2 s sleep is usually missed and, when
+    seen, read as anything from 0 to 420 ms.
+    """
+    while True:
+        started = time.monotonic()
+        await asyncio.sleep(interval_seconds)
+        overslept = (time.monotonic() - started) - interval_seconds
+        lag.record(overslept)
+        if overslept >= LOOP_STALL_THRESHOLD_SECONDS:
+            metrics().observe(RUNTIME_EVENT_LOOP_STALLS, {}, overslept * 1000.0)
+
+
 def _resident_bytes() -> int | None:
     """Current resident set size, or None where it cannot be read.
 
@@ -157,9 +187,11 @@ class RuntimeMetrics:
     def __init__(self, lag: EventLoopLag, gc_pauses: GcPauses) -> None:
         self._lag = lag
         self._gc_pauses = gc_pauses
-        usage = resource.getrusage(resource.RUSAGE_SELF)
-        self._last_user = usage.ru_utime
-        self._last_system = usage.ru_stime
+        # os.times rather than resource.getrusage: the same two figures, and
+        # available on Windows, where the resource module does not exist.
+        usage = os.times()
+        self._last_user = usage.user
+        self._last_system = usage.system
         self._last_collections = self._collection_counts()
 
     def install(self, registry: MetricsRegistry) -> None:
@@ -173,16 +205,16 @@ class RuntimeMetrics:
     def _record_cumulative(self) -> None:
         registry = metrics()
 
-        usage = resource.getrusage(resource.RUSAGE_SELF)
+        usage = os.times()
         for mode, previous, current in (
-            ("user", self._last_user, usage.ru_utime),
-            ("system", self._last_system, usage.ru_stime),
+            ("user", self._last_user, usage.user),
+            ("system", self._last_system, usage.system),
         ):
             delta = current - previous
             if delta > 0:
                 registry.increment(RUNTIME_CPU_SECONDS, {"mode": mode}, delta)
-        self._last_user = usage.ru_utime
-        self._last_system = usage.ru_stime
+        self._last_user = usage.user
+        self._last_system = usage.system
 
         counts = self._collection_counts()
         for generation, current in enumerate(counts):

@@ -4,9 +4,9 @@ Everything else in the catalogue fires a handful of times a day. These fire
 once per message, so they are the only events where reporting could slow the
 thing being reported on. Three rules keep it off that path:
 
-- **The sender never waits.** The transport and the agent consumer hand over a
-  small record and return. One worker task looks up what the event needs — the
-  room's platform, type and membership, who the sender is — and emits.
+- **The sender never waits.** The transport and the router hand over a small
+  record and return. One worker task looks up what the event needs (the
+  room's platform, type and membership, who the sender is) and emits.
 - **Lookups are cached.** A busy room says a lot and changes membership
   rarely, so a room is read at most once per `_CACHE_TTL_SECONDS` rather than
   once per message. The member counts can therefore be that far behind. A
@@ -145,9 +145,9 @@ class MessageTelemetry:
     """Reports `room_message_sent`, `agent_message_sent` and
     `agent_message_received`.
 
-    The transport's `ParticipantMessageObserver`, and what the agent consumer
-    tells when a message is addressed to its agent. Does nothing at all — no
-    queue, no lookups — while telemetry is off.
+    The transport's `ParticipantMessageObserver`, and what the router tells
+    once a message addressed to an agent has committed. Does nothing at all
+    (no queue, no lookups) while telemetry is off.
     """
 
     def __init__(

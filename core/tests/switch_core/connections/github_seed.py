@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.keys import Keyring
 from tests.switch_core.connections.fake_vendor import FakeVendor
 
@@ -51,6 +52,7 @@ async def connect_github(session: AsyncSession, owner: str, keyring: Keyring) ->
                 }
             )
         ),
+        oauth_client_id=None,
     )
 
 
@@ -85,4 +87,6 @@ def github_broker(
         disabled={},
         store=STORE,
         token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=False,
     )

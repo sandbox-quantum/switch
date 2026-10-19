@@ -106,7 +106,10 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
   - Honours `If-None-Match`; returns `200` with an `ETag` header, or `304`.
 - `PUT  /v1/management/controllers/{id}/status`
   - Body: a `StatusReport`.
-  - Returns `{assignment_revision, report_within_s}`.
+  - Returns `{assignment_revision, report_within_s, controller_release}`.
+    `controller_release` is `{version, url, sha256}`, the controller package the
+    deployment names (`CONTROLLER_RELEASE_*`), or null when it names none and for a
+    `console` controller, which updates with Switch Console.
   - An older `seq` is ignored, and the response is still 200.
 - `GET  /v1/management/controllers/{id}/operations?state=pending`
   - Expired leases are re-offered.
@@ -145,7 +148,10 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
     shows it open but the process holding it stopped or died), its last `status`, and
     `workspaces_dir`: the directory the controller makes
     agents' workspaces in, from that status (`machine.workspaces_dir`), null when it has not
-    reported one.
+    reported one. `release` is `{wanted, running, current}`: the controller version the
+    deployment names, the one the controller last reported, and whether they are the
+    same; null when the deployment names none, and for a `console` controller. How the controller's move to it is going
+    is in its status's `update` (`{target, state, problem}`), when it reports one.
 - `PATCH  /gateway/management/controllers/{id}`
   - Body: `{name?, description?}`, at least one. Renames the machine and/or changes its
     description; `description: null` (or blank) clears it. Same limits as at enrollment;

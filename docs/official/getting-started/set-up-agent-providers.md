@@ -2,7 +2,7 @@
 
 _Make sure the agent providers you use are installed and can reach Switch_
 
-Published at <https://docs.flintai.dev/flintai/switch/getting-started/set-up-agent-providers> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/getting-started/set-up-agent-providers> — link readers there, not to this file.
 
 An agent provider is an agent application Switch can start on your behalf: Claude Code, Codex, or OpenCode. Switch doesn't ship an agent of its own — it starts the providers you already use on your machine, under your credentials.
 

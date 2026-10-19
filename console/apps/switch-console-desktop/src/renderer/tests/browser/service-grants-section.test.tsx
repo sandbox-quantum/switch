@@ -10,7 +10,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
-import { OWNER_ONLY_POLICY, type ServiceGrants } from '@shared/core/switch-servers/service-grants';
+import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
+import type { ServiceGrants } from '@shared/core/switch-servers/service-grants';
 
 const agents = vi.hoisted(() => ({ getAgents: vi.fn() }));
 const workspaces = vi.hoisted(() => ({
@@ -140,7 +141,7 @@ it('makes the agent owner-only from the warning', async () => {
     expect(workspaces.updateAddressingPolicy).toHaveBeenCalledWith({
       workspaceId: 'workspace',
       agentId: 'agent',
-      policy: OWNER_ONLY_POLICY,
+      policy: ownerOnlyPolicy(),
     })
   );
 });
@@ -153,7 +154,7 @@ it('says what removing a grant does, and does not, on your computer', async () =
   expect(button(el, 'Remove')!.title).toContain('may still use your own sign-in');
   await act(async () => button(el, 'Remove')!.click());
   await vi.waitFor(() =>
-    expect(el.textContent).toContain('Removing a grant stops Switch giving this access.')
+    expect(el.textContent).toContain('Removing it stops Switch giving this access.')
   );
   expect(workspaces.removeServiceGrant).toHaveBeenCalledWith({
     workspaceId: 'workspace',
@@ -169,23 +170,26 @@ it('grants GitHub on the repositories picked, for reading unless asked', async (
   });
   const el = await render();
 
-  await vi.waitFor(() => expect(el.querySelector('[aria-label="GitHub account"]')).not.toBeNull());
-  await act(async () => el.querySelector<HTMLElement>('[aria-label="GitHub account"]')!.click());
-  await vi.waitFor(() =>
-    expect(document.querySelectorAll('[role="option"]').length).toBeGreaterThan(0)
+  // One account: nothing to choose there. Nothing is chosen until a repository is.
+  const search = () => el.querySelector<HTMLInputElement>('input[aria-label="Add repository"]');
+  await vi.waitFor(() => expect(search()).not.toBeNull());
+  expect(el.querySelector('[aria-label="GitHub account"]')).toBeNull();
+  expect(el.textContent).toContain('Turn GitHub on for helper');
+  expect(el.textContent).toContain('No repository chosen.');
+  expect(button(el, 'Turn on')?.disabled).toBe(true);
+  await act(async () => {
+    const input = search()!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    setter.call(input, 'docs');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await vi.waitFor(() => expect(el.textContent).toContain('example-org/docs'));
+  const docs = [...el.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((option) =>
+    option.textContent?.includes('docs')
   );
-  const account = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
-    (option) => option.textContent?.trim() === 'example-org'
-  );
-  await act(async () => account!.click());
-  await vi.waitFor(() => expect(el.textContent).toContain('docs'));
-
-  const docs = [...el.querySelectorAll('label')].find((label) =>
-    label.textContent?.includes('docs')
-  );
-  await act(async () => docs!.querySelector<HTMLElement>('[role="checkbox"], button')!.click());
-  expect(button(el, 'Grant')?.disabled).toBe(false);
-  await act(async () => button(el, 'Grant')!.click());
+  await act(async () => docs!.click());
+  expect(button(el, 'Turn on')?.disabled).toBe(false);
+  await act(async () => button(el, 'Turn on')!.click());
 
   await vi.waitFor(() =>
     expect(workspaces.setServiceGrant).toHaveBeenCalledWith({
@@ -219,6 +223,20 @@ it('draws nothing, and asks nothing, where the server has service connections of
   await act(async () => {});
   expect(el.textContent).toBe('');
   expect(workspaces.getServiceGrants).not.toHaveBeenCalled();
+});
+
+it('changes which repositories a GitHub grant reaches, in a form that never says "grant"', async () => {
+  workspaces.getServiceGrants.mockResolvedValue(GRANTED);
+  const el = await render();
+
+  await vi.waitFor(() => expect(button(el, 'Change')).toBeDefined());
+  await act(async () => button(el, 'Change')!.click());
+  await vi.waitFor(() =>
+    expect(el.textContent).toContain('Change which repositories helper reaches')
+  );
+  const form = button(el, 'Save')!.closest('.rounded-lg')!;
+  expect(form.textContent).toContain('Change which repositories helper reaches');
+  expect(form.textContent).not.toMatch(/\bgrant/i);
 });
 
 it('says so when the grants could not be loaded', async () => {
@@ -280,6 +298,8 @@ function onOff(
     loopback_ports: null,
     key: null,
     external_identity: null,
+    consent: null,
+    workspace_enabled: null,
     ...overrides,
   };
 }
@@ -365,7 +385,7 @@ it('cannot turn on a service that is not connected, or not available, and says w
 
   await vi.waitFor(() => expect(exampleSwitch(el)).not.toBeNull());
   expect(exampleSwitch(el)!.getAttribute('aria-disabled') ?? '').not.toBe('false');
-  expect(el.textContent).toContain("first connect it from the server's Connections");
+  expect(el.textContent).toContain('first connect it from Connectors');
   expect(el.textContent).toContain('Switched off on this server.');
   await act(async () => exampleSwitch(el)!.click());
   await act(async () => el.querySelector<HTMLElement>('[aria-label="Other for helper"]')!.click());

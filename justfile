@@ -162,6 +162,15 @@ migration msg:
 test *args:
     uv run --project core pytest -c core/pyproject.toml core/tests/ {{ args }}
 
+# ── End-to-end proof for "follow the conversation" ─────────────────────────────
+# Plays every journey as two people in a fresh local Mattermost against
+# switch-core from this checkout, then writes a report with the server's log
+# line for each message, plus screenshots. Needs Docker and Chrome, and your
+# local stack stopped. `--video` also records a captioned demo (needs ffmpeg);
+# `--keep` leaves it running to try by hand. Output: build/e2e/follow-the-conversation.
+e2e-follow-ups *args:
+    core/tests/e2e/follow_the_conversation/run.sh {{ args }}
+
 # ── Run integration tests (real Postgres via testcontainers) ───────────────────
 # DOCKER_HOST is auto-resolved from the active docker context in conftest, so this
 # works under Docker Desktop / OrbStack / colima without extra setup.

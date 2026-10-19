@@ -17,6 +17,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     Released,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.bridges.agent.protocol.stream import KEEPALIVE, event_frames
 
 AGENT = "agent-1"
@@ -38,7 +39,7 @@ def _open(
         scope=scope,  # type: ignore[arg-type]
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=speaks),
         expected_generation=None,
     )
@@ -198,9 +199,11 @@ def test_two_sessions_in_one_room_are_refused_without_change() -> None:
     assert conn.rooms == {ROOM_B}
 
 
-async def test_the_displaced_stream_is_sent_room_released() -> None:
+async def test_the_displaced_stream_is_sent_room_released(
+    db_buffer: EventBuffer,
+) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     loser = _open(registry, "loser", speaks=PROTOCOL_VERSION, scope="all")
     winner = _open(registry, "winner", speaks=PROTOCOL_VERSION, scope="all")
     registry.replace_placements(loser, {"session-1": ROOM_A})
@@ -218,9 +221,11 @@ async def test_the_displaced_stream_is_sent_room_released() -> None:
     assert [name for name, _ in frames].count("room_released") == 1
 
 
-async def test_a_client_that_declared_nothing_is_not_sent_room_released() -> None:
+async def test_a_client_that_declared_nothing_is_not_sent_room_released(
+    db_buffer: EventBuffer,
+) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     loser = _open(registry, "loser", speaks=None, scope="all")
     winner = _open(registry, "winner", speaks=PROTOCOL_VERSION, scope="all")
     registry.replace_placements(loser, {"session-1": ROOM_A})

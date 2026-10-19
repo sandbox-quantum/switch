@@ -35,6 +35,10 @@ export interface MessagePayload {
   timestamp: number;
   thread_id?: string | null;
   attachments?: AttachmentRef[];
+  /** The words the chat opened with, posted in the agent's name as it joined; absent elsewhere. */
+  opening_message?: string | null;
+  /** The sending person's role in the workspace when the message arrived. */
+  sender_role?: 'owner' | 'admin' | 'member' | null;
 }
 
 export interface CommandPayload {
@@ -73,8 +77,11 @@ export interface AgentBridgeEvent {
   room_id: string;
   payload: MessagePayload | CommandPayload | RoomJoinPayload | TaskPayload;
   /**
-   * The event's position in the agent's buffer. Present on the push transport,
-   * absent on the legacy poll.
+   * The event's number in the agent's own events (`s`). It is present on the push
+   * transport and absent on the legacy poll. It is also absent on a message
+   * from a room's conversation sent to a connection that reads the whole room
+   * (`filter: 'all'`), because that message is numbered in the room's own
+   * sequence, which `position` carries.
    *
    * Load-bearing when a watcher spawns a session: the session's connection has
    * to start from *before* the message that triggered the spawn, or the very
@@ -91,6 +98,13 @@ export interface AgentBridgeEvent {
    * `reason` is why. A reason alongside a number means the number is a floor.
    */
   missed?: { count: number | null; reason: string | null };
+  /**
+   * The event's place as a position with one entry: the source it came from
+   * and its number there, for example `{s: 7}` for an event in the agent's
+   * own events or `{'r:<room id>': 42}` for a message in a room's conversation. A
+   * server that speaks agent-protocol 9 sends it.
+   */
+  position?: Record<string, number>;
 }
 
 export interface AgentBridgeEventResponse {

@@ -7,6 +7,7 @@ import AgentDetailPage from "./pages/agents/AgentDetailPage";
 import AgentsPage from "./pages/agents/AgentsPage";
 import LoginPage from "./pages/auth/LoginPage";
 import CollaborationsPage from "./pages/collaborations/CollaborationsPage";
+import ConnectorAppsPage from "./pages/connector-apps/ConnectorAppsPage";
 import EcosystemGraphPage from "./pages/ecosystem/EcosystemGraphPage";
 import MachinesPage from "./pages/machines/MachinesPage";
 import RegistrationKeysPage from "./pages/registration-keys/RegistrationKeysPage";
@@ -141,6 +142,7 @@ export function AppRoutes() {
         <Route path="registration-keys" element={<RegistrationKeysPage />} />
         <Route path="usage" element={<UsagePage />} />
         <Route path="users" element={<UsersPage />} />
+        <Route path="connectors" element={<ConnectorAppsPage />} />
         <Route path="workspace" element={<WorkspacePage />} />
       </Route>
       <Route path="/invite" element={<InviteCapture />} />

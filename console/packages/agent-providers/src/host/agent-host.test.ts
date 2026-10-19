@@ -21,6 +21,7 @@ import {
 import type { Handoff } from './handoff';
 import { ensureSharedProcess, type Supervision } from './launch';
 import { type SessionRequest, SessionLinks } from './session-channel';
+import type * as sessionServices from './session-services';
 import { sharedConfigSchema } from './shared-config';
 import { clearTakenOver, recordTakenOver } from './taken-over';
 import { SESSION_STARTING_MESSAGE, WatcherControl } from './watcher-tools';
@@ -35,6 +36,13 @@ vi.mock('./launch', () => ({
   sharedSessionsBase: () => paths.root,
   liveSupervisor: (root: string) => Promise.resolve(supervisors.get(root) ?? null),
   ensureSharedProcess: vi.fn(),
+}));
+/** The shape of the agent's grants as the watcher reads them; null reads as unknown. */
+const grantsNow = vi.hoisted(() => ({ shape: null as string | null }));
+vi.mock('./session-services', async (importOriginal) => ({
+  ...(await importOriginal<typeof sessionServices>()),
+  GRANTS_CHECK_MS: 20,
+  currentServicesShape: async () => grantsNow.shape,
 }));
 const streams = vi.hoisted(() => [] as SwitchEventStreamDeps[]);
 const declarations = vi.hoisted(() => [] as boolean[]);
@@ -767,6 +775,80 @@ it('routes to the session Console moved the room to, and tells Switch where ever
   expect(JSON.parse(await readFile(join(root, 'placements.json'), 'utf8'))).toEqual({
     placements: { [placed.sessionId]: 'room' },
   });
+});
+
+it('warms a room once: starts its session unasked, and the first message goes to it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-warm-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  const control = new WatcherControl();
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    control,
+    openSwitchStream
+  );
+  let warmed: string | null = null;
+  try {
+    await eventually(() => streams.length === 1);
+    warmed = await control.warm('room');
+    expect(warmed).not.toBeNull();
+    expect(published.at(-1)).toEqual({ [warmed!]: 'room' });
+    expect(await control.warm('room')).toBe(warmed);
+    await streams[0]!.onEvent!(addressed(1, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  expect(
+    new Set(
+      vi.mocked(ensureSharedProcess).mock.calls.map((call) => call[0].config.session.sessionId)
+    )
+  ).toEqual(new Set([warmed]));
+  expect(hosts.to(join(root, warmed!))).toMatchObject([
+    { type: 'room', handoff: { sequence: 1, roomId: 'room', messageId: 'message-1' } },
+  ]);
+  const journal = await AgentHostAssignments.open(root);
+  expect(journal.sessions().map((each) => each.session.sessionId)).toEqual([warmed]);
+  expect(journal.cursor).toBe(1);
+  await expect(control.warm('room')).rejects.toThrow('not running');
+});
+
+it('warms nothing while the agent may not start sessions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-warm-off-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  await stopSpawning(root);
+  const hosts = sessionHosts();
+  const control = new WatcherControl();
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    control,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    expect(await control.warm('room')).toBeNull();
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(vi.mocked(ensureSharedProcess)).not.toHaveBeenCalled();
+  expect((await AgentHostAssignments.open(root)).sessions()).toEqual([]);
 });
 
 it('puts a move Console asked for back when Switch refuses it', async () => {
@@ -1636,6 +1718,204 @@ it('brings live sessions in step with a rewritten definition, each once its turn
     await run;
   }
   expect(restarted).toHaveLength(2);
+});
+
+it('reports which of its sessions are mid-turn, as their hosts start, go busy, go idle and exit', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-busy-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const first = await existing(root, config);
+  const second = await existing(root, config);
+  await assignTo(root, config, 1, 'room', first.sessionId);
+  await assignTo(root, config, 2, 'elsewhere', second.sessionId);
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const hosts = sessionHosts();
+  await hosts.start(first.sessionRoot);
+  hosts.busy(first.sessionRoot, false);
+  const control = new WatcherControl();
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    control,
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    expect(control.health().busy).toEqual([]);
+    hosts.busy(first.sessionRoot, true);
+    expect(control.health().busy).toEqual([first.sessionId]);
+    hosts.busy(first.sessionRoot, false);
+    expect(control.health().busy).toEqual([]);
+    // A host that has not said yet whether it is in a turn is not taken to be idle.
+    await hosts.start(second.sessionRoot);
+    expect(control.health().busy).toEqual([second.sessionId]);
+    hosts.exit(second.sessionRoot);
+    expect(control.health().busy).toEqual([]);
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(control.health().busy).toEqual([]);
+});
+
+/** Records, as a session's host does as it starts, the shape of the grants it started with. */
+async function startedWith(sessionRoot: string, shape: string): Promise<void> {
+  await writeFile(join(sessionRoot, 'services.json'), JSON.stringify({ shape }));
+}
+
+it('restarts live sessions once a service is granted to their agent, each once its turn has ended', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-regranted-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const working = await existing(root, config);
+  const idle = await existing(root, config);
+  const unrecorded = await existing(root, config);
+  await assignTo(root, config, 1, 'room', working.sessionId);
+  await assignTo(root, config, 2, 'elsewhere', idle.sessionId);
+  await assignTo(root, config, 3, 'third', unrecorded.sessionId);
+  await startedWith(working.sessionRoot, '[]');
+  await startedWith(idle.sessionRoot, '[]');
+  grantsNow.shape = '[]';
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const hosts = sessionHosts();
+  for (const session of [working, idle, unrecorded]) await hosts.start(session.sessionRoot);
+  hosts.busy(working.sessionRoot, true);
+  hosts.busy(idle.sessionRoot, false);
+  hosts.busy(unrecorded.sessionRoot, false);
+  const restarted: { root: string; resuming: boolean; restart: boolean }[] = [];
+  vi.mocked(ensureSharedProcess).mockImplementation(
+    async ({ root: sessionRoot, resuming, restart }) => {
+      restarted.push({ root: sessionRoot, resuming, restart });
+      // The new host records the grants it started with, as `shared-daemon` does.
+      await startedWith(sessionRoot, grantsNow.shape!);
+      return { created: false };
+    }
+  );
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    // Nothing granted or taken away: every check leaves the sessions alone.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(restarted).toEqual([]);
+    grantsNow.shape = '[{"service":"google-workspace"}]';
+    await eventually(() => restarted.length === 1);
+    // The session in the middle of a turn is left to finish it, and one whose
+    // host recorded nothing is not restarted on a guess.
+    expect(restarted).toEqual([{ root: idle.sessionRoot, resuming: true, restart: true }]);
+    hosts.busy(working.sessionRoot, false);
+    await eventually(() => restarted.length === 2);
+    expect(restarted[1]).toEqual({ root: working.sessionRoot, resuming: true, restart: true });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  } finally {
+    abort.abort();
+    await run;
+    grantsNow.shape = null;
+  }
+  expect(restarted).toHaveLength(2);
+});
+
+it('restarts a session for its agent’s granted services once, even if it comes back without them', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-regranted-once-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const session = await existing(root, config);
+  await assignTo(root, config, 1, 'room', session.sessionId);
+  await startedWith(session.sessionRoot, '[]');
+  grantsNow.shape = '[{"service":"google-workspace"}]';
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const hosts = sessionHosts();
+  await hosts.start(session.sessionRoot);
+  hosts.busy(session.sessionRoot, false);
+  // The new host fails to read the grants itself, so it records the old ones.
+  vi.mocked(ensureSharedProcess).mockImplementation(async () => ({ created: false }));
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => vi.mocked(ensureSharedProcess).mock.calls.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  } finally {
+    abort.abort();
+    await run;
+    grantsNow.shape = null;
+  }
+  expect(ensureSharedProcess).toHaveBeenCalledTimes(1);
+});
+
+it('restarts a session’s host before handing it a reset, when its agent’s services changed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-reset-regranted-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const granted = await existing(root, config);
+  const unchanged = await existing(root, config);
+  await startedWith(granted.sessionRoot, '[]');
+  await startedWith(unchanged.sessionRoot, '[{"service":"google-workspace"}]');
+  grantsNow.shape = '[{"service":"google-workspace"}]';
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const hosts = sessionHosts();
+  await hosts.start(granted.sessionRoot);
+  await hosts.start(unchanged.sessionRoot);
+  const order: string[] = [];
+  vi.mocked(ensureSharedProcess).mockImplementation(async ({ root: sessionRoot, restart }) => {
+    order.push(`restart ${sessionRoot} ${restart}`);
+    await startedWith(sessionRoot, grantsNow.shape!);
+    return { created: false };
+  });
+  const reset = (sessionId: string) => ({
+    sessionId,
+    commandId: `reset-${sessionId}`,
+    body: { type: 'session.reset' },
+  });
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onSessionCommand!(reset(granted.sessionId));
+    order.push(...hosts.to(granted.sessionRoot).map((request) => request.type));
+    await streams[0]!.onSessionCommand!(reset(unchanged.sessionId));
+  } finally {
+    abort.abort();
+    await run;
+    grantsNow.shape = null;
+  }
+  expect(order.slice(0, 2)).toEqual([`restart ${granted.sessionRoot} true`, 'command']);
+  expect(hosts.to(unchanged.sessionRoot)).toEqual([
+    { type: 'command', command: reset(unchanged.sessionId), requesterName: null },
+  ]);
+  expect(vi.mocked(ensureSharedProcess).mock.calls.map(([input]) => input.root)).toEqual([
+    granted.sessionRoot,
+  ]);
 });
 
 it('gives a room a new session once the one serving it has been stopped', async () => {

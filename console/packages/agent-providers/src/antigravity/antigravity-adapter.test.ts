@@ -59,6 +59,7 @@ async function setup(resume = false, switchRegistered = true) {
           },
         }
       : {},
+    connectorMcpServers: [],
     ...(resume ? { resume: { nativeSessionId: 'acp:native' } } : {}),
   });
   const server = servers.at(-1)!;
@@ -250,6 +251,7 @@ it('refuses legacy CLI conversation IDs before starting a process', async () => 
       runtimeMode: 'approval-required',
       env: {},
       mcpServers: {},
+      connectorMcpServers: [],
       resume: { nativeSessionId: 'old-cli' },
     })
   ).rejects.toThrow('previous Antigravity CLI');
@@ -368,6 +370,7 @@ it('registers an HTTP MCP server with its headers when the agent declares HTTP',
     runtimeMode: 'approval-required',
     env: {},
     mcpServers: httpSwitch,
+    connectorMcpServers: [],
   });
   expect(servers.at(-1)!.received.find((m) => m.method === 'session/new')?.params).toMatchObject({
     mcpServers: [
@@ -391,6 +394,7 @@ it('refuses to start a session whose HTTP MCP servers the agent cannot reach', a
       runtimeMode: 'approval-required',
       env: {},
       mcpServers: httpSwitch,
+      connectorMcpServers: [],
     })
   ).rejects.toThrow('Antigravity does not declare MCP over HTTP');
   expect(servers.at(-1)!.received.some((m) => m.method === 'session/new')).toBe(false);
@@ -406,6 +410,7 @@ it('auto-approves calls to any MCP server the session registered, not only Switc
     runtimeMode: 'approval-required',
     env: {},
     mcpServers: { echo: { transport: 'stdio', command: 'node', args: ['echo.js'] } },
+    connectorMcpServers: [],
   });
   const server = servers.at(-1)!;
   await adapter.sendTurn({ sessionId: 'echo', turnId: 't', text: 'echo' });

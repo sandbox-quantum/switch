@@ -2,7 +2,7 @@
 
 _Take one room from an empty channel to something a team can work in — instructions, material, jobs, and who's allowed to drive what_
 
-Published at <https://docs.flintai.dev/flintai/switch/building/payments-room> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/building/payments-room> — link readers there, not to this file.
 
 ## What we're building
 

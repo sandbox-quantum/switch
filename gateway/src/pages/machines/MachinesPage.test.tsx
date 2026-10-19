@@ -20,6 +20,7 @@ const laptop: Controller = {
   assignment_revision: 3,
   created_at: "2026-10-01T00:00:00Z",
   revoked_at: null,
+  release: null,
   status: {
     seq: 1,
     observed_at: new Date().toISOString(),
@@ -135,6 +136,33 @@ describe("MachinesPage", () => {
     expect(screen.getByText("Codex: login expired")).toBeTruthy();
     expect(screen.getByText("pm-agent")).toBeTruthy();
     expect(screen.getByText("failed: invalid_credential")).toBeTruthy();
+  });
+
+  it("shows the controller's version against the release Switch names", async () => {
+    const wanted = { wanted: "0.31.0", running: "0.1.0", current: false };
+    const machines: Controller[] = [
+      { ...laptop, id: "c1", name: "on-it", version: "0.31.0", release: { ...wanted, running: "0.31.0", current: true } },
+      { ...laptop, id: "c2", name: "waiting", release: wanted, status: { ...laptop.status!, update: { target: "0.31.0", state: "waiting_idle" } } },
+      {
+        ...laptop,
+        id: "c3",
+        name: "stuck",
+        release: wanted,
+        status: { ...laptop.status!, update: { target: "0.31.0", state: "failed", problem: "SHA-256 mismatch" } },
+      },
+      { ...laptop, id: "c4", name: "silent", release: wanted },
+    ];
+    mockManagement({
+      "GET /controllers": [200, machines],
+      "GET /agents": [200, []],
+      "GET /operations": [200, []],
+    });
+    render(<MachinesPage />);
+    expect(await screen.findByText("0.31.0")).toBeTruthy();
+    expect(screen.getByText("updating when idle")).toBeTruthy();
+    expect(screen.getByText("update failed")).toBeTruthy();
+    expect(screen.getByText("behind")).toBeTruthy();
+    expect(screen.getAllByText("0.1.0")).toHaveLength(3);
   });
 
   it("shows a revoked machine's agents as not running, whatever it last reported", async () => {

@@ -30,6 +30,7 @@ from switch_core.keys import Keyring
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import NullSink
 from switch_core.trust.client import NullTrustClient
+from tests.db_buffer import QuietRooms
 
 
 def _telemetry() -> TelemetryService:
@@ -52,7 +53,7 @@ def _build(telemetry: TelemetryService) -> Any:
         room_service=object(),  # type: ignore[arg-type]
         client_lifecycle=object(),  # type: ignore[arg-type]
         collab_lifecycle=object(),  # type: ignore[arg-type]
-        event_buffer=EventBuffer(sequence_base=0),
+        event_buffer=EventBuffer(object(), sequence_base=0, rooms=QuietRooms()),  # type: ignore[arg-type]
         task_store=object(),  # type: ignore[arg-type]
         resource_service=object(),  # type: ignore[arg-type]
         api_key_store=object(),  # type: ignore[arg-type]

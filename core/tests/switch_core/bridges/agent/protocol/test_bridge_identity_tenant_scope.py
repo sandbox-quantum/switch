@@ -143,6 +143,9 @@ class _StoppableClientLifecycle:
     def start_client(self, client: Client) -> None:
         pass
 
+    def announce(self, tenant_id: str) -> None:
+        return None
+
     async def stop(self, client_id: str) -> None:
         self.stopped.append(client_id)
 
@@ -152,7 +155,7 @@ class _StoppableClientLifecycle:
 
 class TestBridgeIdentityRemovalTenantScope:
     async def test_other_tenants_bridge_is_not_stripped_of_a_same_named_identity(
-        self, session_factory: async_sessionmaker[AsyncSession]
+        self, session_factory: async_sessionmaker[AsyncSession], db_buffer: EventBuffer
     ) -> None:
         # Tenant A deletes an agent named "shared-name"; tenant B happens to
         # have its own, unrelated agent of the same name on its own bridge.
@@ -167,7 +170,7 @@ class TestBridgeIdentityRemovalTenantScope:
             [tenant_a_bridge, tenant_b_bridge]
         )
         svc.client_lifecycle = _StoppableClientLifecycle(session_factory)  # type: ignore[attr-defined]
-        svc.event_buffer = EventBuffer(sequence_base=0)  # type: ignore[attr-defined]
+        svc.event_buffer = db_buffer  # type: ignore[attr-defined]
 
         owner = await make_owner(session_factory)
         agent_id = await register(svc, "shared-name", owner)
@@ -182,7 +185,7 @@ class TestBridgeIdentityRemovalTenantScope:
         assert tenant_b_bridge.adapter.identities_removed == []
 
     async def test_unbound_deletion_is_refused_before_the_agent_is_stopped(
-        self, session_factory: async_sessionmaker[AsyncSession]
+        self, session_factory: async_sessionmaker[AsyncSession], db_buffer: EventBuffer
     ) -> None:
         # Same precondition from the other end. Raising part-way through leaves
         # the worst state of all: the client stopped but never removed, the
@@ -191,7 +194,7 @@ class TestBridgeIdentityRemovalTenantScope:
         svc.collab_lifecycle = _MultiTenantBridges([])  # type: ignore[attr-defined]
         lifecycle = _StoppableClientLifecycle(session_factory)
         svc.client_lifecycle = lifecycle  # type: ignore[attr-defined]
-        svc.event_buffer = EventBuffer(sequence_base=0)  # type: ignore[attr-defined]
+        svc.event_buffer = db_buffer  # type: ignore[attr-defined]
 
         owner = await make_owner(session_factory)
         agent_id = await register(svc, "still-here", owner)

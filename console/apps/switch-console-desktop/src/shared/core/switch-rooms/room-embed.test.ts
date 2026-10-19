@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { channelUrlFromDeeplink, mattermostPartition } from './room-embed';
+import {
+  channelUrlFromDeeplink,
+  embedIsStale,
+  mattermostPartition,
+  type RoomEmbed,
+} from './room-embed';
 
 describe('channelUrlFromDeeplink', () => {
   it('rewrites a Mattermost deeplink onto the origin we serve it from', () => {
@@ -44,5 +49,32 @@ describe('mattermostPartition', () => {
 
   it('is persistent, so the session survives a pane remount', () => {
     expect(mattermostPartition('a').startsWith('persist:')).toBe(true);
+  });
+});
+
+describe('embedIsStale', () => {
+  const unavailable: RoomEmbed = { kind: 'unavailable', reason: 'down' };
+  const inline: RoomEmbed = {
+    kind: 'inline',
+    url: 'http://localhost:8065/switch/channels/town-square',
+    partition: 'persist:mm',
+    chromeless: true,
+  };
+
+  it('decides again once the link a room was missing comes back', () => {
+    expect(embedIsStale(unavailable, null, 'mattermost://town-square')).toBe(true);
+  });
+
+  it('leaves a room whose link has not changed', () => {
+    expect(embedIsStale(unavailable, null, null)).toBe(false);
+    expect(embedIsStale(inline, 'mattermost://a', 'mattermost://a')).toBe(false);
+  });
+
+  it('keeps a live conversation when its link merely goes missing', () => {
+    expect(embedIsStale(inline, 'mattermost://a', null)).toBe(false);
+  });
+
+  it('decides again when the link points somewhere else', () => {
+    expect(embedIsStale(inline, 'mattermost://a', 'mattermost://b')).toBe(true);
   });
 });

@@ -87,6 +87,17 @@ def _grant_view(broker: ServiceBroker, agent: Agent, grant: ServiceGrant) -> dic
     }
 
 
+def _status(broker: ServiceBroker, connection: ServiceConnection | None) -> str:
+    """The connection's status, as a person acts on it: one made through an
+    app this server has since replaced needs reconnecting before anyone uses
+    it and finds out."""
+    if connection is None:
+        return "not_connected"
+    if connection.status == "active" and broker.client_replaced(connection):
+        return "needs_reauthorization"
+    return connection.status
+
+
 @router.get("/service-connections")
 async def list_service_connections(
     user: Annotated[User, Depends(get_current_user)],
@@ -98,6 +109,7 @@ async def list_service_connections(
         connection.service: connection
         for connection in await STORE.list_connections(session, user.id)
     }
+    switched_off = await broker.workspace_disabled(session)
     entries = []
     for entry in CATALOG.values():
         definition = entry.definition
@@ -114,6 +126,11 @@ async def list_service_connections(
                 "connectable": broker.connectable(definition.slug),
                 "configured": unavailable is None,
                 "unavailable_reason": unavailable,
+                # Whether it waits on the server's operator setting up its app
+                # under Connectors, so a client can offer them that.
+                "server_setup_needed": broker.server_setup_needed(definition.slug),
+                # Whether a workspace admin left it on for this workspace.
+                "workspace_enabled": definition.slug not in switched_off,
                 # A grant hands the agent the owner's own token: it is on or
                 # off, at the connection's level, and lasts the token's life.
                 "pass_through": (
@@ -133,7 +150,7 @@ async def list_service_connections(
                 # What a person pastes to connect a service connected with a
                 # key, and where they make one; null for any other.
                 "key": _key_form(definition),
-                "status": "not_connected" if connection is None else connection.status,
+                "status": _status(broker, connection),
                 "consent": None if connection is None else connection.consent,
                 "external_identity": (
                     None if connection is None else connection.external_identity
@@ -141,6 +158,44 @@ async def list_service_connections(
             }
         )
     return {"connections": entries}
+
+
+@router.get("/service-connections/{service}/agents")
+async def list_service_agents(
+    service: str,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[dict[str, Any]]:
+    """The person's own agents in this workspace, whether each has a grant
+    on `service`, and whether others can address it."""
+    entry = CATALOG.get(service)
+    if entry is None or not entry.definition.enabled:
+        raise HTTPException(status_code=404, detail=f"No service named {service!r}.")
+    agents = list(
+        await session.scalars(
+            select(Agent)
+            .where(Agent.tenant_id == require_tenant_id(), Agent.owner_id == user.id)
+            .order_by(Agent.name)
+        )
+    )
+    granted = set(
+        await session.scalars(
+            select(ServiceGrant.agent_id).where(
+                ServiceGrant.tenant_id == require_tenant_id(),
+                ServiceGrant.owner_id == user.id,
+                ServiceGrant.service == service,
+            )
+        )
+    )
+    return [
+        {
+            "agent_id": agent.id,
+            "name": agent.display_name or agent.name,
+            "granted": agent.id in granted,
+            "addressing_open": await _others_can_address(session, agent, user),
+        }
+        for agent in agents
+    ]
 
 
 def _key_form(definition: ConnectionDefinition) -> dict[str, Any] | None:
@@ -181,6 +236,8 @@ async def connect_with_key(
     sent back. Re-pasting replaces it in place, keeping the grants.
     """
     try:
+        await broker.require_workspace_enabled(session, service)
+        await session.commit()
         checked = await broker.check_key(service, body.fields)
     except ServiceError as error:
         return service_refusal(error)
@@ -219,6 +276,7 @@ async def connect_with_key(
             account_id=checked.account_id,
             external_identity=checked.label,
             secret=checked.secret,
+            oauth_client_id=None,
         )
     except ServiceError as error:
         return service_refusal(error)
@@ -257,20 +315,14 @@ async def list_service_grants(
 
 
 async def _others_can_address(session: AsyncSession, agent: Agent, owner: User) -> bool:
-    """Whether someone other than the owner, or another person's agent, may
-    address the agent: what makes its grants usable by them."""
+    """Whether someone other than the owner, or any agent, may address the
+    agent: what makes its grants usable by them."""
     policy = parse_policy(agent.addressing_policy)
     if policy.is_open():
         return True
     identities = await ExternalUserStore().get_by_user(session, owner.id)
-    own_agents = await session.scalars(
-        select(Agent.id).where(
-            Agent.tenant_id == require_tenant_id(), Agent.owner_id == owner.id
-        )
-    )
     return policy.admits_others(
-        owner_identity_ids={identity.id for identity in identities},
-        owner_agent_ids=set(own_agents),
+        owner_identity_ids={identity.id for identity in identities}
     )
 
 

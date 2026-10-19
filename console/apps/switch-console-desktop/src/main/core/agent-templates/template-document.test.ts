@@ -8,6 +8,7 @@ import {
   parseTemplateAgents,
   substituteAgentSlots,
   templateKind,
+  version2Rooms,
 } from './template-document';
 
 const TRIAGE_PAIR = `
@@ -237,5 +238,198 @@ describe('formOptions', () => {
     expect(formOptions('room:\n  name: r\n')).toEqual({
       advanced: { label: 'Advanced', open: false },
     });
+  });
+});
+
+describe('parseTemplateAgents: what a template leaves unsaid', () => {
+  it('reports each runtime setting an agent has no field or shared param for', () => {
+    const { unsaid } = parseTemplateAgents(`
+agent:
+  name: helper
+  provider: claude
+  instructions: Help.
+`);
+    expect(unsaid).toEqual([
+      { index: 0, label: 'helper', field: 'location' },
+      { index: 0, label: 'helper', field: 'directory' },
+    ]);
+  });
+
+  it('counts a param of that type no field reads as said for every agent', () => {
+    const { unsaid } = parseTemplateAgents(`
+params:
+  provider: { type: provider, default: [claude] }
+  where: { type: location, default: local }
+  dir: { type: directory, default: "{$agents_dir}/{agent}" }
+agents:
+  - name: a
+    instructions: A.
+  - name: b
+    instructions: B.
+`);
+    expect(unsaid).toEqual([]);
+  });
+
+  it('does not count a param one agent reads as said for another', () => {
+    const { unsaid } = parseTemplateAgents(`
+params:
+  where: { type: location, default: local }
+agents:
+  - name: a
+    provider: claude
+    location: "{where}"
+    directory: /tmp/a
+    instructions: A.
+  - name: b
+    provider: claude
+    directory: /tmp/b
+    instructions: B.
+`);
+    expect(unsaid).toEqual([{ index: 1, label: 'b', field: 'location' }]);
+  });
+
+  it('records every placeholder an entry reads, its instructions included', () => {
+    const { agents } = parseTemplateAgents(`
+agent:
+  name: "{team}-fixer"
+  instructions: Work on {repo}.
+`);
+    expect(agents[0].placeholders.sort()).toEqual(['repo', 'team']);
+  });
+});
+
+describe('parseTemplateAgents: managed agents', () => {
+  it('counts a machine, or a machine param, as saying where an agent runs', () => {
+    const { unsaid } = parseTemplateAgents(`
+params:
+  box: { type: machine, default: [$first] }
+agents:
+  - name: a
+    provider: claude
+    machine: laptop
+    directory: /tmp/a
+    instructions: A.
+  - name: b
+    provider: claude
+    machine: "{box}"
+    directory: /tmp/b
+    instructions: B.
+`);
+    expect(unsaid).toEqual([]);
+  });
+
+  it('reads the settings a managed agent carries', () => {
+    const { agents, warnings } = parseTemplateAgents(`
+agent:
+  name: a
+  instructions: A.
+  model: claude-sonnet
+  advanced_config: { effort: high }
+  isolation: isolated
+  auto_approve: true
+  connections:
+    - { service: github, access: write, repos: [acme/widgets] }
+    - atlassian
+    - { service: linear, access: admin }
+`);
+    expect(agents[0]).toMatchObject({
+      model: 'claude-sonnet',
+      advancedConfig: { effort: 'high' },
+      isolation: 'isolated',
+      autoApprove: true,
+      connections: [
+        { service: 'github', access: 'write', repos: ['acme/widgets'] },
+        { service: 'atlassian', access: null, repos: [] },
+        { service: 'linear', access: null, repos: [] },
+      ],
+    });
+    expect(warnings).toEqual(["`agent:`: linear access 'admin' is not read or write."]);
+  });
+
+  it('leaves machine params out of the room document', () => {
+    const doc = load(
+      serverDocument(`
+params:
+  box: { type: machine, default: [$first] }
+  topic: { type: string }
+agent:
+  name: a
+  instructions: A.
+  machine: "{box}"
+room:
+  name: "{topic}"
+  agents: ["{agent}"]
+`) ?? ''
+    ) as { params: Record<string, unknown> };
+    expect(Object.keys(doc.params)).toEqual(['agent', 'topic']);
+  });
+});
+
+describe('parseTemplateAgents: allow_existing', () => {
+  it('lets an entry be filled by an existing agent only when the template says so', () => {
+    const { agents } = parseTemplateAgents(`
+agents:
+  - name: reviewer
+    allow_existing: true
+    instructions: Review.
+  - name: fixer
+    instructions: Fix.
+`);
+    expect(agents.map((a) => a.allowExisting)).toEqual([true, false]);
+  });
+});
+
+describe('version 2 documents', () => {
+  const V2 = `
+version: 2
+params:
+  start_in: { type: enum, enum: [nowhere, new_room], default: nowhere }
+  room_name: { type: string, if: "{start_in} == new_room" }
+resources:
+  expert:
+    type: agent
+    display_name: Switch expert
+    instructions: Help.
+    provider: claude
+    machine: laptop
+    directory: "{$agents_dir}/{expert.name}"
+  expert_room:
+    type: room
+    if: "{start_in} == new_room"
+    name: "{room_name}"
+    agents: [expert]
+    kickoff: "@{expert.name} hi"
+`;
+
+  it('reads agents from resources, with their key and condition', () => {
+    const { agents, singular, unsaid } = parseTemplateAgents(V2);
+    expect(agents.map((a) => [a.key, a.displayName, a.condition])).toEqual([
+      ['expert', 'Switch expert', null],
+    ]);
+    expect(singular).toBe(false);
+    expect(unsaid).toEqual([]);
+    expect(templateKind(V2)).toBe('agent');
+  });
+
+  it('reads rooms with their key, condition and the params they read', () => {
+    const { rooms } = version2Rooms(V2);
+    expect(rooms).toMatchObject([
+      {
+        key: 'expert_room',
+        condition: '{start_in} == new_room',
+        agents: ['expert'],
+        kickoff: '@{expert.name} hi',
+      },
+    ]);
+    expect(rooms[0]!.placeholders).toContain('room_name');
+  });
+
+  it('writes a bundled brief into the agent resource', () => {
+    const doc = load(
+      composeTemplateDocument(V2.replace('    instructions: Help.\n', ''), 'Brief')
+    ) as {
+      resources: { expert: { instructions: string } };
+    };
+    expect(doc.resources.expert.instructions).toBe('Brief');
   });
 });

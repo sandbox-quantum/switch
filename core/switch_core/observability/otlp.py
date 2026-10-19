@@ -137,6 +137,11 @@ class OtlpResource:
     version, and is then omitted rather than placeheld — a dashboard filtered
     by version should show the record missing, not attribute it to a release
     nobody built. ``commit_sha`` and ``repository_url`` follow the same rule.
+
+    ``instance_id`` is the process (`process_identity.py`), so a deployment of
+    several pods reports one series per pod rather than one series every pod
+    overwrites. ``None`` for a resource that describes no single process, as
+    product telemetry's does.
     """
 
     service_name: str
@@ -145,6 +150,7 @@ class OtlpResource:
     deployment_id: str
     commit_sha: str | None
     repository_url: str | None
+    instance_id: str | None
 
     def attributes(self) -> dict[str, AttributeValue]:
         values: dict[str, AttributeValue] = {
@@ -155,6 +161,8 @@ class OtlpResource:
         }
         if self.service_version:
             values["service.version"] = self.service_version
+        if self.instance_id:
+            values["service.instance.id"] = self.instance_id
         if self.environment:
             # Datadog maps this onto `env`.
             values["deployment.environment"] = self.environment

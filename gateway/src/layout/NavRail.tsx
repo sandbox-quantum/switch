@@ -3,6 +3,7 @@ import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
 import ChatBubbleOutlineOutlined from "@mui/icons-material/ChatBubbleOutlineOutlined";
 import ComputerOutlined from "@mui/icons-material/ComputerOutlined";
 import DataUsageOutlined from "@mui/icons-material/DataUsageOutlined";
+import PowerOutlined from "@mui/icons-material/PowerOutlined";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
 import LockOutlined from "@mui/icons-material/LockOutlined";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
@@ -60,12 +61,21 @@ const WORKSPACE_ADMIN_ITEMS: NavItem[] = [
   { label: "Usage", path: "/usage", icon: DataUsageOutlined },
 ];
 
-const ADMIN_ITEMS: NavItem[] = [{ label: "Users", path: "/users", icon: PeopleOutlined }];
+const ADMIN_ITEMS: NavItem[] = [
+  { label: "Users", path: "/users", icon: PeopleOutlined },
+  { label: "Connectors", path: "/connectors", icon: PowerOutlined },
+];
 
-const TARGET = 44;
+// The rail follows the window's height: at a laptop's it is sized so an
+// operator's eleven labelled items and the account button fit, and it grows
+// with the window up to its full size. Shorter still, the items scroll.
+const TARGET = "clamp(36px, 4vh, 44px)";
+const ICON = "clamp(20px, 2.2vh, 22px)";
+const ITEM_GAP = "clamp(4px, 1.4vh, 16px)";
+const LABEL = "clamp(0.6875rem, 1.05vh, 0.75rem)";
 // The logo sits slightly inside the nav button footprint: it is a solid mark
 // against thin-stroke icons, so matching the container would read as heavier.
-const LOGO = 28;
+const LOGO = "clamp(24px, 2.6vh, 28px)";
 
 function RailItem({ item, active }: { item: NavItem; active: boolean }) {
   return (
@@ -77,7 +87,7 @@ function RailItem({ item, active }: { item: NavItem; active: boolean }) {
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        gap: 0.5,
+        gap: 0.25,
         textDecoration: "none",
         color: "text.primary",
         opacity: active ? 1 : 0.75,
@@ -94,7 +104,7 @@ function RailItem({ item, active }: { item: NavItem; active: boolean }) {
           justifyContent: "center",
           width: TARGET,
           height: TARGET,
-          borderRadius: "16px",
+          borderRadius: "12px",
           // The active indicator is a subtle vertical gradient pill with a
           // whisper of lift — never a filled accent.
           ...(active && {
@@ -104,10 +114,10 @@ function RailItem({ item, active }: { item: NavItem; active: boolean }) {
           }),
         }}
       >
-        <item.icon sx={{ fontSize: 22, strokeWidth: 1.5 }} />
+        <item.icon sx={{ fontSize: ICON, strokeWidth: 1.5 }} />
       </Box>
       <Typography
-        sx={{ fontSize: "0.75rem", lineHeight: 1, fontWeight: 500, letterSpacing: "-0.01em" }}
+        sx={{ fontSize: LABEL, lineHeight: 1, fontWeight: 500, letterSpacing: "-0.01em" }}
       >
         {item.label}
       </Typography>
@@ -165,8 +175,9 @@ export default memo(function NavRail() {
       sx={{
         width: "var(--nav-rail-width)",
         flexShrink: 0,
+        minHeight: 0,
         alignItems: "center",
-        py: 2,
+        py: 1.5,
         color: "text.primary",
       }}
     >
@@ -209,9 +220,23 @@ export default memo(function NavRail() {
         </Box>
       </Tooltip>
 
-      <Divider sx={{ my: 2, width: 29 }} />
+      <Divider sx={{ my: 1.5, width: 29 }} />
 
-      <Stack sx={{ width: "100%", alignItems: "center", gap: 2 }}>
+      <Stack
+        sx={{
+          width: "100%",
+          alignItems: "center",
+          gap: ITEM_GAP,
+          // On a window shorter still, the items scroll and the account
+          // button stays put; the rail is too narrow for a scrollbar.
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
+          overflowX: "hidden",
+          scrollbarWidth: "none",
+          "&::-webkit-scrollbar": { display: "none" },
+        }}
+      >
         {items.map((item) => (
           <RailItem
             key={item.path}
@@ -221,7 +246,7 @@ export default memo(function NavRail() {
         ))}
       </Stack>
 
-      <Stack sx={{ mt: "auto", width: "100%", alignItems: "center", gap: 2, pt: 2 }}>
+      <Stack sx={{ width: "100%", alignItems: "center", gap: 2, pt: 2 }}>
         <Box
           component="button"
           onClick={(e: MouseEvent<HTMLElement>) => setAnchor(e.currentTarget)}

@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
+import buddyAvatar from '@/assets/images/switch-buddy/avatar.png';
 import { useAvatarSettings } from '@renderer/lib/stores/use-avatar-settings';
 import { cn } from '@renderer/utils/utils';
 import { agentInitials, resolveAgentAvatarSrc } from '@shared/core/agents/agent-avatar';
+import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
 
 /**
  * An agent's own picture, at whatever size the surface asks for (CHOO-2171).
@@ -50,7 +52,12 @@ export function AgentAvatar({
 }) {
   const avatarSettings = useAvatarSettings(serverId);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
-  const src = resolveAgentAvatarSrc(iconUrl, name, avatarSettings.thirdPartyAvatarsEnabled);
+  // switch-buddy's picture ships with the app: shown from here, it needs no
+  // network and no avatar setting.
+  const src =
+    iconUrl === BUDDY_ICON_URL
+      ? buddyAvatar
+      : resolveAgentAvatarSrc(iconUrl, name, avatarSettings.thirdPartyAvatarsEnabled);
   const [attempt, setAttempt] = useState({ src, count: 0 });
   const tries = attempt.src === src ? attempt.count : 0;
 

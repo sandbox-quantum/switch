@@ -1,8 +1,8 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { loginShellPath } from './login-path';
+import { loginShellPath, withUserBinDirs } from './login-path';
 
 const dirs: string[] = [];
 
@@ -58,5 +58,18 @@ describe.skipIf(process.platform === 'win32')("the login shell's PATH", () => {
     const started = Date.now();
     expect(await loginShellPath(shell, '/usr/bin', 10_000)).toBe('/usr/bin:/opt/bin');
     expect(Date.now() - started).toBeLessThan(5_000);
+  });
+});
+
+describe('withUserBinDirs', () => {
+  it('adds ~/.local/bin after the PATH when it exists and is missing', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'login-path-home-'));
+    dirs.push(home);
+    expect(withUserBinDirs('/usr/bin', home)).toBe('/usr/bin');
+    await mkdir(join(home, '.local', 'bin'), { recursive: true });
+    const bin = join(home, '.local', 'bin');
+    expect(withUserBinDirs('/usr/bin', home)).toBe(['/usr/bin', bin].join(delimiter));
+    const already = [bin, '/usr/bin'].join(delimiter);
+    expect(withUserBinDirs(already, home)).toBe(already);
   });
 });

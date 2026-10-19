@@ -84,6 +84,11 @@ async def test_the_apps_client_is_closed_only_after_the_bridges_stop(
         def begin_shutdown(self) -> None:
             calls.append("controllers told")
 
+    async def released() -> None:
+        # What `main` releases first: the work this process owns, handed
+        # over, then its connections and its lease.
+        calls.append("owned work handed over")
+
     class _Exited(Exception):
         pass
 
@@ -100,17 +105,22 @@ async def test_the_apps_client_is_closed_only_after_the_bridges_stop(
     with pytest.raises(_Exited):
         await _shutdown(
             server=server,
+            begin_draining=lambda: None,
+            release=released,
+            drain_seconds=0.0,
             controllers=_Controllers(),  # type: ignore[arg-type]
             client_lifecycle=_Stoppable("clients"),  # type: ignore[arg-type]
             collab_lifecycle=_Lifecycle(calls),  # type: ignore[arg-type]
             connector_lifecycle=_Stoppable("connectors"),  # type: ignore[arg-type]
             provisioning=_Stoppable("provisioning"),  # type: ignore[arg-type]
             discord_gateway=None,
-            discord_gateway_task=None,
             teams_app=_TeamsApp(),  # type: ignore[arg-type]
         )
 
     assert calls.index("bridges stopped") < calls.index("teams app closed")
+    # The work this process owns is handed over before anything it runs is
+    # stopped, so the other processes take it over at once.
+    assert calls.index("owned work handed over") < calls.index("bridges stopped")
     assert server.should_exit is True
 
 
@@ -131,3 +141,70 @@ async def test_the_package_carries_the_environments_app_name() -> None:
     assert manifest["name"]["short"] == "Agent Switch (dev)"
     assert app is not None
     await app.aclose()
+
+
+async def test_shutdown_drains_before_it_closes_anything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Readiness fails and the lease is released before uvicorn stops
+    accepting, and with several replicas the process keeps serving for the
+    drain window while the Service moves its traffic elsewhere."""
+    calls: list[str] = []
+
+    class _Stoppable:
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        async def stop_all(self) -> None:
+            calls.append(f"{self._name} stopped")
+
+        async def close(self) -> None:
+            calls.append(f"{self._name} closed")
+
+    class _Controllers:
+        def begin_shutdown(self) -> None:
+            calls.append("controllers told")
+
+    class _Server:
+        def __setattr__(self, name: str, value: object) -> None:
+            if name == "should_exit" and value:
+                calls.append("sockets closing")
+            object.__setattr__(self, name, value)
+
+    class _Exited(Exception):
+        pass
+
+    def fake_exit(code: int) -> None:
+        raise _Exited
+
+    async def sleep(seconds: float) -> None:
+        calls.append(f"slept {seconds:g}")
+
+    async def release() -> None:
+        calls.append("lease released")
+
+    monkeypatch.setattr(main_module.os, "_exit", fake_exit)
+    monkeypatch.setattr(main_module.asyncio, "sleep", sleep)
+
+    with pytest.raises(_Exited):
+        await _shutdown(
+            server=_Server(),  # type: ignore[arg-type]
+            begin_draining=lambda: calls.append("not ready"),
+            release=release,
+            drain_seconds=5.0,
+            controllers=_Controllers(),  # type: ignore[arg-type]
+            client_lifecycle=_Stoppable("clients"),  # type: ignore[arg-type]
+            collab_lifecycle=_Lifecycle(calls),  # type: ignore[arg-type]
+            connector_lifecycle=_Stoppable("connectors"),  # type: ignore[arg-type]
+            provisioning=_Stoppable("provisioning"),  # type: ignore[arg-type]
+            discord_gateway=None,
+            teams_app=None,
+        )
+
+    assert calls[:5] == [
+        "not ready",
+        "controllers told",
+        "lease released",
+        "slept 5",
+        "sockets closing",
+    ]

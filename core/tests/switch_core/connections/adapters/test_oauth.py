@@ -38,6 +38,7 @@ from switch_core.connections.adapters.oauth import (
 from switch_core.connections.broker import Principal, ServiceBroker
 from switch_core.connections.loader import ConnectionDefinition
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import (
     IDENTITY_URL,
@@ -471,6 +472,8 @@ class TestThroughTheBroker:
             disabled={},
             store=STORE,
             token_retention=timedelta(days=30),
+            workspace_services=WorkspaceServiceStore(),
+            workspace_gate=False,
         )
         secret = await _sign_in(adapter, vendor)
         # Due for renewal: inside the fifteen minutes a pass-through keeps.
@@ -490,6 +493,7 @@ class TestThroughTheBroker:
                 account_id="acct-1",
                 external_identity="ada@example.test",
                 encrypted_secret=TEST_KEYRING.encrypt(json.dumps(values)),
+                oauth_client_id=None,
             )
             for agent in agents:
                 await STORE.save_grant(

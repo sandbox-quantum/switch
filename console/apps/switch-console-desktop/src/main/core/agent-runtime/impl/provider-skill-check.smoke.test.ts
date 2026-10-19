@@ -51,6 +51,7 @@ describe.skipIf(!RUN)('the Switch skill in an isolated OpenCode session', () => 
         ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}),
       },
       mcpServers: {},
+      connectorMcpServers: [],
       model: { id: MODEL },
     });
     await adapter.sendTurn({

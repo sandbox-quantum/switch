@@ -9,10 +9,15 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { type OpenAgentStream, readSharedCredentials } from '@switch-console/agent-providers';
+import {
+  bundleIdentity,
+  type OpenAgentStream,
+  readSharedCredentials,
+} from '@switch-console/agent-providers';
 import {
   SERVICE_ACCOUNT_KEY_FIXTURE,
   vertexCredentialFixture,
@@ -20,7 +25,13 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { dataLayout } from './paths';
-import { InProcessRuntime, isInside, loginProbeEnvironment, observeOnDisk } from './runtime';
+import {
+  InProcessRuntime,
+  isInside,
+  LaunchedBundle,
+  loginProbeEnvironment,
+  observeOnDisk,
+} from './runtime';
 import { buildWatcherTemplate } from './template';
 
 /** Stands in for the shared-host bundle: answers `--probe`. Sessions are never started here. */
@@ -328,6 +339,39 @@ describe('InProcessRuntime', () => {
     await expect(
       runtime.workingDirectory('agent-1', 'scout', join(dir, 'data', 'workspaces'))
     ).resolves.toBe(join(dir, 'data', 'workspaces'));
+  });
+});
+
+describe('LaunchedBundle', () => {
+  const health = (bundle: string | undefined, current = true) => ({
+    state: 'connected' as const,
+    detail: null,
+    since: new Date(0).toISOString(),
+    placements: {},
+    pid: 4242,
+    updatedAt: new Date(0).toISOString(),
+    current,
+    ...(bundle === undefined ? {} : { bundle }),
+  });
+
+  it('says a live agent host on another bundle, or one that names none, is outdated', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'launched-bundle-'));
+    try {
+      const path = join(dir, 'shared-host.mjs');
+      await writeFile(path, 'console.log(1);');
+      const launched = new LaunchedBundle(path);
+      const ours = await bundleIdentity(path);
+      expect(await launched.outdates(health(ours))).toBe(false);
+      expect(await launched.outdates(health('another'))).toBe(true);
+      expect(await launched.outdates(health(undefined))).toBe(true);
+      expect(await launched.outdates(health('another', false))).toBe(false);
+      expect(await launched.outdates(null)).toBe(false);
+
+      await writeFile(path, 'console.log(22);');
+      expect(await launched.outdates(health(ours))).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -7,7 +7,9 @@ be used stop the server, rather than surfacing at the first connect.
 
 A static OAuth client's settings are a JSON file named by
 `<PREFIX>_CLIENT_CONFIG_PATH`, the prefix being the entry's
-`auth.oauth.client_settings`, beside `GITHUB_APP_CONFIG_PATH` for GitHub.
+`auth.oauth.client_settings`, beside `GITHUB_APP_CONFIG_PATH` for GitHub, or
+the operator saves them from the dashboard; `connections/app_credentials.py`
+resolves which applies, and hands the result here.
 """
 
 from __future__ import annotations
@@ -99,77 +101,91 @@ def _every_scope(definition: ConnectionDefinition) -> list[str]:
     )
 
 
+def build_adapter(
+    slug: str,
+    definition: ConnectionDefinition,
+    *,
+    github_app: GitHubApp | None,
+    oauth_client: OAuthClientCredentials | None,
+    http: httpx.AsyncClient,
+    registration: ClientRegistration,
+) -> ServiceAdapter | None:
+    """The adapter for one enabled entry, or None where it is not set up.
+
+    `github_app` and `oauth_client` are the app the operator set up for the
+    entry, where its adapter needs one.
+    """
+    if definition.adapter == "github":
+        # With the App alone, GitHub can be connected but not granted.
+        if github_app is None:
+            return None
+        return GitHubAdapter(github_app.connections, github_app.signer)
+    if definition.adapter == "oauth":
+        oauth = definition.auth.oauth
+        assert oauth is not None
+        if oauth.registration == "dynamic":
+            uris = redirect_uris(
+                slug, oauth.redirect, registration.public_url, oauth.loopback_ports
+            )
+            if not uris:
+                raise ServiceSetupError(
+                    f"Connection {slug} signs in only through Core's callback, "
+                    "which needs GATEWAY_PUBLIC_URL."
+                )
+            return OAuthAdapter(
+                definition,
+                RegisteredClient(
+                    service=slug,
+                    name=definition.name,
+                    session_factory=registration.session_factory,
+                    keyring=registration.keyring,
+                    http=http,
+                    client_name=client_name(
+                        registration.public_url, registration.server_name
+                    ),
+                    redirect_uris=uris,
+                    scopes=_every_scope(definition),
+                ),
+                http,
+            )
+        if oauth_client is None:
+            return None
+        return OAuthAdapter(definition, StaticClient(oauth_client), http)
+    if definition.adapter == "api_key":
+        # A key needs nothing set up on the server: people paste their own.
+        return ApiKeyAdapter(definition, http)
+    raise ServiceSetupError(
+        f"Connection {slug} names the {definition.adapter} adapter, which "
+        "this server does not have."
+    )
+
+
 def build_adapters(
     catalog: dict[str, Connection],
     *,
     github_app: GitHubApp | None,
-    environ: Mapping[str, str],
+    oauth_clients: Mapping[str, OAuthClientCredentials],
     http: httpx.AsyncClient,
     registration: ClientRegistration,
 ) -> dict[str, ServiceAdapter]:
     """An adapter for each enabled entry this server is set up for.
 
+    `oauth_clients` are the static clients the operator set up, by service.
     `http` is how OAuth/MCP adapters reach their vendors: one client, held to
     the server's outbound policy.
     """
     adapters: dict[str, ServiceAdapter] = {}
     for slug, entry in catalog.items():
-        definition = entry.definition
-        if not definition.enabled:
+        if not entry.definition.enabled:
             continue
-        if definition.adapter == "github":
-            # With the App alone, GitHub can be connected but not granted.
-            if github_app is not None:
-                adapters[slug] = GitHubAdapter(
-                    github_app.connections, github_app.signer
-                )
-        elif definition.adapter == "oauth":
-            oauth = definition.auth.oauth
-            assert oauth is not None
-            if oauth.registration == "dynamic":
-                uris = redirect_uris(
-                    slug, oauth.redirect, registration.public_url, oauth.loopback_ports
-                )
-                if not uris:
-                    raise ServiceSetupError(
-                        f"Connection {slug} signs in only through Core's callback, "
-                        "which needs GATEWAY_PUBLIC_URL."
-                    )
-                adapters[slug] = OAuthAdapter(
-                    definition,
-                    RegisteredClient(
-                        service=slug,
-                        name=definition.name,
-                        session_factory=registration.session_factory,
-                        keyring=registration.keyring,
-                        http=http,
-                        client_name=client_name(
-                            registration.public_url, registration.server_name
-                        ),
-                        redirect_uris=uris,
-                        scopes=_every_scope(definition),
-                    ),
-                    http,
-                )
-                continue
-            assert oauth.client_settings is not None
-            settings = load_client_settings(oauth.client_settings, environ)
-            if settings is not None:
-                adapters[slug] = OAuthAdapter(
-                    definition,
-                    StaticClient(
-                        OAuthClientCredentials(
-                            settings.client_id, settings.client_secret
-                        )
-                    ),
-                    http,
-                )
-        elif definition.adapter == "api_key":
-            # A key needs nothing set up on the server: people paste their own.
-            adapters[slug] = ApiKeyAdapter(definition, http)
-        else:
-            raise ServiceSetupError(
-                f"Connection {slug} names the {definition.adapter} adapter, which "
-                "this server does not have."
-            )
+        adapter = build_adapter(
+            slug,
+            entry.definition,
+            github_app=github_app,
+            oauth_client=oauth_clients.get(slug),
+            http=http,
+            registration=registration,
+        )
+        if adapter is not None:
+            adapters[slug] = adapter
     return adapters

@@ -1900,8 +1900,11 @@ export async function detachPackageFromRoom(
 
 export interface TemplateSummary {
   id: string;
-  owner_id: string;
+  /** Null for a template that comes with Switch. */
+  owner_id: string | null;
   owner_name: string | null;
+  /** Comes with Switch: on every workspace, and changed by nobody. */
+  official: boolean;
   name: string;
   description: string;
   kind: string;
@@ -2205,6 +2208,8 @@ export interface ServiceConnection {
   connectable: boolean;
   /** Why the service cannot be granted to agents on this server; null when it can. */
   unavailable_reason: string | null;
+  /** Whether it waits on the server's operator setting up its app under Connectors. */
+  server_setup_needed: boolean;
   status: "not_connected" | "active" | "needs_reauthorization" | "error";
   /** Whether a grant hands the agent the owner's own token: on or off, at the connection's level. */
   pass_through: boolean;
@@ -2285,3 +2290,141 @@ export const OWNER_ONLY_POLICY: AddressingPolicy = {
     },
   ],
 };
+
+// ── Connector app credentials (the server's operator only) ───────────────
+
+export type ConnectorAppKind = "github_app" | "oauth_client";
+export type ConnectorAppField = "client_id" | "client_secret" | "private_key";
+
+/** Whether a secret is set, and how the operator recognises it; never the secret. */
+export interface ConnectorAppSecret {
+  set: boolean;
+  /** A client secret's last four characters. */
+  last4?: string | null;
+  /** A private key's SHA-256 fingerprint, as GitHub lists it. */
+  fingerprint?: string | null;
+}
+
+/** The app one connector signs in through, and where it comes from. */
+export interface ConnectorApp {
+  slug: string;
+  name: string;
+  kind: ConnectorAppKind;
+  source: "configuration" | "saved" | "none";
+  /** The variables that set it from configuration. */
+  configuration_variables: string[];
+  /** GitHub's HOSTED_GITHUB_CONFIG_PATH: no private key, so it can't be copied. */
+  deprecated: boolean;
+  client_id: string | null;
+  /** The client saved here, when there is one. */
+  saved_client_id: string | null;
+  fields: { slug?: string | null };
+  secrets: Record<string, ConnectorAppSecret>;
+  /** Saved here, but configuration is set, so Switch uses that. */
+  saved_ignored: boolean;
+  /** Saved here under a key the server no longer has. */
+  unreadable: boolean;
+  /** Why the app saved here can't be used. */
+  load_error: string | null;
+  /** Where the vendor sends people back to Switch; null without a GATEWAY_PUBLIC_URL it accepts. */
+  redirect_uri: string | null;
+  /** Why it can't be set up here, before any vendor is asked; null when nothing stops it. */
+  setup_blocked: string | null;
+  install_url: string | null;
+  updated_by_name: string | null;
+  updated_at: string | null;
+  connected_members: number;
+  workspaces: number;
+  /** Connections made through an app this server no longer uses. */
+  stale_connections: number;
+}
+
+/** The server's connector apps; a service that needs no app of the operator's is not listed. */
+export interface ConnectorApps {
+  public_url: string | null;
+  apps: ConnectorApp[];
+}
+
+export interface ConnectorAppCheck {
+  name: string;
+  ok: boolean;
+  message: string;
+  field: ConnectorAppField | null;
+}
+
+export interface SaveConnectorAppInput {
+  client_id: string;
+  client_secret?: string;
+  private_key?: string;
+  /** Switching to another app on purpose: everyone connected must reconnect. */
+  replace: boolean;
+}
+
+export interface ConnectorAppImpact {
+  connected_members: number;
+  workspaces: number;
+}
+
+/** A save the vendor refused: what it said, and the value to look at again. */
+export class ConnectorAppRefusal extends ApiError {
+  readonly field: ConnectorAppField | null;
+
+  constructor(status: number, message: string, field: ConnectorAppField | null) {
+    super(status, message, message);
+    this.name = "ConnectorAppRefusal";
+    this.field = field;
+  }
+}
+
+/** What the operator reads when the server has no connector-apps routes:
+ * they are mounted only with the `service_connections` flag. */
+export const CONNECTORS_NOT_ENABLED =
+  "Connectors are not enabled on this server. An operator turns them on by adding service_connections to FEATURE_FLAGS_ENABLED.";
+
+export async function fetchConnectorApps(): Promise<ConnectorApps> {
+  return jsonRequest<ConnectorApps>("/connector-apps", "GET");
+}
+
+export async function saveConnectorApp(
+  service: string,
+  input: SaveConnectorAppInput,
+): Promise<ConnectorApp> {
+  const res = await fetch(`${BASE}/connector-apps/${service}`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = payload?.detail ?? null;
+    const message = errorText(detail, `${res.status} ${res.statusText}`);
+    if (res.status === 422 && payload && "checks" in payload) {
+      throw new ConnectorAppRefusal(res.status, message, payload.field ?? null);
+    }
+    throw new ApiError(res.status, detail, message);
+  }
+  return payload as ConnectorApp;
+}
+
+export async function importConnectorApp(service: string): Promise<ConnectorApp> {
+  return jsonRequest<ConnectorApp>(`/connector-apps/${service}/import`, "POST");
+}
+
+export async function checkConnectorApp(
+  service: string,
+): Promise<{ ok: boolean; checks: ConnectorAppCheck[] }> {
+  return jsonRequest(`/connector-apps/${service}/check`, "POST");
+}
+
+export async function fetchConnectorAppImpact(
+  service: string,
+  clientId: string,
+): Promise<ConnectorAppImpact> {
+  const params = new URLSearchParams({ client_id: clientId });
+  return jsonRequest<ConnectorAppImpact>(`/connector-apps/${service}/impact?${params}`, "GET");
+}
+
+export async function removeConnectorApp(service: string): Promise<ConnectorAppImpact> {
+  return jsonRequest<ConnectorAppImpact>(`/connector-apps/${service}`, "DELETE");
+}

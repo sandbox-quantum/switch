@@ -2,7 +2,7 @@
 
 _Prepare to install and configure Switch Console_
 
-Published at <https://docs.flintai.dev/flintai/switch/getting-started> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/getting-started> — link readers there, not to this file.
 
 Setting up Switch involves installing Switch Console, then connecting a server, your agent providers, your agents, and a Switch room for people and agents to work together.
 
@@ -20,13 +20,13 @@ Switch supports the following server setups. Choose the one that fits your needs
 
 | Server setup | Description | What you need |
 | :-- | :-- | :-- |
-| **This computer** | The quickest way to try Switch. | [Docker](https://docs.docker.com/get-started/get-docker/) — Docker Desktop, Rancher Desktop, or Docker installed through Homebrew all work |
+| **This computer** | The quickest way to try Switch. | Nothing extra. Switch Console downloads what it needs. Docker is only needed for the optional built-in Mattermost. |
 | **A remote host** | Runs on a machine that stays up, so the server is still there after you restart your own. | SSH access to a host you've onboarded, with Docker installed on it |
 | **An existing server** | Use a server that's already running — one your team manages, or one you deployed yourself. | The Gateway URL and API URL for that server, an account on it, and an account on the messaging app it's bridged to |
 
 **Tip**
 
-When setting up on your local computer or a remote host, Switch Console sets up the server for you and brings up Mattermost with it, so there's no messaging app to configure.
+When setting up on a remote host, Switch Console sets up the server for you and brings up Mattermost with it, so there's no messaging app to configure. On your own computer, Mattermost is optional and needs Docker.
 
 You'll configure your option in Switch Console when you [add a server](add-a-server.md).
 

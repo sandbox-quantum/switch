@@ -1463,16 +1463,13 @@ async def remove_member(
             "service_connections_deleted": len(removed_services),
         },
     )
+    # Sign-ins the member had under way in this workspace go with them.
+    await request.app.state.sign_in_flows.discard_for_user(session, user_id, None)
     await session.delete(membership)
     await session.commit()
 
     for key_hash in revoked_key_hashes:
         protocol.api_key_cache.invalidate(key_hash)
 
-    github = getattr(request.app.state, "github_connections", None)
-    if github is not None:
-        for flow_id, flow in list(github.flows.items()):
-            if (flow.tenant_id, flow.user_id) == (tenant_id, user_id):
-                del github.flows[flow_id]
     warning = await broker.finish_disconnect(session, user_id, removed_services)
     return {"ok": True, "warning": warning}

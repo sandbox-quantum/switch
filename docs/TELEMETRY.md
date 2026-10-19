@@ -94,7 +94,7 @@ id, no IP field, no Switch identity.
 | `location` | `local`, `remote`, `unknown`. **Never a path, directory or project name.** |
 | `server_kind` | `local`, `remote_managed`, `external`. **Never a server name or URL.** |
 | `bridge_platform` | A platform key the server lists as one of its registered platforms (`slack`, `mattermost`, `discord`, `teams`, `telegram`, and any platform added since), else `other`, or `unknown` when it cannot be read. Always a short lowercase key. **Never a workspace or channel name.** |
-| `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `unknown` |
+| `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `link`, `unknown` |
 | `target` | `local`, `remote`, `unknown` |
 
 ### 3.3 Every event and its fields
@@ -116,13 +116,16 @@ id, no IP field, no Switch identity.
 
 | Event | Fields, with example values |
 |---|---|
-| `view_opened` | `view_id`, one of exactly 10: `home`, `location`, `session`, `room`, `settings`, `server`, `serverAgents`, `serverRooms`, `remoteHosts`, `remoteHost` |
+| `view_opened` | `view_id`, one of exactly 18: `home`, `location`, `session`, `managedAgent`, `room`, `settings`, `server`, `managedServer`, `serverAgents`, `connectors`, `serverRooms`, `remoteHosts`, `remoteHost`, `templateImport`, `templates`, `templateDetail`, `templateUse`, `templateCapture` |
 | `command_executed` | `command_id`, one of 28 known commands: `app.settings`, `app.newSession`, `app.addServer`, `app.toggleTheme`, `session.newTerminal`, `session.gitPush`, … · `invoked_by`: `palette` / `shortcut` |
 | `deeplink_opened` | `resolved`: `true` / `false` · `cold_start`: `true` / `false`. **The URL is never sent.** |
 | `onboarding_step_started` | `step_id`, one of exactly 4: `addServer`, `agentProviders`, `onboardAgents`, `createRoom` |
 | `onboarding_checklist_dismissed` | *(no fields)* |
 | `onboarding_completed` | *(no fields)* |
 | `add_server_step` | `step`: `choose` / `managedGitHub` / `managedAgent` / `local` / `remoteHost` / `external` / `signIn` / `linkAccounts` · `choice`: `none` / `local` / `remoteHost` / `external` / `cloud` · `first_run`: `true` / `false` — whether the same step was reached on a fresh install rather than from the Add server dialog |
+| `onboarding_page` | `page`: `welcome` / `how_to_run` / `local_setup` / `server_address` / `sign_in` / `choose_workspace` / `create_workspace` / `meet_buddy` / `provider_setup` · `path`: `none` / `cloud` / `local` / `external` — which page of the first run opened, and how the install is running Switch once chosen |
+| `buddy_step` | `action`: `start` / `skip` / `setup_opened` / `install` / `sign_in` / `check_again` / `created` / `create_failed` / `opened_existing` / `intro_opened` / `intro_dismissed` · `provider`: `claude` / `codex` / `opencode` / `cursor` / `antigravity` / `none` — a step on the way to switch-buddy, the first agent, from the first run or from the pop-up that introduces it to people who have none |
+| `buddy_message_sent` | `nth`: `1` / `2` / `3` / `4` / `5` / `6+` — the how-manyth message sent to one's own switch-buddy. **The message is never sent.** |
 
 **Agents and sessions**
 
@@ -312,7 +315,7 @@ an anonymous installation counter, not an identity.
 ## 6. Where it is sent
 
 1. **App → our relay.** One plain HTTPS POST per event (OTLP logs format; no
-   batching, no retries, 10-second timeout) to `telemetry.flintai.dev`, an
+   batching, no retries, 10-second timeout) to `telemetry.switchagents.ai`, an
    endpoint we operate. No third-party analytics SDK runs inside the app, and no
    vendor credential is shipped in the app. Released builds cannot be pointed at
    a different endpoint — the override exists only in dev builds.

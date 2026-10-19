@@ -6,7 +6,12 @@ const setSessionCookie = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const logWarn = vi.hoisted(() => vi.fn());
 const keepSeparateDashboard = vi.hoisted(() => vi.fn(async () => {}));
 
-vi.mock('electron', () => ({ BrowserWindow: vi.fn(), session: { fromPartition: vi.fn() } }));
+vi.mock('electron', () => ({
+  BrowserWindow: vi.fn(),
+  session: { fromPartition: vi.fn() },
+  shell: { openExternal: vi.fn(async () => {}) },
+}));
+vi.mock('@main/app/deeplinks', () => ({ appReturnUrl: () => null, bringToFront: vi.fn() }));
 vi.mock('@main/core/managed-switch-server/secrets', () => ({ readSecrets }));
 vi.mock('@main/core/managed-switch-server/host/host-for-server', () => ({
   managedServerSecretsKey: (server: { sshHost: string | null }) =>
@@ -22,8 +27,14 @@ const consoleIdentityHeaders = vi.hoisted(() =>
 vi.mock('./console-identity', () => ({ consoleIdentityHeaders }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: logWarn, error: vi.fn(), info: vi.fn() } }));
 
-const { callbackHostHop, oidcLogin, reauthenticateManagedServer, refreshSession, signup } =
-  await import('./auth');
+const {
+  callbackHostHop,
+  cancelOidcLogin,
+  oidcLogin,
+  reauthenticateManagedServer,
+  refreshSession,
+  signup,
+} = await import('./auth');
 const electron = await import('electron');
 
 const REMOTE = {
@@ -317,7 +328,7 @@ describe('oidcLogin', () => {
         destroy: vi.fn(),
       } as never;
     });
-    const result = oidcLogin(server as never);
+    const result = oidcLogin(server as never, null, false);
     closed?.();
     expect(await result).toMatchObject({ success: false, error: { kind: 'cancelled' } });
     return (loadURL.mock.calls[0] as unknown as [string])[0];
@@ -419,7 +430,7 @@ describe('oidcLogin following an older server to its callback host', () => {
 
   it('restarts on the host the provider returns to, and keeps it as the dashboard', async () => {
     const win = signInWindow();
-    const result = oidcLogin(ONE_ADDRESS);
+    const result = oidcLogin(ONE_ADDRESS, null, false);
 
     expect(win.redirect(idp(CALLBACK))).toHaveBeenCalledOnce();
     expect(win.loadURL.mock.calls.map(([url]) => url)).toEqual([
@@ -435,9 +446,23 @@ describe('oidcLogin following an older server to its callback host', () => {
     );
   });
 
+  it('carries the sign-in option to the host it restarts on', async () => {
+    const win = signInWindow();
+    const result = oidcLogin(ONE_ADDRESS, 'google', false);
+
+    win.redirect(idp(CALLBACK));
+    expect(win.loadURL.mock.calls.map(([url]) => url)).toEqual([
+      'https://switch-api.example.com/gateway/auth/oidc/login?provider=google',
+      'https://switch-gateway.example.com/gateway/auth/oidc/login?provider=google',
+    ]);
+
+    win.signedIn();
+    expect(await result).toMatchObject({ success: true });
+  });
+
   it('leaves a sign-in alone that returns to the host it started on', async () => {
     const win = signInWindow();
-    const result = oidcLogin(ONE_ADDRESS);
+    const result = oidcLogin(ONE_ADDRESS, null, false);
 
     expect(
       win.redirect(idp('https://switch-api.example.com/gateway/auth/oidc/callback'))
@@ -451,7 +476,7 @@ describe('oidcLogin following an older server to its callback host', () => {
 
   it('asks only the first redirect that leaves the starting host', async () => {
     const win = signInWindow();
-    const result = oidcLogin(ONE_ADDRESS);
+    const result = oidcLogin(ONE_ADDRESS, null, false);
 
     // The same host again (an upgrade to HTTPS, say) is not the decision.
     expect(
@@ -471,7 +496,7 @@ describe('oidcLogin following an older server to its callback host', () => {
   it('does not take the first load, cancelled by the hop, for a failure', async () => {
     let cancel!: (cause: Error) => void;
     const win = signInWindow(new Promise((_resolve, reject) => (cancel = reject)));
-    const result = oidcLogin(ONE_ADDRESS);
+    const result = oidcLogin(ONE_ADDRESS, null, false);
 
     win.redirect(idp(CALLBACK));
     cancel(new Error('ERR_ABORTED (-3)'));
@@ -484,7 +509,7 @@ describe('oidcLogin following an older server to its callback host', () => {
   it('is signed in even when the host cannot be kept', async () => {
     keepSeparateDashboard.mockRejectedValueOnce(new Error('database is locked'));
     const win = signInWindow();
-    const result = oidcLogin(ONE_ADDRESS);
+    const result = oidcLogin(ONE_ADDRESS, null, false);
 
     win.redirect(idp(CALLBACK));
     win.signedIn();
@@ -493,6 +518,41 @@ describe('oidcLogin following an older server to its callback host', () => {
     expect(logWarn).toHaveBeenCalledWith(
       'switch-servers: could not keep the host the sign-in returned to',
       expect.objectContaining({ error: 'Error: database is locked' })
+    );
+  });
+});
+
+describe('oidcLogin in the system browser', () => {
+  /** Starts the sign-in, reports the page the browser was sent to, and cancels it. */
+  async function openedPage(server: { id: string }): Promise<URL> {
+    const result = oidcLogin(server as never, 'google', true);
+    await vi.waitFor(() => expect(electron.shell.openExternal).toHaveBeenCalledOnce());
+    cancelOidcLogin(server.id);
+    expect(await result).toMatchObject({ success: false, error: { kind: 'cancelled' } });
+    return new URL(vi.mocked(electron.shell.openExternal).mock.calls[0]![0]);
+  }
+
+  it('starts on the dashboard’s host for a server that keeps one apart', async () => {
+    const page = await openedPage(EXTERNAL);
+    expect(`${page.origin}${page.pathname}`).toBe(
+      'https://switch.example.com/gateway/auth/oidc/login'
+    );
+    expect(page.searchParams.get('provider')).toBe('google');
+    expect(page.searchParams.get('return_to')).toMatch(
+      /^http:\/\/127\.0\.0\.1:\d+\/switch-sign-in$/
+    );
+  });
+
+  it('starts on the server’s own address otherwise', async () => {
+    const page = await openedPage({
+      id: 'srv-one',
+      name: 'One address',
+      url: 'https://switch.example.org',
+      dashboardUrl: null,
+      managed: false,
+    } as never);
+    expect(`${page.origin}${page.pathname}`).toBe(
+      'https://switch.example.org/gateway/auth/oidc/login'
     );
   });
 });

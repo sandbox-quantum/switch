@@ -28,7 +28,7 @@ def signing(tmp_path, monkeypatch):
         )
     )
     path.chmod(0o600)
-    return GitHubInstallationCredentials("example-client", str(path)), key
+    return GitHubInstallationCredentials.from_file("example-client", str(path)), key
 
 
 def response_body():
@@ -152,7 +152,7 @@ def test_invalid_key_fails_without_key_material(tmp_path):
     path = tmp_path / "invalid.pem"
     path.write_text("SYNTHETIC-INVALID-KEY")
     with pytest.raises(ValueError, match="could not be loaded"):
-        GitHubInstallationCredentials("example-client", str(path))
+        GitHubInstallationCredentials.from_file("example-client", str(path))
 
 
 @pytest.mark.parametrize(

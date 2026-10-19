@@ -16,6 +16,7 @@ function startInput(overrides: Partial<ProviderSessionStartInput> = {}): Provide
     runtimeMode: 'approval-required',
     env: { PATH: '/usr/bin', HOME: '/home/agent' },
     mcpServers: {},
+    connectorMcpServers: [],
     ...overrides,
   };
 }
@@ -169,6 +170,7 @@ describe('ClaudeAdapter session lifecycle', () => {
     });
     expect(options.settings).toEqual({
       enabledPlugins: { 'switch-connector@switch-plugins': false },
+      permissions: { allow: ['mcp__switch'] },
     });
   });
 
@@ -212,10 +214,12 @@ describe('ClaudeAdapter session lifecycle', () => {
     await adapter.startSession(
       startInput({
         mcpServers: { switch: { transport: 'stdio', command: 'node', args: ['server.mjs'] } },
+        connectorMcpServers: [],
       })
     );
     expect(sdk.options().settings).toEqual({
       enabledPlugins: { 'switch-connector@switch-plugins': false },
+      permissions: { allow: ['mcp__switch'] },
     });
     expect(sdk.options().settingSources).toBeUndefined();
     const native = createFakeSdk();
@@ -282,9 +286,9 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(warning.message).toContain('bundled with the Agent SDK');
   });
 
-  it('maps each runtime mode onto a permission mode', async () => {
+  it('starts the SDK in the permission mode each runtime mode names', async () => {
     for (const [runtimeMode, permissionMode] of [
-      ['approval-required', undefined],
+      ['approval-required', 'default'],
       ['auto-accept-edits', 'acceptEdits'],
       ['full-access', 'bypassPermissions'],
     ] as const) {
@@ -293,6 +297,14 @@ describe('ClaudeAdapter session lifecycle', () => {
       await adapter.startSession(startInput({ runtimeMode }));
       expect(sdk.options().permissionMode).toBe(permissionMode);
     }
+  });
+
+  it('never leaves approval-required to the person’s own default mode', async () => {
+    // Unset, the CLI reads `defaultMode` from the person's settings; `auto`
+    // there settles connector calls before the callback can ask.
+    const { sdk } = await startSession('approval-required');
+    expect(sdk.options()).toHaveProperty('permissionMode', 'default');
+    expect(sdk.options().allowDangerouslySkipPermissions).toBeUndefined();
   });
 
   it('drops the SDK’s shadowed-callback warning and leaves other warnings alone', async () => {
@@ -949,8 +961,6 @@ describe('ClaudeAdapter approvals', () => {
 
   it('leaves native permission rules and hooks in control when bypass is off', async () => {
     const { sdk } = await startSession();
-    expect(sdk.options()).not.toHaveProperty('permissionMode');
-    expect(sdk.options()).toHaveProperty('resolvePermissionModeInCli', true);
     expect(sdk.options().settingSources).toBeUndefined();
     expect(sdk.options().hooks).toBeUndefined();
     expect(sdk.options().canUseTool).toBeTypeOf('function');
@@ -1090,6 +1100,16 @@ describe('ClaudeAdapter user input', () => {
   });
 });
 
+describe('ClaudeAdapter context usage', () => {
+  it("reads the live query's context usage and window", async () => {
+    const { adapter } = await startSession();
+    await expect(adapter.contextUsage(SESSION)).resolves.toEqual({
+      usedTokens: 134000,
+      windowTokens: 1000000,
+    });
+  });
+});
+
 describe('ClaudeAdapter model switching', () => {
   it('clears an explicit effort when the user selects the provider default', async () => {
     const { sdk, adapter } = await startSession();
@@ -1214,5 +1234,108 @@ describe('ClaudeAdapter background subagents', () => {
     );
     await vi.waitFor(() => expect(adapter.hasBackgroundWork(SESSION)).toBe(true));
     await adapter.stopAll();
+  });
+});
+
+describe('ClaudeAdapter connector tools', () => {
+  const MODES: RuntimeMode[] = ['approval-required', 'auto-accept-edits', 'full-access'];
+  const stdio = { transport: 'stdio' as const, command: 'node', args: ['server.mjs'] };
+  const toolOptions = (toolUseID: string, extra: Record<string, unknown> = {}) => ({
+    signal: new AbortController().signal,
+    toolUseID,
+    requestId: `control-${toolUseID}`,
+    ...extra,
+  });
+
+  async function startWithConnectors(runtimeMode: RuntimeMode) {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    const recorder = new EventRecorder(adapter);
+    await adapter.startSession(
+      startInput({
+        runtimeMode,
+        mcpServers: {
+          switch: stdio,
+          atlassian: { transport: 'http', url: 'http://127.0.0.1:4100/mcp' },
+          // A vendor CLI the host serves to the CLI as an MCP server.
+          'google-workspace': stdio,
+          other: stdio,
+        },
+        connectorMcpServers: ['atlassian', 'google-workspace'],
+      })
+    );
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    return { sdk, adapter, recorder };
+  }
+
+  it.each(MODES)("never asks about Switch's own room tools, in %s", async (mode) => {
+    const { sdk, recorder } = await startWithConnectors(mode);
+    const allowed = await sdk.canUseTool()('mcp__switch__post_message', {}, toolOptions('t1'));
+    expect(allowed).toEqual({ behavior: 'allow' });
+    expect(recorder.ofType('request.opened')).toEqual([]);
+  });
+
+  it.each(MODES)('allows a server that is not a connector without asking, in %s', async (mode) => {
+    const { sdk, recorder } = await startWithConnectors(mode);
+    const allowed = await sdk.canUseTool()('mcp__other__run', {}, toolOptions('t1'));
+    expect(allowed).toEqual({ behavior: 'allow' });
+    expect(recorder.ofType('request.opened')).toEqual([]);
+  });
+
+  it.each(
+    MODES.flatMap((mode) =>
+      ['atlassian', 'google-workspace'].map((server) => [mode, server] as const)
+    )
+  )('in %s a %s tool asks, except in full access', async (mode, server) => {
+    const { sdk, adapter, recorder } = await startWithConnectors(mode);
+    const decision = sdk.canUseTool()(
+      `mcp__${server.replace(/[^A-Za-z0-9_-]/g, '_')}__search`,
+      { query: 'open issues' },
+      toolOptions('t1')
+    );
+    if (mode === 'full-access') {
+      expect(await decision).toEqual({ behavior: 'allow' });
+      expect(recorder.ofType('request.opened')).toEqual([]);
+      return;
+    }
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    expect(opened.requestType).toBe('mcp_tool_approval');
+    expect(opened.connector).toBe(server);
+    expect(opened.title).toBe(`${server.replace(/[^A-Za-z0-9_-]/g, '_')} wants to run search`);
+    expect(opened.detail).toBe('{"query":"open issues"}');
+    await adapter.respondToRequest(SESSION, opened.requestId, 'accept');
+    expect(await decision).toEqual({ behavior: 'allow' });
+  });
+
+  it('denies a declined connector call, telling the agent not to retry', async () => {
+    const { sdk, adapter, recorder } = await startWithConnectors('approval-required');
+    const decision = sdk.canUseTool()('mcp__atlassian__add_comment', {}, toolOptions('t1'));
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    await adapter.respondToRequest(SESSION, opened.requestId, 'decline');
+    expect(await decision).toEqual({
+      behavior: 'deny',
+      message: 'The user declined this request. Do not retry it another way.',
+    });
+  });
+
+  it('keeps "allow for this session" to the session', async () => {
+    const { sdk, adapter, recorder } = await startWithConnectors('auto-accept-edits');
+    const rule = {
+      type: 'addRules',
+      rules: [{ toolName: 'mcp__atlassian__search' }],
+      behavior: 'allow',
+      destination: 'localSettings',
+    };
+    const decision = sdk.canUseTool()(
+      'mcp__atlassian__search',
+      {},
+      toolOptions('t1', { suggestions: [rule] })
+    );
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    await adapter.respondToRequest(SESSION, opened.requestId, 'acceptForSession');
+    expect(await decision).toEqual({
+      behavior: 'allow',
+      updatedPermissions: [{ ...rule, destination: 'session' }],
+    });
   });
 });

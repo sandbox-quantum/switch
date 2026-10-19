@@ -16,21 +16,21 @@ from unittest.mock import MagicMock
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.tenant_store import TenantStore
+from tests.ownership import NeverOwned
 
 
 class _BlockingClient:
-    """A consumer whose task never finishes on its own, like a receive loop.
-    It stands in for its own actor too: the task only reads a name off it."""
+    """An actor whose task never finishes on its own, like a receive loop."""
 
     def __init__(self) -> None:
         self.display_name = "blocking"
         self.transport_user_id = "@blocking:test"
         self.stopped = False
 
-    async def start(self) -> None:
+    async def connect(self) -> None:
         await asyncio.Event().wait()
 
-    async def stop(self) -> None:
+    async def close(self) -> None:
         self.stopped = True
 
 
@@ -43,18 +43,20 @@ def _service() -> ClientLifecycleService:
         session_factory=MagicMock(),
         config=MagicMock(),
         tenants_isolated=True,
+        ownership=NeverOwned(),  # type: ignore[arg-type]
+        cursor_writer=MagicMock(),
     )
 
 
 async def test_starting_a_client_twice_cancels_the_first_task() -> None:
     service = _service()
     client = _BlockingClient()
-    service._start_task("client-1", client, client)  # type: ignore[arg-type]
+    service._start_task("client-1", client)  # type: ignore[arg-type]
     await asyncio.sleep(0)
     first = service._tasks["client-1"]
 
     client = _BlockingClient()
-    service._start_task("client-1", client, client)  # type: ignore[arg-type]
+    service._start_task("client-1", client)  # type: ignore[arg-type]
     second = service._tasks["client-1"]
     await asyncio.gather(first, return_exceptions=True)
 
@@ -72,10 +74,9 @@ async def test_stop_all_waits_for_the_tasks_it_cancelled() -> None:
     service = _service()
     client = _BlockingClient()
     service._clients["client-1"] = client  # type: ignore[assignment]
-    service._consumers["client-1"] = client  # type: ignore[assignment]
     service._client_types["client-1"] = "agent"
     service._client_tenants["client-1"] = "tenant-1"
-    service._start_task("client-1", client, client)  # type: ignore[arg-type]
+    service._start_task("client-1", client)  # type: ignore[arg-type]
     await asyncio.sleep(0)
     task = service._tasks["client-1"]
 

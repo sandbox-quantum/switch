@@ -31,7 +31,10 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
 )
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.event_buffer import Reader
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
+from switch_core.db.models import TENANT_ZERO_ID
+from switch_core.tenant_context import tenant_scope
 
 AGENT = "agent-1"
 ROOM = "room-1"
@@ -61,6 +64,20 @@ class _RecordingSessionStore:
         lifecycle: str,
     ) -> None:
         self.bindings.append((agent_id, room_id, transport_session_id))
+
+
+class _UncountedBuffer:
+    """The buffer, as far as connecting reaches it.
+
+    Connecting hands the room's unread count to whoever took the room. What
+    that does to the count is the buffer's own business, pinned where the
+    buffer is tested, and none of it bears on the payload.
+    """
+
+    async def hand_counting_to(
+        self, tenant_id: str, agent_id: str, reader: Reader, room_id: str
+    ) -> None:
+        return None
 
 
 def _protocol(
@@ -104,7 +121,7 @@ def _protocol(
 
     return SimpleNamespace(
         connections=registry,
-        event_buffer=EventBuffer(sequence_base=0),
+        event_buffer=_UncountedBuffer(),
         agent_session_store=store,
         session_factory=session_factory,
         agent_store=SimpleNamespace(get=_returning(agent)),
@@ -130,7 +147,7 @@ def _open(registry: AgentConnectionRegistry, connection_id: str):
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
@@ -154,9 +171,11 @@ async def _connect_as(connection_id: str) -> dict[str, Any]:
         CallContext(agent_id=AGENT, session_key=connection_id, session=None)
     )
     try:
-        return await definitions.connect_to_room(
-            ROOM, include_general_instructions=False
-        )
+        # Bound for the call as authenticating the agent binds it for a request.
+        with tenant_scope(TENANT_ZERO_ID):
+            return await definitions.connect_to_room(
+                ROOM, include_general_instructions=False
+            )
     finally:
         reset_call_context(token)
 

@@ -1341,9 +1341,9 @@ it('does not acknowledge a delivery before the consumer has saved it', async () 
   });
   const { stream, abort } = makeStream(fetchMock, { rooms: ['room'], startCursor: 6, onEvent });
   await vi.waitFor(() => expect(onEvent).toHaveBeenCalledOnce());
-  expect(stream.position).toBe(6);
+  expect(stream.position).toEqual({ s: 6 });
   finish();
-  await vi.waitFor(() => expect(stream.position).toBe(7));
+  await vi.waitFor(() => expect(stream.position).toEqual({ s: 7 }));
   abort.abort();
 });
 
@@ -1399,10 +1399,10 @@ it('waits for durable reset checkpoint before advancing the cursor or delivering
       cursorReset: true,
       reason: 'buffer reset',
     });
-    expect(stream.position).toBe(4);
+    expect(stream.position).toEqual({ s: 4 });
     expect(onEvent).not.toHaveBeenCalled();
     finish();
-    await vi.waitFor(() => expect(stream.position).toBe(1));
+    await vi.waitFor(() => expect(stream.position).toEqual({ s: 1 }));
     expect(onEvent).toHaveBeenCalledOnce();
   } finally {
     abort.abort();
@@ -1420,7 +1420,7 @@ it('does not advance or deliver when persisting the reset checkpoint fails', asy
   );
   try {
     await vi.waitFor(() => expect(onGap).toHaveBeenCalledOnce());
-    expect(stream.position).toBe(4);
+    expect(stream.position).toEqual({ s: 4 });
     expect(onEvent).not.toHaveBeenCalled();
   } finally {
     abort.abort();
@@ -1822,7 +1822,7 @@ describe('test_gap_above_cursor_is_not_cursor_reset', () => {
     const { stream, abort } = makeStream(fetchMock, { rooms: [], onGap: (g) => void gaps.push(g) });
     await flush();
     expect(gaps).toEqual([expect.objectContaining({ resumedAt: 2 ** 32 - 1, cursorReset: false })]);
-    expect(stream.position).toBe(2 ** 32 - 1);
+    expect(stream.position).toEqual({ s: 2 ** 32 - 1 });
     abort.abort();
   });
 });
@@ -2059,7 +2059,7 @@ describe('choosing the transport', () => {
     await flush();
 
     const params = new URL(urlsFor(fetchMock, '/events')[0]!).searchParams;
-    expect(params.get('protocol')).toBe('8');
+    expect(params.get('protocol')).toBe('9');
     expect(Number(params.get('protocol_accepts'))).toBeLessThanOrEqual(6);
     abort.abort();
   });

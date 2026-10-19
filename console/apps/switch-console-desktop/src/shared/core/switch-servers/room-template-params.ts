@@ -9,11 +9,13 @@
 export const ENTITY_PARAM_TYPES = ['agent', 'bridge', 'room', 'user'] as const;
 export type EntityParamType = (typeof ENTITY_PARAM_TYPES)[number];
 
-/** Param types the Console answers itself and leaves out of the request to
- * the server. `provider` is the coding agent that runs an agent the template
- * creates, `location` the machine it runs on, `directory` its working
- * directory. Mirrors `CONSOLE_PARAM_TYPES` in core. */
-export const CONSOLE_PARAM_TYPES = ['provider', 'location', 'directory'] as const;
+/** Param types that say how an agent the template creates runs, left out of
+ * the room document the server provisions. `provider` is the coding agent
+ * that runs it; `location` where it runs as this Console knows it (this
+ * computer or an SSH host), `machine` one of the owner's machines on the
+ * server; `directory` its working directory. Mirrors `CONSOLE_PARAM_TYPES`
+ * in core. */
+export const CONSOLE_PARAM_TYPES = ['provider', 'location', 'machine', 'directory'] as const;
 export type ConsoleParamType = (typeof CONSOLE_PARAM_TYPES)[number];
 
 export type ParamType =
@@ -50,6 +52,7 @@ export const CHAIN_PARAM_TYPES: readonly ParamType[] = [
   'room',
   'provider',
   'location',
+  'machine',
 ];
 
 /** In a chain: the first thing of the param's type the server or the Console has. */

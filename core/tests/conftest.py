@@ -17,12 +17,14 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 from testcontainers.postgres import PostgresContainer
 
 # Importing the models module registers every table on Base.metadata so
 # create_all provisions the full schema (rooms, room_groups, FKs, …).
 import switch_core.db.models  # noqa: F401
 from switch_core import messaging_platforms
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.collaboration.platforms import PLATFORMS
 from switch_core.db import encrypted_json
 from switch_core.db.base import Base
@@ -30,7 +32,9 @@ from switch_core.db.engine import create_session_factory
 from switch_core.db.models import TENANT_ZERO_ID, Tenant
 from switch_core.db.runtime_role import grant_runtime_role
 from switch_core.keys import Keyring
+from switch_core.messages.notify import MessageListener
 from switch_core.tenant_context import tenant_scope
+from tests.db_buffer import db_buffer_on
 from tests.switch_core.pool_checkouts import PoolCheckouts
 from tests.switch_core.statement_counts import StatementCounts
 
@@ -372,3 +376,26 @@ async def rls_harness(postgres_schema: str) -> AsyncIterator[RLSHarness]:
                 text("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO PUBLIC")
             )
         await owner_engine.dispose()
+
+
+@pytest.fixture
+def db_buffer(session_factory: async_sessionmaker[AsyncSession]) -> EventBuffer:
+    """The db-buffer on this test's database. Seed the agents it queues for
+    with `tests.db_buffer.seed_agent`."""
+    return db_buffer_on(session_factory)
+
+
+@pytest_asyncio.fixture
+async def room_bells(postgres_schema: str) -> AsyncIterator[MessageListener]:
+    """The room announcements of this test's database, listened to: for a
+    test whose stream reads a room's conversation and has to be woken when a
+    row is written there (`db_buffer_on(..., rooms=room_bells)`)."""
+    listener = MessageListener(
+        lambda: create_async_engine(postgres_schema, poolclass=NullPool)
+    )
+    await listener.start()
+    try:
+        await asyncio.wait_for(listener.connected.wait(), 10.0)
+        yield listener
+    finally:
+        await listener.stop()

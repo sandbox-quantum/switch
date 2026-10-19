@@ -14,6 +14,8 @@ from switch_core.db.models import SwitchCoreProcess
 class ProcessLeaseRow:
     beat_at: datetime
     stopped_at: datetime | None
+    # None for a process from before the column was written.
+    key_ids: tuple[str, ...] | None
 
 
 class SwitchCoreProcessStore:
@@ -25,12 +27,19 @@ class SwitchCoreProcessStore:
     hosts' clocks say.
     """
 
-    async def renew(self, session: AsyncSession, process_id: str) -> None:
+    async def renew(
+        self, session: AsyncSession, process_id: str, key_ids: list[str]
+    ) -> None:
         """Claim the lease, or renew it: its beat is now. A row pruned while
         this process could not reach the database is claimed again."""
         await session.execute(
             insert(SwitchCoreProcess)
-            .values(id=process_id, started_at=func.now(), beat_at=func.now())
+            .values(
+                id=process_id,
+                started_at=func.now(),
+                beat_at=func.now(),
+                key_ids=key_ids,
+            )
             .on_conflict_do_update(
                 index_elements=[SwitchCoreProcess.id],
                 set_={"beat_at": func.now(), "stopped_at": None},
@@ -64,9 +73,14 @@ class SwitchCoreProcessStore:
                 SwitchCoreProcess.id,
                 SwitchCoreProcess.beat_at,
                 SwitchCoreProcess.stopped_at,
+                SwitchCoreProcess.key_ids,
             )
         )
         return now, {
-            process_id: ProcessLeaseRow(beat_at=beat_at, stopped_at=stopped_at)
-            for process_id, beat_at, stopped_at in rows.all()
+            process_id: ProcessLeaseRow(
+                beat_at=beat_at,
+                stopped_at=stopped_at,
+                key_ids=None if key_ids is None else tuple(key_ids),
+            )
+            for process_id, beat_at, stopped_at, key_ids in rows.all()
         }

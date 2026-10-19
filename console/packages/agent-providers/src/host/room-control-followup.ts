@@ -27,3 +27,10 @@ export function roomControlFollowup(input: {
 export function followupCommandId(commandId: string): string {
   return `${commandId}:followup`;
 }
+
+/** What the room is told when the session refused a reset or compaction asked for there. */
+export function roomControlRefusal(action: 'reset' | 'compact', reason: string | null): string {
+  if (reason?.includes('SESSION_BUSY'))
+    return `I can't ${action} my session while I'm working on a turn. Ask again once I've finished, or stop the turn first.`;
+  return `I couldn't ${action} my session: ${reason?.replace(/^Error: /, '') || 'the session refused it.'}`;
+}

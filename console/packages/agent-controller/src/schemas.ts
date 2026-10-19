@@ -242,6 +242,13 @@ export const agentStatusSchema = z
   );
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
 
+/**
+ * Who moves this controller onto another release: itself, following the one
+ * Switch names, or Switch Console, which runs it and replaces its bundle.
+ */
+export const updatedBySchema = z.enum(['self', 'console']);
+export type UpdatedBy = z.infer<typeof updatedBySchema>;
+
 export const statusReportSchema = z.object({
   seq: z.number().int().positive(),
   observed_at: time,
@@ -249,6 +256,7 @@ export const statusReportSchema = z.object({
     version: z.string().min(1),
     protocol: z.literal(PROTOCOL_VERSION),
     assignment_revision: revision,
+    updated_by: updatedBySchema,
   }),
   machine: z.object({
     platform: platformSchema,
@@ -264,12 +272,26 @@ export const statusReportSchema = z.object({
   providers: z.array(providerStatusSchema),
   tools: z.array(toolStatusSchema),
   agents: z.array(agentStatusSchema),
+  /** Why this controller does not run the release Switch names, when it does not. */
+  update: z
+    .object({
+      target: z.string().min(1),
+      state: z.enum(['waiting_idle', 'failed', 'restart_needed']),
+      problem: z.string().max(500).optional(),
+    })
+    .optional(),
 });
 export type StatusReport = z.infer<typeof statusReportSchema>;
 
 export const statusResponseSchema = z.object({
   assignment_revision: revision,
   report_within_s: z.number().int().positive(),
+  /**
+   * The release Switch wants this controller to run, or null/absent for none.
+   * Kept unread here so a malformed one cannot fail the whole response:
+   * `readControllerRelease` reads it.
+   */
+  controller_release: z.unknown().optional(),
 });
 export type StatusResponse = z.infer<typeof statusResponseSchema>;
 
@@ -393,6 +415,9 @@ export const agentSessionCommandFrameSchema = z.object({
   command: z.looseObject({ commandId: z.string().min(1) }),
 });
 export type AgentSessionCommandFrame = z.infer<typeof agentSessionCommandFrameSchema>;
+
+export const agentWarmFrameSchema = z.object({ agent_id: id, room_id: id });
+export type AgentWarmFrame = z.infer<typeof agentWarmFrameSchema>;
 
 export const agentApprovalOutcomeFrameSchema = z.object({
   agent_id: id,

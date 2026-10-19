@@ -10,18 +10,21 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from switch_core.connections.adapters.github import GitHubAdapter
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
+from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.models import (
     ServiceConnection,
     ServiceTokenIssuance,
+    SignInFlow,
     User,
     require_tenant_id,
 )
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_session
 from switch_core.gateway.github_connections import router
@@ -34,7 +37,10 @@ TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 
 
 @pytest.fixture
-async def github_app(tmp_path, session_factory):
+async def github_app(request, tmp_path, session_factory):
+    """The GitHub routes on their own. Parametrize indirectly with True for the
+    workspace switch to apply, as the `service_connections` flag makes it."""
+    workspace_gate = getattr(request, "param", False)
     config = tmp_path / "github.json"
     config.write_text(
         json.dumps(
@@ -46,7 +52,7 @@ async def github_app(tmp_path, session_factory):
             }
         )
     )
-    github = GitHubConnections(str(config))
+    github = GitHubConnections.from_file(str(config))
     github.exchange = AsyncMock(
         return_value={
             "access_token": "SYNTHETIC-ACCESS",
@@ -87,12 +93,24 @@ async def github_app(tmp_path, session_factory):
         await session.commit()
     identity = {"user": user}
 
+    app = _process(github, identity, session_factory, workspace_gate)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
+    ) as client:
+        yield client, github, identity, session_factory
+
+
+def _process(github, identity, session_factory, workspace_gate: bool) -> FastAPI:
+    """One switch-core process's gateway: its own app, broker and flow store,
+    on the shared database."""
+
     async def sessions():
         async with session_factory() as session:
             yield session
 
     app = FastAPI()
     app.state.github_connections = github
+    app.state.sign_in_flows = SignInFlows(session_factory, TEST_KEYRING)
     app.state.service_broker = ServiceBroker(
         session_factory=session_factory,
         keyring=TEST_KEYRING,
@@ -101,15 +119,28 @@ async def github_app(tmp_path, session_factory):
         disabled={},
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=workspace_gate,
     )
     app.include_router(router, prefix="/gateway")
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
     app.dependency_overrides[get_session] = sessions
     app.dependency_overrides[get_config] = lambda: SimpleNamespace(keyring=TEST_KEYRING)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
-    ) as client:
-        yield client, github, identity, session_factory
+    return app
+
+
+class _EachRequestToTheNextProcess(httpx.AsyncBaseTransport):
+    """A load balancer with no stickiness: each request goes to the next of
+    the processes, in turn."""
+
+    def __init__(self, *apps: FastAPI) -> None:
+        self._transports = [httpx.ASGITransport(app=app) for app in apps]
+        self._next = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        transport = self._transports[self._next % len(self._transports)]
+        self._next += 1
+        return await transport.handle_async_request(request)
 
 
 BASE = "/gateway/provider-connections/github"
@@ -133,17 +164,9 @@ async def authorize(client):
 
 
 async def relay(client, flow_id):
+    """The browser comes back from GitHub and is sent on to Console's listener."""
     response = await client.get(
         BASE + "/callback", params={"state": flow_id, "code": "SYNTHETIC-CODE"}
-    )
-    assert response.status_code == 200
-    assert "Linking GitHub" in response.text
-    assert (
-        "form-action 'self' http://127.0.0.1:12345"
-        in response.headers["content-security-policy"]
-    )
-    response = await client.post(
-        BASE + "/callback", data={"state": flow_id, "code": "SYNTHETIC-CODE"}
     )
     assert response.status_code == 303
     location = urlsplit(response.headers["location"])
@@ -162,13 +185,7 @@ async def complete(client, flow_id):
     )
 
 
-async def confirm(client, flow_id):
-    return await client.post(
-        BASE + f"/flows/{flow_id}/confirm", json={"completion_secret": SECRET}
-    )
-
-
-async def test_browser_handoff_requires_console_completion_and_saves_encrypted(
+async def test_browser_handoff_completes_through_console_and_saves_encrypted(
     github_app,
 ):
     client, github, _, factory = github_app
@@ -176,14 +193,17 @@ async def test_browser_handoff_requires_console_completion_and_saves_encrypted(
     await relay(client, flow_id)
     github.exchange.assert_not_called()
     assert (await client.get(BASE + f"/flows/{flow_id}")).json()["status"] == "pending"
-    assert (await confirm(client, flow_id)).status_code == 409
-    assert (await complete(client, flow_id)).status_code == 204
     assert (await client.get(BASE)).json()["status"] == "not_connected"
+    completed = await complete(client, flow_id)
+    assert completed.status_code == 200, completed.text
+    assert completed.json() == {"warning": None, "login": "example-user"}
+    # The outcome stays readable, without the token, until Console drops it.
     assert (await client.get(BASE + f"/flows/{flow_id}")).json() == {
-        "status": "ready",
+        "status": "connected",
         "login": "example-user",
+        "error": None,
+        "warning": None,
     }
-    assert (await confirm(client, flow_id)).status_code == 200
     status = await client.get(BASE)
     assert (
         status.json()["installations"][0]["repositories"][0]["name"]
@@ -200,7 +220,10 @@ async def test_browser_handoff_requires_console_completion_and_saves_encrypted(
             json.loads(TEST_KEYRING.decrypt(row.encrypted_secret))["access_token"]
             == "SYNTHETIC-ACCESS"
         )
-    assert (await confirm(client, flow_id)).status_code == 410
+        flow = await session.scalar(select(SignInFlow).where(SignInFlow.id == flow_id))
+        assert flow is not None and flow.encrypted_result is None
+    assert (await client.delete(BASE + f"/flows/{flow_id}")).status_code == 204
+    assert (await client.get(BASE + f"/flows/{flow_id}")).status_code == 410
     assert (await client.delete(BASE)).status_code == 200
     github.revoke.assert_awaited_once_with("SYNTHETIC-ACCESS")
     assert (await client.get(BASE)).json()["status"] == "not_connected"
@@ -224,7 +247,7 @@ async def test_callback_rejects_missing_cookie_and_replayed_completion(github_ap
     )
     assert wrong.status_code == 400
     github.exchange.assert_not_called()
-    assert (await complete(client, flow_id)).status_code == 204
+    assert (await complete(client, flow_id)).status_code == 200
     assert (await complete(client, flow_id)).status_code == 400
     assert github.exchange.await_count == 1
     assert (
@@ -240,22 +263,85 @@ async def test_flow_is_bound_to_initiating_user_and_tenant(github_app):
     assert (await client.get(BASE + f"/flows/{flow_id}")).status_code == 404
     assert (await complete(client, flow_id)).status_code == 404
     identity["user"] = SimpleNamespace(id="github-user")
+    # Another workspace does not see the flow at all.
     with tenant_scope("other-tenant"):
-        assert (await complete(client, flow_id)).status_code == 404
+        assert (await complete(client, flow_id)).status_code == 410
     github.exchange.assert_not_called()
 
 
-async def test_cancel_expiry_and_restart_are_visible(github_app):
-    client, github, _, _ = github_app
+async def test_cancel_and_expiry_are_visible(github_app):
+    client, github, _, factory = github_app
     flow_id = await authorize(client)
     assert (await client.delete(BASE + f"/flows/{flow_id}")).status_code == 204
     assert (await client.get(BASE + f"/flows/{flow_id}")).status_code == 410
     flow_id = await authorize(client)
-    github.flows[flow_id].expires_at = 0
+    async with factory() as session:
+        await session.execute(
+            update(SignInFlow)
+            .where(SignInFlow.id == flow_id)
+            .values(expires_at=datetime.now(UTC) - timedelta(seconds=1))
+        )
+        await session.commit()
     assert (await client.get(BASE + f"/flows/{flow_id}")).status_code == 410
+    assert (
+        await client.get(BASE + "/authorize", params={"state": flow_id})
+    ).status_code == 400
+
+
+async def test_a_flow_keeps_nothing_secret_in_the_clear(github_app):
+    client, _, _, factory = github_app
     flow_id = await authorize(client)
-    github.flows.clear()
-    assert (await client.get(BASE + f"/flows/{flow_id}")).status_code == 410
+    await relay(client, flow_id)
+    assert (await complete(client, flow_id)).status_code == 200
+    async with factory() as session:
+        row = await session.scalar(select(SignInFlow).where(SignInFlow.id == flow_id))
+    assert row is not None
+    assert SECRET not in row.completion_secret_hash
+    assert "SYNTHETIC-REFRESH" not in (row.encrypted_result or "")
+    assert row.browser_nonce_hash is not None
+    assert row.account_label == "example-user"
+
+
+async def test_a_sign_in_started_on_one_process_completes_on_another(
+    github_app,
+):
+    """Every request of the sign-in lands on the other process from the one
+    before: start, the browser's two steps, completion and status."""
+    _, github, identity, factory = github_app
+    first = _process(github, identity, factory, False)
+    second = _process(github, identity, factory, False)
+    async with httpx.AsyncClient(
+        transport=_EachRequestToTheNextProcess(first, second),
+        base_url="https://switch.example.com",
+    ) as client:
+        flow_id = await authorize(client)
+        await relay(client, flow_id)
+        assert (await complete(client, flow_id)).status_code == 200
+        assert (await client.get(BASE + f"/flows/{flow_id}")).json() == {
+            "status": "connected",
+            "login": "example-user",
+            "error": None,
+            "warning": None,
+        }
+        assert (await client.get(BASE)).json()["login"] == "example-user"
+    github.exchange.assert_awaited_once()
+
+
+async def test_two_processes_racing_to_complete_exchange_the_code_once(github_app):
+    _, github, identity, factory = github_app
+    first = _process(github, identity, factory, False)
+    second = _process(github, identity, factory, False)
+    async with httpx.AsyncClient(
+        transport=_EachRequestToTheNextProcess(first, second),
+        base_url="https://switch.example.com",
+    ) as client:
+        flow_id = await authorize(client)
+        await relay(client, flow_id)
+        results = await asyncio.gather(
+            complete(client, flow_id), complete(client, flow_id)
+        )
+    assert sorted(r.status_code for r in results) == [200, 400]
+    github.exchange.assert_awaited_once()
 
 
 async def test_refresh_saved_before_repository_failure(github_app):
@@ -264,7 +350,6 @@ async def test_refresh_saved_before_repository_failure(github_app):
     github.exchange.return_value["expires_at"] = 0
     await relay(client, flow_id)
     await complete(client, flow_id)
-    await confirm(client, flow_id)
     github.exchange.return_value = {
         "access_token": "NEW-SYNTHETIC-ACCESS",
         "refresh_token": "NEW-SYNTHETIC-REFRESH",
@@ -286,7 +371,6 @@ async def test_failed_authorization_preserves_saved_connection(github_app):
     flow_id = await authorize(client)
     await relay(client, flow_id)
     await complete(client, flow_id)
-    await confirm(client, flow_id)
     next_id = await authorize(client)
     await relay(client, next_id)
     github.exchange.side_effect = GitHubError("GitHub rejected authorization")
@@ -317,8 +401,7 @@ async def test_github_identity_cannot_link_to_another_workspace_user(github_app)
     client, _, identity, factory = github_app
     first = await authorize(client)
     await relay(client, first)
-    assert (await complete(client, first)).status_code == 204
-    assert (await confirm(client, first)).status_code == 200
+    assert (await complete(client, first)).status_code == 200
     async with factory() as session:
         other = User(
             id="other-github-user",
@@ -332,10 +415,13 @@ async def test_github_identity_cannot_link_to_another_workspace_user(github_app)
     identity["user"] = other
     second = await authorize(client)
     await relay(client, second)
-    assert (await complete(client, second)).status_code == 204
-    response = await confirm(client, second)
+    response = await complete(client, second)
     assert response.status_code == 409
     assert "already linked" in response.json()["detail"]
+    assert (
+        "already linked"
+        in (await client.get(BASE + f"/flows/{second}")).json()["error"]
+    )
     assert response.json()["code"] == "account_linked_elsewhere"
     assert response.json()["retryable"] is False
     async with factory() as session:
@@ -344,14 +430,15 @@ async def test_github_identity_cannot_link_to_another_workspace_user(github_app)
         assert rows[0].user_id == "github-user"
 
 
-async def test_continue_page_reload_and_cancelled_consent(github_app):
+async def test_callback_is_taken_once_and_a_cancelled_consent_fails(github_app):
     client, github, _, _ = github_app
     flow_id = await authorize(client)
-    for _ in range(2):
-        response = await client.get(
-            BASE + "/callback", params={"state": flow_id, "code": "SYNTHETIC-CODE"}
-        )
-        assert response.status_code == 200
+    await relay(client, flow_id)
+    response = await client.get(
+        BASE + "/callback", params={"state": flow_id, "code": "SYNTHETIC-CODE"}
+    )
+    assert response.status_code == 400
+    flow_id = await authorize(client)
     response = await client.get(
         BASE + "/callback", params={"state": flow_id, "error": "access_denied"}
     )
@@ -366,7 +453,6 @@ async def test_concurrent_refresh_exchanges_once_and_saves_on_cancel(github_app)
     github.exchange.return_value["expires_at"] = 0
     await relay(client, flow_id)
     await complete(client, flow_id)
-    await confirm(client, flow_id)
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def refresh(data):
@@ -408,12 +494,36 @@ async def test_disconnect_finishes_and_warns_when_github_revoke_fails(github_app
     client, github, _, factory = github_app
     flow = await authorize(client)
     await relay(client, flow)
-    assert (await complete(client, flow)).status_code == 204
-    assert (await confirm(client, flow)).status_code == 200
+    assert (await complete(client, flow)).status_code == 200
     github.revoke.side_effect = GitHubError("Synthetic revocation failure")
     result = await client.delete(BASE)
     assert result.status_code == 200
     assert "GitHub settings" in result.json()["warning"]
+    async with factory() as session:
+        assert (
+            await session.scalar(
+                select(ServiceConnection).where(ServiceConnection.service == "github")
+            )
+            is None
+        )
+
+
+async def test_disconnect_works_once_the_app_is_removed(github_app):
+    client, github, _, factory = github_app
+    flow = await authorize(client)
+    await relay(client, flow)
+    assert (await complete(client, flow)).status_code == 200
+    # As `install_github_app(state, None)` and the broker leave the server.
+    state = client._transport.app.state
+    state.github_connections = None
+    state.service_broker.replace_adapter("github", None)
+    result = await client.delete(BASE)
+    assert result.status_code == 200
+    assert result.json()["warning"] == (
+        "GitHub is not set up on this server, so Switch could not revoke the "
+        "sign-in. Revoke it at GitHub."
+    )
+    github.revoke.assert_not_called()
     async with factory() as session:
         assert (
             await session.scalar(
@@ -442,8 +552,7 @@ async def test_relink_queues_existing_installation_tokens(github_app, monkeypatc
     client, github, identity, factory = github_app
     first = await authorize(client)
     await relay(client, first)
-    assert (await complete(client, first)).status_code == 204
-    assert (await confirm(client, first)).status_code == 200
+    assert (await complete(client, first)).status_code == 200
     async with factory() as session:
         issued = ServiceTokenIssuance(
             grant_id="grant",
@@ -473,11 +582,101 @@ async def test_relink_queues_existing_installation_tokens(github_app, monkeypatc
     }
     second = await authorize(client)
     await relay(client, second)
-    assert (await complete(client, second)).status_code == 204
-    response = await confirm(client, second)
+    response = await complete(client, second)
     assert response.status_code == 200
     assert response.json()["warning"]
     github.revoke.assert_awaited_once_with("SYNTHETIC-ACCESS")
     async with factory() as session:
         row = await session.get(ServiceTokenIssuance, (require_tenant_id(), issued.id))
         assert row.revoke_requested and row.encrypted_token is not None
+
+
+GITHUB_REFUSAL = {
+    "detail": (
+        "GitHub is not enabled in this workspace. Ask a workspace admin; they "
+        "switch it on under Connectors in Switch Console."
+    ),
+    "code": "forbidden",
+    "retryable": False,
+}
+
+
+async def _switch_github(factory, user_id: str, enabled: bool) -> None:
+    async with factory() as session:
+        await WorkspaceServiceStore().set_enabled(session, "github", enabled, user_id)
+        await session.commit()
+
+
+async def _start(client):
+    return await client.post(
+        BASE + "/flows",
+        json={
+            "port": 12345,
+            "state": secrets.token_urlsafe(32),
+            "completion_secret": SECRET,
+        },
+    )
+
+
+@pytest.mark.parametrize("github_app", [True], indirect=True)
+async def test_start_is_refused_where_the_workspace_switched_github_off(github_app):
+    client, github, identity, factory = github_app
+    await _switch_github(factory, identity["user"].id, False)
+    response = await _start(client)
+    assert response.status_code == 403
+    assert response.json() == GITHUB_REFUSAL
+    async with factory() as session:
+        assert await session.scalar(select(SignInFlow)) is None
+
+
+async def test_with_the_flag_off_the_workspace_switch_is_ignored(github_app):
+    client, _, identity, factory = github_app
+    await _switch_github(factory, identity["user"].id, False)
+    assert (await _start(client)).status_code == 200
+
+
+@pytest.mark.parametrize("github_app", [True], indirect=True)
+async def test_switched_off_mid_flow_the_sign_in_is_revoked_and_not_kept(github_app):
+    client, github, identity, factory = github_app
+    flow_id = await authorize(client)
+    await relay(client, flow_id)
+    await _switch_github(factory, identity["user"].id, False)
+
+    response = await complete(client, flow_id)
+
+    assert response.status_code == 403
+    assert response.json() == GITHUB_REFUSAL
+    github.revoke.assert_awaited_once_with("SYNTHETIC-ACCESS")
+    async with factory() as session:
+        flow = await session.scalar(select(SignInFlow).where(SignInFlow.id == flow_id))
+        assert flow is not None
+        assert (flow.status, flow.encrypted_result) == ("failed", None)
+        assert flow.error == GITHUB_REFUSAL["detail"]
+        assert await session.scalar(select(ServiceConnection)) is None
+
+
+async def test_the_connection_records_the_apps_client(github_app):
+    client, _, _, factory = github_app
+    flow_id = await authorize(client)
+    await relay(client, flow_id)
+    assert (await complete(client, flow_id)).status_code == 200
+    async with factory() as session:
+        row = await session.scalar(
+            select(ServiceConnection).where(ServiceConnection.service == "github")
+        )
+    assert row.oauth_client_id == "example-client"
+
+
+async def test_an_app_replaced_during_the_sign_in_is_refused(github_app):
+    """The sign-in carried over to an App with another client: its code was
+    issued to the old one, so it is refused before GitHub is asked."""
+    client, github, _, _ = github_app
+    flow_id = await authorize(client)
+    await relay(client, flow_id)
+    github.client_id = "another-client"
+    response = await complete(client, flow_id)
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "This server's GitHub App changed during your sign-in. Start it again."
+    )
+    github.exchange.assert_not_called()

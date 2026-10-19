@@ -25,14 +25,16 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
+from switch_core.db.models import TENANT_ZERO_ID
 
 AGENT_ID = "agent-1"
 CONN_ID = "conn-1"
 
 
 class _Protocol:
-    def __init__(self) -> None:
-        self.event_buffer = EventBuffer(sequence_base=0)
+    def __init__(self, event_buffer: EventBuffer) -> None:
+        self.event_buffer = event_buffer
         self.connections = AgentConnectionRegistry()
         # No approval outcomes: these tests are about opening the stream.
         self.approval_outcomes = None
@@ -55,7 +57,7 @@ def _attach(protocol: _Protocol) -> Any:
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
@@ -64,7 +66,9 @@ def _attach(protocol: _Protocol) -> Any:
 async def _reopen(protocol: _Protocol, expected_generation: int | None) -> Any:
     conn, _frames = await _open_connection(
         config=None,  # type: ignore[arg-type]
-        agent=SimpleNamespace(id=AGENT_ID, metadata_={}),  # type: ignore[arg-type]
+        agent=SimpleNamespace(  # type: ignore[arg-type]
+            id=AGENT_ID, tenant_id=TENANT_ZERO_ID, metadata_={}
+        ),
         protocol=protocol,  # type: ignore[arg-type]
         connection_id=CONN_ID,
         scope="single",
@@ -78,8 +82,10 @@ async def _reopen(protocol: _Protocol, expected_generation: int | None) -> Any:
     return conn
 
 
-async def test_a_reattach_claiming_a_superseded_incarnation_is_refused() -> None:
-    protocol = _Protocol()
+async def test_a_reattach_claiming_a_superseded_incarnation_is_refused(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     displaced = _attach(protocol).stream_generation
     _attach(protocol)  # the winner attaches; the incarnation bumps
 
@@ -90,9 +96,11 @@ async def test_a_reattach_claiming_a_superseded_incarnation_is_refused() -> None
     assert caught.value.detail["code"] == "taken_over"  # type: ignore[index]
 
 
-async def test_the_refused_reattach_leaves_the_winner_attached() -> None:
+async def test_the_refused_reattach_leaves_the_winner_attached(
+    db_buffer: EventBuffer,
+) -> None:
     """Refusing must cost the holder nothing, or it is a way to disrupt it."""
-    protocol = _Protocol()
+    protocol = _Protocol(db_buffer)
     displaced = _attach(protocol).stream_generation
     winner = _attach(protocol)
     held = winner.stream_generation
@@ -107,8 +115,8 @@ async def test_the_refused_reattach_leaves_the_winner_attached() -> None:
     assert protocol.declarations == []
 
 
-async def test_the_holders_own_reattach_is_admitted() -> None:
-    protocol = _Protocol()
+async def test_the_holders_own_reattach_is_admitted(db_buffer: EventBuffer) -> None:
+    protocol = _Protocol(db_buffer)
     conn = _attach(protocol)
     before = conn.stream_generation
 
@@ -120,9 +128,11 @@ async def test_the_holders_own_reattach_is_admitted() -> None:
     assert protocol.declarations != []
 
 
-async def test_a_client_that_claims_nothing_still_takes_over() -> None:
+async def test_a_client_that_claims_nothing_still_takes_over(
+    db_buffer: EventBuffer,
+) -> None:
     """Old clients, and deliberate takeovers, are unconditional as before."""
-    protocol = _Protocol()
+    protocol = _Protocol(db_buffer)
     conn = _attach(protocol)
     before = conn.stream_generation
 

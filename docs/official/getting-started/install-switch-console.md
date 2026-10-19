@@ -2,7 +2,7 @@
 
 _Install the desktop app that will help you set up and manage Switch_
 
-Published at <https://docs.flintai.dev/flintai/switch/getting-started/install-switch-console> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/getting-started/install-switch-console> — link readers there, not to this file.
 
 Switch Console is the desktop app that guides you through setting up Switch. If you haven't already, review [Setting up Switch](index.md) to decide where your server will run and prepare the connections you'll need.
 

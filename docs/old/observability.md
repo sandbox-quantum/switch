@@ -113,7 +113,10 @@ readiness never gated on it.
 
 A steady `switch.runtime.event_loop_lag` of one or two milliseconds is the
 floor, not a stall: it is how far past its deadline a timer normally wakes.
-The alert on it fires at a thousand times that.
+The alert on it fires at a thousand times that. The reading comes from a probe
+that wakes every 100 ms, so a stall longer than that is always caught and read
+to within 100 ms. `switch.runtime.event_loop_stalls` counts each stall of 50 ms
+or more by duration, which says how often the loop blocks, not only how badly.
 
 **What this does not exercise.** A bare server has no rooms, no agents and no
 bridges, so nine of the twenty-five metrics never appear — everything under
@@ -233,14 +236,23 @@ handled in a way that leaves no trace.
 - **`switch.messages.delivery_failures`** — the delivery loop swallows one
   room's exception so it cannot stop the others. Correct, and it means a room
   that stopped delivering leaves only a log line.
+- **`switch.messages.backlog_skipped`**: a consumer resuming from its
+  stored cursor steps over rows older than its replay cap rather than answer
+  them late. The rows stay in the room; what they would have caused (a
+  command's reply, a platform post) never happens, and only this says so.
 - **`switch.messages.send_failures`** — a send that raises before the commit
   writes nothing, so the symptom is an absence, and an absence is what a quiet
   room looks like too.
 - **`switch.messages.observer_failures`** — reporting a message for product
-  telemetry raised, after the transport committed it or while an agent's
-  consumer was delivering it. Caught, because the message itself is fine: a
-  send that raised after its commit would be retried and posted twice. So the
-  only trace is a rate-limited log line.
+  telemetry raised, after the transport committed it or after the router
+  decided an agent was asked something in it. Caught, because the message
+  itself is fine: a send that raised after its commit would be retried and
+  posted twice. So the only trace is a rate-limited log line.
+- **`switch.messages.routing_failures`**: the router could not store one
+  agent's own event for a message it was writing, could not post a reply that
+  message owed (an offline notice, a refusal, a command's answer), or could not
+  decide a multi-file post it had given up waiting for. Each is caught so that
+  one agent cannot cost the room its message, so `stage` says which it was.
 - **`switch.agent.events_dropped`** — an agent's buffer discards events when it
   overflows or when they age out. The agent is *told* it missed them, so
   nothing is hidden from the agent; nothing told anybody else.

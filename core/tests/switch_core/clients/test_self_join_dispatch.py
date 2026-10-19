@@ -1,8 +1,7 @@
 """The self-join hook must still fire when the client joined the room itself.
 
-`join_room` records membership as soon as the join returns so `wait_joined` and
-the `_should_ignore` cutoff are accurate (CHOO-1781). Auto-accepting an invite
-goes through it, so by the time the join arrives over sync the room is already
+`join_room` records membership as soon as the join returns so `wait_joined` is
+accurate (CHOO-1781). Auto-accepting an invite goes through it, so by the time the join arrives over sync the room is already
 in `room_join_times` — CHOO-2170: gating the hook on that made the agent
 greeting unreachable on every room an agent is invited to, which is all of them.
 """
@@ -29,7 +28,6 @@ class _Client(Consumer):
         actor._room_joined_events = {}
         self.actor = actor
         self._self_join_dispatched = set()
-        self._startup_ts = 1000
         self.self_joins: list[str] = []
         self.member_events: list[str] = []
 
@@ -97,12 +95,15 @@ async def test_profile_update_is_not_an_arrival() -> None:
 
 
 @pytest.mark.asyncio
-async def test_join_predating_this_process_is_not_announced() -> None:
+async def test_a_join_handed_over_late_is_still_announced() -> None:
+    """Whether a join is news is the cursor's call, not the clock's. A join
+    the client had not handled when its last reader stopped is handed to the
+    next one, however long ago it was, and is announced there."""
     client = _Client()
 
     await client._handle_member_event(_room(), _member_event(timestamp=500))
 
-    assert client.self_joins == []
+    assert client.self_joins == [TRANSPORT_ROOM_ID]
 
 
 @pytest.mark.asyncio
@@ -130,17 +131,3 @@ async def test_another_member_joining_is_not_a_self_join() -> None:
 
     assert client.self_joins == []
     assert client.member_events == [other]
-
-
-@pytest.mark.asyncio
-async def test_an_arrival_is_logged_even_when_it_is_not_announced() -> None:
-    """Announcing and logging answer different questions.
-
-    A join older than this process is nobody's news, so it is not announced.
-    It is still how that participant got into the room, so it is still history.
-    """
-    client = _Client()
-
-    await client._handle_member_event(_room(), _member_event(timestamp=500))
-
-    assert client.self_joins == []

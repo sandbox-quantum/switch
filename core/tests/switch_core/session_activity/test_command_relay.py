@@ -12,6 +12,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.bridges.agent.protocol.stream import event_frames
 from switch_core.db.models import User
 from switch_core.gateway.agent_sessions import router
@@ -32,7 +33,11 @@ class _Protocol:
 
 
 def _watcher(
-    registry: AgentConnectionRegistry, *, speaks: int | None, scope: str = "all"
+    registry: AgentConnectionRegistry,
+    buffer: EventBuffer,
+    *,
+    speaks: int | None,
+    scope: str = "all",
 ):
     conn = registry.open(
         agent_id=AGENT,
@@ -40,14 +45,14 @@ def _watcher(
         scope=scope,
         delivery_filter="addressed",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=speaks),
         expected_generation=None,
     )
     stream = event_frames(
         conn=conn,
         registry=registry,
-        buffer=EventBuffer(sequence_base=0),
+        buffer=buffer,
         approvals=None,
     )
     return conn, stream
@@ -73,9 +78,11 @@ async def owner(session_factory, people) -> str:
         return await make_agent(db, AGENT)
 
 
-async def test_a_relayed_session_command_reaches_the_watcher_stream() -> None:
+async def test_a_relayed_session_command_reaches_the_watcher_stream(
+    db_buffer: EventBuffer,
+) -> None:
     registry = AgentConnectionRegistry()
-    _, stream = _watcher(registry, speaks=PROTOCOL_VERSION)
+    _, stream = _watcher(registry, db_buffer, speaks=PROTOCOL_VERSION)
     try:
         await anext(stream)  # connection_state
         waiting = asyncio.create_task(anext(stream))
@@ -95,9 +102,11 @@ async def test_a_relayed_session_command_reaches_the_watcher_stream() -> None:
         (PROTOCOL_VERSION, "single"),
     ],
 )
-async def test_a_command_nobody_can_take_is_not_relayed(speaks, scope) -> None:
+async def test_a_command_nobody_can_take_is_not_relayed(
+    speaks, scope, db_buffer: EventBuffer
+) -> None:
     registry = AgentConnectionRegistry()
-    conn, stream = _watcher(registry, speaks=speaks, scope=scope)
+    conn, stream = _watcher(registry, db_buffer, speaks=speaks, scope=scope)
     conn.stream_attached = True
     assert registry.relay_session_command(AGENT, FRAME) is False
     assert conn.session_commands == []
@@ -105,11 +114,11 @@ async def test_a_command_nobody_can_take_is_not_relayed(speaks, scope) -> None:
 
 
 async def test_switch_does_not_answer_where_an_agents_sessions_are(
-    session_factory, owner
+    session_factory, owner, db_buffer: EventBuffer
 ) -> None:
     """The agent's room watcher owns its connection and placements; Console asks it."""
     registry = AgentConnectionRegistry()
-    _watcher(registry, speaks=PROTOCOL_VERSION)
+    _watcher(registry, db_buffer, speaks=PROTOCOL_VERSION)
     registry.place_session(AGENT, "session-1", "room-1", f"conn-all-{PROTOCOL_VERSION}")
     async with _client(session_factory, registry, owner) as client:
         assert (await client.get("/agent-sessions/room-health")).status_code == 404

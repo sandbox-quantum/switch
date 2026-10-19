@@ -1,4 +1,4 @@
-import { USER_DATA_DIR_NAME } from '@shared/app-identity';
+import { userDataDirName } from '../../app/user-data-dir';
 
 /**
  * Fixed coordinates for the managed local stack. These mirror the ports and
@@ -8,26 +8,40 @@ import { USER_DATA_DIR_NAME } from '@shared/app-identity';
  */
 
 /**
+ * The `docker compose --project-name` of a managed stack kept by the Console
+ * whose data lives in `dataDirName`, made of what compose accepts in a project
+ * name: lowercase letters, digits, `-` and `_`, starting with a letter or digit.
+ */
+export function stackProjectName(dataDirName: string, kind: 'local' | 'remote'): string {
+  const safe = dataDirName
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^[^a-z0-9]+/, '');
+  return `${safe || 'switchdash'}-${kind}`;
+}
+
+/**
  * `docker compose --project-name` for the managed stack on this machine, so its
  * containers and volumes are isolated and discoverable across app restarts.
  *
- * Scoped per build. Each build keeps its generated stack secrets in its own
- * userData dir (see USER_DATA_DIR_NAME), but Postgres only honours
- * POSTGRES_PASSWORD when it initialises a fresh volume — so builds sharing one
- * project name share `pgdata` and every build except the one that created it
+ * One per data directory. Each Console keeps its generated stack secrets and
+ * its chosen ports in its own data directory, but Postgres only honours
+ * POSTGRES_PASSWORD when it initialises a fresh volume — so Consoles sharing one
+ * project name share `pgdata` and every one except the one that created it
  * fails authentication. They also fight over the containers themselves,
- * recreating each other's stack on start. Stable keeps the original name so
+ * recreating each other's stack on start with their own ports. That covers
+ * dev builds and Canary started side by side with SWITCH_CONSOLE_USER_DATA_DIR,
+ * not only different builds. Stable keeps the original name, `switchdash-local`, so
  * existing installs stay attached to the stack they already have.
  */
-export const LOCAL_SERVER_PROJECT_NAME =
-  USER_DATA_DIR_NAME === 'switchdash' ? 'switchdash-local' : `${USER_DATA_DIR_NAME}-local`;
+export const LOCAL_SERVER_PROJECT_NAME = stackProjectName(userDataDirName(), 'local');
 
 /** `docker compose --project-name` for a managed stack on a remote host. Each
- * remote host runs its own Docker daemon, so one name per build is enough to
- * isolate + rediscover the stack there — per build for the same reason as
- * {@link LOCAL_SERVER_PROJECT_NAME}, since two builds can target one host. */
-export const REMOTE_SERVER_PROJECT_NAME =
-  USER_DATA_DIR_NAME === 'switchdash' ? 'switchdash-remote' : `${USER_DATA_DIR_NAME}-remote`;
+ * remote host runs its own Docker daemon, so one name per data directory is
+ * enough to isolate + rediscover the stack there — per data directory for the
+ * same reason as {@link LOCAL_SERVER_PROJECT_NAME}, since two Consoles can
+ * target one host. */
+export const REMOTE_SERVER_PROJECT_NAME = stackProjectName(userDataDirName(), 'remote');
 
 /**
  * The volume holding what every Console sharing a remote stack must agree on:

@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import secrets
 from datetime import timedelta
-from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -19,13 +18,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import ConnectionSecret
+from switch_core.connections.adapters.oauth import OAuthAdapter, OAuthClientCredentials
 from switch_core.connections.broker import Principal, ServiceBroker
 from switch_core.connections.flows import ServiceFlows
 from switch_core.connections.loader import CATALOG
 from switch_core.connections.oauth_clients import LOOPBACK_CALLBACK_PATH
 from switch_core.connections.registry import ClientRegistration, build_adapters
+from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.models import ServiceConnection, User
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway.service_connections import (
     router as service_connections_router,
 )
@@ -74,25 +76,19 @@ class World:
 
 def _world(
     session_factory: async_sessionmaker[AsyncSession],
-    tmp_path: Path,
     *,
     client_settings: bool = True,
     disabled: dict[str, str] | None = None,
 ) -> World:
     google = FakeGoogle()
-    environ = {}
-    if client_settings:
-        path = tmp_path / "google-client.json"
-        path.write_text(
-            json.dumps(
-                {"client_id": STATIC_CLIENT_ID, "client_secret": STATIC_CLIENT_SECRET}
-            )
-        )
-        environ["GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH"] = str(path)
     adapters = build_adapters(
         CATALOG,
         github_app=None,
-        environ=environ,
+        oauth_clients=(
+            {SERVICE: OAuthClientCredentials(STATIC_CLIENT_ID, STATIC_CLIENT_SECRET)}
+            if client_settings
+            else {}
+        ),
         http=google.client(),
         registration=ClientRegistration(
             session_factory=session_factory,
@@ -109,17 +105,34 @@ def _world(
         disabled=disabled or {},
         store=STORE,
         token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=False,
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker
-    harness.gateway_app.state.service_flows = ServiceFlows(PUBLIC)
+    harness.gateway_app.state.service_flows = ServiceFlows(
+        PUBLIC, SignInFlows(harness.session_factory, TEST_KEYRING)
+    )
     harness.gateway_app.include_router(service_connections_router)
     harness.gateway_app.include_router(service_flows_router)
     return World(harness, google, broker)
 
 
 async def _connect(world: World, client: httpx.AsyncClient, user: User) -> None:
-    """Switch Console's side and the person's browser, through Core's callback."""
+    state, secret, code = await _signed_in(world, client, user)
+    completed = await client.post(
+        f"{FLOWS}/{state}/complete",
+        json={"completion_secret": secret, "code": code},
+        cookies=cookies_for(user),
+    )
+    assert completed.status_code == 200, completed.text
+
+
+async def _signed_in(
+    world: World, client: httpx.AsyncClient, user: User
+) -> tuple[str, str, str]:
+    """Switch Console's side and the person's browser, through Core's callback,
+    up to Console holding the code: its state, completion secret and code."""
     state = secrets.token_urlsafe(32)
     secret = secrets.token_urlsafe(32)
     started = await client.post(
@@ -136,30 +149,15 @@ async def _connect(world: World, client: httpx.AsyncClient, user: User) -> None:
     back = urlsplit(world.google.authorize(left.headers["location"]))
     assert f"{back.scheme}://{back.netloc}{back.path}" == f"{PUBLIC}{FLOWS}/callback"
     code = parse_qs(back.query)["code"][0]
-    page = await client.get(f"{back.path}?{back.query}", cookies=cookie)
-    assert page.status_code == 200
-    relayed = await client.post(
-        f"{FLOWS}/callback", data={"state": state, "code": code}, cookies=cookie
-    )
-    assert relayed.status_code == 303
-    listener = urlsplit(relayed.headers["location"])
+    returned = await client.get(f"{back.path}?{back.query}", cookies=cookie)
+    assert returned.status_code == 303
+    listener = urlsplit(returned.headers["location"])
     assert (listener.netloc, listener.path) == (
         f"127.0.0.1:{PORT}",
         LOOPBACK_CALLBACK_PATH,
     )
     assert parse_qs(listener.query)["code"] == [code]
-    completed = await client.post(
-        f"{FLOWS}/{state}/complete",
-        json={"completion_secret": secret, "code": code},
-        cookies=cookies_for(user),
-    )
-    assert completed.status_code == 204, completed.text
-    confirmed = await client.post(
-        f"{FLOWS}/{state}/confirm",
-        json={"completion_secret": secret},
-        cookies=cookies_for(user),
-    )
-    assert confirmed.status_code == 200, confirmed.text
+    return state, secret, code
 
 
 async def _connection(
@@ -176,11 +174,82 @@ async def _connection(
     return connection
 
 
+def _another_client(world: World, session_factory) -> OAuthAdapter:
+    adapter = build_adapters(
+        CATALOG,
+        github_app=None,
+        oauth_clients={
+            SERVICE: OAuthClientCredentials("other-client-id", "example-secret-1111")
+        },
+        http=world.google.client(),
+        registration=ClientRegistration(
+            session_factory=session_factory,
+            keyring=TEST_KEYRING,
+            public_url=PUBLIC,
+            server_name="switch.example.com",
+        ),
+    )[SERVICE]
+    assert isinstance(adapter, OAuthAdapter)
+    return adapter
+
+
+class TestTheClientSignedInThrough:
+    async def test_the_connection_records_it(self, session_factory) -> None:
+        world = _world(session_factory)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+        connection = await _connection(session_factory, ada.id)
+        assert connection.oauth_client_id == STATIC_CLIENT_ID
+
+    async def test_a_client_replaced_during_the_sign_in_is_refused(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            state, secret, code = await _signed_in(world, client, ada)
+            world.broker.replace_adapter(
+                SERVICE, _another_client(world, session_factory)
+            )
+            completed = await client.post(
+                f"{FLOWS}/{state}/complete",
+                json={"completion_secret": secret, "code": code},
+                cookies=cookies_for(ada),
+            )
+        assert completed.status_code == 400
+        assert completed.json()["detail"] == (
+            "This server's Google Workspace app changed during your sign-in. "
+            "Start it again."
+        )
+        assert [
+            request
+            for request in world.google.token_requests
+            if request.get("grant_type") == "authorization_code"
+        ] == []
+
+    async def test_a_replaced_client_shows_the_connection_as_needing_reconnecting(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+            world.broker.replace_adapter(
+                SERVICE, _another_client(world, session_factory)
+            )
+            listed = await client.get(
+                "/gateway/service-connections", cookies=cookies_for(ada)
+            )
+        [google] = [c for c in listed.json()["connections"] if c["slug"] == SERVICE]
+        assert google["status"] == "needs_reauthorization"
+
+
 class TestSignIn:
     async def test_signs_in_offline_through_core_and_keeps_the_refresh_token(
-        self, session_factory, tmp_path
+        self, session_factory
     ) -> None:
-        world = _world(session_factory, tmp_path)
+        world = _world(session_factory)
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
             await _connect(world, client, ada)
@@ -206,9 +275,9 @@ class TestSignIn:
         assert secret["access_token"] in world.google.live_access
 
     async def test_a_sign_in_without_the_write_scopes_is_read_only(
-        self, session_factory, tmp_path
+        self, session_factory
     ) -> None:
-        world = _world(session_factory, tmp_path)
+        world = _world(session_factory)
         world.google.unticked = set(WRITE_ONLY)
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
@@ -220,9 +289,9 @@ class TestSignIn:
 
 class TestAgents:
     async def test_a_granted_agent_gets_gws_and_the_owners_token(
-        self, session_factory, tmp_path
+        self, session_factory
     ) -> None:
-        world = _world(session_factory, tmp_path)
+        world = _world(session_factory)
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
             await _connect(world, client, ada)
@@ -260,9 +329,9 @@ class TestAgents:
         assert issued.token in world.google.live_access
 
     async def test_a_refresh_keeps_googles_reusable_refresh_token(
-        self, session_factory, tmp_path
+        self, session_factory
     ) -> None:
-        world = _world(session_factory, tmp_path)
+        world = _world(session_factory)
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
             await _connect(world, client, ada)
@@ -276,9 +345,9 @@ class TestAgents:
 
 class TestDisconnect:
     async def test_disconnecting_revokes_the_sign_in_at_google(
-        self, session_factory, tmp_path
+        self, session_factory
     ) -> None:
-        world = _world(session_factory, tmp_path)
+        world = _world(session_factory)
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
             await _connect(world, client, ada)
@@ -301,8 +370,9 @@ class TestAvailability:
             (
                 False,
                 {},
-                "Not set up on this server. Its operator registers an internal "
-                "Google app; see the docs.",
+                "Google Workspace is not set up on this server. Ask whoever runs "
+                "your Switch server to add it under Connectors in the Switch "
+                "dashboard.",
             ),
             (
                 True,
@@ -313,11 +383,10 @@ class TestAvailability:
         ids=["no-client-settings", "switched-off"],
     )
     async def test_says_why_google_workspace_cannot_be_used_here(
-        self, session_factory, tmp_path, client_settings, disabled, reason
+        self, session_factory, client_settings, disabled, reason
     ) -> None:
         world = _world(
             session_factory,
-            tmp_path,
             client_settings=client_settings,
             disabled=disabled,
         )

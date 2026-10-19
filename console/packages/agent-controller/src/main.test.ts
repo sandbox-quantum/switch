@@ -1,11 +1,12 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK } from './exit-codes';
-import { infoChange, main } from './main';
+import { infoChange, installerFor, isSupervised, main, planServiceReleases } from './main';
 import { dataLayout } from './paths';
 import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
+import { ReleasesDirInstaller } from './self-update';
 import { ControllerStore } from './store';
 
 let dir: string;
@@ -44,6 +45,10 @@ describe('main', () => {
     expect(lastLine()).toBe(
       'switch-agent-controller: --controller-id and --server adopt an identity together; pass both.'
     );
+    expect(await main(['run', '--updated-by-console', '--releases-dir', '/tmp/releases'])).toBe(
+      EXIT_CONFIGURATION
+    );
+    expect(lastLine()).toMatch(/--updated-by-console and --releases-dir disagree/);
     expect(await main(['enroll', '--server', 'https://switch.example.com'])).toBe(
       EXIT_CONFIGURATION
     );
@@ -280,5 +285,100 @@ describe('infoChange', () => {
     });
     expect(() => infoChange({ name: 'x'.repeat(201) })).toThrow(/at most 200/);
     expect(() => infoChange({ description: 'y'.repeat(501) })).toThrow(/at most 500/);
+  });
+});
+
+describe('isSupervised', () => {
+  it('restarts on 7 under the separate-users service, launchd, or anything systemd runs', () => {
+    expect(isSupervised(null, false, {})).toBe(false);
+    expect(
+      isSupervised(
+        {
+          v: 1,
+          user: 'builder',
+          uid: 1001,
+          gid: 990,
+          dataDir: '/var/lib/controller',
+          agentsDir: '/var/lib/switch-agents/1001',
+          agentUsers: 4,
+          node: '/usr/bin/node',
+          bundle: '/opt/shared-host.mjs',
+          releasesDir: null,
+        },
+        false,
+        {}
+      )
+    ).toBe(true);
+    expect(isSupervised(null, true, {})).toBe(true);
+    expect(isSupervised(null, false, { INVOCATION_ID: 'abc' })).toBe(true);
+  });
+});
+
+const NPM = { run: vi.fn(), node: 'node', cacheDir: 'cache', env: {} };
+
+describe('installerFor', () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'installer-for-'));
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('says a Windows controller does not update itself, whatever it runs from', async () => {
+    const installer = await installerFor(null, null, NPM, 'win32');
+    expect(installer.unavailable).toMatch(/Linux and macOS only/);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'installs into the releases directory a service runs through',
+    async () => {
+      const releasesDir = join(root, 'releases');
+      mkdirSync(releasesDir);
+      expect((await installerFor(null, releasesDir, NPM, 'linux')).unavailable).toMatch(
+        /no current link/
+      );
+      symlinkSync(join(root, 'prefix'), join(releasesDir, 'current'));
+      const installer = await installerFor(null, releasesDir, NPM, 'linux');
+      expect(installer.unavailable).toBeNull();
+      expect(installer).toBeInstanceOf(ReleasesDirInstaller);
+    }
+  );
+});
+
+describe.skipIf(process.platform === 'win32')('planServiceReleases', () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'service-releases-'));
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  const cliIn = (prefix: string) =>
+    join(prefix, 'lib', 'node_modules', 'switch-agent-controller', 'dist', 'cli.js');
+
+  it('runs an npm install through <data dir>/releases', async () => {
+    const dir = join(root, 'data', 'releases');
+    expect(await planServiceReleases(cliIn('/home/me/.local'), dir)).toEqual({
+      dir,
+      prefix: '/home/me/.local',
+    });
+  });
+
+  it('has none for a checkout', async () => {
+    expect(await planServiceReleases('/src/switch/console/dist/cli.js', root)).toBeNull();
+  });
+
+  it('runs again from a release of its own directory, and refuses another setup’s', async () => {
+    const own = join(root, 'data', 'releases');
+    const other = join(root, 'var', 'releases');
+    for (const dir of [own, other]) {
+      mkdirSync(join(dir, '0.31.0'), { recursive: true });
+      symlinkSync(join(dir, '0.31.0'), join(dir, 'current'));
+    }
+    expect(await planServiceReleases(cliIn(join(own, '0.31.0')), own)).toEqual({
+      dir: own,
+      prefix: join(own, '0.31.0'),
+    });
+    await expect(planServiceReleases(cliIn(join(other, '0.31.0')), own)).rejects.toThrow(
+      /releases directory of another setup/
+    );
   });
 });

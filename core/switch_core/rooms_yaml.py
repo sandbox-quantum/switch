@@ -78,12 +78,13 @@ PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
 # bridge's display name, a room's name, a platform username.
 ENTITY_PARAM_TYPES = ("agent", "bridge", "room", "user")
 
-# Param types the Console answers and removes before provisioning: the coding
-# agent that runs an agent the template creates, the machine it runs on, and
-# its working directory. The server sees them only in stored documents. They
-# are known types so such a document passes the lint and can be stored; if
-# one does reach provisioning it is treated as a string.
-CONSOLE_PARAM_TYPES = ("provider", "location", "directory")
+# Param types that say how an agent the template creates runs: the coding
+# agent that runs it, where it runs (`location`, a Console answer: this
+# computer or an SSH host; `machine`, one of the owner's machines on the
+# server), and its working directory. They are read when the agents are
+# created and removed before the rooms are provisioned; if one does reach
+# provisioning it is treated as a string.
+CONSOLE_PARAM_TYPES = ("provider", "location", "machine", "directory")
 
 # Param types whose ``default`` may be a list of candidates, tried in order
 # until one names something the server (or, for the Console's types, the
@@ -92,7 +93,7 @@ CONSOLE_PARAM_TYPES = ("provider", "location", "directory")
 # the first coding agent available where the agent runs. A `user` param has no "first":
 # which account is meant depends on who asks, and ``{$creator}`` already
 # covers the deployer.
-CHAIN_PARAM_TYPES = ("agent", "bridge", "room", "provider", "location")
+CHAIN_PARAM_TYPES = ("agent", "bridge", "room", "provider", "location", "machine")
 FIRST = "$first"
 # In a `room` param's chain: the room the template's own ``room:`` block
 # describes. Resolved by the Console, which decides between creating that
@@ -116,6 +117,7 @@ ParamType = Literal[
     "user",
     "provider",
     "location",
+    "machine",
     "directory",
 ]
 
@@ -820,8 +822,13 @@ class RoomYamlService:
         """
         try:
             data = yaml.safe_load(text)
+            # A version 2 param's `if:` is the template engine's, not the spec's.
             declared = {
-                name: ParamSpec.model_validate(spec)
+                name: ParamSpec.model_validate(
+                    {k: v for k, v in spec.items() if k != "if"}
+                    if isinstance(spec, dict)
+                    else spec
+                )
                 for name, spec in ((data or {}).get("params") or {}).items()
             }
         except (yaml.YAMLError, ValidationError, AttributeError, TypeError):
@@ -1148,6 +1155,24 @@ class RoomYamlService:
             rooms=room_results,
             errors=errors,
         )
+
+    async def check_bridges(self, parsed: ParsedTemplate) -> None:
+        """Every messaging app the rooms name must exist, checked before
+        anything is created: a run that creates agents first would otherwise
+        find out only once they exist."""
+        specs = (
+            list(parsed.spec.rooms)
+            if isinstance(parsed.spec, GroupSpec)
+            else [parsed.spec]
+        )
+        for spec in specs:
+            bridge_id = await self._resolve_bridge_id(spec.bridge)
+            if spec.users and bridge_id is None:
+                raise ValueError(
+                    f"Room {spec.name!r} names users ({', '.join(spec.users)}), and "
+                    "it is on no messaging app: this server has none set up. Leave "
+                    "users out, or make them depend on a bridge."
+                )
 
     async def _resolve_bridge_id(self, bridge_name: str | None) -> str | None:
         if bridge_name is None:

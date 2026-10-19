@@ -9,10 +9,12 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     InboundMessage,
 )
+from switch_core.clients.admin_messages import SENDER_IS_APP_MARKER
 from switch_core.trust.client import NullTrustClient
 
 
 class _FakeHumanActor:
+    client_id = "human-actor-client"
     transport_user_id = "@human actor:s"
 
     def __init__(self) -> None:
@@ -54,9 +56,22 @@ class _FakeHumanActor:
         return f"$evt-{len(self.media) - 1}"
 
     async def send_message(
-        self, transport_room_id, content, *, metered, format=None, thread_root_id=None
+        self,
+        transport_room_id,
+        content,
+        *,
+        metered,
+        format=None,
+        thread_root_id=None,
+        extra_content=None,
     ):  # noqa: ANN001, ANN201, A002
-        self.messages.append({"content": content, "thread_root_id": thread_root_id})
+        self.messages.append(
+            {
+                "content": content,
+                "thread_root_id": thread_root_id,
+                "extra_content": extra_content,
+            }
+        )
         return "$evt-text"
 
 
@@ -88,6 +103,7 @@ def _fake_bridge() -> SimpleNamespace:
         return None
 
     ns = SimpleNamespace(
+        _bridge_id="bridge-1",
         _handle_text_answer=_no_text_answer,
         _repair_placeholder_username=_repair_placeholder_username,
         _adapter=_FakeAdapter(),
@@ -107,6 +123,7 @@ def _msg(
     content: str = "here you go",
     attachments: list[Attachment] | None = None,
     attachment_failures: list[AttachmentFailure] | None = None,
+    sender_is_app: bool = False,
 ) -> InboundMessage:
     return InboundMessage(
         channel_id="chan-1",
@@ -115,6 +132,7 @@ def _msg(
         sender_name="alice",
         content=content,
         message_ref="post-1",
+        sender_is_app=sender_is_app,
         attachments=attachments or [],
         attachment_failures=attachment_failures or [],
     )
@@ -161,6 +179,27 @@ async def test_three_attachments_are_stamped_as_one_group() -> None:
         }
     ]
     assert bridge.human_actor.messages == []
+
+
+async def test_a_post_delivered_again_writes_into_the_same_group() -> None:
+    # A delivery that stopped after the first file is sent again by the
+    # platform; the files it still writes must complete the first group, not
+    # start one of their own.
+    bridge = _fake_bridge()
+    post = _msg(
+        content="two files",
+        attachments=[
+            _attachment("cat.png", "image/png"),
+            _attachment("notes.md", "text/markdown"),
+        ],
+    )
+
+    await CollaborationCore._handle_inbound_message(bridge, post)
+    await CollaborationCore._handle_inbound_message(bridge, post)
+
+    media = bridge.human_actor.media
+    assert len(media) == 4
+    assert len({m["group"]["id"] for m in media}) == 1
 
 
 async def test_single_attachment_carries_no_group_marker() -> None:
@@ -238,3 +277,25 @@ async def test_attachment_failures_ride_on_the_caption_of_relayed_media() -> Non
     caption = bridge.human_actor.media[0]["caption"]
     assert "two files, one failed" in caption
     assert "huge.zip" in caption
+
+
+async def test_a_post_from_an_app_is_marked_as_one() -> None:
+    # Following the conversation never delivers an app's post; this marker is
+    # how it can tell.
+    bridge = _fake_bridge()
+
+    await CollaborationCore._handle_inbound_message(
+        bridge, _msg(content="CI failed on main", sender_is_app=True)
+    )
+
+    assert bridge.human_actor.messages[0]["extra_content"] == {
+        SENDER_IS_APP_MARKER: True
+    }
+
+
+async def test_a_post_from_a_person_carries_no_app_marker() -> None:
+    bridge = _fake_bridge()
+
+    await CollaborationCore._handle_inbound_message(bridge, _msg(content="hello"))
+
+    assert bridge.human_actor.messages[0]["extra_content"] is None

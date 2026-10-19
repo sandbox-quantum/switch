@@ -15,6 +15,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.collaboration.models import DirectoryUser
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Client,
@@ -145,3 +146,80 @@ async def test_admin_can_claim_an_identity_for_a_member(
         assert await _EXTERNAL_USERS.claimant_ids(session, external_user.id) == [
             member.id
         ]
+
+
+class _ProvisioningLifecycle:
+    """A running bridge whose directory lists one account Switch has not seen,
+    and which records it, from its own session, when asked to."""
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        bridge_id: str,
+        external_user_id: str,
+    ) -> None:
+        self._session_factory = session_factory
+        self._bridge_id = bridge_id
+        self._external_user_id = external_user_id
+
+    def get_adapter(self, _bridge_id: str) -> _ProvisioningLifecycle:
+        return self
+
+    def get(self, _bridge_id: str) -> _ProvisioningLifecycle:
+        return self
+
+    async def search_directory_users(self, _query: str) -> list[DirectoryUser]:
+        return [
+            DirectoryUser(
+                external_user_id=self._external_user_id,
+                username="user",
+                display_name="User",
+                email=None,
+            )
+        ]
+
+    async def ensure_external_user(
+        self, *, external_user_id: str, external_username: str
+    ) -> ExternalUser:
+        async with self._session_factory() as session:
+            external_user = ExternalUser(
+                bridge_id=self._bridge_id,
+                external_user_id=external_user_id,
+                external_username=external_username,
+                client_id=await _make_client(session, "external_user"),
+            )
+            session.add(external_user)
+            await session.commit()
+            return external_user
+
+
+async def test_claiming_an_account_switch_has_not_seen_links_it_to_the_caller(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # What a fresh deployment does on its first run: the seeded admin claims
+    # the seeded chat account before it has ever spoken. The caller is loaded
+    # in the request's own session, as authentication loads it.
+    bridge_id, _seen, admin, _member, _outsider = await _setup(session_factory)
+    unseen = f"U{uuid.uuid4().hex[:8]}"
+
+    async with session_factory() as session:
+        caller = await session.get(User, admin.id)
+        assert caller is not None
+        await claim_bridge_identity(
+            bridge_id,
+            ClaimIdentityRequest(external_user_id=unseen, username="user"),
+            session,
+            CollaborationBridgeStore(),
+            _EXTERNAL_USERS,
+            UserStore(),
+            _ProvisioningLifecycle(session_factory, bridge_id, unseen),  # type: ignore[arg-type]
+            caller,
+            True,
+        )
+
+    async with session_factory() as session:
+        provisioned = await _EXTERNAL_USERS.get_by_external_id(
+            session, bridge_id, unseen
+        )
+        assert provisioned is not None
+        assert await _EXTERNAL_USERS.claimant_ids(session, provisioned.id) == [admin.id]

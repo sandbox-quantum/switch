@@ -26,6 +26,7 @@ from switch_core.provisioning.postgres import (
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.invites import InviteBus
 from tests.conftest import RLSHarness
+from tests.routing import router_on
 
 
 async def _client(session: AsyncSession, name: str = "someone") -> Client:
@@ -55,6 +56,11 @@ async def _never(_room_id: str) -> None:
     raise AssertionError("the other half of the registration was rung")
 
 
+async def _no_reconcile() -> None:
+    """The re-read a change made in another process asks for. Nothing here
+    calls it: these tests make every change in this process."""
+
+
 def _provisioning(
     session_factory: async_sessionmaker[AsyncSession],
     invites: InviteBus | None = None,
@@ -63,7 +69,7 @@ def _provisioning(
         session_factory=session_factory,
         room_store=RoomStore(),
         client_store=ClientStore(),
-        message_store=MessageStore(),
+        router=router_on(session_factory),
         invites=invites or InviteBus(),
     )
 
@@ -135,7 +141,7 @@ class TestMembership:
         # because `transport_user_id` is unique per tenant and every tenant's
         # admin client carries the same one.
         invites = InviteBus()
-        invites.register(client_id, _handler, _never)
+        invites.register(client_id, _handler, _never, _no_reconcile)
         await _provisioning(session_factory, invites).invite_to_room(
             transport_room_id, user_id
         )
@@ -239,7 +245,7 @@ class TestMembership:
         invites = InviteBus()
         provisioning = _provisioning(session_factory, invites)
         await provisioning.invite_to_room(transport_room_id, user_id)
-        invites.register(client_id, _never, _handler)
+        invites.register(client_id, _never, _handler, _no_reconcile)
         await provisioning.kick_user(transport_room_id, user_id)
 
         assert told == [transport_room_id]
@@ -277,11 +283,11 @@ class TestMembership:
         provisioning = _provisioning(session_factory, invites)
 
         # Registered under the handle, which is what the bus is *not* keyed on.
-        invites.register(user_id, _never, _handler)
+        invites.register(user_id, _never, _handler, _no_reconcile)
         await provisioning.kick_user(transport_room_id, user_id)
         assert told == []
 
-        invites.register(client_id, _never, _handler)
+        invites.register(client_id, _never, _handler, _no_reconcile)
         await provisioning.kick_user(transport_room_id, user_id)
         assert told == [transport_room_id]
 
@@ -341,7 +347,7 @@ class TestMembership:
         await provisioning.invite_to_room(transport_room_id, user_id)
 
         invites = InviteBus()
-        invites.register(client.id, _handler, _never)
+        invites.register(client.id, _handler, _never, _no_reconcile)
         await _provisioning(session_factory, invites).invite_to_room(
             transport_room_id, user_id
         )
@@ -417,7 +423,9 @@ class TestTwoTenantsSharingAHandle:
 
         invites = InviteBus()
         for tenant_id in tenants:
-            invites.register(clients[tenant_id], _handler_for(tenant_id), _never)
+            invites.register(
+                clients[tenant_id], _handler_for(tenant_id), _never, _no_reconcile
+            )
 
         provisioning = _provisioning(rls_harness.restricted, invites)
         for tenant_id in tenants:

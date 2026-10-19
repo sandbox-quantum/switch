@@ -1,6 +1,25 @@
+"""Every collaboration bridge: quiet in every process, listening in the one that holds it.
+
+A bridge is a connection to a messaging platform. Two halves of it must run
+once: listening to the platform (a socket, a poll) and relaying the bridge's
+rooms out to it (the `WorkspaceConsumer`) with the session-activity drawings
+beside it, or every event comes in, and every message goes out, once per
+process. Those run in the one switch-core process that holds the bridge
+(`ownership.py`, kind `BRIDGE_CONNECTIONS`). Every other process runs the
+bridge quietly, without them, because requests that touch a platform (create a
+channel, add an agent to one, answer a webhook or a button press) reach any
+process.
+
+Registering, editing and removing a bridge reach every process as a
+`bridge.changed` signal (`bridge_signals.py`), so the holder applies an edit
+made through another process, and a bridge removed anywhere stops everywhere.
+"""
+
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import re
 import time
@@ -43,6 +62,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
+from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_collaboration_bridge
@@ -58,18 +78,54 @@ from switch_core.telemetry.deployment import (
 )
 from switch_core.telemetry.snapshot import normalise_platform
 from switch_core.tenant_context import current_tenant_id, no_tenant
+from switch_core.transport.cursors import ConsumerCursors, CursorWriter
 from switch_core.trust.client import NullTrustClient, TrustClient
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_connections import (
         AgentConnectionRegistry,
     )
+    from switch_core.bridges.collaboration.bridge_signals import BridgeSignals
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+    from switch_core.ownership import Fence, Ownership
     from switch_core.room_service import RoomService
     from switch_core.session_activity.listener import AgentSessionActivityListener
     from switch_core.session_activity.service import AgentSessionActivityService
 
 logger = logging.getLogger(__name__)
+
+# How long a bridge being stopped waits for its workspace consumer to finish
+# the message in hand. The transport gives it as long, then cancels the rest.
+STOP_GRACE_SECONDS = 5.0
+
+# The kind of owned work a bridge's platform connection is (`ownership.py`),
+# keyed by bridge id.
+BRIDGE_CONNECTIONS = "bridge"
+
+
+# What a running bridge writes into its own config as it learns it from
+# traffic (`_persist_service_url`, `_persist_channel_team`). Not an edit: the
+# copy that learned it already uses it, and any other reads it on its next
+# start or learns it from traffic itself.
+_LEARNED_CONFIG_KEYS = frozenset({"service_url", "channel_teams"})
+
+
+def _started_from(bridge: CollaborationBridge) -> str:
+    """What a running bridge was built from, as one value: an edit made by
+    another process changes it, and a re-check that finds it changed restarts
+    the bridge here."""
+    config = {
+        key: value
+        for key, value in (bridge.connection_config or {}).items()
+        if key not in _LEARNED_CONFIG_KEYS
+    }
+    return hashlib.sha256(
+        json.dumps(
+            [bridge.type, bridge.display_name, config],
+            sort_keys=True,
+            default=str,
+        ).encode()
+    ).hexdigest()
 
 
 # Reaching the platform failed outright, in the transports Switch itself
@@ -202,10 +258,36 @@ class CollaborationBridgeLifecycleService:
         session_activity_listener: AgentSessionActivityListener,
         session_activity_service: AgentSessionActivityService,
         connections: AgentConnectionRegistry,
+        ownership: Ownership,
+        cursor_writer: CursorWriter,
         telemetry: TelemetryService | None = None,
         trust_client: TrustClient = NullTrustClient(),
     ) -> None:
         self._bridge_store = bridge_store
+        self._cursor_writer = cursor_writer
+        self._cursor_store = DeliveryCursorStore()
+        self._owned = ownership.kind(
+            BRIDGE_CONNECTIONS, start=self._take_over, stop=self._hand_over
+        )
+        self._signals: BridgeSignals | None = None
+        # The running bridges' workspace consumers, here only where this
+        # process holds the bridge, with the cursors each runs under.
+        self._workspace_consumers: dict[str, WorkspaceConsumer] = {}
+        self._workspace_cursors: dict[str, ConsumerCursors] = {}
+        # What each running bridge was started from (`_started_from`).
+        self._started_rows: dict[str, str] = {}
+        # Quiet copies being started in the background after a hand-over.
+        self._quiet_starts: dict[str, asyncio.Task[None]] = {}
+        # One start or stop of a bridge at a time. A bridge is started and
+        # stopped from several places that interleave: the ownership taking
+        # it over or handing it on, an edit made here or announced from
+        # another process, a quiet copy starting in the background. Two
+        # starts at once would build two adapters, and the one overwritten
+        # would go on listening with nothing left to stop it.
+        self._bridge_locks: dict[str, asyncio.Lock] = {}
+        # Why the last take-over of each bridge failed to start it, for
+        # `register` to raise: the ownership logs the failure and goes on.
+        self._failed_take_overs: dict[str, Exception] = {}
         self._external_user_store = external_user_store
         self._bridge_message_map_store = bridge_message_map_store
         self._room_store = room_store
@@ -290,14 +372,20 @@ class CollaborationBridgeLifecycleService:
         # so two concurrent registrations would both see a free resource and
         # both take it — the very collision the check exists to refuse.
         #
-        # A process-wide lock is sufficient *because* switch-core is a
-        # singleton: the chart fails the render for replicaCount != 1, since
-        # it keeps delivery state (event buffers, the invite and presence
-        # buses, the message listener) in memory. If that ever changes, this
-        # has to become a database constraint — the way the single-default
-        # bridge invariant already is — because a lock in one process would
-        # then be guarding nothing.
+        # A process-wide lock guards only this process's registrations. Two
+        # processes registering a conflicting bridge at the same moment are
+        # not kept apart by it; that needs a database constraint, as the
+        # single-default bridge invariant has.
         self._register_lock = asyncio.Lock()
+
+    def use_signals(self, signals: BridgeSignals) -> None:
+        """Where a bridge registered, edited or removed here is announced, so
+        every other process applies it to its own copy (`bridge_signals.py`)."""
+        self._signals = signals
+
+    def _announce(self, bridge_id: str) -> None:
+        if self._signals is not None:
+            self._signals.changed(bridge_id)
 
     def register_adapter(
         self,
@@ -630,12 +718,24 @@ class CollaborationBridgeLifecycleService:
                     if bridge.tenant_id == tenant_id
                 )
 
-        logger.info("Starting %d collaboration bridges", len(bridges))
+        logger.info("Wanting %d collaboration bridges", len(bridges))
         for bridge in bridges:
+            self._want(bridge)
+
+    async def start_quiet_copies(self) -> None:
+        """Start, quietly, every wanted bridge this process does not hold.
+
+        After the ownership's first balance (`main`), which has started the
+        bridges this process holds: starting the others before it would build
+        every bridge twice at boot, quiet and then listening.
+        """
+        for bridge_id in sorted(self._owned.wanted()):
+            if self.holds(bridge_id) or bridge_id in self._bridges:
+                continue
             try:
-                await self.start(bridge.id)
+                await self.start(bridge_id)
             except Exception:
-                logger.exception("Failed to start bridge %s", bridge.id)
+                logger.exception("Failed to start bridge %s", bridge_id)
 
     def reserve_resource(self, resource: str, holder: str) -> None:
         """Keep a resource the deployment itself uses away from every bridge.
@@ -881,7 +981,15 @@ class CollaborationBridgeLifecycleService:
         )
 
         try:
-            await self.start(bridge.id)
+            # Which process holds it is settled first, so it starts once, in
+            # the form it will run here.
+            self._want(bridge)
+            await self._owned.settle()
+            failed = self._failed_take_overs.pop(bridge.id, None)
+            if failed is not None:
+                raise failed
+            if not self.holds(bridge.id):
+                await self.start(bridge.id)
         except Exception:
             # Stored and not startable is a half state: a row that fails every
             # boot, and for an install a second bridge on the next attempt. So
@@ -912,10 +1020,40 @@ class CollaborationBridgeLifecycleService:
             bridge_type,
             display_name,
         )
+        self._announce(bridge.id)
+        return bridge
+
+    def _bridge_lock(self, bridge_id: str) -> asyncio.Lock:
+        lock = self._bridge_locks.get(bridge_id)
+        if lock is None:
+            lock = self._bridge_locks[bridge_id] = asyncio.Lock()
+        return lock
+
+    def _running(self, bridge_id: str) -> CollaborationCore | None:
+        bridge = self._bridges.get(bridge_id)
+        task = self._tasks.get(bridge_id)
+        if bridge is None or task is None or task.done():
+            return None
         return bridge
 
     async def start(self, bridge_id: str) -> None:
-        """Start a bridge, reporting a failure even before one is ever run.
+        """Start a bridge here, listening if this process holds it and quietly
+        otherwise. One already running in that form is left as it is, and one
+        running in the other form is restarted in this one."""
+        async with self._bridge_lock(bridge_id):
+            await self._start_locked(bridge_id)
+
+    async def _start_locked(self, bridge_id: str) -> None:
+        running = self._running(bridge_id)
+        if running is not None and running.active == self.holds(bridge_id):
+            return
+        if running is not None or bridge_id in self._bridges:
+            await self._stop_locked(bridge_id, reason="restart")
+        await self._start_bridge(bridge_id)
+
+    async def _start_bridge(self, bridge_id: str) -> None:
+        """Build and run a bridge here, listening if this process holds it and
+        quietly otherwise, reporting a failure even before one is ever run.
 
         Everything here runs before `_run_bridge` is scheduled, so nothing
         downstream reports a raise from this method. Unreported it would be an
@@ -935,6 +1073,8 @@ class CollaborationBridgeLifecycleService:
         # room with no bridge at all.
         platform = "unknown"
         adapter_cls: type[PlatformAdapter] | None = None
+        fence = self._owned.fence(bridge_id)
+        active = fence is not None
         # Before the first statement that can fail, so a bridge that never gets
         # past reading its own row still reports how long that took.
         self._connect_started[bridge_id] = time.monotonic()
@@ -955,6 +1095,10 @@ class CollaborationBridgeLifecycleService:
                 bridge = await self._bridge_store.get(session, bridge_id)
             if bridge is None:
                 raise ValueError(f"Bridge not found: {bridge_id}")
+            # Recorded before anything can fail: a re-check started from the
+            # same row does not try again what failed here, as one process
+            # tried a failing bridge once until it was edited or restarted.
+            self._started_rows[bridge_id] = _started_from(bridge)
             platform = normalise_platform(bridge.type)
 
             adapter_cls = self._adapter_registry.get(bridge.type)
@@ -1005,6 +1149,7 @@ class CollaborationBridgeLifecycleService:
                 connection_config=bridge.connection_config or {},
             )
             adapter = adapter_cls(config=typed_config)  # type: ignore[call-arg]
+            adapter.set_listening(active)
             adapter.set_tenant_id(tenant_id)
             adapter.set_outbound_policy(self._config.outbound_policy)
             adapter.set_service_url_persister(
@@ -1016,6 +1161,9 @@ class CollaborationBridgeLifecycleService:
                 lambda channel_id, team_id: self._persist_channel_team(
                     bridge_id, tenant_id, channel_id, team_id
                 )
+            )
+            adapter.set_holder_relay(
+                lambda request: self._relay_to_holder(bridge_id, request)
             )
             adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
             adapter.set_third_party_avatars(self._config.third_party_avatars_enabled)
@@ -1065,22 +1213,37 @@ class CollaborationBridgeLifecycleService:
                 session_activity_listener=self._session_activity_listener,
                 session_activity_service=self._session_activity_service,
                 connections=self._connections,
+                active=active,
                 trust_client=self._trust_client,
             )
 
-            workspace_consumer = WorkspaceConsumer(
-                collaboration_core=collaboration_core,
-                actor=Actor(
-                    client_id=workspace_consumer_record.id,
+            # Only where this process holds the bridge: everywhere else the
+            # bridge relays nothing out, and its rooms are read by the holder.
+            workspace_consumer: WorkspaceConsumer | None = None
+            if fence is not None:
+                workspace_consumer = WorkspaceConsumer(
+                    collaboration_core=collaboration_core,
+                    actor=Actor(
+                        client_id=workspace_consumer_record.id,
+                        tenant_id=workspace_consumer_record.tenant_id,
+                        transport_user_id=workspace_consumer_record.transport_user_id,
+                        display_name=workspace_consumer_record.display_name,
+                        session_factory=self._session_factory,
+                        client_store=self._client_store,
+                        config=WorkspaceConsumerConfig(bridge_id=bridge_id),
+                        transport_factory=self._client_factory.transport_for,
+                    ),
+                )
+                self._workspace_consumers[bridge_id] = workspace_consumer
+                self._workspace_cursors[bridge_id] = ConsumerCursors(
+                    writer=self._cursor_writer,
+                    store=self._cursor_store,
                     tenant_id=workspace_consumer_record.tenant_id,
-                    transport_user_id=workspace_consumer_record.transport_user_id,
-                    display_name=workspace_consumer_record.display_name,
-                    session_factory=self._session_factory,
-                    client_store=self._client_store,
-                    config=WorkspaceConsumerConfig(bridge_id=bridge_id),
-                    transport_factory=self._client_factory.transport_for,
-                ),
-            )
+                    client_id=workspace_consumer_record.id,
+                    fence=fence,
+                    actor_role=workspace_consumer.actor.role,
+                    on_lost=self._owned.lost,
+                )
 
             for listener in self._bridge_starting_listeners:
                 listener(adapter)
@@ -1107,8 +1270,19 @@ class CollaborationBridgeLifecycleService:
             if workspace is not None:
                 self._running_workspaces[bridge_id] = workspace
 
-            logger.info("Started collaboration bridge %s (%s)", bridge_id, bridge.type)
+            logger.info(
+                "Started collaboration bridge %s (%s), %s",
+                bridge_id,
+                bridge.type,
+                "listening" if active else "quiet: another process holds it",
+            )
         except Exception as exc:
+            self._workspace_consumers.pop(bridge_id, None)
+            self._workspace_cursors.pop(bridge_id, None)
+            if not active:
+                # Reported by the process that holds the bridge, once.
+                self._connect_started.pop(bridge_id, None)
+                raise
             self._note_connect_failure(bridge_id)
             # Resolved before the call, never inside its argument list: an
             # expression there is evaluated before `emit_safely` is entered, so
@@ -1190,9 +1364,11 @@ class CollaborationBridgeLifecycleService:
         bridge_id: str,
         tenant_id: str,
         collaboration_core: CollaborationCore,
-        workspace_consumer: WorkspaceConsumer,
+        workspace_consumer: WorkspaceConsumer | None,
     ) -> None:
-        """The bridge's own long-lived task.
+        """The bridge's own long-lived task: until stopped, the workspace
+        consumer where this process holds the bridge, and nothing but the
+        quiet adapter elsewhere.
 
         `no_tenant` first, because an `asyncio.Task` snapshots the contextvars
         of whoever created it — and `start` is reached from an HTTP request as
@@ -1208,16 +1384,31 @@ class CollaborationBridgeLifecycleService:
         with no_tenant():
             connected = False
             try:
-                await self._record_bridge_memberships(
-                    bridge_id, tenant_id, workspace_consumer.client_id
-                )
+                if workspace_consumer is not None:
+                    await self._record_bridge_memberships(
+                        bridge_id, tenant_id, workspace_consumer.client_id
+                    )
                 await collaboration_core.start()
                 # The one point that means "connected": `start()` only
-                # launched this task and `workspace_consumer.start()` never returns.
+                # launched this task, and what follows runs until the bridge
+                # is stopped.
                 connected = True
                 self._connected.add(bridge_id)
+                if workspace_consumer is None:
+                    # Quiet: serving requests and webhooks until stopped.
+                    await asyncio.Event().wait()
+                    return
                 await self._report_connector_up(bridge_id, platform, configured_at)
-                await workspace_consumer.start()
+                cursors = self._workspace_cursors.get(bridge_id)
+                if (
+                    cursors is None
+                    or self._workspace_consumers.get(bridge_id)
+                    is not workspace_consumer
+                ):
+                    # Stopped, or stopped and started again, while it was
+                    # coming up: this consumer is not to read at all.
+                    return
+                await workspace_consumer.start(cursors)
             except Exception as exc:
                 logger.exception("Bridge %s crashed", bridge_id)
                 self._bridges.pop(bridge_id, None)
@@ -1240,7 +1431,10 @@ class CollaborationBridgeLifecycleService:
                 reason = _failure_reason(
                     exc, self._running_adapter_classes.pop(bridge_id, None)
                 )
-                if connected:
+                if workspace_consumer is None:
+                    # Reported by the process that holds the bridge, once.
+                    self._connect_started.pop(bridge_id, None)
+                elif connected:
                     emit_safely(
                         self._telemetry,
                         "bridge_disconnected",
@@ -1386,6 +1580,31 @@ class CollaborationBridgeLifecycleService:
         )
 
     async def stop(self, bridge_id: str, *, reason: str = "shutdown") -> None:
+        async with self._bridge_lock(bridge_id):
+            await self._stop_locked(bridge_id, reason=reason)
+
+    async def _stop_locked(self, bridge_id: str, *, reason: str) -> None:
+        # The workspace consumer first, and gracefully: it finishes the
+        # message in hand and stores how far it got, so whoever holds the
+        # bridge next neither posts it again nor skips it.
+        workspace_consumer = self._workspace_consumers.pop(bridge_id, None)
+        cursors = self._workspace_cursors.pop(bridge_id, None)
+        if workspace_consumer is not None:
+            await workspace_consumer.stop()
+            running = self._tasks.get(bridge_id)
+            if running is not None:
+                await asyncio.wait({running}, timeout=STOP_GRACE_SECONDS)
+        if cursors is not None:
+            try:
+                await cursors.flush()
+            except Exception:
+                logger.warning(
+                    "Could not store bridge %s's progress as it stopped; whoever "
+                    "holds it next handles its last messages again, and posts "
+                    "none of them twice",
+                    bridge_id,
+                    exc_info=True,
+                )
         # Before the adapter goes, so a press in flight is answered as gone
         # rather than handled by a bridge that is halfway shut down.
         endpoint = self._callback_endpoints.pop(bridge_id, None)
@@ -1394,29 +1613,39 @@ class CollaborationBridgeLifecycleService:
         collaboration_core = self._bridges.get(bridge_id)
         was_connected = bridge_id in self._connected
         self._connected.discard(bridge_id)
-        if collaboration_core:
-            await collaboration_core.stop()
+        try:
+            if collaboration_core:
+                await collaboration_core.stop()
+        finally:
+            # Unregistered whatever the stop raised, as the lease is let go
+            # of all the same: left here, the copy would read as running and
+            # be stopped again at shutdown.
+            task = self._tasks.pop(bridge_id, None)
+            if task and not task.done():
+                task.cancel()
 
-        task = self._tasks.pop(bridge_id, None)
-        if task and not task.done():
-            task.cancel()
-
-        self._bridges.pop(bridge_id, None)
-        self._held_resources.pop(bridge_id, None)
-        self._running_workspaces.pop(bridge_id, None)
-        self._running_adapter_classes.pop(bridge_id, None)
-        self._started.discard(bridge_id)
-        # A bridge cancelled before it connected never reaches an outcome, and
-        # `_run_bridge`'s handler does not catch `CancelledError`, so its
-        # reading would otherwise sit here for the life of the process — and be
-        # spent by the *next* attempt on the same id, which would then report a
-        # duration measured from the one before it.
-        self._connect_started.pop(bridge_id, None)
+            self._bridges.pop(bridge_id, None)
+            self._held_resources.pop(bridge_id, None)
+            self._running_workspaces.pop(bridge_id, None)
+            self._running_adapter_classes.pop(bridge_id, None)
+            self._started.discard(bridge_id)
+            # A bridge cancelled before it connected never reaches an outcome, and
+            # `_run_bridge`'s handler does not catch `CancelledError`, so its
+            # reading would otherwise sit here for the life of the process — and be
+            # spent by the *next* attempt on the same id, which would then report a
+            # duration measured from the one before it.
+            self._connect_started.pop(bridge_id, None)
+            self._started_rows.pop(bridge_id, None)
         logger.info("Stopped collaboration bridge %s", bridge_id)
 
         # `_bridges` membership is set before the connection is attempted, so
-        # on its own it would report a bridge that never connected.
-        if collaboration_core is not None and was_connected:
+        # on its own it would report a bridge that never connected. Reported
+        # where the bridge was held, once.
+        if (
+            collaboration_core is not None
+            and was_connected
+            and collaboration_core.active
+        ):
             platform, _ = self._bridge_facts.get(bridge_id, ("none", None))
             emit_safely(
                 self._telemetry,
@@ -1429,19 +1658,237 @@ class CollaborationBridgeLifecycleService:
             )
 
     async def restart(self, bridge_id: str) -> None:
-        """Stop and start a bridge so it picks up its stored config.
+        """Stop and start a bridge so it picks up its stored config, here and
+        in every other process.
 
         An adapter is built from the config it was given at start, so an edit
         is inert until the bridge is rebuilt."""
         await self.stop(bridge_id, reason="restart")
         await self.start(bridge_id)
         logger.info("Restarted collaboration bridge %s", bridge_id)
+        self._announce(bridge_id)
 
     async def stop_all(self) -> None:
+        """Stop every bridge still running here, as the process shuts down.
+        The ones it held were stopped and handed over first
+        (`Ownership.stop`); these are its quiet copies. A quiet copy still
+        starting is given the grace period to finish, so it is stopped whole
+        rather than cancelled halfway through being built."""
+        starting = list(self._quiet_starts.values())
+        if starting:
+            _, unfinished = await asyncio.wait(starting, timeout=STOP_GRACE_SECONDS)
+            for task in unfinished:
+                task.cancel()
+            await asyncio.gather(*unfinished, return_exceptions=True)
         logger.info("Stopping all %d collaboration bridges", len(self._bridges))
         for bridge_id in list(self._bridges):
             await self.stop(bridge_id)
         await self._callback_ingress.stop()
+
+    # ── Ownership ────────────────────────────────────────────────────────────
+
+    async def _take_over(self, bridge_id: str, fence: Fence) -> None:
+        """This process now holds the bridge: rebuild its quiet copy here as
+        the listening one. Called by the ownership with the hold in place."""
+        logger.info("Taking over collaboration bridge %s", bridge_id)
+        self._failed_take_overs.pop(bridge_id, None)
+        try:
+            await self.start(bridge_id)
+        except Exception as exc:
+            self._failed_take_overs[bridge_id] = exc
+            raise
+
+    async def _hand_over(self, bridge_id: str) -> None:
+        """This process no longer holds the bridge: stop listening, finish the
+        message in hand, and run on as a quiet copy if the bridge is still
+        wanted here. The quiet copy starts in the background, so the next
+        holder is not kept waiting on this process's platform calls."""
+        logger.info("Handing collaboration bridge %s over", bridge_id)
+        await self.stop(bridge_id, reason="restart")
+        if self._owned.wants(bridge_id) and not self._owned.stopping:
+            self._start_quietly(bridge_id)
+
+    def _start_quietly(self, bridge_id: str) -> None:
+        async def run() -> None:
+            try:
+                with no_tenant():
+                    async with self._bridge_lock(bridge_id):
+                        # Removed, or the process began shutting down, since
+                        # the hand-over: nothing is to run here any more.
+                        if not self._owned.wants(bridge_id) or self._owned.stopping:
+                            return
+                        await self._start_locked(bridge_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Collaboration bridge %s could not start quietly here after "
+                    "being handed over",
+                    bridge_id,
+                )
+            finally:
+                if self._quiet_starts.get(bridge_id) is asyncio.current_task():
+                    del self._quiet_starts[bridge_id]
+
+        self._quiet_starts[bridge_id] = asyncio.create_task(run())
+
+    def _want(self, bridge: CollaborationBridge) -> None:
+        """This process could hold `bridge`, beside whatever its platform
+        says it must be held with (`PlatformAdapter.held_with`)."""
+        adapter_cls = self._adapter_registry.get(bridge.type)
+        held_with = (
+            adapter_cls.held_with(bridge.connection_config or {})
+            if adapter_cls is not None
+            else None
+        )
+        self._owned.want(bridge.id, placed_with=held_with)
+
+    def holds(self, bridge_id: str) -> bool:
+        """Whether this process holds the bridge and listens for it."""
+        return self._owned.fence(bridge_id) is not None
+
+    def _relay_to_holder(self, bridge_id: str, request: dict[str, str]) -> None:
+        if self._signals is None:
+            logger.warning(
+                "Collaboration bridge %s has work for its holder and no signal "
+                "bus to send it on; dropping %r",
+                bridge_id,
+                request,
+            )
+            return
+        self._signals.for_holder(bridge_id, request)
+
+    async def receive_relayed(self, bridge_id: str, request: dict[str, str]) -> None:
+        """Work a quiet copy of the bridge in another process relayed to its
+        holder. Done here only if this process holds the bridge and its copy
+        is running; otherwise it is another process's, or nobody's until the
+        next holder catches up as it takes the bridge over."""
+        if not self.holds(bridge_id):
+            return
+        running = self._running(bridge_id)
+        if running is None or not running.active:
+            return
+        with no_tenant():
+            await running.adapter.receive_relayed(request)
+
+    # ── Changes made in other processes ──────────────────────────────────────
+
+    async def reconcile_bridge(self, bridge_id: str) -> None:
+        """Bring this process's copy of one bridge in line with its row, after
+        another process registered, edited or removed it."""
+        tenant_id = await tenant_of_collaboration_bridge(
+            self._session_factory, bridge_id
+        )
+        bridge: CollaborationBridge | None = None
+        if tenant_id is not None:
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                bridge = await self._bridge_store.get(session, bridge_id)
+        await self._reconcile_row(bridge_id, bridge)
+
+    async def reconcile_all(self) -> None:
+        """`reconcile_bridge` for every bridge stored or running here, reading
+        the rows one tenant at a time."""
+        rows: dict[str, CollaborationBridge] = {}
+        for tenant_id in await all_tenant_ids(self._session_factory):
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                rows.update(
+                    (bridge.id, bridge)
+                    for bridge in await self._bridge_store.get_active(session)
+                    if bridge.tenant_id == tenant_id
+                )
+        bridge_ids = set(rows) | set(self._bridges) | self._owned.wanted()
+        for bridge_id in sorted(bridge_ids):
+            try:
+                await self._reconcile_row(bridge_id, rows.get(bridge_id))
+            except Exception:
+                logger.warning(
+                    "Could not bring collaboration bridge %s in line with its "
+                    "row; retrying at the next re-check",
+                    bridge_id,
+                    exc_info=True,
+                )
+
+    async def _reconcile_row(
+        self, bridge_id: str, bridge: CollaborationBridge | None
+    ) -> None:
+        """Bring this process's copy of a bridge in line with its row.
+
+        Stopped, and let go of, where the row is gone or no longer active.
+        Wanted where it is new here, so the process that should hold it
+        claims it. Started, or restarted, where this process has not started
+        it from this version of the row. A bridge already started from this
+        row is left alone, running or not: one that crashed or failed to
+        start stays down until it is edited or restarted, as it does in a
+        deployment of one process.
+        """
+        if self._owned.stopping:
+            return
+        if bridge is None or bridge.status != "active":
+            if self._owned.wants(bridge_id) or bridge_id in self._bridges:
+                logger.info(
+                    "Collaboration bridge %s was removed elsewhere; stopping it",
+                    bridge_id,
+                )
+                await self._owned.drop(bridge_id)
+                await self.stop(bridge_id)
+            return
+        if not self._owned.wants(bridge_id):
+            # New here: which process holds it is settled first, so it starts
+            # once, in the form it runs in.
+            self._want(bridge)
+            await self._owned.settle()
+        if bridge_id in self._quiet_starts:
+            # Starting in the background, from the row as it reads then.
+            return
+        started_from = self._started_rows.get(bridge_id)
+        if started_from == _started_from(bridge):
+            return
+        if started_from is None:
+            logger.info(
+                "Collaboration bridge %s was added elsewhere; starting it", bridge_id
+            )
+        else:
+            logger.info(
+                "Collaboration bridge %s was edited elsewhere; restarting it",
+                bridge_id,
+            )
+            await self.stop(bridge_id, reason="restart")
+        await self.start(bridge_id)
+
+    def rooms_changed(self, bridge_id: str) -> None:
+        """A room was bridged to `bridge_id` or unbridged from it, and the
+        change has committed: every other process maps the bridge's rooms
+        again, so none goes on carrying a channel into a room it no longer
+        serves. Called by whoever made the change, after it has mapped its own
+        copy."""
+        if self._signals is not None:
+            self._signals.rooms_changed(bridge_id)
+
+    async def reload_rooms(self, bridge_id: str) -> None:
+        """Map the rooms of one bridge running here as their rows say."""
+        bridge = self._bridges.get(bridge_id)
+        if bridge is not None:
+            await bridge.reload_channel_map()
+
+    async def reload_all_rooms(self) -> None:
+        """`reload_rooms` for every bridge running here."""
+        for bridge_id in sorted(self._bridges):
+            try:
+                await self.reload_rooms(bridge_id)
+            except Exception:
+                logger.warning(
+                    "Could not map collaboration bridge %s's rooms again; "
+                    "retrying at the next re-check",
+                    bridge_id,
+                    exc_info=True,
+                )
+
+    def agents_changed(self, tenant_id: str) -> None:
+        """Agents were registered or deleted in `tenant_id`, maybe by another
+        process: every bridge of the tenant running here provisions their
+        platform identities again."""
+        for bridge in self.bridges_for_tenant(tenant_id):
+            bridge.agents_changed()
 
     async def remove(self, bridge_id: str) -> None:
         """Disconnect a messaging app and take its identities with it.
@@ -1481,6 +1928,9 @@ class CollaborationBridgeLifecycleService:
                 "what it holds on its platform itself; removing it anyway",
                 bridge_id,
             )
+        # Held here or not, let go of it: no process is to take it over. A
+        # quiet copy waiting to start finds it no longer wanted.
+        await self._owned.drop(bridge_id)
         await self.stop(bridge_id)
         async with self._session_factory() as session:
             bridge = await self._bridge_store.get(session, bridge_id)
@@ -1518,6 +1968,7 @@ class CollaborationBridgeLifecycleService:
             bridge_id,
             len(removed),
         )
+        self._announce(bridge_id)
 
         if bridge is not None:
             emit_safely(
@@ -1541,6 +1992,10 @@ class CollaborationBridgeLifecycleService:
         self._preconfigured.discard(bridge_id)
         self._connect_failures.pop(bridge_id, None)
         self._connect_started.pop(bridge_id, None)
+        self._failed_take_overs.pop(bridge_id, None)
+        lock = self._bridge_locks.get(bridge_id)
+        if lock is not None and not lock.locked():
+            del self._bridge_locks[bridge_id]
 
     def get(self, bridge_id: str) -> CollaborationCore | None:
         """The running bridge for ``bridge_id``, if it is the bound tenant's.

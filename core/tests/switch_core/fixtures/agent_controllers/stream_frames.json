@@ -53,7 +53,9 @@
           "body": "@reviewer can you look at this?",
           "timestamp": 1767225600000,
           "thread_id": null,
-          "attachments": []
+          "attachments": [],
+          "opening_message": null,
+          "sender_role": null
         },
         "sequence": 1,
         "missed": {
@@ -85,6 +87,13 @@
         },
         "requesterName": "Ada"
       }
+    }
+  },
+  {
+    "event": "agent.warm",
+    "data": {
+      "agent_id": "00000000-0000-4000-8000-0000000000a1",
+      "room_id": "00000000-0000-4000-8000-0000000000b1"
     }
   },
   {

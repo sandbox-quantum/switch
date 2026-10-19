@@ -20,6 +20,7 @@ from switch_core.connections.adapters.api_key import ApiKeyAdapter
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
 from switch_core.db.models import ServiceConnection
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.connections.service_harness import (
@@ -65,7 +66,9 @@ def datadog() -> DatadogStandIn:
 def service(
     session_factory: async_sessionmaker[AsyncSession], datadog: DatadogStandIn
 ) -> tuple[Harness, ServiceBroker]:
-    harness, broker = build_service_harness(session_factory, FakeVendor())
+    harness, broker = build_service_harness(
+        session_factory, FakeVendor(), workspace_gate=False
+    )
     broker._adapters["datadog"] = ApiKeyAdapter(
         CATALOG["datadog"].definition,
         httpx.AsyncClient(transport=httpx.MockTransport(datadog)),
@@ -240,3 +243,36 @@ class TestUse:
                 },
             }
         ]
+
+
+class TestWorkspaceSwitch:
+    async def test_a_key_for_a_service_the_workspace_switched_off_is_never_checked(
+        self, session_factory, datadog: DatadogStandIn
+    ) -> None:
+        harness, broker = build_service_harness(
+            session_factory, FakeVendor(), workspace_gate=True
+        )
+        broker._adapters["datadog"] = ApiKeyAdapter(
+            CATALOG["datadog"].definition,
+            httpx.AsyncClient(transport=httpx.MockTransport(datadog)),
+        )
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.session_factory() as session:
+            await WorkspaceServiceStore().set_enabled(
+                session, "datadog", False, owner.id
+            )
+            await session.commit()
+
+        response = await _connect(harness, owner, KEYS)
+
+        assert response.status_code == 403
+        assert response.json() == {
+            "detail": (
+                "Datadog is not enabled in this workspace. Ask a workspace admin; "
+                "they switch it on under Connectors in Switch Console."
+            ),
+            "code": "forbidden",
+            "retryable": False,
+        }
+        assert datadog.requests == []
+        assert await _connections(harness) == []

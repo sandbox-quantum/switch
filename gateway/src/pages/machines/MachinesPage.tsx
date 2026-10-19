@@ -130,6 +130,57 @@ function providerChip(status: ProviderStatus, label: (provider: string) => strin
   );
 }
 
+/**
+ * The controller's version, and where it stands against the release Switch names: on it,
+ * waiting for its sessions to end, or stuck, with why. The versions and the reason are on
+ * hover, since a dev build's version is too long to sit in the chip.
+ */
+function controllerVersion(row: Controller) {
+  const running = row.version;
+  const release = row.release;
+  if (release === null || release.current)
+    return (
+      <Tooltip
+        title={
+          release !== null
+            ? `Runs ${release.wanted}, the release Switch names.`
+            : row.kind === "console" || row.status?.controller.updated_by === "console"
+              ? "Updates with Switch Console, which runs it."
+              : "Switch names no controller release for this machine."
+        }
+      >
+        <span>{running ?? EM_DASH}</span>
+      </Tooltip>
+    );
+  const update = row.status?.update;
+  const names = `Runs ${running ?? "an unknown version"}; Switch names ${release.wanted}.`;
+  let chip: { label: string; color: "warning" | "error"; why: string };
+  if (row.state !== "online" || !update || update.target !== release.wanted)
+    chip = {
+      label: "behind",
+      color: "warning",
+      why:
+        row.state === "online"
+          ? "It has said nothing about moving to it: a controller older than self-update never does. Reinstall it once on the machine, or, if Switch Console runs it on an SSH host, update Console."
+          : "It moves to it once it is connected again.",
+    };
+  else if (update.state === "waiting_idle")
+    chip = { label: "updating when idle", color: "warning", why: "It moves to it once no session is running on it." };
+  else if (update.state === "restart_needed")
+    chip = { label: "restart needed", color: "warning", why: update.problem ?? "It installed it; restart it to run it." };
+  else chip = { label: "update failed", color: "error", why: update.problem ?? "It did not say why." };
+  return (
+    <Tooltip title={`${names} ${chip.why}`}>
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ height: "100%", overflow: "hidden" }}>
+        <Typography variant="body2" noWrap>
+          {running ?? EM_DASH}
+        </Typography>
+        <Chip size="small" variant="outlined" color={chip.color} label={chip.label} />
+      </Stack>
+    </Tooltip>
+  );
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -260,6 +311,13 @@ export default function MachinesPage() {
         width: 150,
         valueGetter: (_value, row) =>
           row.platform ? `${row.platform.os} ${row.platform.arch}` : EM_DASH,
+      },
+      {
+        field: "version",
+        headerName: "Controller",
+        width: 210,
+        valueGetter: (_value, row) => row.version,
+        renderCell: ({ row }) => controllerVersion(row),
       },
       {
         field: "providers",

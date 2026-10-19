@@ -452,18 +452,32 @@ async function registerAndSignIn(
   activate: boolean,
   onMessage: (message: string) => void
 ): Promise<string> {
-  const server = await ensureManagedServer(
-    { name: serverName, ...managedServerAddresses(settings.ports) },
-    ref
+  return registerManagedServer(
+    ref,
+    serverName,
+    managedServerAddresses(settings.ports),
+    settings.secrets,
+    activate,
+    onMessage
   );
+}
+
+/** {@link registerAndSignIn} with the server's addresses given explicitly, for
+ * a server that is not a compose stack (a native local server runs no
+ * dashboard of its own, so it has no separate dashboard address). */
+export async function registerManagedServer(
+  ref: ManagedServerRef,
+  serverName: string,
+  addresses: { url: string; dashboardUrl: string | null },
+  secrets: LocalServerSecrets,
+  activate: boolean,
+  onMessage: (message: string) => void
+): Promise<string> {
+  const server = await ensureManagedServer({ name: serverName, ...addresses }, ref);
   if (activate) await setActiveServerId(server.id);
 
   onMessage('Signing in…');
-  const login = await passwordLogin(
-    server,
-    LOCAL_SERVER_ADMIN_EMAIL,
-    settings.secrets.gatewayAdminPassword
-  );
+  const login = await passwordLogin(server, LOCAL_SERVER_ADMIN_EMAIL, secrets.gatewayAdminPassword);
   if (!login.success) {
     log.warn('managed-switch-server: auto sign-in failed; server will show a sign-in prompt', {
       error: login.error,

@@ -2,6 +2,9 @@
 @import 'tw-animate-css';
 @import 'allotment/dist/style.css';
 
+/* Streamdown's built-in renderers carry Tailwind classes from its dist (pnpm hoists it). */
+@source '../../../../node_modules/streamdown/dist/*.js';
+
 @custom-variant dark (&:is(.dark *));
 @custom-variant dark-black (&:is(.dark-black *));
 @custom-variant emlight (&:is(.emlight *));
@@ -430,6 +433,14 @@
     --menu-surface: #ffffff;
     --menu-field: #f6f6f5;
     --menu-shadow: 0 20px 44px rgb(0 0 0 / 0.12);
+    --composer-shadow:
+      0 1px 1px rgb(0 0 0 / 0.04), 0 2px 4px rgb(0 0 0 / 0.04), 0 4px 10px rgb(0 0 0 / 0.03);
+    --composer-border: var(--border);
+    --composer-border-focus: var(--border-1);
+    --composer-send-bg: #1b1817;
+    --composer-send-fg: var(--foreground-inverse);
+    --composer-send-bg-hover: color-mix(in srgb, #1b1817 90%, white);
+    --composer-send-bg-active: color-mix(in srgb, #1b1817, black 10%);
     --menu-faint: rgb(0 0 0 / 0.03);
     --menu-pill: rgb(0 0 0 / 0.06);
     --menu-tile: #ebebea;
@@ -765,6 +776,13 @@
     --menu-surface: #262626;
     --menu-field: #1e1e1e;
     --menu-shadow: 0 20px 44px rgb(0 0 0 / 0.28);
+    --composer-shadow: 0 1px 1px rgb(0 0 0 / 0.2), 0 2px 4px rgb(0 0 0 / 0.18);
+    --composer-border: var(--border);
+    --composer-border-focus: var(--border-1);
+    --composer-send-bg: var(--foreground);
+    --composer-send-fg: var(--foreground-inverse);
+    --composer-send-bg-hover: color-mix(in srgb, var(--foreground) 92%, black);
+    --composer-send-bg-active: color-mix(in srgb, var(--foreground) 85%, black);
     --menu-faint: rgb(255 255 255 / 0.03);
     --menu-pill: rgb(255 255 255 / 0.1);
     --menu-tile: #333333;

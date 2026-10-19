@@ -4,7 +4,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { AttachmentTransfers } from './attachment-transfers';
 import { CONTROL_FILE, ControlClient, ensureSessions, serveControl } from './control';
 import type { Supervision } from './launch';
@@ -50,10 +52,21 @@ function host() {
   return child;
 }
 
+/** Gives `sessionId` a saved configuration naming `agentId`, as its host's launch writes it. */
+async function saved(base: string, sessionId: string, agentId: string): Promise<void> {
+  await mkdir(join(base, sessionId), { recursive: true });
+  await writeFile(
+    join(base, sessionId, 'config.json'),
+    JSON.stringify({ session: { sessionId, agentId } })
+  );
+}
+
 async function started() {
   const base = await mkdtemp(join(tmpdir(), 'control-'));
   roots.push(base);
   paths.base = base;
+  for (const id of ['session', 'stopped', 'gone', 'elsewhere']) await saved(base, id, 'agent');
+  await saved(base, 'theirs', 'other');
   const links = new SessionLinks();
   const ensure = vi.fn(async () => ({ created: true }));
   const stop = new AbortController();
@@ -181,6 +194,111 @@ it('answers at once for a session nothing is running', async () => {
   await serving;
 });
 
+it('never reads or commands a session of another agent', async () => {
+  const { base, links, stop, serving, client, watcher } = await started();
+  const sessionRoot = join(base, 'theirs');
+  await writeFile(join(sessionRoot, 'running'), 'yes');
+  const child = host();
+  const sent = vi.spyOn(child, 'send');
+  links.attach(sessionRoot, child as unknown as ChildProcess);
+  child.emit('message', { kind: 'ready' });
+  const placed = vi.fn();
+  const forgot = vi.fn();
+  const unbind = watcher.bind({ place: placed, forget: forgot, warm: vi.fn() });
+
+  const console = client();
+  await console.ready;
+  const refused = 'not a session of agent agent';
+  for (const id of ['theirs', 'unknown']) {
+    await expect(console.request(id, { type: 'snapshot' })).rejects.toThrow(refused);
+    if (id === 'theirs')
+      await expect(
+        console.subscribe(
+          id,
+          () => {},
+          () => {}
+        )
+      ).rejects.toThrow(refused);
+    // No public method sends these two; the port must still refuse them.
+    await expect(console['call']({ journal: id })).rejects.toThrow(refused);
+    const chunk = {
+      transferId: 't1',
+      sessionId: id,
+      name: 'a.txt',
+      mimeType: 'text/plain',
+      size: 1,
+      sha256: '0'.repeat(64),
+      index: 0,
+      count: 1,
+      chunk: 'YQ==',
+    };
+    await expect(console['call']({ attachment: chunk })).rejects.toThrow(refused);
+    await expect(console.place(id, 'room')).rejects.toThrow(refused);
+    if (id === 'theirs') await expect(console.forget(id)).rejects.toThrow(refused);
+    await expect(console.reasoning(id, null)).rejects.toThrow(refused);
+  }
+  expect(sent).not.toHaveBeenCalled();
+  expect(placed).not.toHaveBeenCalled();
+  expect(forgot).not.toHaveBeenCalledWith('theirs');
+
+  unbind();
+  console.close();
+  stop.abort();
+  await serving;
+});
+
+it('forgets a session with no config and waits on one until its config is saved', async () => {
+  const { base, links, stop, serving, client, watcher } = await started();
+  const forgot = vi.fn();
+  const unbind = watcher.bind({ place: vi.fn(), forget: forgot, warm: vi.fn() });
+  const console = client();
+  await console.ready;
+
+  await console.forget('deleted');
+  expect(forgot).toHaveBeenCalledWith('deleted');
+
+  const watch = async (id: string) => {
+    const root = join(base, id);
+    await mkdir(root, { recursive: true });
+    const child = host();
+    links.attach(root, child as unknown as ChildProcess);
+    const heard: number[] = [];
+    const failures: (string | null)[] = [];
+    const off = await console.subscribe(
+      id,
+      (pushed) => heard.push(pushed.sequence),
+      (failure) => failures.push(failure)
+    );
+    return { child, heard, failures, off };
+  };
+
+  const mine = await watch('starting');
+  expect(mine.failures).toEqual([null]);
+  mine.child.emit('message', { kind: 'event', event: event(1) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(mine.heard).toEqual([]);
+  await saved(base, 'starting', 'agent');
+  mine.child.emit('message', { kind: 'event', event: event(2) });
+  await vi.waitFor(() => expect(mine.heard).toEqual([2]));
+  mine.off();
+
+  const foreign = await watch('claimed');
+  await saved(base, 'claimed', 'other');
+  foreign.child.emit('message', { kind: 'event', event: event(1) });
+  await vi.waitFor(() =>
+    expect(foreign.failures).toEqual([null, 'Session claimed is not a session of agent agent.'])
+  );
+  foreign.child.emit('message', { kind: 'event', event: event(2) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(foreign.heard).toEqual([]);
+  await expect(console.place('claimed', 'room')).rejects.toThrow('not a session of agent agent');
+
+  unbind();
+  console.close();
+  stop.abort();
+  await serving;
+});
+
 it('refuses a client without the secret', async () => {
   const { stop, serving, client } = await started();
   await expect(client('wrong').ready).rejects.toThrow();
@@ -200,9 +318,12 @@ it('moves a room to a session through the watcher, and says why when it cannot',
     displaced: 'other',
   }));
   const forgot = vi.fn(async () => {});
-  const unbind = watcher.bind({ place: placed, forget: forgot });
+  const warmed = vi.fn(async (roomId: string) => `session-for-${roomId}`);
+  const unbind = watcher.bind({ place: placed, forget: forgot, warm: warmed });
   await console.forget('gone');
   expect(forgot).toHaveBeenCalledWith('gone');
+  expect(await console.warm('room')).toBe('session-for-room');
+  expect(warmed).toHaveBeenCalledWith('room');
   expect(await console.place('session', 'room')).toEqual({
     sessionId: 'session',
     roomId: 'room',
@@ -416,4 +537,61 @@ it('starts a session whose start source is newer than this sidecar, as not known
   socket.destroy();
   stop.abort();
   await serving;
+});
+
+it('answers a reasoning ask from the session host, and from no host with none', async () => {
+  const { base, links, stop, serving, client, watcher } = await started();
+  const sessionRoot = join(base, 'session');
+  const list = { epoch: 'epoch', turns: [] };
+  const child = host();
+  const asked: unknown[] = [];
+  child.send = (message, callback) => {
+    callback(null);
+    const { id, request } = message as { id: number; request: unknown };
+    asked.push(request);
+    setImmediate(() => child.emit('message', { kind: 'reply', id, ok: true, value: list }));
+    return true;
+  };
+  links.attach(sessionRoot, child as unknown as ChildProcess);
+  child.emit('message', { kind: 'ready' });
+
+  const console = client();
+  await console.ready;
+  expect(await console.reasoning('session', ['turn'])).toEqual(list);
+  expect(asked).toEqual([{ type: 'reasoning', turnIds: ['turn'] }]);
+  expect(await console.reasoning('elsewhere', null)).toBeNull();
+  expect(await console.request('session', { type: 'reasoning', turnIds: null })).toEqual(list);
+  // A plain health ask is still a health ask.
+  expect(await console.health()).toEqual(watcher.health());
+
+  console.close();
+  stop.abort();
+  await serving;
+});
+
+it('reads as a health ask to a sidecar that predates reasoning, so its connection stays up', async () => {
+  const stream = new PassThrough();
+  const toSidecar: string[] = [];
+  const duplex = Object.assign(stream, {
+    write: (line: string) => {
+      toSidecar.push(line);
+      const message = JSON.parse(line) as Record<string, unknown>;
+      // What an older sidecar parses the line as: its plain health message.
+      const old = z.object({ id: z.number().int(), health: z.literal(true) }).safeParse(message);
+      if ('token' in message) setImmediate(() => stream.emit('data', '{"authenticated":true}\n'));
+      else if (old.success)
+        setImmediate(() =>
+          stream.emit(
+            'data',
+            `${JSON.stringify({ id: old.data.id, ok: true, value: { state: 'connected' } })}\n`
+          )
+        );
+      return true;
+    },
+  });
+  const console = new ControlClient(duplex, 'token');
+  await console.ready;
+  expect(await console.reasoning('session', null)).toEqual({ state: 'connected' });
+  expect(console.isClosed).toBe(false);
+  expect(toSidecar).toHaveLength(2);
 });

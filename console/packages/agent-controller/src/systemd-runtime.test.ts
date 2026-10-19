@@ -110,6 +110,7 @@ beforeEach(() => {
     agentUsers: 2,
     node: '/usr/bin/node',
     bundle: '/opt/switch/shared-host.mjs',
+    releasesDir: null,
   };
   mkdirSync(config.dataDir, { mode: 0o700 });
   mkdirSync(config.agentsDir, { mode: 0o700 });

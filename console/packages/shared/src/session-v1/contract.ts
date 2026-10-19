@@ -69,6 +69,8 @@ export type Request = {
   expiresAt: string | null;
 };
 export type SessionModel = { id: string; options: Record<string, string> };
+/** How full the provider's context window was when last measured; `windowTokens` null when the provider does not say. */
+export type SessionContext = { usedTokens: number; windowTokens: number | null; updatedAt: string };
 export type ModelChoice = {
   id: string;
   label: string;
@@ -89,6 +91,7 @@ export type Session = {
   pendingRequestIds: Id[];
   models?: ModelChoice[];
   model?: SessionModel | null;
+  context?: SessionContext | null;
 };
 export type HostBody =
   | { type: 'session.upsert'; session: Session }

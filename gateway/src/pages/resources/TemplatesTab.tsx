@@ -46,7 +46,8 @@ export default function TemplatesTab({ refreshKey }: Props) {
   const owners = useMemo(() => {
     const m = new Map<string, string>();
     for (const t of catalogue ?? []) {
-      m.set(t.owner_id, t.owner_name ?? t.owner_id);
+      // A template that comes with Switch has no owner to filter by.
+      if (t.owner_id !== null) m.set(t.owner_id, t.owner_name ?? t.owner_id);
     }
     return [...m.entries()].map(([id, name]) => ({ id, name }));
   }, [catalogue]);

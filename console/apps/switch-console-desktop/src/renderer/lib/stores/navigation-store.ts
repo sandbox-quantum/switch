@@ -9,6 +9,9 @@ import type { Snapshottable } from './snapshottable';
 
 type ViewParamsStore = Partial<{ [K in ViewId]: WrapParams<K> }>;
 
+/** Asked before a navigation while it is set: resolves whether to go on. */
+export type LeaveGuard = (viewId: ViewId, params: unknown) => Promise<boolean>;
+
 export class NavigationStore implements Snapshottable<NavigationSnapshot> {
   currentViewId: ViewId = 'home';
   viewParamsStore: ViewParamsStore = {};
@@ -17,6 +20,7 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
 
   private readonly _guards = new Map<ViewId, (params: unknown) => GuardResult>();
   private readonly _registeredViewIds = new Set<ViewId>();
+  private _leaveGuard: LeaveGuard | null = null;
 
   constructor() {
     makeAutoObservable(this);
@@ -32,6 +36,20 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
 
   registerGuard(viewId: ViewId, guard: (params: unknown) => GuardResult): void {
     this._guards.set(viewId, guard);
+  }
+
+  /** A screen with work that would be lost sets this, and clears it when there is none. */
+  setLeaveGuard(guard: LeaveGuard | null): void {
+    this._leaveGuard = guard;
+  }
+
+  /** Runs `go` now, or once the leave guard lets the navigation through. */
+  whenLeaveAllowed(viewId: ViewId, params: unknown, go: () => void): void {
+    const guard = this._leaveGuard;
+    if (!guard) return go();
+    void guard(viewId, params).then((ok) => {
+      if (ok) go();
+    });
   }
 
   private _runGuard(viewId: ViewId, params: unknown): GuardResult {
@@ -54,6 +72,12 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
   }
 
   navigate<T extends ViewId>(viewId: T, params?: WrapParams<T>): void {
+    this.whenLeaveAllowed(viewId, params ?? this.viewParamsStore[viewId], () =>
+      this._navigate(viewId, params)
+    );
+  }
+
+  private _navigate<T extends ViewId>(viewId: T, params?: WrapParams<T>): void {
     const historyParams = params ?? this.viewParamsStore[viewId] ?? ({} as WrapParams<T>);
     appState.history.push({ kind: 'view', viewId, params: historyParams });
     this._applyNavigation(viewId, params);
@@ -91,7 +115,14 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
   ): void {
     const current = (this.viewParamsStore[viewId] ?? {}) as WrapParams<TId>;
     const next = typeof update === 'function' ? update(current) : { ...current, ...update };
-    this.viewParamsStore = { ...this.viewParamsStore, [viewId]: next };
+    // Only the current screen's params change what is on screen.
+    if (viewId === this.currentViewId)
+      this.whenLeaveAllowed(viewId, next, () => this._setViewParams(viewId, next));
+    else this._setViewParams(viewId, next);
+  }
+
+  private _setViewParams<TId extends ViewId>(viewId: TId, params: WrapParams<TId>): void {
+    this.viewParamsStore = { ...this.viewParamsStore, [viewId]: params };
   }
 
   get snapshot(): NavigationSnapshot {

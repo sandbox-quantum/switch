@@ -60,6 +60,7 @@ export function summarizeTemplate(yamlText: string): TemplateSummary {
     doc = null;
   }
   const root = asRecord(doc) ?? {};
+  if (root.version === 2) return summarizeVersion2(root);
   // Only params the deployer has to answer: no default to prefill from, and
   // not marked optional. A chain default counts as a default here, since a
   // server with the first candidate set up asks nothing.
@@ -112,4 +113,55 @@ export function summarizeTemplate(yamlText: string): TemplateSummary {
     inputs,
     creates: roomEntries.length > 0 ? creates : [],
   };
+}
+
+/**
+ * A version 2 document says what it creates under `resources:`, each with a
+ * type. A resource with an `if:` is created only for some answers, and a
+ * param with one is asked only for some, so neither is counted: the card
+ * says what every run creates and what every run asks.
+ */
+function summarizeVersion2(root: Record<string, unknown>): TemplateSummary {
+  const resources = Object.entries(asRecord(root.resources) ?? {}).flatMap(([key, value]) => {
+    const r = asRecord(value);
+    return r ? [{ key, r }] : [];
+  });
+  const always = resources.filter(({ r }) => r.if === undefined);
+  const ofType = (list: typeof resources, type: string) => list.filter(({ r }) => r.type === type);
+  // As for version 1: params with no default to prefill from, not marked optional.
+  const inputs = Object.values(asRecord(root.params) ?? {}).filter((spec) => {
+    const record = asRecord(spec);
+    return record?.if === undefined && record?.default === undefined && record?.required !== false;
+  }).length;
+  const name = (key: string, r: Record<string, unknown>) =>
+    str(r.name) || str(r.display_name) || key;
+  const rooms = ofType(resources, 'room');
+  const agents = ofType(resources, 'agent');
+  const described = (r: Record<string, unknown>, fallback: string) => {
+    const text = str(r.description) || fallback;
+    return r.if === undefined
+      ? text
+      : `${text.replace(/\.?$/, '.')} Created only for some answers.`;
+  };
+  const creates: TemplateEntity[] = [
+    ...rooms.map(({ key, r }) => ({
+      kind: 'room' as const,
+      name: name(key, r),
+      description: described(r, 'A room'),
+    })),
+    ...agents.map(({ key, r }) => ({
+      kind: 'agent' as const,
+      name: name(key, r),
+      description: described(r, 'An agent with its own instructions'),
+    })),
+  ];
+  const roomCount = ofType(always, 'room').length;
+  const agentCount = ofType(always, 'agent').length;
+  const kind =
+    ofType(resources, 'group').length > 0 || roomCount > 1 || agents.length > 1
+      ? 'group'
+      : agents.length > 0
+        ? 'agent'
+        : 'room';
+  return { kind, rooms: roomCount, agents: agentCount, inputs, creates };
 }

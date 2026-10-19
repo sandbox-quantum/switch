@@ -19,9 +19,13 @@ it('preserves native JSONC configuration, skills, MCP, paths and credentials', a
     await writeFile(join(source, 'opencode.jsonc'), original);
     await writeFile(join(root, 'auth-sentinel'), 'unchanged');
     prepared = await prepareOpencodeHome(
-      buildConfigFile('approval-required', {
-        switch: { transport: 'stdio', command: 'node', args: ['managed.mjs'] },
-      }),
+      buildConfigFile(
+        'approval-required',
+        {
+          switch: { transport: 'stdio', command: 'node', args: ['managed.mjs'] },
+        },
+        ['switch']
+      ),
       [{ name: 'managed', content: 'Managed skill' }],
       { HOME: root }
     );

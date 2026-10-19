@@ -260,8 +260,8 @@ reasons. Each is now answered rather than ignored:
    sink now batches: events wait up to five seconds, or until two hundred are
    queued, and go as one request. Its buffer is bounded, so a relay that is down
    costs events, never memory.
-2. **The sender must not pay for it.** The transport and the agent consumer
-   hand a small record to a queue and return. One worker looks up the room and
+2. **The sender must not pay for it.** The transport and the router hand a
+   small record to a queue and return. One worker looks up the room and
    the sender — cached, so a busy room is read once every five minutes rather
    than once per message — and emits. That queue is bounded too, and drops with
    a warning when it falls behind.
@@ -764,7 +764,7 @@ This is what each carries.
 | `room_group_deleted` | `room_count` (number); `age_days` (number) |
 | `template_created` | `template_kind` (`room` \| `group` \| `agent` \| `other`) |
 | `template_deleted` | `template_kind` (`room` \| `group` \| `agent` \| `other`); `age_days` (number) |
-| `agent_request_refused` | `operation` (`list_templates` \| `get_template` \| `run_template` \| `save_template` \| `update_template` \| `delete_template` \| `create_room` \| `create_room_from_yaml`); `reason` (`not_found` \| `not_yours` \| `name_taken` \| `visibility_not_allowed` \| `invalid` \| `too_large` \| `missing_agents` \| `agent_creation_console_only` \| `busy` \| `run_paused` \| `run_stopped` \| `repeat` \| `kickoff_ignored`) |
+| `agent_request_refused` | `operation` (`list_templates` \| `get_template` \| `run_template` \| `save_template` \| `update_template` \| `delete_template` \| `create_room` \| `create_room_from_yaml`); `reason` (`not_found` \| `not_yours` \| `name_taken` \| `visibility_not_allowed` \| `invalid` \| `too_large` \| `has_warnings` \| `missing_agents` \| `agent_creation_console_only` \| `agents_not_created` \| `run_undone` \| `busy` \| `run_paused` \| `run_stopped` \| `repeat` \| `kickoff_ignored`) |
 | `room_link_created` | none |
 | `room_link_removed` | none |
 | `room_role_defined` | `exclusive` (boolean) |
@@ -1004,7 +1004,7 @@ Two things to set up first, or a third of the list cannot fire at all:
   same agent and session emits nothing, across restarts, for 7 days.
 
 **Messages** — `telemetry/messages.py`, fed by `transport/postgres.py` and
-`clients/agent_consumer.py`
+`delivery/recipient.py`
 
 - `room_message_sent` — any person or agent posting in any room. A post with
   three files is one event. A command reply or an offline notice is none.

@@ -180,7 +180,7 @@ describe('status report', () => {
   const report = {
     seq: 1,
     observed_at: '2026-01-01T00:00:00Z',
-    controller: { version: '0.1.0', protocol: 2, assignment_revision: 0 },
+    controller: { version: '0.1.0', protocol: 2, assignment_revision: 0, updated_by: 'self' },
     machine: {
       platform: { os: 'linux', arch: 'x64', os_version: '6.1' },
       disk_free_bytes: 1,
@@ -223,5 +223,33 @@ describe('status report', () => {
   it('requires a reason for a failed agent', () => {
     const { reason: _reason, ...agent } = report.agents[0]!;
     expect(statusReportSchema.safeParse({ ...report, agents: [agent] }).success).toBe(false);
+  });
+
+  it('says why the controller is not on the release Switch names, when it is not', () => {
+    expect(
+      statusReportSchema.safeParse({
+        ...report,
+        update: { target: '0.31.0', state: 'failed', problem: 'npm install failed' },
+      }).success
+    ).toBe(true);
+    expect(
+      statusReportSchema.safeParse({ ...report, update: { target: '0.31.0', state: 'done' } })
+        .success
+    ).toBe(false);
+  });
+});
+
+describe('status response', () => {
+  it('keeps controller_release as sent, absent included, whatever its shape', () => {
+    const base = { assignment_revision: 3, report_within_s: 60 };
+    expect(statusResponseSchema.parse(base).controller_release).toBeUndefined();
+    expect(
+      statusResponseSchema.parse({ ...base, controller_release: null }).controller_release
+    ).toBeNull();
+    const release = { version: '0.31.0', url: 'https://example.invalid/a.tgz', sha256: 'f' };
+    expect(
+      statusResponseSchema.parse({ ...base, controller_release: release }).controller_release
+    ).toEqual(release);
+    expect(statusResponseSchema.safeParse({ ...base, controller_release: 42 }).success).toBe(true);
   });
 });

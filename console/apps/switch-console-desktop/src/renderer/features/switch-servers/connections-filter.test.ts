@@ -18,6 +18,8 @@ function entry(name: string, category: string): ConnectionCatalogEntry {
     loopback_ports: null,
     key: null,
     external_identity: null,
+    consent: null,
+    workspace_enabled: null,
   };
 }
 
