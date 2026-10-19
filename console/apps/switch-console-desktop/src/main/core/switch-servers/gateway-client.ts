@@ -66,6 +66,7 @@ import {
 import type {
   AddressingPolicy,
   AddTeamsTeamResult,
+  AgentRenameOutcome,
   BridgeConfigField,
   BridgeDirectoryUser,
   ChatClaim,
@@ -1362,6 +1363,38 @@ export async function updateAgentDisplayName(
     body: { display_name: displayName },
   });
   return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
+}
+
+/**
+ * Rename an agent and set its display name in one step
+ * (`PUT /agents/{id}/name`). The display name is always sent: the current one
+ * keeps it, null clears it. Only the agent's owner (or an admin) may; a
+ * refusal (a name in use, a clash in a room or on a chat platform) surfaces as
+ * a `GatewayError` carrying the server's reason.
+ */
+export async function renameAgent(
+  server: SwitchServer,
+  agentId: string,
+  name: string,
+  displayName: string | null
+): Promise<AgentRenameOutcome> {
+  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/name`, {
+    authenticated: true,
+    method: 'PUT',
+    body: { name, display_name: displayName },
+  });
+  const json = (await res.json()) as {
+    agent: AgentSummaryJson;
+    old_name: string;
+    bridge_failures: string[];
+    templates_mentioning_old_name: string[];
+  };
+  return {
+    agent: toRemoteAgentSummary(json.agent),
+    oldName: json.old_name,
+    bridgeFailures: json.bridge_failures,
+    templatesMentioningOldName: json.templates_mentioning_old_name,
+  };
 }
 
 /** List a server's room groups (`GET /room-groups`), for the addressing-rule
