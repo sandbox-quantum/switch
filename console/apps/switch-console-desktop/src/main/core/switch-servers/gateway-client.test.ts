@@ -751,9 +751,9 @@ describe('registerKnownAgent', () => {
   });
 
   it('sends the caller-supplied agent_type rather than a hardcoded default', async () => {
-    // The type governs the connector label and the hand-onboarding command the
-    // gateway shows, so a default here would silently mislabel every non-Claude
-    // agent (CHOO-1436).
+    // The type governs the agent's provider label and the replies the gateway
+    // builds for it, so a default here would silently mislabel every
+    // non-Claude agent (CHOO-1436).
     const registered = await registerKnownAgent(SERVER, {
       name: 'codex-hoot',
       description: 'Codex running in repo',
