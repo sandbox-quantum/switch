@@ -121,18 +121,35 @@ describe('servesDashboard', () => {
     );
   });
 
-  it('is false for a server that answers its root with anything else', async () => {
+  it('is false where switch-core’s API answers the root', async () => {
     fetchMock.mockResolvedValueOnce(UNAUTHORIZED());
     expect(await servesDashboard('https://old-api.example.com')).toBe(false);
 
-    fetchMock.mockResolvedValueOnce(answer(502, 'text/html'));
-    expect(await servesDashboard('https://proxy.example.com')).toBe(false);
+    fetchMock.mockResolvedValueOnce(answer(404, 'text/plain'));
+    expect(await servesDashboard('https://old-api.example.com')).toBe(false);
   });
 
-  it('is null when the address cannot be reached', async () => {
+  it('cannot tell when something else answers with a page, or with an outage', async () => {
+    // A proxy's sign-in in front of the dashboard, its error page while the
+    // server restarts: neither says the server has no dashboard.
+    fetchMock.mockResolvedValueOnce(answer(401, 'text/html'));
+    expect(await servesDashboard('https://behind-sign-in.example.com')).toBeNull();
+
+    fetchMock.mockResolvedValueOnce(answer(502, 'text/html'));
+    expect(await servesDashboard('https://proxy.example.com')).toBeNull();
+
+    fetchMock.mockResolvedValueOnce(answer(503, 'text/plain'));
+    expect(await servesDashboard('https://restarting.example.com')).toBeNull();
+  });
+
+  it('is null, and says why, when the address cannot be reached', async () => {
     fetchMock.mockRejectedValue(new TypeError('fetch failed'));
 
     expect(await servesDashboard('https://down.example.com')).toBeNull();
+    expect(logWarn).toHaveBeenCalledWith(
+      'switch-servers: could not ask whether an address serves the dashboard',
+      { origin: 'https://down.example.com', error: 'TypeError: fetch failed' }
+    );
   });
 });
 

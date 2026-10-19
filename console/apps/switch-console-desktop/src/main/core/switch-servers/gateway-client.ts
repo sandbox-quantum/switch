@@ -65,7 +65,6 @@ import {
   serviceGrantsSchema,
 } from '@shared/core/switch-servers/service-grants';
 import {
-  dashboardOrigin,
   type AddressingPolicy,
   type AddTeamsTeamResult,
   type BridgeConfigField,
@@ -3393,9 +3392,7 @@ export async function startGitHubConnection(
   server: SwitchServer,
   input: { port: number; state: string; completion_secret: string }
 ) {
-  // A browser flow, so it runs where the server's web pages are.
-  const web = new URL(dashboardOrigin(server));
-  if (!isHttpsOrLoopback(web))
+  if (!isHttpsOrLoopback(new URL(server.url)))
     throw new Error('GitHub connections require HTTPS, unless the server is on this computer.');
   const value = z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{43}$/), url: z.string() }).parse(
     await (
@@ -3407,8 +3404,13 @@ export async function startGitHubConnection(
     ).json()
   );
   const url = new URL(value.url);
+  // Core names its public address, which on an older server whose dashboard
+  // has a host of its own is not where Console opens dashboard pages.
   if (
-    url.origin !== web.origin ||
+    !isHttpsOrLoopback(url) ||
+    ![server.url, server.dashboardUrl].some(
+      (own) => own !== null && new URL(own).origin === url.origin
+    ) ||
     url.pathname !== '/gateway/provider-connections/github/authorize' ||
     url.searchParams.get('state') !== value.id ||
     url.username ||

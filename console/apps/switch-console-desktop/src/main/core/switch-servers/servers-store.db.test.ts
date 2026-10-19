@@ -354,7 +354,6 @@ describe('servers-store: rename & delete', () => {
       await addServer({
         name: 'External server',
         url: 'https://switch.example.com',
-        dashboardUrl: null,
       });
 
       expect(telemetryMocks.trackEvent).not.toHaveBeenCalled();
@@ -599,7 +598,6 @@ describe('servers-store: one address per server', () => {
       const added = await addServer({
         name: '  Team  ',
         url: ' https://switch.example.com/ ',
-        dashboardUrl: null,
       });
 
       expect(added).toMatchObject({
@@ -616,7 +614,6 @@ describe('servers-store: one address per server', () => {
       const adding = addServer({
         name: 'Again',
         url: 'https://switch.example.com/',
-        dashboardUrl: null,
       });
 
       await expect(adding).rejects.toBeInstanceOf(DuplicateServerUrlError);
@@ -629,16 +626,9 @@ describe('servers-store: one address per server', () => {
 
   describe('address spelling', () => {
     it('stores one spelling: lowercased host, no default port, no trailing slash', async () => {
-      const added = await addServer({
-        name: 'Team',
-        url: 'HTTPS://Switch.Example.com:443/',
-        dashboardUrl: 'https://Switch-Gateway.example.com/',
-      });
+      const added = await addServer({ name: 'Team', url: 'HTTPS://Switch.Example.com:443/' });
 
-      expect(added).toMatchObject({
-        url: 'https://switch.example.com',
-        dashboardUrl: 'https://switch-gateway.example.com',
-      });
+      expect(added).toMatchObject({ url: 'https://switch.example.com', dashboardUrl: null });
     });
 
     it('refuses another spelling of an address already saved, however it was stored', async () => {
@@ -646,7 +636,7 @@ describe('servers-store: one address per server', () => {
       await insertServer({ id: 'a', name: 'Company server', url: 'https://Switch.example.com' });
 
       await expect(
-        addServer({ name: 'Again', url: 'https://switch.example.com:443', dashboardUrl: null })
+        addServer({ name: 'Again', url: 'https://switch.example.com:443' })
       ).rejects.toBeInstanceOf(DuplicateServerUrlError);
       expect((await findServerByUrl('https://SWITCH.example.com/'))?.id).toBe('a');
     });
@@ -715,6 +705,25 @@ describe('servers-store: one address per server', () => {
         updateServer({ id: 'b', name: 'Second', url: 'https://one.example.com' })
       ).rejects.toThrow('already the address of “First”');
       expect((await getServer('b'))?.url).toBe('https://two.example.com');
+    });
+
+    it('still saves one of two servers that already share an address', async () => {
+      // Migration 0052 keeps rows whose API address was the same.
+      await insertServer({ id: 'a', name: 'First', url: 'https://one.example.com' });
+      await insertServer({
+        id: 'b',
+        name: 'Second',
+        url: 'https://one.example.com',
+        dashboardUrl: 'https://two.example.com',
+      });
+
+      const saved = await updateServer({
+        id: 'b',
+        name: 'Renamed',
+        url: 'https://one.example.com',
+      });
+
+      expect(saved).toMatchObject({ name: 'Renamed', dashboardUrl: 'https://two.example.com' });
     });
 
     it('throws for an unknown server id', async () => {
@@ -833,6 +842,18 @@ describe('servers-store: one address per server', () => {
       );
 
       expect(server.dashboardUrl).toBeNull();
+    });
+
+    it('registers one row when the same stack is registered twice at once', async () => {
+      const params = { name: 'Local', url: 'http://localhost:8010', dashboardUrl: null };
+
+      const [first, second] = await Promise.all([
+        ensureManagedServer(params, { kind: 'local' }),
+        ensureManagedServer(params, { kind: 'local' }),
+      ]);
+
+      expect(second.id).toBe(first.id);
+      expect(await fixture.db.select().from(switchServers)).toHaveLength(1);
     });
   });
 });

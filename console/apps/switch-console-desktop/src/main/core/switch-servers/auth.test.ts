@@ -1,3 +1,4 @@
+import { get } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const readSecrets = vi.hoisted(() => vi.fn());
@@ -371,6 +372,8 @@ describe('callbackHostHop', () => {
     ['no return address', 'https://idp.example/authorize?state=s'],
     ['a return address that is not a web address', idp('javascript:alert(1)')],
     ['a return address that does not parse', idp('not a url')],
+    // A proxy with a sign-in of its own in front of the dashboard.
+    ['a callback that is not Switch’s', idp('https://auth.example.com/oauth2/callback')],
   ])('leaves a sign-in alone that returns to %s', (_case, redirect) => {
     expect(callbackHostHop(start, redirect)).toBeNull();
   });
@@ -544,6 +547,10 @@ describe('oidcLogin in the system browser', () => {
   });
 
   it('starts on the server’s own address otherwise', async () => {
+    // A current server answers a sign-in on its own address itself.
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, { status: 302, headers: { location: 'https://idp.example/authorize' } })
+    );
     const page = await openedPage({
       id: 'srv-one',
       name: 'One address',
@@ -553,6 +560,68 @@ describe('oidcLogin in the system browser', () => {
     } as never);
     expect(`${page.origin}${page.pathname}`).toBe(
       'https://switch.example.org/gateway/auth/oidc/login'
+    );
+    expect(keepSeparateDashboard).not.toHaveBeenCalled();
+  });
+
+  it('follows an older server to the host its sign-in returns to, and keeps it', async () => {
+    const OLDER = {
+      id: 'srv-older',
+      name: 'Older',
+      url: 'https://switch-api.example.com',
+      dashboardUrl: null,
+      managed: false,
+    };
+    const toProvider = `https://idp.example/authorize?${new URLSearchParams({
+      redirect_uri: 'https://switch-gateway.example.com/gateway/auth/oidc/callback',
+    })}`;
+    fetchMock.mockImplementation(async (url: string) =>
+      url.endsWith('/gateway/auth/oidc/login')
+        ? new Response(null, { status: 302, headers: { location: toProvider } })
+        : new Response('{}', { status: 200, headers: { 'set-cookie': 'switch_auth=jwt; Path=/' } })
+    );
+
+    const result = oidcLogin(OLDER as never, null, true);
+    await vi.waitFor(() => expect(electron.shell.openExternal).toHaveBeenCalledOnce());
+    const page = new URL(vi.mocked(electron.shell.openExternal).mock.calls[0]![0]);
+    expect(`${page.origin}${page.pathname}`).toBe(
+      'https://switch-gateway.example.com/gateway/auth/oidc/login'
+    );
+
+    // The browser comes back to this computer with a code, as the server sends it.
+    const back = new URL(page.searchParams.get('return_to')!);
+    back.search = new URLSearchParams({
+      code: 'c',
+      state: page.searchParams.get('state')!,
+    }).toString();
+    await new Promise<void>((resolve, reject) =>
+      get(back, (res) => res.resume().on('end', resolve)).on('error', reject)
+    );
+
+    expect(await result).toEqual({ success: true, data: true });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://switch-api.example.com/gateway/auth/oidc/exchange',
+      expect.anything()
+    );
+    expect(keepSeparateDashboard).toHaveBeenCalledExactlyOnceWith(
+      OLDER,
+      'https://switch-gateway.example.com'
+    );
+  });
+
+  it('starts on the server’s own address when it cannot ask where sign-in returns', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));
+    const page = await openedPage({
+      id: 'srv-down',
+      name: 'Unreachable for a moment',
+      url: 'https://switch.example.net',
+      dashboardUrl: null,
+      managed: false,
+    } as never);
+    expect(page.origin).toBe('https://switch.example.net');
+    expect(logWarn).toHaveBeenCalledWith(
+      'switch-servers: could not ask where the server’s sign-in returns to',
+      expect.objectContaining({ server: 'srv-down' })
     );
   });
 });

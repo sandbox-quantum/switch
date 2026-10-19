@@ -59,19 +59,28 @@ export async function assertServerAddress(url: string): Promise<void> {
 }
 
 /**
- * Whether `origin` serves the dashboard: answers its root with a page. Null
- * when it could not be asked at all.
+ * Whether `origin` serves the dashboard: true when its root answers with a
+ * page, false when switch-core's API answers there instead (a refusal or a
+ * not-found that is not a page). Null when that cannot be told: the address
+ * could not be asked, or something else answered with a page of its own, such
+ * as a proxy's sign-in or error page.
  */
 export async function servesDashboard(origin: string): Promise<boolean | null> {
+  let response: Response;
   try {
-    const response = await fetch(`${origin.replace(/\/+$/, '')}/`, {
+    response = await fetch(`${origin.replace(/\/+$/, '')}/`, {
       headers: { Accept: 'text/html' },
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
-    return response.ok && isHtml(response);
-  } catch {
+  } catch (error) {
+    log.warn('switch-servers: could not ask whether an address serves the dashboard', {
+      origin,
+      error: String(error),
+    });
     return null;
   }
+  if (isHtml(response)) return response.ok ? true : null;
+  return response.status === 401 || response.status === 404 ? false : null;
 }
 
 /**
@@ -97,9 +106,9 @@ export class NoManagementApiError extends Error {
 export class NoDashboardError extends Error {
   constructor(serverName: string, origin: string) {
     super(
-      `${serverName} does not serve its dashboard at ${origin}. The server is older than ` +
-        `switch-core serving the dashboard on its own address; once whoever runs it upgrades ` +
-        `it, its pages open from here.`
+      `${serverName} does not serve its dashboard at ${origin}. Either it is older than ` +
+        `switch-core serving the dashboard on its own address, and its pages open from here ` +
+        `once whoever runs it upgrades it, or its dashboard is turned off.`
     );
     this.name = 'NoDashboardError';
   }

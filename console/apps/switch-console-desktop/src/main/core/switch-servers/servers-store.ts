@@ -149,9 +149,23 @@ async function managedServerSlot(
   url: string,
   ref: ManagedServerRef
 ): Promise<{ existingForTarget: SwitchServer | null; atUrl: SwitchServer | null }> {
+  return slotAmong(await listServers(), url, ref);
+}
+
+/** {@link managedServerSlot} over servers already read, so that a transaction
+ * can decide and write on one reading. */
+function slotAmong(
+  servers: SwitchServer[],
+  url: string,
+  ref: ManagedServerRef
+): { existingForTarget: SwitchServer | null; atUrl: SwitchServer | null } {
   const existingForTarget =
-    ref.kind === 'remote' ? await getRemoteManagedServer(ref.sshHost) : await getManagedServer();
-  const atUrl = await getServerByUrl(url);
+    servers.find((server) =>
+      ref.kind === 'remote'
+        ? server.managementKind === 'remote' && server.sshHost === ref.sshHost
+        : server.managementKind === 'local'
+    ) ?? null;
+  const atUrl = servers.find((server) => normaliseUrl(server.url) === url) ?? null;
   if (atUrl && atUrl.id !== existingForTarget?.id && (existingForTarget || atUrl.managed)) {
     throw new ManagedServerUrlConflictError(
       url,
@@ -191,16 +205,42 @@ export async function ensureManagedServer(
   const dashboardUrl = params.dashboardUrl === null ? null : normaliseUrl(params.dashboardUrl);
   const managementKind = ref.kind;
   const sshHost = ref.kind === 'remote' ? ref.sshHost : null;
-  const { existingForTarget, atUrl } = await managedServerSlot(url, ref);
-  const existing = existingForTarget ?? atUrl;
-  if (existing) {
-    // Preserve the stored name on restart: the name is set once at creation and
-    // then owned by the user (rename). Only the addresses/kind refresh when a managed
-    // stack restarts (ports can change), so overwriting name here would clobber a
-    // rename — the local stack always restarts with a hardcoded default name.
-    const [row] = await db
-      .update(switchServers)
-      .set({
+  // One transaction for the decision and the write: with no unique index on
+  // the address, two registrations at once must not both insert.
+  const { server, inserted } = db.transaction((tx) => {
+    const servers = tx
+      .select()
+      .from(switchServers)
+      .orderBy(desc(switchServers.createdAt))
+      .all()
+      .map(mapRow);
+    const { existingForTarget, atUrl } = slotAmong(servers, url, ref);
+    const existing = existingForTarget ?? atUrl;
+    if (existing) {
+      // Preserve the stored name on restart: the name is set once at creation and
+      // then owned by the user (rename). Only the addresses/kind refresh when a managed
+      // stack restarts (ports can change), so overwriting name here would clobber a
+      // rename — the local stack always restarts with a hardcoded default name.
+      const [row] = tx
+        .update(switchServers)
+        .set({
+          url,
+          dashboardUrl,
+          managed: true,
+          managementKind,
+          sshHost,
+          updatedAt: sql`CURRENT_TIMESTAMP`,
+        })
+        .where(eq(switchServers.id, existing.id))
+        .returning()
+        .all();
+      return { server: mapRow(row!), inserted: false };
+    }
+    const [row] = tx
+      .insert(switchServers)
+      .values({
+        id: randomUUID(),
+        name: params.name.trim(),
         url,
         dashboardUrl,
         managed: true,
@@ -208,33 +248,19 @@ export async function ensureManagedServer(
         sshHost,
         updatedAt: sql`CURRENT_TIMESTAMP`,
       })
-      .where(eq(switchServers.id, existing.id))
-      .returning();
-    const server = mapRow(row);
-    await ensureServerWorkspace(server);
-    return server;
-  }
-  const [row] = await db
-    .insert(switchServers)
-    .values({
-      id: randomUUID(),
-      name: params.name.trim(),
-      url,
-      dashboardUrl,
-      managed: true,
-      managementKind,
-      sshHost,
-      updatedAt: sql`CURRENT_TIMESTAMP`,
-    })
-    .returning();
-  const server = mapRow(row);
+      .returning()
+      .all();
+    return { server: mapRow(row!), inserted: true };
+  });
   await ensureServerWorkspace(server);
   // Only the insert: this function also runs on every restart of a stack that
   // already exists, and that is not a server being added.
-  trackEvent('server_added', {
-    server_kind: ref.kind === 'remote' ? 'remote_managed' : 'local',
-    outcome: 'success',
-  });
+  if (inserted) {
+    trackEvent('server_added', {
+      server_kind: ref.kind === 'remote' ? 'remote_managed' : 'local',
+      outcome: 'success',
+    });
+  }
   return server;
 }
 
@@ -296,7 +322,6 @@ function assertUrlFree(tx: StoreTransaction, url: string, exceptId: string | nul
 
 export async function addServer(params: AddServerParams): Promise<SwitchServer> {
   const url = normaliseUrl(params.url);
-  const dashboardUrl = params.dashboardUrl === null ? null : normaliseUrl(params.dashboardUrl);
   const server = db.transaction((tx) => {
     assertUrlFree(tx, url, null);
     const [row] = tx
@@ -305,7 +330,6 @@ export async function addServer(params: AddServerParams): Promise<SwitchServer> 
         id: randomUUID(),
         name: params.name.trim(),
         url,
-        dashboardUrl,
         updatedAt: sql`CURRENT_TIMESTAMP`,
       })
       .returning()
@@ -332,13 +356,16 @@ export async function updateServer(params: UpdateServerParams): Promise<SwitchSe
   const row = db.transaction((tx) => {
     const [previous] = tx.select().from(switchServers).where(eq(switchServers.id, params.id)).all();
     if (!previous) throw new Error(`No Switch server with id ${params.id}`);
-    assertUrlFree(tx, url, params.id);
+    // Only a new address is checked: rows that already share one (migration
+    // 0052 keeps them) stay editable.
+    const urlChanged = normaliseUrl(previous.url) !== url;
+    if (urlChanged) assertUrlFree(tx, url, params.id);
     const [updated] = tx
       .update(switchServers)
       .set({
         name: params.name.trim(),
         url,
-        ...(normaliseUrl(previous.url) !== url ? { dashboardUrl: null } : {}),
+        ...(urlChanged ? { dashboardUrl: null } : {}),
         updatedAt: sql`CURRENT_TIMESTAMP`,
       })
       .where(eq(switchServers.id, params.id))

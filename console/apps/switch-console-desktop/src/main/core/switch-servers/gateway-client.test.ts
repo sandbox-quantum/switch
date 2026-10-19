@@ -1129,6 +1129,25 @@ describe('GitHub connection transport', () => {
       })
     ).rejects.toThrow('invalid GitHub authorization URL');
   });
+  it('accepts the server’s own address on an older server that keeps its dashboard apart', async () => {
+    const state = 'a'.repeat(43);
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: state,
+          url: `https://switch-api.example.com/gateway/provider-connections/github/authorize?state=${state}`,
+        })
+      )
+    );
+    const split = {
+      ...(SERVER as object),
+      url: 'https://switch-api.example.com',
+      dashboardUrl: 'https://switch.example.com',
+    } as never;
+    await expect(
+      startGitHubConnection(split, { port: 12345, state, completion_secret: 'b'.repeat(43) })
+    ).resolves.toMatchObject({ id: state });
+  });
   it('checks state matches the returned authorization id', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(

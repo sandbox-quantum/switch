@@ -19,6 +19,8 @@ import { keepSeparateDashboard } from './server-address';
 import { getSessionCookie, setSessionCookie } from './servers-store';
 
 const SWITCH_AUTH_COOKIE = 'switch_auth';
+/** Where switch-core's identity provider returns a browser sign-in. */
+const OIDC_CALLBACK_PATH = '/auth/oidc/callback';
 const OIDC_LOGIN_TIMEOUT_MS = 300_000;
 
 export type LoginError =
@@ -52,7 +54,9 @@ function webGatewayUrl(server: SwitchServer, path: string): string {
  * host, so a return to a different one would find none. A current server makes
  * that hop itself before this point; an older one, whose dashboard is on a host
  * of its own, does not. Hostnames only, as cookies do. Nothing later is asked,
- * so a page on the provider's side cannot steer it.
+ * so a page on the provider's side cannot steer it, and only a return to a
+ * Switch sign-in callback counts: a proxy with a sign-in of its own in front of
+ * the dashboard returns somewhere else, and is left to run.
  */
 export function callbackHostHop(startUrl: string, redirectUrl: string): string | null {
   const start = new URL(startUrl);
@@ -65,6 +69,7 @@ export function callbackHostHop(startUrl: string, redirectUrl: string): string |
     return null;
   }
   if (callback.protocol !== 'https:' && callback.protocol !== 'http:') return null;
+  if (!callback.pathname.endsWith(OIDC_CALLBACK_PATH)) return null;
   return callback.hostname === start.hostname ? null : callback.origin;
 }
 
@@ -400,8 +405,10 @@ async function oidcBrowserLogin(
   const state = randomBytes(24).toString('base64url');
   const verifier = randomBytes(32).toString('base64url');
   const challenge = createHash('sha256').update(verifier).digest('base64url');
+  const callbackOrigin = await browserCallbackHost(server);
+  const startOrigin = callbackOrigin ?? dashboardOrigin(server);
 
-  return new Promise<Result<true, LoginError>>((resolve) => {
+  const result = await new Promise<Result<true, LoginError>>((resolve) => {
     let settled = false;
     let port = 0;
     const page = (status: number, text: string, res: ServerResponse, returnUrl: string | null) => {
@@ -501,7 +508,7 @@ async function oidcBrowserLogin(
       if (provider !== null) query.set('provider', provider);
       // Started where the server's web pages are, for the reason
       // `webGatewayUrl` gives; the code is traded on the server's own address.
-      shell.openExternal(webGatewayUrl(server, `/auth/oidc/login?${query}`)).catch((cause) =>
+      shell.openExternal(`${startOrigin}/gateway/auth/oidc/login?${query}`).catch((cause) =>
         finish(
           err({
             kind: 'failed',
@@ -509,6 +516,49 @@ async function oidcBrowserLogin(
           })
         )
       );
+    });
+  });
+
+  if (result.success && callbackOrigin !== null) await keepCallbackHost(server, callbackOrigin);
+  return result;
+}
+
+/**
+ * The host an older server's identity provider returns a browser sign-in to,
+ * when Console has no dashboard address for it and that host is another; null
+ * otherwise. The system browser cannot be watched the way the sign-in window is
+ * (see {@link callbackHostHop}), so the server's first answer to a sign-in is
+ * read here instead. A current server makes that hop itself, and its answer
+ * names no identity provider.
+ */
+async function browserCallbackHost(server: SwitchServer): Promise<string | null> {
+  if (server.dashboardUrl !== null) return null;
+  const startUrl = gatewayUrl(server, '/auth/oidc/login');
+  let location: string | null;
+  try {
+    const response = await fetch(startUrl, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(10_000),
+    });
+    location = response.headers.get('location');
+  } catch (cause) {
+    log.warn('switch-servers: could not ask where the server’s sign-in returns to', {
+      server: server.id,
+      error: String(cause),
+    });
+    return null;
+  }
+  return location === null ? null : callbackHostHop(startUrl, new URL(location, startUrl).href);
+}
+
+/** Keep the host a sign-in was followed to as the server's dashboard address.
+ * Signed in either way, so a failure to record it is only noted. */
+async function keepCallbackHost(server: SwitchServer, callbackOrigin: string): Promise<void> {
+  await keepSeparateDashboard(server, callbackOrigin).catch((error: unknown) => {
+    log.warn('switch-servers: could not keep the host the sign-in returned to', {
+      server: server.id,
+      callbackOrigin,
+      error: String(error),
     });
   });
 }
@@ -598,16 +648,7 @@ async function oidcWindowLogin(
     });
   });
 
-  if (result.success && callbackOrigin !== null) {
-    // Where the server's sign-in returns is where an older server keeps its
-    // dashboard. Signed in either way, so a failure to record it is only noted.
-    await keepSeparateDashboard(server, callbackOrigin).catch((error: unknown) => {
-      log.warn('switch-servers: could not keep the host the sign-in returned to', {
-        server: server.id,
-        callbackOrigin,
-        error: String(error),
-      });
-    });
-  }
+  // Where the server's sign-in returns is where an older server keeps its dashboard.
+  if (result.success && callbackOrigin !== null) await keepCallbackHost(server, callbackOrigin);
   return result;
 }

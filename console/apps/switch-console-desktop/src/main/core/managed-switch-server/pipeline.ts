@@ -434,10 +434,13 @@ async function unansweredAddress(
   signal: AbortSignal
 ): Promise<string | null> {
   const { url, dashboardUrl } = managedServerAddresses(ports);
-  for (const address of [url, dashboardUrl]) {
-    if (!(await waitForHealth(address, { signal }))) return address;
-  }
-  return null;
+  const addresses = [url, dashboardUrl];
+  // Waited for together, so a stack that never comes up is reported after one
+  // wait rather than two.
+  const answered = await Promise.all(
+    addresses.map((address) => waitForHealth(address, { signal }))
+  );
+  return addresses.find((_address, index) => !answered[index]) ?? null;
 }
 
 /**

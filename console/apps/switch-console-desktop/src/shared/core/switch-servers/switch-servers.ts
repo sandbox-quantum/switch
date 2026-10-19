@@ -98,10 +98,6 @@ export type SwitchServer = {
 export type AddServerParams = {
   name: string;
   url: string;
-  /** Where this server's dashboard was reached, when that is known to be a
-   * different address: an invite link names the dashboard's origin. Kept only
-   * if it serves the dashboard and `url` does not; see {@link SwitchServer}. */
-  dashboardUrl: string | null;
 };
 
 /** What a managed stack registers itself with: its own address, and where its

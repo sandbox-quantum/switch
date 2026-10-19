@@ -92,7 +92,7 @@ import {
 } from './github-browser-flow';
 import { deleteManagedClaudeCredential } from './managed-claude-credential';
 import { hostUnreachable, requireReachableServer, requireServer } from './require-server';
-import { assertServerAddress, assertServesDashboard, separateDashboard } from './server-address';
+import { assertServerAddress, assertServesDashboard } from './server-address';
 import {
   addServer,
   deleteSessionCookie,
@@ -210,7 +210,7 @@ async function registerSwitchCloud({ url }: SwitchCloudEndpoint): Promise<Switch
   if (existing) return existing;
   let server: SwitchServer;
   try {
-    server = await addServer({ name: SWITCH_CLOUD_NAME, url, dashboardUrl: null });
+    server = await addServer({ name: SWITCH_CLOUD_NAME, url });
   } catch (error) {
     trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
     throw error;
@@ -274,11 +274,7 @@ export const switchServersController = createRPCController({
     let server: SwitchServer;
     try {
       await assertServerAddress(params.url);
-      const dashboardUrl =
-        params.dashboardUrl === null
-          ? null
-          : await separateDashboard(params.url, params.dashboardUrl);
-      server = await addServer({ ...params, dashboardUrl });
+      server = await addServer(params);
     } catch (error) {
       trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
       throw error;

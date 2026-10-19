@@ -448,7 +448,7 @@ export class SwitchServersStore {
   async addServer(name: string, url: string): Promise<SwitchServer | null> {
     this.clearError();
     try {
-      const created = await rpc.switchServers.addServer({ name, url, dashboardUrl: null });
+      const created = await rpc.switchServers.addServer({ name, url });
       const [servers, installIsEmpty] = await Promise.all([
         rpc.switchServers.listServers(),
         rpc.onboarding.installIsEmpty(),

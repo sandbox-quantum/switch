@@ -13,7 +13,6 @@ const findServerByUrl = vi.hoisted(() => vi.fn());
 const findServerByWebAddress = vi.hoisted(() => vi.fn());
 const assertServerAddress = vi.hoisted(() => vi.fn());
 const assertServesDashboard = vi.hoisted(() => vi.fn());
-const separateDashboard = vi.hoisted(() => vi.fn());
 const passwordLogin = vi.hoisted(() => vi.fn());
 const signup = vi.hoisted(() => vi.fn());
 const reconcileServerWorkspaces = vi.hoisted(() => vi.fn());
@@ -96,7 +95,6 @@ vi.mock('./gateway-client', () => ({
 vi.mock('./server-address', () => ({
   assertServerAddress,
   assertServesDashboard,
-  separateDashboard,
 }));
 vi.mock('./servers-store', () => ({
   getServer,
@@ -640,7 +638,7 @@ describe('editing a server', () => {
 });
 
 describe('adding a server by URL', () => {
-  const params = { name: 'S', url: 'http://switch', dashboardUrl: null };
+  const params = { name: 'S', url: 'http://switch' };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -681,48 +679,6 @@ describe('adding a server by URL', () => {
     });
   });
 
-  it('keeps the dashboard address an invite named, once it is checked to be one', async () => {
-    addServer.mockResolvedValue(server({ id: 'new' }));
-    separateDashboard.mockResolvedValueOnce('https://switch-gateway.example.com');
-
-    await switchServersController.addServer({
-      name: 'S',
-      url: 'https://switch-api.example.com',
-      dashboardUrl: 'https://switch-gateway.example.com',
-    });
-
-    expect(separateDashboard).toHaveBeenCalledExactlyOnceWith(
-      'https://switch-api.example.com',
-      'https://switch-gateway.example.com'
-    );
-    expect(addServer).toHaveBeenCalledWith({
-      name: 'S',
-      url: 'https://switch-api.example.com',
-      dashboardUrl: 'https://switch-gateway.example.com',
-    });
-  });
-
-  it('keeps no dashboard address the check turned down', async () => {
-    addServer.mockResolvedValue(server({ id: 'new' }));
-    separateDashboard.mockResolvedValueOnce(null);
-
-    await switchServersController.addServer({
-      name: 'S',
-      url: 'https://switch.example.com',
-      dashboardUrl: 'https://switch.example.com',
-    });
-
-    expect(addServer).toHaveBeenCalledWith(expect.objectContaining({ dashboardUrl: null }));
-  });
-
-  it('asks nothing about a dashboard when nothing named one', async () => {
-    addServer.mockResolvedValue(server({ id: 'new' }));
-
-    await switchServersController.addServer(params);
-
-    expect(separateDashboard).not.toHaveBeenCalled();
-  });
-
   it('reports the failure when the row itself cannot be written', async () => {
     addServer.mockRejectedValue(new Error('constraint failed'));
 
@@ -760,7 +716,6 @@ describe('connecting to Switch Cloud', () => {
     expect(addServer).toHaveBeenCalledWith({
       name: 'Switch Cloud',
       url: 'https://cloud.example.com',
-      dashboardUrl: null,
     });
     expect(assertServerAddress).not.toHaveBeenCalled();
     expect(trackEvent).toHaveBeenCalledWith('server_added', {
