@@ -206,3 +206,103 @@ def test_an_existing_room_left_out_is_refused():
             machines=MACHINES,
         )
     assert {p.code for p in e.value.problems} == {"input_missing"}
+
+
+NESTED = """\
+version: 2
+params:
+  team: { type: string }
+  repo: { type: string }
+  with_room: { type: boolean, default: true }
+resources:
+  fix_room:
+    type: template
+    if: "{with_room}"
+    name: "{team} fix room"
+    presets: { repo: "{repo}" }
+    document:
+      version: 2
+      params:
+        bug: { type: string }
+        repo: { type: string }
+      resources:
+        room:
+          type: room
+          name: "Fix {bug} in {repo}"
+          instructions: |
+            Fix {bug}.
+            Then report back.
+  bugs:
+    type: room
+    name: "{team}-bugs"
+    instructions: Run {fix_room.name}.
+"""
+
+
+def test_a_template_resource_is_saved_not_run():
+    compiled = compile_v2(NESTED, {"team": "red", "repo": "acme/app"}, {})
+    document = yaml.safe_load(compiled.document)
+    assert document["room"]["instructions"] == "Run red fix room."
+    assert "fix_room" not in compiled.document
+    (nested,) = compiled.templates
+    assert (nested.key, nested.name, nested.visibility) == (
+        "fix_room",
+        "red fix room",
+        "private",
+    )
+    inner = yaml.safe_load(nested.content)
+    # The outer run fills nothing in the inner document but its presets.
+    assert inner["params"]["repo"]["default"] == "acme/app"
+    assert inner["resources"]["room"]["name"] == "Fix {bug} in {repo}"
+    assert "instructions: |" in nested.content
+
+
+def test_a_template_resource_that_is_off_is_not_saved_and_not_named():
+    with pytest.raises(TemplateError, match="does not create"):
+        compile_v2(NESTED, {"team": "red", "repo": "x", "with_room": False}, {})
+    off = NESTED.replace("    instructions: Run {fix_room.name}.\n", "")
+    compiled = compile_v2(off, {"team": "red", "repo": "x", "with_room": False}, {})
+    assert compiled.templates == []
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (("presets: { repo:", "presets: { nope:"), "does not declare"),
+        (('name: "{team} fix room"', 'name: ""'), "has no name yet"),
+        (("    presets:", "    owner: me\n    presets:"), "not owner"),
+        (("    document:", "    visibility: everyone\n    document:"), "visibility"),
+        (
+            ("        room:\n", "        again: { type: template }\n        room:\n"),
+            "one level deep",
+        ),
+    ],
+)
+def test_a_template_resource_says_what_is_wrong(change, message):
+    with pytest.raises(TemplateError, match=message):
+        compile_v2(NESTED.replace(*change), {"team": "red", "repo": "x"}, {})
+
+
+def test_a_preset_with_no_value_is_refused():
+    with pytest.raises(TemplateError, match="presets read repo"):
+        compile_v2(NESTED, {"team": "red"}, {})
+
+
+def test_lint_reads_a_template_resource_and_its_document():
+    assert lint_template(NESTED).warnings == []
+    assert lint_template(NESTED).errors == []
+    broken = NESTED.replace("type: room\n          name", "type: rom\n          name")
+    (error,) = lint_template(broken).errors
+    assert error.code == "invalid_resource_type"
+    assert error.message.startswith("resource 'fix_room', in its document:")
+    nested_twice = NESTED.replace(
+        "        room:\n", "        again: { type: template }\n        room:\n"
+    )
+    assert "invalid_template_resource" in {
+        f.code for f in lint_template(nested_twice).errors
+    }
+
+
+def test_a_template_resource_counts_for_nothing_the_template_makes():
+    assert template_kind(NESTED) == "room"
+    assert agent_slots(NESTED) == []

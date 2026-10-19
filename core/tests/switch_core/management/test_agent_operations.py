@@ -1322,6 +1322,25 @@ resources:
 """
 
 
+NESTED_DOCUMENT_TEMPLATE = (
+    DOCUMENT_TEMPLATE
+    + """\
+  notes:
+    type: template
+    name: "{helper.name}'s notes"
+    visibility: shared
+    presets: { helper: "{helper.name}" }
+    document:
+      params:
+        topic: { type: string }
+        helper: { type: agent }
+      room:
+        name: "Notes: {topic}"
+        agents: ["{helper}"]
+"""
+)
+
+
 @pytest.mark.usefixtures("_short_listen")
 class TestTheConsoleRunsAVersion2Template:
     """`POST /gateway/rooms/from-template-document`: the server works the
@@ -1357,6 +1376,68 @@ class TestTheConsoleRunsAVersion2Template:
         assert created["machine"]["name"] == "laptop"
         agent = await _agent_row(harness, "ada-helper")
         assert agent is not None and agent.addressing_policy is None
+
+    async def test_a_template_inside_is_saved_for_the_person(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+
+        response = await client.post(
+            "/gateway/rooms/from-template-document",
+            json={
+                "template": NESTED_DOCUMENT_TEMPLATE,
+                "inputs": {"name": "Ada helper"},
+                "template_name": "helper",
+            },
+            cookies=cookies_for(owner),
+        )
+
+        assert response.status_code == 201, response.text
+        (saved,) = response.json()["saved_templates"]
+        assert saved["name"] == "ada-helper's notes"
+        async with harness.session_factory() as session:
+            row = await session.get(Template, saved["id"])
+        assert row is not None
+        assert (row.owner_id, row.created_by_agent_id, row.read_visibility) == (
+            owner.id,
+            None,
+            "public",
+        )
+        assert "default: ada-helper" in row.content
+
+    async def test_a_template_name_already_taken_refuses_the_run(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        async with harness.session_factory() as session:
+            session.add(
+                Template(
+                    owner_id=owner.id,
+                    name="ada-helper's notes",
+                    description="mine",
+                    kind="room",
+                    content="room: { name: mine }",
+                )
+            )
+            await session.commit()
+
+        response = await client.post(
+            "/gateway/rooms/from-template-document",
+            json={
+                "template": NESTED_DOCUMENT_TEMPLATE,
+                "inputs": {"name": "Ada helper"},
+                "template_name": "helper",
+            },
+            cookies=cookies_for(owner),
+        )
+
+        assert response.status_code == 400, response.text
+        assert "already have one by that name" in response.json()["detail"]
+        assert await _agent_row(harness, "ada-helper") is None
 
     async def test_no_machine_that_can_run_it_is_refused_with_the_reason(
         self, harness: Harness, client: httpx.AsyncClient

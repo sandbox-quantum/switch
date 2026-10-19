@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+import yaml
 from sqlalchemy import select, update
 
 from switch_core.agent_refusals import AgentRefused
@@ -839,3 +840,172 @@ async def test_users_with_no_messaging_app_are_refused_before_any_agent(managed)
     with pytest.raises(ValueError, match="on no messaging app"):
         await _as(managed["agent_id"], run_template, template_id=template_id)
     assert managed["management"].created == []
+
+
+DESK = """\
+version: 2
+params:
+  team: { type: string }
+  repo: { type: string }
+  machine: { type: machine, default: [$first] }
+resources:
+  fix_room:
+    type: template
+    name: "{team} fix room"
+    description: One room per bug in {repo}
+    presets: { repo: "{repo}", fixer: "{fixer.name}" }
+    document:
+      version: 2
+      params:
+        bug: { type: string }
+        repo: { type: string }
+        fixer: { type: agent }
+      resources:
+        room:
+          type: room
+          name: "Fix {bug}"
+          description: Fixing {bug} in {repo}
+          agents: ["{fixer}"]
+  fixer:
+    type: agent
+    name: "{team}-fixer"
+    instructions: Fix what you are given.
+    provider: claude
+    machine: "{machine}"
+    directory: "{$agents_dir}/{fixer.name}"
+    addressing: owner-agents
+  manager:
+    type: agent
+    name: "{team}-manager"
+    instructions: Run the template named {fix_room.name} for each bug.
+    provider: claude
+    machine: "{machine}"
+    directory: "{$agents_dir}/{manager.name}"
+  bugs:
+    type: room
+    name: "{team}-bugs"
+    description: Report bugs here
+    agents: [manager, fixer]
+"""
+
+
+async def _templates(env: dict[str, Any]) -> list[Template]:
+    async with env["session_factory"]() as session:
+        return list((await session.execute(select(Template))).scalars())
+
+
+@pytest.mark.asyncio
+async def test_a_template_inside_a_template_is_saved_by_the_run(managed):
+    template_id = await _stored(managed, DESK)
+
+    result = await _as(
+        managed["agent_id"],
+        run_template,
+        template_id=template_id,
+        inputs={"team": "red", "repo": "acme/app"},
+    )
+
+    saved = next(t for t in await _templates(managed) if t.name == "red fix room")
+    assert result["saved_templates"] == [{"id": saved.id, "name": "red fix room"}]
+    assert (saved.owner_id, saved.created_by_agent_id) == (
+        managed["user_id"],
+        managed["agent_id"],
+    )
+    assert (saved.read_visibility, saved.description, saved.kind) == (
+        "private",
+        "One room per bug in acme/app",
+        "room",
+    )
+    params = yaml.safe_load(saved.content)["params"]
+    assert params["repo"]["default"] == "acme/app"
+    assert params["fixer"]["default"] == "red-fixer"
+    assert "default" not in params["bug"]
+    manager = next(s for s in managed["management"].created if s.name == "red-manager")
+    assert "the template named red fix room" in manager.instructions
+
+    # The manager, an agent of the same owner, runs it with the bug alone.
+    fixed = await _as(
+        managed["agent_id"],
+        run_template,
+        template_id=saved.id,
+        inputs={"bug": "login"},
+    )
+    assert fixed["room_name"] == "Fix login"
+    room = next(r for r in await _rooms(managed) if r.name == "Fix login")
+    assert room.description == "Fixing login in acme/app"
+
+
+@pytest.mark.asyncio
+async def test_a_template_name_already_taken_refuses_the_run_first(managed):
+    async with managed["session_factory"]() as session:
+        session.add(
+            Template(
+                owner_id=managed["user_id"],
+                name="red fix room",
+                description="mine",
+                kind="room",
+                content="room: { name: mine }",
+            )
+        )
+        await session.commit()
+    template_id = await _stored(managed, DESK)
+
+    with pytest.raises(ValueError, match="already have one by that name"):
+        await _as(
+            managed["agent_id"],
+            run_template,
+            template_id=template_id,
+            inputs={"team": "red", "repo": "acme/app"},
+        )
+    assert managed["management"].created == []
+    assert await _rooms(managed) == []
+
+
+@pytest.mark.asyncio
+async def test_a_saved_template_is_deleted_again_when_the_rooms_fail(managed):
+    async def broken(config: Any) -> Any:
+        raise ValueError("the messaging app is down")
+
+    managed["protocol"].room_service.create_room = broken
+    template_id = await _stored(managed, DESK)
+
+    with pytest.raises(RunUndone):
+        await _as(
+            managed["agent_id"],
+            run_template,
+            template_id=template_id,
+            inputs={"team": "red", "repo": "acme/app"},
+        )
+    assert "red fix room" not in {t.name for t in await _templates(managed)}
+    assert not {"red-fixer", "red-manager"} & await _agent_names(managed)
+
+
+@pytest.mark.asyncio
+async def test_a_template_of_templates_alone_saves_them_and_creates_nothing(managed):
+    bundle = """\
+version: 2
+params:
+  team: { type: string }
+resources:
+  standup:
+    type: template
+    name: "{team} standup"
+    visibility: shared
+    document:
+      room: { name: "{team} standup {$date}" }
+"""
+    template_id = await _stored(managed, bundle)
+
+    result = await _as(
+        managed["agent_id"],
+        run_template,
+        template_id=template_id,
+        inputs={"team": "red"},
+    )
+
+    assert [t["name"] for t in result["saved_templates"]] == ["red standup"]
+    saved = next(t for t in await _templates(managed) if t.name == "red standup")
+    assert saved.read_visibility == "public"
+    assert yaml.safe_load(saved.content) == {"room": {"name": "{team} standup {$date}"}}
+    assert managed["management"].created == []
+    assert await _rooms(managed) == []

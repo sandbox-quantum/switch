@@ -20,7 +20,8 @@ the same is the one meant. Version 2 says it outright::
         agents: [expert]
         kickoff: "@{expert.name} hi"
 
-Every resource has a key and a ``type`` (``agent``, ``room``, ``group``).
+Every resource has a key and a ``type`` (``agent``, ``room``, ``group``,
+``template``).
 Resources refer to each other by key: ``agents: [expert]`` on a room, and
 ``{expert.name}`` anywhere for the name a resource is created under. One
 construct is conditional, ``if:``: on a resource (it is created only when the
@@ -29,10 +30,25 @@ value written as a list of ``{if, value}``, the first that holds being taken.
 A condition is ``"{param}"`` (true when the value is) or ``"{param} == x"`` /
 ``"{param} != x"``.
 
+A ``template`` resource carries another template whole, under
+``document:``, and running the outer one saves it under ``name:`` for the
+deployer, so an agent the run creates can run it later by that name::
+
+    fix_room:
+      type: template
+      name: "{team} bug fix room"
+      presets: { repo: "{repo}" }
+      document: { version: 2, params: {...}, resources: {...} }
+
+The inner document is the inner template's own: the outer run fills nothing
+in it, and only ``presets`` pass values across, each becoming the default of
+the inner param it names. An inner document carries no template of its own.
+
 A version 2 document is compiled, once the inputs are known, into the
 version 1 document it amounts to, which the rest of the template engine runs
 as it always has. What version 1 cannot say comes back beside it: an agent
-whose addressing admits anyone in one of the rooms the run creates.
+whose addressing admits anyone in one of the rooms the run creates, and the
+templates the run saves.
 """
 
 from __future__ import annotations
@@ -45,7 +61,17 @@ import yaml
 
 from switch_core.rooms_yaml import PLACEHOLDER_RE, ParamSpec, coerce_param, interpolate
 
-RESOURCE_TYPES = ("agent", "room", "group")
+RESOURCE_TYPES = ("agent", "room", "group", "template")
+TEMPLATE_FIELDS = (
+    "type",
+    "if",
+    "name",
+    "description",
+    "visibility",
+    "presets",
+    "document",
+)
+TEMPLATE_VISIBILITIES = ("private", "shared")
 
 # A reference to the name a resource is created under.
 _NAME_REF = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\.name\}")
@@ -133,6 +159,16 @@ def _choose(node: Any, values: dict[str, Any]) -> Any:
     return node
 
 
+def _strings(node: Any) -> list[str]:
+    if isinstance(node, str):
+        return [node]
+    if isinstance(node, dict):
+        return [s for v in node.values() for s in _strings(v)]
+    if isinstance(node, list):
+        return [s for item in node for s in _strings(item)]
+    return []
+
+
 def _drop_empty(node: Any) -> Any:
     if isinstance(node, dict):
         return {k: _drop_empty(v) for k, v in node.items()}
@@ -159,6 +195,18 @@ def _known_values(
 
 
 @dataclass(frozen=True)
+class NestedTemplate:
+    """A template a run saves for the deployer: the ``template`` resource
+    ``key``, under ``name``, its document with the presets applied."""
+
+    key: str
+    name: str
+    description: str
+    visibility: str
+    content: str
+
+
+@dataclass(frozen=True)
 class Compiled:
     """A version 2 document as the version 1 document it amounts to, the
     inputs to run it with, and, per agent created, the rooms (by name) whose
@@ -169,6 +217,7 @@ class Compiled:
     room_addressing: dict[str, list[str]] = field(default_factory=dict)
     # Each resource's key, with the name it is created under.
     names: dict[str, str] = field(default_factory=dict)
+    templates: list[NestedTemplate] = field(default_factory=list)
 
 
 def _resources(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -192,6 +241,69 @@ def _resources(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def template_document(key: str, spec: dict[str, Any]) -> dict[str, Any]:
+    """A ``template`` resource's document, refusing a resource that does not
+    say what to save, a document that carries a template of its own, and a
+    preset for a param the document does not declare."""
+    unknown = sorted(set(map(str, spec)) - set(TEMPLATE_FIELDS))
+    if unknown:
+        raise TemplateError(
+            f"resource '{key}': a template takes "
+            f"{', '.join(TEMPLATE_FIELDS[2:])}, not {', '.join(unknown)}."
+        )
+    document = spec.get("document")
+    if not isinstance(document, dict) or not document:
+        raise TemplateError(
+            f"resource '{key}' needs a 'document': the template it saves, "
+            "written as a mapping."
+        )
+    inner = document.get("resources")
+    if isinstance(inner, dict) and any(
+        isinstance(r, dict) and r.get("type") == "template" for r in inner.values()
+    ):
+        raise TemplateError(
+            f"resource '{key}': its document carries a template of its own. A "
+            "template inside a template goes one level deep."
+        )
+    if spec.get("visibility", "private") not in TEMPLATE_VISIBILITIES:
+        raise TemplateError(
+            f"resource '{key}': visibility is {' or '.join(TEMPLATE_VISIBILITIES)}."
+        )
+    presets = spec.get("presets") or {}
+    if not isinstance(presets, dict):
+        raise TemplateError(
+            f"resource '{key}': presets map each param of its document to a value."
+        )
+    params = document.get("params")
+    undeclared = [
+        str(name)
+        for name in presets
+        if not (isinstance(params, dict) and isinstance(params.get(name), dict))
+    ]
+    if undeclared:
+        raise TemplateError(
+            f"resource '{key}': presets name {', '.join(undeclared)}, which its "
+            "document does not declare as params."
+        )
+    return document
+
+
+class _BlockDumper(yaml.SafeDumper):
+    """Writes a string of several lines as a block, as a person would."""
+
+
+def _str_block(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
+    style = "|" if "\n" in value else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+
+_BlockDumper.add_representer(str, _str_block)
+
+
+def _dump(document: dict[str, Any]) -> str:
+    return yaml.dump(document, Dumper=_BlockDumper, sort_keys=False, allow_unicode=True)
+
+
 def compile_v2(text: str, inputs: dict[str, Any], builtins: dict[str, str]) -> Compiled:
     data = yaml.safe_load(text)
     if not isinstance(data, dict):
@@ -212,12 +324,20 @@ def compile_v2(text: str, inputs: dict[str, Any], builtins: dict[str, str]) -> C
             del params[name]
             values.pop(name, None)
             off[name] = ""
-    resources = {
+    declared = _resources(data)
+    for key, spec in declared.items():
+        if spec["type"] == "template":
+            template_document(key, spec)
+    kept = {
         key: spec
-        for key, spec in _resources(data).items()
+        for key, spec in declared.items()
         if "if" not in spec or holds(spec["if"], values)
     }
-    dropped = set(_resources(data)) - set(resources)
+    dropped = set(declared) - set(kept)
+    # A template resource is filled here, whole, and its document not at all:
+    # it is saved rather than run, so nothing later fills it in.
+    nested = {k: s for k, s in kept.items() if s["type"] == "template"}
+    resources = {k: s for k, s in kept.items() if s["type"] != "template"}
     # A param that is not asked reads as empty, and drops out of the lists it
     # was written in (a `join` with no room picked joins nothing).
     resources = {
@@ -226,6 +346,10 @@ def compile_v2(text: str, inputs: dict[str, Any], builtins: dict[str, str]) -> C
     }
 
     names: dict[str, str] = {}
+    filled = {**values, **off}
+
+    def fill(node: Any) -> Any:
+        return interpolate(_choose(node, values), filled)
 
     def name_of(key: str, spec: dict[str, Any]) -> str:
         if spec["type"] == "agent":
@@ -267,11 +391,20 @@ def compile_v2(text: str, inputs: dict[str, Any], builtins: dict[str, str]) -> C
             return [resolve(item, where) for item in node]
         return node
 
-    # Agents first: a room's name may read an agent's, never the reverse.
+    # Agents first: a template's or a room's name may read an agent's, never
+    # the reverse.
     for key, spec in resources.items():
         if spec["type"] == "agent":
             names[key] = name_of(key, spec)
     resources = {key: resolve(spec, key) for key, spec in resources.items()}
+    for key, spec in nested.items():
+        name = str(resolve(fill(spec.get("name") or ""), key)).strip()
+        if not name or PLACEHOLDER_RE.search(name) or _NAME_REF.search(name):
+            raise TemplateError(
+                f"resource '{key}' has no name yet: give it a 'name' whose "
+                "inputs have values."
+            )
+        names[key] = name
     for key, spec in resources.items():
         if spec["type"] != "agent":
             names[key] = name_of(key, spec)
@@ -389,6 +522,39 @@ def compile_v2(text: str, inputs: dict[str, Any], builtins: dict[str, str]) -> C
         out["room"] = room_block(room_keys[0])
         if resources[room_keys[0]].get("kickoff"):
             out["kickoff"] = resources[room_keys[0]]["kickoff"]
+    templates: list[NestedTemplate] = []
+    for key, spec in nested.items():
+        presets = resolve(fill(spec.get("presets") or {}), key)
+        unfilled = sorted(
+            {
+                ref
+                for text_node in _strings(presets)
+                for ref in PLACEHOLDER_RE.findall(text_node)
+                if ref in raw_params or ref.startswith("$")
+            }
+            | {ref for t in _strings(presets) for ref in _NAME_REF.findall(t)}
+        )
+        if unfilled:
+            raise TemplateError(
+                f"resource '{key}': its presets read {', '.join(unfilled)}, "
+                "which has no value; give it in inputs."
+            )
+        document = dict(spec["document"])
+        inner_params = {k: dict(v) for k, v in (document.get("params") or {}).items()}
+        for param, value in presets.items():
+            inner_params[param]["default"] = value
+        if inner_params:
+            document["params"] = inner_params
+        templates.append(
+            NestedTemplate(
+                key=key,
+                name=names[key],
+                description=str(resolve(fill(spec.get("description") or ""), key)),
+                visibility=str(spec.get("visibility", "private")),
+                content=_dump(document),
+            )
+        )
+
     # An input may carry a reference too: a directory param's default,
     # "{$agents_dir}/{expert.name}", filled into the form and sent back.
     run_inputs = {k: resolve(v, f"input {k}") for k, v in inputs.items() if k in params}
@@ -397,4 +563,5 @@ def compile_v2(text: str, inputs: dict[str, Any], builtins: dict[str, str]) -> C
         inputs=run_inputs,
         room_addressing=room_addressing,
         names=names,
+        templates=templates,
     )

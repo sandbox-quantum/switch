@@ -9,7 +9,8 @@ of what to ask and what to fold away, and every fallback order is written in
 the template.
 
 This page is the reference. `switch-expert/template.yaml` at the repository
-root is the worked example, and `examples/` holds more.
+root is the worked example, and `examples/` holds more, all in
+[Version 2](#version-2).
 
 ## Contents
 
@@ -441,7 +442,8 @@ room:
 The same shape `POST /rooms/from-yaml` accepts and `GET /rooms/{id}/yaml`
 exports, so an exported room is a valid template once you add `params:`.
 `examples/room-templates/red-blue-workroom.template.yaml` documents every
-field in place.
+field in place, written as a version 2 room resource (see
+[Version 2](#version-2)).
 
 `agents:` names agents that exist on the server, plus the ones this
 document creates by the text written as their `name`. `users:` names people
@@ -607,8 +609,9 @@ resources:
 **Resources.** `resources:` maps each key (letters, digits, `_`) to a
 resource with a `type`: `agent` (the fields of [The agent block](#the-agent-block)),
 `room` (the fields of [The room block](#the-room-block), plus its own
-`kickoff:` and, inside a group, `group: <key>`), or `group` (`name`,
-`description`, `color`, and `links: [{from: room key, to: room key, label}]`).
+`kickoff:` and, inside a group, `group: <key>`), `group` (`name`,
+`description`, `color`, and `links: [{from: room key, to: room key, label}]`),
+or `template` (see [Templates inside templates](#templates-inside-templates)).
 Several rooms go in one group.
 
 **References.** A resource names another by its key: a room's `agents:` and
@@ -643,6 +646,72 @@ the rest as for any template. Switch Console sends the document whole
 (`POST /gateway/rooms/from-template-document`), and `run_template` takes it
 as any saved template; `agents: {resource key: existing agent}` fills a slot
 whose agent says `allow_existing: true`.
+
+### Templates inside templates
+
+A template can carry another one, for an agent it creates to run later: a
+bug desk whose manager opens a room per bug carries the bug room's template,
+so the two are written, shared and run as one.
+
+```yaml
+version: 2
+params:
+  team: { type: string }
+  repo: { type: string }
+resources:
+  fix_room:
+    type: template
+    name: "{team} bug fix room"
+    description: One room per bug in {repo}
+    presets: { repo: "{repo}", fixer: "{fixer.name}" }
+    document:
+      version: 2
+      params:
+        bug: { type: string }
+        repo: { type: string }
+        fixer: { type: agent }
+      resources:
+        room:
+          type: room
+          name: "Bug fix: {bug}"
+          agents: ["{fixer}"]
+  fixer:
+    type: agent
+    name: "{team}-bug-fixer"
+    # ...
+  manager:
+    type: agent
+    name: "{team}-bug-manager"
+    instructions: Start each fix with the saved template {fix_room.name}.
+    # ...
+```
+
+- **Fields.** `name` (required) is what it is saved as; `description`;
+  `visibility`, `private` (the default) or `shared`; `presets`; `document`
+  (required), the template itself, written as a mapping.
+- **Running.** Running the outer template saves the inner one for the
+  deployer, after every check of the run and before any agent or room is
+  created. A run by an agent saves it for the agent's owner, recording the
+  agent as the one that saved it. The agents the run creates belong to the
+  same owner, so they see it in `list_templates`. A name the deployer
+  already uses refuses the run before anything exists; a run that then
+  fails deletes it again with the agents.
+- **Naming it.** `{key.name}` anywhere in the outer document is the name it
+  is saved under, so an agent's instructions say which template to run.
+- **The document is its own.** The outer run fills nothing into it: its
+  placeholders are its own params, and the same param name may appear in
+  both. Only `presets` pass values across, each becoming the `default` of
+  the inner param it names, so the agent that runs it supplies only the
+  rest. A preset may name a resource of the outer run (`{fixer.name}`).
+- **One level.** The inner document cannot carry a template of its own, so
+  a template never reaches back to itself.
+- **Agents cannot create agents.** An agent running the saved template must
+  fill every agent slot with an agent that exists; an inner template meant
+  for an agent puts existing agents in rooms, passed in by presets.
+- **Not covered.** The saved template is a template like any other: it is
+  not updated when the outer one changes, nor deleted with what the outer
+  run created. Running a template already saved, named by a param, is
+  written as a `string` param the agent's instructions read, as before.
 
 ## Agents and saved templates
 

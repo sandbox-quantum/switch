@@ -1,10 +1,11 @@
 # Support desk: two agents across two linked rooms.
 #
-# Switch Console creates the `agents:`. The server creates the room group
-# from `group:`, `rooms:` and `links:`: each room has its own `kickoff:`, and
-# a link connects two rooms by name. The greeter is in both rooms and carries
-# a case from intake to escalations. The engineer is only in escalations.
-version: 1
+# Two agent resources and two room resources, filed under one group
+# resource. Each room has its own `kickoff:` and names the group it belongs
+# to; the group's `links:` connect two rooms by key. The greeter is in both
+# rooms and carries a case from intake to escalations. The engineer is only
+# in escalations. docs/TEMPLATES.md, "Version 2", describes the language.
+version: 2
 
 params:
   team:
@@ -13,31 +14,30 @@ params:
     pattern: "[a-z][a-z0-9-]*"
   provider:
     type: provider
-    description: Which coding agent backs both. The first one installed is chosen.
+    description: Which coding agent backs both. The first one ready on its machine is chosen.
     default: [claude, codex, opencode]
     input: advanced
-  location:
-    type: location
-    description: The machine both run on.
-    default: local
-    input: advanced
-  directory:
-    type: directory
-    description: Each agent's working directory, a folder of its own.
-    default: "{$agents_dir}/{agent}"
+  machine:
+    type: machine
+    description: The machine both run on. The first online one that can run them, unless you pick.
+    default: [$first]
     input: advanced
   bridge:
     type: bridge
     description: Where the rooms are mirrored. The server's default app is chosen.
     default: [$first]
+form:
+  advanced: { label: Advanced, open: false }
 
-agents:
-  - name: "{team}-greeter"
+resources:
+  greeter:
+    type: agent
+    name: "{team}-greeter"
     description: Meets every request first and answers what it can
     addressing: anyone
     provider: "{provider}"
-    location: "{location}"
-    directory: "{directory}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{greeter.name}"
     instructions: |
       You are the greeter of a support desk. You sit in two rooms: the intake
       room, where people bring requests, and the escalations room, where the
@@ -50,12 +50,15 @@ agents:
       in the intake room that it has been escalated and to whom.
 
       Keep a running numbered list of open requests in the intake room.
-  - name: "{team}-engineer"
+
+  engineer:
+    type: agent
+    name: "{team}-engineer"
     description: Works the cases the greeter escalates
     addressing: owner-agents
     provider: "{provider}"
-    location: "{location}"
-    directory: "{directory}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{engineer.name}"
     instructions: |
       You are the engineer of a support desk. You only see what the greeter
       escalates into your room. For each case: say what you are about to
@@ -63,29 +66,33 @@ agents:
       the same thread with what you found and what you changed, if anything.
       Never guess a result you did not run.
 
-group:
-  name: "{team} support desk"
-  description: Intake and escalations for {team}
+  desk:
+    type: group
+    name: "{team} support desk"
+    description: Intake and escalations for {team}
+    links:
+      - { from: intake, to: escalations, label: escalations }
 
-rooms:
-  - name: "{team}-intake"
+  intake:
+    type: room
+    group: desk
+    name: "{team}-intake"
     description: Where requests arrive; the greeter answers or escalates
     bridge: "{bridge}"
-    agents: ["{team}-greeter"]
+    agents: [greeter]
     users: ["{$creator}"]
     kickoff: |
-      @{team}-greeter this is the intake room. Say hello in one line and
+      @{greeter.name} this is the intake room. Say hello in one line and
       explain what you will answer here and what you will escalate.
-  - name: "{team}-escalations"
+
+  escalations:
+    type: room
+    group: desk
+    name: "{team}-escalations"
     description: Where the engineer works escalated cases with the greeter
     bridge: "{bridge}"
-    agents: ["{team}-greeter", "{team}-engineer"]
+    agents: [greeter, engineer]
     users: ["{$creator}"]
     kickoff: |
-      @{team}-engineer this is the escalations room. Say hello in one line;
+      @{engineer.name} this is the escalations room. Say hello in one line;
       the greeter will bring you cases from the intake room.
-
-links:
-  - from: "{team}-intake"
-    to: "{team}-escalations"
-    label: escalations

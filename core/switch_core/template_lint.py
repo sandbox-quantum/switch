@@ -27,7 +27,13 @@ import yaml
 from pydantic import ValidationError
 
 from switch_core.rooms_yaml import PLACEHOLDER_RE, ParamSpec
-from switch_core.template_v2 import RESOURCE_TYPES, condition_params, is_v2
+from switch_core.template_v2 import (
+    RESOURCE_TYPES,
+    TemplateError,
+    condition_params,
+    is_v2,
+    template_document,
+)
 
 # Top-level keys any shape of template may carry, across every shape known to
 # be in flight — room, group, and the kickoff message that rides beside them.
@@ -312,6 +318,41 @@ def _conditions(node: Any, into: list[str]) -> list[str]:
     return into
 
 
+def _without_document(spec: dict[str, Any]) -> dict[str, Any]:
+    if spec.get("type") != "template":
+        return spec
+    return {k: v for k, v in spec.items() if k != "document"}
+
+
+def _lint_nested(
+    key: str, spec: dict[str, Any], errors: list[Finding], warnings: list[Finding]
+) -> None:
+    """A ``template`` resource: what it saves must be a template, read here
+    as one, its findings said against the resource."""
+    try:
+        document = template_document(key, spec)
+    except TemplateError as e:
+        errors.append(Finding("invalid_template_resource", str(e), key))
+        return
+    if not spec.get("name"):
+        errors.append(
+            Finding(
+                "invalid_template_resource",
+                f"resource '{key}' needs a 'name': what the template is saved as.",
+                key,
+            )
+        )
+    inner = lint_template(yaml.safe_dump(document, sort_keys=False))
+    errors.extend(
+        Finding(f.code, f"resource '{key}', in its document: {f.message}", key)
+        for f in inner.errors
+    )
+    warnings.extend(
+        Finding(f.code, f"resource '{key}', in its document: {f.message}", key)
+        for f in inner.warnings
+    )
+
+
 def _lint_v2(
     document: dict[str, Any], errors: list[Finding], warnings: list[Finding]
 ) -> None:
@@ -390,12 +431,15 @@ def _lint_v2(
             continue
         if "if" in spec:
             conditions.append((str(key), str(spec["if"])))
+        if kind == "template":
+            _lint_nested(str(key), spec, errors, warnings)
+            spec = _without_document(spec)
         conditions.extend((str(key), c) for c in _conditions(spec, []))
         if kind == "agent":
             agents.append({k: v for k, v in spec.items() if k not in ("type", "if")})
         elif kind == "room":
             room_count += 1
-        else:
+        elif kind == "group":
             has_group = True
     if room_count > 1 and not has_group:
         errors.append(
@@ -424,7 +468,14 @@ def _lint_v2(
                 )
             )
 
-    strings = _walk_strings(resources)
+    # A template resource's document is the inner template's own: its
+    # placeholders are its params, not this document's.
+    strings = _walk_strings(
+        {
+            key: _without_document(spec) if isinstance(spec, dict) else spec
+            for key, spec in resources.items()
+        }
+    )
     for text_node in strings:
         for ref in _NAME_REF_RE.findall(text_node):
             if ref not in resources:

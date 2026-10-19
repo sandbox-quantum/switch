@@ -1,11 +1,11 @@
 # Triage pair: two agents and the room they share.
 #
-# Switch Console creates each entry of `agents:`, in its own working
+# Each agent resource is created as a managed agent, in its own working
 # directory and backed by the coding agent the `provider` param names. The
-# server creates the `room:` with both agents in it. Every value the form
-# starts with is written under `params:`; the language is documented in
-# docs/TEMPLATES.md.
-version: 1
+# room resource lists both agents by key. Every value the form starts with
+# is written under `params:`; the language is documented in
+# docs/TEMPLATES.md, "Version 2".
+version: 2
 
 params:
   team:
@@ -14,31 +14,30 @@ params:
     pattern: "[a-z][a-z0-9-]*"
   provider:
     type: provider
-    description: Which coding agent backs both. The first one installed is chosen.
+    description: Which coding agent backs both. The first one ready on its machine is chosen.
     default: [claude, codex, opencode]
     input: advanced
-  location:
-    type: location
-    description: The machine both run on.
-    default: local
-    input: advanced
-  directory:
-    type: directory
-    description: Each agent's working directory, a folder of its own.
-    default: "{$agents_dir}/{agent}"
+  machine:
+    type: machine
+    description: The machine both run on. The first online one that can run them, unless you pick.
+    default: [$first]
     input: advanced
   bridge:
     type: bridge
     description: Where the room is mirrored. The server's default app is chosen.
     default: [$first]
+form:
+  advanced: { label: Advanced, open: false }
 
-agents:
-  - name: "{team}-triager"
+resources:
+  triager:
+    type: agent
+    name: "{team}-triager"
     description: Reads reports, files and routes them
     addressing: anyone
     provider: "{provider}"
-    location: "{location}"
-    directory: "{directory}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{triager.name}"
     instructions: |
       You are the triager of a small team. Reports arrive in your room from
       people and from other agents. For each one:
@@ -51,12 +50,15 @@ agents:
 
       Keep a running list of open reports in your replies, so anyone joining
       the room can see the state without scrolling.
-  - name: "{team}-repro"
+
+  repro:
+    type: agent
+    name: "{team}-repro"
     description: Reproduces what the triager routes to it
     addressing: owner-agents
     provider: "{provider}"
-    location: "{location}"
-    directory: "{directory}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{repro.name}"
     instructions: |
       You reproduce bugs the triager hands you. For each one, work in your
       directory: write the smallest script or command that shows the
@@ -66,15 +68,15 @@ agents:
       Say what you are about to try before a slow step, so the room is not
       left wondering. Never guess a result you did not run.
 
-# The room is created on the messaging app the `bridge` input names.
-# `{$creator}` puts the deployer in it, so the agents' answers reach them.
-room:
-  name: "{team}-triage"
-  description: Both agents and you, the triager routing to the reproducer
-  bridge: "{bridge}"
-  agents: ["{team}-triager", "{team}-repro"]
-  users: ["{$creator}"]
-
-kickoff: |
-  @{team}-triager and @{team}-repro: this is your triage room. Triager, say
-  hello in one line and describe how you will hand bugs to the reproducer.
+  # The room is created on the messaging app the `bridge` input names.
+  # `{$creator}` puts the deployer in it, so the agents' answers reach them.
+  triage_room:
+    type: room
+    name: "{team}-triage"
+    description: Both agents and you, the triager routing to the reproducer
+    bridge: "{bridge}"
+    agents: [triager, repro]
+    users: ["{$creator}"]
+    kickoff: |
+      @{triager.name} and @{repro.name}: this is your triage room. Triager, say
+      hello in one line and describe how you will hand bugs to the reproducer.

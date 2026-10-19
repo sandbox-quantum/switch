@@ -39,7 +39,7 @@ from switch_core.template_runs import (
     NewAgentPlan,
     Problem,
 )
-from switch_core.template_v2 import compile_v2, is_v2
+from switch_core.template_v2 import NestedTemplate, compile_v2, is_v2
 
 TemplateKind = Literal["room", "group", "agent"]
 
@@ -412,6 +412,9 @@ class TemplatePlan:
     # Per agent created, the rooms (by name) whose members may address it
     # beyond its owner: a version 2 `addressing: {anyone_in: [...]}`.
     room_addressing: dict[str, list[str]]
+    # The templates the run saves for the deployer: version 2 `template`
+    # resources.
+    templates: list[NestedTemplate]
 
 
 def _machine_ready(machine: dict[str, Any], provider: str | None) -> bool:
@@ -896,12 +899,14 @@ def plan_template(
     """
     data = _load(text)
     room_addressing: dict[str, list[str]] = {}
+    templates: list[NestedTemplate] = []
     if is_v2(data):
         compiled = compile_v2(text, inputs, builtins)
-        text, inputs, room_addressing = (
+        text, inputs, room_addressing, templates = (
             compiled.document,
             compiled.inputs,
             compiled.room_addressing,
+            compiled.templates,
         )
         # A version 2 slot is filled by its resource's key.
         filled = {compiled.names.get(k, k): v for k, v in filled.items()}
@@ -955,6 +960,8 @@ def plan_template(
     if planner.problems:
         raise AgentsNotCreated(planner.problems)
     if _room_part(data) is None:
-        return TemplatePlan(new_agents, existing, None, {}, room_addressing)
+        return TemplatePlan(new_agents, existing, None, {}, room_addressing, templates)
     document, run_inputs = room_document(text, names, inputs)
-    return TemplatePlan(new_agents, existing, document, run_inputs, room_addressing)
+    return TemplatePlan(
+        new_agents, existing, document, run_inputs, room_addressing, templates
+    )

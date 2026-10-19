@@ -1,7 +1,8 @@
 # Red-blue workroom: a coder/reviewer loop with a human gate.
 #
-# The canonical example for the room-template surface. Conventions it
-# demonstrates:
+# The canonical example for the room-template surface, in version 2 of the
+# template language (docs/TEMPLATES.md, "Version 2"): the room is a resource
+# with a key and a type. Conventions it demonstrates:
 #
 #   params:      Typed inputs the Console's "Create from template" wizard
 #                collects. Besides string, number, boolean and enum, a param
@@ -17,13 +18,14 @@
 #                invites whoever instantiates the template into the room.
 #                Other builtins: {$creator_email}, {$date}, {$timestamp}.
 #
-#   kickoff:     Top-level key beside room: and params:. Posted into the room
+#   kickoff:     A key of the room resource, posted into the room
 #                by Switch on the creator's behalf once provisioning
 #                completes: each agent it mentions applies its addressing
 #                policy to the creator, as if they had typed it. Agents only
 #                start working when a message addresses them, so mention
 #                them here. This is what turns a provisioned room into
 #                running work.
+version: 2
 params:
   task_name:
     type: string
@@ -38,26 +40,28 @@ params:
     type: string
     multiline: true
     description: The task brief (paste the full text)
-room:
-  name: "Switch work: {task_name}"
-  description: "A coder implements the task and a reviewer drives the acceptance loop; you gate the merge."
-  channel_type: channel_private
-  agents: ["{coder_agent}", "{reviewer_agent}"]
-  users: ["{$creator}"]
-  instructions: |
-    This room implements {task_name}. {coder_agent} owns the branch and
-    commits. {reviewer_agent} reviews against the Acceptance section of the
-    brief and pushes the coder in a loop until every item is met. Only
-    {$creator}'s explicit confirmation stops the loop.
+resources:
+  workroom:
+    type: room
+    name: "Switch work: {task_name}"
+    description: "A coder implements the task and a reviewer drives the acceptance loop; you gate the merge."
+    channel_type: channel_private
+    agents: ["{coder_agent}", "{reviewer_agent}"]
+    users: ["{$creator}"]
+    instructions: |
+      This room implements {task_name}. {coder_agent} owns the branch and
+      commits. {reviewer_agent} reviews against the Acceptance section of the
+      brief and pushes the coder in a loop until every item is met. Only
+      {$creator}'s explicit confirmation stops the loop.
 
-    Brief:
-    {brief}
-kickoff: |
-  @{coder_agent} @{reviewer_agent} — kicking off {task_name}.
+      Brief:
+      {brief}
+    kickoff: |
+      @{coder_agent} @{reviewer_agent} — kicking off {task_name}.
 
-  @{coder_agent}: read the brief in the room instructions and start
-  implementing. Post your plan here before your first commit.
+      @{coder_agent}: read the brief in the room instructions and start
+      implementing. Post your plan here before your first commit.
 
-  @{reviewer_agent}: drive the acceptance loop. Review every hand-off
-  against the brief's Acceptance section and push back until every item is
-  met, then ping {$creator} to confirm and close.
+      @{reviewer_agent}: drive the acceptance loop. Review every hand-off
+      against the brief's Acceptance section and push back until every item is
+      met, then ping {$creator} to confirm and close.

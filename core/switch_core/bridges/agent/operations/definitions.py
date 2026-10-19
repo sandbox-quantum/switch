@@ -46,9 +46,15 @@ from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
-from switch_core.db.models import CollaborationBridge, User, require_tenant_id
+from switch_core.db.models import (
+    CollaborationBridge,
+    Template,
+    User,
+    require_tenant_id,
+)
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.nested_templates import check_names_free, saved
 from switch_core.rooms_yaml import GroupSpec, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
 from switch_core.template_runs import (
@@ -62,7 +68,7 @@ from switch_core.template_runs import (
     pending_addressing,
     room_ids_of,
 )
-from switch_core.template_v2 import is_v2_text
+from switch_core.template_v2 import NestedTemplate, is_v2_text
 
 logger = logging.getLogger(__name__)
 
@@ -1761,7 +1767,12 @@ async def create_room_from_yaml(
         if is_v2_text(yaml):
             return await _run_document(yaml, inputs, {}, template_name=None)
         return await _provision_as_agent(
-            yaml, inputs, template_name=None, new_agents=[], room_addressing={}
+            yaml,
+            inputs,
+            template_name=None,
+            new_agents=[],
+            room_addressing={},
+            templates=[],
         )
 
 
@@ -1810,19 +1821,21 @@ async def _provision_as_agent(
     template_name: str | None,
     new_agents: Sequence[NewAgentPlan],
     room_addressing: dict[str, list[str]],
+    templates: Sequence[NestedTemplate],
 ) -> dict[str, Any]:
     """Create the agents and rooms a document describes, as the calling
     agent: the one path for a document an agent writes and a template it
     runs, so the run guards in ``agent_runs`` apply the same to both.
 
-    ``new_agents`` are created first, as managed agents of the owner, once
-    every check of the agents and the rooms has passed; when the rooms then
-    fail, they are deleted again. ``yaml`` is None for a template that
-    creates agents and no room.
+    ``templates`` are saved for the owner, then ``new_agents`` are created,
+    as managed agents of the owner, once every check of the templates, the
+    agents and the rooms has passed; when the rooms then fail, both are
+    deleted again. ``yaml`` is None for a template that creates no room.
     """
     protocol = get_protocol()
     acting = await _acting_for()
     agent, owner = acting.agent, acting.owner
+    await check_names_free(protocol.session_factory, owner.id, templates)
     # An agent acts for its owner but not with the owner's admin reach: a
     # document it writes or a template it runs attaches only what the owner
     # could attach as a member, never another person's private reference.
@@ -1849,11 +1862,26 @@ async def _provision_as_agent(
         checked = await creator.check(tenant_id, owner.id, new_agents)
     created_names = {plan.name for plan in new_agents}
 
+    saving = saved(
+        protocol.session_factory,
+        TemplateStore(),
+        owner_id=owner.id,
+        agent_id=agent.id,
+        templates=templates,
+    )
     if yaml is None:
-        if creator is None:
+        if creator is None and not templates:
             raise ValueError("The template describes no agent and no room")
-        created = await creator.create(tenant_id, owner.id, checked)
-        return {"created_agents": _created_view(created)}
+        async with saving as rows:
+            created = (
+                []
+                if creator is None
+                else await creator.create(tenant_id, owner.id, checked)
+            )
+        return {
+            **({"created_agents": _created_view(created)} if creator else {}),
+            **_saved_view(rows),
+        }
 
     rooms_yaml = protocol.room_yaml_service()
     inputs = await rooms_yaml.resolve_defaults(yaml, inputs)
@@ -1876,13 +1904,16 @@ async def _provision_as_agent(
         for spec, text in room_specs
         if text
     ]
-    async with protocol.run_service().agent_creating(
-        agent,
-        owner_name=owner.name,
-        from_room_id=await connected_room(),
-        kickoffs=kickoffs,
-        pending=pending_addressing(new_agents, owner.id, room_addressing),
-    ) as origin:
+    async with (
+        saving as rows,
+        protocol.run_service().agent_creating(
+            agent,
+            owner_name=owner.name,
+            from_room_id=await connected_room(),
+            kickoffs=kickoffs,
+            pending=pending_addressing(new_agents, owner.id, room_addressing),
+        ) as origin,
+    ):
         created = (
             []
             if creator is None
@@ -1922,7 +1953,14 @@ async def _provision_as_agent(
             ) from error
     if new_agents:
         result["created_agents"] = _created_view(created)
-    return result
+    return {**result, **_saved_view(rows)}
+
+
+def _saved_view(rows: Sequence[Template]) -> dict[str, Any]:
+    """The templates a run saved, for its answer; nothing when it saved none."""
+    if not rows:
+        return {}
+    return {"saved_templates": [{"id": t.id, "name": t.name} for t in rows]}
 
 
 def _created_view(created: Sequence[CreatedAgent]) -> list[dict[str, Any]]:
@@ -2133,6 +2171,7 @@ async def _run_document(
         template_name=template_name,
         new_agents=plan.new_agents,
         room_addressing=plan.room_addressing,
+        templates=plan.templates,
     )
 
 

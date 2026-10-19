@@ -1,0 +1,306 @@
+# Bug fixing desk — a bug room, a manager and a fixer for one repository,
+# and the template the manager runs to open a room per bug.
+#
+# Run this once. It creates two agents and the bug room they work in, and
+# saves "<team> bug fix room", the template for one bug's room, for you.
+# People report bugs in the bug room as ordinary messages; the manager
+# handles each one in its own thread. Filing a ticket and starting the fix
+# are two separate steps: filing is the default, the fix is only started on
+# request, and when it is, the manager runs the saved fix room template.
+#
+# The manager never leaves the bug room: running the fix room template
+# starts the fixer by itself, so there is no trip to make.
+#
+# docs/TEMPLATES.md, "Templates inside templates", describes the `template`
+# resource.
+version: 2
+
+params:
+  team:
+    type: string
+    label: Team name
+    description: Names the rooms and the agents
+    pattern: "[a-z][a-z0-9-]*"
+  repo:
+    type: string
+    label: Repository
+    description: The repository being fixed. The agents clone it themselves.
+  jira_site:
+    type: string
+    label: Jira site
+    description: e.g. https://yourcompany.atlassian.net
+  jira_project:
+    type: string
+    label: Jira project key
+  jira_epic:
+    type: string
+    label: Epic
+    description: The epic bugs are filed under. Change it later in the room, not here.
+  approvers:
+    type: string
+    label: Who may approve a bug
+    description: Names, comma separated. Leave empty and anyone in the room may approve.
+    default: ""
+    required: false
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Where the bug room is created
+    default: [$first]
+  provider:
+    type: provider
+    description: The coding agent that runs both of these
+    default: [claude, codex, opencode]
+    input: advanced
+  machine:
+    type: machine
+    description: The machine they run on. The first online one that can run them, unless you pick.
+    default: [$first]
+    input: advanced
+
+form:
+  advanced:
+    label: Advanced
+    open: false
+
+resources:
+  fix_room:
+    type: template
+    name: "{team} bug fix room"
+    description: "One room for one approved bug in {repo}: the fixer, the person who approved it, and a kickoff that starts the work. Run by {manager.name}, not by hand."
+    presets:
+      repo: "{repo}"
+      fixer: "{fixer.name}"
+      bug_room: "{bug_room.name}"
+      bridge: "{bridge}"
+    document:
+      # One room for one bug. The manager runs this each time a fix is
+      # started: it creates the room, puts the fixer and the bug's owner in
+      # it, and the kickoff starts the fixer.
+      version: 2
+      params:
+        bug:
+          type: string
+          description: Short name for the bug, used in the room name
+        ticket:
+          type: string
+          description: The Jira key
+        summary:
+          type: string
+          multiline: true
+          description: The bug as it was reported
+        owner:
+          type: user
+          description: The person who approved the bug. They review and merge the PR.
+        fixer:
+          type: agent
+          description: The agent that fixes it
+        bug_room:
+          type: room
+          description: The bug room to report back to when the fix is merged
+        thread:
+          type: string
+          description: The id of this bug's thread in the bug room
+        repo:
+          type: string
+          description: The repository to fix
+        bridge:
+          type: bridge
+          description: Where the channel is created
+          default: [$first]
+
+      resources:
+        room:
+          type: room
+          name: "Bug fix: {bug}"
+          description: "Fixing {ticket} — {bug}"
+          channel_type: channel_private
+          bridge: "{bridge}"
+          agents: ["{fixer}"]
+          users: ["{owner}"]
+          instructions: |
+            One bug, one room. When it is merged, this room is closed.
+
+            - Bug: {bug}
+            - Ticket: {ticket}
+            - Repository: {repo}
+            - Owner: {owner} — reviews and merges. The fixer never merges.
+            - Report back to: room {bug_room}, thread {thread}
+
+            Other bugs are being fixed at the same time in the same folder. Work in
+            a git worktree of your own named after the ticket, never in the shared
+            clone, and remove it once the PR is merged.
+
+            When the PR is merged, report it in room {bug_room}, in thread {thread},
+            as a message **addressed to the `manager` role** — not as an ordinary
+            post. An ordinary post does not wake the manager and the bug is left
+            looking unfinished. Address the owner the same way when you post the PR
+            here.
+
+            What was reported:
+            {summary}
+          kickoff: |
+            @{fixer} fix {ticket} — {bug}.
+
+            Read the room instructions. Make a worktree for {ticket}, reproduce the
+            bug there, fix it, open a PR, then post it here in a message addressed to
+            {owner}. They merge, not you. When they tell you it is merged, remove your
+            worktree, go to the bug room, and in the bug's thread send a message
+            addressed to the `manager` role saying it is done with the PR link. Then
+            come straight back here. A plain post will not wake the manager.
+
+  manager:
+    type: agent
+    name: "{team}-bug-manager"
+    description: "Takes bug reports for {repo}, dedupes them against Jira, files the ticket, and opens a fix room when asked."
+    addressing: anyone
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{manager.name}"
+    instructions: |
+      You are the bug manager for {repo}.
+
+      You live in one room: the bug room. You never leave it.
+
+      Every bug is one thread. Someone posts a bug at the top level; you
+      reply in their thread, and everything about that bug stays there.
+
+      The Jira details, the approvers and the fixer's name are in the bug
+      room's instructions. Read them at the start of every session. They
+      change; your prompt does not.
+
+      Filing the ticket and starting the fix are two separate steps. Ask
+      for both; do only what you are told.
+
+      For each new bug:
+
+      1. Reply in the reporter's thread. Ask only for what is missing:
+         steps to reproduce, what happened, what should have happened.
+      2. Search Jira for a duplicate before anything else. If there is one,
+         post its link, and stop.
+      3. Ask an approver two things: should this be filed, and should the
+         fix be started now. Say that filing alone is the default. Address
+         them by name. Create nothing until one of them answers.
+      4. If they say file it: create the ticket under the epic and post its
+         link in the thread. That person now owns this bug.
+      5. Stop there unless they also asked for the fix to be started. A
+         ticket on its own is a finished job, not a half-done one.
+      6. Only when asked, start the fix: find the saved template named in
+         the room's instructions with list_templates, then run_template
+         with the bug name, the ticket, the summary, the owner and the
+         thread id. The repository, the fixer, this room and the messaging
+         app are already filled in. Post the fix room's name in the thread. Someone may ask for this days
+         later in the same thread — the ticket already exists, so go
+         straight to this step.
+      7. The fixer addresses you in that thread when the fix is merged.
+         Reply, close the Jira ticket, and archive the fix room.
+
+      Rules:
+
+      - Always post the link to a ticket you create or find. Never make
+        someone go and search for it.
+      - Never travel to a fix room. Running the template starts the fixer.
+      - Never file a ticket, and never start a fix, without being asked.
+      - Never say a bug is fixed. The owner decides that.
+      - One message, one point. Keep every message short.
+
+  fixer:
+    type: agent
+    name: "{team}-bug-fixer"
+    description: "Fixes one bug per room in {repo} and opens a PR. Clones the repository itself."
+    addressing: owner-agents
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{fixer.name}"
+    instructions: |
+      You fix bugs in {repo}, one bug per room. The bug, the ticket and who
+      owns it are in each room's instructions.
+
+      You work several bugs at once — one session per room — and they all
+      share your one folder. So the clone is shared and the work is not.
+
+      First time in your folder: clone {repo} into it as `repo`. If the
+      clone fails, say so in the room and stop. Do not guess at code you
+      could not read.
+
+      For the bug in your room:
+
+      1. Give it its own worktree, named after the ticket. Never work in
+         `repo` itself, and never in another bug's worktree.
+
+           git -C repo fetch origin
+           git -C repo worktree add ../ABC-123 -b ABC-123 origin/HEAD
+
+      2. Reproduce the bug there. If you cannot, say so and ask the owner.
+         Never guess a fix.
+      3. Fix it, commit, push the branch, open a PR.
+      4. Send a message in your room addressed to the owner with the PR.
+         They review and merge. You never merge.
+      5. Wait. The owner tells you when it is merged.
+      6. Remove your worktree: git -C repo worktree remove ../ABC-123
+      7. Go to the bug room and, in that bug's thread, send a message
+         addressed to the `manager` role saying it is done, with the PR
+         link. Then come straight back to your own room.
+
+      Rules:
+
+      - **Addressing someone means a targeted message, not an ordinary
+        post.** An ordinary post never reaches an agent — the manager is
+        not watching the room, it is woken by being addressed. Report step
+        7 as a plain message and the bug sits there looking unfinished
+        forever. Always target the `manager` role, never the room.
+      - Post one line before any slow step, then do the work.
+      - Never report a fix you have not run.
+      - Keep every message short.
+
+  bug_room:
+    type: room
+    name: "{team}-bugs"
+    description: "Report bugs in {repo} here. One message per bug."
+    channel_type: channel_public
+    bridge: "{bridge}"
+    agents: [manager, fixer]
+    users: ["{$creator}"]
+    roles:
+      - name: manager
+        exclusive: true
+        instructions: |
+          You are the bug manager in this room. Follow your own procedure and
+          the bindings in the room instructions. Only one agent holds this at
+          a time, and addressing the manager role reaches whoever does.
+    instructions: |
+      Report a bug here as an ordinary message, one message per bug. The bug
+      manager replies in your thread, and that thread is where your bug lives
+      from then on.
+
+      ## What you will be asked
+
+      Filing a ticket and starting the fix are two separate things, and you
+      are asked about both.
+
+      - **Filing alone is the default.** Say yes and you get a ticket, with
+        its link posted in your thread. That is a complete outcome.
+      - **Starting the fix only happens if you ask for it.** Say so
+        explicitly and a room is opened for it with the fixer in it.
+      - You can come back to the same thread any time later and ask for the
+        fix to be started then. The ticket already exists, so it picks up
+        from there.
+
+      Whoever says yes owns that bug: they review the PR and they merge it.
+      The fixer never merges, and never decides a bug is fixed.
+
+      ## Bindings
+
+      Change a value here and the manager picks it up. Do not edit the agent.
+
+      - Repository: {repo}
+      - Jira site: {jira_site}
+      - Jira project: {jira_project}
+      - Epic: {jira_epic}
+      - Approvers: {approvers} — if that is empty, anyone in this room may approve
+      - Fixer: {fixer.name}
+      - Fix room template: {fix_room.name}
+    kickoff: |
+      @{manager.name} this is the bug room. Read the bindings in the room
+      instructions, then say hello in one line and say what you need in a bug
+      report.

@@ -23,7 +23,7 @@ params:      # the inputs, each written as {name} anywhere below
   <name>: {type: ..., default: ..., ...}
 resources:   # what the template creates, each under a key with a type
   <key>:     # letters, digits and _
-    type: agent | room | group
+    type: agent | room | group | template
     if: "{param}" | "{param} == value" | "{param} != value"   # optional
     ...the fields of that type
 form:        # optional: how the form folds things away
@@ -123,6 +123,27 @@ needs one (make them depend on it: [{if: "{bridge}", value: [...]},
   name: text
   description: text
   links: [{from: room key, to: room key, label: text}]
+
+## A template (type: template)
+
+A template the run saves, so an agent it creates can run it later: a desk
+whose manager opens a room per request, with that room's template inside.
+
+  name: text                     # REQUIRED: what it is saved as
+  description: text
+  visibility: private | shared   # default private
+  presets: {inner param: value}  # becomes that param's default
+  document: {...}                # REQUIRED: the template, written whole
+
+Running the outer template saves the inner one for the deployer (you, for
+your owner, when you run it), before any agent or room is created; a name
+the deployer already uses refuses the run, and a run that fails deletes it
+again. {key.name} is the saved name, so the agent's instructions can say
+which template to run. The document is the inner template's own: nothing
+of the outer one is filled into it except presets, and it carries no
+template of its own. Agents cannot create agents, so an inner template an
+agent will run should only put existing agents in rooms (pass them in
+presets, e.g. fixer: "{fixer.name}").
 
 ## Params
 

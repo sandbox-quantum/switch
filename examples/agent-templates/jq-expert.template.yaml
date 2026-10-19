@@ -1,76 +1,83 @@
 # jq expert: an agent template for a jq specialist.
 #
-# Same format as switch-expert/template.yaml, which describes every field.
-# The instructions are inline, as they must be in any template stored on a
-# server or pasted into the Console. Save it to a workspace with kind
-# `agent`, or paste it into the Console's import page.
-version: 1
+# Version 2 of the template language, as switch-expert/template.yaml; see
+# docs/TEMPLATES.md, "Version 2". The instructions are inline, as they must
+# be in any template stored on a server or pasted into the Console. Save it
+# to a workspace, or paste it into the Console's import page.
+version: 2
 params:
   provider:
     type: provider
     description: The coding agent that runs it. The first one installed is chosen.
     default: [claude, codex, opencode]
     input: advanced
-  location:
-    type: location
-    description: The machine it runs on.
-    default: local
+  machine:
+    type: machine
+    description: The machine it runs on. The first online one that can run it, unless you pick.
+    default: [$first]
     input: advanced
   directory:
     type: directory
     description: Its working directory. The jq repository is cloned inside it.
-    default: "{$agents_dir}/{agent}"
+    default: "{$agents_dir}/{jq.name}"
     input: advanced
-agent:
-  name: jq-expert
-  provider: "{provider}"
-  location: "{location}"
-  directory: "{directory}"
-  description: >-
-    Answers questions about jq, the command-line JSON processor, and writes
-    and debugs jq filters. Reads the jq source and manual rather than
-    answering from memory.
-  repo: https://github.com/jqlang/jq
-  addressing: anyone
-  sources:
-    - label: jq manual
-      url: https://jqlang.org/manual/
-  instructions: |
-    You are jq-expert. You help people write, read and debug jq filters, and
-    you explain how jq behaves.
+form:
+  advanced: { label: Advanced, open: false }
 
-    ## Where your answers come from
+resources:
+  jq:
+    type: agent
+    name: jq-expert
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{directory}"
+    description: >-
+      Answers questions about jq, the command-line JSON processor, and writes
+      and debugs jq filters. Reads the jq source and manual rather than
+      answering from memory.
+    repo: https://github.com/jqlang/jq
+    addressing: anyone
+    sources:
+      - label: jq manual
+        url: https://jqlang.org/manual/
+    instructions: |
+      You are jq-expert. You help people write, read and debug jq filters, and
+      you explain how jq behaves.
 
-    A clone of the jq repository sits in `jq/` inside your working directory.
-    If it is missing, say "One moment, fetching the jq source." and run
-    `git clone --depth 1 https://github.com/jqlang/jq jq`. At the start of
-    every conversation run `git -C jq pull --ff-only` so you read today's
-    version.
+      ## Where your answers come from
 
-    - Filter syntax, builtins and their exact behaviour: `jq/docs/content/manual/`
-      in the clone, and https://jqlang.org/manual/ when the person is on a
-      released version.
-    - How something actually behaves when the manual is silent: the source
-      under `jq/src/`. Say when you are reading code rather than docs.
-    - Never quote a version number from memory. Look it up in the clone or
-      at https://github.com/jqlang/jq/releases.
+      A clone of the jq repository sits in `jq/` inside your working directory.
+      If it is missing, say "One moment, fetching the jq source." and run
+      `git clone --depth 1 https://github.com/jqlang/jq jq`. At the start of
+      every conversation run `git -C jq pull --ff-only` so you read today's
+      version.
 
-    ## How to answer
+      - Filter syntax, builtins and their exact behaviour: `jq/docs/content/manual/`
+        in the clone, and https://jqlang.org/manual/ when the person is on a
+        released version.
+      - How something actually behaves when the manual is silent: the source
+        under `jq/src/`. Say when you are reading code rather than docs.
+      - Never quote a version number from memory. Look it up in the clone or
+        at https://github.com/jqlang/jq/releases.
 
-    - Lead with the filter. Show it, then one or two lines on why it works.
-    - Test it. Run `jq` on a small input before you post a filter, and paste
-      the input and output you used.
-    - Be short. A couple of sentences answers most questions.
-    - When you do not know, say so, and say where the answer would live.
-room:
-  name: "Ask {agent}"
-  description: "Where {$creator} asks {agent} for help with jq."
-  channel_type: channel_private
-  agents: ["{agent}"]
-  users: ["{$creator}"]
-  instructions: |
-    This room is for asking {agent} about jq. Answer here, briefly, with a
-    tested filter whenever the question is about one.
-kickoff: |
-  @{agent} hi. In one line, what can I ask you? Then show me the filter that
-  turns {"a": [1, 2, 3]} into the sum of the array.
+      ## How to answer
+
+      - Lead with the filter. Show it, then one or two lines on why it works.
+      - Test it. Run `jq` on a small input before you post a filter, and paste
+        the input and output you used.
+      - Be short. A couple of sentences answers most questions.
+      - When you do not know, say so, and say where the answer would live.
+
+  jq_room:
+    type: room
+    name: "Ask {jq.name}"
+    description: "Where {$creator} asks {jq.name} for help with jq."
+    channel_type: channel_private
+    agents: [jq]
+    users: ["{$creator}"]
+    instructions: |
+      This room is for asking {jq.name} about jq. Answer here, briefly, with a
+      tested filter whenever the question is about one.
+    kickoff: |
+      @{jq.name} hi. In one line, what can I ask you? Then show me the filter that
+      turns {"a": [1, 2, 3]} into the sum of the array.

@@ -22,6 +22,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
@@ -56,6 +57,7 @@ from switch_core.gateway.schemas import (
     RoomUpdateRequest,
     RoomUsersRequest,
 )
+from switch_core.nested_templates import check_names_free, saved
 from switch_core.room_service import RoleSpec, RoomCreateConfig, RoomService
 from switch_core.rooms_yaml import (
     GroupProvisionResult,
@@ -74,7 +76,7 @@ from switch_core.template_runs import (
     TemplateAgents,
     room_ids_of,
 )
-from switch_core.template_v2 import is_v2_text
+from switch_core.template_v2 import NestedTemplate, is_v2_text
 
 logger = logging.getLogger(__name__)
 
@@ -592,6 +594,7 @@ async def run_template_with_agents(
         inputs=body.inputs,
         template_name=body.template_name,
         room_addressing={},
+        templates=[],
     )
 
 
@@ -655,6 +658,7 @@ async def run_template_document(
         inputs=plan.inputs or None,
         template_name=body.template_name,
         room_addressing=plan.room_addressing,
+        templates=plan.templates,
     )
 
 
@@ -669,9 +673,11 @@ async def _run_as_person(
     inputs: dict[str, Any] | None,
     template_name: str,
     room_addressing: dict[str, list[str]],
+    templates: list[NestedTemplate],
 ) -> dict[str, Any] | JSONResponse:
-    """Check everything, create the agents, then the rooms, as `user`; undo
-    the agents when the rooms fail."""
+    """Check everything, save the templates the run carries, create the
+    agents, then the rooms, as `user`; undo the agents and the templates when
+    the rooms fail."""
     tenant_id = require_tenant_id()
     creator = TemplateAgents(
         protocol=protocol,
@@ -680,6 +686,7 @@ async def _run_as_person(
         listen_timeout=LISTEN_TIMEOUT_SECONDS,
     )
     try:
+        await check_names_free(protocol.session_factory, user.id, templates)
         parsed = None
         builtins: dict[str, str] = {}
         if document is not None:
@@ -697,40 +704,47 @@ async def _run_as_person(
             await rooms_yaml.check_entity_params(parsed)
             await rooms_yaml.check_bridges(parsed)
         checked = await creator.check(tenant_id, user.id, plans)
-        created = await creator.create(tenant_id, user.id, checked)
-        room: ProvisionResult | GroupProvisionResult | None = None
-        if parsed is not None:
-            try:
-                if isinstance(parsed.spec, GroupSpec):
-                    room = await rooms_yaml.provision_group(
-                        parsed.spec,
-                        user_id=user.id,
-                        is_admin=is_admin,
-                        creator_name=builtins["$creator"],
-                        template_name=template_name,
-                    )
-                else:
-                    room = await rooms_yaml.provision(
-                        parsed.spec,
-                        kickoff=parsed.kickoff,
-                        user_id=user.id,
-                        is_admin=is_admin,
-                        creator_name=builtins["$creator"],
-                        template_name=template_name,
-                    )
-                if room_addressing:
-                    await creator.open_to_rooms(
-                        tenant_id,
-                        created,
-                        room_addressing,
-                        room_ids_of(room.model_dump()),
-                    )
-            except Exception as error:
-                if not created:
-                    raise
-                raise await creator.undone(
-                    created, f"the rooms could not be created: {error}"
-                ) from error
+        async with saved(
+            protocol.session_factory,
+            TemplateStore(),
+            owner_id=user.id,
+            agent_id=None,
+            templates=templates,
+        ) as rows:
+            created = await creator.create(tenant_id, user.id, checked)
+            room: ProvisionResult | GroupProvisionResult | None = None
+            if parsed is not None:
+                try:
+                    if isinstance(parsed.spec, GroupSpec):
+                        room = await rooms_yaml.provision_group(
+                            parsed.spec,
+                            user_id=user.id,
+                            is_admin=is_admin,
+                            creator_name=builtins["$creator"],
+                            template_name=template_name,
+                        )
+                    else:
+                        room = await rooms_yaml.provision(
+                            parsed.spec,
+                            kickoff=parsed.kickoff,
+                            user_id=user.id,
+                            is_admin=is_admin,
+                            creator_name=builtins["$creator"],
+                            template_name=template_name,
+                        )
+                    if room_addressing:
+                        await creator.open_to_rooms(
+                            tenant_id,
+                            created,
+                            room_addressing,
+                            room_ids_of(room.model_dump()),
+                        )
+                except Exception as error:
+                    if not created:
+                        raise
+                    raise await creator.undone(
+                        created, f"the rooms could not be created: {error}"
+                    ) from error
     except (AgentsNotCreated, RunUndone) as error:
         return _refused_run(error)
     except ValueError as e:
@@ -751,6 +765,7 @@ async def _run_as_person(
             for agent in created
         ],
         "room": None if room is None else room.model_dump(),
+        "saved_templates": [{"id": t.id, "name": t.name} for t in rows],
     }
 
 
