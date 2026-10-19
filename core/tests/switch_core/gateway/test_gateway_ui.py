@@ -29,6 +29,7 @@ from switch_core.observability.catalogue import HTTP_REQUESTS
 from switch_core.observability.http import GATEWAY_UI_ROUTE, MetricsMiddleware
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.trust.client import NullTrustClient
+from tests.db_buffer import QuietRooms
 
 _APP_TSX = Path(__file__).resolve().parents[4] / "gateway/src/App.tsx"
 
@@ -167,7 +168,7 @@ def _agent_bridge_app(gateway_ui: GatewayUi | None) -> FastAPI:
         room_service=object(),  # type: ignore[arg-type]
         client_lifecycle=object(),  # type: ignore[arg-type]
         collab_lifecycle=object(),  # type: ignore[arg-type]
-        event_buffer=EventBuffer(sequence_base=0),
+        event_buffer=EventBuffer(object(), sequence_base=0, rooms=QuietRooms()),  # type: ignore[arg-type]
         task_store=object(),  # type: ignore[arg-type]
         resource_service=object(),  # type: ignore[arg-type]
         api_key_store=object(),  # type: ignore[arg-type]

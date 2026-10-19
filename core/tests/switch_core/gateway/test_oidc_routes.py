@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import RedirectResponse
 from starlette.testclient import TestClient
 
@@ -871,6 +872,7 @@ class TestTheLoginStartsOnTheCallbacksHost:
         gateway = FastAPI()
         gateway.include_router(oidc_routes.router)
         gateway.dependency_overrides[get_config] = lambda: config
+        gateway.add_middleware(SessionMiddleware, secret_key="test")
         app = FastAPI()
         app.mount("/gateway", gateway)
         return TestClient(app, base_url=host, follow_redirects=False), fake
