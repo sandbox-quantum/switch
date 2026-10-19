@@ -190,8 +190,8 @@ version of their own to them without also giving them a release of their own.
 #### Removed
 - **`!run-cmd`, and the terminal command in offline replies.** A CLI started
   with that command got none of the Switch tools, so it never brought the agent
-  online. An agent that is offline or not live now asks its owner to open
-  Switch Console instead. Slack apps that list `/run-cmd` in their manifest keep
+  online. The reply for an agent that is offline or not live now says what's
+  wrong and who has to act, with no command to paste. Slack apps that list `/run-cmd` in their manifest keep
   showing it, answering "Unknown command", until an admin deletes it; Discord
   and Telegram drop it from their command lists by themselves (#730).
 
