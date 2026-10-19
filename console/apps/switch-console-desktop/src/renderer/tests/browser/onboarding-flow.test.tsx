@@ -373,8 +373,9 @@ describe('the server address form', () => {
       'https://switch-gateway.example.com answered with a web page, not the Switch server.';
     const el = await renderFlow();
 
-    await act(async () => button(el, 'Continue with your own server').click());
-    await choose(el, "It's already running");
+    await act(async () => button(el, 'Get started').click());
+    await choose(el, 'Join an existing server');
+    await act(async () => button(el, 'Continue').click());
     await type(field(el, 'Server address')!, 'https://switch-gateway.example.com');
     await choose(el, 'Sign in to this server');
 
@@ -385,8 +386,9 @@ describe('the server address form', () => {
   it('asks for a full address before it will go on', async () => {
     const el = await renderFlow();
 
-    await act(async () => button(el, 'Continue with your own server').click());
-    await choose(el, "It's already running");
+    await act(async () => button(el, 'Get started').click());
+    await choose(el, 'Join an existing server');
+    await act(async () => button(el, 'Continue').click());
     await type(field(el, 'Server address')!, 'switch.example.com');
 
     expect(el.textContent).toContain('Enter a full address, e.g. https://switch.example.com');
