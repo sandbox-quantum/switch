@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from switch_core.clients.agent_consumer import (
     AgentConsumer,
     _offline_owner_message,
+    _passive_message,
     _start_from_console_message,
 )
 
@@ -165,6 +166,58 @@ class TestUnavailableReplyRouting:
             msg = await _reply(_client("ownerhandle"), agent, **kwargs)
             assert "I read room messages asynchronously" in msg
             assert "I don't have a session" not in msg
+            # The owner is the only one who can trigger it, so they are
+            # mentioned and notified.
+            assert "@ownerhandle has to trigger me" in msg
+
+    async def test_a_passive_agent_without_a_known_agent_names_its_owner(self) -> None:
+        # Registered via `register-other`: no known-agent spec, same reply.
+        msg = await _reply(_client("ownerhandle"), _agent("session_passive", {}))
+        assert "I read room messages asynchronously" in msg
+        assert "@ownerhandle has to trigger me" in msg
+
+    async def test_a_session_here_that_is_not_live_points_at_switch_console(
+        self,
+    ) -> None:
+        agent = _agent(
+            "session_addressable",
+            {
+                "known_agent_type": "claude-code",
+                "known_agent_options": {"repo_dir": "/srv/work"},
+            },
+        )
+        msg = await _reply(_client("ownerhandle"), agent, connected_not_live=True)
+        assert "isn't reporting as live" in msg
+        assert "@ownerhandle can restart it" in msg
+        assert "in Switch Console" in msg
+        assert "```" not in msg
+
+    async def test_every_other_provider_points_at_switch_console(self) -> None:
+        for agent_type in ("codex", "opencode", "antigravity", "cursor"):
+            agent = _agent(
+                "session_addressable",
+                {"known_agent_type": agent_type, "known_agent_options": {}},
+            )
+            msg = await _reply(_client("ownerhandle"), agent)
+            assert "I don't have a session connected to this room." in msg, agent_type
+            assert "in Switch Console" in msg, agent_type
+            assert "```" not in msg, agent_type
+
+
+class TestPassiveMessage:
+    def test_names_the_owner_so_they_are_notified(self) -> None:
+        msg = _passive_message("ownerhandle", "louisa")
+        assert "@ownerhandle has to trigger me" in msg
+
+    def test_the_owner_asking_is_called_you(self) -> None:
+        msg = _passive_message("louisa", "louisa")
+        assert "you have to trigger me" in msg
+        assert "@louisa" not in msg
+
+    def test_an_unlinked_owner_is_named_without_a_mention(self) -> None:
+        msg = _passive_message(None, "louisa")
+        assert "my owner has to trigger me" in msg
+        assert "@" not in msg
 
 
 class TestStartFromConsoleMessage:

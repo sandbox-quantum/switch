@@ -283,13 +283,13 @@ class HttpTrustClient:
 
 
 def trust_annotation(result: TrustCheckResult) -> str | None:
-    """A short, non-blocking note to append to a message's body — the
-    in-chat indicator for ALERTED and a degraded/errored check. Reuses the
-    message's own body rather than a separate notice or a platform reaction:
-    `mark_activity` (the existing "working"/"queued" badge) is scoped to a
+    """A short, non-blocking note — the in-chat indicator for ALERTED and a
+    degraded/errored check. A person's message carries it appended to its own
+    body; an agent's send gets it as a separate notice threaded under the send
+    (`AgentCore._post_trust_alert_notice`). Text rather than a platform
+    reaction: `mark_activity` (the "working"/"queued" badge) is scoped to a
     specific agent's identity on platforms that track per-agent reactions, and
-    a Switch Trust verdict belongs to no agent — retrofitting it would mean a
-    new cross-adapter primitive, out of proportion to a quiet heads-up.
+    a Switch Trust verdict belongs to no agent.
     `None` for every other outcome, including BLOCKED (handled separately) and
     REDACTED (the redaction itself is the signal)."""
     if result.outcome == "alerted":

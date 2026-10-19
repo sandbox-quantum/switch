@@ -411,9 +411,10 @@ pnpm run lint
   rather than reading the log itself, and no log content may enter a telemetry payload.
 - **Telemetry consent is a gate, not a preference.** Anything that would send usage data
   must `await isTelemetryAllowed()` (`src/main/core/telemetry/consent.ts`) at the point of
-  emission and send nothing when it returns false. Do not read the setting anywhere else,
-  and do not cache the answer across a send, since the user can revoke it at any time. Consent off
-  means **no request is made at all**, not a request whose result is discarded.
+  emission and send nothing when it returns false. Do not read the setting directly to
+  decide whether to send, and do not cache the answer across a send, since the user can
+  revoke it at any time. Consent off means **no request is made at all**, not a request
+  whose result is discarded.
 - **The answer reaches the managed server too, and never by omission.** "Share usage
   data" is one decision covering this app and a Switch server it runs, so `startStack`
   reads it and writes `TELEMETRY_ENABLED` into the stack's `.env` on every start —
@@ -655,7 +656,8 @@ pnpm run test
   because the install runner's shell may be either PowerShell or cmd.exe, and
   each would expand one of them before `powershell -c` ran.
 - An auto-approving Codex session opens its app-server thread with
-  `approvalPolicy: 'never'` and nothing else. The sandbox is deliberately **not** overridden: "Bypass
+  `approvalPolicy: 'never'` (plus `approvalsReviewer: 'user'`, which every Codex thread
+  gets). The sandbox is deliberately **not** overridden: "Bypass
   permissions" promises unattended approvals, not unattended filesystem and
   network access, so the user's own `sandbox_mode` from `~/.codex/config.toml`
   stands. See `packages/agent-providers/src/codex/codex-adapter.ts`.

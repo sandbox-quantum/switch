@@ -7,6 +7,6 @@ the platform: what to create on the platform side, the permissions it needs,
 what each connection field means and what the platform can't do.
 
 The platforms Switch shipped with are documented on the published docs site,
-under [Deploy → Messaging apps](https://docs.flintai.dev/flintai/switch/deploy/messaging-apps).
+under [Deploy → Messaging apps](https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps).
 A page here moves there once it's published, and the adapter's `docs_slug` is
 then set so Console links to it.

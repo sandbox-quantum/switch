@@ -41,9 +41,11 @@ and describe what was asked.
   reply, which has since been removed. Editing it does not relocate anything, it just makes
   the dashboard disagree with where the agent actually runs.
 - **Confirmed by:** Switch Console's new-agent dialog and settings panel in `console/`, which
-  has no directory field or update path after creation; and `repo_dir`'s only remaining
-  reader being Console's remote-host discovery
+  has no directory field or update path after creation; and the only reader of `repo_dir`
+  that changes behaviour being Console's remote-host discovery
   (`console/apps/switch-console-desktop/src/main/core/agents/discover-loadable-agents.ts`).
+  The server also copies it to an agent's subagents when they register
+  (`core/switch_core/gateway/subagent_registration.py`), but never acts on it.
 - **Fixed in:** `AGENT.md` (Switch Console steps) and `knowledge/GOTCHAS.md` (new entry).
 
 ### 2026-08-24 — "who can talk to your agent" has four choices, and it is in the settings

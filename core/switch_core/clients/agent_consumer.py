@@ -138,11 +138,6 @@ _UNAVAILABLE_MESSAGES = {
         "I'm not in an active session right now. "
         "I'll see this when I next connect to the room."
     ),
-    "session_passive": (
-        "I read room messages asynchronously, not in real time — my owner "
-        "has to trigger me to pull the latest messages, either from a session I "
-        "already have open or by starting a new one."
-    ),
     # auto_session with no watcher reporting in: same honest "offline" story as
     # always_on — nothing is going to spin a session up right now.
     "auto_session": (
@@ -201,6 +196,33 @@ def _join_room_names(names: list[str]) -> str:
     return f"{', '.join(bold[:-1])} and {bold[-1]}"
 
 
+def _owner_actor(owner_handle: str | None, asker_handle: str) -> str:
+    """Who to name as the person who has to act: the owner's @-mention, so the
+    owner is notified; "you" when the owner is the one asking; "my owner" when
+    the owner has no account on this platform to mention."""
+    if owner_handle is None:
+        return "my owner"
+    if owner_handle == asker_handle:
+        return "you"
+    return f"@{owner_handle}"
+
+
+def _passive_message(owner_handle: str | None, asker_handle: str) -> str:
+    """The reply for a session_passive agent addressed in a room.
+
+    Such an agent never receives room messages in real time, so it is not
+    told it has no session; the owner has to trigger it to read the room, and
+    is mentioned so they are notified.
+    """
+    actor = _owner_actor(owner_handle, asker_handle)
+    verb = "have" if actor == "you" else "has"
+    return (
+        f"I read room messages asynchronously, not in real time — {actor} {verb} "
+        "to trigger me to pull the latest messages, either from a session I "
+        "already have open or by starting a new one."
+    )
+
+
 def _start_from_console_message(
     agent_name: str,
     owner_handle: str | None,
@@ -217,12 +239,7 @@ def _start_from_console_message(
     Switch tools, which is why no terminal command is offered. The owner is
     named where the action is, and called "you" when they are the one asking.
     """
-    if owner_handle is None:
-        actor = "my owner"
-    elif owner_handle == asker_handle:
-        actor = "you"
-    else:
-        actor = f"@{owner_handle}"
+    actor = _owner_actor(owner_handle, asker_handle)
     sentence_actor = actor if actor.startswith("@") else actor.capitalize()
     console = f"opening **{agent_name}** in Switch Console"
     if connected_not_live:
@@ -1273,11 +1290,13 @@ class AgentConsumer(Consumer[AgentActor]):
         An auto_session agent with nowhere else to point the asker gets the
         owner-facing "I'm not online" reply: only its owner can act, so the
         message asks them and nobody else. A session_passive agent is never live
-        in real time, so it gets the passive reply rather than being told it has
-        no session. A known agent otherwise gets `_start_from_console_message`,
-        and an agent with no known-agent spec falls back to the static
-        `_UNAVAILABLE_MESSAGES` text keyed by connection_model;
-        `connected_not_live` selects the "bound here but not live" fallback.
+        in real time, so it gets `_passive_message`, which names its owner,
+        rather than being told it has no session. A known agent otherwise gets
+        `_start_from_console_message`, and an agent with no known-agent spec
+        falls back to the static `_UNAVAILABLE_MESSAGES` text keyed by
+        connection_model; `connected_not_live` selects the "bound here but not
+        live" fallback, and a connection_model with no text of its own is
+        treated as passive.
 
         `agent` is the freshly-read row supplied by the caller (via
         `_fresh_agent`), so option edits made through the gateway (e.g.
@@ -1288,7 +1307,10 @@ class AgentConsumer(Consumer[AgentActor]):
             "connection_model", "session_passive"
         )
         if connection_model == "session_passive":
-            return _UNAVAILABLE_MESSAGES["session_passive"]
+            return _passive_message(
+                await self.owner_handle_in(session, agent, meta.bridge_id),
+                asker_handle,
+            )
         # `other_room_names` outranks this: a live session in another room is
         # somewhere the asker can go right now, which beats asking the owner to
         # start something.
@@ -1311,8 +1333,12 @@ class AgentConsumer(Consumer[AgentActor]):
             )
         if connected_not_live:
             return _CONNECTED_NOT_LIVE_MESSAGE
-        return _UNAVAILABLE_MESSAGES.get(
-            connection_model, _UNAVAILABLE_MESSAGES["session_passive"]
+        static = _UNAVAILABLE_MESSAGES.get(connection_model)
+        if static is not None:
+            return static
+        return _passive_message(
+            await self.owner_handle_in(session, agent, meta.bridge_id),
+            asker_handle,
         )
 
     async def _is_available(

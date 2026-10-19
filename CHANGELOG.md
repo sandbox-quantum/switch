@@ -54,6 +54,14 @@ version of their own to them without also giving them a release of their own.
   Confluence write tools (infographics and apps on a page) spend 15-30 credits
   a request, and the skill tells agents to use them only when asked.
 
+#### Removed
+- **`!run-cmd`, and the terminal command in offline replies.** A CLI started
+  with that command got none of the Switch tools, so it never brought the agent
+  online. An agent that is offline or not live now asks its owner to open
+  Switch Console instead. Slack apps that list `/run-cmd` in their manifest keep
+  showing it, answering "Unknown command", until an admin deletes it; Discord
+  and Telegram drop it from their command lists by themselves (#730).
+
 ### [0.30.0] - 2026-10-12
 
 #### Added

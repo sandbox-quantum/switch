@@ -252,9 +252,9 @@ class TestTerminalReplyThreadsOffTheTrigger:
     """Where an "I can't help right now" reply lands (CHOO-2344).
 
     Unlike the starting-session notice, nothing follows it — it IS the answer.
-    And it is bulky: an owner mention plus a paste-ready connect command, for
-    something only one person can act on. At the conversation root that is a
-    wall of text dropped into the channel, so it threads off the message that
+    And it is addressed to one person: an owner mention and an instruction
+    only they can act on. At the conversation root that is noise dropped into
+    the channel for everyone else, so it threads off the message that
     triggered it instead.
     """
 
