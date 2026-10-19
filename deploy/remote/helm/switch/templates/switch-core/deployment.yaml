@@ -68,7 +68,7 @@ spec:
           imagePullPolicy: {{ include "switch.imagePullPolicy" (dict "policy" .Values.switchCore.imagePullPolicy "image" .Values.switchCore.image) }}
           command: ["switch-migrate"]
           env:
-            {{- include "switch.coreEnv" . | nindent 12 }}
+            {{- include "switch.coreEnv" (merge (dict "omitTeamsApp" true) .) | nindent 12 }}
           resources:
             {{- toYaml .Values.switchCore.resources | nindent 12 }}
           {{- if include "switch.dbCaBundleConfigMap" . }}
