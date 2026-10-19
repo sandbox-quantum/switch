@@ -7,7 +7,7 @@
 {{- if and .Values.postgresql.caBundle.contents (not .Values.postgresql.caBundle.existingConfigMap) }}
 {{- $caOverride = printf "%s-db-ca-migrate" (include "switch.fullname" .) }}
 {{- end }}
-{{- $ctx := merge (dict "secretNameOverride" $secretOverride "dbCaConfigMapOverride" $caOverride) . }}
+{{- $ctx := merge (dict "secretNameOverride" $secretOverride "dbCaConfigMapOverride" $caOverride "omitTeamsApp" true) . }}
 # Migrates before an upgrade rolls the new switch-core pods, so a failed
 # migration blocks the release instead of crash-looping the new pods.
 # pre-upgrade only: on a fresh install the managed Postgres does not exist yet

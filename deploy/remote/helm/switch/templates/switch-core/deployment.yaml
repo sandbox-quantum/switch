@@ -42,6 +42,7 @@ spec:
         {{- include "switch.labels" . | nindent 8 }}
         {{- include "switch.selectorLabels" (dict "Release" .Release "component" "switch-core") | nindent 8 }}
     spec:
+      serviceAccountName: {{ include "switch.coreServiceAccountName" . }}
       {{- if .Values.global.imagePullSecrets }}
       {{- include "switch.imagePullSecrets" . | nindent 6 }}
       {{- end }}
@@ -67,7 +68,7 @@ spec:
           imagePullPolicy: {{ include "switch.imagePullPolicy" (dict "policy" .Values.switchCore.imagePullPolicy "image" .Values.switchCore.image) }}
           command: ["switch-migrate"]
           env:
-            {{- include "switch.coreEnv" . | nindent 12 }}
+            {{- include "switch.coreEnv" (merge (dict "omitTeamsApp" true) .) | nindent 12 }}
           resources:
             {{- toYaml .Values.switchCore.resources | nindent 12 }}
           {{- if include "switch.dbCaBundleConfigMap" . }}

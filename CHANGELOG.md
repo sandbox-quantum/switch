@@ -136,6 +136,15 @@ version of their own to them without also giving them a release of their own.
   agents with whether each holds a grant and whether others can address it.
 
 #### Changed
+- **The Helm chart runs switch-core as a ServiceAccount of its own.**
+  It is `<release>-switch-core` (`switchCore.serviceAccount`) where it used to be
+  the namespace's `default`, which every pod that names no account shares, so
+  anything trusting switch-core's identity, such as the distributed Teams app's
+  federated credential, trusts switch-core alone. `create: false` with a `name`
+  runs it as an account made elsewhere. A Teams app whose federated
+  credential trusts `default` stops getting tokens after this upgrade: add a
+  credential for `system:serviceaccount:<namespace>:<release>-switch-core`
+  first, and remove the old one once the new pod is up.
 - **Usage telemetry goes to `telemetry.switchagents.ai` by default.** The
   default `TELEMETRY_ENDPOINT` (Helm `switchCore.telemetry.endpoint`) was
   `https://telemetry.flintai.dev`, an older name for the same relay that is
@@ -170,6 +179,13 @@ version of their own to them without also giving them a release of their own.
   could not tell where the image would be loaded from.
 
 #### Fixed
+- **A Teams app on a federated credential can deploy from the Helm chart.**
+  switch-core's migrate init container and the pre-upgrade migration Job were
+  given the Teams app's settings but not its projected token, so
+  `TEAMS_APP_FEDERATED_TOKEN_FILE` named a missing file and both refused to
+  load their configuration: with `switchCore.teamsApp.credential: federated`,
+  no release could migrate or start. The two that migrate are no longer given
+  the Teams app at all.
 - **A controller Switch Console runs on an SSH host is no longer shown as behind.**
   It enrolls like a standalone controller, so Core named it the release and the
   Machines page marked it behind, though it runs Console's bundle and cannot

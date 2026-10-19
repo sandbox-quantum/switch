@@ -61,6 +61,21 @@ def test_the_server_pods_init_container_runs_it_too() -> None:
     assert [ENTRY_POINT] in _commands(DEPLOYMENT)
 
 
+def test_neither_migration_container_is_given_the_teams_app() -> None:
+    # Both load a full SwitchConfig, and neither mounts the federated token
+    # the serving container presents to Microsoft: given the Teams app's
+    # settings, TEAMS_APP_FEDERATED_TOKEN_FILE would name a missing file and
+    # the config would refuse to load, so the release could never migrate.
+    assert '"omitTeamsApp" true' in MIGRATE_JOB.read_text()
+    init_env = re.search(
+        r'command: \["switch-migrate"\]\n\s*env:\n\s*(.*)$',
+        DEPLOYMENT.read_text(),
+        flags=re.MULTILINE,
+    )
+    assert init_env is not None
+    assert '"omitTeamsApp" true' in init_env.group(1)
+
+
 def test_the_entry_point_is_installed_by_the_package() -> None:
     # The image installs the project, so anything declared here lands on PATH
     # in the same container the Job runs — and anything not declared does not.
