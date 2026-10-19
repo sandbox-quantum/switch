@@ -13,9 +13,21 @@ check stops the next piece of work, not the one in flight, and a budget can be
 overshot by whatever was already running when it was reached.
 """
 
+from typing import Protocol
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.stores.budget_store import BudgetStanding, BudgetStore
+from switch_core.db.stores.budget_store import BudgetStanding
+
+
+class BudgetStandings(Protocol):
+    """Where the guard reads budgets from: `BudgetStore`, or the router's
+    reads for one row, which ask for a tenant's budgets once and answer every
+    agent in the room from them."""
+
+    async def standings(
+        self, session: AsyncSession, *, tenant_id: str, agent_id: str | None
+    ) -> list[BudgetStanding]: ...
 
 
 def _describe(standing: BudgetStanding) -> str:
@@ -43,7 +55,7 @@ class BudgetExceeded(Exception):
 
 
 class BudgetGuard:
-    def __init__(self, store: BudgetStore) -> None:
+    def __init__(self, store: BudgetStandings) -> None:
         self._store = store
 
     async def require_within(

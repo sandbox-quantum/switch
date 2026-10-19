@@ -41,6 +41,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.tenant_context import current_tenant_id
 from tests.conftest import RLSHarness
+from tests.ownership import NeverOwned
 
 
 def _service(
@@ -54,6 +55,8 @@ def _service(
         session_factory=session_factory,
         config=SimpleNamespace(id_server_name="test"),  # type: ignore[arg-type]
         tenants_isolated=True,
+        ownership=NeverOwned(),  # type: ignore[arg-type]
+        cursor_writer=MagicMock(),
     )
 
 

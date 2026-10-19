@@ -15,6 +15,7 @@ import type { DataLayout } from './paths';
 import {
   type AgentObservation,
   type AgentRunner,
+  LaunchedBundle,
   type LaunchOptions,
   ownsRoot,
   OWNER_RECORDS,
@@ -38,18 +39,24 @@ const LAUNCH_TIMEOUT_MS = 60_000;
  * controller's hub, over a WebSocket on the relay's port.
  *
  * Being its own process, it is not stopped when the controller exits: it
- * keeps retrying the hub, and picks up again when the controller is back.
+ * keeps retrying the hub, and picks up again when the controller is back,
+ * still on the bundle it was started from. One on another bundle than this
+ * controller's is `outdated`, and the controller restarts it once idle.
  * A restart is a stop and a start: the agent host is turned off, waited out,
  * and launched again from the new template.
  */
 export class DetachedRuntime implements AgentRunner {
+  private readonly bundle: LaunchedBundle;
+
   constructor(
     private readonly deps: {
       layout: DataLayout;
       /** The `shared-host-daemon.mjs` bundle from agent-providers. */
       bundlePath: string;
     }
-  ) {}
+  ) {
+    this.bundle = new LaunchedBundle(deps.bundlePath);
+  }
 
   async observe(agentId: string): Promise<AgentObservation> {
     const root = this.deps.layout.watcherRoot(agentId);
@@ -67,7 +74,12 @@ export class DetachedRuntime implements AgentRunner {
         current: parsed.pid !== process.pid && (await ownsRoot(parsed.pid, root)),
       };
     }
-    return { ...(await readRoot(root)), alive: living, health };
+    return {
+      ...(await readRoot(root)),
+      alive: living,
+      health,
+      outdated: living && (await this.bundle.outdates(health)),
+    };
   }
 
   async launch(agentId: string, template: SharedHostConfig, options: LaunchOptions): Promise<void> {

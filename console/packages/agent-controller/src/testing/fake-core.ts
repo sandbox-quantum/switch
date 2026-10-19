@@ -108,6 +108,8 @@ export class FakeCore {
   publicKey: string | null = null;
   /** The logins given to the machine, by provider, as `GET .../provider-credentials/{provider}` answers. */
   readonly sealedLogins = new Map<string, { revision: number; sealed: unknown }>();
+  /** What status responses name as `controller_release`; left out while undefined. */
+  controllerRelease: unknown = undefined;
   /** Answers the next request to a path with this, once. */
   readonly scripted: { method: string; path: string; status: number; body: unknown }[] = [];
   /** What `GET .../media` sends, in these chunks; `waitBetween` holds back all but the first. */
@@ -441,6 +443,9 @@ export class FakeCore {
       return this.json(res, 200, {
         assignment_revision: this.assignment.revision,
         report_within_s: this.reportWithinS,
+        ...(this.controllerRelease === undefined
+          ? {}
+          : { controller_release: this.controllerRelease }),
       });
     }
     if (method === 'GET' && url.pathname === `${base}/operations`) {

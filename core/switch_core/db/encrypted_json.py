@@ -119,7 +119,12 @@ async def reencrypt_stale_values(
     ids = list(rows.scalars())
     if not ids:
         return 0
-    instances = await session.execute(select(model).where(model.id.in_(ids)))
+    # Locked, so a value another process writes between the select above and
+    # the flush below waits for this transaction, or, if it committed first,
+    # is the value read here: either way the newer value is the one kept.
+    instances = await session.execute(
+        select(model).where(model.id.in_(ids)).with_for_update()
+    )
     for instance in instances.scalars():
         attributes.flag_modified(instance, column)
     await session.flush()

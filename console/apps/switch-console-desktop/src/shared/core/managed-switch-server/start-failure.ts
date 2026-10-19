@@ -13,7 +13,9 @@ export type StartFailure = {
   port: number | null;
 };
 
-const MAX_LINE = 240;
+/** The longest failure line shown; anything longer is cut with an ellipsis. */
+export const MAX_START_FAILURE_LINE = 240;
+const MAX_LINE = MAX_START_FAILURE_LINE;
 
 const PORT_IN_USE = [
   /bind [^\s]*?:(\d+): address already in use/i,

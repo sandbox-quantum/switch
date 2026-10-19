@@ -6,7 +6,6 @@ import json
 import logging
 import re
 import threading
-import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
@@ -302,6 +301,11 @@ def _ephemeral(text: str) -> dict[str, Any]:
 class MattermostAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Mattermost"
     docs_slug: ClassVar[str | None] = "mattermost"
+    # A quiet Mattermost bridge opens no websocket and mints no bot token: it
+    # knows each agent's bot by id, for mentions, and calls the API as the
+    # admin. Mattermost sends every event to every open socket, so a socket
+    # in each process would hand each process every post.
+    keeps_quiet_unless_listening: ClassVar[bool] = True
 
     @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
@@ -408,6 +412,13 @@ class MattermostAdapter(PlatformAdapter):
 
         self._agent_bots: dict[str, dict[str, str]] = {}
         self._bot_drivers: dict[str, Driver] = {}
+        # Set to close an agent bot's socket for good: when the adapter stops,
+        # or the agent's identity is removed. Each socket runs in a thread of
+        # its own that reconnects whenever the connection drops, so without
+        # this a stopped bridge's sockets stayed open for the life of the
+        # process, handing it every post. A bridge handed from one process to
+        # another stops here and starts there.
+        self._ws_stops: dict[str, threading.Event] = {}
         self._identity_locks: dict[str, asyncio.Lock] = {}
         self._bot_id_to_username: dict[str, str] = {}
         self._bridge_bot_ids: set[str] = set()
@@ -510,9 +521,22 @@ class MattermostAdapter(PlatformAdapter):
         )
 
     async def stop(self) -> None:
+        for agent_name in list(self._ws_stops):
+            self._close_bot_socket(agent_name)
         self._admin_driver = None
         self._bot_drivers.clear()
         logger.info("Mattermost adapter stopped")
+
+    def _close_bot_socket(self, agent_name: str) -> None:
+        """Close an agent bot's socket and keep its thread from reconnecting.
+        The thread finishes once the driver notices, within its read timeout,
+        and hands nothing over meanwhile."""
+        stopped = self._ws_stops.pop(agent_name, None)
+        if stopped is not None:
+            stopped.set()
+        driver = self._bot_drivers.get(agent_name)
+        if driver is not None and getattr(driver, "websocket", None) is not None:
+            driver.disconnect()
 
     # ── Callbacks ────────────────────────────────────────────────────────────
 
@@ -2090,7 +2114,7 @@ class MattermostAdapter(PlatformAdapter):
         existing = await self._find_existing_bot(agent_name)
         if existing:
             bot_id: str = str(existing["user_id"])
-            if existing.get("display_name") != label:
+            if existing.get("display_name") != label and self._listening:
                 try:
                     await self._mm_api(
                         "put", f"/bots/{bot_id}", {"display_name": label}
@@ -2114,10 +2138,29 @@ class MattermostAdapter(PlatformAdapter):
                 )
                 bot_id = str(bot["user_id"])
             except Exception as e:
-                logger.exception(
-                    "Failed to create Mattermost bot %s: %s", agent_name, e
-                )
-                return
+                # Another switch-core process may have created it a moment ago:
+                # every process provisions its copy of the bridge.
+                created = await self._find_existing_bot(agent_name)
+                if created is None:
+                    logger.exception(
+                        "Failed to create Mattermost bot %s: %s", agent_name, e
+                    )
+                    return
+                bot_id = str(created["user_id"])
+
+        if not self._listening:
+            # Known by id, for mentions and for telling its posts from people's.
+            # The process holding the bridge posts as the bot and listens on
+            # its socket.
+            self._agent_bots[agent_name] = {
+                "bot_id": bot_id,
+                "user_id": bot_id,
+                "username": agent_name,
+            }
+            self._bridge_bot_ids.add(bot_id)
+            self._bot_id_to_username[bot_id] = agent_name
+            logger.info("Found Mattermost bot identity %s (quiet)", agent_name)
+            return
 
         try:
             token_resp = await self._mm_api(
@@ -2155,25 +2198,33 @@ class MattermostAdapter(PlatformAdapter):
         except Exception:
             pass
 
+        stopped = threading.Event()
+        self._ws_stops[agent_name] = stopped
+
         def _run_ws(driver: Driver = bot_driver, name: str = agent_name) -> None:
             async def _handler(event_data: str) -> None:
+                if stopped.is_set():
+                    return
                 await self._ws_handler(event_data, name)
 
-            time.sleep(1)
+            if stopped.wait(1):
+                return
             backoff = 2
-            while True:
+            while not stopped.is_set():
                 try:
                     ws_loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(ws_loop)
                     ws_loop.run_until_complete(driver.init_websocket(_handler))
                 except Exception as e:
+                    if stopped.is_set():
+                        break
                     logger.debug(
                         "WebSocket for %s disconnected: %s, retrying in %ds",
                         name,
                         e,
                         backoff,
                     )
-                    time.sleep(backoff)
+                    stopped.wait(backoff)
                     backoff = min(backoff * 2, 30)
                 else:
                     backoff = 2
@@ -2253,6 +2304,10 @@ class MattermostAdapter(PlatformAdapter):
         existing = await self._find_existing_bot(username)
         if existing:
             bot_id = str(existing["user_id"])
+        elif not self._listening:
+            # Created by the process holding the bridge; this one posts no
+            # notices.
+            return
         else:
             try:
                 bot = await self._mm_api(
@@ -2268,6 +2323,10 @@ class MattermostAdapter(PlatformAdapter):
             except Exception:
                 logger.exception("Failed to create Switch Admin bot")
                 return
+        if not self._listening:
+            self._admin_bot_id = bot_id
+            self._bridge_bot_ids.add(bot_id)
+            return
         try:
             token_resp = await self._mm_api(
                 "post",
@@ -2320,6 +2379,7 @@ class MattermostAdapter(PlatformAdapter):
             pass
 
     async def remove_agent_identity(self, agent_name: str) -> None:
+        self._close_bot_socket(agent_name)
         self._agent_bots.pop(agent_name, None)
         self._bot_drivers.pop(agent_name, None)
 
@@ -2410,6 +2470,14 @@ class MattermostAdapter(PlatformAdapter):
         driver = self._admin_driver
         try:
             url = await self.agent_icon_url(agent_name)
+            if url is None:
+                # Nothing is uploaded, so the bot keeps the image it has: the
+                # default for a new bot, or whatever an earlier start set.
+                logger.debug(
+                    "[BOT-ICON] no icon to send for %s; leaving the bot's current image",
+                    agent_name,
+                )
+                return
             logger.debug("[BOT-ICON] fetching avatar for %s", agent_name)
             # This is the one place Switch dereferences an agent's icon URL
             # rather than handing it to a platform, so the fetch is bounded:

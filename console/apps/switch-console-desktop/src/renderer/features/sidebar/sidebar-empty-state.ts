@@ -32,3 +32,17 @@ export function sidebarEmptyState(input: {
     return 'empty';
   return null;
 }
+
+/**
+ * Whether the sidebar shows Agents / Rooms under agent management: once
+ * anything is managed, while switch-buddy waits on a provider (its row is the
+ * way back to its page), or with no agents at all, where there is nothing
+ * legacy to show instead.
+ */
+export function showsAgentsAndRooms(input: {
+  managedAgentCount: number;
+  buddyPending: boolean;
+  legacyAgentCount: number;
+}): boolean {
+  return input.managedAgentCount > 0 || input.buddyPending || input.legacyAgentCount === 0;
+}

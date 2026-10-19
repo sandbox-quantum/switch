@@ -17,6 +17,7 @@ from switch_core.addressing import (
     AddressingPolicy,
     AddressingRule,
     owner_and_owner_agents_policy,
+    owner_only_policy,
 )
 from switch_core.connections.adapters import ServiceAdapterError
 from switch_core.connections.broker import ServiceBroker
@@ -26,9 +27,11 @@ from switch_core.db.models import (
     Agent,
     AuditEvent,
     ServiceConnection,
+    TenantMember,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.connections.service_harness import (
@@ -38,6 +41,7 @@ from tests.switch_core.connections.service_harness import (
     bound_to,
     build_service_harness,
     connect,
+    grant_directly,
 )
 from tests.switch_core.gateway.test_tenant_api_routes import (
     TENANT_A,
@@ -64,7 +68,7 @@ def vendor() -> FakeVendor:
 def harness(
     session_factory: async_sessionmaker[AsyncSession], vendor: FakeVendor
 ) -> Harness:
-    return build_service_harness(session_factory, vendor)[0]
+    return build_service_harness(session_factory, vendor, workspace_gate=False)[0]
 
 
 async def _put(harness: Harness, owner, agent_id: str, body: dict, service="github"):
@@ -208,18 +212,19 @@ class TestGrants:
     @pytest.mark.parametrize(
         ("policy", "warned"),
         [
-            (owner_and_owner_agents_policy(), False),
+            (owner_only_policy([]), False),
+            (owner_and_owner_agents_policy(), True),
             (
                 AddressingPolicy(
                     rules=[
-                        *owner_and_owner_agents_policy().rules,
+                        *owner_only_policy([]).rules,
                         AddressingRule(rooms=["room-x"], users="*", agents=[]),
                     ]
                 ),
                 True,
             ),
         ],
-        ids=["owner-and-their-agents", "anyone-in-one-room"],
+        ids=["owner-alone", "owner-and-their-agents", "anyone-in-one-room"],
     )
     async def test_the_warning_follows_who_else_can_address_the_agent(
         self, harness: Harness, policy: AddressingPolicy, warned: bool
@@ -442,6 +447,8 @@ class TestMemberRemoval:
             disabled={},
             store=STORE,
             token_retention=timedelta(days=30),
+            workspace_services=WorkspaceServiceStore(),
+            workspace_gate=False,
         )
 
         token = _token(admin_id, "svc-admin@example.invalid", TENANT_A)
@@ -459,3 +466,175 @@ class TestMemberRemoval:
             )
         assert event is not None and event.details is not None
         assert event.details["service_connections_deleted"] == 1
+
+
+@pytest.fixture
+def gated(
+    session_factory: async_sessionmaker[AsyncSession], vendor: FakeVendor
+) -> Harness:
+    """The harness with the workspace switch applying, as the flag would."""
+    return build_service_harness(session_factory, vendor, workspace_gate=True)[0]
+
+
+async def _switch_off(harness: Harness, service: str, admin_id: str) -> None:
+    async with harness.session_factory() as session:
+        await WorkspaceServiceStore().set_enabled(session, service, False, admin_id)
+        await session.commit()
+
+
+async def _listed(harness: Harness, user) -> dict[str, dict]:
+    async with harness.client() as client:
+        response = await client.get(
+            "/gateway/service-connections", cookies=cookies_for(user)
+        )
+    assert response.status_code == 200, response.text
+    return {entry["slug"]: entry for entry in response.json()["connections"]}
+
+
+WORKSPACE_REFUSAL = (
+    "GitHub is not enabled in this workspace. Ask a workspace admin; they "
+    "switch it on under Connectors in Switch Console."
+)
+
+
+class TestWorkspaceSwitch:
+    async def test_the_list_says_which_services_the_workspace_has_on(
+        self, gated: Harness
+    ) -> None:
+        owner = await add_member(gated.session_factory, "ada")
+        await connect(gated.session_factory, owner.id, consent="read")
+        await _switch_off(gated, "datadog", owner.id)
+
+        entries = await _listed(gated, owner)
+
+        assert entries["datadog"]["workspace_enabled"] is False
+        assert {
+            slug for slug, entry in entries.items() if not entry["workspace_enabled"]
+        } == {"datadog"}
+        assert entries["github"]["consent"] == "read"
+        assert entries["atlassian"]["consent"] is None
+
+    async def test_with_the_gate_off_every_service_reads_as_on(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        await _switch_off(harness, "datadog", owner.id)
+
+        entries = await _listed(harness, owner)
+
+        assert all(entry["workspace_enabled"] is True for entry in entries.values())
+
+    async def test_a_running_sessions_grants_drop_the_service_and_its_token_is_refused(
+        self, gated: Harness, vendor: FakeVendor
+    ) -> None:
+        owner = await add_member(gated.session_factory, "ada")
+        agent_id, key = await agent_with_key(gated.session_factory, owner, "builder")
+        await connect(gated.session_factory, owner.id)
+        await grant_directly(gated.session_factory, agent_id, owner.id)
+        await _switch_off(gated, "github", owner.id)
+
+        async with gated.client() as client:
+            grants = await client.get(
+                f"/agents/{agent_id}/service-grants", headers=bearer(key)
+            )
+        token = await _token_for(gated, agent_id, key)
+
+        assert grants.status_code == 200, grants.text
+        assert grants.json()["grants"] == []
+        assert token.status_code == 403
+        assert token.json()["error"] == {
+            "code": "forbidden",
+            "message": WORKSPACE_REFUSAL,
+            "retryable": False,
+        }
+        assert vendor.issued == [] and vendor.refreshes == 0
+
+
+async def _agents(harness: Harness, user, service: str = "github"):
+    async with harness.client() as client:
+        return await client.get(
+            f"/gateway/service-connections/{service}/agents",
+            cookies=cookies_for(user),
+        )
+
+
+async def _set_policy(
+    harness: Harness, agent_id: str, policy: AddressingPolicy
+) -> None:
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(Agent)
+            .where(Agent.id == agent_id)
+            .values(addressing_policy=policy.model_dump())
+        )
+        await session.commit()
+
+
+class TestYourAgents:
+    async def test_lists_only_the_callers_own_agents_in_this_workspace(
+        self, harness: Harness, session_factory
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        other = await add_member(harness.session_factory, "bob")
+        granted_id, _ = await agent_with_key(harness.session_factory, owner, "builder")
+        plain_id, _ = await agent_with_key(harness.session_factory, owner, "planner")
+        await agent_with_key(harness.session_factory, other, "bobs-agent")
+        await _make_tenant(session_factory, TENANT_A)
+        elsewhere = bound_to(session_factory, TENANT_A)
+        async with elsewhere() as session:
+            session.add(
+                TenantMember(tenant_id=TENANT_A, user_id=owner.id, role="member")
+            )
+            await session.commit()
+        await agent_with_key(elsewhere, owner, "elsewhere")
+        await connect(harness.session_factory, owner.id)
+        await grant_directly(harness.session_factory, granted_id, owner.id)
+        await _set_policy(harness, plain_id, owner_only_policy([]))
+
+        response = await _agents(harness, owner)
+
+        assert response.status_code == 200, response.text
+        assert response.json() == [
+            {
+                "agent_id": granted_id,
+                "name": "builder",
+                "granted": True,
+                "addressing_open": True,
+            },
+            {
+                "agent_id": plain_id,
+                "name": "planner",
+                "granted": False,
+                "addressing_open": False,
+            },
+        ]
+
+    async def test_an_agent_its_owners_agents_can_address_is_open(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        agent_id, _ = await agent_with_key(harness.session_factory, owner, "builder")
+        await _set_policy(harness, agent_id, owner_and_owner_agents_policy())
+
+        response = await _agents(harness, owner)
+
+        assert response.status_code == 200, response.text
+        assert [(a["agent_id"], a["addressing_open"]) for a in response.json()] == [
+            (agent_id, True)
+        ]
+
+    async def test_a_member_with_no_agents_gets_an_empty_list(
+        self, harness: Harness
+    ) -> None:
+        member = await add_member(harness.session_factory, "cy")
+        response = await _agents(harness, member)
+        assert (response.status_code, response.json()) == (200, [])
+
+    @pytest.mark.parametrize("service", ["nowhere", "asana"])
+    async def test_an_unknown_or_placeholder_service_is_not_found(
+        self, harness: Harness, service: str
+    ) -> None:
+        member = await add_member(harness.session_factory, "cy")
+        response = await _agents(harness, member, service)
+        assert response.status_code == 404
+        assert response.json()["detail"] == f"No service named {service!r}."

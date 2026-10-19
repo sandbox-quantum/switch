@@ -64,3 +64,22 @@ export function channelUrlFromDeeplink(deeplink: string, mattermostOrigin: strin
 export function mattermostPartition(serverId: string): string {
   return `persist:switch-mattermost:${serverId}`;
 }
+
+/**
+ * Whether a room's conversation, decided while its channel link was
+ * `resolvedUrl`, has to be decided again now the room list says `currentUrl`.
+ *
+ * The link is missing while the server's bridge is not running — a local
+ * server's Mattermost comes up minutes after the server does — so a room
+ * opened in that window would otherwise stay "unavailable" once it is back.
+ * A live conversation is not torn down for a link that has merely gone
+ * missing: its own page reconnects when the platform does.
+ */
+export function embedIsStale(
+  embed: RoomEmbed,
+  resolvedUrl: string | null,
+  currentUrl: string | null
+): boolean {
+  if (resolvedUrl === currentUrl) return false;
+  return currentUrl !== null || embed.kind !== 'inline';
+}

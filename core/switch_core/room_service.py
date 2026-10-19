@@ -16,6 +16,7 @@ room Switch has no record of it being in.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
@@ -135,6 +136,12 @@ class RoomCreateConfig(BaseModel):
     created_by_kind: Literal["user", "agent", "system"] = "user"
     # Provisioned from a room template rather than created directly.
     from_template: bool = False
+    # The Switch Console chat creation this room is for, stamped into the
+    # room's metadata in the same insert so a retried creation finds it.
+    chat_operation_id: str | None = None
+    # `{agent_id, body}`: what that agent says as it joins, in place of its
+    # usual line. Stamped with the room, so it is there before the agent is.
+    agent_greeting: dict[str, str] | None = None
 
 
 class RoomCreateResult(BaseModel):
@@ -151,11 +158,12 @@ class RoomCreateResult(BaseModel):
 
 
 class RoomService:
-    # Class-level default so a caller that builds this without `__init__` —
+    # Class-level defaults so a caller that builds this without `__init__` —
     # several tests assemble a minimal instance directly — still has the
-    # attribute. Telemetry is genuinely optional here; `emit_safely` treats
+    # attributes. Telemetry is genuinely optional here; `emit_safely` treats
     # None as "report nothing".
     _telemetry: TelemetryService | None = None
+    _room_agents_listeners: tuple[Callable[[str, str], Awaitable[None]], ...] = ()
 
     def __init__(
         self,
@@ -184,6 +192,28 @@ class RoomService:
         self._telemetry = telemetry
         # The shared delivery read; told when a room goes.
         self._room_cache = room_cache
+
+    def on_room_agents_changed(
+        self, listener: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        """Call `listener(tenant_id, room_id)` after a room's agents change."""
+        self._room_agents_listeners = (*self._room_agents_listeners, listener)
+
+    async def room_agents_changed(self, tenant_id: str, room_id: str) -> None:
+        """Tell the listeners a room's agents (or their owners) changed.
+
+        The change itself is already committed, so a listener that fails is
+        reported rather than raised; listeners re-read on their own schedule.
+        """
+        for listener in self._room_agents_listeners:
+            try:
+                await listener(tenant_id, room_id)
+            except Exception:
+                logger.exception(
+                    "Room-agents listener failed for room %s; it will catch up "
+                    "on its next re-read",
+                    room_id,
+                )
 
     async def _resolve_agent_ids(self, config: RoomCreateConfig) -> list[str]:
         if config.agent_ids is not None:
@@ -599,7 +629,19 @@ class RoomService:
                 read_visibility=config.read_visibility,
                 write_visibility=config.write_visibility,
                 # Nothing else on the row can answer this afterwards.
-                metadata_={"created_by_kind": config.created_by_kind},
+                metadata_={
+                    "created_by_kind": config.created_by_kind,
+                    **(
+                        {"chat_operation_id": config.chat_operation_id}
+                        if config.chat_operation_id is not None
+                        else {}
+                    ),
+                    **(
+                        {"agent_greeting": config.agent_greeting}
+                        if config.agent_greeting is not None
+                        else {}
+                    ),
+                },
             )
 
             async with self._session_factory() as session:
@@ -630,6 +672,8 @@ class RoomService:
                 collaboration_core.add_room_mapping(
                     room.id, transport_room_id, external_channel_id, room.tenant_id
                 )
+            if bridge_id and external_channel_id:
+                self._collab_lifecycle.rooms_changed(bridge_id)
         finally:
             if collaboration_core and external_channel_id:
                 collaboration_core.end_provisioning(external_channel_id)
@@ -735,6 +779,9 @@ class RoomService:
             len(system_clients),
         )
 
+        if agent_ids:
+            await self.room_agents_changed(room.tenant_id, room.id)
+
         failed_attachments = unreachable_users + await self._attach_after_creation(
             room.id, config
         )
@@ -818,6 +865,7 @@ class RoomService:
             collaboration_core = self._collab_lifecycle.get(bridge_id)
             if collaboration_core:
                 collaboration_core.remove_room_mapping(room.id, room.transport_room_id)
+            self._collab_lifecycle.rooms_changed(bridge_id)
 
         logger.info("Deleted room %s", room_id)
 
@@ -924,6 +972,7 @@ class RoomService:
                 )
 
         logger.info("Added %d agents to room %s", len(agent_ids), room_id)
+        await self.room_agents_changed(room.tenant_id, room.id)
 
         emit_safely(
             self._telemetry,
@@ -965,6 +1014,7 @@ class RoomService:
                 )
 
         logger.info("Removed %d agents from room %s", len(agent_ids), room_id)
+        await self.room_agents_changed(room.tenant_id, room.id)
 
         emit_safely(
             self._telemetry,
@@ -1213,6 +1263,9 @@ class RoomService:
             collaboration_core.add_room_mapping(
                 room.id, room.transport_room_id, external_channel_id, room.tenant_id
             )
+        if external_channel_id:
+            self._collab_lifecycle.rooms_changed(bridge_id)
+        if collaboration_core and external_channel_id:
             await self._ensure_channel_capture(
                 collaboration_core, external_channel_id, channel_type
             )
@@ -1235,6 +1288,7 @@ class RoomService:
             collaboration_core = self._collab_lifecycle.get(bridge_id)
             if collaboration_core:
                 collaboration_core.remove_room_mapping(room.id, room.transport_room_id)
+            self._collab_lifecycle.rooms_changed(bridge_id)
 
         logger.info("Unlinked bridge from room %s", room_id)
 
@@ -1356,6 +1410,7 @@ class RoomService:
                 new_bridge.add_room_mapping(
                     room_id, transport_room_id, external_channel_id, room.tenant_id
                 )
+                self._collab_lifecycle.rooms_changed(bridge_id)
             finally:
                 new_bridge.end_provisioning(external_channel_id)
 
@@ -1382,6 +1437,7 @@ class RoomService:
                 )
 
             if old_bridge_id:
+                self._collab_lifecycle.rooms_changed(old_bridge_id)
                 old_bridge = self._collab_lifecycle.get(old_bridge_id)
                 if old_bridge is not None:
                     old_bridge.remove_room_mapping(room_id, transport_room_id)
@@ -1502,6 +1558,14 @@ class RoomService:
                 len(rooms),
                 ", ".join(failures),
             )
+
+    async def reconcile_room(self, room: Room) -> None:
+        """Put the room's agent and system clients in it where they are missing.
+
+        For a caller repairing one room whose creation may have stopped after
+        the room row committed and before its clients joined.
+        """
+        await self._reconcile_one_room(room)
 
     async def _reconcile_one_room(self, room: Room) -> None:
         with tenant_scope(room.tenant_id):

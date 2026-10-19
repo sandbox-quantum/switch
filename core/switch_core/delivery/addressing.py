@@ -13,10 +13,10 @@ ordinary room chatter when so. Nothing here sends anything; deciding is all it
 does, and the refusal wording travels back with the decision so the caller does
 not have to re-derive why.
 
-This used to live on the agent client (now `AgentConsumer`), where every answer was reached through a
-live Matrix client. It takes a message as data instead — a sender, a body, a
-content dict — so the same rules decide for a message read out of the log as
-for one that arrived on the bus. That equivalence is the point: two code paths
+This used to live on the agent client, where every answer was reached through
+a live Matrix client. It takes a message as data instead (a sender, a body, a
+content dict), so the same rules decide for a message read out of the log as
+for one that arrived on the bus, and for every agent in a room at once. That equivalence is the point: two code paths
 answering "is this for me?" differently would be a security bug waiting for a
 rewrite to expose it.
 """
@@ -34,6 +34,7 @@ from switch_core.addressing import (
     can_address,
     parse_policy,
 )
+from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
     PLATFORM_MARKER,
@@ -237,7 +238,7 @@ class AddressingResolver:
         """
         if "@" not in message.body:
             return False
-        alias = await self._room_store.get_alias(session, room_id, agent.id)
+        alias = await self.alias_of(session, room_id, agent.id)
         if not alias:
             return False
         return mention_regex(alias).search(message.body) is not None
@@ -262,12 +263,42 @@ class AddressingResolver:
         """
         if "@" not in message.body:
             return False
-        role_name = await self._room_role_store.agent_room_role(
-            session, room_id, agent.id, self._live_connection_ids()
-        )
+        role_name = await self.role_of(session, room_id, agent.id)
         if not role_name:
             return False
         return mention_regex(role_name).search(strip_emphasis(message.body)) is not None
+
+    # ── What the rules read ───────────────────────────────────────────────────
+    #
+    # The rules above and below ask the database these few questions and
+    # nothing else. Each is a method of its own so that a caller deciding one
+    # message for every agent in a room at once (the router) can answer them
+    # from reads it made once for the whole room, while every rule stays the
+    # one written here.
+
+    async def alias_of(
+        self, session: AsyncSession, room_id: str, agent_id: str
+    ) -> str | None:
+        """The name the agent goes under in this room, if it has one."""
+        return await self._room_store.get_alias(session, room_id, agent_id)
+
+    async def role_of(
+        self, session: AsyncSession, room_id: str, agent_id: str
+    ) -> str | None:
+        """The room role the agent live-holds in this room, if any."""
+        return await self._room_role_store.agent_room_role(
+            session, room_id, agent_id, self._live_connection_ids()
+        )
+
+    async def group_of(self, session: AsyncSession, room_id: str) -> str | None:
+        """The room group the room belongs to, which a policy can name."""
+        room = await self._room_store.get(session, room_id)
+        return room.group_id if room is not None else None
+
+    async def claimed_accounts(self, session: AsyncSession, user_id: str) -> list[str]:
+        """The ids of the platform accounts a Switch user has claimed."""
+        claimed = await self._external_user_store.get_by_user(session, user_id)
+        return [ext.id for ext in claimed]
 
     # ── Permitted ─────────────────────────────────────────────────────────────
 
@@ -301,8 +332,7 @@ class AddressingResolver:
             return AddressingDecision(allowed=True, refusal="")
 
         principal = await self.resolve_sender(session, sender, content)
-        room = await self._room_store.get(session, room_id)
-        group_id = room.group_id if room is not None else None
+        group_id = await self.group_of(session, room_id)
 
         if principal is None:
             if policy.is_open():
@@ -319,15 +349,14 @@ class AddressingResolver:
             return AddressingDecision(allowed=False, refusal=ADDRESSING_DENIED_MESSAGE)
 
         if principal.kind == "platform" and principal.on_behalf_of is not None:
-            claimed = await self._external_user_store.get_by_user(
-                session, principal.on_behalf_of
-            )
             allowed = allows_on_behalf_of(
                 policy,
                 room_id=room_id,
                 group_id=group_id,
                 user_id=principal.on_behalf_of,
-                external_user_ids=[ext.id for ext in claimed],
+                external_user_ids=await self.claimed_accounts(
+                    session, principal.on_behalf_of
+                ),
                 owner_user_id=agent.owner_id,
             )
         elif policy.is_open() and principal.kind != "platform":
@@ -386,9 +415,13 @@ class AddressingResolver:
         """Map a sender's mxid to the principal a policy is written about.
 
         Every participant is a Switch client, so the mxid resolves to a Client
-        and from there to an Agent, an ExternalUser, or the admin client
-        (the platform). None means none of those, which a restricted agent
-        should not trust.
+        and from there to an Agent, an ExternalUser, a gateway user's member
+        client, or the admin client (the platform). None means none of those,
+        which a restricted agent should not trust.
+
+        A member client is that gateway user speaking in person, so it
+        resolves to them directly: `user_ids` is that one user, with no
+        platform claims involved.
 
         `content` matters only for the admin client: its platform marker may
         name the person the message speaks for. The marker is read for no
@@ -417,6 +450,8 @@ class AddressingResolver:
                 session, external_user.id
             )
             return SenderPrincipal("user", external_user.id, claimants, None)
+        if client.type == MEMBER_CLIENT_TYPE and client.user_id is not None:
+            return SenderPrincipal("user", client.id, [client.user_id], None)
         if client.type == "admin":
             person = platform_on_behalf_of(content or {})
             if person is not None and person.agent_id is not None:

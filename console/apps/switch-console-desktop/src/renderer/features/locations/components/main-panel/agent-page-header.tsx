@@ -1,12 +1,15 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
+import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
-import { useParams } from '@renderer/lib/layout/navigation-provider';
+import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import {
   workspaceAgentsQueryKey,
@@ -29,6 +32,7 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
     params: { locationId, agentName },
   } = useParams('location');
   const showCreateSessionModal = useShowModal('sessionModal');
+  const { navigate } = useNavigate();
   const showAddToRoom = useShowModal('addAgentToRoomModal');
 
   const agent = agentsStore.agentAtLocation(locationId, agentName);
@@ -53,6 +57,12 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const switchAgentId = agent?.switchAgentId ?? null;
+  // A managed agent's page is where its chats are.
+  const managedAgents = useManagedAgents(agent?.serverId ?? null);
+  const chatsEnabled = useFeatureFlags(agent?.serverId).agent_chats;
+  const chatsTab =
+    chatsEnabled && (managedAgents.data ?? []).some((managed) => managed.agentId === switchAgentId);
+  const newChat = chatsEnabled && agent?.serverId != null && switchAgentId !== null;
 
   /** The icon is stored on the Switch server, not locally, so a change is a
    * request that can fail. It is reported rather than swallowed: a picture
@@ -88,7 +98,7 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
         ) : (
           // Not registered on a server yet, so there is nothing to change the
           // icon on — shown, but not offered as editable.
-          <AgentAvatar name={title} iconUrl={null} size={88} />
+          <AgentAvatar name={title} iconUrl={null} serverId={agent?.serverId ?? null} size={88} />
         )
       }
       title={title}
@@ -103,13 +113,32 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
       description={description}
       actions={
         <>
-          <Button
-            onClick={() =>
-              showCreateSessionModal({ locationId, agentName, entryPoint: 'agent_page' })
-            }
-          >
-            New Session
-          </Button>
+          {!newChat && (
+            <Button
+              onClick={() =>
+                showCreateSessionModal({ locationId, agentName, entryPoint: 'agent_page' })
+              }
+            >
+              New Session
+            </Button>
+          )}
+          {newChat && (
+            <Button
+              onClick={async () => {
+                const serverId = agent.serverId as string;
+                const switchAgentId = agent.switchAgentId as string;
+                if (chatsTab) {
+                  navigate('managedAgent', { serverId, agentId: switchAgentId, name: title });
+                  return;
+                }
+                const chat = await directChats.start(serverId, switchAgentId);
+                if (chat)
+                  navigate('chat', { serverId, roomId: chat.roomId, agentId: switchAgentId });
+              }}
+            >
+              New chat
+            </Button>
+          )}
           {roomable && (
             <Button
               variant="outline"

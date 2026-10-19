@@ -1,0 +1,632 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from switch_core.bridges.agent.commands import _addressed_by_name_or_role
+from switch_core.delivery.addressing import (
+    AddressingResolver,
+    IncomingMessage,
+)
+from switch_core.delivery.recipient import (
+    _STARTING_SESSION_MESSAGE,
+    AgentRecipient,
+    _role_elsewhere_message,
+)
+
+
+@asynccontextmanager
+async def _session_factory():  # type: ignore[no-untyped-def]
+    yield object()
+
+
+def _no_connections(
+    *, connected: bool = False, spawns: bool = False
+) -> SimpleNamespace:
+    """A connection registry with nothing live, unless told otherwise.
+
+    Presence is the union of the heartbeat rows and the live connections
+    (CHOO-1857); most of these tests drive the DB arm, so the connection arm
+    contributes nothing by default. `connected` is a connection that claims no
+    room — a worker elsewhere, or a controller — and `spawns` is one that
+    declared it will start a session for this room.
+    """
+    return SimpleNamespace(
+        controllers=SimpleNamespace(is_bound=lambda _agent_id: False),
+        live_connection_ids=lambda: set(),
+        is_live=lambda _agent_id: connected,
+        live_in_room=lambda _agent_id, _room_id: False,
+        claimant_of=lambda _agent_id, _room_id: None,
+        can_spawn_for=lambda _agent_id, _room_id: spawns,
+        for_agent=lambda _agent_id: [],
+        placed_rooms=lambda _agent_id: set(),
+        session_in_room=lambda _agent_id, _room_id: None,
+    )
+
+
+def _event(body: str, formatted_body: str | None = None) -> IncomingMessage:
+    return IncomingMessage(sender="@u:test", body=body, formatted_body=formatted_body)
+
+
+def _resolver(**attrs: object) -> SimpleNamespace:
+    """A resolver-shaped double with the named checks wired to the real ones.
+
+    Each check reads only the stores it needs, so a double carrying just those
+    is enough to run the real logic against.
+    """
+    resolver = SimpleNamespace(**attrs)
+    for name in (
+        "mentions_name",
+        "mentions_alias",
+        "mentions_role",
+        "alias_of",
+        "role_of",
+    ):
+        setattr(
+            resolver,
+            name,
+            (
+                lambda method: (
+                    lambda *a, **kw: getattr(AddressingResolver, method)(
+                        resolver, *a, **kw
+                    )
+                )
+            )(name),
+        )
+    return resolver
+
+
+def _client(name: str) -> SimpleNamespace:
+    """An AgentRecipient-shaped double: an agent, an mxid, and a resolver."""
+    return SimpleNamespace(
+        agent=SimpleNamespace(name=name),
+        transport_user_id=f"@switch-agent-{name}:switch.local",
+        _addressing=_resolver(),
+        _as_incoming=AgentRecipient._as_incoming,
+    )
+
+
+def _is_mentioned(name: str, body: str) -> bool:
+    return AddressingResolver.mentions_name(
+        _resolver(),
+        agent=SimpleNamespace(name=name),  # type: ignore[arg-type]
+        agent_user_id=f"@switch-agent-{name}:switch.local",
+        message=_event(body),
+    )
+
+
+async def _command_addresses(name: str, args: str) -> bool:
+    # Exercise the real default command-targeting predicate with a client that
+    # holds no role, so this reflects pure name-boundary matching.
+    client = SimpleNamespace(
+        agent=SimpleNamespace(name=name), session_factory=_session_factory
+    )
+    client._args_tag_my_name = lambda text: AgentRecipient._args_tag_my_name(
+        client, text
+    )
+
+    async def _no(_session: object, _text: str, _room_id: str) -> bool:
+        return False
+
+    client._text_tags_my_role = _no
+    client._text_tags_my_alias = _no
+    return await _addressed_by_name_or_role(client, args, "room-1")
+
+
+class TestPrefixCollision:
+    def test_mention_does_not_match_prefix_name(self) -> None:
+        # The original bug: "@cc-bug-fixing" is a substring of "@cc-bug-fixing-2".
+        assert _is_mentioned("cc-bug-fixing", "@cc-bug-fixing-2 please run") is False
+
+    def test_mention_matches_exact_longer_name(self) -> None:
+        assert _is_mentioned("cc-bug-fixing-2", "@cc-bug-fixing-2 please run") is True
+
+    async def test_command_does_not_address_prefix_name(self) -> None:
+        # `!reset @cc-bug-fixing-2` must not trigger cc-bug-fixing.
+        assert await _command_addresses("cc-bug-fixing", "@cc-bug-fixing-2") is False
+
+    async def test_command_addresses_exact_name(self) -> None:
+        assert await _command_addresses("cc-bug-fixing-2", "@cc-bug-fixing-2") is True
+
+    def test_dotted_prefix_name_not_matched(self) -> None:
+        full = "claude-code.workforce-manager.jdoe"
+        prefix = "claude-code.workforce-manager"
+        assert _is_mentioned(prefix, f"@{full} hi") is False
+        assert _is_mentioned(full, f"@{full} hi") is True
+
+
+class TestTruePositives:
+    def test_trailing_space(self) -> None:
+        assert _is_mentioned("cc-bug-fixing", "@cc-bug-fixing can you help") is True
+
+    def test_end_of_string(self) -> None:
+        assert _is_mentioned("cc-bug-fixing", "ping @cc-bug-fixing") is True
+
+    def test_trailing_colon(self) -> None:
+        assert _is_mentioned("cc-bug-fixing", "@cc-bug-fixing: status?") is True
+
+    def test_case_insensitive(self) -> None:
+        assert _is_mentioned("cc-bug-fixing", "@CC-Bug-Fixing hey") is True
+
+    def test_no_at_means_not_mentioned(self) -> None:
+        assert _is_mentioned("cc-bug-fixing", "cc-bug-fixing without an at") is False
+
+    async def test_command_with_no_at_addresses_everyone(self) -> None:
+        assert await _command_addresses("cc-bug-fixing", "") is True
+
+    def test_formatted_body_full_mxid_still_matches(self) -> None:
+        # The formatted_body branch matches the full Matrix id; unaffected by
+        # the boundary fix.
+        client = _client("cc-bug-fixing")
+        event = _event(
+            body="hello",
+            formatted_body='<a href="...@switch-agent-cc-bug-fixing:switch.local">x</a>',
+        )
+        assert AgentRecipient._is_mentioned(client, event) is True
+
+
+class TestMediaEventWithoutFormattedBody:
+    """Media events (RoomMessageImage/File) have no `formatted_body` attribute.
+
+    Regression: _is_mentioned used to read event.formatted_body directly and
+    crashed with AttributeError on media events.
+    """
+
+    def test_media_caption_mention_matches(self) -> None:
+        client = _client("cc-bug-fixing")
+        # A media event surfaces only `body` (the caption) — no formatted_body.
+        media_event = SimpleNamespace(
+            body="@cc-bug-fixing look at this", content={}, sender="@u:test"
+        )
+        assert AgentRecipient._is_mentioned(client, media_event) is True
+
+    def test_media_without_mention_not_addressed(self) -> None:
+        client = _client("cc-bug-fixing")
+        media_event = SimpleNamespace(body="cat.png", content={}, sender="@u:test")
+        assert AgentRecipient._is_mentioned(client, media_event) is False
+
+
+class TestStripMention:
+    def test_strips_exact_mention_only(self) -> None:
+        client = _client("cc-bug-fixing")
+        # Should strip its own mention...
+        assert AgentRecipient._strip_mention(
+            client, "@cc-bug-fixing hello"
+        ).strip() == ("hello")
+
+    def test_does_not_strip_longer_name(self) -> None:
+        client = _client("cc-bug-fixing")
+        # ...but must not partially strip a longer agent's mention.
+        assert (
+            AgentRecipient._strip_mention(client, "@cc-bug-fixing-2 hello")
+            == "@cc-bug-fixing-2 hello"
+        )
+
+
+def _role_client(agent_name: str, held_role: str | None) -> SimpleNamespace:
+    """A fake client for role tagging: its agent LIVE-holds `held_role` (or
+    None) — agent_room_role just returns that, ignoring the DB."""
+
+    async def _agent_room_role(_session, _room_id, _agent_id, _live_conns=()):  # type: ignore[no-untyped-def]
+        return held_role
+
+    return SimpleNamespace(
+        agent=SimpleNamespace(id="agent-1", name=agent_name),
+        _addressing=_resolver(
+            _room_role_store=SimpleNamespace(agent_room_role=_agent_room_role),
+            _live_connection_ids=_no_connections().live_connection_ids,
+        ),
+    )
+
+
+class TestRoleMentionRouting:
+    """Tagging `@<role>` addresses an agent only if it LIVE-holds that role.
+
+    `_is_mentioned_via_role` just unwraps `event.body` onto
+    `_text_tags_my_role`, which is exercised directly here.
+    """
+
+    async def test_role_holder_is_addressed(self) -> None:
+        client = _role_client("ephemeral-cc", held_role="manager")
+        assert (
+            await AgentRecipient._text_tags_my_role(
+                client, None, "@manager review", "room-1"
+            )
+            is True
+        )
+
+    async def test_non_holder_not_addressed(self) -> None:
+        # This agent holds no role, so an @manager tag does not reach it.
+        client = _role_client("ephemeral-cc", held_role=None)
+        assert (
+            await AgentRecipient._text_tags_my_role(
+                client, None, "@manager review", "room-1"
+            )
+            is False
+        )
+
+    async def test_other_role_tag_not_addressed(self) -> None:
+        # Holds "worker" but "@manager" is tagged → not addressed.
+        client = _role_client("ephemeral-cc", held_role="worker")
+        assert (
+            await AgentRecipient._text_tags_my_role(
+                client, None, "@manager review", "room-1"
+            )
+            is False
+        )
+
+    async def test_role_prefix_not_falsely_matched(self) -> None:
+        # Boundary safety: holding "lead" must not match "@lead-dev".
+        client = _role_client("ephemeral-cc", held_role="lead")
+        assert (
+            await AgentRecipient._text_tags_my_role(
+                client, None, "@lead-dev ping", "room-1"
+            )
+            is False
+        )
+
+    async def test_no_at_short_circuits(self) -> None:
+        client = _role_client("ephemeral-cc", held_role="manager")
+        assert (
+            await AgentRecipient._text_tags_my_role(
+                client, None, "no at here", "room-1"
+            )
+            is False
+        )
+
+
+def _alias_client(agent_name: str, alias_by_room: dict[str, str]) -> SimpleNamespace:
+    """A fake client whose room alias is looked up from `alias_by_room`
+    (room_id -> alias), mirroring RoomStore.get_alias scoped per room."""
+
+    async def _get_alias(_session, room_id, _agent_id):  # type: ignore[no-untyped-def]
+        return alias_by_room.get(room_id)
+
+    return SimpleNamespace(
+        agent=SimpleNamespace(id="agent-1", name=agent_name),
+        _addressing=_resolver(
+            _room_store=SimpleNamespace(get_alias=_get_alias),
+        ),
+    )
+
+
+class TestAliasMentionRouting:
+    """Tagging `@<alias>` addresses the agent exactly like its real name, and is
+    scoped to the room the alias was set in. Exercises `_text_tags_my_alias`."""
+
+    async def test_alias_addresses_agent(self) -> None:
+        client = _alias_client("claude-code.aq-switch-2", {"room-1": "fixer"})
+        assert (
+            await AgentRecipient._text_tags_my_alias(
+                client, None, "@fixer please look", "room-1"
+            )
+            is True
+        )
+
+    async def test_alias_case_insensitive(self) -> None:
+        client = _alias_client("claude-code.aq-switch-2", {"room-1": "fixer"})
+        assert (
+            await AgentRecipient._text_tags_my_alias(
+                client, None, "@FIXER hi", "room-1"
+            )
+            is True
+        )
+
+    async def test_alias_is_room_scoped(self) -> None:
+        # Alias set in room-1 only — tagging it in room-2 does not address us.
+        client = _alias_client("claude-code.aq-switch-2", {"room-1": "fixer"})
+        assert (
+            await AgentRecipient._text_tags_my_alias(
+                client, None, "@fixer hi", "room-2"
+            )
+            is False
+        )
+
+    async def test_no_alias_not_addressed(self) -> None:
+        client = _alias_client("claude-code.aq-switch-2", {})
+        assert (
+            await AgentRecipient._text_tags_my_alias(
+                client, None, "@fixer hi", "room-1"
+            )
+            is False
+        )
+
+    async def test_alias_prefix_not_falsely_matched(self) -> None:
+        # Boundary safety: alias "fix" must not match "@fixer".
+        client = _alias_client("claude-code.aq-switch-2", {"room-1": "fix"})
+        assert (
+            await AgentRecipient._text_tags_my_alias(
+                client, None, "@fixer ping", "room-1"
+            )
+            is False
+        )
+
+    async def test_no_at_short_circuits(self) -> None:
+        client = _alias_client("claude-code.aq-switch-2", {"room-1": "fixer"})
+        assert (
+            await AgentRecipient._text_tags_my_alias(
+                client, None, "no at here", "room-1"
+            )
+            is False
+        )
+
+
+class TestCommandRoleTargeting:
+    """`!reset @<role>` / `!interrupt @<role>` target the role's holder.
+
+    on_command lets an agent through when the command args tag a role it
+    holds; that gate is `_text_tags_my_role(args, room_id)`.
+    """
+
+    async def test_holder_targeted_by_role(self) -> None:
+        client = _role_client("ephemeral-cc", held_role="manager")
+        assert (
+            await AgentRecipient._text_tags_my_role(client, None, "@manager", "room-1")
+            is True
+        )
+
+    async def test_non_holder_not_targeted(self) -> None:
+        client = _role_client("ephemeral-cc", held_role=None)
+        assert (
+            await AgentRecipient._text_tags_my_role(client, None, "@manager", "room-1")
+            is False
+        )
+
+    async def test_role_prefix_not_targeted(self) -> None:
+        client = _role_client("ephemeral-cc", held_role="lead")
+        assert (
+            await AgentRecipient._text_tags_my_role(client, None, "@lead-dev", "room-1")
+            is False
+        )
+
+
+def _unavailable_client(
+    *,
+    live_rooms: list[str],
+    role_here: bool,
+    connection_model: str = "session_addressable",
+    bound_here: bool = False,
+    watching: bool = False,
+    connected: bool = False,
+    spawns: bool = False,
+) -> SimpleNamespace:
+    """Fake client for _reply_when_unavailable_here.
+
+    `live_rooms`: room ids where the agent currently has a live, room-bound
+    session (live_connected_rooms). `role_here`: whether the agent holds a live
+    role in the room it was addressed from (agent_room_role). `connection_model`
+    drives the connected-but-not-live branch; `bound_here` is what
+    has_room_binding returns for the addressed room. `watching` is the
+    room-agnostic heartbeat an un-migrated connector keeps up, and `connected`
+    / `spawns` are the connection arm (see `_no_connections`).
+    `_unavailable_reply` returns the sentinel "OFFLINE".
+    """
+
+    async def _live_connected_rooms(_session, _agent_id):  # type: ignore[no-untyped-def]
+        return list(live_rooms)
+
+    async def _agent_room_role(_session, _room_id, _agent_id, _live_conns=()):  # type: ignore[no-untyped-def]
+        return "worker" if role_here else None
+
+    async def _has_room_binding(_session, _agent_id, _room_id):  # type: ignore[no-untyped-def]
+        return bound_here
+
+    async def _get_live_agent_ids(_session, agent_ids, _room_id):  # type: ignore[no-untyped-def]
+        return set(agent_ids) if watching else set()
+
+    async def _unavailable_reply(  # type: ignore[no-untyped-def]
+        _session,
+        _room_name,
+        _agent,
+        _asker_handle,
+        other_room_names=None,
+        connected_not_live=False,
+    ):
+        if other_room_names:
+            return "ELSEWHERE: " + ", ".join(other_room_names)
+        if connected_not_live:
+            return "NOT_LIVE"
+        return "OFFLINE"
+
+    async def _get_room(_session, room_id):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(name=f"Room {room_id}")
+
+    agent = SimpleNamespace(
+        id="agent-1",
+        integration_profile={"connection_model": connection_model},
+    )
+
+    return SimpleNamespace(
+        agent=agent,
+        session_factory=_session_factory,
+        _connections=_no_connections(connected=connected, spawns=spawns),
+        _room_role_store=SimpleNamespace(agent_room_role=_agent_room_role),
+        _agent_session_store=SimpleNamespace(
+            live_connected_rooms=_live_connected_rooms,
+            has_room_binding=_has_room_binding,
+            get_live_agent_ids=_get_live_agent_ids,
+        ),
+        _room_store=SimpleNamespace(get=_get_room),
+        _unavailable_reply=_unavailable_reply,
+    )
+
+
+def _here() -> SimpleNamespace:
+    return SimpleNamespace(room_id="room-A", name="Room A")
+
+
+@pytest_asyncio.fixture
+async def db(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> AsyncIterator[AsyncSession]:
+    """A real session, for the arm that reads the sessions Switch has.
+
+    Empty throughout: these cases are about what the heartbeat rows say, and an
+    agent Switch holds no session record for is the shape they describe.
+    """
+    async with session_factory() as session:
+        yield session
+
+
+class TestUnavailableHereReply:
+    """An agent addressed in room A while its session is elsewhere should say
+    where it actually is, not the generic 'no active session'."""
+
+    async def test_role_holder_session_elsewhere_says_role_elsewhere(
+        self, db: AsyncSession
+    ) -> None:
+        # Holds a role here, but its assuming session is attending room-B.
+        client = _unavailable_client(live_rooms=["room-B"], role_here=True)
+        msg = await AgentRecipient._reply_when_unavailable_here(
+            client, db, client.agent, _here(), "asker"
+        )
+        assert msg == _role_elsewhere_message("Room room-B")
+        assert "Room room-B" in msg
+
+    async def test_no_role_lists_other_sessions(self, db: AsyncSession) -> None:
+        # No role here, but the agent has live sessions in two other rooms.
+        # Defers to the Switch Console reply with the other rooms named,
+        # rather than the role-flavoured wording.
+        client = _unavailable_client(live_rooms=["room-B", "room-C"], role_here=False)
+        msg = await AgentRecipient._reply_when_unavailable_here(
+            client, db, client.agent, _here(), "asker"
+        )
+        assert msg == "ELSEWHERE: Room room-B, Room room-C"
+
+    async def test_only_session_is_here_falls_back_to_offline(
+        self, db: AsyncSession
+    ) -> None:
+        # The only live session is the addressed room itself → nothing elsewhere.
+        client = _unavailable_client(live_rooms=["room-A"], role_here=False)
+        assert (
+            await AgentRecipient._reply_when_unavailable_here(
+                client, db, client.agent, _here(), "asker"
+            )
+            == "OFFLINE"
+        )
+
+    async def test_no_live_sessions_is_offline(self, db: AsyncSession) -> None:
+        client = _unavailable_client(live_rooms=[], role_here=False)
+        assert (
+            await AgentRecipient._reply_when_unavailable_here(
+                client, db, client.agent, _here(), "asker"
+            )
+            == "OFFLINE"
+        )
+
+
+class TestConnectedNotLive:
+    """A session_addressable agent with a session bound here but not live (and
+    no live session in a distinct room) gets the connected-not-live reply."""
+
+    async def test_bound_but_not_live_says_connected_not_live(
+        self, db: AsyncSession
+    ) -> None:
+        client = _unavailable_client(live_rooms=[], role_here=False, bound_here=True)
+        msg = await AgentRecipient._reply_when_unavailable_here(
+            client, db, client.agent, _here(), "asker"
+        )
+        assert msg == "NOT_LIVE"
+
+    async def test_no_binding_is_offline(self, db: AsyncSession) -> None:
+        client = _unavailable_client(live_rooms=[], role_here=False, bound_here=False)
+        msg = await AgentRecipient._reply_when_unavailable_here(
+            client, db, client.agent, _here(), "asker"
+        )
+        assert msg == "OFFLINE"
+
+    async def test_passive_never_says_connected_not_live(
+        self, db: AsyncSession
+    ) -> None:
+        # A session_passive agent is never live in real time, so "connected
+        # but not live" must not apply.
+        client = _unavailable_client(
+            live_rooms=[],
+            role_here=False,
+            connection_model="session_passive",
+            bound_here=True,
+        )
+        msg = await AgentRecipient._reply_when_unavailable_here(
+            client, db, client.agent, _here(), "asker"
+        )
+        assert msg == "OFFLINE"
+
+    async def test_same_named_live_room_not_offered_as_elsewhere(
+        self, db: AsyncSession
+    ) -> None:
+        # The reported bug: a live session in a DIFFERENT room that shows the
+        # same name as this one must not be offered as "elsewhere". Bound here +
+        # not live → connected-not-live, not a confusing same-name pointer.
+        # _here() is room-A / "Room A"; room id "A" → name "Room A" (collision).
+        client = _unavailable_client(live_rooms=["A"], role_here=False, bound_here=True)
+        msg = await AgentRecipient._reply_when_unavailable_here(
+            client, db, client.agent, _here(), "asker"
+        )
+        assert msg == "NOT_LIVE"
+
+    async def test_distinct_named_live_room_still_points_elsewhere(
+        self, db: AsyncSession
+    ) -> None:
+        # A genuinely different (distinct-named) live room still wins.
+        client = _unavailable_client(
+            live_rooms=["room-B"], role_here=False, bound_here=True
+        )
+        msg = await AgentRecipient._reply_when_unavailable_here(
+            client, db, client.agent, _here(), "asker"
+        )
+        assert msg == "ELSEWHERE: Room room-B"
+
+
+class TestStartingASessionIsAPromise:
+    """Only something willing to start a session may say one is coming."""
+
+    async def test_a_spawn_capable_connection_promises_one(
+        self, db: AsyncSession
+    ) -> None:
+        client = _unavailable_client(
+            live_rooms=[], role_here=False, connection_model="auto_session", spawns=True
+        )
+        msg = await AgentRecipient._reply_when_unavailable_here(
+            client, db, client.agent, _here(), "asker"
+        )
+        assert msg == _STARTING_SESSION_MESSAGE
+
+    async def test_the_watch_heartbeat_still_promises_one(
+        self, db: AsyncSession
+    ) -> None:
+        """An un-migrated connector declares no capability; the loop was it."""
+        client = _unavailable_client(
+            live_rooms=[],
+            role_here=False,
+            connection_model="auto_session",
+            watching=True,
+        )
+        msg = await AgentRecipient._reply_when_unavailable_here(
+            client, db, client.agent, _here(), "asker"
+        )
+        assert msg == _STARTING_SESSION_MESSAGE
+
+    async def test_a_connection_that_will_not_spawn_promises_nothing(
+        self, db: AsyncSession
+    ) -> None:
+        """Connected is not willing.
+
+        A session worker in another room keeps a connection and will never
+        spawn; a controller with auto-start off keeps one and has declined to.
+        Answering either with "Starting a session…" leaves the asker waiting
+        for something nobody is going to start.
+        """
+        client = _unavailable_client(
+            live_rooms=[],
+            role_here=False,
+            connection_model="auto_session",
+            connected=True,
+        )
+        msg = await AgentRecipient._reply_when_unavailable_here(
+            client, db, client.agent, _here(), "asker"
+        )
+        assert msg == "OFFLINE"

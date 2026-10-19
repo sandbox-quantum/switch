@@ -77,10 +77,15 @@ peer still on it, and it can never be raised past what is running in the field.
    - builds multi-arch (`linux/amd64`, `linux/arm64`) images for `switch-core`,
      `gateway`, and `setup` and pushes them to the container registry tagged
      `<version>` and `latest`;
+   - builds, tests and packs the agents controller at the same version and
+     publishes it as the `switch-agent-controller-v<version>` GitHub release
+     (see "The controller a Switch release names" below);
    - once the images are pushed, writes each image's digest into the chart's
-     `values.yaml`, packages the chart at the same version, checks the packaged
-     chart renders every first-party image by digest, and pushes it as an OCI
-     artifact to the same registry (see [Pinned by digest](#pinned-by-digest)).
+     `values.yaml` and that controller package's version, URL and SHA-256 into
+     `switchCore.controllerRelease`, packages the chart at the same version,
+     checks the packaged chart renders every first-party image by digest, and
+     pushes it as an OCI artifact to the same registry (see
+     [Pinned by digest](#pinned-by-digest)).
    `workflow_dispatch` runs the build without pushing, for verification. It
    pins placeholder digests, so the pin and the check run too.
 
@@ -103,6 +108,12 @@ git push origin switch-v0.30.0-rc.1
   `core/pyproject.toml` and not already released as `switch-v0.30.0`.
 - **Never `latest`.** Images, chart and compose are pushed under `0.30.0-rc.1` only.
   `helm install` skips the chart unless given `--devel` or that exact `--version`.
+- **Its own controller, as a prerelease.** An RC publishes the controller as
+  `switch-agent-controller-v0.30.0-rc.1`, a GitHub prerelease that `install.sh` and
+  `switch-agent-controller update` leave out, and its chart names it in
+  `switchCore.controllerRelease`: controllers talking to an RC update to it once
+  idle, as they would for a release. `0.30.0-rc.1` sorts before `0.30.0`, so the
+  release that follows moves them on. The dev cleanup never prunes it.
 - **The server reports the RC.** The workflow stamps `0.30.0rc1` (the PEP 440 form)
   into `core/pyproject.toml` on the runner, so the running server's version says
   which candidate it is. Nothing is committed.
@@ -120,19 +131,27 @@ building from source at deploy time.
 - **The dev charts carry a moving `main` tag.** Once both charts are pushed,
   the run moves their `main` tag to its build, but only while the commit it
   built is still the tip of main, so a slower run cannot move it backwards. An
-  environment that follows main (development, through ArgoCD) tracks that tag
-  and resolves it to a digest; every other environment pins a version. The
-  cleanup never deletes the build `main` points at.
+  environment that follows main can track that tag, or take the highest
+  version of the dev chart (`>=0.0.0-0` in Helm or ArgoCD), which comes to the
+  same build because dev versions sort in build order; every other environment
+  pins a version. The cleanup never deletes the build `main` points at.
 - **Version** `<next patch>-dev.<run number>.g<short sha>`, e.g.
   `0.29.1-dev.512.g7f0c803` after `switch-v0.29.0`: one patch above the newest
   release tag on main, so a dev build sorts after the release it contains and
   before the next release or RC. The server reports `0.29.1.dev512` (PEP 440),
   stamped on the runner like an RC. A semver pre-release, so `helm install`
   skips it unless given that exact `--version`. No compose artifact.
+- **A dev controller too.** The run publishes the agents controller at the dev
+  version as a GitHub *prerelease*, `switch-agent-controller-v<dev version>`
+  (package only, no `install.sh`), and pins it into the dev switch chart's
+  `switchCore.controllerRelease`, so the dev environment's controllers follow
+  main the way a release's follow that release. `install.sh` and
+  `switch-agent-controller update` leave prereleases out.
 - **The newest push wins.** Pushes to main share a concurrency group, so a dev
   build still running when the next merge lands is cancelled.
 - **Pruned.** `switch-dev-cleanup.yml` runs daily and deletes dev builds older
-  than 30 days that are not among the 20 newest (`scripts/prune_dev_packages.py`;
+  than 30 days that are not among the 20 newest, the dev controller
+  prereleases and their tags included (`scripts/prune_dev_packages.py`;
   dispatch it with `dry_run` to see what it would delete).
 - **Not gated on PR CI.** It builds whatever reached main; what an environment
   runs is decided by its pin, not by the build existing.
@@ -279,6 +298,39 @@ git push origin switch-agent-controller-v0.2.0
   installs the package and runs it once before releasing.
 
 `workflow_dispatch` runs everything except the release, for verification.
+
+### The controller a Switch release names
+
+A Switch release (`switch-v<version>`) also publishes the controller
+(an RC and a dev build of main do too, as a prerelease: see
+[Release candidates](#release-candidates) and [Dev builds](#dev-builds)),
+built from the same commit, as `switch-agent-controller-v<version>`: the same
+GitHub release this workflow makes (package and `install.sh`, never Latest), so
+`install.sh` and `switch-agent-controller update` find it as they find any other.
+Its tag is created by the release with the workflow token, which starts no
+workflow, so this workflow does not publish it again. If that release already
+exists (a re-run), the switch-release workflow checks that its package is the
+one it just built and fails otherwise.
+
+The chart from that release names the package in `switchCore.controllerRelease`
+(`version`, `url`, `sha256`), which switch-core gets as
+`CONTROLLER_RELEASE_VERSION`, `_URL` and `_SHA256` and hands every controller in
+its status answer (except Switch Console's own, which updates with Console). A
+controller running another version downloads the package,
+refuses it unless its SHA-256 matches, and installs it and restarts once none of
+its agents has a session running. The owner's controller list
+(`GET /gateway/management/controllers`, `release.current`) shows which are not yet
+on it.
+
+- **Rollback:** point the three values at the previous release's package (its
+  version, its `.../switch-agent-controller-v<old>/switch-agent-controller-<old>.tgz`
+  URL, and the SHA-256 in its release notes) and upgrade the chart. Setting none of
+  them stops telling controllers anything; they keep the version they have.
+- **Versions now follow Switch.** Controllers released this way carry the Switch
+  version, which is well above the controller's own earlier `0.1.x` line. A
+  controller release tagged by hand still works, but take its version from the
+  Switch version it ships beside, or it is either overtaken by the next Switch
+  release or ahead of the one Core names.
 
 ## Where artifacts are published
 

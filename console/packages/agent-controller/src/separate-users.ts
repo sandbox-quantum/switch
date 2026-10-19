@@ -2,6 +2,7 @@ import {
   access,
   chmod,
   chown,
+  lstat,
   mkdir,
   readdir,
   readFile,
@@ -13,7 +14,9 @@ import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'no
 import { z } from 'zod';
 import { ConfigurationError } from './errors';
 import { defaultDataDir } from './paths';
+import { CURRENT, pointCurrent, readCurrent } from './releases';
 import { CommandFailure, type CommandRunner } from './secrets';
+import { installPrefix, isNewer } from './update';
 
 /**
  * Running every agent as a Linux user of its own.
@@ -36,6 +39,7 @@ export const SEPARATE_USERS_CONFIG_DIR = '/etc/switch-agent-controller';
 const SYSTEMD_SYSTEM_DIR = '/etc/systemd/system';
 const POLKIT_RULES_DIR = '/etc/polkit-1/rules.d';
 const AGENTS_PARENT = '/var/lib/switch-agents';
+const RELEASES_PARENT = '/var/lib';
 export const MAX_AGENT_USERS = 99;
 export const DEFAULT_AGENT_USERS = 16;
 /** Where agents cannot reach, so nothing an agent runs may live there. */
@@ -55,6 +59,12 @@ export const separateUsersConfigSchema = z.strictObject({
   agentUsers: z.number().int().min(1).max(MAX_AGENT_USERS),
   node: absolutePath,
   bundle: absolutePath,
+  /**
+   * The releases directory the controller installs the releases Switch names
+   * into (`releases.ts`); null for a setup made before there was one, or from
+   * a controller that is not an npm install.
+   */
+  releasesDir: absolutePath.nullable().default(null),
 });
 export type SeparateUsersConfig = z.infer<typeof separateUsersConfigSchema>;
 
@@ -86,6 +96,11 @@ export function slotName(slot: number): string {
 /** Where agents' directories are when setup names none. */
 export function defaultAgentsDir(uid: number): string {
   return join(AGENTS_PARENT, String(uid));
+}
+
+/** Where the controller's releases are when setup names no other place. */
+export function defaultReleasesDir(uid: number): string {
+  return join(RELEASES_PARENT, `switch-agent-controller-${uid}`, 'releases');
 }
 
 /** Where the directory of the agent agent user `slot` runs is, on the machine. */
@@ -225,7 +240,7 @@ polkit.addRule(function (action, subject) {
 /**
  * The controller as a system service of its user, with the agents' group as a
  * supplementary group, so it can read what its agents write. Restarted on exit
- * code 1 only, as the user service is.
+ * codes 1 and 7 (restarting into an update), as the user service is.
  */
 export function controllerSystemUnit(
   config: SeparateUsersConfig,
@@ -356,6 +371,10 @@ export type SetupInput = {
   node: string;
   cli: string;
   bundle: string;
+  /** The version of the controller running the setup, which `cli` is. */
+  version: string;
+  /** Where the controller's releases go; `defaultReleasesDir` when null. */
+  releasesDir: string | null;
   envFile: string | null;
   path: string;
   /**
@@ -412,6 +431,15 @@ export async function installSeparateUsers(
     throw new ConfigurationError(
       `--agents-dir ${agentsDir} is under a home directory, which agents cannot reach.`
     );
+  const releases = planReleases({
+    cli: input.cli,
+    bundle: input.bundle,
+    releasesDir: input.releasesDir,
+    uid: account.uid,
+    dataDir,
+    agentsDir: resolve(agentsDir),
+    homes,
+  });
   const config = separateUsersConfigSchema.parse({
     v: 1,
     user: account.name,
@@ -421,7 +449,8 @@ export async function installSeparateUsers(
     agentsDir: resolve(agentsDir),
     agentUsers: input.agentUsers,
     node: input.node,
-    bundle: input.bundle,
+    bundle: releases?.bundle ?? input.bundle,
+    releasesDir: releases?.dir ?? null,
   } satisfies SeparateUsersConfig);
   for (let slot = 1; slot <= config.agentUsers; slot++)
     await ensureAgentUser(names.agentUser(slot), names.group, run);
@@ -430,6 +459,14 @@ export async function installSeparateUsers(
   await mkdir(config.agentsDir, { recursive: true, mode: 0o700 });
   await chown(config.agentsDir, account.uid, account.gid);
   await chmod(config.agentsDir, 0o700);
+  const releasesNote = releases
+    ? await ensureReleases({
+        releasesDir: releases.dir,
+        prefix: releases.prefix,
+        version: input.version,
+        owner: { uid: account.uid, gid: account.gid },
+      })
+    : 'The controller does not run from an npm install, so it cannot install the releases Switch names for itself.';
 
   const tools = {
     sh: await which('sh', SYSTEM_PATH),
@@ -445,7 +482,11 @@ export async function installSeparateUsers(
   await writeFile(names.polkitRule, polkitRule(config), { mode: 0o644 });
   await writeFile(
     join(SYSTEMD_SYSTEM_DIR, names.controllerUnit),
-    controllerSystemUnit(config, { cli: input.cli, envFile: input.envFile, path: input.path }),
+    controllerSystemUnit(config, {
+      cli: releases?.cli ?? input.cli,
+      envFile: input.envFile,
+      path: input.path,
+    }),
     { mode: 0o644 }
   );
   await run('systemctl', ['daemon-reload'], null);
@@ -463,10 +504,114 @@ export async function installSeparateUsers(
       `Agents' directories: ${config.agentsDir}`,
       `Each agent runs as ${names.agentUnitPattern}; its log: journalctl -u ${names.agentUnit(1)}`,
       `The controller runs as ${names.controllerUnit}; its log: journalctl -u ${names.controllerUnit} -f`,
+      releasesNote,
       'Agents see only their own directory: a definition naming a directory elsewhere is refused.',
       "Agents do not see this user's provider logins: give each provider an API key or token in --env-file.",
     ],
   };
+}
+
+/** Where the controller's units run it and its bundle from, through `<releases>/current`. */
+export type ReleasesPlan = {
+  dir: string;
+  /** The npm prefix the controller running the setup was installed in. */
+  prefix: string;
+  cli: string;
+  bundle: string;
+};
+
+/**
+ * The releases directory for a setup run by the controller at `cli`, and the
+ * paths of the CLI and the shared-host bundle through its `current` link; null
+ * when that controller is not an npm install (a checkout), which cannot have
+ * one. The directory must be where agents can read it and the controller
+ * alone writes: not under a home, the data directory or the agents'
+ * directories, which agents cannot reach.
+ */
+export function planReleases(input: {
+  cli: string;
+  bundle: string;
+  releasesDir: string | null;
+  uid: number;
+  dataDir: string;
+  agentsDir: string;
+  homes: string[];
+}): ReleasesPlan | null {
+  const prefix = installPrefix(input.cli);
+  if (!prefix) {
+    if (input.releasesDir)
+      throw new ConfigurationError(
+        `--releases-dir needs the controller installed with npm (sudo npm install --global <the release's .tgz URL>), not run from ${input.cli}.`
+      );
+    return null;
+  }
+  const dir = resolve(input.releasesDir ?? defaultReleasesDir(input.uid));
+  if (!isUnitSafe(dir))
+    throw new ConfigurationError(
+      `--releases-dir ${dir}: a path in a unit file must hold only letters, digits and ._/@+-.`
+    );
+  const home = homeRootOf(dir, input.homes);
+  if (home)
+    throw new ConfigurationError(
+      `--releases-dir ${dir} is under ${home}, which agents running as users of their own cannot reach.`
+    );
+  for (const [what, root] of [
+    ['the data directory', input.dataDir],
+    ["the agents' directories", input.agentsDir],
+  ] as const)
+    if (dir === resolve(root) || isWithin(root, dir) || isWithin(dir, root))
+      throw new ConfigurationError(
+        `--releases-dir ${dir} overlaps ${what} (${root}), which agents cannot read; name a directory of its own.`
+      );
+  const current = join(dir, CURRENT);
+  return {
+    dir,
+    prefix,
+    cli: join(current, relative(prefix, input.cli)),
+    bundle: isWithin(prefix, input.bundle)
+      ? join(current, relative(prefix, input.bundle))
+      : input.bundle,
+  };
+}
+
+/**
+ * Makes the releases directory (0755, the controller's), and points its
+ * `current` link at `prefix`, the release running the setup, only when the
+ * link is missing, names no readable release, or names one older than
+ * `version`: a machine whose boot runs the setup with the release its image
+ * carries keeps an update applied since, and a newer image still wins.
+ */
+export async function ensureReleases(input: {
+  releasesDir: string;
+  prefix: string;
+  version: string;
+  owner: { uid: number; gid: number } | null;
+}): Promise<string> {
+  const { releasesDir } = input;
+  await mkdir(dirname(releasesDir), { recursive: true, mode: 0o755 });
+  try {
+    const found = await lstat(releasesDir);
+    if (!found.isDirectory() || found.isSymbolicLink())
+      throw new ConfigurationError(`${releasesDir} is not a directory; move it aside.`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    await mkdir(releasesDir, { mode: 0o755 });
+  }
+  if (input.owner) await chown(releasesDir, input.owner.uid, input.owner.gid);
+  await chmod(releasesDir, 0o755);
+  const current = await readCurrent(releasesDir);
+  if (current.kind === 'not_a_link')
+    throw new ConfigurationError(
+      `${join(releasesDir, CURRENT)} is not a link; move it aside and run the setup again.`
+    );
+  if (
+    current.kind === 'link' &&
+    current.version !== null &&
+    !isNewer(input.version, current.version)
+  )
+    return `The controller runs ${current.version} from ${current.target}, through ${join(releasesDir, CURRENT)}; it installs the releases Switch names there.`;
+  await pointCurrent(releasesDir, input.prefix, input.owner);
+  return `The controller runs ${input.version} from ${input.prefix}, through ${join(releasesDir, CURRENT)}; it installs the releases Switch names there.`;
 }
 
 /**
@@ -483,12 +628,14 @@ export async function uninstallSeparateUsers(
   const account = parsePasswd((await run('getent', ['passwd', user], null)).stdout);
   const names = separateUserNames(account.uid);
   let agentsDir: string | null = null;
+  let releasesDir: string | null = null;
   let agentUsers = MAX_AGENT_USERS;
   try {
     const config = separateUsersConfigSchema.parse(
       JSON.parse(await readFile(names.config, 'utf8'))
     );
     agentsDir = config.agentsDir;
+    releasesDir = config.releasesDir;
     agentUsers = config.agentUsers;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
@@ -505,11 +652,16 @@ export async function uninstallSeparateUsers(
     await run('userdel', [names.agentUser(slot)], null).catch(ignoreFailure);
   await run('groupdel', [names.group], null).catch(ignoreFailure);
   return {
-    notes: agentsDir
-      ? [
-          `The agents' directories are kept in ${agentsDir}; remove them when nothing in them is needed.`,
-        ]
-      : [],
+    notes: [
+      ...(agentsDir
+        ? [
+            `The agents' directories are kept in ${agentsDir}; remove them when nothing in them is needed.`,
+          ]
+        : []),
+      ...(releasesDir
+        ? [`The controller's releases are kept in ${releasesDir}; remove it when it is not needed.`]
+        : []),
+    ],
   };
 }
 

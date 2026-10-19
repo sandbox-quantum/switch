@@ -1,7 +1,11 @@
-import { CircleCheck, ExternalLink } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { ExternalLink } from 'lucide-react';
+import { useEffect, useReducer, useRef } from 'react';
+import {
+  canCloseConnectFlow,
+  connectFlowReducer,
+  initialConnectFlow,
+} from '@renderer/features/connectors/connect-flow';
 import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
 import { Button } from '@renderer/lib/ui/button';
 import {
@@ -12,50 +16,65 @@ import {
 } from '@renderer/lib/ui/dialog';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
-import type { ServiceFlow } from '@shared/core/switch-servers/service-connection';
+import type { ServiceCalls } from './service-calls';
 
 /**
  * Connecting a service through Switch's generic sign-in: the browser signs in
- * at the vendor, this Console takes the result back, and the person confirms
- * the account before Switch keeps it. GitHub has its own step.
+ * at the vendor, this Console takes the result back, and Switch keeps the
+ * account as soon as it has it. The dialog follows the sign-in and shows the
+ * account connected, or why it was not. GitHub has its own step.
  */
 export function ServiceConnectStep({
-  serverId,
+  calls,
   connection,
   onBack,
+  onConnected,
 }: {
-  serverId: string;
+  calls: ServiceCalls;
   connection: ConnectionCatalogEntry;
   onBack: () => void;
+  /** Moves on once the account is connected, with the warning Switch gave. */
+  onConnected?: (warning: string | null) => void;
 }) {
   const service = connection.slug;
-  const [connected, setConnected] = useState(connection.status === 'connected');
-  const [flowId, setFlowId] = useState<string | null>(null);
-  const [flow, setFlow] = useState<ServiceFlow | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [warning, setWarning] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useCloseGuard(busy || flowId !== null);
+  const [state, dispatch] = useReducer(
+    connectFlowReducer,
+    connection.status === 'connected',
+    initialConnectFlow
+  );
+  const { connected, flowId, flow, busy, warning, error } = state;
+  const closable = canCloseConnectFlow(state);
+  useCloseGuard(!closable);
+  // Callers build their calls as they render; polling follows the flow, not them.
+  const callsRef = useRef(calls);
+  callsRef.current = calls;
+  const onConnectedRef = useRef(onConnected);
+  onConnectedRef.current = onConnected;
   useEffect(() => {
     if (!flowId) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const result = await rpc.switchServers.getServiceFlow(serverId, service, flowId);
+        const result = await callsRef.current.getSignIn(service, flowId);
         if (!alive) return;
-        setFlow(result);
-        if (result.status === 'failed')
-          setError(
-            result.error ?? `Signing in to ${connection.name} failed. Cancel and try again.`
-          );
-        else if (result.status !== 'ready') timer = setTimeout(() => void poll(), 2000);
-      } catch (cause) {
-        if (alive) {
-          setFlowId(null);
-          setFlow(null);
-          setError(failureText(cause, `Could not check the ${connection.name} sign-in.`));
+        if (result.status === 'connected') {
+          onConnectedRef.current?.(result.warning);
+          dispatch({ type: 'connected', warning: result.warning });
+          return;
         }
+        dispatch({
+          type: 'polled',
+          flow: result,
+          failure: `Signing in to ${connection.name} failed. Cancel and try again.`,
+        });
+        if (result.status !== 'failed') timer = setTimeout(() => void poll(), 2000);
+      } catch (cause) {
+        if (alive)
+          dispatch({
+            type: 'poll_failed',
+            error: failureText(cause, `Could not check the ${connection.name} sign-in.`),
+          });
       }
     };
     void poll();
@@ -63,44 +82,54 @@ export function ServiceConnectStep({
       alive = false;
       clearTimeout(timer);
     };
-  }, [serverId, service, flowId, connection.name]);
-  const act = async (action: () => Promise<void>) => {
-    setBusy(true);
-    setError(null);
+  }, [service, flowId, connection.name]);
+  const fallback = `Could not update the ${connection.name} connection.`;
+  const start = async () => {
+    dispatch({ type: 'act' });
     try {
-      await action();
+      dispatch({
+        type: 'started',
+        flowId: await calls.startSignIn(service),
+      });
     } catch (cause) {
-      setError(failureText(cause, `Could not update the ${connection.name} connection.`));
-    } finally {
-      setBusy(false);
+      dispatch({ type: 'failed', error: failureText(cause, fallback) });
+    }
+  };
+  const cancel = async (id: string) => {
+    dispatch({ type: 'act' });
+    try {
+      await calls.cancelSignIn(service, id);
+      dispatch({ type: 'cancelled' });
+    } catch (cause) {
+      dispatch({ type: 'cancel_failed', cause, error: failureText(cause, fallback) });
+    }
+  };
+  const disconnect = async () => {
+    dispatch({ type: 'act' });
+    try {
+      const result = await calls.disconnect(service);
+      dispatch({ type: 'disconnected', warning: result.warning });
+    } catch (cause) {
+      dispatch({ type: 'failed', error: failureText(cause, fallback) });
     }
   };
   const needsReconnect =
     connection.status === 'needs_reauthorization' || connection.status === 'error';
   return (
     <>
-      <DialogHeader showCloseButton={!busy && !flowId}>
+      <DialogHeader showCloseButton={closable}>
         <DialogTitle>
           {connected && !flowId ? `${connection.name} connected` : `Connect ${connection.name}`}
         </DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
         {flowId ? (
-          flow?.status === 'ready' ? (
-            <>
-              <p className="flex items-center gap-2 text-sm">
-                <CircleCheck className="size-5 text-foreground-success" />
-                Signed in as <strong>{flow.account}</strong>
-              </p>
-              <p className="text-sm text-foreground-muted">
-                Confirm this is the {connection.name} account you want to connect to Switch.
-              </p>
-            </>
-          ) : (
-            <p className="flex items-center gap-2 text-sm">
-              <Spinner /> Finish signing in in your browser, then return here.
-            </p>
-          )
+          <p className="flex items-center gap-2 text-sm">
+            <Spinner />
+            {flow?.status === 'checking'
+              ? `Connecting ${connection.name}…`
+              : 'Finish signing in in your browser, then return here.'}
+          </p>
         ) : (
           <>
             <p className="text-sm text-foreground-muted">{connection.description}</p>
@@ -138,71 +167,21 @@ export function ServiceConnectStep({
       </DialogContentArea>
       <DialogFooter>
         {flowId ? (
-          <>
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() =>
-                void act(async () => {
-                  await rpc.switchServers.cancelServiceConnection(serverId, service, flowId);
-                  setFlowId(null);
-                  setFlow(null);
-                })
-              }
-            >
-              Cancel
-            </Button>
-            {flow?.status === 'ready' && (
-              <Button
-                disabled={busy}
-                onClick={() =>
-                  void act(async () => {
-                    const result = await rpc.switchServers.confirmServiceConnection(
-                      serverId,
-                      service,
-                      flowId
-                    );
-                    setFlowId(null);
-                    setFlow(null);
-                    setWarning(result.warning);
-                    setConnected(true);
-                  })
-                }
-              >
-                Connect {flow.account}
-              </Button>
-            )}
-          </>
+          <Button variant="outline" disabled={busy} onClick={() => void cancel(flowId)}>
+            Cancel
+          </Button>
         ) : (
           <>
             <Button variant="outline" onClick={onBack} disabled={busy}>
               Back
             </Button>
             {connected && (
-              <Button
-                variant="ghost"
-                disabled={busy}
-                onClick={() =>
-                  void act(async () => {
-                    const result = await rpc.switchServers.disconnectService(serverId, service);
-                    setWarning(result.warning);
-                    setConnected(false);
-                  })
-                }
-              >
+              <Button variant="ghost" disabled={busy} onClick={() => void disconnect()}>
                 Disconnect
               </Button>
             )}
             {(!connected || error) && (
-              <Button
-                disabled={busy || !connection.connectable}
-                onClick={() =>
-                  void act(async () => {
-                    setFlow(null);
-                    setFlowId(await rpc.switchServers.startServiceConnection(serverId, service));
-                  })
-                }
-              >
+              <Button disabled={busy || !connection.connectable} onClick={() => void start()}>
                 Connect {connection.name} <ExternalLink className="size-4" />
               </Button>
             )}

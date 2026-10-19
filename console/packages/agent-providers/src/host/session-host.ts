@@ -27,7 +27,9 @@ import { ChatProjector } from '../session-v1/chat-projector';
 import { ATTACHMENT_MIME_TYPES } from './attachments';
 import { Journal } from './journal';
 import { fitModelCatalog } from './model-catalog';
+import { ReasoningBuffer, type HostReasoningList } from './reasoning-buffer';
 import type { Redactions } from './redaction';
+import { ToolDetailBuffer } from './tool-detail-buffer';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
@@ -73,6 +75,11 @@ export type HostSessionStart = {
   replyToRoom?: (reply: RoomReply) => Promise<void>;
   /** Service tokens to scrub from every event before it is recorded; none when absent. */
   redactions?: Redactions;
+  /**
+   * Told each time the provider asks to run a connector's tool, before the
+   * request is published, so a notice it raises comes ahead of the card.
+   */
+  connectorApproval?: (connector: string) => void;
 };
 /** What the host posts for a turn a room message started that ended without the agent posting. */
 export type RoomReply = { roomId: string; threadId: string | null; body: string };
@@ -105,6 +112,10 @@ export class HostedSession {
   private readonly queue: Command[] = [];
   private readonly questions = new Map<string, PendingQuestion>();
   private readonly listeners = new Set<(event: ServerEvent) => void>();
+  /** Recent reasoning, in memory only: never published, journaled or replayed. */
+  private readonly reasoningBuffer = new ReasoningBuffer();
+  /** Recent tool input and output, in memory only, under the same rules as reasoning. */
+  private readonly toolDetails = new ToolDetailBuffer();
   private activeTurn: string | null = null;
   private serial: Promise<unknown> = Promise.resolve();
   private eventSerial: Promise<unknown> = Promise.resolve();
@@ -178,6 +189,8 @@ export class HostedSession {
     this.projector = new ChatProjector(config.session, config.redactions ?? null);
     this.unsubscribe = adapter.subscribe((event) => {
       if (event.sessionId !== config.session.sessionId) return;
+      this.reasoningBuffer.ingest(event, this.config.session.epoch, Date.now());
+      this.toolDetails.ingest(event, this.config.session.epoch);
       // Process cleanup leaves this conversation available for recovery.
       // An explicit session.stop is handled before shutdown and remains terminal.
       if (
@@ -279,6 +292,7 @@ export class HostedSession {
         if (config.epochAuthority !== 'server') config.session.epoch = randomUUID();
         const next = host.replica.snapshot();
         config.session.models = next.session.models;
+        config.session.context = next.session.context;
         next.session = structuredClone(config.session);
         host.replica = new SessionReplica(next);
       }
@@ -397,6 +411,28 @@ export class HostedSession {
     await this.publish({ type: 'notice', level: 'error', code, message });
   }
 
+  /** Reads how full the context window is and publishes it; unknown when the read fails. */
+  private async refreshContext(): Promise<void> {
+    if (!this.adapter.contextUsage) return;
+    const { sessionId, epoch } = this.config.session;
+    let usage: Awaited<ReturnType<NonNullable<ProviderAdapter['contextUsage']>>> = null;
+    try {
+      usage = await this.adapter.contextUsage(sessionId);
+    } catch (error) {
+      console.warn(`Could not read context usage for session ${sessionId}: ${String(error)}`);
+    }
+    if (this.shuttingDown || this.resetting || epoch !== this.config.session.epoch) return;
+    this.config.session.context = usage
+      ? {
+          usedTokens: Math.max(0, Math.round(usage.usedTokens)),
+          windowTokens:
+            usage.windowTokens && usage.windowTokens > 0 ? Math.round(usage.windowTokens) : null,
+          updatedAt: new Date().toISOString(),
+        }
+      : null;
+    await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
+  }
+
   private async refreshModels(): Promise<void> {
     const generation = ++this.modelGeneration;
     const compact =
@@ -504,6 +540,17 @@ export class HostedSession {
 
   snapshot(): Snapshot {
     return this.replica.snapshot();
+  }
+  /**
+   * The reasoning and tool details still held for `turnIds` (all buffered
+   * turns when null), for this epoch.
+   */
+  reasoning(turnIds: string[] | null): HostReasoningList {
+    const epoch = this.config.session.epoch;
+    return {
+      ...this.reasoningBuffer.list(epoch, turnIds),
+      tools: this.toolDetails.list(epoch, turnIds),
+    };
   }
   replay(after: number): { events: ServerEvent[]; throughSequence: number } {
     return {
@@ -803,6 +850,7 @@ export class HostedSession {
             type: 'session.upsert',
             session: structuredClone(this.config.session),
           });
+          void this.refreshContext().catch((error: unknown) => this.fail(error));
         } catch (error) {
           await this.fail(error);
           throw error;
@@ -845,6 +893,7 @@ export class HostedSession {
           const epoch = this.config.resetEpoch ? await this.config.resetEpoch() : randomUUID();
           this.config.session.epoch = epoch;
           this.config.session.status = 'starting';
+          this.config.session.context = null;
           const snapshot = this.snapshot();
           snapshot.session = structuredClone(this.config.session);
           this.replica = new SessionReplica(snapshot);
@@ -993,11 +1042,11 @@ export class HostedSession {
   }
 
   /**
-   * Answers the room itself when a turn a room message started ended without
-   * the agent posting anywhere — a provider that ended on a quota or sign-in
-   * error, or a model that replied in plain text — since the room would
-   * otherwise hear nothing at all. A turn the host cut short on purpose
-   * (stopping, parking, a reset) is left alone.
+   * Tells the room when a turn a room message started failed without the
+   * agent posting anywhere — a provider that ended on a quota or sign-in
+   * error — since the room would otherwise hear nothing about it. A turn that
+   * simply ended without a post says nothing (`unpostedReply`), and one the
+   * host cut short on purpose (stopping, parking, a reset) is left alone.
    *
    * Decided once per turn and recorded before the post, so a restart never
    * posts it twice. The post runs beside the session; one that fails is
@@ -1015,7 +1064,8 @@ export class HostedSession {
     const origin = this.commands.get(turnId)?.origin;
     if (!origin?.roomId || !origin.messageId) return;
     const roomId = origin.roomId;
-    const body = unpostedReply(lastAssistantText(this.replica.snapshot(), turnId), outcome, detail);
+    const body = unpostedReply(outcome, detail);
+    if (body === null) return;
     await this.inbox.append({ type: 'room-reply', commandId: turnId });
     this.roomReplies.add(turnId);
     void reply({ roomId, threadId: origin.threadId, body })
@@ -1124,6 +1174,8 @@ export class HostedSession {
               },
       };
       this.questions.set(request.requestId, { request, options });
+      if (event.type === 'request.opened' && event.connector !== undefined)
+        this.config.connectorApproval?.(event.connector);
       await this.publish({ type: 'request.opened', request });
     }
     if (event.type === 'request.resolved' || event.type === 'user-input.resolved') {
@@ -1161,6 +1213,7 @@ export class HostedSession {
       await this.replyIfUnposted(event.turnId, event.outcome, event.message ?? null);
       this.activeTurn = null;
       void this.runNext().catch((error: unknown) => this.fail(error));
+      void this.refreshContext().catch((error: unknown) => this.fail(error));
     }
   }
 
@@ -1289,41 +1342,16 @@ export class HostedSession {
   }
 }
 
-/** How much of the agent's last words a room reply carries. */
-const ROOM_REPLY_LIMIT = 4000;
-
-/** The text of the last thing the agent said in `turnId`, trimmed; empty when it said nothing. */
-export function lastAssistantText(snapshot: Snapshot, turnId: string): string {
-  // A long message is published in parts, `<itemId>:part:<n>` after the first.
-  const messages = new Map<string, string[]>();
-  for (const item of snapshot.items) {
-    if (item.turnId !== turnId || item.kind !== 'assistant-message') continue;
-    const part = /^(.*):part:(\d+)$/.exec(item.itemId);
-    const id = part ? part[1]! : item.itemId;
-    const parts = messages.get(id) ?? [];
-    parts[part ? Number(part[2]) : 0] = item.text;
-    messages.set(id, parts);
-  }
-  for (const parts of [...messages.values()].reverse()) {
-    const text = parts.join('').trim();
-    if (text) return text;
-  }
-  return '';
-}
-
-/** What the host posts for a turn that ended without the agent posting. */
-export function unpostedReply(text: string, outcome: TurnOutcome, detail: string | null): string {
+/**
+ * What the host posts for a room turn that ended without the agent posting:
+ * only that it failed, and why, so a crash is not silent. A turn that
+ * finished, or that someone stopped, posts nothing: the agent chose not to
+ * answer, and its final text was never meant for the room.
+ */
+export function unpostedReply(outcome: TurnOutcome, detail: string | null): string | null {
+  if (outcome !== 'error') return null;
   const reason = detail?.trim() ? `: ${cap(detail.trim(), 1000)}` : '.';
-  const failure =
-    outcome === 'error'
-      ? `The turn failed${reason}`
-      : outcome === 'interrupted'
-        ? `The turn was interrupted${reason}`
-        : null;
-  if (!text)
-    return failure ? `I finished without replying. ${failure}` : 'I finished without replying.';
-  const said = `I finished without posting a reply. My last words were:\n\n${cap(text, ROOM_REPLY_LIMIT)}`;
-  return failure && !(detail && text.includes(detail.trim())) ? `${said}\n\n(${failure})` : said;
+  return `I finished without replying. The turn failed${reason}`;
 }
 
 function cap(text: string, limit: number): string {

@@ -18,7 +18,7 @@ the purpose, so a key that leaks from one use does not open another.
 | OIDC login cookie | signed cookie | one login round trip (10 minutes) | current key only; a login in progress at the moment of rotation starts again |
 | Messaging install state | signed token | one install round trip | verified with any key in `SECRET_KEYS` |
 | Mattermost card buttons | signed context in posted messages | as long as the post | verified with any key in `SECRET_KEYS` |
-| Stored credentials: API keys, hosted-install bot tokens, bridge and connector configs | encrypted, value names its key | until changed | re-encrypted under the current key at boot |
+| Stored credentials: API keys, hosted-install bot tokens, bridge and connector configs, connector app credentials | encrypted, value names its key | until changed | re-encrypted under the current key at boot |
 
 The first key is used for everything new. Older keys only verify and decrypt.
 
@@ -40,11 +40,12 @@ before the upgrade, exactly as they were made.
 2. Deploy. On boot, switch-core re-encrypts every stored credential under the
    new key and logs how many it rewrote. Sessions signed before the upgrade
    stay valid until they expire, and buttons on existing Mattermost cards keep
-   working. The Helm chart replaces switch-core rather than rolling it, so
-   two versions never serve at once. Where they do (several replicas updated
-   one by one), a replica still on the previous version cannot verify a
-   session the new version signed, so someone who signs in mid-rollout may be
-   asked to sign in once more.
+   working. At one replica the Helm chart replaces switch-core rather than
+   rolling it, so two versions never serve at once. Where they do (with
+   `switchCore.replicaCount` above 1 the chart updates replicas one by one), a
+   replica still on the previous version cannot verify a session the new
+   version signed, so someone who signs in mid-rollout may be asked to sign in
+   once more.
 
    **This step is one-way.** Once the new version has booted, stored
    credentials are encrypted in a format the previous version cannot read, so
@@ -63,27 +64,41 @@ continuing. That is a key removed too early: put it back.
 ## Rotating
 
 Rotation takes two deploys, so that where replicas are updated one by one, no
-replica is handed a session signed with a key it does not have yet. With the
-Helm chart, which replaces switch-core in one step, step 1 is still what keeps
-the old key available for decrypting and verifying.
+replica is handed a session signed with a key it does not have yet. The Helm
+chart updates replicas one by one when `switchCore.replicaCount` is above 1.
+At one replica it replaces switch-core in one step, and step 1 is still what
+keeps the old key available for decrypting and verifying.
 
 1. Generate a new key and add it **after** the current one:
    `SECRET_KEYS=202610:<old>,202611:<new>`. Deploy. Every replica can now
    verify and decrypt with the new key; nothing uses it yet.
 2. Move the new key **first**: `SECRET_KEYS=202611:<new>,202610:<old>`.
    Deploy. New sessions, signatures and encrypted values use the new key, and
-   the boot re-encrypts stored credentials under it.
+   the boot re-encrypts stored credentials under it. Where replicas are
+   updated one by one, a replica not yet replaced keeps encrypting under the
+   old key after the new replicas' boots have run, so restart switch-core
+   once the roll has finished: that boot re-encrypts what they wrote.
 3. Wait at least 24 hours, so sessions signed with the old key have expired.
 4. Remove the old key and deploy. Buttons on Mattermost cards posted before
    step 2 stop working; nothing else is affected.
 
+Step 1 is enforced. Each switch-core process records the ids of its keys on
+its lease, and a process whose first key a running process lacks refuses to
+start, naming that process. A single replica replaced in one step has no
+running process left to check, so it is not held back.
+
 Rotate on a schedule, and at once if a key may have leaked. For a suspected
-leak, skip step 1 and the wait: deploy `<new>,<old>`, check the boot log
-reports the re-encryption, then deploy `<new>` alone straight away. Stored
-credentials need the old key once to be re-encrypted; until the second deploy,
-sessions signed with the old key still verify, so keep that window short.
-Removing the old key ends every session and stops every Mattermost button
-posted before, which is the point.
+leak, skip the wait: deploy `<old>,<new>`, deploy `<new>,<old>` once that has
+reached every replica, restart switch-core once that has too (where replicas
+are updated one by one), check the boot log reports the re-encryption, then
+deploy `<new>` alone straight away. Skip step 1 as well only where no
+switch-core process is still running when the first new one starts, as with a
+single replica replaced in one step. While an old process is still running,
+the new one refuses to start, and the roll stalls until you deploy step 1.
+Stored credentials need the old key once to be re-encrypted; until the last
+deploy, sessions signed with the old key still verify, so keep that window
+short. Removing the old key ends every session and stops every Mattermost
+button posted before, which is the point.
 
 ## Ids
 

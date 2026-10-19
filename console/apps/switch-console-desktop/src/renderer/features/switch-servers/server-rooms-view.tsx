@@ -22,6 +22,7 @@ import { ServerPage, ServerTableEmpty } from './server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
+import { useReadableRoomsInWorkspace } from './use-listed-rooms';
 
 /** Group key for a room with no messaging app behind it. */
 const UNBRIDGED = '';
@@ -45,7 +46,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
   }, [serverId]);
 
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
-  const rooms = workspaceId === null ? [] : switchRoomsStore.readableRoomsInWorkspace(workspaceId);
+  const rooms = useReadableRoomsInWorkspace(workspaceId);
   const signedOut = switchRoomsStore.workspacesNotSignedIn.some((w) => w.id === workspaceId);
   const failed = switchRoomsStore.workspacesThatFailedToLoad.some((w) => w.id === workspaceId);
 
@@ -314,6 +315,7 @@ const RoomRow = observer(function RoomRow({
                     <AgentAvatar
                       name={agent.name}
                       iconUrl={remoteById.get(agent.switchAgentId ?? '')?.iconUrl ?? null}
+                      serverId={serverId}
                       size={22}
                     />
                   </span>

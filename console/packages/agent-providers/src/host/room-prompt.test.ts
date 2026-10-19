@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { roomCommand, roomCommandId, roomMessageSchema } from './room-prompt';
+import { REPLY_REMINDER, roomCommand, roomCommandId, roomMessageSchema } from './room-prompt';
 
 describe('a room command', () => {
   const event = {
     type: 'message',
     payload: { sender: '@owner:example.test', sender_name: 'Owner', message_id: '$m', body: 'hi' },
   };
-  const command = (message: unknown) =>
+  const command = (message: unknown, firstOfConversation = false) =>
     roomCommand({
       agentId: 'agent',
       sessionId: 'session',
@@ -16,9 +16,39 @@ describe('a room command', () => {
       surface: 'switch-web',
       attachments: [],
       preface: null,
+      firstOfConversation,
     });
+  const text = (message: unknown, first = false) => {
+    const body = command(message, first).body;
+    if (body.type !== 'message.send') throw new Error('not a message');
+    return body.text;
+  };
 
   it('is named by the room message it answers', () => {
     expect(command(event).commandId).toBe(roomCommandId('agent', '!room:example.test', '$m'));
+  });
+
+  it('reminds the agent to reply with post_message, every time', () => {
+    expect(text(event).endsWith(REPLY_REMINDER)).toBe(true);
+  });
+
+  it('tells the first message of a conversation what the chat opened with', () => {
+    const opened = {
+      ...event,
+      payload: { ...event.payload, opening_message: 'Hi, I am your buddy.' },
+    };
+    expect(text(opened, true)).toContain('This chat opened with this message');
+    expect(text(opened, true)).toContain('Hi, I am your buddy.');
+    expect(text(opened, true).indexOf('Hi, I am your buddy.')).toBeLessThan(
+      text(opened, true).indexOf('[Switch] Owner addressed you')
+    );
+    // Later messages are not told again.
+    expect(text(opened, false)).not.toContain('Hi, I am your buddy.');
+  });
+
+  it("says the sender's role in the workspace, as the server read it", () => {
+    const fromMember = { ...event, payload: { ...event.payload, sender_role: 'member' } };
+    expect(text(fromMember)).toContain('[Switch] Owner (workspace member) addressed you');
+    expect(text(event)).toContain('[Switch] Owner addressed you');
   });
 });

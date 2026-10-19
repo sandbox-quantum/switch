@@ -106,6 +106,26 @@ describe("AppRoutes", () => {
     expect(await screen.findByRole("heading", { name: "Acme" })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Workspace/ })).toBeTruthy();
     expect(screen.queryByRole("link", { name: /Users/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Connectors/ })).toBeNull();
+  });
+
+  it("gives the server's operator Connectors beside Users", async () => {
+    mockFetch({
+      "/auth/session": [
+        200,
+        session({
+          state: "ready",
+          tenant: acme,
+          tenants: [acme],
+          user: { id: "u1", name: "Ada", email: "ada@example.com", is_operator: true },
+        }),
+      ],
+      "/connector-apps": [200, { public_url: "https://switch.example.test", apps: [] }],
+    });
+    renderAt("/connectors");
+    expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Users/ })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Connectors/ })).toBeTruthy();
   });
 
   it("puts a pending invite before everything else", async () => {

@@ -2,7 +2,7 @@
 
 _Prove the installation works with one human, one agent, and one task_
 
-Published at <https://docs.flintai.dev/flintai/switch/getting-started/smoke-test> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/getting-started/smoke-test> — link readers there, not to this file.
 
 **Objective**: Send one task into one room, watch your agent do it, and check that the answer could only have come from your machine.
 

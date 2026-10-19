@@ -23,7 +23,7 @@ from switch_core.addressing import (
     owner_only_policy,
 )
 from switch_core.agent_display_name import normalise_display_name
-from switch_core.agent_icon import normalise_icon_url
+from switch_core.agent_icon import normalise_icon_url, refuse_third_party_avatar
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.statuses import agent_statuses_by_room
 from switch_core.db.models import Agent, AgentSession
@@ -394,10 +394,12 @@ class AgentProfileUpdate:
         display_name: str | None,
         icon_url: str | None,
         addressing: str | None,
+        third_party_avatars: bool,
     ) -> AgentProfileUpdate:
         """None leaves a field as it is; an empty `display_name` or `icon_url`
         clears it. Raises ValueError (InvalidIconUrl, InvalidDisplayName) for
-        a value that cannot be stored."""
+        a value that cannot be stored, which includes an icon on an avatar
+        service when `third_party_avatars` (the server's setting) is off."""
         columns: dict[str, Any] = {}
         if description is not None:
             if not description.strip():
@@ -406,7 +408,9 @@ class AgentProfileUpdate:
         if display_name is not None:
             columns["display_name"] = normalise_display_name(display_name)
         if icon_url is not None:
-            columns["icon_url"] = normalise_icon_url(icon_url)
+            columns["icon_url"] = refuse_third_party_avatar(
+                normalise_icon_url(icon_url), third_party_avatars=third_party_avatars
+            )
         if addressing is not None:
             columns["addressing_policy"] = addressing_policy_for(addressing)
         return cls(columns=columns)

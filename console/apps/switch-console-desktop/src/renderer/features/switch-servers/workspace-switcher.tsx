@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronsUpDown, Plus, Search, Server, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
+import { ChatsOfflineNote } from '@renderer/features/chats/components/chats-offline-note';
 import {
   InvitedBadge,
   invitationSummary,
@@ -194,6 +195,7 @@ const ServerMenu = observer(function ServerMenu({ activeServer }: { activeServer
                   ) : (
                     <ServerProblemDot server={activeServer} />
                   )}
+                  <ChatsOfflineNote server={activeServer} />
                 </span>
               </span>
               <ChevronsUpDown className="size-3.5 shrink-0 text-foreground-muted" />
@@ -368,6 +370,7 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
                   ) : (
                     <ServerProblemDot server={activeServer} />
                   )}
+                  <ChatsOfflineNote server={activeServer} />
                 </span>
               </span>
               <PendingInvitationCount server={activeServer} />

@@ -42,6 +42,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.keys import Keyring
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import TelemetryRecord
+from tests.ownership import SoleOwner
 from tests.switch_core.bridges.collaboration.test_lifecycle_callback_endpoint import (
     _FailingClient,
 )
@@ -76,9 +77,7 @@ def _service_with_telemetry(
         sink=sink,  # type: ignore[arg-type]
         enabled=True,
         client_id="deployment-uuid",
-        service_name="switch-core",
         version=None,
-        environment=None,
         telemetry_environment="prod",
         telemetry_internal=False,
         session_factory=session_factory,
@@ -105,6 +104,8 @@ def _service_with_telemetry(
         session_activity_listener=MagicMock(),
         session_activity_service=MagicMock(),
         connections=MagicMock(),
+        ownership=SoleOwner(),
+        cursor_writer=SoleOwner.cursor_writer(session_factory),
         telemetry=telemetry,
     )
     return service, sink
@@ -423,10 +424,11 @@ class TestStartAllsBootPathIsCoveredToo:
     async def test_a_bridge_that_fails_at_boot_is_reported_and_the_rest_still_start(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """`start_all` (`:309-313`) only ever logged and moved on past a
-        bridge that failed to start — it still does, but the failure now
-        reaches telemetry too, because `start` (which it calls unmodified)
-        reports before raising back out to it."""
+        """Boot (`start_all` wanting every bridge, then the ownership's first
+        balance starting each one this process holds) only ever logged and
+        moved on past a bridge that failed to start. It still does, but the
+        failure now reaches telemetry too, because `start` reports before
+        raising back out to it."""
         tenant = f"tenant-{uuid.uuid4().hex[:8]}"
         async with session_factory() as session:
             await _make_tenant(session, tenant)
@@ -445,6 +447,7 @@ class TestStartAllsBootPathIsCoveredToo:
         service._run_bridge = AsyncMock()  # type: ignore[method-assign]
 
         await service.start_all()
+        await service._owned.settle()
         await service._telemetry.aclose()  # type: ignore[union-attr]
 
         events = await _bridge_connected_events(sink)

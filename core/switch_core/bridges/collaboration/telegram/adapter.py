@@ -524,6 +524,11 @@ class TelegramAdapter(PlatformAdapter):
 
     display_name: ClassVar[str] = "Telegram"
     docs_slug: ClassVar[str | None] = "telegram"
+    # A quiet self-registered bridge does not poll: Telegram hands each update
+    # to a single getUpdates caller, so a poller in every process would split
+    # a chat's messages between them. A bridge on the shared app bot polls
+    # nowhere; its updates reach any process as webhooks.
+    keeps_quiet_unless_listening: ClassVar[bool] = True
 
     @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
@@ -589,6 +594,9 @@ class TelegramAdapter(PlatformAdapter):
         self._config = config
         self._app: Application | None = None  # type: ignore[type-arg]
         self._bot: Any = None
+        # Whether `_app` was started and polls, which only the process holding
+        # the bridge does; a quiet one only initialises it to call the Bot API.
+        self._polling = False
         self._bot_user_id: int = 0
         self._bot_username = (config.bot_username or "").lstrip("@")
         # A shared bridge polls nothing and is handed the deployment's bot by
@@ -715,12 +723,20 @@ class TelegramAdapter(PlatformAdapter):
                 "Bot Settings -> Allow Groups?",
                 self._bot_username,
             )
+        if not self._listening:
+            logger.info(
+                "Telegram adapter for @%s running quietly: another process holds "
+                "this bridge and polls for it",
+                self._bot_username,
+            )
+            return
         await app.start()
         if app.updater is None:
             raise RuntimeError("Telegram application was built without an updater")
         await app.updater.start_polling(
             allowed_updates=_ALLOWED_UPDATES, error_callback=self._on_polling_error
         )
+        self._polling = True
         logger.info("Telegram adapter connected as @%s (id %s)", me.username, me.id)
         await self._publish_command_menu()
 
@@ -1007,10 +1023,11 @@ class TelegramAdapter(PlatformAdapter):
     async def stop(self) -> None:
         app = self._app
         self._app = None
+        polling, self._polling = self._polling, False
         if app is not None:
             for shutdown in (
-                app.updater.stop if app.updater else None,
-                app.stop,
+                app.updater.stop if app.updater and polling else None,
+                app.stop if polling else None,
                 app.shutdown,
             ):
                 if shutdown is None:

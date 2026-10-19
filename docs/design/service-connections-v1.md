@@ -366,6 +366,17 @@ through `runAgentHost`.
   session starts without them, the log says why, and the session is told in
   its context that its granted services are not set up and are loaded again
   when it next starts.
+- **Grants changing under a running session** (`host/session-services.ts`):
+  the session host records the shape of the grants it started with (services,
+  skills, vendor MCP servers and CLI tools, allowed tools; not access,
+  resources or revision, which tokens carry). The agent's watcher reads the
+  grants every 30 seconds while it has live sessions and restarts, on their own
+  conversation, each session whose host started under another shape: an idle
+  one at once, a busy one once its turn ends, the same path as a definition
+  change. A `!reset` restarts the host first when the shape changed, so the
+  fresh conversation has the new tools. A host that recorded nothing, or grants
+  that cannot be read, is never a change; a session is restarted at most once
+  for the same grants.
 - **Skills:** granted skills are added when a session is prepared
   (`prepareSharedConfig`), after the agent's template is applied, so resuming
   neither drops nor repeats them. They join `execution.context` for Claude

@@ -57,3 +57,47 @@ export function serviceFallbackNotice(service: string, reason: string, fallback:
     ? `${why}, so ${service === 'github' ? 'git and gh use' : 'it uses'} this machine's own ${name} sign-in instead, if it has one.`
     : `${why}.`;
 }
+
+/**
+ * Shown the first time a session asks to run a connector's tool. Connector
+ * tools used to be allowed in every mode; they now follow the agent's mode.
+ */
+export const CONNECTOR_APPROVAL_NOTICE =
+  'Connector tools ask in this mode. Turn on Bypass permissions for this agent to allow them without asking.';
+
+/** How a notice names a catalog service; the slug for one it does not know. */
+export function serviceName(service: string): string {
+  const names: Record<string, string> = {
+    atlassian: 'Atlassian',
+    datadog: 'Datadog',
+    github: 'GitHub',
+    'google-workspace': 'Google Workspace',
+  };
+  return names[service] ?? service;
+}
+
+function listed(names: string[]): string {
+  return names.length === 1
+    ? names[0]!
+    : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+/**
+ * What a session restarted for a change to its agent's grants is told: the
+ * services that went and came. The host cannot tell a service switched off
+ * for the workspace from a grant removed, so a removal names both.
+ */
+export function servicesChangedNotice(removed: string[], added: string[]): string | null {
+  const sentences: string[] = [];
+  if (removed.length > 0) {
+    const one = removed.length === 1;
+    sentences.push(
+      `${listed(removed.map(serviceName))} ${one ? 'was' : 'were'} removed from this agent's tools: ${one ? 'it was' : 'each was'} switched off for the workspace, or its grant was removed.`
+    );
+  }
+  if (added.length > 0)
+    sentences.push(
+      `${listed(added.map(serviceName))} ${added.length === 1 ? 'was' : 'were'} added to this agent's tools.`
+    );
+  return sentences.length > 0 ? sentences.join(' ') : null;
+}

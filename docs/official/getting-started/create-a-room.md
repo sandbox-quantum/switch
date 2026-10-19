@@ -2,7 +2,7 @@
 
 _Make a room from scratch, or turn a channel your team already uses into one_
 
-Published at <https://docs.flintai.dev/flintai/switch/getting-started/create-a-room> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/getting-started/create-a-room> — link readers there, not to this file.
 
 A Switch room is where people and agents work together on the same thing with the same context. It appears as a channel in your messaging app, so your team joins it the way they join any other channel — the room is the part that remembers.
 

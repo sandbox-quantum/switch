@@ -1,4 +1,4 @@
-"""The whole exemption from row-level security, written out as twelve functions.
+"""The whole exemption from row-level security, written out as thirteen functions.
 
 Row-level security is enforced by `require_tenant_id()` (`db/rls_ddl.py`),
 which raises when no tenant is bound. That is the property everything else
@@ -251,7 +251,7 @@ class TenantLookup:
         return f"{self.name}({', '.join('text' for _ in self.arguments)})"
 
 
-# The twelve of them. Ordered as the three shapes above: enumeration, then
+# The thirteen of them. Ordered as the three shapes above: enumeration, then
 # credential resolution, then deriving a tenant from an identifier in hand.
 TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     TenantLookup(
@@ -381,6 +381,22 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         ),
     ),
     TenantLookup(
+        name="tenant_of_sign_in_flow",
+        arguments=("state",),
+        query=(
+            "SELECT tenant_id FROM sign_in_flows "
+            "WHERE id = p_state AND expires_at > now()"
+        ),
+        purpose=(
+            "Which tenant a sign-in under way belongs to, from the state the "
+            "vendor hands back to the person's browser. The browser's steps "
+            "(leaving for the vendor, coming back, continuing to Switch "
+            "Console) carry no Switch session, only that state, and may reach "
+            "any switch-core process; the flow itself is read afterwards in "
+            "the tenant this names."
+        ),
+    ),
+    TenantLookup(
         name="tenant_of_messaging_install",
         arguments=("platform", "external_workspace_id"),
         query=(
@@ -453,12 +469,12 @@ def attach_tenant_lookups(metadata: MetaData) -> None:
 # ── Calling them ──────────────────────────────────────────────────────────────
 
 # One `text()` per lookup, written out rather than assembled from `lookup.name`
-# at call time: the twelve names are fixed and known here, so there is nothing
+# at call time: the thirteen names are fixed and known here, so there is nothing
 # for a call site to build. Each bind is named after the lookup's own argument,
 # which is what lets `_call` zip them positionally against the dataclass and
 # fail loudly on a mismatch rather than binding the workspace to the platform.
 # The assertion below is what keeps this dict from quietly falling behind
-# `TENANT_LOOKUPS` — a thirteenth lookup with no entry here fails at import, not
+# `TENANT_LOOKUPS`: a fourteenth lookup with no entry here fails at import, not
 # with a `KeyError` on whatever request reaches it first.
 _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     "all_tenant_ids": text("SELECT tenant_id FROM all_tenant_ids() AS tenant_id"),
@@ -496,6 +512,9 @@ _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     "tenant_of_messaging_install": text(
         "SELECT tenant_id FROM "
         "tenant_of_messaging_install(:platform, :external_workspace_id) AS tenant_id"
+    ),
+    "tenant_of_sign_in_flow": text(
+        "SELECT tenant_id FROM tenant_of_sign_in_flow(:state) AS tenant_id"
     ),
 }
 
@@ -631,3 +650,10 @@ async def tenants_of_cloud_machine(
     return await _call(
         session_factory, TENANT_LOOKUPS_BY_NAME["tenants_of_cloud_machine"], machine_id
     )
+
+
+async def tenant_of_sign_in_flow(
+    session_factory: async_sessionmaker[AsyncSession], state: str
+) -> str | None:
+    lookup = TENANT_LOOKUPS_BY_NAME["tenant_of_sign_in_flow"]
+    return _at_most_one(lookup, await _call(session_factory, lookup, state))

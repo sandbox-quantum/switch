@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { ConfigurationError } from './errors';
 import { errorMessage } from './log';
 import { type Assignment, assignmentSchema, type ReasonCode } from './schemas';
+import type { UpdateAttempt } from './self-update';
 
 /**
  * The controller's local state, in one SQLite file: who it is, the last
@@ -356,6 +357,29 @@ export class ControllerStore {
       this.setMeta('status_seq', String(next));
       return next;
     });
+  }
+
+  /** The last attempt at updating to a release Switch named; see `SelfUpdater`. */
+  updateAttempt(): UpdateAttempt | null {
+    const value = this.meta('update_attempt');
+    if (value === null) return null;
+    try {
+      const parsed = JSON.parse(value) as Partial<UpdateAttempt>;
+      if (typeof parsed.target === 'string' && typeof parsed.at === 'number')
+        return {
+          target: parsed.target,
+          at: parsed.at,
+          problem: typeof parsed.problem === 'string' ? parsed.problem : null,
+        };
+    } catch {
+      // Unreadable: as if no attempt was recorded.
+    }
+    return null;
+  }
+
+  saveUpdateAttempt(attempt: UpdateAttempt | null): void {
+    if (attempt === null) this.db.prepare("DELETE FROM meta WHERE key = 'update_attempt'").run();
+    else this.setMeta('update_attempt', JSON.stringify(attempt));
   }
 
   private meta(key: string): string | null {

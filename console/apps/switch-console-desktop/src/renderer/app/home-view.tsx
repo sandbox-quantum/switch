@@ -5,6 +5,7 @@ import { useOnboardingChecklist } from '@renderer/features/onboarding/use-onboar
 import { WelcomeFooter, WelcomeLearnMore } from '@renderer/features/onboarding/welcome-learn-more';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { SwitchConsoleAppIcon } from '@renderer/lib/switch-console-app-icon';
+import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 
 const TAGLINE = 'A platform-agnostic framework to bring humans and agents together.';
 
@@ -26,7 +27,9 @@ export const HomeMainPanel = observer(function HomeMainPanel() {
   const { value: onboarding, isLoading } = useAppSettingsKey('onboarding');
   // Until the setting has loaded there is no honest answer, and guessing "show"
   // flashes the checklist at someone who dismissed it launches ago.
-  const showChecklist = !isLoading && onboarding?.showChecklist === true;
+  // With the first-run flow, switch-buddy takes the checklist's place.
+  const showChecklist =
+    !BUILD_FEATURE_FLAGS.onboarding && !isLoading && onboarding?.showChecklist === true;
 
   return (
     // Home registers no TitlebarSlot, so without a drag region here the whole

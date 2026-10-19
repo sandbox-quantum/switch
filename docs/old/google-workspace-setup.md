@@ -8,13 +8,15 @@ offered. How it works is in
 [`docs/design/service-connections-v2.md`](../design/service-connections-v2.md),
 under Google Workspace.
 
-Without the app, Google Workspace is listed on the server as "Not set up on
-this server. Its operator registers an internal Google app; see the docs."
+Without the app, Google Workspace is listed on the server as "Google
+Workspace is not set up on this server. Ask whoever runs your Switch server to
+add it under Connectors in the Switch dashboard."
 
 ## What you need
 
 - A **Google Workspace organization**, and an account in it that can create
-  Cloud projects. A personal Gmail account cannot make an Internal app.
+  Cloud projects. A personal Gmail account cannot make an Internal app (see
+  [Internal or External](#internal-or-external)).
 - The server's **`GATEWAY_PUBLIC_URL`**: the address people reach Switch at.
   Google sends each sign-in back to it. It must be `https://`, or
   `http://localhost:<port>` for a server on your own computer, which Google
@@ -36,9 +38,8 @@ available APIs.
    ```
 3. **Set up the consent screen** under Google Auth Platform: give the app a
    name people will recognise (it is what Google's consent page shows), and set
-   the audience to **Internal**. An Internal app is used only within your
-   organization, needs no Google verification, and keeps refresh tokens alive
-   beyond the seven days an External app in Testing gets.
+   the audience to **Internal**, unless people outside your organization will
+   connect (see [Internal or External](#internal-or-external)).
 4. **Create a client** under Google Auth Platform, Clients: type **Web
    application**, with one authorized redirect URI:
    ```
@@ -50,7 +51,55 @@ available APIs.
    control, API controls. Depending on your organization's settings, an
    internal app may need to be marked trusted there.
 
+## Internal or External
+
+The consent screen's audience decides who can connect, and what Google asks of
+the app first. Switch cannot tell which a client is, and works with either.
+
+- **Internal**: only people in your Google organization can connect. Google
+  does not review the app, and refresh tokens last as long as your
+  organization's policies let them. This is the one to choose when everyone
+  who will connect is in the organization.
+- **External**: anyone with a Google account can connect, but only once Google
+  has verified the app. Switch asks to read and change Drive files, which
+  Google counts as restricted, so verification includes a security assessment
+  renewed every year. Until the app is verified it stays in Testing: only the
+  test users you list can connect, and their sign-ins lapse after seven days,
+  so they reconnect every week.
+
 ## Give Switch the client
+
+In Switch Console, open **Admin** in the sidebar and **Connector apps** under
+Server, or in the Switch dashboard open **Connectors** beside Users. Both are
+shown to the server's operator only, and only with the server's
+`service_connections` flag on. Choose **Set up Google Workspace**. The dialog
+shows the redirect URI to register, with a copy button; paste the client's
+**Client ID** and **Client secret** as Google Cloud labels them, and choose
+**Check and save**. Switch first asks Google whether the two belong together
+(and, where Google says so, whether the redirect URI is registered), and
+saves only if they do. The secret is stored encrypted, like every other
+stored credential (see [key rotation](key-rotation.md)), and is in use at
+once: nobody needs to restart anything.
+
+From then on the card offers:
+
+- **Check it works**: asks Google again, and stores nothing.
+- **Update secret**: a new secret for the same client, after rotating it in
+  Google Cloud. Nobody is disconnected.
+- **Use a different app**: a client with another id. Everyone connected
+  through the current client must reconnect, and the dialog says how many
+  people in how many workspaces that is before anything changes. Tokens
+  already handed to agents stay valid at Google for up to an hour; if the old
+  client's secret leaked, delete it in Google Cloud too.
+- **Remove**: nobody can connect Google Workspace, and the people connected
+  lose it until a client is set up again. They can still disconnect.
+
+### Or, from configuration
+
+The client can be set in the server's configuration instead, as before.
+**Configuration wins**: while it is set, Switch uses it, a client saved in the
+dashboard is ignored (switch-core says so at startup, and so does the card),
+and saving from the dashboard is refused.
 
 Write the client's id and secret to a JSON file on the server, readable by
 switch-core alone and never committed anywhere:
@@ -69,6 +118,12 @@ GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH=/etc/switch/google-workspace-client.json
 
 If the variable is set but the file cannot be read or holds anything else,
 switch-core does not start, and says why.
+
+To move a configured client into the dashboard, choose **Manage it here
+instead** on its card: **Copy into Switch** saves the configured values with
+nothing retyped, then remove `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH` (with Helm,
+`switchCore.googleWorkspaceClientSecret`) and restart switch-core. It is the
+same client, so nobody reconnects.
 
 ## What people do
 
@@ -100,7 +155,9 @@ agents' next token requests:
 
 - add it to `DISABLED_SERVICES`, e.g.
   `DISABLED_SERVICES='{"google-workspace": "Paused while we review access."}'`;
-- unset `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`.
+- remove its client under Connectors in the dashboard;
+- unset `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`, where it is set from
+  configuration.
 
 Switch's own hosted service does the first in its deployment settings until
 its app has passed Google's review.

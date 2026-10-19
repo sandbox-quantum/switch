@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from switch_core.clients.actor import Actor, ClientConfig
 from switch_core.clients.consumer import Consumer
+from switch_core.events import CommandEvent
 from switch_core.logging_context import log_context
 from switch_core.transport import InboundMedia, InboundMessage, RoomRef
 
@@ -21,11 +22,12 @@ class WorkspaceConsumerConfig(ClientConfig):
 class WorkspaceConsumer(Consumer[Actor[WorkspaceConsumerConfig]]):
     """Reads every room a collaboration bridge mirrors, for its workspace.
 
-    One per bridge (client type `bridge`). Everything new in those rooms is
-    handed to the bridge's `CollaborationCore`, which drops what came from the
-    platform and posts the rest to it. Its actor is the bridge's own identity
-    in the room; it writes nothing, because the people on the platform write
-    through their own `HumanActor`s.
+    One per bridge (client type `bridge`), running in the one switch-core
+    process that holds the bridge (`ownership.py`). Everything new in those
+    rooms is handed to the bridge's `CollaborationCore`, which drops what came
+    from the platform and posts the rest to it. Its actor is the bridge's own
+    identity in the room; it writes nothing, because the people on the
+    platform write through their own `HumanActor`s.
     """
 
     def __init__(
@@ -36,6 +38,12 @@ class WorkspaceConsumer(Consumer[Actor[WorkspaceConsumerConfig]]):
     ) -> None:
         super().__init__(actor=actor)
         self._collaboration_core = collaboration_core
+
+    def held_from(self, room_id: str) -> int | None:
+        """The first file of a multi-file message still waiting to be posted
+        as one: progress stops before it, so whoever holds the bridge next
+        posts the group."""
+        return self._collaboration_core.held_from(room_id)
 
     async def on_message(self, room: RoomRef, event: InboundMessage) -> None:
         logger.debug(
@@ -58,3 +66,9 @@ class WorkspaceConsumer(Consumer[Actor[WorkspaceConsumerConfig]]):
             bridge="collaboration", platform=self._collaboration_core.bridge_type
         ):
             await self._collaboration_core.handle_outbound_media(room, event, self)
+
+    async def on_command(self, room: RoomRef, event: CommandEvent) -> None:
+        with log_context(
+            bridge="collaboration", platform=self._collaboration_core.bridge_type
+        ):
+            await self._collaboration_core.handle_outbound_command(room, event)

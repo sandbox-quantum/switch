@@ -3,9 +3,11 @@ import type { ParamSpec } from '@main/core/room-templates/controller';
 import {
   agentCreateSteps,
   bridgeCandidates,
+  unsaidMessage,
   paramLabel,
+  holds,
   resolveChain,
-  sectionOf,
+  roomOnlyParams,
   serverInputs,
   valueProblem,
 } from './use-template-model';
@@ -24,6 +26,7 @@ function param(overrides: Partial<ParamSpec>): ParamSpec {
     pattern: null,
     min: null,
     max: null,
+    condition: null,
     ...overrides,
   };
 }
@@ -93,25 +96,26 @@ describe('serverInputs', () => {
   });
 });
 
-describe('sectionOf', () => {
-  const agents = [['{name}', '{provider}'], ['{other}']];
-  const room = 'name: "Ask {agent}"\nbridge: "{bridge}"\n';
-  it('puts a param with the agent that reads it, and the rest with the room', () => {
-    expect(sectionOf(param({ name: 'provider' }), agents, room)).toEqual({
-      section: 'agent',
-      index: 0,
-    });
-    expect(sectionOf(param({ name: 'other' }), agents, room)).toEqual({
-      section: 'agent',
-      index: 1,
-    });
-    expect(sectionOf(param({ name: 'bridge' }), agents, room)).toEqual({ section: 'room' });
+describe('roomOnlyParams', () => {
+  const room = 'name: "Ask {agent}"\nbridge: "{bridge}"\nusers: ["{repo}"]\n';
+  it('keeps the params the room reads and no agent entry does', () => {
+    const agents = [{ placeholders: ['name'] }];
+    const params = [param({ name: 'name' }), param({ name: 'bridge' }), param({ name: 'repo' })];
+    expect([...roomOnlyParams(params, agents, room)]).toEqual(['bridge', 'repo']);
   });
 
-  it('keeps a room param with the room even when an agent joins it', () => {
-    expect(sectionOf(param({ name: 'where', type: 'room' }), [['{where}']], room)).toEqual({
-      section: 'room',
-    });
+  it("reads an agent entry whole, so a param used only in its instructions is the agent's too", () => {
+    const agents = [{ placeholders: ['repo'] }, { placeholders: [] }];
+    const params = [param({ name: 'bridge' }), param({ name: 'repo' })];
+    expect([...roomOnlyParams(params, agents, room)]).toEqual(['bridge']);
+  });
+});
+
+describe('unsaidMessage', () => {
+  it('names the agent and the setting the template leaves out', () => {
+    expect(unsaidMessage({ index: 0, label: '{team}-fixer', field: 'provider' })).toBe(
+      'The template never says which coding agent runs {team}-fixer. Give it a `provider:` or declare a `provider` param.'
+    );
   });
 });
 
@@ -126,7 +130,14 @@ describe('paramLabel', () => {
 });
 
 describe('agentCreateSteps', () => {
-  const base = { name: 'a', clones: false, setsPolicy: true, cloneWarning: null } as const;
+  const base = {
+    name: 'a',
+    clones: false,
+    setsPolicy: true,
+    cloneWarning: null,
+    managed: null,
+    error: null,
+  } as const;
 
   it('marks the rows before the call in progress done, the one at it running', () => {
     const steps = agentCreateSteps(0, { ...base, status: 'creating', step: 'create' });
@@ -143,9 +154,39 @@ describe('agentCreateSteps', () => {
     expect(steps.map((s) => s.status)).toEqual(['done', 'done', 'failed']);
   });
 
+  it('shows a managed agent as one call, with the reason it was refused', () => {
+    const steps = agentCreateSteps(0, {
+      ...base,
+      managed: { machine: 'laptop' },
+      status: 'failed',
+      step: 'create',
+      error: "an agent named 'a' already exists",
+    });
+    expect(steps).toEqual([
+      {
+        key: '0:create',
+        label: 'Create a on laptop',
+        status: 'failed',
+        error: "an agent named 'a' already exists",
+      },
+    ]);
+  });
+
   it('has no policy row when the template sets no addressing', () => {
     expect(
       agentCreateSteps(0, { ...base, setsPolicy: false, status: 'idle', step: null })
     ).toHaveLength(2);
+  });
+});
+
+describe('holds', () => {
+  it('reads a param, or compares it', () => {
+    expect(holds(null, {})).toBe(true);
+    expect(holds('{on}', { on: true })).toBe(true);
+    expect(holds('{on}', { on: false })).toBe(false);
+    expect(holds('{start} == new_room', { start: 'new_room' })).toBe(true);
+    expect(holds('{start} != new_room', { start: 'nowhere' })).toBe(true);
+    expect(holds('{start} == new_room', {})).toBe(false);
+    expect(holds('not a condition', {})).toBe(false);
   });
 });

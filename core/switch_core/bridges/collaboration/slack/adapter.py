@@ -94,6 +94,11 @@ _SLACK_MASS_MENTION_WORD = re.compile(
 # reload can tell ours apart from the workspace's own groups.
 _AGENT_GROUP_MARKER = "Switch agent — "
 
+# How long an event from Socket Mode may take to be stored before it is
+# acknowledged anyway. Slack sends an event again unless it is acknowledged
+# within three seconds; the rest is left for the acknowledgement to arrive.
+SOCKET_ACK_WITHIN_SECONDS = 2.0
+
 # User group calls are rate-limited at roughly 20/minute, and the Slack client
 # retries connection errors but not throttling.
 _RATE_LIMIT_MAX_ATTEMPTS = 5
@@ -384,6 +389,9 @@ def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
 class SlackAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Slack"
     docs_slug: ClassVar[str | None] = "slack"
+    # A quiet Slack bridge opens no Socket Mode connection. One over the
+    # Events API opens none anywhere: Slack posts each event to one process.
+    keeps_quiet_unless_listening: ClassVar[bool] = True
 
     @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
@@ -583,6 +591,13 @@ class SlackAdapter(PlatformAdapter):
             logger.info(
                 "Slack adapter listening over HTTP; events arrive at the "
                 "messaging install endpoint rather than over Socket Mode"
+            )
+        elif not self._listening:
+            # Another switch-core process holds the bridge and keeps its
+            # Socket Mode connection. This one only calls the Web API.
+            logger.info(
+                "Slack adapter running quietly: another process holds this "
+                "bridge's Socket Mode connection"
             )
         else:
             # Narrowing for the type checker; the config validator is what
@@ -2751,10 +2766,44 @@ class SlackAdapter(PlatformAdapter):
     async def _handle_socket_event(
         self, client: SocketModeClient, req: SocketModeRequest
     ) -> None:
-        await client.send_socket_mode_response(
-            SocketModeResponse(envelope_id=req.envelope_id)
+        """Handle one Socket Mode envelope and acknowledge it.
+
+        An event (a message, someone joining a channel) is stored first and
+        acknowledged after. Slack sends an event again when it is not
+        acknowledged within three seconds, so a bridge whose process stops in
+        between is sent the event again, by then on the process that holds the
+        bridge next, instead of losing it; that copy finds the post's rows
+        written and writes nothing (`collaboration_core._post_source`). Storing
+        that takes longer than `SOCKET_ACK_WITHIN_SECONDS` is acknowledged at
+        that point and finishes after, so Slack does not send again an event
+        still being stored. Storing that fails within it is not acknowledged,
+        so Slack sends the event again.
+
+        A slash command or a button press is acknowledged first, as before:
+        Slack never sends one again, and the person waits on the answer.
+        """
+        if req.type != "events_api":
+            await client.send_socket_mode_response(
+                SocketModeResponse(envelope_id=req.envelope_id)
+            )
+            await self.dispatch_event(envelope_type=req.type, payload=req.payload)
+            return
+        dispatch = asyncio.ensure_future(
+            self.dispatch_event(envelope_type=req.type, payload=req.payload)
         )
-        await self.dispatch_event(envelope_type=req.type, payload=req.payload)
+        try:
+            await asyncio.wait({dispatch}, timeout=SOCKET_ACK_WITHIN_SECONDS)
+            failed = (
+                dispatch.done()
+                and not dispatch.cancelled()
+                and dispatch.exception() is not None
+            )
+            if not failed:
+                await client.send_socket_mode_response(
+                    SocketModeResponse(envelope_id=req.envelope_id)
+                )
+        finally:
+            await dispatch
 
     async def dispatch_event(
         self, *, envelope_type: str, payload: dict[str, Any]
@@ -2768,9 +2817,10 @@ class SlackAdapter(PlatformAdapter):
         modes would drift into behaving differently for the same event.
 
         Acknowledgement is *not* here, because the two transports acknowledge
-        incompatibly: Socket Mode replies on the socket before dispatching,
-        while HTTP acknowledges by returning 200 to the post. Both must do it
-        promptly and neither can do it for the other.
+        incompatibly: Socket Mode replies on the socket once an event is
+        stored (`_handle_socket_event`), while HTTP acknowledges by returning
+        200 to the post. Both must do it promptly and neither can do it for
+        the other.
         """
         if envelope_type == "slash_commands":
             await self._handle_slash_command(payload)
@@ -2925,7 +2975,24 @@ class SlackAdapter(PlatformAdapter):
         self._seen_ts[message_ts] = None
         if len(self._seen_ts) > self._seen_ts_max:
             self._seen_ts.popitem(last=False)
+        try:
+            await self._deliver_message_event(event, channel_id, message_ts)
+        except BaseException:
+            # Not seen after all. An event whose handling raises within the
+            # acknowledgement window is left unacknowledged
+            # (`_handle_socket_event`), and the copy Slack sends comes back to
+            # this adapter, since only the process holding the bridge has its
+            # socket. Skipped as seen, the copy would be acknowledged and the
+            # event lost. It writes only what this attempt did not
+            # (`collaboration_core._post_source`).
+            self._seen_ts.pop(message_ts, None)
+            raise
 
+    async def _deliver_message_event(
+        self, event: dict[str, object], channel_id: str, message_ts: str
+    ) -> None:
+        """Route a post `_handle_message_event` let through to the command or
+        message callback."""
         user_id = str(event.get("user", ""))
         text = str(event.get("text", ""))
         if not text.strip():

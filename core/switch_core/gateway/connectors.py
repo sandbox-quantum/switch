@@ -69,7 +69,7 @@ async def create_connector(
         connector_type=record.type,
         display_name=record.display_name,
         status=record.status,
-        agent_names=connector_lifecycle.get_agent_names(record.id),
+        agent_names=await connector_lifecycle.get_agent_names(record.id),
         created_at=str(record.created_at),
     )
 
@@ -90,7 +90,7 @@ async def list_connectors(
             connector_type=r.type,
             display_name=r.display_name,
             status=r.status,
-            agent_names=connector_lifecycle.get_agent_names(r.id),
+            agent_names=await connector_lifecycle.get_agent_names(r.id),
             created_at=str(r.created_at),
         )
         for r in records
@@ -116,7 +116,7 @@ async def get_connector(
         connector_type=record.type,
         display_name=record.display_name,
         status=record.status,
-        agent_names=connector_lifecycle.get_agent_names(record.id),
+        agent_names=await connector_lifecycle.get_agent_names(record.id),
         created_at=str(record.created_at),
     )
 

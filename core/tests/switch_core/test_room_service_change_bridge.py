@@ -128,9 +128,14 @@ class _FakeCollaborationCore:
 class _FakeLifecycle:
     def __init__(self, bridges: dict[str, Any]) -> None:
         self._bridges = bridges
+        # Bridges whose rooms changed, announced for the other processes.
+        self.rooms_changed_for: list[str] = []
 
     def get(self, bridge_id: str) -> Any:
         return self._bridges.get(bridge_id)
+
+    def rooms_changed(self, bridge_id: str) -> None:
+        self.rooms_changed_for.append(bridge_id)
 
 
 class _FakeProvisioning:
@@ -235,6 +240,11 @@ class TestChangeBridge:
         assert ("kick", "@bot-old:switch.local") in events
         assert ("remove_room_mapping", "room-1") in events
         assert ("add_room_mapping", "room-1", "chan-new") in events
+        # Both bridges' rooms changed, for every other process to map again.
+        assert svc._collab_lifecycle.rooms_changed_for == [  # type: ignore[attr-defined]
+            "bridge-new",
+            "bridge-old",
+        ]
 
         # Ordering invariants: the new channel exists and is mapped before the
         # old bridge is torn down.

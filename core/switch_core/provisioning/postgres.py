@@ -7,11 +7,17 @@
   next synced; here a live client is woken through the invite bus and joins
   itself, which is what keeps its transport watching the room. When nobody is
   live the membership is written directly, because a client that is not
-  running has nothing to wake and will find the room when it starts.
+  running has nothing to wake and will find the room when it starts. Agents
+  are never live in that sense: nothing reads a room for them, so their
+  membership is always written here, and the arrival goes through the router
+  (`delivery/router.py`), which greets the room on the agent's behalf and hands
+  the arrival to the agents listening for joins.
 - **Removal** deletes the membership and wakes a live client so it drops the
-  room, mirroring the invitation. No leave event is written: a departure is
-  not something a reader of the room needs explained, and the timeline the log
-  serves is what was said.
+  room, mirroring the invitation. An agent's own events in the room are
+  deleted in the same transaction, and its connections and controller in this
+  process let go of the room once it commits. No leave event is written: a
+  departure is not something a reader of the room needs explained, and the
+  timeline the log serves is what was said.
 - **Discarding a room** is left to the caller's own delete, which cascades.
   Nothing here has a second copy to clean up.
 """
@@ -28,8 +34,8 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from switch_core.db.stores.client_store import ClientStore
-    from switch_core.db.stores.message_store import MessageStore
     from switch_core.db.stores.room_store import RoomStore
+    from switch_core.delivery.router import MessageRouter
     from switch_core.transport.invites import InviteBus
 
 logger = logging.getLogger(__name__)
@@ -60,13 +66,13 @@ class PostgresProvisioning:
         session_factory: async_sessionmaker[AsyncSession],
         room_store: RoomStore,
         client_store: ClientStore,
-        message_store: MessageStore,
+        router: MessageRouter,
         invites: InviteBus,
     ) -> None:
         self._session_factory = session_factory
         self._room_store = room_store
         self._client_store = client_store
-        self._message_store = message_store
+        self._router = router
         self._invites = invites
 
     async def create_room(self, name: str, topic: str) -> str:
@@ -92,7 +98,7 @@ class PostgresProvisioning:
         what has to be exactly-once; a wake-up is cheap and idempotent.
         """
         async with self._session_factory() as session:
-            switch_room_id, client_id, display_name = await self._resolve(
+            switch_room_id, tenant_id, client_id, display_name = await self._resolve(
                 session, room_id, user_id
             )
             existing = await session.get(
@@ -110,7 +116,12 @@ class PostgresProvisioning:
             return
 
         async with self._session_factory() as session:
-            await self._room_store.add_client(session, client_id, switch_room_id)
+            if not await self._room_store.add_client(
+                session, client_id, switch_room_id
+            ):
+                # Recorded by another writer meanwhile, which wrote the
+                # arrival too.
+                return
             arrival = Message(
                 room_id=switch_room_id,
                 transport_event_id=f"sw_{uuid.uuid4().hex}",
@@ -124,8 +135,16 @@ class PostgresProvisioning:
                 thread_root_event_id=None,
                 content={"membership": "join", "displayname": display_name},
             )
-            await self._message_store.create(session, arrival, [])
+            routed = await self._router.store(
+                session,
+                tenant_id=tenant_id,
+                room_id=switch_room_id,
+                transport_room_id=room_id,
+                message=arrival,
+                attachments=[],
+            )
             await session.commit()
+        routed.committed()
 
     async def kick_user(self, room_id: str, user_id: str) -> None:
         """Remove a membership, stopping a live client's delivery with it.
@@ -146,11 +165,18 @@ class PostgresProvisioning:
         the right one carried on reading a room it is not.
         """
         async with self._session_factory() as session:
-            switch_room_id, client_id, _ = await self._resolve(
+            switch_room_id, tenant_id, client_id, _ = await self._resolve(
                 session, room_id, user_id
             )
             await self._room_store.remove_client(session, client_id, switch_room_id)
+            removed = await self._router.remove(
+                session,
+                tenant_id=tenant_id,
+                client_id=client_id,
+                room_id=switch_room_id,
+            )
             await session.commit()
+        await removed.committed()
         await self._invites.remove(client_id, room_id)
 
     async def delete_room(self, room_id: str) -> None:
@@ -166,7 +192,8 @@ class PostgresProvisioning:
 
     async def _resolve(
         self, session: AsyncSession, transport_room_id: str, user_id: str
-    ) -> tuple[str, str, str]:
+    ) -> tuple[str, str, str, str]:
+        """The room's id and tenant, and the client's id and name."""
         room = await self._room_store.get_by_transport_room_id(
             session, transport_room_id
         )
@@ -175,4 +202,4 @@ class PostgresProvisioning:
         client = await self._client_store.get_by_transport_user_id(session, user_id)
         if client is None:
             raise ProvisioningError(f"{user_id} is not a Switch client")
-        return room.id, client.id, client.display_name
+        return room.id, room.tenant_id, client.id, client.display_name

@@ -23,6 +23,7 @@ import {
   buildAgentPayloads,
   toAgentInstallationStatus,
 } from './agent-payload-builder';
+import { providerLoginRunner } from './provider-login';
 
 /** Enrich a manager HostDependency snapshot with latestVersion/updateAvailable from the coordinator. */
 const enrichHostDep = (
@@ -96,6 +97,17 @@ export const providersController = createRPCController({
     const mgr = await getDependencyManager(connectionId);
     return reportedCliAction('uninstall', TARGET, id, method, () => mgr.uninstall(id, method));
   },
+
+  // ── Sign-in ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Runs the provider's own sign-in command on this computer. What it writes
+   * arrives on `providerLoginLineChannel`, and its end on
+   * `providerLoginExitChannel`, both under the attempt id returned.
+   */
+  startLogin: (id: AgentProviderId): { attemptId: string } => providerLoginRunner.start(id),
+
+  cancelLogin: (): void => providerLoginRunner.cancel(),
 
   // ── Settings ─────────────────────────────────────────────────────────────────
 

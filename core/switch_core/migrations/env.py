@@ -11,6 +11,7 @@ from switch_core.db import (
 )
 from switch_core.db.base import Base
 from switch_core.db.engine import migration_connect_args
+from switch_core.db.schema_version import record_expand_only
 from switch_core.logging_config import logging_is_configured
 
 config = context.config
@@ -49,7 +50,11 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection):  # type: ignore[no-untyped-def]
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        on_version_apply=[record_expand_only],
+    )
     with context.begin_transaction():
         context.run_migrations()
 

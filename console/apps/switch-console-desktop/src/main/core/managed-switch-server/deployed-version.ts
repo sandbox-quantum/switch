@@ -107,12 +107,19 @@ export async function readVersionStatus(
   host: ServerHost,
   expected: string
 ): Promise<{ deployedVersion: string | null; drift: SwitchVersionDrift | null }> {
-  const deployed = await readDeployedVersion(host);
+  return versionStatusOf(await readDeployedVersion(host), expected, host.label);
+}
+
+/** {@link readVersionStatus} for a deployed version already read. */
+export function versionStatusOf(
+  deployed: DeployedVersion,
+  expected: string,
+  label: string
+): { deployedVersion: string | null; drift: SwitchVersionDrift | null } {
   if (deployed.kind === 'unreadable') {
-    log.warn(
-      `managed-switch-server: could not read the deployed switch-core version on ${host.label}`,
-      { reason: deployed.reason }
-    );
+    log.warn(`managed-switch-server: could not read the deployed switch-core version on ${label}`, {
+      reason: deployed.reason,
+    });
     return {
       deployedVersion: null,
       drift: {

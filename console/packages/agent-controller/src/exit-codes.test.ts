@@ -6,6 +6,7 @@ import {
   EXIT_CONFIGURATION,
   EXIT_FAILURE,
   EXIT_OK,
+  EXIT_RESTARTING,
   EXIT_REVOKED,
   EXIT_TAKEN_OVER,
   exitCodeFor,
@@ -26,6 +27,7 @@ describe('exit codes', () => {
     expect([EXIT_OK, EXIT_FAILURE, EXIT_CONFIGURATION, EXIT_REVOKED, EXIT_TAKEN_OVER]).toEqual([
       0, 1, 2, 3, 4,
     ]);
+    expect(EXIT_RESTARTING).toBe(7);
   });
 });
 

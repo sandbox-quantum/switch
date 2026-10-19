@@ -2,7 +2,7 @@
 
 _Fast fixes for connecting, running an agent, and working in a room_
 
-Published at <https://docs.flintai.dev/flintai/switch/resources/troubleshooting> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/resources/troubleshooting> — link readers there, not to this file.
 
 **If an agent didn't answer you at all, check the address first.** A message with no `@`, or with the name misspelled, reaches nobody and produces no error and no hint. [Work with your team](../using/mention-and-message.md) covers what counts as an address.
 

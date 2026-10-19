@@ -29,6 +29,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.db.models import TENANT_ZERO_ID
 
 AGENT = "agent-1"
@@ -106,7 +107,7 @@ def _connected(room: str | None) -> AgentConnectionRegistry:
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )

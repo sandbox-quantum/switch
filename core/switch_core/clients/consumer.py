@@ -1,16 +1,20 @@
 """Who reads a room: the delivery loop and the hooks it calls.
 
 A consumer is built around an `Actor`. It reads the rooms that actor belongs
-to from its own cursor, filters what that actor should not see (its own
-messages, anything from before it joined), and hands the rest to the hooks a
-subclass overrides. When a hook needs to answer, it writes through the actor.
+to from where its progress starts each room, filters out the actor's own
+messages, and hands the rest to the hooks a subclass overrides. When a hook
+needs to answer, it writes through the actor.
+
+Where reading starts is the cursor, not a clock: a consumer that resumes from
+its stored cursors is handed what its client has not handled yet however old
+it is, and one that reads from each room's head is handed nothing from before
+it started. Neither is handed anything from before its client joined a room.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import TYPE_CHECKING, Any
 
 from switch_core.events import (
@@ -41,6 +45,7 @@ if TYPE_CHECKING:
 
     from switch_core.clients.actor import Actor
     from switch_core.db.stores.client_store import ClientStore
+    from switch_core.transport.cursors import DeliveryProgress
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +60,9 @@ class Consumer[ActorT: Actor[Any]]:
         # Rooms this consumer has already announced its actor's arrival in.
         # Distinct from the actor's `room_join_times`, which is membership
         # bookkeeping recorded as early as possible (an explicit join, a
-        # membership lookup) so `wait_joined` and the `_should_ignore` cutoff
-        # are accurate. Membership being known is not evidence the arrival was
-        # announced.
+        # membership lookup) so `wait_joined` is accurate. Membership being
+        # known is not evidence the arrival was announced.
         self._self_join_dispatched: set[str] = set()
-        self._startup_ts: int = 0
         self._running: bool = False
 
     # The identity a consumer reads for is its actor's. Read-only views, so
@@ -94,6 +97,11 @@ class Consumer[ActorT: Actor[Any]]:
         return self.actor.transport
 
     @property
+    def running(self) -> bool:
+        """Whether this consumer is reading: started and not told to stop."""
+        return self._running
+
+    @property
     def _transport(self) -> MessageTransport:
         return self.actor._transport
 
@@ -102,8 +110,9 @@ class Consumer[ActorT: Actor[Any]]:
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
-    async def start(self) -> None:
-        self._startup_ts = int(time.time() * 1000)
+    async def start(self, progress: DeliveryProgress) -> None:
+        """Read the actor's rooms until stopped, starting each room where
+        `progress` says and recording through it how far it got."""
         self._running = True
 
         await self.actor.connect()
@@ -113,7 +122,7 @@ class Consumer[ActorT: Actor[Any]]:
         retries = 0
         while self._running:
             try:
-                await self._transport.receive_forever()
+                await self._transport.receive_forever(progress)
                 retries = 0
             except Exception:
                 if not self._running:
@@ -152,11 +161,19 @@ class Consumer[ActorT: Actor[Any]]:
                 on_custom_event=self._handle_custom_event,
                 on_invite=self._handle_invite,
                 on_removed=self._handle_removed,
+                held_from=self.held_from,
             )
         )
 
     async def teardown(self) -> None:
         pass
+
+    def held_from(self, room_id: str) -> int | None:
+        """The lowest position in the room this consumer was handed and has
+        not acted on yet, or None. Progress is recorded only up to before it,
+        so whoever reads for the client next handles it. Nothing by default:
+        a consumer acts on each row as it is handed."""
+        return None
 
     # ── Internal event handlers (filtering + dispatch to hooks) ────────────────
 
@@ -200,12 +217,12 @@ class Consumer[ActorT: Actor[Any]]:
                 self.actor.mark_joined(room.room_id, event.timestamp)
                 # A membership-preserving update (display name, avatar) re-fires
                 # m.room.member with membership == "join"; only a transition into
-                # membership is an arrival. Joins predating this process are not
-                # ours to announce, and the room is recorded so a redelivery of
-                # the same join does not announce it twice.
+                # membership is an arrival. A join is handed over only while the
+                # client has not handled it, however long ago it was, and the
+                # room is recorded so a redelivery of the same join does not
+                # announce it twice.
                 if (
                     event.prev_membership != "join"
-                    and event.timestamp >= self._startup_ts
                     and room.room_id not in self._self_join_dispatched
                 ):
                     self._self_join_dispatched.add(room.room_id)
@@ -308,6 +325,8 @@ class Consumer[ActorT: Actor[Any]]:
         if isinstance(typed_event, CommandEvent):
             typed_event.message_id = event.event_id
             typed_event.thread_id = event.thread_root_id or event.event_id
+        typed_event.room_seq = event.seq
+        typed_event.source_event_id = event.event_id
 
         try:
             await getattr(self, method_name)(room, typed_event)
@@ -319,15 +338,9 @@ class Consumer[ActorT: Actor[Any]]:
     # ── Filtering ──────────────────────────────────────────────────────────────
 
     def _should_ignore(self, room: RoomRef, event: InboundEvent) -> bool:
-        if event.sender == self.transport_user_id:
-            return True
-
-        if event.timestamp:
-            join_time = self.actor.room_join_times.get(room.room_id, self._startup_ts)
-            if event.timestamp < join_time:
-                return True
-
-        return False
+        """The actor's own rows. Rows from before it joined are never handed
+        over at all: its reading in a room starts at its arrival."""
+        return event.sender == self.transport_user_id
 
     # ── Event hooks (subclasses override) ──────────────────────────────────────
 
@@ -352,7 +365,7 @@ class Consumer[ActorT: Actor[Any]]:
             self.transport_user_id,
             room.room_id,
         )
-        await self.actor.join_room(room.room_id)
+        await self.actor.join_room(room.room_id, event.timestamp)
 
     async def on_removed(self, room: RoomRef, event: InboundMembership) -> None:
         """This consumer's actor has been taken out of a room while it was

@@ -43,6 +43,26 @@ AGENT_MANAGEMENT = "agent_management"
 # connect routes stay.
 SERVICE_CONNECTIONS = "service_connections"
 
+# Follow the conversation: a person's message that mentions nobody reaches an
+# agent when it is a reply in a thread the agent is taking part in, the next
+# message in an exchange the agent has just answered, or a message in a room
+# whose main agent it is (`delivery/conversation.py`). With it off such
+# messages reach nobody, as before.
+FOLLOW_THE_CONVERSATION = "follow_the_conversation"
+
+# Agent chats in Switch Console: an agent's page opens on its chats (its
+# direct chats and the rooms it is in) beside the conversation. Core puts an
+# agent's owner back in each chat they started that holds the agent; with it
+# off, owning an agent gives no room membership.
+AGENT_CHATS = "agent_chats"
+
+# switch-buddy: each person's own assistant, which Switch Console creates on
+# their computer at the end of its first run. Core serves the built-in
+# switch-buddy template only with it on (and agent management, which the
+# buddy runs as), and Console offers the buddy only on a server that turns it
+# on, so a server without the template is never asked to make one.
+SWITCH_BUDDY = "switch_buddy"
+
 # Every flag the server recognises.
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
     {
@@ -51,5 +71,8 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         HOSTED_AGENTS,
         AGENT_MANAGEMENT,
         SERVICE_CONNECTIONS,
+        FOLLOW_THE_CONVERSATION,
+        AGENT_CHATS,
+        SWITCH_BUDDY,
     }
 )

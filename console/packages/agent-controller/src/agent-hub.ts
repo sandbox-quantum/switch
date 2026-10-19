@@ -67,6 +67,15 @@ type AgentState = {
   rooms: Set<string> | null;
   /** The highest sequence known for this agent. */
   head: number | null;
+  /**
+   * Where Switch first attached the agent to this controller. An agent host
+   * that starts with no cursor of its own (a new agent's first run) starts
+   * here, so what addressed the agent while its host was coming up (a
+   * template's kickoff, posted the moment the agent exists) is not skipped.
+   */
+  attachedFrom: number | null;
+  /** An agent host has started for it since the controller started. */
+  hostStarted: boolean;
   /** At or below this, nothing is held: an agent host starting there is told of a gap. */
   droppedThrough: number;
   /** The cursor the controller resumes the agent from upstream. */
@@ -198,6 +207,7 @@ export class AgentHub {
     const agent = this.agent(agentId);
     agent.attached = true;
     agent.rooms = new Set(rooms);
+    if (agent.attachedFrom === null) agent.attachedFrom = fromSeq;
     if (agent.head === null) agent.head = fromSeq;
     else if (fromSeq > agent.head) {
       // Switch starts the agent past what is held here: whatever lay between
@@ -387,7 +397,10 @@ export class AgentHub {
       start: () => {
         if (host.started || host.closed) return;
         host.started = true;
-        host.cursor = deps.startCursor ?? agent.head;
+        host.cursor =
+          deps.startCursor ??
+          (!agent.hostStarted && agent.attachedFrom !== null ? agent.attachedFrom : agent.head);
+        agent.hostStarted = true;
         if (
           agent.reset &&
           host.cursor !== null &&
@@ -436,6 +449,8 @@ export class AgentHub {
         attached: false,
         rooms: null,
         head: null,
+        attachedFrom: null,
+        hostStarted: false,
         droppedThrough: 0,
         confirmed: null,
         buffer: [],

@@ -6,6 +6,7 @@ import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation, getLocationByHostDir } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
+import { type AvatarSettings, fetchAvatarSettings } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
@@ -15,7 +16,8 @@ import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { db } from '@main/db/client';
 import { agents as agentsTable } from '@main/db/schema';
-import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
+import { log } from '@main/lib/logger';
+import { agentAvatarUrlForName, isThirdPartyAvatarUrl } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -305,21 +307,61 @@ export async function writeNewAgentConfigFile(
   );
 }
 
+/**
+ * The icon to register a new agent with: the one the form chose, or the
+ * name-generated avatar when nothing was chosen — but only when the owning
+ * server allows a name to be sent to DiceBear for that. A server that
+ * disables third-party avatars gets `null` instead, even when
+ * `requestedIconUrl` already carries a third-party URL: the new-agent form
+ * opens on a random DiceBear avatar before anything is known about where the
+ * agent will land, and may be submitted before the server has answered. The
+ * server drops such an icon on registration as well; this keeps the request
+ * itself from carrying one.
+ */
+function resolveNewAgentIconUrl(
+  requestedIconUrl: string | null,
+  name: string,
+  avatarSettings: AvatarSettings
+): string | null {
+  if (avatarSettings.thirdPartyAvatarsEnabled) {
+    return requestedIconUrl ?? agentAvatarUrlForName(name);
+  }
+  return requestedIconUrl !== null && !isThirdPartyAvatarUrl(requestedIconUrl)
+    ? requestedIconUrl
+    : null;
+}
+
+/** The server's avatar setting for a new agent's icon. One that cannot be read
+ * counts as off: the agent is still created, with no generated icon, rather
+ * than an avatar endpoint deciding whether an agent can be created at all. */
+async function avatarSettingsForNewAgent(server: SwitchServer): Promise<AvatarSettings> {
+  try {
+    return await fetchAvatarSettings(server);
+  } catch (error) {
+    log.warn(
+      'addAgent: could not read the server avatar setting; registering without a generated icon',
+      { serverId: server.id, error: String(error) }
+    );
+    return { thirdPartyAvatarsEnabled: false };
+  }
+}
+
 async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
   const checked = await checkNewAgent(params);
   if (checked.kind !== 'ok') return reportFailedCreate(params, checked);
   const { server, workspace: targetWorkspace, slotAgentId } = checked;
 
-  const registered = await withWorkspaceSession(targetWorkspace.id, (target) =>
-    registerAgentIdentity(target, {
+  const registered = await withWorkspaceSession(targetWorkspace.id, async (target) => {
+    const avatarSettings = await avatarSettingsForNewAgent(target);
+    return registerAgentIdentity(target, {
       name: params.name,
       description: params.description,
       displayName: params.displayName,
       repoDir: params.dir,
       agentType: knownAgentTypeForProvider(params.providerId),
-      iconUrl: params.iconUrl ?? agentAvatarUrlForName(params.name),
-    })
-  );
+      iconUrl: resolveNewAgentIconUrl(params.iconUrl, params.name, avatarSettings),
+    });
+  });
   if (registered.kind !== 'created') return reportFailedCreate(params, registered);
 
   const workdir = await resolveWorkdirFsFor(params.sshHost, params.dir);

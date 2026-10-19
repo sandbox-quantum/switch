@@ -130,6 +130,35 @@ describe('handing events to the watcher', () => {
     expect(seen.connected).toBe(1);
   });
 
+  it("hands a new agent's first watcher what arrived while it was starting", async () => {
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a']);
+    // A template's kickoff, posted the moment the agent exists, before its
+    // host is up and with no cursor of its own.
+    hub.ingest(message(1, true));
+    const { stream, seen } = watcher();
+    stream.start();
+    await waitFor(() => seen.events.length === 1, 'the kickoff');
+    expect(seen.events[0]!.sequence).toBe(1);
+    expect(seen.gaps).toEqual([]);
+  });
+
+  it('starts a later watcher with no cursor at the newest event, as before', async () => {
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a']);
+    const first = watcher();
+    first.stream.start();
+    hub.ingest(message(1, true));
+    await waitFor(() => first.seen.events.length === 1, 'the first event');
+    first.stop();
+    hub.ingest(message(2, true));
+    const second = watcher();
+    second.stream.start();
+    hub.ingest(message(3, true));
+    await waitFor(() => second.seen.events.length === 1, 'the event after it started');
+    expect(second.seen.events[0]!.sequence).toBe(3);
+  });
+
   it('tells a watcher starting from before what is held that it missed events', async () => {
     hub.streamAttached();
     hub.attach(AGENT, 0, ['room-a']);

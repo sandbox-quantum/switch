@@ -23,9 +23,10 @@ root is the worked example, and `examples/` holds more.
 8. [Kickoff](#kickoff)
 9. [Where an agent works](#where-an-agent-works)
 10. [The form block](#the-form-block)
-11. [Agents and saved templates](#agents-and-saved-templates)
-12. [Validation](#validation)
-13. [Versioning](#versioning)
+11. [Version 2](#version-2)
+12. [Agents and saved templates](#agents-and-saved-templates)
+13. [Validation](#validation)
+14. [Versioning](#versioning)
 
 ## A first template
 
@@ -43,9 +44,19 @@ params:
     type: provider
     default: [claude, codex, opencode]
     input: advanced
+  location:
+    type: location
+    default: local
+    input: advanced
+  directory:
+    type: directory
+    default: "{$agents_dir}/{agent}"
+    input: advanced
 agent:
   display_name: "{name}"
   provider: "{provider}"
+  location: "{location}"
+  directory: "{directory}"
   repo: https://github.com/jqlang/jq
   addressing: anyone
   instructions: |
@@ -60,9 +71,13 @@ kickoff: "@{agent} hi, introduce yourself in two lines."
 ```
 
 The form for this template shows two inputs, the agent's name and the
-messaging app, both filled in, and an Advanced fold with the provider. One
-click creates the agent, then the room with the agent and the deployer in
-it, then posts the kickoff.
+messaging app, both filled in, and an Advanced fold with the provider, the
+machine and the directory. One click creates the agent, then the room with
+the agent and the deployer in it, then posts the kickoff.
+
+Every agent a template creates must say what runs it, where, and in which
+folder; the Console has no defaults of its own for them. See
+[The agent block](#the-agent-block).
 
 ## Document structure
 
@@ -73,8 +88,8 @@ describe at least one thing to create.
 |---|---|---|
 | `version` | The format version, an integer. `1` today. | |
 | `params` | The inputs of the form, each with a type and a policy. | |
-| `agent` | One agent to create. | Switch Console |
-| `agents` | A list of agents to create. | Switch Console |
+| `agent` | One agent to create. | The server (a managed agent), or Switch Console |
+| `agents` | A list of agents to create. | The server (managed agents), or Switch Console |
 | `room` | One room to create. | The server |
 | `group`, `rooms`, `links` | A room group, its rooms, and links between them. | The server |
 | `kickoff` | A message posted into the room once it exists. | The server |
@@ -85,13 +100,14 @@ room or group template by looking at which keys it has, so a saved document
 with `agents:` and `room:` is listed as a group. Nothing about the language
 changes with the kind.
 
-Two engines read the document. Switch Console creates the agents, because an
-agent runs on a machine the Console can reach and the server cannot, and
-resolves the params only it can answer (where an agent runs, which coding
-agent runs it, in which directory). The server creates the rooms from the
-rest, through `POST /rooms/from-yaml`, and resolves the params that name
-things it has (messaging apps, agents, rooms, users). Both read the same
-document under the same rules.
+Two engines read the document. Switch Console draws the form and resolves
+the params only it can answer (a `location` on this computer or an SSH
+host). The server creates the agents, as managed agents on the deployer's
+machines, then the rooms, and resolves the params that name things it has
+(machines, messaging apps, agents, rooms, users). On a server without agent
+management the Console creates the agents itself and the server only the
+rooms, through `POST /rooms/from-yaml`. Both read the same document under
+the same rules.
 
 ## Params
 
@@ -131,9 +147,10 @@ is the name; keep it a plain identifier.
 | `bridge` | The display name of a messaging app set up on the server. | The server checks it exists. |
 | `room` | The name of a room on the server. | The server checks it exists. |
 | `user` | A username on the room's messaging app. | The server looks it up on the app. |
-| `provider` | A coding agent id: `claude`, `codex`, `opencode`, `antigravity` or `cursor`. | Switch Console; never sent to the server. |
-| `location` | Where an agent runs: `local`, or an SSH host name the Console knows. | Switch Console; never sent to the server. |
-| `directory` | An agent's working directory, on the machine it runs on. | Switch Console; never sent to the server. |
+| `provider` | A coding agent id: `claude`, `codex`, `opencode`, `antigravity` or `cursor`. | Read when the agents are created; never in the room document. |
+| `location` | Where an agent runs: `local`, or an SSH host name the Console knows. | Switch Console; never in the room document. |
+| `machine` | One of the deployer's machines on the server, by name or id. | Read when the agents are created; never in the room document. |
+| `directory` | An agent's working directory, on the machine it runs on. | Read when the agents are created; never in the room document. |
 
 **`description`**. Data type: text. Shown under the input.
 
@@ -201,15 +218,23 @@ param. Checked on the form and by the server.
 
 ### What the form does with a param
 
-The form has an agent section per agent the template creates, then a room
-section. A param is shown in the section of the block that reads it: one
-written into an agent's fields sits with that agent, one written into the
-room sits with the room, and a `room` param always sits with the room since
-it says where the agent works. A `provider`, `location` or `directory`
-param that no agent binds applies to every agent.
+The form lists the params in the order the document declares them, so the
+author decides the order. The `ask` params come first; the `advanced` and
+`fixed` ones sit together in one fold below them (see
+[The form block](#the-form-block)), in the same order. A param that only the
+room part reads is left out while the room is not being created, since it
+does nothing then.
 
-The Create button stays disabled while a required param is empty or a
-value breaks its `pattern` or bounds, and says which.
+Beside the inputs, a preview shows a card for every agent and room the
+template creates. An agent's card shows the provider, machine and directory
+it will get, as the inputs resolve them.
+
+A `provider`, `location` or `directory` param that no agent's field reads
+applies to every agent.
+
+The Create button stays disabled while a required param is empty, a value
+breaks its `pattern` or bounds, or an agent is missing its provider,
+location or directory, and says which.
 
 ## Placeholders and builtins
 
@@ -237,23 +262,68 @@ offers to link it.
 
 ```yaml
 agent:
-  name:          identifier
-  display_name:  text
-  description:   text
-  instructions:  text
-  provider:      claude | codex | opencode | antigravity | cursor | "{param}"
-  location:      local | ssh host | "{param}"
-  directory:     path | "{param}"
-  repo:          URL
-  sources:       [ {label, url} or url ]
-  addressing:    owner | owner-agents | anyone
-  join:          [ room name or "{param}" ]
+  name:           identifier
+  display_name:   text
+  icon_url:       https URL
+  description:    text
+  instructions:   text
+  provider:       claude | codex | opencode | antigravity | cursor | "{param}"
+  machine:        machine name or id | "{param}"
+  location:       local | ssh host | "{param}"
+  directory:      path | "{param}"
+  model:          text | "{param}"
+  advanced_config: { key: value }
+  isolation:      shared | isolated
+  auto_approve:   true | false
+  can_manage_agents: true | false
+  connections:    [ service, or {service, access, repos} ]
+  repo:           URL
+  sources:        [ {label, url} or url ]
+  addressing:     owner | owner-agents | anyone
+  join:           [ room name or "{param}" ]
+  allow_existing: true | false
 ```
 
 `agents:` is a list of the same block, for a template that creates a team.
 In that form a room refers to each agent by the text written as its `name`
-(`"{team}-triager"`), and the form lets the deployer point each entry at an
-agent the server already has instead of creating it.
+(`"{team}-triager"`).
+
+**How agents are created.** On a server with agent management, every agent
+a template creates is a *managed agent* of the deployer: Switch registers it
+and places it on one of the deployer's machines, whose controller runs it.
+The whole run goes to the server in one request (`POST /gateway/rooms/from-template`
+from Switch Console, `run_template` from an agent), and the server checks it
+whole before creating anything: each machine is the deployer's, online, with
+the provider installed and signed in; each name is free; each connection is
+the deployer's to grant; the room half is valid; and, when an agent runs
+the template, its kickoff reaches the agents it mentions. A run that cannot
+be done is refused with every problem and its reason code (such as
+`controller_offline`, `provider_not_installed`, `provider_login_missing`,
+`name_taken`, `connector_not_connected`), and nothing is created. When the
+rooms then fail, the agents the run created are deleted again. An agent
+running a template needs its owner's "can manage agents" capability. On a
+server without agent management, Switch Console creates the agents itself,
+on this computer or an SSH host, as before.
+
+An entry with `allow_existing: true` lets the deployer fill it with an
+agent the server already has instead of creating it: its card on the form
+offers New agent or Existing agent. Without it the agent is always created,
+and the form offers no such choice.
+
+```yaml
+agents:
+  - name: "{team}-reviewer"
+    allow_existing: true
+    instructions: Review what the fixer opens.
+```
+
+**`provider`**, where it runs (**`machine`** or **`location`**) and
+**`directory`** are required for every agent the template creates: each
+written on the entry, literally or as a `{param}`, or through a param of
+that type that no entry's field reads, which then applies to every agent.
+Nothing fills in what the document does not say. A document missing one is
+still saved, with a warning; the run refuses to create from it and names
+what is missing.
 
 **`name`**. The identifier the agent is created under and addressed by:
 lowercase letters, digits, `.`, `-` and `_`, starting with a letter or
@@ -267,26 +337,72 @@ to let the deployer change it.
 
 **`description`**. What the agent is for, shown to others.
 
-**`instructions`**. The agent's brief. Required, except that the Console
-reads the bundled Switch expert's from `AGENT.md` next to its template. A
-template stored on a server or pasted into the Console carries it inline.
+**`instructions`**. The agent's brief. Required. The Switch expert's source
+in `switch-expert/` keeps it in `AGENT.md` next to the template; the server
+writes it in when it serves the template.
 
 **`provider`**. The coding agent that runs it. A literal fixes it; `{param}`
 of type `provider` lets the template say how much choice the deployer has.
-When the field is absent and no `provider` param is declared, the form asks,
-with nothing selected: the Console never picks one on its own.
 
-**`location`**. Where it runs. `local` is this computer; otherwise an SSH
-host the Console knows. When absent and no `location` param is declared,
-the agent runs on this computer.
+**`machine`**. Where it runs, as one of the deployer's machines on the
+server: its name or its id. A `machine` param offers the deployer a choice
+among their machines; `default: [$first]` is the first online machine that
+can run the agents' providers.
+
+**`location`**. Where it runs, as Switch Console knows it: `local` is this
+computer, otherwise an SSH host the Console knows. That is the Console's
+idea, not the server's: on a server with agent management a location names
+a machine only when it is the name or id of one of the deployer's machines
+there, and otherwise the first online machine that can run the agent stands
+in, as `$first` would. The form shows a `location` param as a choice among
+the deployer's machines there. Without agent management, the Console runs
+the agent on this computer or the SSH host, as before.
 
 **`directory`**. Its working directory on that machine. `{$agents_dir}` and
-`{agent}` are useful here. When absent and no `directory` param is declared,
-the agent gets `{$agents_dir}/{agent}`, shown on the form under Advanced.
+`{agent}` are useful here: `"{$agents_dir}/{agent}"` gives the agent a
+folder of its own under the one its machine keeps agents in, which the
+machine creates.
 
-**`repo`**. A repository the agent works from. The Console clones it
-(shallow) into the directory before the agent first runs; if that fails
-the agent is still created and clones it itself.
+**`model`**. The model the provider runs. Absent, the provider's default.
+
+**`advanced_config`**. The provider's advanced settings, keyed as Switch
+Console's "Advanced configuration" (and `get_advanced_config`) lists them,
+such as `{effort: high}`. Each value is checked against the provider's
+setting.
+
+**`isolation`**. `shared` (the default) runs the agent inside its machine's
+controller; `isolated` runs it as a process of its own.
+
+**`auto_approve`**. Whether the agent runs tools without asking for
+approval. Default `false`.
+
+**`icon_url`**. The agent's picture: an absolute `https://` URL, checked as
+an icon set on the agent's page is. Without one it gets the picture drawn
+from its name.
+
+**`can_manage_agents`**. Turns on the agent's "can manage agents"
+capability: it may list the deployer's machines and create managed agents
+on them, acting for the deployer. Default `false`. The deployer owns every
+agent the template creates, so the capability is theirs to give; an agent
+deploying a template already has it, or it could not create agents at all.
+Only on a server with agent management.
+
+**`connections`**. The deployer's own connections (GitHub, Atlassian, and
+the rest of Settings, Connections) granted to the agent once it exists.
+Each entry is a service name, or `{service, access, repos}`: `access` is
+`read` (the default) or `write`, and `repos` lists the GitHub repositories,
+as `owner/name`, a GitHub grant reaches; they must all be reachable through
+one installation of the GitHub App. The deployer must have connected each
+service, with write access to grant write, and connections must be on for
+the server. The form shows each connection on the agent's card, and whether
+the deployer has it.
+
+**`repo`**. A repository the agent works from. A managed agent's
+instructions tell it to clone the repository into its directory; it grants
+nothing, so a private repository needs a `github` connection listing it, or
+credentials on the machine. On a server without agent management, the
+Console clones it (shallow) into the directory before the agent first runs;
+if that fails the agent is still created and clones it itself.
 
 **`sources`**. Pages the agent should read. Shown to the deployer; the agent
 fetches them itself.
@@ -296,7 +412,12 @@ deployer only; `owner-agents`, the deployer and their other agents;
 `anyone`, every member of its rooms. Set right after the agent is created.
 
 **`join`**. Rooms the agent is added to once it exists, by name or through
-a `room` param. See the next section but one.
+a `room` param. See the next section but one. Switch Console adds it after
+the run; `run_template` refuses a `join`.
+
+**`allow_existing`**. Data type: boolean. Default: `false`. Whether the
+deployer may use an agent the server already has for this entry instead of
+creating it.
 
 ## The room block
 
@@ -415,9 +536,10 @@ param resolves to `$new`. A document with neither `room:` nor `join:`
 creates the agent and stops.
 
 On the form, a `room` param an agent joins is a switch with the param's
-label, on when its chain resolved to a room and off otherwise. The room
-choice and the room's own params (its messaging app, its members) sit
-under the switch and only while it is on. With `required: false` and no
+label, in its declared place, on when its chain resolved to a room and off
+otherwise. The room choice sits under the switch, only while it is on. The
+room's own params (its messaging app, its members) are shown only while the
+template's room is the one being created. With `required: false` and no
 default the switch starts off, and turning it on offers the template's
 room first; the Switch expert ships that way. With `default: [$new]` it
 starts on.
@@ -439,14 +561,100 @@ form:
     open: false
 ```
 
-Every `input: advanced` and `input: fixed` param of an agent, and the
-agent's directory when the template names none, sit together in one fold
-under the agent's asked inputs. `label` names the fold; `open` says whether
-it starts open. Folded, it shows its values on one line with a Change
+Every `input: advanced` and `input: fixed` param sits in one fold below
+the asked inputs, in declaration order. `label` names the fold; `open` says
+whether it starts open. Folded, it shows its values on one line with a Change
 button, and it opens by itself when something inside it is empty or wrong.
 The block is the Console's; the server ignores it.
 
+## Version 2
+
+`version: 2` writes a template as resources, each with a key and a type,
+instead of blocks whose meaning comes from where they sit. Version 1
+documents keep working unchanged. A version 2 template creates managed
+agents, so it needs a server that runs agent management.
+The Switch expert, `switch-expert/template.yaml`, is a complete one;
+`examples/agent-templates/switch-expert.v2.template.yaml` is the same with its
+instructions inline, to paste into the Use page.
+
+```yaml
+version: 2
+params:
+  start_in: { type: enum, enum: [nowhere, new_room, existing_room], default: nowhere }
+  existing_room: { type: room, if: "{start_in} == existing_room" }
+  machine: { type: machine, default: [$first], input: advanced }
+resources:
+  expert:
+    type: agent
+    display_name: Switch expert
+    instructions: Answer questions about Switch.
+    provider: claude
+    machine: "{machine}"
+    directory: "{$agents_dir}/{expert.name}"
+    join: ["{existing_room}"]
+    addressing:
+      - if: "{start_in} == new_room"
+        value: { anyone_in: [expert_room] }
+      - value: anyone
+  expert_room:
+    type: room
+    if: "{start_in} == new_room"
+    name: "Ask {expert.name}"
+    agents: [expert]
+    kickoff: "@{expert.name} hi."
+```
+
+**Resources.** `resources:` maps each key (letters, digits, `_`) to a
+resource with a `type`: `agent` (the fields of [The agent block](#the-agent-block)),
+`room` (the fields of [The room block](#the-room-block), plus its own
+`kickoff:` and, inside a group, `group: <key>`), or `group` (`name`,
+`description`, `color`, and `links: [{from: room key, to: room key, label}]`).
+Several rooms go in one group.
+
+**References.** A resource names another by its key: a room's `agents:` and
+`aliases:` take agent keys (or names of agents that already exist), and
+`{key.name}` anywhere is the name that resource is created under: an agent's
+`name`, or the identifier derived from its `display_name`. A reference to a
+resource whose `if:` does not hold is refused.
+
+**`if:`.** The one conditional, and its only forms are `"{param}"` (true when
+the value is) and `"{param} == value"` / `"{param} != value"`:
+
+- On a resource: it is created only while the condition holds.
+- On a param: it is asked only while the condition holds. A param that is not
+  asked reads as empty, and drops out of the lists it was written in.
+- In a field's value, written as a list of `{if, value}`: the first whose
+  condition holds is taken; an entry with no `if` always holds.
+
+The form asks a param while its `if:` holds and while something that is made
+reads it, so the messaging app is not asked when the room it is for is off.
+
+**Addressing.** Besides `owner`, `owner-agents` and `anyone`, an agent's
+`addressing` may be `{anyone_in: [room keys]}`: its owner, and anyone in
+those rooms of the run, set once the rooms exist.
+
+**`join`.** Rooms that already exist, by name, the agent is added to once it
+is created. The server checks each exists and that the deployer may add
+agents to it, before creating anything.
+
+**Running.** The server works the run out from the document and the inputs:
+which resources the conditions make, each agent's machine and provider, and
+the rest as for any template. Switch Console sends the document whole
+(`POST /gateway/rooms/from-template-document`), and `run_template` takes it
+as any saved template; `agents: {resource key: existing agent}` fills a slot
+whose agent says `allow_existing: true`.
+
 ## Agents and saved templates
+
+Every template lives on the server. Besides the ones people and agents save
+on a workspace, the server serves the official templates that come with
+Switch, under `official:` ids (`official:switch-expert`), first in every
+listing, to people and agents alike. Their source is in the repository
+(`core/switch_core/official_templates/`, the Switch expert copied from
+`switch-expert/`); where a template has a version for servers without agent
+management, the `agent_management` feature flag picks which one is served.
+Nobody can change or delete an official template: save a copy under another
+name to change it.
 
 Agents can use the templates saved on a workspace through their Switch
 tools: `list_templates`, `get_template`, `run_template`, `save_template`,
@@ -458,14 +666,20 @@ documents against (`core/switch_core/template_guide.py`; keep it in step).
   ones. An owner's admin rights do not carry over to their agents.
 - **Running.** A room or group template runs the way it does from the
   Console, through the same checks as an agent's own rooms (see
-  [Kickoff](#kickoff)). An agent cannot create agents, so an agent or team
-  template runs only when every agent it describes is replaced by one that
-  already exists: `run_template` takes `agents: {slot: existing agent}`,
-  and `get_template` lists the slots. The `agent:`/`agents:` block and the
-  Console-only params are dropped, and the room half runs.
+  [Kickoff](#kickoff)). An agent or team template creates its agents as
+  managed agents of the agent's owner, on the machines the entries name,
+  then the rooms (see [The agent block](#the-agent-block)); the agent needs
+  its owner's "can manage agents" capability. `get_template` lists each
+  slot with its machine, provider, model, connections and whether an
+  existing agent may stand in; `run_template` takes
+  `agents: {slot: existing agent}` for the slots that allow one.
 - **Saving.** An agent saves for its owner, `private` or `shared` (everyone
   reads it, only the saver changes it), and the template records which
-  agent saved it. A name the owner already uses is refused.
+  agent saved it. A name the owner already uses is refused. A document with
+  warnings, an agent with no provider for example, is refused and the
+  warnings listed, so the agent can fix them or advise whoever asked;
+  `bypass_warnings: true` saves it anyway and returns the warnings.
+  `update_template` does the same for a new document.
 - **Changing and deleting.** Only the agent that saved a template may change
   or delete it; not its owner's templates, and not another agent's.
 
@@ -480,7 +694,16 @@ document outright: not YAML, empty, or not a mapping. Everything else is a
 warning or an error the deployer sees against the field: an unknown param
 type, a default that is not one of the enum's choices, a `$new` in a
 document with no room, a placeholder no param declares, a param nothing
-uses.
+uses, an agent whose provider, location or directory the document never
+says.
+
+Completeness is warned about on save and enforced on run. A registry keeps
+documents written for other versions of the format, so the registry never
+refuses one for what it leaves out; the form, which knows exactly what this
+Console needs, refuses to create from it and names what is missing. An
+agent saving through its Switch tools is stopped at the warnings first and
+saves past them with `bypass_warnings`, so it knows before it stores a
+template nobody can use yet.
 
 A param field this server does not know is a warning, not an error, since a
 registry holds documents written for newer versions of Switch than the one
@@ -488,6 +711,6 @@ reading them.
 
 ## Versioning
 
-`version: 1` names the format described here. The key is accepted and
-checked as an integer; the server does not yet change how it reads a
-document by its version, and a document without one is read the same way.
+`version: 1` names the format described above; a document without a version
+is read the same way. `version: 2` (or a document with `resources:`) is read
+as described in [Version 2](#version-2).

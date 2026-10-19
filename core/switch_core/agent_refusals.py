@@ -1,7 +1,8 @@
 """Requests the server refuses an agent, and how the refusal is reported.
 
 An agent acts for its owner, but not with everything the owner may do: it may
-change only the templates it saved, it cannot create agents, and the run
+change only the templates it saved, it creates agents only with its owner's
+leave and on its owner's machines, and the run
 guards in ``agent_runs`` refuse rooms that cannot work. When one of those
 rules says no, the agent gets a sentence it can act on, and the refusal is
 reported. Nobody yet knows which of these rules people will run into, so the
@@ -32,8 +33,11 @@ RefusalReason = Literal[
     "visibility_not_allowed",
     "invalid",
     "too_large",
+    "has_warnings",
     "missing_agents",
     "agent_creation_console_only",
+    "agents_not_created",
+    "run_undone",
     # Rooms an agent creates (see `agent_runs`)
     "busy",
     "run_paused",

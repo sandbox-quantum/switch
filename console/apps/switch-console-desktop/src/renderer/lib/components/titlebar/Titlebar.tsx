@@ -10,7 +10,19 @@ import { cn } from '@renderer/utils/utils';
 
 const isLinux = detectPlatform() === 'linux';
 
-export function Titlebar({ leftSlot, rightSlot }: { leftSlot?: ReactNode; rightSlot?: ReactNode }) {
+export function Titlebar({
+  leftSlot,
+  rightSlot,
+  className,
+  leftClassName,
+  rightClassName,
+}: {
+  leftSlot?: ReactNode;
+  rightSlot?: ReactNode;
+  className?: string;
+  leftClassName?: string;
+  rightClassName?: string;
+}) {
   const { setCollapsed, isLeftOpen } = useWorkspaceLayoutContext();
   return (
     <header
@@ -25,13 +37,19 @@ export function Titlebar({ leftSlot, rightSlot }: { leftSlot?: ReactNode; rightS
         // covers the views that render no titlebar at all.
         // Linux draws its own controls flush to the right corner (no native
         // frame); everywhere else keep the normal right padding.
-        isLinux ? 'pr-0' : 'pr-[18px]'
+        isLinux ? 'pr-0' : 'pr-[18px]',
+        className
       )}
     >
-      <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1">
+      <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1 self-stretch">
         {!isLeftOpen && <div className="[-webkit-app-region:no-drag]"></div>}
-        <div className="flex w-full items-center justify-between">
-          <div className="flex items-center justify-start [-webkit-app-region:no-drag]">
+        <div className="flex w-full items-center justify-between self-stretch">
+          <div
+            className={cn(
+              'flex items-center justify-start [-webkit-app-region:no-drag]',
+              leftClassName
+            )}
+          >
             {!isLeftOpen && (
               <div className="ml-2 flex items-center gap-0.5 [-webkit-app-region:no-drag]">
                 <Tooltip>
@@ -55,7 +73,12 @@ export function Titlebar({ leftSlot, rightSlot }: { leftSlot?: ReactNode; rightS
             )}
             {leftSlot}
           </div>
-          <div className="flex items-center justify-end [-webkit-app-region:no-drag]">
+          <div
+            className={cn(
+              'flex items-center justify-end [-webkit-app-region:no-drag]',
+              rightClassName
+            )}
+          >
             {rightSlot}
           </div>
         </div>

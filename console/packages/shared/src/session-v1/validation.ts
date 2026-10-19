@@ -118,6 +118,14 @@ export const sessionSchema = z.object({
     .strictObject({ id, options: z.record(z.string(), z.string()) })
     .nullable()
     .optional(),
+  context: z
+    .strictObject({
+      usedTokens: z.number().int().nonnegative(),
+      windowTokens: z.number().int().positive().nullable(),
+      updatedAt: timestamp,
+    })
+    .nullable()
+    .optional(),
 });
 const turn = z.strictObject({
   type: z.literal('turn.upsert'),

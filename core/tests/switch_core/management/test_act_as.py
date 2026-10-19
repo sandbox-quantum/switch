@@ -30,6 +30,7 @@ from switch_core.bridges.agent.operations.callctx import (
 from switch_core.bridges.agent.operations.definitions import connect_to_room
 from switch_core.bridges.agent.protocol.agent_connections import ClientDeclaration
 from switch_core.bridges.agent.protocol.controller_presence import Binding
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
@@ -373,7 +374,7 @@ class TestTheAgentsOwnCredential:
             scope="all",
             delivery_filter="all",
             spawn_capable=True,
-            cursor=0,
+            position={OWN_EVENTS: 0},
             declaration=ClientDeclaration(),
             expected_generation=None,
         )

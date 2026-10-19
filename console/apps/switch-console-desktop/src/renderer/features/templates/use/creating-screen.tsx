@@ -43,7 +43,8 @@ export function CreatingScreen({
   error: string | null;
   /** Where the page goes next, shown under the finished heading. */
   doneDetail: string | null;
-  onRetry: () => void;
+  /** Null when the run kept nothing, so there is nothing to retry from: back to the form instead. */
+  onRetry: (() => void) | null;
   onBack: () => void;
 }) {
   const done = steps.filter((s) => s.status === 'done').length;
@@ -65,16 +66,20 @@ export function CreatingScreen({
             {phase === 'done'
               ? `${templateName} is ready`
               : phase === 'failed'
-                ? 'Stopped at one step'
+                ? onRetry
+                  ? 'Stopped at one step'
+                  : 'Nothing was created'
                 : `Creating ${templateName}`}
           </h3>
           <p className="text-[13px] text-foreground-muted">
             {phase === 'done'
               ? (doneDetail ?? 'Opening it…')
               : phase === 'failed'
-                ? done > 0
-                  ? 'What was created stays created.'
-                  : 'Nothing was created.'
+                ? !onRetry
+                  ? 'The run was refused as a whole. Change what each step says, then create again.'
+                  : done > 0
+                    ? 'What was created stays created.'
+                    : 'Nothing was created.'
                 : 'This takes a few seconds.'}
           </p>
         </div>
@@ -111,6 +116,7 @@ export function CreatingScreen({
                   {STATUS_WORD[step.status]}
                 </span>
               </div>
+              {step.error && <p className="pl-7 text-[11.5px] text-destructive">{step.error}</p>}
               {step.warning && (
                 <p className="pl-7 text-[11.5px] text-amber-700 dark:text-amber-400">
                   {step.warning}
@@ -124,10 +130,12 @@ export function CreatingScreen({
           <div className="flex flex-col gap-3">
             {error && <p className="text-[13px] text-destructive">{error}</p>}
             <div className="flex items-center justify-center gap-2">
-              <Button size="sm" onClick={onRetry}>
-                Retry remaining steps
-              </Button>
-              <Button size="sm" variant="outline" onClick={onBack}>
+              {onRetry && (
+                <Button size="sm" onClick={onRetry}>
+                  Retry remaining steps
+                </Button>
+              )}
+              <Button size="sm" variant={onRetry ? 'outline' : 'default'} onClick={onBack}>
                 Back to the form
               </Button>
             </div>

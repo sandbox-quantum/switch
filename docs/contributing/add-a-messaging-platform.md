@@ -115,6 +115,29 @@ them.
 https URLs. Console opens only http(s) links for platforms it has no
 special handling for.
 
+### Works on several pods
+
+switch-core can run as several pods on one database. One pod holds each
+bridge (`core/switch_core/ownership.py`); the others run a quiet copy of it, to
+serve the requests and webhooks that reach them. So:
+
+- **Long-lived connections run only on the pod holding the lease.** Set
+  `keeps_quiet_unless_listening = True`, and when `self._listening` is False
+  (`set_listening`, called before `start`) open nothing the platform delivers
+  events over: no socket, no polling, no subscription kept alive. Only call the
+  platform's API. Webhooks are fine on any pod.
+- **Drop duplicates using the platform's event id.** Set `message_ref` to the
+  platform's own id for the post, the same on every delivery, and
+  `external_event_id` on webhooks (section 3). A second delivery then writes
+  nothing, whichever pod it reaches.
+- **Keep no state in one process that another pod needs.** Memory is lost when
+  the bridge moves to another pod, and the other pods never see it. Keep such
+  state in the database, or make it safe to lose.
+- **Write rows through the transport.** Hand what arrives to the callbacks
+  given to `start`, and never write to the database yourself: the router
+  decides each row as it is written (`core/switch_core/delivery/router.py`), and
+  a row written any other way reaches no agent.
+
 ## 3. Receiving events over webhooks (optional)
 
 Some platforms can't keep a connection open to Switch: email, SMS, WhatsApp,

@@ -3,10 +3,17 @@ import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
-import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { BuddyAvatar } from '@renderer/features/switch-buddy/buddy-avatar';
+import { expectedBuddyName } from '@renderer/features/switch-buddy/buddy-identity';
+import { useBuddyPending } from '@renderer/features/switch-buddy/buddy-pending';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
+import { useCurrentViewId } from '@renderer/lib/layout/navigation-provider';
+import { appState } from '@renderer/lib/stores/app-state';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
+import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 import { SidebarMenuRow } from './sidebar-primitives';
 import { isRoomViewActive, openRoomView } from './sidebar-room-grouping';
@@ -36,8 +43,12 @@ function storedTab(): MainTab {
 export const SidebarMainSection = observer(function SidebarMainSection() {
   const [tab, setTab] = useState<MainTab>(storedTab);
   const agents = useManagedAgents(switchServersStore.activeServerId);
-  const rooms = switchRoomsStore.listedRoomsInActiveScope;
-  const count = tab === 'agents' ? (agents.data?.length ?? 0) : rooms.length;
+  const flags = useFeatureFlags(switchServersStore.activeServerId);
+  const buddyPending = useBuddyPending(switchServersStore.activeServerId);
+  const rooms = useListedRoomsInActiveScope();
+  // No count until the agents are read: a 0 that turns into the real number
+  // a moment later reads as the list changing.
+  const count = tab === 'agents' ? (agents.data?.length ?? null) : rooms.length;
 
   return (
     <section aria-label={tab === 'agents' ? 'Agents' : 'Rooms'} className="flex flex-col">
@@ -56,16 +67,40 @@ export const SidebarMainSection = observer(function SidebarMainSection() {
       </div>
       {tab === 'agents' ? (
         <>
+          {buddyPending && switchServersStore.activeServerId !== null && (
+            <PendingBuddyRow serverId={switchServersStore.activeServerId} />
+          )}
           <ManagedAgentList />
-          {agents.data?.length === 0 && (
+          {agents.data?.length === 0 && !BUILD_FEATURE_FLAGS.onboarding && (
             <p className="px-[9px] py-2 text-xs text-foreground-muted">No agents yet.</p>
           )}
-          <ChatsTeaser />
+          {!flags.agent_chats && <ChatsTeaser />}
         </>
       ) : (
         <RoomList rooms={rooms} />
       )}
     </section>
+  );
+});
+
+/**
+ * switch-buddy before it exists — skipped in onboarding, or never set up —
+ * so its chat, and the way to give it a provider, can always be found.
+ */
+const PendingBuddyRow = observer(function PendingBuddyRow({ serverId }: { serverId: string }) {
+  const active = useCurrentViewId() === 'switchBuddy';
+  const name = expectedBuddyName(switchServersStore.statusFor(serverId)?.user ?? null);
+  return (
+    <SidebarMenuRow
+      isActive={active}
+      title={`${name} — connect an AI provider to start it`}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={() => appState.navigation.navigate('switchBuddy', { serverId })}
+      className="h-[30px] py-0 text-[13px]"
+    >
+      <BuddyAvatar size={17} shape="round" />
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+    </SidebarMenuRow>
   );
 });
 
@@ -77,25 +112,43 @@ const RoomList = observer(function RoomList({ rooms }: { rooms: RemoteRoomSummar
   return (
     <div className="flex flex-col gap-[2px]" aria-label="Rooms">
       {rooms.map((room) => (
-        <SidebarMenuRow
+        <RoomListRow
           key={room.id}
+          room={room}
           isActive={isRoomViewActive(room.id)}
-          title={room.bridgeDisplayName ? `${room.name} · ${room.bridgeDisplayName}` : room.name}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => openRoomView(room.id)}
-          className="h-[30px] py-0 text-[13px]"
-        >
-          {hasBridgeIcon(room.bridgeType) ? (
-            <BridgeIcon bridgeType={room.bridgeType} size={17} className="shrink-0" />
-          ) : (
-            <DoorOpen className="size-[17px] shrink-0 text-[var(--fg-icon)]" />
-          )}
-          <span className="min-w-0 flex-1 truncate">{room.name}</span>
-        </SidebarMenuRow>
+          onOpen={() => openRoomView(room.id)}
+        />
       ))}
     </div>
   );
 });
+
+export function RoomListRow({
+  room,
+  isActive,
+  onOpen,
+}: {
+  room: Pick<RemoteRoomSummary, 'name' | 'bridgeType' | 'bridgeDisplayName'>;
+  isActive: boolean;
+  onOpen: () => void;
+}) {
+  return (
+    <SidebarMenuRow
+      isActive={isActive}
+      title={room.bridgeDisplayName ? `${room.name} · ${room.bridgeDisplayName}` : room.name}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onOpen}
+      className="h-[30px] py-0 text-[13px]"
+    >
+      {hasBridgeIcon(room.bridgeType) ? (
+        <BridgeIcon bridgeType={room.bridgeType} size={17} className="shrink-0" />
+      ) : (
+        <DoorOpen className="size-[17px] shrink-0 text-[var(--fg-icon)]" />
+      )}
+      <span className="min-w-0 flex-1 truncate">{room.name}</span>
+    </SidebarMenuRow>
+  );
+}
 
 /**
  * One sentence about what is coming for these agents, under them, closed for

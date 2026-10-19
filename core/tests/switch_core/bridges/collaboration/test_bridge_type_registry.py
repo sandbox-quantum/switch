@@ -29,6 +29,7 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramConnectionConfig,
 )
 from switch_core.keys import Keyring
+from tests.ownership import SoleOwner
 
 
 def _service() -> CollaborationBridgeLifecycleService:
@@ -59,6 +60,8 @@ def _service() -> CollaborationBridgeLifecycleService:
         session_activity_listener=None,  # type: ignore[arg-type]
         session_activity_service=None,  # type: ignore[arg-type]
         connections=None,  # type: ignore[arg-type]
+        ownership=SoleOwner(),
+        cursor_writer=SoleOwner.cursor_writer(None),
     )
 
 

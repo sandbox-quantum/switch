@@ -18,12 +18,18 @@ room. Here the subscription is the client's own, so deleting the membership row
 leaves it reading a room it is no longer in. A removal must therefore be rung
 as well as written.
 
-**It is in-process, and that is a real limitation.** A client running in
-another replica of switch-core would not hear it. It is one of the reasons
-switch-core is single-replica today (the Helm chart refuses anything else);
-lifting it is its own step. When nobody is listening for a client the caller
-writes the membership itself, so the room is still joined the next time that client
-starts — the invitation is a wake-up, never the record.
+**This bus is in-process; the other processes hear through the table.** It
+wakes the copy of a client running in the process that served the request,
+which is the copy that joins first and hears its own arrival. Every
+switch-core process runs its own copy of each client, and those learn of the
+change from the `membership.changed` signal a trigger on `client_rooms` sends
+(`db/membership_notify_ddl.py`, `transport/membership_signals.py`): each
+re-reads its client's rows and starts or stops reading the rooms that differ,
+through the third handler a client registers here. The same re-read runs
+periodically, so a signal missed for any reason costs a delay rather than a
+room read by someone removed from it. When nobody is listening for a client
+the caller writes the membership itself, so the room is still joined the next
+time that client starts: the invitation is a wake-up, never the record.
 
 **Keyed by client id, which is a primary key.** It used to be keyed by
 `matrix_user_id`, and that was wrong the moment a second tenant existed:
@@ -46,6 +52,9 @@ from collections.abc import Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 InviteHandler = Callable[[str], Awaitable[None]]
+# Re-read the client's memberships and start or stop reading the rooms that
+# differ from what it reads now.
+MembershipReconcile = Callable[[], Awaitable[None]]
 
 
 class InviteBus:
@@ -59,27 +68,38 @@ class InviteBus:
     def __init__(self) -> None:
         self._handlers: dict[str, InviteHandler] = {}
         self._removal_handlers: dict[str, InviteHandler] = {}
+        self._reconciles: dict[str, MembershipReconcile] = {}
 
     def register(
-        self, client_id: str, handler: InviteHandler, removal_handler: InviteHandler
+        self,
+        client_id: str,
+        handler: InviteHandler,
+        removal_handler: InviteHandler,
+        reconcile: MembershipReconcile,
     ) -> None:
-        """Make this pair the live listeners for `client_id`, displacing any other.
+        """Make these the live listeners for `client_id`, displacing any other.
 
         One slot per client, so a client that starts while an older instance of
         itself is still unwinding takes the slot from it. That is the right
         answer — the newer one is the client with a live receive loop — and it
         is why `unregister` wants the handlers back.
 
-        Both arms are taken together and never separately. A client registered
+        All arms are taken together and never separately. A client registered
         for invitations but not removals is the shape of a leak — it would be
         told about every room it gains and none it loses — so the state is made
-        unrepresentable here rather than guarded against at every use.
+        unrepresentable here rather than guarded against at every use. The
+        reconcile arm is how a change made in another process reaches it.
         """
         self._handlers[client_id] = handler
         self._removal_handlers[client_id] = removal_handler
+        self._reconciles[client_id] = reconcile
 
     def unregister(
-        self, client_id: str, handler: InviteHandler, removal_handler: InviteHandler
+        self,
+        client_id: str,
+        handler: InviteHandler,
+        removal_handler: InviteHandler,
+        reconcile: MembershipReconcile,
     ) -> None:
         """Give the slot up, but only if these handlers still hold it.
 
@@ -97,6 +117,22 @@ class InviteBus:
             del self._handlers[client_id]
         if self._removal_handlers.get(client_id) == removal_handler:
             del self._removal_handlers[client_id]
+        if self._reconciles.get(client_id) == reconcile:
+            del self._reconciles[client_id]
+
+    def client_ids(self) -> list[str]:
+        """The clients with a live listener in this process."""
+        return list(self._reconciles)
+
+    def is_listening(self, client_id: str) -> bool:
+        return client_id in self._reconciles
+
+    async def reconcile(self, client_id: str) -> None:
+        """Have `client_id`, if it is running here, re-read its memberships
+        and start or stop reading the rooms that changed."""
+        reconcile = self._reconciles.get(client_id)
+        if reconcile is not None:
+            await reconcile()
 
     async def invite(self, client_id: str, transport_room_id: str) -> bool:
         """Tell `client_id` it is in `transport_room_id`.

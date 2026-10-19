@@ -20,6 +20,7 @@ import { depthIndent } from './sidebar-store';
 export const SidebarAgentRow = observer(function SidebarAgentRow({
   label,
   iconUrl,
+  serverId,
   providerId,
   isActive,
   depth,
@@ -34,6 +35,8 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
 }: {
   label: string;
   iconUrl: string | null;
+  /** The Switch server this agent belongs to, or null when it has none. */
+  serverId: string | null;
   providerId: AgentProviderId | null;
   isActive: boolean;
   depth: number;
@@ -74,6 +77,7 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
             <AgentAvatar
               name={label}
               iconUrl={iconUrl}
+              serverId={serverId}
               size={21}
               className={cn('bg-transparent', dimmed && 'opacity-60')}
             />

@@ -7,6 +7,8 @@ someone else's is refused.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -29,6 +31,14 @@ from switch_core.gateway.templates import (
 from tests.switch_core.gateway.agent_route_harness import add_user
 
 _TEMPLATE_STORE = TemplateStore()
+
+
+async def _listed(*args: Any, **kwargs: Any) -> list[Any]:
+    """The catalogue without the templates that come with Switch, which every
+    listing carries (see test_official_templates)."""
+    return [t for t in await list_templates(*args, **kwargs) if not t.official]
+
+
 _USER_STORE = UserStore()
 
 
@@ -109,6 +119,7 @@ class TestUploadAndFetch:
                 _USER_STORE,
                 owner,
                 await _is_admin(session, owner),
+                config=_config(),
             )
             assert fetched.content == _AWKWARD_DOCUMENT
 
@@ -118,6 +129,7 @@ class TestUploadAndFetch:
                 _TEMPLATE_STORE,
                 owner,
                 await _is_admin(session, owner),
+                config=_config(),
             )
             assert raw.body.decode("utf-8") == _AWKWARD_DOCUMENT
             assert raw.media_type == "application/x-yaml"
@@ -170,6 +182,7 @@ class TestUploadAndFetch:
                     _USER_STORE,
                     owner,
                     await _is_admin(session, owner),
+                    config=_config(),
                 )
             assert exc.value.status_code == 404
 
@@ -247,12 +260,13 @@ class TestCatalogue:
 
             # Listed identically whoever is asking.
             for caller in (alice, bob):
-                listed = await list_templates(
+                listed = await _listed(
                     session,
                     _TEMPLATE_STORE,
                     _USER_STORE,
                     caller,
                     await _is_admin(session, caller),
+                    config=_config(),
                 )
                 assert {t.name for t in listed} == {"alice-room", "bob-room"}
                 assert {t.owner_name for t in listed} == {"alice", "bob"}
@@ -265,12 +279,13 @@ class TestCatalogue:
             await session.commit()
             await _create(session, owner, name="t", content=_AWKWARD_DOCUMENT)
 
-            listed = await list_templates(
+            listed = await _listed(
                 session,
                 _TEMPLATE_STORE,
                 _USER_STORE,
                 owner,
                 await _is_admin(session, owner),
+                config=_config(),
             )
             assert not hasattr(listed[0], "content")
             assert listed[0].size_bytes == len(_AWKWARD_DOCUMENT.encode("utf-8"))
@@ -285,13 +300,14 @@ class TestCatalogue:
             await _create(session, owner, name="other", description="for DEPLOYing")
             await _create(session, owner, name="unrelated", description="x")
 
-            hits = await list_templates(
+            hits = await _listed(
                 session,
                 _TEMPLATE_STORE,
                 _USER_STORE,
                 owner,
                 await _is_admin(session, owner),
                 q="deploy",
+                config=_config(),
             )
             assert {t.name for t in hits} == {"deploy-room", "other"}
 
@@ -304,13 +320,14 @@ class TestCatalogue:
             await _create(session, owner, name="a", kind="room")
             await _create(session, owner, name="b", kind="group")
 
-            hits = await list_templates(
+            hits = await _listed(
                 session,
                 _TEMPLATE_STORE,
                 _USER_STORE,
                 owner,
                 await _is_admin(session, owner),
                 kind="group",
+                config=_config(),
             )
             assert {t.name for t in hits} == {"b"}
 
@@ -377,6 +394,7 @@ class TestOwnership:
                 _USER_STORE,
                 bob,
                 await _is_admin(session, bob),
+                config=_config(),
             )
             assert fetched.content == _AWKWARD_DOCUMENT
 
@@ -566,12 +584,13 @@ class TestVisibility:
                 await _is_admin(session, alice),
             )
             for who, expected in ((alice, {"mine"}), (bob, set())):
-                listed = await list_templates(
+                listed = await _listed(
                     session,
                     _TEMPLATE_STORE,
                     _USER_STORE,
                     who,
                     await _is_admin(session, who),
+                    config=_config(),
                 )
                 assert {t.name for t in listed} == expected
             with pytest.raises(HTTPException) as exc:
@@ -582,6 +601,7 @@ class TestVisibility:
                     _USER_STORE,
                     bob,
                     await _is_admin(session, bob),
+                    config=_config(),
                 )
             assert exc.value.status_code == 404
 
@@ -688,19 +708,21 @@ class TestVisibility:
                 alice,
                 await _is_admin(session, alice),
             )
-            (row,) = await list_templates(
+            (row,) = await _listed(
                 session,
                 _TEMPLATE_STORE,
                 _USER_STORE,
                 bob,
                 await _is_admin(session, bob),
+                config=_config(),
             )
             assert (row.can_edit, row.can_manage) == (True, False)
-            (own,) = await list_templates(
+            (own,) = await _listed(
                 session,
                 _TEMPLATE_STORE,
                 _USER_STORE,
                 alice,
                 await _is_admin(session, alice),
+                config=_config(),
             )
             assert (own.can_edit, own.can_manage) == (True, True)

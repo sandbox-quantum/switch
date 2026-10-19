@@ -1,6 +1,7 @@
 import { observer } from 'mobx-react-lite';
 import { useCallback, useState } from 'react';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { useReadableRoomsInWorkspace } from '@renderer/features/switch-servers/use-listed-rooms';
 import { PickerCombobox } from '@renderer/lib/components/picker-combobox';
 import { ChosenRoomTile, RoomPickerRow } from '@renderer/lib/components/room-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -58,8 +59,7 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
   // Every room the server let us see, not only the ones this user created: an
   // agent's usefulness is mostly in rooms someone else set up, and a picker that
   // omitted them made those rooms unreachable from here entirely.
-  const candidates: Candidate[] = switchRoomsStore
-    .readableRoomsInWorkspace(workspaceId)
+  const candidates: Candidate[] = useReadableRoomsInWorkspace(workspaceId)
     .filter((room) => !alreadyIn.has(room.id) && !selected.some((s) => s.id === room.id))
     .map((room) => ({ id: room.id, name: room.name, bridgeType: room.bridgeType }));
   const nothingToAdd = candidates.length === 0 && selected.length === 0;

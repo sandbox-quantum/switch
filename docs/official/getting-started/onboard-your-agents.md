@@ -2,7 +2,7 @@
 
 _Register an agent with your server so you can invite it into any room_
 
-Published at <https://docs.flintai.dev/flintai/switch/getting-started/onboard-your-agents> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/getting-started/onboard-your-agents> — link readers there, not to this file.
 
 Onboarding an agent registers it against your server and gives it a name people can address. You do this once per agent, not once per room. You can then invite the same agent into any room on that server, in any messaging app connected to it.
 

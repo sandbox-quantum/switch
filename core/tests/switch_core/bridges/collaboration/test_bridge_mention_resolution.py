@@ -136,6 +136,10 @@ async def test_new_human_actor_is_mentionable_without_waiting_for_a_restart() ->
     async def _create(_session: object, _user: object) -> None:
         return None
 
+    async def _minted_elsewhere(_external_user_id: str) -> None:
+        # No other process has minted this person either.
+        return None
+
     bridge = SimpleNamespace(
         _adapter=adapter,
         _bridge_id=BRIDGE_ID,
@@ -148,6 +152,7 @@ async def test_new_human_actor_is_mentionable_without_waiting_for_a_restart() ->
         _agent_store=SimpleNamespace(get_by_name=_get_by_name),
         _client_lifecycle=SimpleNamespace(create_and_start=_create_and_start),
         _external_user_store=SimpleNamespace(create=_create),
+        _adopt_human_actor=_minted_elsewhere,
     )
     bridge._create_human_actor_locked = functools.partial(
         CollaborationCore._create_human_actor_locked, bridge

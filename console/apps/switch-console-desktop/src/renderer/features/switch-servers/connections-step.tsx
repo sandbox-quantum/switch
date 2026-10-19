@@ -15,6 +15,7 @@ import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connect
 import { ConnectionIcon } from './connection-icon';
 import { filterConnections } from './connections-filter';
 import { ManagedGitHubStep } from './managed-github-step';
+import { serverServiceCalls } from './service-calls';
 import { ServiceConnectStep } from './service-connect-step';
 import { ServiceKeyStep } from './service-key-step';
 
@@ -70,7 +71,7 @@ export function ConnectionsGrid({
       <DialogContentArea className="space-y-4 pt-0">
         <p className="text-sm text-foreground-muted">
           Connect the services your agents can work with. Each agent uses a service only once you
-          grant it, from the agent's settings.
+          grant it, from the agent's Connections.
         </p>
         <SearchInput
           aria-label="Search connections"
@@ -181,9 +182,18 @@ export function ConnectionsStep({
   const opened = catalog.connections?.find((connection) => connection.slug === open);
   if (opened?.key)
     return (
-      <ServiceKeyStep serverId={serverId} connection={opened} form={opened.key} onBack={back} />
+      <ServiceKeyStep
+        calls={serverServiceCalls(serverId)}
+        connection={opened}
+        form={opened.key}
+        replacing={false}
+        onBack={back}
+      />
     );
-  if (opened) return <ServiceConnectStep serverId={serverId} connection={opened} onBack={back} />;
+  if (opened)
+    return (
+      <ServiceConnectStep calls={serverServiceCalls(serverId)} connection={opened} onBack={back} />
+    );
 
   const githubConnected = catalog.connections?.some(
     (connection) => connection.slug === 'github' && connection.status === 'connected'

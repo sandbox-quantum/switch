@@ -9,6 +9,11 @@
     "os_version": "6.1.0"
   },
   "version": "0.1.0",
+  "release": {
+    "wanted": "0.2.0",
+    "running": "0.1.0",
+    "current": false
+  },
   "state": "online",
   "last_seen_at": "2026-10-07T09:00:05Z",
   "connection": {
@@ -22,7 +27,8 @@
     "controller": {
       "version": "0.1.0",
       "protocol": 1,
-      "assignment_revision": 3
+      "assignment_revision": 3,
+      "updated_by": "self"
     },
     "machine": {
       "platform": {

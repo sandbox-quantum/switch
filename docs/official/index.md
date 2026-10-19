@@ -2,7 +2,7 @@
 
 _A governed workspace where people and agents share context, coordinate handoffs, and keep work moving over time_
 
-Published at <https://docs.flintai.dev/flintai/switch> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch> — link readers there, not to this file.
 
 Your team already has agents. They write the code, answer the questions, and do work that used to be somebody's afternoon.
 

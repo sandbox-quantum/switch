@@ -16,9 +16,11 @@ import {
 import { ConfigurationError } from './errors';
 import { adoptIdentity } from './handover';
 import { silentLogger } from './log';
+import { ProviderRechecks } from './provider-rechecks';
 import type { LocalRelay } from './relay';
 import type { AgentAssignment, StatusReport } from './schemas';
 import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
+import { type ReleaseInstaller, SelfUpdater, type UpdateAttempt } from './self-update';
 import { ControllerStore } from './store';
 import { buildWatcherTemplate } from './template';
 import { FakeCore } from './testing/fake-core';
@@ -75,6 +77,9 @@ function deps(server = core.url): ControllerDeps {
     secrets,
     runtime: runtime.build,
     locator: new FakeLocator(),
+    rechecks: new ProviderRechecks(),
+    refreshPath: async () => {},
+    providerSeed: [],
     tools: async () => [],
     fetch,
     openWebSocket: core.openWebSocket,
@@ -82,6 +87,8 @@ function deps(server = core.url): ControllerDeps {
     dataDir: dir,
     workspacesFor: () => join(dir, 'workspaces'),
     version: '0.1.0',
+    updatedBy: 'self',
+    selfUpdate: null,
     now: Date.now,
     random: () => 0,
     timing: {
@@ -418,6 +425,39 @@ describe('runController', () => {
     expect(runtime.calls.filter((call) => call.kind === 'stop')).toEqual([]);
   });
 
+  it('checks every provider again on request, with a fresh PATH, and reports it before answering', async () => {
+    const locator = new FakeLocator();
+    locator.missing.add('codex');
+    const rechecks = new ProviderRechecks();
+    let pathRefreshes = 0;
+    core.setAssignment({ revision: 1, agents: [] });
+    running = runController(
+      {
+        ...deps(),
+        locator,
+        rechecks,
+        refreshPath: async () => {
+          pathRefreshes += 1;
+        },
+      },
+      stop.signal
+    );
+    const codexIn = (report: StatusReport | undefined) =>
+      report?.providers.find((entry) => entry.provider === 'codex')?.installed;
+    await waitFor(() => codexIn(core.statusReports.at(-1)) === false, 'codex reported missing');
+
+    // Installed since: only a recheck finds it before the check goes stale.
+    locator.missing.delete('codex');
+    await rechecks.run();
+
+    expect(pathRefreshes).toBe(1);
+    expect(codexIn(core.statusReports.at(-1))).toBe(true);
+  });
+
+  it('refuses a recheck while the controller is not running', async () => {
+    await expect(new ProviderRechecks().run()).rejects.toThrow(/not connected/);
+  });
+
   it('runs pending operations when nudged', async () => {
     core.setAssignment({ revision: 1, agents: [agent(1)] });
     running = runController(deps(), stop.signal);
@@ -462,6 +502,28 @@ describe('runController', () => {
       clearTakenOver: true,
     });
     expect(runtime.probes).toBeGreaterThan(probesBefore);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('warms the agent host for a room when Switch asks, and only warns when it cannot', async () => {
+    const warnings: string[] = [];
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(
+      { ...deps(), log: { ...silentLogger, warn: (message) => void warnings.push(message) } },
+      stop.signal
+    );
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    await waitFor(() => core.streamCount === 1, 'the stream attached');
+
+    runtime.warmFailure = new Error('not running here');
+    core.push('agent.warm', { agent_id: 'agent-1', room_id: 'room-a' });
+    await waitFor(() => warnings.some((w) => w.includes('warm')), 'the warning');
+
+    runtime.warmFailure = null;
+    core.push('agent.warm', { agent_id: 'agent-1', room_id: 'room-a' });
+    await waitFor(() => runtime.warms.length === 1, 'the warm');
+    expect(runtime.warms).toEqual([{ agentId: 'agent-1', roomId: 'room-a' }]);
     stop.abort();
     expect(await running).toBe('stopped');
   });
@@ -630,6 +692,137 @@ describe('runController', () => {
     const wiped = runController(enrolled, stop.signal);
     await expect(wiped).rejects.toThrow(/revoked at/);
     await expect(wiped).rejects.toBeInstanceOf(ConfigurationError);
+  });
+});
+
+describe('the release Switch names', () => {
+  function selfUpdate() {
+    const installed: string[] = [];
+    const installer: ReleaseInstaller = {
+      unavailable: null,
+      prepare: async () => {},
+      activate: async (version) => void installed.push(version),
+    };
+    let attempt: UpdateAttempt | null = null;
+    const updater = new SelfUpdater({
+      version: '0.1.0',
+      installer,
+      download: async () => join(dir, 'never-written.tgz'),
+      attempts: { last: () => attempt, save: (saved) => void (attempt = saved) },
+      supervised: true,
+      log: silentLogger,
+      now: Date.now,
+    });
+    return { updater, installed };
+  }
+
+  const release = {
+    version: '0.2.0',
+    url: 'https://example.invalid/switch-agent-controller-0.2.0.tgz',
+    sha256: 'c'.repeat(64),
+  };
+
+  it('is installed while no session is mid-turn, and the controller ends to restart on it', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    core.controllerRelease = release;
+    const { updater, installed } = selfUpdate();
+    running = runController({ ...deps(), selfUpdate: updater }, stop.signal);
+    expect(await running).toBe('restarting');
+    expect(installed).toEqual(['0.2.0']);
+  });
+
+  it('waits while an agent host that does not report busy sessions has any, and says so in the status', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    const { updater, installed } = selfUpdate();
+    running = runController({ ...deps(), selfUpdate: updater }, stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    runtime.observation('agent-1').health!.placements = { 'session-1': 'room-a' };
+    core.controllerRelease = release;
+    await waitFor(
+      () => core.statusReports.some((report) => report.update?.state === 'waiting_idle'),
+      'a status saying the update waits'
+    );
+    expect(core.statusReports.at(-1)?.update).toEqual({ target: '0.2.0', state: 'waiting_idle' });
+    expect(installed).toEqual([]);
+    runtime.observation('agent-1').health!.placements = {};
+    expect(await running).toBe('restarting');
+    expect(installed).toEqual(['0.2.0']);
+  });
+
+  it('waits only while a session is mid-turn when the agent host says which are', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    const { updater, installed } = selfUpdate();
+    running = runController({ ...deps(), selfUpdate: updater }, stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    const health = runtime.observation('agent-1').health!;
+    health.placements = { 'session-1': 'room-a', 'session-2': 'room-b' };
+    health.busy = ['session-1'];
+    core.controllerRelease = release;
+    await waitFor(
+      () => core.statusReports.some((report) => report.update?.state === 'waiting_idle'),
+      'a status saying the update waits'
+    );
+    expect(installed).toEqual([]);
+    health.busy = [];
+    expect(await running).toBe('restarting');
+    expect(installed).toEqual(['0.2.0']);
+  });
+
+  it('is left alone by a controller that does not update itself', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    core.controllerRelease = release;
+    running = runController(deps(), stop.signal);
+    await waitFor(() => core.statusReports.length >= 2, 'two status reports');
+    expect(core.statusReports.every((report) => report.update === undefined)).toBe(true);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+});
+
+describe('an agent host that outlived the controller on another bundle', () => {
+  const restarts = () =>
+    runtime.launches('agent-1').filter((call) => call.options.restart === true);
+
+  it('is restarted onto this controller’s bundle once none of its sessions is mid-turn, and only once', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    const observation = runtime.observation('agent-1');
+    observation.outdated = true;
+    observation.health!.placements = { 'session-1': 'room-a' };
+    observation.health!.busy = ['session-1'];
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(restarts()).toEqual([]);
+
+    observation.health!.busy = [];
+    await waitFor(() => restarts().length === 1, 'the outdated agent host restarted');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(restarts()).toHaveLength(1);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('is not restarted again while it stays on another bundle, within the retry wait', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    runtime.observation('agent-1').outdated = true;
+    await waitFor(() => restarts().length === 1, 'the outdated agent host restarted');
+    runtime.observation('agent-1').outdated = true;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(restarts()).toHaveLength(1);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('is left alone when it runs this controller’s bundle', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(restarts()).toEqual([]);
+    stop.abort();
+    expect(await running).toBe('stopped');
   });
 });
 

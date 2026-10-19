@@ -2,7 +2,7 @@
 
 _Run a Switch server or an agent on a machine other than your own_
 
-Published at <https://docs.flintai.dev/flintai/switch/deploy/host-remotely> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/deploy/host-remotely> — link readers there, not to this file.
 
 Everything installed on a local Switch server runs on the machine in front of you. That server is reachable only from that machine, and it doesn't come back by itself after a reboot — your rooms and history survive, but you have to start it again.
 

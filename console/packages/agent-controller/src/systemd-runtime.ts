@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import {
   AGENT_ENV_VARS,
+  CONTROL_FILE,
   clearTakenOver,
   type ProviderReadiness,
   type SharedHostConfig,
@@ -15,6 +16,7 @@ import {
   watcherHealthFileSchema,
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
+import { warmOverControlPort } from './control-port';
 import { ReasonedError } from './errors';
 import type { Logger } from './log';
 import {
@@ -22,6 +24,7 @@ import {
   type AgentRuntime,
   emptyObservation,
   isInside,
+  LaunchedBundle,
   type LaunchOptions,
   loginProbeEnvironment,
   parseRelayCredentials,
@@ -94,13 +97,16 @@ type UnitState = { activeState: string; result: string; mainPid: number };
  * credentials and environment it loads, and starts and stops the unit through
  * `systemctl`, which polkit allows it for these units only. The agent host
  * hears its events on the controller's hub, as one in a process of its own
- * does, and outlives the controller.
+ * does, and outlives the controller. The unit runs the bundle through the
+ * releases directory's `current` link, so restarting one that is `outdated`
+ * brings it onto the release the controller runs.
  *
  * Everything an agent writes is read as untrusted: through no link, parsed
  * against its schema, and never run.
  */
 export class SystemdRuntime implements AgentRuntime {
   private readonly names: ReturnType<typeof separateUserNames>;
+  private readonly bundle: LaunchedBundle;
 
   constructor(
     private readonly deps: {
@@ -114,6 +120,7 @@ export class SystemdRuntime implements AgentRuntime {
     }
   ) {
     this.names = separateUserNames(deps.config.uid);
+    this.bundle = new LaunchedBundle(deps.config.bundle);
   }
 
   /** The agent user the agent runs as, claimed now when it holds none. */
@@ -236,6 +243,15 @@ export class SystemdRuntime implements AgentRuntime {
     });
   }
 
+  async warm(agentId: string, roomId: string): Promise<void> {
+    const slot = this.deps.store.agentUser(agentId);
+    if (slot === null) throw new Error(`Agent ${agentId} has no user on this machine.`);
+    await warmOverControlPort(
+      join(agentRoot(this.deps.config, slot), 'watcher', CONTROL_FILE),
+      roomId
+    );
+  }
+
   agentStateRoot(_agentId: string): string {
     return join(unitAgentRoot(this.deps.config), 'watcher');
   }
@@ -266,7 +282,13 @@ export class SystemdRuntime implements AgentRuntime {
       (state.activeState === 'failed'
         ? `The agent's unit ${unit} failed (${state.result}); see journalctl -u ${unit}.`
         : null);
-    return { ...onDisk, alive, health, failure };
+    return {
+      ...onDisk,
+      alive,
+      health,
+      failure,
+      outdated: alive && (await this.bundle.outdates(health)),
+    };
   }
 
   async launch(agentId: string, template: SharedHostConfig, options: LaunchOptions): Promise<void> {

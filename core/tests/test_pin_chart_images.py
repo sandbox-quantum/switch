@@ -346,3 +346,45 @@ def test_verify_ignores_a_third_party_image_sharing_a_first_party_name() -> None
     assert pin_chart_images.verify(
         "switch-hosted-controller", rendered, "ghcr.io/acme"
     ) == [_pinned("switch-hosted-controller")]
+
+
+def _release(created: datetime, tag: str, prerelease: bool = True) -> dict:
+    return {
+        "id": hash(tag),
+        "tag_name": tag,
+        "prerelease": prerelease,
+        "created_at": created.isoformat().replace("+00:00", "Z"),
+    }
+
+
+def test_prune_deletes_only_old_dev_controller_prereleases_beyond_the_kept_ones() -> (
+    None
+):
+    dev = [
+        _release(
+            NOW - timedelta(days=40 + n),
+            f"switch-agent-controller-v0.31.1-dev.{9 - n}.g{n:07d}",
+        )
+        for n in range(4)
+    ]
+    others = [
+        _release(NOW - timedelta(days=90), "switch-agent-controller-v0.31.0", False),
+        _release(NOW - timedelta(days=90), "switch-agent-controller-v0.31.0-rc.1"),
+        _release(NOW - timedelta(days=90), "switch-v0.31.0-dev.1"),
+        _release(
+            NOW - timedelta(days=90), "switch-agent-controller-v0.30.0-dev.1", False
+        ),
+    ]
+    young = _release(
+        NOW - timedelta(days=1), "switch-agent-controller-v0.31.1-dev.10.gaaaaaaa"
+    )
+
+    doomed = prune_dev_packages.doomed_controller_releases(
+        [*dev, *others, young], NOW, timedelta(days=30), keep=2
+    )
+
+    assert [r["tag_name"] for r in doomed] == [
+        "switch-agent-controller-v0.31.1-dev.8.g0000001",
+        "switch-agent-controller-v0.31.1-dev.7.g0000002",
+        "switch-agent-controller-v0.31.1-dev.6.g0000003",
+    ]

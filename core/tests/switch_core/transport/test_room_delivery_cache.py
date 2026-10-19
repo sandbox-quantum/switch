@@ -28,10 +28,12 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.messages.notify import MessageListener
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.transport import InboundMedia, InboundMessage
+from switch_core.transport.cursors import FromHead
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.postgres import DELIVERY_PAGE, PostgresTransport
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from tests.conftest import RLSHarness
+from tests.routing import router_on
 from tests.switch_core.transport.test_postgres_transport import (
     _FakeListener,
     _make_client,
@@ -119,7 +121,9 @@ class _Room:
             transport.register_handlers(received.handlers())
             room.members.append(transport)
             room.received.append(received)
-            room.tasks.append(asyncio.create_task(transport.receive_forever()))
+            room.tasks.append(
+                asyncio.create_task(transport.receive_forever(FromHead(MessageStore())))
+            )
         for transport in room.members:
             await _watched_room(transport)
         return room
@@ -427,7 +431,7 @@ class TestMembershipIsStillEachClients:
             session_factory=session_factory,
             room_store=RoomStore(),
             client_store=ClientStore(),
-            message_store=MessageStore(),
+            router=router_on(session_factory),
             invites=invites,
         )
         await provisioning.kick_user(room.transport_room_id, leaving.user_id)
@@ -469,7 +473,7 @@ class TestMembershipIsStillEachClients:
             session_factory=session_factory,
             room_store=RoomStore(),
             client_store=ClientStore(),
-            message_store=MessageStore(),
+            router=router_on(session_factory),
             invites=invites,
         )
         for member in room.members:
@@ -552,8 +556,8 @@ class TestMembershipIsStillEachClients:
         a.register_handlers(a_got.handlers())
         b.register_handlers(b_got.handlers())
         tasks = [
-            asyncio.create_task(a.receive_forever()),
-            asyncio.create_task(b.receive_forever()),
+            asyncio.create_task(a.receive_forever(FromHead(MessageStore()))),
+            asyncio.create_task(b.receive_forever(FromHead(MessageStore()))),
         ]
         try:
             await _watched_room(a)
@@ -624,7 +628,11 @@ class TestTheListenerIsNeverHeldUp:
             ]
             for member in members:
                 member.register_handlers(_Received().handlers())
-                tasks.append(asyncio.create_task(member.receive_forever()))
+                tasks.append(
+                    asyncio.create_task(
+                        member.receive_forever(FromHead(MessageStore()))
+                    )
+                )
             for member in members:
                 await _watched_room(member)
             for member in members:

@@ -52,7 +52,7 @@ from switch_core.gateway.dependencies import (
 from switch_core.gateway.hosted_controller import router as controller_router
 from switch_core.gateway.hosted_machines import router as machines_router
 from switch_core.management.placement import placement_refusal
-from switch_core.management.process_lease import ProcessLeases
+from switch_core.process_lease import ProcessLeases
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
 from tests.switch_core.hosted_machine_helpers import add_tenant
@@ -104,6 +104,7 @@ def _hosted_app(
         hosted_disk_retention_days=7,
         hosted_launch_capacity=1,
         hosted_agents_enabled=True,
+        third_party_avatars_enabled=True,
     )
 
     async def session():

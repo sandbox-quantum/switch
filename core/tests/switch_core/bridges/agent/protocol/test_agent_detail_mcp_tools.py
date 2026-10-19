@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import owner_and_owner_agents_policy, owner_only_policy
-from switch_core.agent_icon import InvalidIconUrl
+from switch_core.agent_icon import InvalidIconUrl, generated_icon_url
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
@@ -181,12 +181,14 @@ def _profile(
     display_name: str | None = None,
     icon_url: str | None = None,
     addressing: str | None = None,
+    third_party_avatars: bool = True,
 ) -> AgentProfileUpdate:
     return AgentProfileUpdate.parse(
         description=description,
         display_name=display_name,
         icon_url=icon_url,
         addressing=addressing,
+        third_party_avatars=third_party_avatars,
     )
 
 
@@ -275,6 +277,18 @@ class TestUpdateAgentDetail:
             _profile(icon_url="http://localhost/icon.png")
         with pytest.raises(ValueError, match="description must not be blank"):
             _profile(description="   ")
+
+    def test_an_avatar_service_icon_is_refused_only_when_the_server_turns_them_off(
+        self,
+    ) -> None:
+        dicebear = generated_icon_url("target")
+        with pytest.raises(InvalidIconUrl, match="third-party avatars turned off"):
+            _profile(icon_url=dicebear, third_party_avatars=False)
+        assert _profile(icon_url=dicebear).columns == {"icon_url": dicebear}
+        other = "https://example.com/r.png"
+        assert _profile(icon_url=other, third_party_avatars=False).columns == {
+            "icon_url": other
+        }
 
     async def test_non_owner_is_rejected(
         self, session_factory: async_sessionmaker[AsyncSession]

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -10,7 +12,11 @@ from pathlib import Path
 import httpx
 import jwt
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
-from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    PublicFormat,
+    load_pem_private_key,
+)
 
 from switch_core.providers.github import (
     GitHubConnections,
@@ -43,14 +49,12 @@ class RepositoryCredential:
 
 
 class GitHubInstallationCredentials:
-    def __init__(self, client_id: str, private_key_path: str):
+    def __init__(self, client_id: str, private_key: bytes):
         if not client_id:
             raise ValueError("A GitHub App client ID is required.")
         try:
-            key = load_pem_private_key(
-                Path(private_key_path).read_bytes(), password=None
-            )
-        except (ValueError, TypeError, OSError):
+            key = load_pem_private_key(private_key, password=None)
+        except (ValueError, TypeError):
             raise ValueError(
                 "The GitHub App signing key could not be loaded."
             ) from None
@@ -60,6 +64,35 @@ class GitHubInstallationCredentials:
             )
         self._key = key
         self._client_id = client_id
+
+    def assertion(self) -> str:
+        """A JWT that authenticates as the App, for nine minutes."""
+        now = int(time.time())
+        return jwt.encode(
+            {"iat": now - 60, "exp": now + 540, "iss": self._client_id},
+            self._key,
+            algorithm="RS256",
+        )
+
+    @property
+    def fingerprint(self) -> str:
+        """The key as GitHub's App settings list it: SHA-256 of the public key."""
+        public = self._key.public_key().public_bytes(
+            Encoding.DER, PublicFormat.SubjectPublicKeyInfo
+        )
+        return "SHA256:" + base64.b64encode(hashlib.sha256(public).digest()).decode()
+
+    @classmethod
+    def from_file(
+        cls, client_id: str, private_key_path: str
+    ) -> GitHubInstallationCredentials:
+        try:
+            private_key = Path(private_key_path).read_bytes()
+        except OSError:
+            raise ValueError(
+                "The GitHub App signing key could not be loaded."
+            ) from None
+        return cls(client_id, private_key)
 
     @staticmethod
     async def revoke(token: str) -> None:
@@ -143,12 +176,7 @@ class GitHubInstallationCredentials:
             or any(level not in ("read", "write") for level in permissions.values())
         ):
             raise GitHubError("These GitHub permissions cannot be granted.")
-        now = int(time.time())
-        assertion = jwt.encode(
-            {"iat": now - 60, "exp": now + 540, "iss": self._client_id},
-            self._key,
-            algorithm="RS256",
-        )
+        assertion = self.assertion()
         token = None
         try:
             async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:

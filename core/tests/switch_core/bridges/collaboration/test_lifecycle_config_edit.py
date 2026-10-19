@@ -21,6 +21,7 @@ from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
 )
+from tests.ownership import SoleOwner
 
 _SHARED = {"event_delivery": "shared", "tenant_id": "org-1"}
 
@@ -42,6 +43,8 @@ def _service() -> CollaborationBridgeLifecycleService:
         session_activity_listener=MagicMock(),
         session_activity_service=MagicMock(),
         connections=MagicMock(),
+        ownership=SoleOwner(),
+        cursor_writer=SoleOwner.cursor_writer(MagicMock()),
     )
     service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
     service.register_adapter(

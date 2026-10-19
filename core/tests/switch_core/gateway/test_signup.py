@@ -58,6 +58,7 @@ async def signup_app(session_factory):
         gateway_password_login_enabled=True,
         gateway_oidc_enabled=False,
         gateway_oidc_provider_label=None,
+        gateway_oidc_login_options=[],
         hosted_launch_capacity=2,
         hosted_agents_enabled=True,
         keyring=TEST_KEYRING,

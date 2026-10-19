@@ -91,10 +91,17 @@ stream and it owns:
 
 A connection belongs to exactly one agent. An agent may have several.
 
-The connection is held **in memory only**. It cannot outlive the server
-process (its socket and buffer cannot), so persisting it would recreate the
-staleness bug. Every question of the form "is this agent reachable in room R?"
-is answered from the live connection set, not from a table.
+The connection is held **in the memory of the process holding its socket**:
+its socket, heartbeat and the frames it is owed cannot be anywhere else. What
+other `switch-core` processes need to know about it (which process holds it,
+its current incarnation, its room claims and session placements) is written
+to `agent_connections` and the tables beside it when it opens, moves or
+closes, never per heartbeat, and each process keeps a copy of the others'
+live connections. A row counts only while the holding process's lease in
+`switch_core_processes` is held, so a connection still cannot outlive its
+process. Every question of the form "is this agent reachable in room R?" is
+answered from the live connection set, which includes those copies, not from a
+query per question.
 
 ### 2.2 Scope
 

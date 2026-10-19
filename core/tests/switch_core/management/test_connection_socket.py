@@ -82,7 +82,7 @@ def client(calls: _Calls, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClien
 
         return frames()
 
-    def record_beat(**kwargs: Any) -> list[str]:
+    async def record_beat(**kwargs: Any) -> list[str]:
         calls.beats.append(kwargs)
         if calls.beat_refusal is not None:
             raise calls.beat_refusal

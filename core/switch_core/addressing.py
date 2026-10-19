@@ -197,24 +197,32 @@ class AddressingPolicy(BaseModel):
             for rule in self.rules
         )
 
-    def admits_others(
-        self, *, owner_identity_ids: set[str], owner_agent_ids: set[str]
-    ) -> bool:
-        """Whether anyone but the owner and the owner's own agents may address
-        the agent, and so have it act on what its owner granted it.
+    def admits_others(self, *, owner_identity_ids: set[str]) -> bool:
+        """Whether anyone but the owner may address the agent, and so have it
+        act on what its owner granted it.
 
-        An open policy does; so does any rule that admits every human or
-        agent (``"*"``, whatever its rooms), a human by an identity the owner
-        has not claimed, or another person's agent. `owner_identity_ids` are
-        the platform identities the owner has claimed; `owner_agent_ids` the
-        agents they own. A platform rule is not counted: the platform acting
-        for a person is judged as that person (`allows_on_behalf_of`).
+        An open policy does; so does any rule that admits every human
+        (``"*"``, whatever its rooms), a human by an identity the owner has
+        not claimed, or any agent at all: ``owner_agents``, a named agent, or
+        ``"*"``. The owner's own agents count as others because an agent
+        sender is not the person. Whoever addressed that agent can have it
+        pass the request on, and the grant is then used on their behalf, not
+        the owner's: a confused-deputy path. `owner_identity_ids` are the
+        platform identities the owner has claimed. A platform rule is not
+        counted: the platform acting for a person is judged as that person
+        (`allows_on_behalf_of`).
+
+        This only reports the exposure; it does not refuse anything. An
+        ``owner_agents`` rule still lets the owner's agents address the agent
+        (`allows`), and closing that path needs the originating person carried
+        on agent-to-agent messages.
         """
         if self.is_open():
             return True
         return any(
             _admits_beyond(rule.users, owner_identity_ids)
-            or _admits_beyond(rule.agents, owner_agent_ids)
+            or rule.owner_agents
+            or rule.agents != []
             for rule in self.rules
         )
 

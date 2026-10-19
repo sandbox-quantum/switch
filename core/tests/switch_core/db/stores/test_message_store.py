@@ -390,6 +390,60 @@ class TestListForRoom:
         assert [m.transport_event_id for m in following] == ["$a1"]
 
 
+class TestConversationHistory:
+    """The two reads following the conversation decides from."""
+
+    async def test_a_thread_newest_first_with_its_root(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = MessageStore()
+        async with session_factory() as session:
+            room = await _make_room(session, "alpha")
+            other = await _make_room(session, "beta")
+            await store.create(session, _message(room.id, "$root"), [])
+            await store.create(session, _message(room.id, "$top"), [])
+            await store.create(
+                session, _message(room.id, "$r1", thread_root_event_id="$root"), []
+            )
+            await store.create(
+                session,
+                _message(other.id, "$elsewhere", thread_root_event_id="$root"),
+                [],
+            )
+            await store.create(
+                session, _message(room.id, "$r2", thread_root_event_id="$root"), []
+            )
+            await session.commit()
+
+            rows = await store.list_thread_newest_first(
+                session, room.id, thread_root_event_id="$root", limit=10
+            )
+            newest = await store.list_thread_newest_first(
+                session, room.id, thread_root_event_id="$root", limit=1
+            )
+
+        assert [r.transport_event_id for r in rows] == ["$r2", "$r1", "$root"]
+        assert [r.transport_event_id for r in newest] == ["$r2"]
+
+    async def test_top_level_newest_first_without_replies(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = MessageStore()
+        async with session_factory() as session:
+            room = await _make_room(session, "alpha")
+            for event_id in ("$a", "$b"):
+                await store.create(session, _message(room.id, event_id), [])
+            await store.create(
+                session, _message(room.id, "$reply", thread_root_event_id="$a"), []
+            )
+            await store.create(session, _message(room.id, "$c"), [])
+            await session.commit()
+
+            rows = await store.list_top_level_newest_first(session, room.id, limit=2)
+
+        assert [r.transport_event_id for r in rows] == ["$c", "$b"]
+
+
 class TestForeignKeyBehaviour:
     async def test_deleting_the_room_cascades_its_messages(
         self, session_factory: async_sessionmaker[AsyncSession]

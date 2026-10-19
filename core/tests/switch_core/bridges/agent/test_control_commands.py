@@ -46,7 +46,7 @@ def _client(
     placed: str | None = None,
     relayed: list[Any] | None = None,
 ) -> SimpleNamespace:
-    """Minimal AgentConsumer stand-in for _dispatch_control_command."""
+    """Minimal AgentRecipient stand-in for _dispatch_control_command."""
 
     agent = SimpleNamespace(
         id="agent-1",
@@ -84,6 +84,10 @@ def _client(
     ) -> None:
         return None
 
+    async def _enqueue(*a: Any, **k: Any) -> int:
+        enqueue.append((a, k))
+        return len(enqueue)
+
     return SimpleNamespace(
         agent=agent,
         _fresh_agent=_fresh_agent,
@@ -100,7 +104,7 @@ def _client(
             session_in_room=lambda _agent, _room: placed,
             relay_session_command=_relay,
         ),
-        _event_buffer=SimpleNamespace(enqueue=lambda *a, **k: enqueue.append((a, k))),
+        _event_buffer=SimpleNamespace(enqueue=_enqueue),
     )
 
 
@@ -195,6 +199,8 @@ async def test_live_capable_session_acks_and_enqueues(
     assert len(reply.bodies) == 1
     assert "Resetting my session" in reply.bodies[0]
     assert len(enqueue) == 1
+    # Queued in the agent's own tenant, which the buffer now takes first.
+    assert enqueue[0][0][:3] == ("tenant-1", "agent-1", "room-1")
 
 
 # ── Admin-side usage feedback (_check_control_target) ─────────────────────────

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -22,6 +22,9 @@ from switch_core.transport.observer import ParticipantMessageObserver
 from switch_core.transport.postgres import PostgresTransport
 from switch_core.transport.room_cache import RoomDeliveryCache
 
+if TYPE_CHECKING:
+    from switch_core.delivery.router import MessageRouter
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +44,7 @@ class ClientFactory:
         ephemeral: EphemeralBus,
         room_cache: RoomDeliveryCache,
         message_observer: ParticipantMessageObserver,
+        router: MessageRouter,
     ) -> None:
         self._client_store = client_store
         self._session_factory = session_factory
@@ -55,6 +59,10 @@ class ClientFactory:
         # One for the process, so every member of a room shares it.
         self._room_cache = room_cache
         self._message_observer = message_observer
+        # Every transport writes through it, and it posts agents' replies
+        # through transports built here, so it is handed how to build one.
+        self._router = router
+        router.use_transports(self.transport_for)
         self._registry: dict[
             str,
             tuple[
@@ -80,15 +88,22 @@ class ClientFactory:
         """
         self._registry[client_type] = (actor_cls, consumer_cls, consumer_kwargs)
 
-    def create(
-        self, record: Client
-    ) -> tuple[Actor[ClientConfig], Consumer[Any] | None]:
+    def has_consumer(self, client_type: str) -> bool:
+        """Whether a client of this type has a consumer, which runs in one
+        process only, the one that owns the client (`ownership.py`)."""
+        entry = self._registry.get(client_type)
+        if entry is None:
+            raise ValueError(f"Unknown client type: {client_type!r}")
+        return entry[1] is not None
+
+    def create_actor(self, record: Client) -> Actor[ClientConfig]:
+        """The actor a `clients` row becomes."""
         entry = self._registry.get(record.type)
         if entry is None:
             raise ValueError(f"Unknown client type: {record.type!r}")
-        actor_cls, consumer_cls, consumer_kwargs = entry
+        actor_cls = entry[0]
         config = actor_cls.config_class.model_validate(record.config or {})
-        actor = actor_cls(
+        return actor_cls(
             client_id=record.id,
             # Straight off the row this client *is*. `create_client` writes
             # that row inside a session with the tenant bound and the factory
@@ -103,9 +118,19 @@ class ClientFactory:
             config=config,
             transport_factory=self.transport_for,
         )
+
+    def create_consumer(
+        self, client_type: str, actor: Actor[ClientConfig]
+    ) -> Consumer[Any] | None:
+        """A fresh consumer around `actor`, or None for a type that reads
+        nothing."""
+        entry = self._registry.get(client_type)
+        if entry is None:
+            raise ValueError(f"Unknown client type: {client_type!r}")
+        _, consumer_cls, consumer_kwargs = entry
         if consumer_cls is None:
-            return actor, None
-        return actor, consumer_cls(actor=actor, **consumer_kwargs)
+            return None
+        return consumer_cls(actor=actor, **consumer_kwargs)
 
     def transport_for(self, client: Actor[Any]) -> MessageTransport:
         """The transport every client in the process runs on.
@@ -131,4 +156,5 @@ class ClientFactory:
             ephemeral=self._ephemeral,
             room_cache=self._room_cache,
             message_observer=self._message_observer,
+            router=self._router,
         )

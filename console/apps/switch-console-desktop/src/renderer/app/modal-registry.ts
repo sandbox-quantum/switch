@@ -1,4 +1,13 @@
+import {
+  ConnectorAppMoveDialog,
+  ConnectorAppRemoveDialog,
+  ConnectorAppSecretDialog,
+  ConnectorAppSetupDialog,
+} from '@renderer/features/admin/connector-app-dialogs';
+import { RenameChatModal } from '@renderer/features/chats/components/chat-modals';
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
+import { ConnectServiceModal } from '@renderer/features/connectors/connect-service-modal';
+import { DisconnectServiceDialog } from '@renderer/features/connectors/disconnect-dialog';
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
 import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
@@ -7,6 +16,7 @@ import { RemoveAgentConfigModal } from '@renderer/features/remote-hosts/remove-a
 import { CreateSessionModal } from '@renderer/features/sessions/create-session-modal/create-session-modal';
 import { DeleteSessionModal } from '@renderer/features/sessions/delete-session-modal';
 import { RenameSessionModal } from '@renderer/features/sessions/rename-session-modal';
+import { BuddySetupModal } from '@renderer/features/switch-buddy/buddy-setup-modal';
 import { AddAgentsToRoomModal } from '@renderer/features/switch-rooms/AddAgentsToRoomModal';
 import { AddAgentToRoomsModal } from '@renderer/features/switch-rooms/AddAgentToRoomsModal';
 import { DeleteRoomModal } from '@renderer/features/switch-rooms/DeleteRoomModal';
@@ -15,9 +25,9 @@ import { AssignServerModal } from '@renderer/features/switch-servers/assign-serv
 import { BundledChatSignInModal } from '@renderer/features/switch-servers/BundledChatSignIn';
 import { ClaimIdentityModal } from '@renderer/features/switch-servers/ClaimIdentityModal';
 import { ConnectChatModal } from '@renderer/features/switch-servers/ConnectChatModal';
-import { ConnectionsModal } from '@renderer/features/switch-servers/ConnectionsModal';
 import { ConnectMessagingAppModal } from '@renderer/features/switch-servers/ConnectMessagingAppModal';
 import { CreateRoomModal } from '@renderer/features/switch-servers/CreateRoomModal';
+import { DeleteAccountModal } from '@renderer/features/switch-servers/delete-account-modal';
 import { DeleteServerModal } from '@renderer/features/switch-servers/DeleteServerModal';
 import { DisconnectMessagingAppModal } from '@renderer/features/switch-servers/DisconnectMessagingAppModal';
 import { RenameServerModal } from '@renderer/features/switch-servers/RenameServerModal';
@@ -70,6 +80,7 @@ export const modalRegistry = {
   }),
   deleteSessionModal: createModal(DeleteSessionModal, { size: 'sm' }),
   addServerModal: createModal(AddServerModal, { size: 'md', dismissOnOutsideClick: false }),
+  buddySetupModal: createModal(BuddySetupModal, { size: 'lg', dismissOnOutsideClick: false }),
   createWorkspaceModal: createModal(CreateWorkspaceModal, {
     size: 'md',
     dismissOnOutsideClick: false,
@@ -85,13 +96,25 @@ export const modalRegistry = {
     dismissOnOutsideClick: false,
   }),
   deleteServerModal: createModal(DeleteServerModal, { size: 'sm' }),
+  deleteAccountModal: createModal(DeleteAccountModal, { size: 'sm', dismissOnOutsideClick: false }),
   createRoomModal: createModal(CreateRoomModal, { size: 'lg', dismissOnOutsideClick: false }),
   connectMessagingAppModal: createModal(ConnectMessagingAppModal, {
     size: 'md',
     dismissOnOutsideClick: false,
   }),
   connectChatModal: createModal(ConnectChatModal, { size: 'md' }),
-  connectionsModal: createModal(ConnectionsModal, { size: 'md' }),
+  connectServiceModal: createModal(ConnectServiceModal, { size: 'md' }),
+  disconnectServiceModal: createModal(DisconnectServiceDialog, { size: 'sm' }),
+  connectorAppSetupModal: createModal(ConnectorAppSetupDialog, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
+  connectorAppSecretModal: createModal(ConnectorAppSecretDialog, {
+    size: 'sm',
+    dismissOnOutsideClick: false,
+  }),
+  connectorAppRemoveModal: createModal(ConnectorAppRemoveDialog, { size: 'sm' }),
+  connectorAppMoveModal: createModal(ConnectorAppMoveDialog, { size: 'sm' }),
   claimIdentityModal: createModal(ClaimIdentityModal, {
     size: 'md',
     dismissOnOutsideClick: false,
@@ -115,5 +138,6 @@ export const modalRegistry = {
     dismissOnOutsideClick: false,
   }),
   deleteRoomModal: createModal(DeleteRoomModal, { size: 'sm', dismissOnOutsideClick: false }),
+  renameChatModal: createModal(RenameChatModal, { size: 'xs', dismissOnOutsideClick: false }),
   // oxlint-disable-next-line typescript/no-explicit-any
 } satisfies Record<string, ModalRegistryEntry<any, any>>;

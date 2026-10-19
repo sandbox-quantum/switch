@@ -55,10 +55,12 @@ function editAction(mode: RuntimeMode): OpencodePermissionAction {
 
 /**
  * The permission keys covering the tools of the MCP servers the caller
- * registered. OpenCode names an MCP permission `<server>_<tool>` and matches a
- * permission key as a glob, so one entry per server covers its whole surface.
+ * registered and auto-approves. OpenCode names an MCP permission
+ * `<server>_<tool>` and matches a permission key as a glob, so one entry per
+ * server covers its whole surface.
  *
- * Only explicitly supplied servers receive these rules. Native user MCP
+ * Only explicitly supplied servers receive these rules, and not a connector's,
+ * whose tools fall under `'*' → ask` like any other tool. Native user MCP
  * registrations retain their own permissions. Switch's room protocol must be
  * available so the agent can ask the room for help.
  */
@@ -135,13 +137,15 @@ export function mcpConfigFor(
   return entries;
 }
 
+/** `autoApproved` names the servers whose tools are allowed without asking. */
 export function buildConfigFile(
   mode: RuntimeMode,
-  servers: Record<string, McpServerSpec>
+  servers: Record<string, McpServerSpec>,
+  autoApproved: string[]
 ): OpencodeConfigFile {
   return {
     $schema: 'https://opencode.ai/config.json',
-    permission: permissionConfigFor(mode, Object.keys(servers)),
+    permission: permissionConfigFor(mode, autoApproved),
     mcp: mcpConfigFor(servers),
   };
 }

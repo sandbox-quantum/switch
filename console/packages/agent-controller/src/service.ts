@@ -17,6 +17,8 @@ export type ServiceSpec = {
   dataDir: string;
   envFile: string | null;
   sharedHostBundle: string | null;
+  /** The releases directory the service runs through (`<releases>/current`), and the controller installs releases into; null when it runs from where it is. */
+  releasesDir: string | null;
   path: string;
 };
 
@@ -54,13 +56,14 @@ function runArguments(spec: ServiceSpec, launchd: boolean): string[] {
     spec.dataDir,
     ...(spec.envFile ? ['--env-file', spec.envFile] : []),
     ...(spec.sharedHostBundle ? ['--shared-host-bundle', spec.sharedHostBundle] : []),
+    ...(spec.releasesDir ? ['--releases-dir', spec.releasesDir] : []),
     ...(launchd ? ['--launchd'] : []),
   ];
 }
 
 /**
- * The systemd user unit: restarted on exit code 1 only, since 2 (configuration),
- * 3 (revoked) and 4 (taken over) would fail the same way again.
+ * The systemd user unit: restarted on exit code 1 (may pass) and 7 (restarting
+ * into an update), not on 2 to 6, which would fail the same way again.
  */
 export function systemdUnit(spec: ServiceSpec): string {
   const quote = (value: string) => `"${value.replace(/(["\\])/g, '\\$1')}"`;
@@ -95,7 +98,7 @@ function xml(value: string): string {
  * The launchd agent. launchd cannot spare particular exit codes from a
  * restart, so the controller runs with `--launchd`, which ends with 0 on the
  * codes that must not restart (having logged why), and `KeepAlive` restarts
- * only an unsuccessful exit.
+ * only an unsuccessful exit: 1, and 7 (restarting into an update).
  */
 export function launchdPlist(spec: ServiceSpec, label: string, logFile: string): string {
   const strings = (values: string[]) =>

@@ -180,7 +180,7 @@ interface, Postmark, SendGrid, or your own.
 | `GATEWAY_SMTP_HOST` | `switchCore.smtp.host` (and `smtp.enabled: true`) | the relay; setting it turns e-mail on |
 | `GATEWAY_SMTP_PORT` | `switchCore.smtp.port` | default 587 |
 | `GATEWAY_SMTP_TLS` | `switchCore.smtp.tls` | `starttls` (default, port 587), `tls` (port 465), or `none` for a relay on a trusted network |
-| `GATEWAY_SMTP_USERNAME` / `GATEWAY_SMTP_PASSWORD` | `switchCore.smtp.username` / `secrets.gatewaySmtpPassword` | set both or neither |
+| `GATEWAY_SMTP_USERNAME` / `GATEWAY_SMTP_PASSWORD` | `switchCore.smtp.username` (or `secrets.gatewaySmtpUsername` with `switchCore.smtp.usernameFromSecret: true`) / `secrets.gatewaySmtpPassword` | set both or neither |
 | `GATEWAY_SMTP_FROM` | `switchCore.smtp.from` | the From address, e.g. `Switch <invites@your-domain>` |
 | `GATEWAY_INVITE_EMAILS_PER_DAY` | `switchCore.smtp.emailsPerDayPerWorkspace` | default 50 |
 

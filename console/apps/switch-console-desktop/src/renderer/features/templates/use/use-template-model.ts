@@ -1,3 +1,4 @@
+import type { ParsedAgentEntry, UnsaidRuntime } from '@main/core/agent-templates/template-document';
 import type { ParamSpec } from '@main/core/room-templates/controller';
 import {
   FIRST,
@@ -11,14 +12,31 @@ export type Values = Record<string, string | number | boolean>;
 
 /** Fill `{param}` and `{$builtin}` placeholders from `values`. A placeholder with no value yet is left as written. */
 export function interpolate(template: string, values: Values): string {
-  return template.replace(/\{(\$?\w+)\}/g, (match, key: string) => {
+  return template.replace(/\{(\$?[\w.]+)\}/g, (match, key: string) => {
     const val = values[key];
     return val !== undefined && val !== '' ? String(val) : match;
   });
 }
 
 export function hasPlaceholder(text: string): boolean {
-  return /\{\$?\w+\}/.test(text);
+  return /\{\$?[\w.]+\}/.test(text);
+}
+
+/**
+ * Whether a version 2 condition holds with these values: `"{param}"` (true
+ * when the value is), `"{param} == value"` or `"{param} != value"`. Mirrors
+ * `holds` in core's template_v2. Something that is not a condition never holds.
+ */
+export function holds(condition: string | null | undefined, values: Values): boolean {
+  if (condition === null || condition === undefined) return true;
+  const match = /^\s*\{([A-Za-z_]\w*)\}\s*(?:(==|!=)\s*(.*?))?\s*$/.exec(condition);
+  if (!match) return false;
+  const [, name, op, literal] = match;
+  const value = values[name!];
+  if (!op) return value !== undefined && value !== '' && value !== false && value !== 0;
+  const equal =
+    value !== undefined && String(value) === (literal ?? '').trim().replace(/^['"]|['"]$/g, '');
+  return op === '==' ? equal : !equal;
 }
 
 /** Every `{name}` placeholder written in `text`, without the braces. */
@@ -50,6 +68,8 @@ export function paramLabel(param: ParamSpec): string {
       return 'Provider';
     case 'location':
       return 'Runs on';
+    case 'machine':
+      return 'Machine';
     case 'directory':
       return 'Directory';
     case 'room':
@@ -166,23 +186,35 @@ export function resolveChain(
   return null;
 }
 
-/** Which section of the page a param belongs to: the agent it is written
- * into, or the room part. A `room` param always sits with the room, since
- * it says where the agent works; a param used by both sits with the agent. */
-export function sectionOf(
-  param: ParamSpec,
-  agentTexts: string[][],
+/** What a document is missing for one of its agents, in one sentence. */
+export function unsaidMessage(unsaid: UnsaidRuntime): string {
+  const what =
+    unsaid.field === 'provider'
+      ? `which coding agent runs ${unsaid.label}`
+      : unsaid.field === 'location'
+        ? `which machine ${unsaid.label} runs on`
+        : `which directory ${unsaid.label} works in`;
+  const fields = unsaid.field === 'location' ? ['location', 'machine'] : [unsaid.field];
+  const said = fields.map((f) => `\`${f}:\``).join(' or ');
+  const params = fields.map((f) => `\`${f}\``).join(' or ');
+  return `The template never says ${what}. Give it a ${said} or declare a ${params} param.`;
+}
+
+/**
+ * The params only the room part reads: written into the room document and
+ * into no agent entry. They do nothing when the room is not created.
+ */
+export function roomOnlyParams(
+  params: ParamSpec[],
+  agents: Pick<ParsedAgentEntry, 'placeholders'>[],
   roomText: string
-): { section: 'agent'; index: number } | { section: 'room' } {
-  if (param.type !== 'room') {
-    const index = agentTexts.findIndex((texts) =>
-      texts.some((t) => placeholdersIn(t).includes(param.name))
-    );
-    if (index >= 0) return { section: 'agent', index };
-  }
-  if (param.type === 'room' || placeholdersIn(roomText).includes(param.name))
-    return { section: 'room' };
-  return { section: 'agent', index: 0 };
+): Set<string> {
+  const inRoom = new Set(placeholdersIn(roomText));
+  return new Set(
+    params
+      .filter((p) => inRoom.has(p.name) && !agents.some((a) => a.placeholders.includes(p.name)))
+      .map((p) => p.name)
+  );
 }
 
 export type CreateStepStatus = 'waiting' | 'running' | 'done' | 'failed';
@@ -194,6 +226,8 @@ export type CreateStep = {
   status: CreateStepStatus;
   /** A problem that did not stop the run, such as a repository that could not be cloned. */
   warning?: string | null;
+  /** Why the step failed, when it says. */
+  error?: string | null;
 };
 
 export function createStepStatus(status: SlotStatus): CreateStepStatus {
@@ -220,8 +254,23 @@ export function agentCreateSteps(
     clones: boolean;
     setsPolicy: boolean;
     cloneWarning: string | null;
+    /** A managed agent: the server makes it, its directory and who may address it in one call, on `machine`. */
+    managed: { machine: string | null } | null;
+    error: string | null;
   }
 ): CreateStep[] {
+  if (agent.managed) {
+    return [
+      {
+        key: `${index}:create`,
+        label: agent.managed.machine
+          ? `Create ${agent.name} on ${agent.managed.machine}`
+          : `Create ${agent.name}`,
+        status: createStepStatus(agent.status),
+        error: agent.status === 'failed' ? agent.error : null,
+      },
+    ];
+  }
   const order: SlotStep[] = agent.setsPolicy
     ? ['prepare', 'create', 'policy']
     : ['prepare', 'create'];
@@ -245,5 +294,6 @@ export function agentCreateSteps(
             ? 'done'
             : createStepStatus(agent.status),
     warning: step === 'prepare' ? agent.cloneWarning : null,
+    error: k === at && agent.status === 'failed' ? agent.error : null,
   }));
 }

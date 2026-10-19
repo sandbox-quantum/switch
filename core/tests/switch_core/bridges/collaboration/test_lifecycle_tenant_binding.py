@@ -44,6 +44,16 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.keys import Keyring
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 from tests.conftest import RLSHarness
+from tests.ownership import SoleOwner
+
+
+async def _boot(service: CollaborationBridgeLifecycleService) -> None:
+    """Start every bridge as `main` does at boot: each is wanted, the bridges
+    this process holds start with the ownership's first balance, and the rest
+    start quietly after it."""
+    await service.start_all()
+    await service._owned.settle()
+    await service.start_quiet_copies()
 
 
 def _service(
@@ -72,6 +82,8 @@ def _service(
         session_activity_listener=MagicMock(),
         session_activity_service=MagicMock(),
         connections=MagicMock(),
+        ownership=SoleOwner(),
+        cursor_writer=SoleOwner.cursor_writer(session_factory),
     )
 
 
@@ -156,7 +168,7 @@ async def test_start_all_binds_nothing_around_starting_a_bridge(
     service.start = _fake_start  # type: ignore[method-assign]
 
     assert current_tenant_id() is None
-    await service.start_all()
+    await _boot(service)
     assert current_tenant_id() is None
 
     assert seen == {bridge_a: None, bridge_b: None}
@@ -187,7 +199,7 @@ async def test_a_failing_bridge_leaves_nothing_bound_for_the_next_one(
 
     service.start = _fake_start  # type: ignore[method-assign]
 
-    await service.start_all()
+    await _boot(service)
 
     assert seen == {bridge_a: None, bridge_b: None}
     assert current_tenant_id() is None
@@ -267,12 +279,16 @@ async def test_the_bridge_task_unbinds_and_then_binds_per_unit_of_work(
     class _Client:
         client_id = ""
 
-        async def start(self) -> None:
+        async def start(self, progress: object) -> None:
             seen["client"] = current_tenant_id()
 
     workspace_consumer = _Client()
     workspace_consumer.client_id = client_id
 
+    # What `start` leaves for the task: the workspace consumer, and the
+    # cursors it reads its rooms under.
+    service._workspace_consumers[bridge_id] = workspace_consumer  # type: ignore[assignment]
+    service._workspace_cursors[bridge_id] = MagicMock()
     leaked: list[str | None] = []
     with tenant_scope(caller_tenant):
         await service._run_bridge(

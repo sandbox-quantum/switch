@@ -43,7 +43,11 @@ export const CODEX_SERVER_REQUESTS = {
   mcpElicitation: 'mcpServer/elicitation/request',
 } as const;
 
-export type CodexAskForApproval = 'untrusted' | 'on-request' | 'never';
+/**
+ * `untrusted` is retired: codex-cli 0.162 refuses it in configuration, and the
+ * documented replacement is a project `trust_level` (see `threadModeConfig`).
+ */
+export type CodexAskForApproval = 'on-request' | 'never';
 export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
 export type CodexApprovalsReviewer = 'user' | 'auto_review' | 'guardian_subagent';
 export type CodexTurnStatus = 'completed' | 'interrupted' | 'failed' | 'inProgress';
@@ -282,9 +286,25 @@ export interface CodexToolRequestUserInputParams {
   }>;
 }
 
+/**
+ * What Codex adds to an elicitation it raises to approve an MCP tool call
+ * (codex-cli 0.162.1). It names no tool: the tool is only in `message`
+ * ("Allow the <server> MCP server to run tool \"<tool>\"?").
+ */
+export interface CodexMcpToolCallMeta {
+  codex_approval_kind?: string;
+  /** The scopes an accept may keep the approval for: `session`, `always`. */
+  persist?: string[];
+  tool_description?: string;
+  tool_params?: Record<string, unknown>;
+  tool_params_display?: Array<{ name: string; value: unknown; display_name?: string }>;
+}
+
 export interface CodexMcpElicitationParams {
   threadId: string;
   turnId: string | null;
   serverName: string;
   message: string;
+  /** Present on a tool-call approval; a server's own elicitation carries none. */
+  _meta?: CodexMcpToolCallMeta | null;
 }

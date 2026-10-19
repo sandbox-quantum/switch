@@ -1,19 +1,23 @@
-import { useQueryClient } from '@tanstack/react-query';
-import { MoreVertical, Play, Square, Trash2 } from 'lucide-react';
+import { MoreVertical, Power, PowerOff, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { type ReactNode, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { ChatHeaderControls } from '@renderer/features/chats/components/chat-header';
+import { useAgentActivities } from '@renderer/features/chats/components/chat-panel';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
-import { ServerStatusPill } from '@renderer/features/switch-servers/server-presentation';
+import {
+  ServerStatusPill,
+  serverState,
+} from '@renderer/features/switch-servers/server-presentation';
+import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
+import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { TitlebarBreadcrumb } from '@renderer/lib/components/titlebar/titlebar-breadcrumb';
-import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
-import { toast } from '@renderer/lib/hooks/use-toast';
-import { rpc } from '@renderer/lib/ipc';
-import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
-import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
+import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { Button } from '@renderer/lib/ui/button';
 import {
   DropdownMenu,
@@ -23,11 +27,30 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import {
+  AgentChats,
+  agentSectionLabel,
+  openAgentChat,
+  openAgentRoom,
+  useAgentSection,
+} from './agent-chats';
+import { type AgentSection, isAgentSection } from './agent-sections';
 import { ManagedAgentPage } from './managed-agent-page';
 import { managedAgentLabel } from './managed-agent-state';
-import { MANAGED_AGENTS_KEY, useManagedAgents } from './use-managed-agents';
+import { useManagedAgentActions } from './use-managed-agent-actions';
+import { useManagedAgents } from './use-managed-agents';
 
-type ManagedAgentParams = { serverId: string; agentId: string; name: string };
+type ManagedAgentParams = {
+  serverId: string;
+  agentId: string;
+  name: string;
+  /** The chat open on the agent's page. */
+  roomId?: string;
+  /** Shown instead of a chat when set. */
+  section?: AgentSection;
+  /** A room the agent is in, summarised instead of a chat when set. */
+  room?: string;
+};
 
 const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
   const { params } = useParams('managedAgent');
@@ -35,31 +58,73 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
   const agent = agents.data?.find((listed) => listed.agentId === params.agentId) ?? null;
   const server = switchServersStore.servers.find((s) => s.id === params.serverId) ?? null;
   const label = agent ? managedAgentLabel(agent) : params.name;
+  const chatsOn = useFeatureFlags(params.serverId).agent_chats;
+  const { section } = useAgentSection(params.serverId, agent, params.section);
+  const room = chatsOn && agent ? openAgentRoom(agent, params.room, section) : null;
+  const chat = chatsOn && agent && !section && !room ? openAgentChat(agent, params.roomId) : null;
+  const roomBridge = room && switchRoomsStore.roomBridgeTypeById(room);
+  const activities = useAgentActivities(params.serverId, chat ?? undefined);
+  const crumb = {
+    key: 'agent',
+    // Nothing until the agent is read: a stand-in drawn from its name
+    // would be replaced by its own picture a moment later.
+    icon: agent ? (
+      <AgentAvatar
+        name={label}
+        iconUrl={agent.iconUrl}
+        serverId={params.serverId}
+        size={16}
+        className="bg-transparent"
+      />
+    ) : (
+      <span className="inline-block size-4 shrink-0" aria-hidden />
+    ),
+    label,
+  };
+  const pill = server && <ServerStatusPill server={server} />;
+  if (!chatsOn)
+    return (
+      <Titlebar
+        leftSlot={<TitlebarBreadcrumb crumbs={[crumb]} />}
+        rightSlot={
+          <div className="mr-1 flex items-center gap-1.5">
+            {pill}
+            {agent && <ManagedAgentActionsMenu agent={agent} />}
+          </div>
+        }
+      />
+    );
   return (
     <Titlebar
-      leftSlot={
-        <TitlebarBreadcrumb
-          crumbs={[
-            {
-              key: 'agent',
-              icon: (
-                <AgentAvatar
-                  name={label}
-                  iconUrl={agent?.iconUrl ?? null}
-                  size={16}
-                  className="bg-transparent"
-                />
-              ),
-              label,
-            },
-          ]}
-        />
-      }
+      className="border-b border-border pr-[7px]"
+      leftClassName="w-[300px] shrink-0 self-stretch border-r border-border [-webkit-app-region:drag]"
+      leftSlot={<TitlebarBreadcrumb crumbs={[{ ...crumb, maxWidthClassName: 'max-w-none' }]} />}
+      rightClassName="min-w-0 flex-1 justify-between gap-3 pl-4 [-webkit-app-region:drag]"
       rightSlot={
-        <div className="mr-1 flex items-center gap-1.5">
-          {server && <ServerStatusPill server={server} />}
-          {agent && <ManagedAgentActionsMenu agent={agent} />}
-        </div>
+        <>
+          <span className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium">
+            {room && hasBridgeIcon(roomBridge) && <BridgeIcon bridgeType={roomBridge} size={16} />}
+            {section
+              ? agentSectionLabel(section)
+              : room
+                ? (switchRoomsStore.roomNameById(room) ?? room)
+                : chat?.name}
+          </span>
+          <div className="flex shrink-0 items-center gap-1.5 [-webkit-app-region:no-drag]">
+            {server &&
+              serverState(server) !== 'connected' &&
+              serverState(server) !== 'running-local' &&
+              pill}
+            {agent &&
+              (chat ? (
+                <ChatHeaderControls serverId={params.serverId} chat={chat} activities={activities}>
+                  <ManagedAgentActionItems agent={agent} />
+                </ChatHeaderControls>
+              ) : (
+                <ManagedAgentActionsMenu agent={agent} />
+              ))}
+          </div>
+        </>
       }
     />
   );
@@ -67,78 +132,54 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
 
 /** Starting, stopping and deleting the agent, from the titlebar's menu as a Console agent's actions are. */
 function ManagedAgentActionsMenu({ agent }: { agent: ManagedAgentView }) {
-  const label = managedAgentLabel(agent);
-  const queryClient = useQueryClient();
-  const { navigate } = useNavigate();
-  const confirm = useShowModal('confirmActionModal');
-  const [busy, setBusy] = useState(false);
-
-  const act = async (fallback: string, run: () => Promise<void>) => {
-    setBusy(true);
-    try {
-      await run();
-      await queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY] });
-    } catch (failure) {
-      const { headline, detail } = describeFailure(failure, fallback);
-      toast({ title: headline, description: detail ?? undefined, variant: 'destructive' });
-    } finally {
-      setBusy(false);
-    }
-  };
-  const setDesiredState = (desiredState: 'running' | 'stopped') =>
-    act(
-      desiredState === 'running'
-        ? `${label} could not be started.`
-        : `${label} could not be stopped.`,
-      () =>
-        rpc.managedAgents.setDesiredState({
-          serverId: agent.serverId,
-          agentId: agent.agentId,
-          desiredState,
-        })
-    );
-  const remove = () =>
-    confirm({
-      title: `Delete ${label}?`,
-      description: `Its machine stops it and it is deleted from Switch, for every room it is in.`,
-      confirmLabel: 'Delete',
-      onSuccess: () =>
-        void act(`${label} could not be deleted.`, async () => {
-          await rpc.managedAgents.remove({ serverId: agent.serverId, agentId: agent.agentId });
-          // Its name is free again: the New agent form checks names against this list.
-          await queryClient.invalidateQueries({ queryKey: ['workspace-agents'] });
-          navigate('serverAgents', { serverId: agent.serverId });
-        }),
-    });
-
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
         render={
-          <Button variant="ghost" size="sm" className="size-7 p-0" aria-label={`${label} actions`}>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="size-7 p-0"
+            aria-label={`${managedAgentLabel(agent)} actions`}
+          >
             <MoreVertical className="size-4" />
           </Button>
         }
       />
       <DropdownMenuContent align="end">
-        {agent.desiredState === 'running' ? (
-          <DropdownMenuItem disabled={busy} onClick={() => void setDesiredState('stopped')}>
-            <Square className="size-4" />
-            Stop
-          </DropdownMenuItem>
-        ) : (
-          <DropdownMenuItem disabled={busy} onClick={() => void setDesiredState('running')}>
-            <Play className="size-4" />
-            Start
-          </DropdownMenuItem>
-        )}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem variant="destructive" disabled={busy} onClick={remove}>
-          <Trash2 className="size-4" />
-          Delete agent…
-        </DropdownMenuItem>
+        <ManagedAgentActionItems agent={agent} />
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+function ManagedAgentActionItems({ agent }: { agent: ManagedAgentView }) {
+  const { busy, setDesiredState, remove } = useManagedAgentActions(agent);
+  const chatsOn = useFeatureFlags(agent.serverId).agent_chats;
+
+  return (
+    <>
+      {agent.desiredState === 'running' ? (
+        <DropdownMenuItem disabled={busy} onClick={() => void setDesiredState('stopped')}>
+          <PowerOff className="size-4" />
+          Turn off agent
+        </DropdownMenuItem>
+      ) : (
+        <DropdownMenuItem disabled={busy} onClick={() => void setDesiredState('running')}>
+          <Power className="size-4" />
+          Turn on agent
+        </DropdownMenuItem>
+      )}
+      {!chatsOn && (
+        <>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem variant="destructive" disabled={busy} onClick={remove}>
+            <Trash2 className="size-4" />
+            Delete agent…
+          </DropdownMenuItem>
+        </>
+      )}
+    </>
   );
 }
 
@@ -146,6 +187,7 @@ const ManagedAgentPanel = observer(function ManagedAgentPanel() {
   const { params } = useParams('managedAgent');
   const agents = useManagedAgents(params.serverId);
   const agent = agents.data?.find((listed) => listed.agentId === params.agentId);
+  const chatsOn = useFeatureFlags(params.serverId).agent_chats;
   if (agents.error)
     return (
       <ServerPage width={900} title={params.name} description="">
@@ -176,7 +218,8 @@ const ManagedAgentPanel = observer(function ManagedAgentPanel() {
         </p>
       </ServerPage>
     );
-  return <ManagedAgentPage key={agent.agentId} agent={agent} />;
+  if (!chatsOn) return <ManagedAgentPage key={agent.agentId} agent={agent} serviceGrants />;
+  return <AgentChats key={agent.agentId} agent={agent} />;
 });
 
 export const managedAgentView = {
@@ -188,7 +231,10 @@ export const managedAgentView = {
     if (
       typeof value.serverId !== 'string' ||
       typeof value.agentId !== 'string' ||
-      typeof value.name !== 'string'
+      typeof value.name !== 'string' ||
+      (value.roomId !== undefined && typeof value.roomId !== 'string') ||
+      (value.section !== undefined && !isAgentSection(value.section)) ||
+      (value.room !== undefined && typeof value.room !== 'string')
     )
       return { ok: false, redirect: 'home', discardParams: true };
     return { ok: true };

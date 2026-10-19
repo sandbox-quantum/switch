@@ -166,9 +166,13 @@ export async function resolveChannelEmbed(params: {
     if (externalChannelUrl) {
       return { kind: 'external', url: externalChannelUrl, platform: bridgeType };
     }
+    // The server sends no link both for a room with no channel and while its
+    // Mattermost bridge is not running, which on a local server is the minutes
+    // Mattermost takes to come up after the server does.
     return {
       kind: 'unavailable',
-      reason: 'No Mattermost channel is linked to this room yet.',
+      reason:
+        'This room’s Mattermost channel can’t be reached right now. If the server has just started, Mattermost can take a few minutes to come up.',
     };
   }
 

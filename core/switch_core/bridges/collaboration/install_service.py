@@ -305,9 +305,6 @@ class MessagingInstallService:
         self._lifecycle = lifecycle
         self._public_origin = public_origin
         self._keyring = keyring
-        # Burnt claim states awaiting an answer: state id -> (chat, when). See
-        # `propose`.
-        self._proposals: dict[str, tuple[str, float]] = {}
 
     def _redirect_uri(self, platform: str) -> str:
         """Where the platform sends the browser back to.
@@ -749,10 +746,9 @@ class MessagingInstallService:
         The claim-based counterpart of `complete`: verify, then burn the state
         and commit before anything else, so a code seen in the chat — in the
         claim itself, or behind the proposal's buttons — is dead from here on.
-        The burnt state is then held for this one chat, and only an answer from
-        it can decide it (see `connect`). Held in memory: the app runs on one
-        pod, and a restart costs an unanswered proposal, whose answer is then
-        refused as expired.
+        The burnt state is held for this one chat, in its row, and only an
+        answer from it can decide it (see `connect`), whichever switch-core
+        process the answer reaches.
 
         Everything `connect` would refuse is refused here first, so a chat is
         only asked about a claim that can still succeed.
@@ -776,15 +772,14 @@ class MessagingInstallService:
                     f"the {platform} workspace {chat_id} is already connected to Switch"
                 )
             try:
-                burnt = await self._burn(state)
+                burnt = await self._burn(state, proposed_in=chat_id)
             except MessagingInstallStateError:
-                if self._proposed_chat(state.state_id) == chat_id:
+                if await self._proposed_chat(state) == chat_id:
                     raise InstallClaimRepeated(
                         f"the {platform} workspace {chat_id} was already asked "
                         "about this claim"
                     ) from None
                 raise
-            self._proposals[state.state_id] = (chat_id, time.monotonic())
 
             async with tenant_session(
                 self._session_factory, state.tenant_id
@@ -916,16 +911,15 @@ class MessagingInstallService:
             )
             return attached
 
-    def _proposed_chat(self, state_id: str) -> str | None:
+    async def _proposed_chat(self, state: InstallState) -> str | None:
         """The chat a burnt state was proposed in, while it can be answered."""
-        held = self._proposals.get(state_id)
-        if held is None:
-            return None
-        chat_id, proposed_at = held
-        if time.monotonic() - proposed_at > CONFIRM_TTL.total_seconds():
-            del self._proposals[state_id]
-            return None
-        return chat_id
+        async with tenant_session(self._session_factory, state.tenant_id) as session:
+            return await self._store.proposed_chat(
+                session,
+                state_id=state.state_id,
+                platform=state.platform,
+                window=CONFIRM_TTL,
+            )
 
     async def _decide(
         self,
@@ -940,7 +934,8 @@ class MessagingInstallService:
         from another. Who answered is checked before the state is decided, so
         a refused press leaves the proposal for an admin to answer.
         """
-        if self._proposed_chat(state.state_id) != claim.grant.external_workspace_id:
+        chat_id = claim.grant.external_workspace_id
+        if await self._proposed_chat(state) != chat_id:
             raise MessagingInstallStateError(
                 "this claim was not proposed in this chat, or its proposal has "
                 "expired. Start again from Switch."
@@ -952,9 +947,9 @@ class MessagingInstallService:
                 state_id=state.state_id,
                 platform=state.platform,
                 window=CONFIRM_TTL,
+                proposed_in=chat_id,
             )
             await session.commit()
-        self._proposals.pop(state.state_id, None)
         return decided
 
     @staticmethod
@@ -1019,16 +1014,21 @@ class MessagingInstallService:
                     raise
             await asyncio.sleep(_BRIDGE_START_POLL)
 
-    async def _burn(self, state: InstallState) -> MessagingInstallState:
+    async def _burn(
+        self, state: InstallState, *, proposed_in: str | None = None
+    ) -> MessagingInstallState:
         """Redeem a verified state, and commit, before anything else happens.
 
         Shared by both ways an install completes, and in its own transaction
         for the reason the module docstring gives: a replay must fail even if
-        everything after this does.
+        everything after this does. A claim names the chat it is put to.
         """
         async with tenant_session(self._session_factory, state.tenant_id) as session:
             burnt = await self._store.redeem_state(
-                session, state_id=state.state_id, platform=state.platform
+                session,
+                state_id=state.state_id,
+                platform=state.platform,
+                proposed_in=proposed_in,
             )
             await session.commit()
         return burnt

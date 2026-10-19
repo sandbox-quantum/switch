@@ -1,117 +1,124 @@
-import { Link2, Server, TriangleAlert, Wrench } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { buddyIntroStore } from '@renderer/features/switch-buddy/buddy-intro-store';
+import { BuddyStep } from '@renderer/features/switch-buddy/buddy-step';
+import { openBuddyChat } from '@renderer/features/switch-buddy/open-buddy';
 import {
-  ChoiceCard,
   ExternalServerStep,
   LocalSetupStep,
-  RemoteHostSetupStep,
   SignInStep,
 } from '@renderer/features/switch-servers/AddServerModal';
-import { LinkAccountsStep } from '@renderer/features/switch-servers/link-accounts-step';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useSwitchCloud } from '@renderer/features/switch-servers/use-switch-cloud';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { report } from '@renderer/lib/telemetry/report';
-import { Alert, AlertAction, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
-import { Button } from '@renderer/lib/ui/button';
-import { Spinner } from '@renderer/lib/ui/spinner';
-import { WizardChromeProvider, WizardFrame } from '@renderer/lib/ui/wizard-frame';
+import { WizardChromeProvider } from '@renderer/lib/ui/wizard-frame';
 import type {
   AddServerChoiceName,
   AddServerStepName,
 } from '@shared/core/switch-servers/add-server-steps';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import type { RendererTelemetryEvents } from '@shared/core/telemetry/renderer-events';
 import { CreateWorkspacePage } from './create-workspace-page';
-import { AcceptInvitePage, InvitePage } from './invite-pages';
+import { type CloudChoiceState, HowToRunPage } from './how-to-run-page';
 import { onboardingStore, type OnboardingPage } from './onboarding-store';
 import { PickWorkspacePage } from './pick-workspace-page';
-import { WelcomePage, type WelcomeCloud } from './welcome-page';
+import { WelcomePage } from './welcome-page';
 
 /**
  * The first-run pages and the add-server wizard's steps, named against each
  * other so both funnels answer the same question.
  *
- * They are the same steps — the first-run pages are the wizard drawn full
- * window — so reporting them under new names would split "how far did people
- * get" in two. `firstRun` on the event is what keeps them apart where it
- * matters. The welcome page belongs to neither: nothing has been chosen on it
- * and there is no server being added yet.
- *
- * The workspace pages are unreported for the opposite reason: they are not
- * steps of the add-server wizard at all — the modal has nothing like them,
- * because by the time you open it you are already in a workspace — so counting
- * them here would put drop-offs from one funnel into the other's numbers.
+ * The pages that set a server up are the wizard's own steps drawn full window,
+ * so reporting them under new names would split "how far did people get" in
+ * two. `firstRun` on the event is what keeps them apart where it matters. The
+ * welcome, workspace and buddy pages belong to no step of the wizard and are
+ * not reported here.
  */
 const STEP_FOR_PAGE: Record<OnboardingPage, AddServerStepName | null> = {
   welcome: null,
-  invite: null,
-  whoRuns: 'choose',
+  howToRun: 'choose',
   local: 'local',
-  remoteHost: 'remoteHost',
   connect: 'external',
   signIn: 'signIn',
   pickWorkspace: null,
   createWorkspace: null,
-  acceptInvite: null,
-  linkAccounts: 'linkAccounts',
+  meetBuddy: null,
 };
 
 /**
- * Which path each page belongs to.
- *
- * Unlike the modal's, these barely inherit: the only way to reach sign-in on a
- * fresh install is by connecting to a server someone else runs. Whether that
- * server was typed in or was Switch Cloud is the one thing the table cannot
- * know, so `choiceForPage` refines it.
+ * Which path each page belongs to. Whether a server signed in to was typed in,
+ * was Switch Cloud or was started here is the one thing the table cannot know,
+ * so `choiceForPage` refines it.
  */
 const CHOICE_FOR_PAGE: Record<OnboardingPage, AddServerChoiceName> = {
   welcome: 'none',
-  invite: 'none',
-  whoRuns: 'none',
+  howToRun: 'none',
   local: 'local',
-  remoteHost: 'remoteHost',
   connect: 'external',
   signIn: 'external',
   pickWorkspace: 'external',
   createWorkspace: 'external',
-  acceptInvite: 'external',
-  linkAccounts: 'external',
+  meetBuddy: 'external',
 };
 
 /**
- * Everything the window shows before there is a server to show.
+ * Everything the window shows before there is a workspace to show: what
+ * Switch is, where it runs, signing in, the workspace, and meeting
+ * switch-buddy, the first agent, which the flow ends in a chat with.
  *
- * The pages after the first are the add-server wizard's own steps, drawn full
- * window instead of in a dialog. Setting up a server is the same three
- * questions whether you have none or nine, and a first-run copy of them would
- * be a second place for the Docker check, the connection form and the sign-in
- * to drift from what the rest of the app does.
- *
- * Running a managed stack on a remote host is offered only when there is a host
- * to run it on. It needs one onboarded over SSH, which a fresh install has none
- * of — but onboarding a host needs no server, so someone who deleted their last
- * one may well arrive here with hosts already set up, and hiding the path from
- * them would leave it unreachable.
+ * The pages that set the server up are the add-server wizard's own steps,
+ * drawn full window instead of in a dialog, so the Docker check, the
+ * connection form and the sign-in cannot drift from what the rest of the app
+ * does.
  */
+/** Each page as the first-run funnel names it. */
+const FUNNEL_PAGE: Record<OnboardingPage, RendererTelemetryEvents['onboarding_page']['page']> = {
+  welcome: 'welcome',
+  howToRun: 'how_to_run',
+  local: 'local_setup',
+  connect: 'server_address',
+  signIn: 'sign_in',
+  pickWorkspace: 'choose_workspace',
+  createWorkspace: 'create_workspace',
+  meetBuddy: 'meet_buddy',
+};
+
+/** How the install runs Switch, once the page on screen says. */
+function funnelPath(page: OnboardingPage): RendererTelemetryEvents['onboarding_page']['path'] {
+  if (page === 'welcome' || page === 'howToRun') return 'none';
+  if (page === 'local') return 'local';
+  if (page === 'connect') return 'external';
+  return onboardingStore.via;
+}
+
 export const OnboardingFlow = observer(function OnboardingFlow() {
   const { navigate } = useNavigate();
+  const page = onboardingStore.page;
+  // switch-buddy runs on this computer at the end, whatever server is chosen:
+  // its providers are checked now, while the person signs in, so the buddy's
+  // page knows what is signed in by the time it opens.
+  useEffect(() => {
+    void rpc.embeddedController.precheckProviders();
+  }, []);
+  // Every page as it opens, so the last one an install reports is where it
+  // stopped.
+  useEffect(() => {
+    // The workspace picker says so itself: it often moves straight on, and a
+    // page the person never saw must not count as reached.
+    if (page === 'pickWorkspace') return;
+    report('onboarding_page', { page: FUNNEL_PAGE[page], path: funnelPath(page) });
+  }, [page]);
 
   const goTo = (page: OnboardingPage) => {
     onboardingStore.goTo(page);
     reportPage(page);
   };
 
-  /**
-   * Leave the first-run pages for the app they were setting up.
-   *
-   * Landing on the new server's page rather than wherever the window would
-   * otherwise open: the flow was about that server, and dropping the user into
-   * an empty home view would make the last ten minutes look like they did
-   * nothing.
-   */
+  /** Leave the first-run pages for the app, on the server they set up. */
   const finish = (serverId: string | null) => {
     onboardingStore.reset();
     if (serverId === null) return;
@@ -119,20 +126,28 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
     navigate('server', { serverId });
   };
 
-  // The server as the list has it, not as the flow remembers it. Once one
-  // exists the window is the workspace again for any view that does not need a
-  // server, so it can be deleted from under the flow — and a form aimed at a
-  // row that is gone fails on submit with no way back to a working one.
+  /** Leave them for the buddy's chat: its own once it exists, else the one waiting for a provider. */
+  const finishWithBuddy = async (
+    serverId: string,
+    agent: { agentId: string; name: string } | null
+  ) => {
+    // The destination is chosen, and its chat found or made, while the flow
+    // is still on screen: ending the flow first would draw the app's home
+    // page for the moment that takes, then jump to the buddy.
+    await switchServersStore.setActive(serverId);
+    if (agent) await openBuddyChat(serverId, agent);
+    else {
+      buddyIntroStore.skipped();
+      navigate('switchBuddy', { serverId });
+    }
+    onboardingStore.reset();
+  };
+
+  // The server as the list has it, not as the flow remembers it: it can be
+  // deleted from under the flow once the window is the workspace again for a
+  // view that does not need one.
   const server = switchServersStore.serverById(pageServerId());
 
-  /**
-   * Leave the flow for the app, with the server set up but the rest not done.
-   *
-   * Offered only once the page on screen has a server of its own, which is both
-   * when there is something to come back to and when the flow stops being the
-   * only thing the window can draw. Before that, stepping back off the welcome
-   * page is the way out.
-   */
   const exit =
     server !== null
       ? { label: 'Finish later', onExit: () => finish(server.id) }
@@ -146,20 +161,13 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
     error: null,
   });
 
-  /**
-   * Register Switch Cloud and go straight to signing in to it.
-   *
-   * There is nothing to ask first: the address is the build's, and the name is
-   * the Cloud's. The connect page's form would be a page of fields already
-   * filled in.
-   */
+  /** Register Switch Cloud and go straight to signing in to it: there is nothing to ask first. */
   const connectToCloud = () => {
     setCloudAttempt({ connecting: true, error: null });
     switchServersStore.connectToSwitchCloud().then(
       (added) => {
         setCloudAttempt({ connecting: false, error: null });
-        onboardingStore.connected(added, 'cloud');
-        reportPage('signIn');
+        connectedTo(added, 'cloud');
       },
       (cause) => {
         const failure = describeFailure(cause, 'Could not connect to Switch Cloud.');
@@ -171,25 +179,20 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
     );
   };
 
-  const welcomeCloud: WelcomeCloud =
+  const cloudChoice: CloudChoiceState =
     cloud.kind === 'open' ? { ...cloud, ...cloudAttempt, onConnect: connectToCloud } : cloud;
 
   return (
     <WizardChromeProvider chrome="page" exit={exit}>
-      {currentPage(server, welcomeCloud, goTo, finish)}
+      {currentPage(server, cloudChoice, goTo, finish, finishWithBuddy)}
     </WizardChromeProvider>
   );
 });
 
 /**
- * The server the page on screen is the setup of, if it has one yet.
- *
- * Asked per page rather than kept as one field, because the paths reach a
- * server by different means and none of them owns another's: the connect page
- * hands one over and every page after it works on that same one, while each
- * managed page brings its own up. Reading a single field instead offered a way
- * out to a server the current page had nothing to do with — connect to one,
- * walk back, choose the local path, and the exit still pointed at the first.
+ * The server the page on screen is the setup of, if it has one yet: the one a
+ * managed path brought up, while its page is on screen, or the one signed in
+ * to on the pages after.
  */
 function pageServerId(): string | null {
   const page = onboardingStore.page;
@@ -198,10 +201,24 @@ function pageServerId(): string | null {
   return onboardingStore.server?.id ?? null;
 }
 
+/**
+ * A server was added or found: sign in to it, unless this Console is signed in
+ * already — replaying these pages against a server it knows — when the
+ * workspace is next.
+ */
+function connectedTo(server: SwitchServer, via: 'external' | 'cloud'): void {
+  onboardingStore.connected(server, via);
+  if (switchServersStore.isConnected(server.id)) {
+    onboardingStore.goTo('pickWorkspace');
+    return;
+  }
+  reportPage('signIn');
+}
+
 function choiceForPage(page: OnboardingPage): AddServerChoiceName {
   const choice = CHOICE_FOR_PAGE[page];
-  if (choice === 'external' && page !== 'connect' && onboardingStore.via === 'cloud')
-    return 'cloud';
+  if (choice === 'external' && page !== 'connect' && onboardingStore.via !== 'external')
+    return onboardingStore.via;
   return choice;
 }
 
@@ -213,86 +230,56 @@ function reportPage(page: OnboardingPage): void {
 
 function currentPage(
   server: SwitchServer | null,
-  welcomeCloud: WelcomeCloud,
+  cloud: CloudChoiceState,
   goTo: (page: OnboardingPage) => void,
-  finish: (serverId: string | null) => void
+  finish: (serverId: string | null) => void,
+  finishWithBuddy: (
+    serverId: string,
+    agent: { agentId: string; name: string } | null
+  ) => Promise<void>
 ) {
   switch (onboardingStore.page) {
     case 'welcome':
       return (
         <WelcomePage
-          cloud={welcomeCloud}
-          onContinue={() => goTo('whoRuns')}
-          onInvite={() => goTo('invite')}
+          onContinue={() => goTo('howToRun')}
           onLeave={onboardingStore.rehearsal ? () => finish(null) : null}
         />
       );
-    case 'invite':
+    case 'howToRun':
       return (
-        <InvitePage
-          onBack={() => goTo('welcome')}
-          onResolved={(invite, found) => {
-            onboardingStore.holdInvite(invite);
-            if (found.kind === 'known') {
-              onboardingStore.connected(found.server, found.via);
-              reportPage('signIn');
-            } else {
-              goTo('connect');
-            }
-          }}
-        />
-      );
-    case 'whoRuns':
-      return (
-        <WhoRunsPage
+        <HowToRunPage
+          cloud={cloud}
           onBack={() => goTo('welcome')}
           onLocal={() => goTo('local')}
-          onRemoteHost={() => goTo('remoteHost')}
           onExternal={() => goTo('connect')}
         />
       );
     case 'local':
       return (
         <LocalSetupStep
-          onBack={() => goTo('whoRuns')}
-          onDone={finish}
+          onBack={() => goTo('howToRun')}
+          onDone={(serverId) => {
+            // Console signed in to the stack it runs as its admin: the
+            // workspace is next, not a sign-in page.
+            const started = serverId === null ? null : switchServersStore.serverById(serverId);
+            if (started) onboardingStore.startedLocally(started);
+            else finish(serverId);
+          }}
           onClose={null}
           onRegistered={(serverId) => onboardingStore.registered('local', serverId)}
         />
       );
-    case 'remoteHost':
-      return (
-        <RemoteHostSetupStep
-          onBack={() => goTo('whoRuns')}
-          onDone={finish}
-          onClose={() => goTo('whoRuns')}
-          onRegistered={(serverId) => onboardingStore.registered('remoteHost', serverId)}
-        />
-      );
     case 'signIn':
-      // Both of these need the server the connect page added. Without one there
-      // is nothing to sign in to, so the flow goes back to the page that makes
-      // it rather than drawing a form against nothing.
+      // Needs the server the previous page added; without one the flow goes
+      // back to the page that makes it rather than drawing a form against nothing.
       if (server === null) break;
       return (
         <SignInStep
           server={server}
-          // The Cloud was chosen on the welcome page, with no form in between
-          // to go back to. An invite link names its server, so the page it was
-          // pasted on is where a different one is chosen.
-          onBack={() =>
-            goTo(
-              onboardingStore.invite !== null
-                ? 'invite'
-                : onboardingStore.via === 'cloud'
-                  ? 'welcome'
-                  : 'connect'
-            )
-          }
+          onBack={() => goTo(onboardingStore.via === 'cloud' ? 'howToRun' : 'connect')}
           onClose={null}
-          onSignedIn={() =>
-            goTo(onboardingStore.invite !== null ? 'acceptInvite' : 'pickWorkspace')
-          }
+          onSignedIn={() => goTo('pickWorkspace')}
         />
       );
     case 'pickWorkspace':
@@ -300,8 +287,8 @@ function currentPage(
       return (
         <PickWorkspacePage
           server={server}
-          onBack={() => goTo('signIn')}
-          onPicked={() => goTo('linkAccounts')}
+          onBack={() => goTo(onboardingStore.via === 'local' ? 'howToRun' : 'signIn')}
+          onPicked={() => goTo('meetBuddy')}
           onCreate={() => goTo('createWorkspace')}
         />
       );
@@ -311,168 +298,51 @@ function currentPage(
         <CreateWorkspacePage
           server={server}
           // Nothing to go back to when the account is in no workspace and has
-          // no invitation: the picker sent the user straight here, and
-          // returning to it would be a door onto a list with nothing in it.
+          // no invitation: the picker sent the user straight here.
           onBack={onboardingStore.pickerHasChoices ? () => goTo('pickWorkspace') : null}
-          onCreated={() => goTo('linkAccounts')}
+          onCreated={() => goTo('meetBuddy')}
         />
       );
-    case 'acceptInvite': {
-      const invite = onboardingStore.invite;
-      if (server === null || invite === null) break;
+    case 'meetBuddy': {
+      if (server === null) break;
+      const workspaceId = workspacesStore.idOnServerInScope(server.id);
+      // The buddy belongs to a workspace; with none open there is one to choose first.
+      if (workspaceId === null)
+        return (
+          <PickWorkspacePage
+            server={server}
+            onBack={() => goTo('signIn')}
+            onPicked={() => goTo('meetBuddy')}
+            onCreate={() => goTo('createWorkspace')}
+          />
+        );
       return (
-        <AcceptInvitePage
-          server={server}
-          invite={invite}
-          onAccepted={() => {
-            onboardingStore.dropInvite();
-            goTo('linkAccounts');
-          }}
-          onSkip={() => {
-            onboardingStore.dropInvite();
-            goTo('pickWorkspace');
-          }}
+        <BuddyStep
+          serverId={server.id}
+          workspaceId={workspaceId}
+          onCreated={(agent) => void finishWithBuddy(server.id, agent)}
+          onSkip={() => void finishWithBuddy(server.id, null)}
+          onNotOffered={() => finish(server.id)}
         />
       );
     }
-    case 'linkAccounts':
-      if (server === null) break;
-      return (
-        <LinkAccountsStep
-          serverId={server.id}
-          serverName={server.name}
-          onDone={() => finish(server.id)}
-        />
-      );
     case 'connect':
       break;
   }
 
-  // An invite link for a server this install does not know gives its address,
-  // which is the gateway's and usually the API's too. Both stay editable.
-  const inviteOrigin = onboardingStore.invite?.origin ?? null;
   return (
     <ExternalServerStep
-      initialGatewayUrl={inviteOrigin}
-      initialApiUrl={inviteOrigin}
+      initialGatewayUrl={null}
+      initialApiUrl={null}
       initialName={null}
       serverId={null}
       isEdit={false}
       firstRun
       existing={server}
-      onBack={() => goTo(inviteOrigin === null ? 'whoRuns' : 'invite')}
-      onClose={() => goTo(inviteOrigin === null ? 'whoRuns' : 'invite')}
+      onBack={() => goTo('howToRun')}
+      onClose={() => goTo('howToRun')}
       onSuccess={() => finish(server?.id ?? null)}
-      onConnected={(added) => {
-        onboardingStore.connected(added, 'external');
-        reportPage('signIn');
-      }}
+      onConnected={(added) => connectedTo(added, 'external')}
     />
-  );
-}
-
-/**
- * Whether there are onboarded hosts to offer the managed path on.
- *
- * Three states, not two. A failed read is not an empty list — saying "no hosts"
- * because the question could not be asked hides a path the user has already set
- * up and leaves them no way to tell why.
- */
-type HostsRead =
-  | { kind: 'reading' }
-  | { kind: 'read'; hosts: { sshHost: string }[] }
-  | { kind: 'failed'; headline: string; detail: string | null };
-
-function WhoRunsPage({
-  onBack,
-  onLocal,
-  onRemoteHost,
-  onExternal,
-}: {
-  onBack: () => void;
-  onLocal: () => void;
-  onRemoteHost: () => void;
-  onExternal: () => void;
-}) {
-  const [hosts, setHosts] = useState<HostsRead>({ kind: 'reading' });
-
-  const readHosts = useCallback(() => {
-    setHosts({ kind: 'reading' });
-    void rpc.remoteHosts.listHosts().then(
-      (list) => setHosts({ kind: 'read', hosts: list }),
-      (cause) =>
-        setHosts({
-          kind: 'failed',
-          ...describeFailure(cause, 'Could not check for onboarded hosts.'),
-        })
-    );
-  }, []);
-
-  useEffect(readHosts, [readHosts]);
-
-  return (
-    <WizardFrame
-      title="Who runs the server?"
-      subtitle="Either Switch Console installs and looks after the stack for you, or you point it at one that already exists."
-      /* The chevron below repeats this. It is unlabelled, so it cannot be the
-         only way back from a page whose cards all lead forward. */
-      footer={
-        <Button variant="outline" onClick={onBack}>
-          Back
-        </Button>
-      }
-      pager={{ pageName: 'Who runs the server', onBack, onNext: null }}
-    >
-      {/* The whole set waits on the read, not just the card it decides. Painting
-          two and inserting a third between them a round trip later moves the
-          answer under a cursor already on its way to one. */}
-      {hosts.kind === 'reading' ? (
-        <div className="flex items-center gap-2 text-sm text-foreground-muted">
-          <Spinner className="size-3.5" />
-          <span>Looking for onboarded hosts…</span>
-        </div>
-      ) : (
-        <div className="grid gap-3">
-          {hosts.kind === 'failed' && (
-            // The two certain paths are still offered: not knowing about hosts
-            // is no reason to hold the whole question hostage. Retrying may add
-            // a third card, but only because it was asked for.
-            <Alert variant="destructive">
-              <TriangleAlert className="size-4" />
-              <AlertTitle>{hosts.headline}</AlertTitle>
-              <AlertDescription>
-                {hosts.detail ? `${hosts.detail} ` : ''}
-                Running a server on one of your own hosts is not offered until this succeeds.
-              </AlertDescription>
-              <AlertAction>
-                <Button variant="outline" size="sm" onClick={readHosts}>
-                  Try again
-                </Button>
-              </AlertAction>
-            </Alert>
-          )}
-          <ChoiceCard
-            icon={<Wrench className="size-5" />}
-            title="Set it up for me"
-            description="Switch Console installs the full stack on this computer with Docker and keeps it updated."
-            onClick={onLocal}
-          />
-          {hosts.kind === 'read' && hosts.hosts.length > 0 && (
-            <ChoiceCard
-              icon={<Server className="size-5" />}
-              title="Set it up on one of my hosts"
-              description="Switch Console installs the stack over SSH on a host you've onboarded. Stays running when Switch Console is closed."
-              onClick={onRemoteHost}
-            />
-          )}
-          <ChoiceCard
-            icon={<Link2 className="size-5" />}
-            title="It's already running"
-            description="Connect by URL to a Switch gateway your team or someone else operates. You'll need its gateway and API addresses."
-            onClick={onExternal}
-          />
-        </div>
-      )}
-    </WizardFrame>
   );
 }

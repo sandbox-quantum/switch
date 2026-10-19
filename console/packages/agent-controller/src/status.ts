@@ -17,6 +17,7 @@ import {
   type Assignment,
   type Platform,
   type ProcessState,
+  isProvider,
   PROTOCOL_VERSION,
   type Provider,
   PROVIDERS,
@@ -24,6 +25,7 @@ import {
   type ReasonCode,
   type StatusReport,
   type ToolStatus,
+  type UpdatedBy,
 } from './schemas';
 import type { GivenLogin, LoginProblem, SealedLogins } from './sealed-logins';
 import type { AgentRow, ControllerStore } from './store';
@@ -92,7 +94,8 @@ export interface ProviderLocator {
 
 /**
  * Looks each provider's CLI up on `PATH` under the names its plugin declares,
- * as Console's dependency detection does, and asks it for its version.
+ * as Console's dependency detection does, and asks it for its version. `path`
+ * is read on every lookup, so a PATH refreshed since start is the one used.
  */
 export class PathProviderLocator implements ProviderLocator {
   /**
@@ -102,7 +105,7 @@ export class PathProviderLocator implements ProviderLocator {
    * its first run is unpacked once.
    */
   constructor(
-    private readonly path: string | undefined,
+    private readonly path: () => string | undefined,
     private readonly probeHome: string
   ) {}
 
@@ -112,7 +115,7 @@ export class PathProviderLocator implements ProviderLocator {
     const dependency = plugin.capabilities.hostDependency;
     if (providerUnsupportedReason(provider, process.platform) !== null) return null;
     for (const name of dependency.binaryNames) {
-      const candidate = await findOnPath(name, this.path);
+      const candidate = await findOnPath(name, this.path());
       if (candidate === null) continue;
       if (dependency.skipVersionProbe)
         return { path: candidate, version: null, versionProblem: null };
@@ -214,6 +217,9 @@ export function providerStatusFrom(
  * A provider as last checked: its status, its CLI, the login Switch gave the
  * machine when that is what agents use, and why a given login is not used.
  */
+/** Provider checks made elsewhere, for {@link ProviderStatuses.seed}: each status and where its CLI was found. */
+export type ProviderSeed = { status: ProviderStatus; path: string | null }[];
+
 type ProviderEntry = {
   status: ProviderStatus;
   path: string | null;
@@ -251,6 +257,44 @@ export class ProviderStatuses {
       onChange: () => void;
     }
   ) {}
+
+  /**
+   * Takes provider checks made before this controller started (Switch
+   * Console's, as onboarding opens) as its own, so its first report already
+   * carries them rather than waiting on checks of its own.
+   *
+   * Only what no login given to the machine could change: a provider signed
+   * in on its own, or not installed. Any other is checked here as usual, and
+   * so is one already checked here or checked longer ago than the TTL.
+   */
+  seed(seeds: ProviderSeed): void {
+    let changed = false;
+    for (const { status, path } of seeds) {
+      if (!isProvider(status.provider) || this.entries.has(status.provider)) continue;
+      const own = status.auth === 'ok' && status.auth_source === 'local';
+      if (!own && status.installed) continue;
+      const at = Date.parse(status.checked_at);
+      if (!Number.isFinite(at) || this.deps.now() - at >= PROVIDER_TTL_MS) continue;
+      this.entries.set(status.provider, {
+        status,
+        path,
+        at,
+        login: null,
+        problem: null,
+        sequence: 0,
+      });
+      changed = true;
+    }
+    if (changed) this.deps.onChange();
+  }
+
+  /** Every check made so far, with where each provider's CLI was found: what `seed` takes. */
+  results(): ProviderSeed {
+    return PROVIDERS.flatMap((provider) => {
+      const entry = this.entries.get(provider);
+      return entry ? [{ status: entry.status, path: entry.path }] : [];
+    });
+  }
 
   /** Checks one provider now, its own login first, then one given to the machine. */
   async check(provider: Provider): Promise<ProviderStatus> {
@@ -386,6 +430,11 @@ export class ProviderStatuses {
     }
   }
 
+  /** Checks every provider now, whatever its last check, all at once. */
+  async checkAll(): Promise<void> {
+    await Promise.all(PROVIDERS.map((provider) => this.check(provider)));
+  }
+
   /** Checks every provider whose last check is older than the TTL, all at once. */
   async refreshStale(): Promise<void> {
     this.refreshing ??= Promise.all(
@@ -513,6 +562,23 @@ export function mapAgentProcess(input: {
 }
 
 /**
+ * Whether no session here is in the middle of a turn, as each assigned
+ * agent's host last reported it: what a controller waits for before it
+ * restarts into another release. Idle sessions do not hold it back; they are
+ * restarted with it and resume their conversations. An agent host too old to
+ * report which sessions are busy holds it back while it has any session at
+ * all. An agent host not running, or whose report is not its own, has none.
+ */
+export function noSessionMidTurn(observations: AgentObservation[]): boolean {
+  return observations.every((observation) => {
+    const health = observation.alive && observation.health?.current ? observation.health : null;
+    if (!health) return true;
+    if (health.busy) return health.busy.length === 0;
+    return Object.keys(health.placements).length === 0;
+  });
+}
+
+/**
  * Builds status reports: the machine, the providers as last checked, and every
  * assigned agent as its agent host's files describe it. `since` is kept across
  * reports so it marks when an agent entered its current state.
@@ -533,6 +599,7 @@ export class StatusCollector {
       /** Where agents with no directory of their own work, reported so the server can name it. */
       workspacesDir: string;
       version: string;
+      updatedBy: UpdatedBy;
       now: () => number;
     }
   ) {}
@@ -583,6 +650,7 @@ export class StatusCollector {
         version: this.deps.version,
         protocol: PROTOCOL_VERSION,
         assignment_revision: assignment?.revision ?? 0,
+        updated_by: this.deps.updatedBy,
       },
       machine: {
         platform: contractPlatform(),
@@ -621,5 +689,8 @@ export function statusFingerprint(report: Omit<StatusReport, 'seq'>): string {
       a.sessions.ids,
       a.directory,
     ]),
+    update: report.update
+      ? [report.update.target, report.update.state, report.update.problem]
+      : null,
   });
 }

@@ -8,6 +8,10 @@ expressible and lands as NULL.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock
+
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -27,6 +31,10 @@ _AGENT_STORE = AgentStore()
 _ICON = "https://cdn.example.com/9.x/bottts/png?seed=switch-worker"
 _OTHER_ICON = "https://cdn.example.com/9.x/shapes/png?seed=switch-worker"
 
+_AVATARS_ON: Any = SimpleNamespace(third_party_avatars_enabled=True)
+_AVATARS_OFF: Any = SimpleNamespace(third_party_avatars_enabled=False)
+_CHATS: Any = SimpleNamespace(agent_changed=AsyncMock())
+
 
 class TestUpdateAgentIcon:
     async def test_owner_can_set_an_icon(
@@ -43,6 +51,8 @@ class TestUpdateAgentIcon:
                 _AGENT_STORE,
                 owner,
                 await is_admin(session, owner),
+                _AVATARS_ON,
+                _CHATS,
             )
 
             assert summary.icon_url == _ICON
@@ -69,6 +79,8 @@ class TestUpdateAgentIcon:
                 _AGENT_STORE,
                 owner,
                 await is_admin(session, owner),
+                _AVATARS_ON,
+                _CHATS,
             )
 
             assert summary.icon_url == generated_icon_url("a1")
@@ -92,6 +104,8 @@ class TestUpdateAgentIcon:
                 _AGENT_STORE,
                 owner,
                 await is_admin(session, owner),
+                _AVATARS_ON,
+                _CHATS,
             )
 
             assert summary.icon_url == _OTHER_ICON
@@ -114,6 +128,8 @@ class TestUpdateAgentIcon:
                 _AGENT_STORE,
                 owner,
                 await is_admin(session, owner),
+                _AVATARS_ON,
+                _CHATS,
             )
 
             assert summary.icon_url is None
@@ -137,6 +153,8 @@ class TestUpdateAgentIcon:
                 _AGENT_STORE,
                 owner,
                 await is_admin(session, owner),
+                _AVATARS_ON,
+                _CHATS,
             )
 
             assert summary.icon_url is None
@@ -157,6 +175,8 @@ class TestUpdateAgentIcon:
                     _AGENT_STORE,
                     other,
                     await is_admin(session, other),
+                    _AVATARS_ON,
+                    _CHATS,
                 )
 
             assert exc.value.status_code == 403
@@ -179,6 +199,8 @@ class TestUpdateAgentIcon:
                 _AGENT_STORE,
                 admin,
                 await is_admin(session, admin),
+                _AVATARS_ON,
+                _CHATS,
             )
 
             assert summary.icon_url == _ICON
@@ -197,6 +219,8 @@ class TestUpdateAgentIcon:
                     _AGENT_STORE,
                     owner,
                     await is_admin(session, owner),
+                    _AVATARS_ON,
+                    _CHATS,
                 )
 
             assert exc.value.status_code == 404
@@ -231,6 +255,8 @@ class TestUpdateAgentIcon:
                     _AGENT_STORE,
                     owner,
                     await is_admin(session, owner),
+                    _AVATARS_ON,
+                    _CHATS,
                 )
 
             assert exc.value.status_code == 400
@@ -255,8 +281,60 @@ class TestUpdateAgentIcon:
                     _AGENT_STORE,
                     owner,
                     await is_admin(session, owner),
+                    _AVATARS_ON,
+                    _CHATS,
                 )
 
             stored = await _AGENT_STORE.get(session, agent.id)
             assert stored is not None
             assert stored.icon_url == _ICON
+
+
+class TestWithThirdPartyAvatarsOff:
+    """No bridge shows an icon on an avatar service on such a server, so
+    setting one is refused where the owner can see why, not stored to vanish."""
+
+    async def test_an_avatar_service_icon_is_refused_and_nothing_is_stored(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            agent = await add_agent(session, name="a1", owner_id=owner.id)
+
+            with pytest.raises(HTTPException) as refused:
+                await update_agent_icon(
+                    agent.id,
+                    UpdateAgentIconRequest(icon_url=generated_icon_url("a1")),
+                    session,
+                    _AGENT_STORE,
+                    owner,
+                    await is_admin(session, owner),
+                    _AVATARS_OFF,
+                    _CHATS,
+                )
+
+            assert refused.value.status_code == 400
+            assert "third-party avatars turned off" in str(refused.value.detail)
+            stored = await _AGENT_STORE.get(session, agent.id)
+            assert stored is not None
+            assert stored.icon_url is None
+
+    async def test_an_icon_on_any_other_host_is_still_set(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            agent = await add_agent(session, name="a1", owner_id=owner.id)
+
+            summary = await update_agent_icon(
+                agent.id,
+                UpdateAgentIconRequest(icon_url=_ICON),
+                session,
+                _AGENT_STORE,
+                owner,
+                await is_admin(session, owner),
+                _AVATARS_OFF,
+                _CHATS,
+            )
+
+            assert summary.icon_url == _ICON

@@ -304,7 +304,16 @@ services:
       # Whether this is one of the company's own deployments. Switch Console
       # writes its own answer here for a server it runs.
       TELEMETRY_INTERNAL:
+      # Switch Console writes true here for a server it runs, so the server's
+      # agents can tell it apart from Switch Cloud and a self-hosted server.
+      MANAGED_BY_CONSOLE:
       TELEMETRY_SNAPSHOT_INTERVAL_HOURS:
+      # Whether agents and people are drawn by outside avatar services, which
+      # see their names (api.dicebear.com, ui-avatars.com). Unset is true;
+      # false leaves each platform's default icon. A server Switch Console runs
+      # for you always uses the default: Console writes its `.env` afresh on
+      # every start and does not set this.
+      THIRD_PARTY_AVATARS_ENABLED:
     depends_on:
       postgres:
         condition: service_healthy

@@ -14,6 +14,7 @@ import {
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
+import { report } from '@renderer/lib/telemetry/report';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
@@ -123,17 +124,26 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
     if (workspaces === null || offersPending || settled.current) return;
     settled.current = true;
     onboardingStore.resolved(workspaces, offers);
-    if (offersFailed || offers > 0) return;
+    const shown = () =>
+      report('onboarding_page', {
+        page: 'choose_workspace',
+        path: onboardingStore.via,
+      });
+    if (offersFailed || offers > 0) {
+      shown();
+      return;
+    }
     // A question with one answer is not a question, and with none there is
     // nothing here to answer it with.
     if (workspaces.length === 0) onCreate();
     else if (workspaces.length === 1) void open(workspaces[0]!);
+    else shown();
   }, [workspaces, offers, offersPending, offersFailed, open, onCreate]);
 
   return (
     <WizardFrame
-      title="Pick a workspace"
-      subtitle={`${pickSubtitle(workspaces?.length ?? 0, offers)} A workspace is where your agents, rooms and teammates live.`}
+      title="Choose your workspace"
+      subtitle={`${pickSubtitle(workspaces?.length ?? 0, offers)} A workspace holds your agents, rooms and templates; nothing in it is visible to other workspaces.`}
       /* The chevron below repeats this. It is unlabelled, so it cannot be the
          only way back from a page whose rows all lead forward. Both are held
          shut while a workspace is being opened, since leaving now would land
@@ -144,7 +154,7 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
         </Button>
       }
       pager={{
-        pageName: 'Pick a workspace',
+        pageName: 'Choose your workspace',
         onBack: opening === null ? onBack : null,
         onNext: null,
       }}
@@ -233,7 +243,7 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
 
           <div className="flex items-center gap-3">
             <span className="h-px flex-1 bg-border" />
-            <span className="text-xs text-foreground-muted">or start fresh</span>
+            <span className="text-xs text-foreground-muted">or</span>
             <span className="h-px flex-1 bg-border" />
           </div>
 
@@ -244,7 +254,7 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
             className="flex items-center justify-center gap-2 rounded-[10px] border border-dashed border-border px-3.5 py-3 text-sm font-medium text-foreground hover:bg-[var(--sel-soft)] disabled:opacity-50"
           >
             <Plus className="size-4" />
-            Create a new workspace
+            Create your own workspace
           </button>
         </div>
       )}
@@ -292,7 +302,7 @@ function JoinableRow({
         {joining ? (
           <Spinner className="size-3.5 shrink-0" />
         ) : (
-          <span className="shrink-0 text-sm font-medium text-foreground">Join</span>
+          <span className={ROW_ACTION}>Join</span>
         )}
       </button>
     </li>
@@ -334,7 +344,7 @@ function InvitationRow({
         {accepting ? (
           <Spinner className="size-3.5 shrink-0" />
         ) : (
-          <span className="shrink-0 text-sm font-medium text-foreground">Accept</span>
+          <span className={ROW_ACTION}>Accept</span>
         )}
       </button>
     </li>
@@ -374,12 +384,16 @@ function WorkspaceRow({
         {opening ? (
           <Spinner className="size-3.5 shrink-0" />
         ) : (
-          <span className="shrink-0 text-sm text-foreground-muted">Open</span>
+          <span className={ROW_ACTION}>Open</span>
         )}
       </button>
     </li>
   );
 }
+
+/** A row's action, drawn as the button the whole row is. */
+const ROW_ACTION =
+  'shrink-0 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground';
 
 const GRAPHEMES = new Intl.Segmenter();
 

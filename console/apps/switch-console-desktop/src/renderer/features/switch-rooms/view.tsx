@@ -1,6 +1,7 @@
 import { DoorOpen, ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { ConsoleChatRedirect } from '@renderer/features/chats/console-chat-redirect';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
@@ -107,10 +108,16 @@ const RoomTitlebar = observer(function RoomTitlebar() {
 
 /** Settings when the room is showing them; otherwise nothing, and the
  * conversation drawn by `RoomEmbedLayer` above shows through. */
-const RoomMainPanel = observer(function RoomMainPanel() {
+const RoomMainPanel = observer(function RoomMainPanel(): React.JSX.Element {
   const { params } = useParams('room');
-  if (roomTabStore.tabFor(params.roomId) !== 'configuration') return null;
-  return <RoomConfigurationPanel roomId={params.roomId} />;
+  return (
+    <>
+      <ConsoleChatRedirect roomId={params.roomId} />
+      {roomTabStore.tabFor(params.roomId) === 'configuration' && (
+        <RoomConfigurationPanel roomId={params.roomId} />
+      )}
+    </>
+  );
 });
 
 export const roomView = {

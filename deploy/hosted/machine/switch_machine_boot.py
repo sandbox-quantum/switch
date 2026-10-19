@@ -50,6 +50,9 @@ CONTROLLER_DIR_NAME = ".switch-controller"
 # The SHA-256 of the code the enrollment in a data directory was made with.
 CODE_RECORD_NAME = ".switch-controller-code"
 AGENTS_DIR_NAME = "agents"
+RELEASES_DIR_NAME = "controller-releases"
+# Where a releases directory's `current` release has the controller's CLI.
+CURRENT_CLI = Path("current") / "bin" / "switch-agent-controller"
 # The other indexes' directories, each in CONTROLLERS_DIR_NAME/<index>.
 CONTROLLERS_DIR_NAME = "controllers"
 INDEXES_NAME = ".switch-controllers.json"
@@ -129,6 +132,9 @@ class Seat:
     data_dir: Path
     code_record: Path
     agents_dir: Path
+    # Where the controller installs the releases Switch names, on the data
+    # volume so an update outlives the root volume.
+    releases_dir: Path
 
     @property
     def gid(self) -> int:
@@ -167,6 +173,7 @@ def seat_for(index: int, config: MachineConfig) -> Seat:
             data_dir=DATA_MOUNT / CONTROLLER_DIR_NAME,
             code_record=DATA_MOUNT / CODE_RECORD_NAME,
             agents_dir=DATA_MOUNT / AGENTS_DIR_NAME,
+            releases_dir=DATA_MOUNT / RELEASES_DIR_NAME,
         )
     home = DATA_MOUNT / CONTROLLERS_DIR_NAME / str(index)
     return Seat(
@@ -176,6 +183,7 @@ def seat_for(index: int, config: MachineConfig) -> Seat:
         data_dir=home / "data",
         code_record=home / "code",
         agents_dir=home / "agents",
+        releases_dir=home / "releases",
     )
 
 
@@ -669,7 +677,13 @@ def enrolled(commands: Commands, config: MachineConfig, seat: Seat) -> bool:
     """Whether the seat's data directory holds an enrollment that was not revoked."""
     status = commands.result(
         _as_controller(
-            seat, [*_cli(config), "status", "--data-dir", str(seat.data_dir)]
+            seat,
+            [
+                *_controller_cli(config, seat),
+                "status",
+                "--data-dir",
+                str(seat.data_dir),
+            ],
         ),
         env=_environment(config),
     )
@@ -682,6 +696,16 @@ def _cli(config: MachineConfig) -> list[str]:
     """The controller's CLI, run on the image's Node.js by its path rather
     than through `#!/usr/bin/env node` and whatever PATH there is."""
     return [config.node, config.cli]
+
+
+def _controller_cli(config: MachineConfig, seat: Seat) -> list[str]:
+    """The CLI the seat's controller runs as itself: the release its
+    releases directory points at when there is one, which may be newer than
+    the image's and have moved its data directory on, else the image's. Only
+    ever run as the controller's user: root never runs what that user can
+    write."""
+    current = seat.releases_dir / CURRENT_CLI
+    return [config.node, str(current)] if current.exists() else _cli(config)
 
 
 def _environment(config: MachineConfig) -> dict[str, str]:
@@ -738,7 +762,7 @@ def start_controller(
             _as_controller(
                 seat,
                 [
-                    *_cli(config),
+                    *_controller_cli(config, seat),
                     "enroll",
                     "--server",
                     api_endpoint,
@@ -773,6 +797,10 @@ def start_controller(
             str(seat.agents_dir),
             "--agent-users",
             str(config.agent_users),
+            # install-service makes it the controller user's, and points its
+            # `current` at the image's release unless it names a newer one.
+            "--releases-dir",
+            str(seat.releases_dir),
             # The controller's unit is ordered after this service: a restart
             # waited for here would wait for this very boot to finish.
             "--no-block",

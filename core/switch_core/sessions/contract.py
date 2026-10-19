@@ -198,6 +198,12 @@ class SessionModel(_Model):
     options: dict[str, str]
 
 
+class SessionContext(_Model):
+    used_tokens: int = Field(ge=0)
+    window_tokens: int | None = Field(gt=0)
+    updated_at: Timestamp
+
+
 class ModelChoice(_Model):
     id: Id
     label: str
@@ -219,6 +225,7 @@ class Session(_Model):
     pending_request_ids: list[Id]
     models: list[ModelChoice] = Field(default_factory=list)
     model: SessionModel | None = None
+    context: SessionContext | None = None
 
 
 # ── Event bodies ─────────────────────────────────────────────────────────────

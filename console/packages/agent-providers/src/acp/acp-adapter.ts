@@ -109,6 +109,8 @@ interface State {
   context: string;
   runtimeMode: ProviderSessionStartInput['runtimeMode'];
   mcpNames: Set<string>;
+  /** The registered servers whose tools are allowed without asking: all but the connectors. */
+  autoApprovedMcpNames: Set<string>;
   toolServers: Map<string, string>;
   prompt: AcpPromptCapabilities;
   configOptions: AcpConfigOption[];
@@ -188,6 +190,9 @@ export class AcpAdapter implements ProviderAdapter {
       context: input.systemContext ?? '',
       runtimeMode: input.runtimeMode,
       mcpNames: new Set(Object.keys(input.mcpServers)),
+      autoApprovedMcpNames: new Set(
+        Object.keys(input.mcpServers).filter((name) => !input.connectorMcpServers.includes(name))
+      ),
       toolServers: new Map(),
       prompt: {},
       configOptions: [],
@@ -452,7 +457,7 @@ export class AcpAdapter implements ProviderAdapter {
           this.emit(state, { type: 'user-input.requested', turnId, requestId, questions });
         });
       },
-      requestDecision: async ({ requestType, title, detail, options }) => {
+      requestDecision: async ({ requestType, title, detail, options, connector }) => {
         const turnId = active();
         if (!turnId) return ACP_CANCELLED;
         const requestId = randomUUID();
@@ -469,6 +474,7 @@ export class AcpAdapter implements ProviderAdapter {
             title,
             ...(detail === undefined ? {} : { detail }),
             options: options.map(({ decision, label }) => ({ decision, label })),
+            ...(connector === undefined ? {} : { connector }),
           });
         });
       },
@@ -493,7 +499,7 @@ export class AcpAdapter implements ProviderAdapter {
     const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
     if (
       once &&
-      ((server !== undefined && state.mcpNames.has(server)) ||
+      ((server !== undefined && state.autoApprovedMcpNames.has(server)) ||
         state.runtimeMode === 'full-access' ||
         (state.runtimeMode === 'auto-accept-edits' && toolCall.kind === 'edit'))
     )
@@ -522,15 +528,18 @@ export class AcpAdapter implements ProviderAdapter {
       });
     }
     options.push({ decision: 'cancel', label: 'Cancel', response: ACP_CANCELLED });
+    const mcp = server !== undefined && state.mcpNames.has(server);
     return await context.requestDecision({
-      requestType:
-        toolCall.kind === 'execute'
+      requestType: mcp
+        ? 'mcp_tool_approval'
+        : toolCall.kind === 'execute'
           ? 'command_execution_approval'
           : toolCall.kind === 'edit'
             ? 'file_change_approval'
             : 'tool_approval',
       title: toolCall.title ?? `${this.hooks.label} needs permission`,
       options,
+      ...(mcp && !state.autoApprovedMcpNames.has(server) ? { connector: server } : {}),
     });
   }
 

@@ -2,7 +2,7 @@
 
 _How Switch Console or its sidecar puts an agent session on Switch: the pushed skill, the session host, and the watcher that holds the connection_
 
-Published at <https://docs.flintai.dev/flintai/switch/internals/connectors-and-runtime> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/internals/connectors-and-runtime> — link readers there, not to this file.
 
 Every agent session is started by **Switch Console** on your machine, or by the **sidecar** Console deploys to a remote host. Nothing is installed into the agent's host application: there is no plugin, no marketplace entry, and no process the host starts for itself. Console or the sidecar gives each session two things when it starts it:
 

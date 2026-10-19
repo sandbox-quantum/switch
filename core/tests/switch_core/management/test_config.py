@@ -104,3 +104,73 @@ def test_capacity_with_agent_management_is_accepted() -> None:
         hosted_launch_capacity=2,
     )
     assert config.hosted_launch_capacity == 2
+
+
+_RELEASE = dict(
+    controller_release_version="0.31.0",
+    controller_release_url="https://example.com/switch-agent-controller-0.31.0.tgz",
+    controller_release_sha256="a" * 64,
+)
+
+
+def test_no_controller_release_by_default() -> None:
+    assert _config().controller_release is None
+
+
+def test_a_full_controller_release_is_accepted() -> None:
+    release = _config(**_RELEASE).controller_release
+    assert release is not None
+    assert release.version == "0.31.0"
+    assert release.url == "https://example.com/switch-agent-controller-0.31.0.tgz"
+    assert release.sha256 == "a" * 64
+
+
+def test_a_dev_build_controller_release_is_accepted() -> None:
+    release = _config(
+        **{**_RELEASE, "controller_release_version": "0.31.1-dev.412.gabc1234"}
+    ).controller_release
+    assert release is not None
+    assert release.version == "0.31.1-dev.412.gabc1234"
+
+
+def test_empty_controller_release_values_count_as_unset() -> None:
+    config = _config(
+        controller_release_version="",
+        controller_release_url="",
+        controller_release_sha256="",
+    )
+    assert config.controller_release is None
+
+
+@pytest.mark.parametrize("missing", sorted(_RELEASE))
+def test_a_partial_controller_release_raises(missing: str) -> None:
+    with pytest.raises(ValueError, match="all together or not at all") as caught:
+        _config(**{**_RELEASE, missing: None})
+    assert missing.upper() in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("controller_release_version", "v0.31.0", "CONTROLLER_RELEASE_VERSION"),
+        ("controller_release_version", "0.31.0-", "CONTROLLER_RELEASE_VERSION"),
+        ("controller_release_version", "0.31.0-dev..1", "CONTROLLER_RELEASE_VERSION"),
+        ("controller_release_version", "0.31.0+build", "CONTROLLER_RELEASE_VERSION"),
+        ("controller_release_version", "0.31.0\n", "CONTROLLER_RELEASE_VERSION"),
+        (
+            "controller_release_url",
+            "http://example.com/c.tgz",
+            "CONTROLLER_RELEASE_URL",
+        ),
+        ("controller_release_url", "https:///c.tgz", "CONTROLLER_RELEASE_URL"),
+        ("controller_release_url", "example.com/c.tgz", "CONTROLLER_RELEASE_URL"),
+        ("controller_release_sha256", "A" * 64, "CONTROLLER_RELEASE_SHA256"),
+        ("controller_release_sha256", "a" * 63, "CONTROLLER_RELEASE_SHA256"),
+        ("controller_release_sha256", "g" * 64, "CONTROLLER_RELEASE_SHA256"),
+    ],
+)
+def test_a_malformed_controller_release_raises(
+    field: str, value: str, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _config(**{**_RELEASE, field: value})

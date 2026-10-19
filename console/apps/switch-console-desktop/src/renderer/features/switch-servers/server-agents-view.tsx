@@ -1,4 +1,4 @@
-import { Bot, ExternalLink, MoreVertical, Plug, Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { Bot, ExternalLink, MoreVertical, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -21,7 +21,6 @@ import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
-import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -55,7 +54,6 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
   const serverId = useServerId();
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const showAddAgentModal = useShowModal('addAgentModal');
-  const showConnectionsModal = useShowModal('connectionsModal');
 
   // The sidebar reads the same two things, but this page must not be right only
   // when the sidebar happened to be open first.
@@ -63,8 +61,6 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
     void refreshSidebarRoomState(false);
   }, [serverId]);
 
-  // Connections are offered where the server has service connections on.
-  const serviceConnections = useFeatureFlags(serverId).service_connections;
   const machines = useCloudMachines(serverId);
   const managed = useManagedAgents(serverId);
   const agents = withoutManaged(agentsStore.agentsOnServer(serverId), managed.data);
@@ -74,14 +70,6 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
       width={880}
       title="Your Agents"
       description={`Agents on ${server?.name ?? 'this server'}. Add one, set how it is addressed, and start sessions.`}
-      action={
-        serviceConnections && (
-          <Button variant="outline" size="sm" onClick={() => showConnectionsModal({ serverId })}>
-            <Plug className="size-4" />
-            Connections
-          </Button>
-        )
-      }
     >
       {machines.data
         ?.filter((machine) => machine.state !== 'deleted')
@@ -148,7 +136,7 @@ function ManagedAgentCard({ agent }: { agent: ManagedAgentView }) {
       />
       <div className="pointer-events-none flex flex-1 flex-col p-[14px]">
         <div className="flex flex-1 items-center justify-center py-3">
-          <AgentAvatar name={label} iconUrl={agent.iconUrl} size={66} />
+          <AgentAvatar name={label} iconUrl={agent.iconUrl} serverId={agent.serverId} size={66} />
         </div>
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-foreground">{label}</div>
@@ -202,7 +190,7 @@ const AgentCard = observer(function AgentCard({
 
       <div className="pointer-events-none flex flex-1 flex-col p-[14px]">
         <div className="flex flex-1 items-center justify-center py-3">
-          <AgentAvatar name={label} iconUrl={iconUrl} size={66} />
+          <AgentAvatar name={label} iconUrl={iconUrl} serverId={serverId} size={66} />
         </div>
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-foreground">{label}</div>

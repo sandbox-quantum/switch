@@ -1,21 +1,17 @@
 import { makeAutoObservable } from 'mobx';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import type { InviteLink } from '@shared/core/workspaces/invite-link';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 
 /** Where a fresh install is in getting its first server. */
 export type OnboardingPage =
   | 'welcome'
-  | 'invite'
-  | 'whoRuns'
+  | 'howToRun'
   | 'local'
-  | 'remoteHost'
   | 'connect'
   | 'signIn'
   | 'pickWorkspace'
   | 'createWorkspace'
-  | 'acceptInvite'
-  | 'linkAccounts';
+  | 'meetBuddy';
 
 /**
  * The first-run flow's place in itself.
@@ -37,11 +33,11 @@ class OnboardingStore {
   /** The server the connect page added, and the subject of the pages after it. */
   server: SwitchServer | null = null;
   /**
-   * How that server was reached: typed in on the connect page, or chosen as
-   * Switch Cloud on the welcome page. Decides where Back from sign-in goes and
-   * which path the pages after it are reported under.
+   * How that server was reached: typed in on the connect page, chosen as
+   * Switch Cloud, or started on this computer. Decides where Back from
+   * sign-in goes and which path the pages after it are reported under.
    */
-  via: 'external' | 'cloud' = 'external';
+  via: 'external' | 'cloud' | 'local' = 'external';
   /** The workspaces that server said the account is in, once it has been asked. */
   serverWorkspaces: Workspace[] | null = null;
   /**
@@ -58,13 +54,6 @@ class OnboardingStore {
    * offered to it would take the user somewhere they did not set up.
    */
   registeredOn: { page: OnboardingPage; serverId: string } | null = null;
-  /**
-   * The invite link the user pasted, until it has been accepted or given up on.
-   *
-   * Held across the connect and sign-in pages because accepting needs an
-   * account on the server, and the link arrives before there is one.
-   */
-  invite: InviteLink | null = null;
   /**
    * The flow was opened on purpose from a dev or canary build that already has
    * servers, to walk through the first-run pages again. It keeps the flow on
@@ -106,7 +95,6 @@ class OnboardingStore {
       this.serverWorkspaces = null;
       this.joinOfferCount = 0;
       this.registeredOn = null;
-      this.invite = null;
     }
     this.page = page;
   }
@@ -130,6 +118,16 @@ class OnboardingStore {
   }
 
   /**
+   * The stack on this computer is up, and Console signed in to it as its
+   * admin: there is no sign-in page, so the workspace is next.
+   */
+  startedLocally(server: SwitchServer): void {
+    this.server = server;
+    this.via = 'local';
+    this.page = 'pickWorkspace';
+  }
+
+  /**
    * What the server answered when asked which workspaces this account is in.
    *
    * Kept so the create page knows whether there was anything to come back to:
@@ -146,15 +144,6 @@ class OnboardingStore {
     return (this.serverWorkspaces?.length ?? 0) > 0 || this.joinOfferCount > 0;
   }
 
-  holdInvite(invite: InviteLink): void {
-    this.invite = invite;
-  }
-
-  /** The invitation was accepted, or the user went on without it. */
-  dropInvite(): void {
-    this.invite = null;
-  }
-
   reset(): void {
     this.page = 'welcome';
     this.server = null;
@@ -162,7 +151,6 @@ class OnboardingStore {
     this.serverWorkspaces = null;
     this.joinOfferCount = 0;
     this.registeredOn = null;
-    this.invite = null;
     this.rehearsal = false;
   }
 }

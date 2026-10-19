@@ -25,6 +25,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
     Closure,
 )
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import TelemetryRecord
 
@@ -71,7 +72,7 @@ class TestTheEndpointIsABaseUrl:
         with pytest.raises(ValueError, match="no path of its own"):
             _config(
                 telemetry_enabled=True,
-                telemetry_endpoint="https://telemetry.flintai.dev/v1/logs",
+                telemetry_endpoint="https://telemetry.switchagents.ai/v1/logs",
             )
 
     def test_whitespace_is_refused(self) -> None:
@@ -80,7 +81,7 @@ class TestTheEndpointIsABaseUrl:
         with pytest.raises(ValueError, match="whitespace"):
             _config(
                 telemetry_enabled=True,
-                telemetry_endpoint="https://telemetry.flintai.dev ",
+                telemetry_endpoint="https://telemetry.switchagents.ai ",
             )
 
     def test_a_query_string_is_refused(self) -> None:
@@ -138,9 +139,7 @@ class TestASessionIsTheAgentNotTheConnection:
             sink=sink,  # type: ignore[arg-type]
             enabled=True,
             client_id=VALID_UUID,
-            service_name="switch-core",
             version="1.0.0",
-            environment=None,
             telemetry_environment="prod",
             telemetry_internal=False,
         )
@@ -156,7 +155,7 @@ class TestASessionIsTheAgentNotTheConnection:
             scope="all",
             delivery_filter="all",
             spawn_capable=False,
-            cursor=0,
+            position={OWN_EVENTS: 0},
             declaration=ClientDeclaration(),
             expected_generation=None,
         )

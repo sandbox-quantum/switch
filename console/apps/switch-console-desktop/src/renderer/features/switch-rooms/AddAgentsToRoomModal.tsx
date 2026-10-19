@@ -4,8 +4,6 @@ import { useCallback, useEffect, useState } from 'react';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
-import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { bundledTemplates } from '@renderer/features/templates/bundled-templates';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { agentProviderLabel } from '@renderer/lib/components/agent-mark';
 import { AgentPickerRow, ChosenAgentTile } from '@renderer/lib/components/agent-picker';
@@ -49,9 +47,7 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
   const serverId = workspaceId === null ? null : workspacesStore.serverIdFor(workspaceId);
   const roomName = switchRoomsStore.roomNameById(roomId);
 
-  // Templates can create an agent straight into this room. The bundled
-  // templates are listed at once; the workspace's are added when the request
-  // returns.
+  // Templates can create an agent straight into this room.
   const [serverTemplates, setServerTemplates] = useState<StoredTemplateSummary[]>([]);
   useEffect(() => {
     if (workspaceId === null) return;
@@ -66,7 +62,6 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
         setServerTemplates([]);
         toast({
           title: failureText(e, "Could not load the workspace's templates."),
-          description: 'The built-in ones are still offered.',
           variant: 'destructive',
         });
       });
@@ -74,33 +69,7 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
       cancelled = true;
     };
   }, [workspaceId]);
-  // A built-in template the signed-in user saved to the workspace is listed
-  // once, as their copy. Names are unique only per owner, so someone else's
-  // template of the same name is not a copy.
-  const meId = serverId ? (switchServersStore.statusFor(serverId)?.user?.id ?? null) : null;
-  const onWorkspace = serverTemplates.filter((t) => t.kind === 'agent');
-  const templates: StoredTemplateSummary[] = [
-    ...bundledTemplates
-      .filter(
-        (b) =>
-          b.kind === 'agent' &&
-          !onWorkspace.some((t) => t.name === b.name && meId !== null && t.ownerId === meId)
-      )
-      .map(({ id, name, description, kind, creator }) => ({
-        id,
-        name,
-        description,
-        kind,
-        creator,
-        ownerId: null,
-        version: 1,
-        readVisibility: 'public' as const,
-        writeVisibility: 'private' as const,
-        canEdit: false,
-        canManage: false,
-      })),
-    ...onWorkspace,
-  ];
+  const templates = serverTemplates.filter((t) => t.kind === 'agent');
   // The Use page creates the agent. With `intoRoomId` it adds the agent to
   // this room instead of creating the template's own room.
   const createFromTemplate = (template: StoredTemplateSummary) => {
@@ -211,6 +180,7 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
                   <ChosenAgentTile
                     key={agent.id}
                     agent={agent}
+                    serverId={serverId}
                     subtitle={agentProviderLabel(agent.providerId)}
                     onRemove={() =>
                       setSelected((current) => current.filter((a) => a.id !== agent.id))
@@ -228,7 +198,11 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
               }}
               searchText={(item) => item.name}
               renderItem={(item) => (
-                <AgentPickerRow agent={item} subtitle={agentProviderLabel(item.providerId)} />
+                <AgentPickerRow
+                  agent={item}
+                  serverId={serverId}
+                  subtitle={agentProviderLabel(item.providerId)}
+                />
               )}
               disabled={nothingToAdd}
               placeholder="Search agents to add..."

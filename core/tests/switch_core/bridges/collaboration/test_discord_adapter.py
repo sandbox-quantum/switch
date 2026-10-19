@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import discord
 import pytest
+from discord.http import handle_message_parameters
 
 from switch_core.bridges.agent.commands import COMMANDS
 from switch_core.bridges.collaboration.discord import adapter as adapter_module
@@ -28,6 +29,7 @@ def _adapter() -> DiscordAdapter:
         config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
     )
     adapter._connection._bot_user_id = BOT_USER_ID
+    adapter.set_third_party_avatars(True)
     return adapter
 
 
@@ -623,6 +625,23 @@ def test_send_message_posts_via_webhook_with_agent_identity() -> None:
     assert ref == f"{CHANNEL_ID}:901"
 
 
+def test_with_third_party_avatars_off_discord_draws_its_default_avatar() -> None:
+    """No avatar goes to the webhook, and discord.py leaves a None one out of
+    the request, so Discord shows its own default rather than a broken image."""
+    adapter = _adapter()
+    adapter.set_third_party_avatars(False)
+    channel = _FakeChannel()
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
+    webhook = _FakeWebhook()
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
+
+    _run(adapter.send_message(str(CHANNEL_ID), "my-agent", "hello"))
+
+    assert webhook.sent[0]["avatar_url"] is None
+    request = handle_message_parameters(content="hello", avatar_url=None)
+    assert "avatar_url" not in request.payload
+
+
 def test_an_agent_message_cannot_page_the_channel() -> None:
     # Discord decides who a message pings from the request, not the markup, so
     # the webhook path pins the same guard every other send path does.
@@ -1206,6 +1225,31 @@ def test_start_raises_when_gateway_connection_fails() -> None:
                 await adapter.start(*_noop_callbacks())
             assert isinstance(exc.value.__cause__, RuntimeError)
             assert str(exc.value.__cause__) == "login failed"
+
+    _run(scenario())
+
+
+def test_a_quiet_copy_logs_in_for_the_api_and_opens_no_socket() -> None:
+    """Another process holds the bridge and listens for it. Discord delivers
+    every event to every socket, so this copy opens none, and leaves the
+    commands to the one that does."""
+    adapter = DiscordAdapter(
+        config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
+    )
+    adapter.set_listening(False)
+    fake = _FakeGatewayClient()
+
+    async def scenario() -> None:
+        with patch.object(adapter_module.discord, "Client", lambda **kw: fake):
+            await adapter.start(*_noop_callbacks())
+            assert fake.logged_in
+            assert adapter._connection._connect_task is None
+            assert fake.registered_events == []
+            assert fake.http.bulk_upserts == []
+            assert adapter._require_client() is fake
+
+            await adapter.stop()
+            assert fake.closed
 
     _run(scenario())
 

@@ -1,5 +1,6 @@
 import { makeAutoObservable } from 'mobx';
 import type { ViewId, WrapParams } from '@renderer/app/view-registry';
+import { appState } from './app-state';
 
 const MAX_STACK_SIZE = 50;
 
@@ -77,22 +78,27 @@ export class NavigationHistoryStore {
   }
 
   back(apply: (entry: HistoryEntry) => void): void {
-    if (!this.canGoBack) return;
-    this.index--;
-    this.navigating = true;
-    try {
-      apply(this.entries[this.index]!);
-    } finally {
-      this.navigating = false;
-    }
+    if (this.canGoBack) this._step(this.index - 1, apply);
   }
 
   forward(apply: (entry: HistoryEntry) => void): void {
-    if (!this.canGoForward) return;
-    this.index++;
+    if (this.canGoForward) this._step(this.index + 1, apply);
+  }
+
+  private _step(index: number, apply: (entry: HistoryEntry) => void): void {
+    const entry = this.entries[index]!;
+    if (entry.kind === 'view')
+      appState.navigation.whenLeaveAllowed(entry.viewId, entry.params, () =>
+        this._moveTo(index, apply)
+      );
+    else this._moveTo(index, apply);
+  }
+
+  private _moveTo(index: number, apply: (entry: HistoryEntry) => void): void {
+    this.index = index;
     this.navigating = true;
     try {
-      apply(this.entries[this.index]!);
+      apply(this.entries[index]!);
     } finally {
       this.navigating = false;
     }

@@ -59,7 +59,7 @@ class _Capture(logging.Handler):
 @pytest.fixture
 def json_lines(monkeypatch: pytest.MonkeyPatch):
     config = _config(monkeypatch, LOG_FORMAT="json", ENVIRONMENT="pilot")
-    capture = _Capture(build_handler(config, "1.2.3"))
+    capture = _Capture(build_handler(config, "1.2.3", "core-0-abcd1234"))
     logger = logging.getLogger("switch_core.test.json")
     logger.propagate = False
     logger.setLevel(logging.DEBUG)
@@ -85,13 +85,14 @@ def test_json_line_carries_tenant_without_anything_binding_it(json_lines) -> Non
     assert entry["service"] == "switch-core"
     assert entry["env"] == "pilot"
     assert entry["version"] == "1.2.3"
+    assert entry["process_id"] == "core-0-abcd1234"
     assert entry["logger"]["name"] == "switch_core.test.json"
     assert "timestamp" in entry
 
 
 def test_configured_tenant_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
     config = _config(monkeypatch, LOG_FORMAT="json", TENANT_ID="acme")
-    capture = _Capture(build_handler(config, None))
+    capture = _Capture(build_handler(config, None, "core-0-abcd1234"))
     logger = logging.getLogger("switch_core.test.tenant")
     logger.propagate = False
     logger.handlers = [capture]
@@ -169,7 +170,7 @@ def test_unserialisable_value_does_not_lose_the_line(json_lines) -> None:
 
 def test_text_format_shows_the_context(monkeypatch: pytest.MonkeyPatch) -> None:
     config = _config(monkeypatch, LOG_FORMAT="text")
-    capture = _Capture(build_handler(config, "1.2.3"))
+    capture = _Capture(build_handler(config, "1.2.3", "core-0-abcd1234"))
     logger = logging.getLogger("switch_core.test.text")
     logger.propagate = False
     logger.setLevel(logging.DEBUG)
@@ -180,14 +181,17 @@ def test_text_format_shows_the_context(monkeypatch: pytest.MonkeyPatch) -> None:
     logger.info("plain")
 
     with_context, without = capture.lines
-    assert "[tenant_id=default request_id=req-1] hello" in with_context
-    assert "[tenant_id=default] plain" in without
+    assert (
+        "[process_id=core-0-abcd1234 tenant_id=default request_id=req-1] hello"
+        in with_context
+    )
+    assert "[process_id=core-0-abcd1234 tenant_id=default] plain" in without
 
 
 def test_a_third_party_logger_gets_the_same_fields(monkeypatch: pytest.MonkeyPatch):
     """The filter is on the handler, so library records carry the fields too."""
     config = _config(monkeypatch, LOG_FORMAT="json")
-    capture = _Capture(build_handler(config, None))
+    capture = _Capture(build_handler(config, None, "core-0-abcd1234"))
     logger = logging.getLogger("uvicorn.access")
     logger.propagate = False
     logger.handlers = [capture]
@@ -235,7 +239,7 @@ def test_a_record_that_missed_the_filter_still_formats(
 ) -> None:
     """A formatter must not raise on a record from a handler without the filter."""
     config = _config(monkeypatch, LOG_FORMAT="json")
-    handler = build_handler(config, None)
+    handler = build_handler(config, None, "core-0-abcd1234")
     formatter = handler.formatter
     assert formatter is not None
     record = logging.LogRecord(
@@ -357,7 +361,7 @@ class TestTheLogAgreesWithTheDatabase:
 @pytest.mark.parametrize("format", ["text", "json"])
 def test_access_logs_remove_authorization_query_parameters(monkeypatch, format):
     config = _config(monkeypatch, LOG_FORMAT=format)
-    capture = _Capture(build_handler(config, None))
+    capture = _Capture(build_handler(config, None, "core-0-abcd1234"))
     record = logging.LogRecord(
         "uvicorn.access",
         logging.INFO,

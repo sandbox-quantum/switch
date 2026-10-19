@@ -2,7 +2,7 @@
 
 _Authorization over resources, addressing policy over agents, and the identity claims that connect them_
 
-Published at <https://docs.flintai.dev/flintai/switch/internals/identity-and-access> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/internals/identity-and-access> — link readers there, not to this file.
 
 Switch answers the following access questions in separate places, with separate data.
 

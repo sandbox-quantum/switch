@@ -163,8 +163,10 @@ Specifically never sent, in addition to any identifier:
 - error messages and stack traces — an enumerated reason code instead
 
 Free text never reaches the wire at all: every property is a number, a boolean,
-or a value from a closed set fixed in the catalogue. A property carrying an
-unexpected value is a bug to be raised, not a string to be passed through.
+or a value from a closed set fixed in code. Almost every set is written out in
+the catalogue; `bridge_platform` is the platforms this build registers, which
+are code too. A property carrying an unexpected value is a bug to be raised,
+not a string to be passed through.
 
 ## Deployment identity and the install clock
 
@@ -214,16 +216,19 @@ On every event:
 
 | Attribute | Value |
 |---|---|
-| `service.name` | `switch-core` |
-| `service.version` | the running version, as `/version` reports it |
+| `service.name` | `switch-core`, always |
+| `service.version` | the running version, as `/version` reports it; omitted when unknown |
 | `flint.client_id` | the per-deployment id |
-| `deployment.environment` | from the existing `ENVIRONMENT` setting |
+| `flint_env` | `prod` \| `staging` \| `dev` \| `local`, from `TELEMETRY_ENVIRONMENT` |
+| `flint_internal` | `true` \| `false`, from `TELEMETRY_INTERNAL` |
 
-`deployment.environment` is the OpenTelemetry-conventional name and is already a
-server setting. The Console instead sends a bespoke `build` attribute
-(`dev`/`canary`/`stable`), which is a desktop release-channel notion with no
-server equivalent. The two are deliberately different fields rather than one
-field meaning different things on each side.
+The rule against free text holds here too. `service.name` is a constant rather
+than the `SERVICE_NAME` setting, and the `ENVIRONMENT` setting is not sent as
+`deployment.environment`: both are free text an operator sets for their own log
+pipeline, and either could name their company. The operational OTLP export
+(`OTLP_ENDPOINT`) still carries both, because it goes to the operator's own
+collector. A test sets both to a company name and checks the whole request body
+the relay receives for it.
 
 ## Four kinds of event
 
@@ -255,8 +260,8 @@ reasons. Each is now answered rather than ignored:
    sink now batches: events wait up to five seconds, or until two hundred are
    queued, and go as one request. Its buffer is bounded, so a relay that is down
    costs events, never memory.
-2. **The sender must not pay for it.** The transport and the agent consumer
-   hand a small record to a queue and return. One worker looks up the room and
+2. **The sender must not pay for it.** The transport and the router hand a
+   small record to a queue and return. One worker looks up the room and
    the sender — cached, so a busy room is read once every five minutes rather
    than once per message — and emits. That queue is bounded too, and drops with
    a warning when it falls behind.
@@ -547,9 +552,9 @@ a slow average.
 (tri-state: `true` | `false` | `unknown` — `unknown` when the activity count
 itself could not be run, which is not evidence the room was never used).
 
-**`room_agents_added`** — `agent_count` (number), `added_by_kind`.
+**`room_agents_added`** — `agent_count` (number), `added_by_kind` (`user` | `agent` | `system`).
 
-**`room_agents_removed`** — `agent_count` (number), `removed_by_kind`.
+**`room_agents_removed`** — `agent_count` (number), `removed_by_kind` (as above).
 
 ### Removals
 
@@ -584,7 +589,7 @@ that as `false` would misfile a lookup failure as a failed setup.
 
 | Property | Type |
 |---|---|
-| `agent_type` | `always_on` \| `session_addressable` \| `session_passive` |
+| `agent_type` | `always_on` \| `session_addressable` \| `session_passive` \| `auto_session` |
 | `known_agent_type` | `claude-code` \| `codex` \| `opencode` \| `other` \| `none` |
 | `registration_path` | `bootstrap` \| `personal_key` \| `gateway` \| `other` |
 | `has_parent` | boolean — a subagent rather than a top-level agent |
@@ -624,8 +629,9 @@ The connection registry already records a reason on every close, which is where
 these values come from; the set is closed here so a new reason string added in
 the code does not silently become a new Amplitude value.
 
-**`bridge_connected`** — `bridge_platform`, `outcome`, `failure_reason`,
-`duration_ms`.
+**`bridge_connected`** — `bridge` (`collaboration` \| `agent`), `bridge_platform`,
+`outcome`, `failure_reason`, `duration_ms`. `bridge` is always `collaboration`
+today; `agent` is declared so the agent bridge can report the same events.
 
 Fires for every attempt, including the ones that fail before the bridge's task
 is ever scheduled — an unregistered adapter type, a stored config that no
@@ -641,9 +647,9 @@ failure half is the more interesting one, because a timeout and a refusal carry
 the same `failure_reason` and nothing alike in the time. `-1` if no reading was
 taken, following the convention below.
 
-**`bridge_disconnected`** — `bridge_platform`, `reason`
+**`bridge_disconnected`** — `bridge` (as above), `bridge_platform`, `reason`
 (`shutdown` \| `restart` \| `auth_failed` \| `network` \| `platform_error` \|
-`unknown`).
+`config_invalid` \| `unknown`).
 
 Bridge drops are worth having as events rather than only as a snapshot count:
 the snapshot says two bridges are down right now, the events say one platform
@@ -730,17 +736,66 @@ separates an agent answering people from agents talking among themselves.
 | `has_attachment` | boolean |
 | `in_thread` | boolean |
 
+### Resources, keys, groups and the rest
+
+What each one is for, and how to make it fire, is under
+[Every event, and how to make it fire](#every-event-and-how-to-make-it-fire).
+This is what each carries.
+
+| Event | Properties |
+|---|---|
+| `reference_created` | `reference_type`; `read_visibility` (`private` \| `public`); `created_by_kind` (`user` \| `agent` \| `system`) |
+| `reference_attached_to_room` | `reference_type` |
+| `reference_detached_from_room` | `reference_type` |
+| `reference_deleted` | `reference_type`; `age_days` (number) |
+| `document_created` | `scope` (`library` \| `room`); `created_by_kind` (`user` \| `agent` \| `system`); `has_instructions` (boolean) |
+| `document_attached_to_room` | none |
+| `document_detached_from_room` | none |
+| `document_deleted` | `scope` (`library` \| `room`); `age_days` (number) |
+| `package_created` | `created_by_kind` (`user` \| `agent` \| `system`) |
+| `package_attached_to_room` | `reference_count` (number); `document_count` (number) |
+| `package_detached_from_room` | none |
+| `package_deleted` | `age_days` (number) |
+| `reference_type_created` | none |
+| `reference_type_deleted` | `age_days` (number) |
+| `api_key_created` | `key_type` (`agent` \| `registration` \| `bootstrap` \| `other`) |
+| `api_key_revoked` | `key_type` (`agent` \| `registration` \| `bootstrap` \| `other`); `age_days` (number) |
+| `room_group_created` | `has_parent` (boolean) |
+| `room_group_deleted` | `room_count` (number); `age_days` (number) |
+| `template_created` | `template_kind` (`room` \| `group` \| `agent` \| `other`) |
+| `template_deleted` | `template_kind` (`room` \| `group` \| `agent` \| `other`); `age_days` (number) |
+| `agent_request_refused` | `operation` (`list_templates` \| `get_template` \| `run_template` \| `save_template` \| `update_template` \| `delete_template` \| `create_room` \| `create_room_from_yaml`); `reason` (`not_found` \| `not_yours` \| `name_taken` \| `visibility_not_allowed` \| `invalid` \| `too_large` \| `has_warnings` \| `missing_agents` \| `agent_creation_console_only` \| `agents_not_created` \| `run_undone` \| `busy` \| `run_paused` \| `run_stopped` \| `repeat` \| `kickoff_ignored`) |
+| `room_link_created` | none |
+| `room_link_removed` | none |
+| `room_role_defined` | `exclusive` (boolean) |
+| `room_role_deleted` | none |
+| `room_users_added` | `user_count` (number) |
+| `server_connector_registered` | `connector_kind` (`opencode` \| `other`) |
+| `server_connector_removed` | `connector_kind` (`opencode` \| `other`) |
+| `connector_configured` | `bridge_platform`; `is_preconfigured` (boolean) |
+| `invitation_sent` | `delivery` (`sent` \| `not_configured` \| `failed` \| `not_requested`) |
+| `invitation_accepted` | `age_hours` (number) |
+
 ### Closed value sets
 
-`bridge_platform`: `slack` | `mattermost` | `discord` | `teams` | `telegram` |
-`none` | `unknown`. `none` is "no bridge" (an internal-only room); `unknown` is
-"there is one and the lookup that would have named it failed" — the two are
-kept apart because collapsing them would misreport a Slack-bridged room as
-internal-only whenever that lookup has a transient error.
+`bridge_platform`: a platform this build registers — today `slack` |
+`mattermost` | `discord` | `teams` | `telegram` — or `none` | `unknown`. The
+set is read from the platform registry when an event is checked, so a new
+platform adds its own value; a platform key is code, a short lowercase name,
+never anything an operator typed. `none` is "no bridge" (an internal-only
+room); `unknown` is "there is one and it could not be named", because the
+lookup failed or its platform is no longer registered. The two are kept apart
+because collapsing them would misreport a Slack-bridged room as internal-only
+whenever that lookup has a transient error.
 
 `channel_type`: `channel_public` | `channel_private` | `direct` | `none` |
-`unknown`, with `unknown` meaning what it does for `bridge_platform`. Only the
-message events can carry it.
+`unknown`, with `unknown` meaning what it does for `bridge_platform`. Every
+event with a `channel_type` accepts `unknown`, but only the message events send
+it today; the room events read the type from a row they already hold.
+
+`reference_type`: `google_drive` | `confluence` | `github` | `jira` | `other`. The
+four built-in types; a user-defined type's slug is free text, so it reports as
+`other`.
 
 `sender_kind`: `user` | `agent` | `platform` | `unknown`. `platform` is Switch
 itself speaking; `unknown` a sender whose client could not be looked up.
@@ -748,10 +803,13 @@ itself speaking; `unknown` a sender whose client could not be looked up.
 `outcome`: `success` | `failure`. `failure_reason` is an enumerated code per
 event, `none` on success — never an exception message.
 
-`bridge_connected.failure_reason` and `bridge_disconnected.reason` share one
-set, because one classifier feeds both. A value that classifier can produce and
-only one of the two declares is an event that fails validation at the moment a
-bridge drops — which is precisely the event worth not losing.
+`bridge_connected.failure_reason` is `none` | `auth_failed` | `network` |
+`platform_error` | `config_invalid` | `unknown`. `bridge_disconnected.reason`
+takes the same failure codes without `none`, plus `shutdown` and `restart`. The
+failure codes are shared because one classifier feeds both: a value that
+classifier can produce and only one of the two declares is an event that fails
+validation at the moment a bridge drops — which is precisely the event worth
+not losing.
 
 **Tri-state facts**: `true` | `false` | `unknown`, for a yes/no property the
 server can fail to establish (`room_archived`/`room_deleted`.`was_ever_active`,
@@ -946,7 +1004,7 @@ Two things to set up first, or a third of the list cannot fire at all:
   same agent and session emits nothing, across restarts, for 7 days.
 
 **Messages** — `telemetry/messages.py`, fed by `transport/postgres.py` and
-`clients/agent_consumer.py`
+`delivery/recipient.py`
 
 - `room_message_sent` — any person or agent posting in any room. A post with
   three files is one event. A command reply or an offline notice is none.

@@ -119,6 +119,7 @@ switch-agent-controller update [--check]
   | `4` | Another instance of this controller, with the same identity, opened the controller stream after this one, which took it over. | No |
   | `5` | The server does not speak this controller's protocol (`protocol_unsupported`). | No: update the controller |
   | `6` | The server knows no controller by this credential (`invalid_credential`): it was replaced, or its key was deleted. | No: enroll again |
+  | `7` | It installed the release Switch names and is restarting into it (see [Updates](#updates)). | Yes, at once |
 
   Code `2` covers: an unknown command, option or missing argument; a server
   URL that is not one, or is plain `http` to a host that is not loopback; a
@@ -158,7 +159,10 @@ Linux it also starts at boot and survives logout only with lingering on
 keeps the `PATH` of the shell that installed it, so the provider CLIs found then are
 found by the service. A data directory other than the default gets a service name
 with a hash of its path, so two controllers on one account each get their own.
-`uninstall-service` stops and removes it and keeps the enrollment.
+The service runs the controller through `<data dir>/releases/current`, which
+`install-service` points at the npm install it was run from (see
+[Updates](#updates)). `uninstall-service` stops and removes it, and the releases it
+installed, and keeps the enrollment.
 
 On Linux without a systemd user manager (some containers and minimal VMs),
 `install-service` refuses. Run `run` under your own supervisor instead, with the
@@ -227,12 +231,25 @@ user's default one):
   `switch-agent-controller-<uid>.service`, run with
   `--agent-runtime separate-user` and the agents' group as a supplementary group,
   so it can read what its agents write. It replaces the user service, which must
-  be uninstalled first.
+  be uninstalled first;
+- a releases directory, `/var/lib/switch-agent-controller-<uid>/releases`
+  (`--releases-dir`), owned by the controller's user and readable by everyone,
+  where the controller installs the releases Switch names (see
+  [Updates](#updates)). The controller's unit runs
+  `<releases>/current/lib/node_modules/switch-agent-controller/cli.mjs` and the
+  agents' units run the shared-host bundle beside it, so both follow `current`.
+  The setup points `current` at the release it runs from (for example
+  `/usr/lib` after `sudo npm install --global`) only when `current` is missing,
+  names no readable release, or names an older one: running it again with the
+  same or an older release keeps an update applied since. The directory must not
+  be under a home, the data directory or the agents' directories, which agents
+  cannot reach. A controller run from a checkout gets none.
 
 The setup is written to `/etc/switch-agent-controller/separate-users-<uid>.json`.
 Running the setup again rewrites everything and adds agent users. `sudo
 switch-agent-controller uninstall-service --separate-users` stops the controller
-and its agents, then removes what the setup made except the agents' directories.
+and its agents, then removes what the setup made except the agents' directories
+and the releases directory.
 
 Each agent claims a free user from the pool when it is first started, and runs as
 `switch-agent-<uid>@<NN>.service`. systemd restarts an agent host that crashes. The
@@ -324,9 +341,68 @@ directory remembers it:
 
 ### Updates
 
-`update` installs the newest release with npm and restarts the service if it runs;
-`update --check` only says whether there is one. `run` logs a warning when a newer
-release exists, and `doctor` shows it.
+When Switch names a release for this controller, `run` follows it; otherwise
+`update` does it by hand.
+
+**The release Switch names.** A status response can carry
+`controller_release: {"version", "url", "sha256"}`. When it names a version other
+than the one running (newer or older: Switch can roll back), the controller:
+
+1. waits until no session on the machine is in the middle of a turn, checking at
+   each status report and every few seconds while it waits, and reports
+   `update: {"target", "state": "waiting_idle"}` in its status meanwhile. Each
+   agent host reports which of its sessions are busy; one that has not said yet
+   counts as busy. Idle sessions do not hold the update back: those in the
+   controller's own process are restarted with it and resume their
+   conversations, and agents running in a process of their own keep running
+   through it (once the controller is back on the new release, it restarts each
+   of those onto it as soon as none of its sessions is mid-turn: each records
+   the shared-host bundle it runs in its `health.json`). An agent host too old to report busy sessions holds it back
+   while it has any session, as `sessions_running` counts them;
+2. downloads the package into `<data dir>/updates/` (at most 200 MB) and checks
+   its SHA-256 against the one Switch gave, the only one trusted; a package that
+   differs is deleted;
+3. installs it from that file, never from the URL, checks that the installed CLI
+   says `--version` is that version, checks again that no turn started
+   meanwhile, and switches to it;
+4. exits with code `7`, and its service starts it again on the new release.
+
+A failed attempt is reported (`update: {"target", "state": "failed", "problem"}`)
+and logged, and the same release is not tried again for an hour; the last
+attempt is kept in the data directory, so a restart does not retry it either.
+Absent or null, `controller_release` leaves the controller alone; one that cannot
+be read is logged and treated as absent. A controller Switch Console runs never
+updates itself: its own (run with `--credential-stdin`) and one it starts on an
+SSH host (run with `--updated-by-console`) update when Console replaces their
+bundle. Each reports `controller.updated_by: "console"` in its status (`"self"`
+otherwise), and Switch names it no release.
+
+Where it installs depends on how the controller was installed:
+
+- **As a service, of your user or with `--separate-users`:** into its releases
+  directory, `<data dir>/releases` for a service of your user (`--releases-dir`,
+  which `install-service` passes to `run`) or the one the separate-users setup
+  names (see [Each agent as a Linux user of its own](#each-agent-as-a-linux-user-of-its-own)).
+  Each release is `<releases>/<version>/`, an npm prefix: it installs into
+  `<version>.partial`, checks it, renames it, then points `<releases>/current`, which
+  the service runs through, at it in one step. It keeps the release it replaced and
+  at most one older one, and never touches a prefix outside the directory, such as
+  the npm install `current` first named. A failed install leaves `current` as it
+  was. A service of your user installed before releases directories updates in
+  place, as below, until `install-service` is run again.
+- **A plain npm install, not run as a service:** with `npm install --global
+  --prefix <prefix>`, over the prefix the running controller came from, as `update`
+  does. A controller run from a checkout does not update itself, and reports why,
+  as does one on Windows. Under systemd (which sets `INVOCATION_ID`) or launchd
+  (`--launchd`) it exits `7` to be restarted; run any other way, it installs,
+  reports `restart_needed` and logs that it must be restarted, and keeps running.
+
+**By hand.** `update` installs the newest published release with npm and restarts
+the service if it runs; `update --check` only says whether there is one. `run` logs
+a warning when a newer release exists, and `doctor` shows it. `update` refuses to
+install into a releases directory, which only its controller installs into. Run from
+the npm install, it installs there and points the service's `current` back at it when
+that is newer than what `current` names.
 
 ### Checking a machine
 
@@ -343,8 +419,10 @@ To run it under another supervisor, have it run `run` and restart it on exit cod
 configuration is fixed, nor on `3`, because a revoked controller must be enrolled
 again, nor on `4`, because two instances would take the stream from each other in
 turn, nor on `5` or `6`, because the server has said it will refuse this controller
-the same way again. With systemd, `Restart=on-failure` and
-`RestartPreventExitStatus=2 3 4 5 6`.
+the same way again. Do restart it on `7`: it installed the release Switch names and
+ends to run it. With systemd, `Restart=on-failure` and
+`RestartPreventExitStatus=2 3 4 5 6`. A controller run outside systemd and launchd
+installs the release Switch names without exiting; restart it to run it.
 
 ## Run by a parent process
 
@@ -542,6 +620,8 @@ It holds:
 | `secrets/controller-credential` | The controller credential, with the `file` secret store (see below). Absent with a keychain store, or when the credential is handed over with `--credential-stdin`. |
 | `agents/<id>/credentials.json` | Each agent's relay endpoint, relay token and hub, in the layout the shared host reads. No Switch credential. |
 | `agent hosts/<id>/` | Each agent's agent host state root: `watch.json`, `config.json`, `health.json` (what `status` reads), its journal, and `supervisor/failure.json` once it has failed for good. |
+| `updates/` | A release being downloaded to update to (deleted once installed or refused), and npm's cache. The last update attempt is kept in `controller.db`. |
+| `releases/` | With `install-service`: the releases the controller installed for itself, each an npm prefix, and `current`, the link the service runs through. |
 
 An agent whose definition names no directory works in
 `~/.switch/agents/<server>/<name>/`, where `<server>` is the server's address

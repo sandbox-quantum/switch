@@ -66,6 +66,7 @@ def _fake_bridge(
         recorded.append(kwargs)
 
     bridge = SimpleNamespace(
+        _bridge_id="bridge-1",
         _channel_to_room={"chan-1": ("room-uuid", "!matrix:switch.local")},
         _adapter=SimpleNamespace(translate_inbound=translate),
         _ensure_human_in_room=_ensure_human_in_room,
@@ -218,6 +219,7 @@ class TestCommandResultThreadingRace:
 
             return SimpleNamespace(
                 transport_user_id="@human actor:switch.local",
+                client_id="human-actor-1",
                 send_event=_send_event,
             )
 

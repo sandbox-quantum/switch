@@ -37,6 +37,8 @@ export type ParamSpec = {
   /** Bounds of a number param, inclusive. */
   min: number | null;
   max: number | null;
+  /** A version 2 param's `if:`: asked only while it holds. Null when it has none. */
+  condition: string | null;
 };
 
 /** One room of a template, with the fields the Use page shows and edits. */
@@ -47,6 +49,11 @@ export type TemplateRoom = {
   users: string[];
   bridge: string | null;
   kickoff: string | null;
+  /** A version 2 room resource's key and `if:`; null for version 1. */
+  key?: string | null;
+  condition?: string | null;
+  /** Every `{name}` the room reads, for telling which params only it uses. */
+  placeholders?: string[];
 };
 
 export type ParsedTemplate = {
@@ -93,6 +100,7 @@ export function extractParams(raw: unknown): ParamSpec[] {
         pattern: null,
         min: null,
         max: null,
+        condition: null,
       };
     }
     const s = spec as Record<string, unknown>;
@@ -123,6 +131,7 @@ export function extractParams(raw: unknown): ParamSpec[] {
       pattern: validType === 'string' && typeof s.pattern === 'string' ? s.pattern : null,
       min: validType === 'number' && typeof s.min === 'number' ? s.min : null,
       max: validType === 'number' && typeof s.max === 'number' ? s.max : null,
+      condition: typeof s.if === 'string' ? s.if : null,
     };
   });
 }

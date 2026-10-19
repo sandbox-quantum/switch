@@ -40,6 +40,7 @@ const dataDir = flag('--data-dir');
 const mode = fs.readFileSync(path.join(dataDir, 'mode'), 'utf8').trim();
 const runs = path.join(dataDir, 'runs');
 fs.appendFileSync(runs, 'run\n');
+fs.writeFileSync(path.join(dataDir, 'last-args'), rest.join(' '));
 if (mode === 'revoked') process.exit(3);
 if (mode === 'fail-once' && fs.readFileSync(runs, 'utf8').split('\n').filter(Boolean).length === 1) process.exit(1);
 process.on('SIGTERM', () => process.exit(0));
@@ -192,6 +193,9 @@ describe('the detached supervisor', () => {
     await start('up');
     await until(async () => (await status()).running, 5_000);
     const supervisor = startedPids.at(-1)!;
+    // Console updates it, by replacing its bundle; it follows no release Switch names.
+    await until(async () => existsSync(join(dataDir(), 'last-args')), 5_000);
+    expect(readFileSync(join(dataDir(), 'last-args'), 'utf8')).toContain('--updated-by-console');
     mkdirSync(join(dataDir(), 'watchers', 'agent-1'), { recursive: true });
     writeFileSync(join(dataDir(), 'controller.db'), '');
     mkdirSync(join(dataDir(), 'secrets'), { recursive: true });
@@ -282,7 +286,7 @@ describe('the systemd unit', () => {
       path: '/home/ada/.local/bin:/usr/bin',
     });
     expect(unit).toContain(
-      'ExecStart="/usr/bin/node" "/home/ada/.local/state/switch/sdk-host/agent-controller-x.mjs" "run" "--data-dir" "/home/ada/.local/state/switch/agent-controller/console-server-1" "--shared-host-bundle" "/home/ada/.local/state/switch/sdk-host/shared-host-y.mjs"'
+      'ExecStart="/usr/bin/node" "/home/ada/.local/state/switch/sdk-host/agent-controller-x.mjs" "run" "--data-dir" "/home/ada/.local/state/switch/agent-controller/console-server-1" "--shared-host-bundle" "/home/ada/.local/state/switch/sdk-host/shared-host-y.mjs" "--updated-by-console"'
     );
     expect(unit).toContain('Environment="PATH=/home/ada/.local/bin:/usr/bin"');
     expect(unit).toContain('Restart=on-failure');

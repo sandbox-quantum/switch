@@ -80,9 +80,18 @@ class MessagingInstallStore:
         return state
 
     async def redeem_state(
-        self, session: AsyncSession, *, state_id: str, platform: str
+        self,
+        session: AsyncSession,
+        *,
+        state_id: str,
+        platform: str,
+        proposed_in: str | None = None,
     ) -> MessagingInstallState:
         """Burn a state, or raise. Exactly one caller can succeed.
+
+        `proposed_in` is the chat a claim-based install is put to as it is
+        burnt, recorded in the same statement: only an answer from that chat
+        may decide it (`decide_state`).
 
         The check and the write are one statement on purpose. Reading the row,
         deciding it is unused and then updating it leaves a window in which two
@@ -104,7 +113,7 @@ class MessagingInstallStore:
                 MessagingInstallState.consumed_at.is_(None),
                 MessagingInstallState.expires_at > datetime.now(UTC),
             )
-            .values(consumed_at=datetime.now(UTC))
+            .values(consumed_at=datetime.now(UTC), proposed_chat_id=proposed_in)
             .returning(MessagingInstallState)
         )
         state = result.scalars().one_or_none()
@@ -115,6 +124,28 @@ class MessagingInstallStore:
             )
         return state
 
+    async def proposed_chat(
+        self,
+        session: AsyncSession,
+        *,
+        state_id: str,
+        platform: str,
+        window: timedelta,
+    ) -> str | None:
+        """The chat a redeemed claim state was proposed in, while an answer
+        there can still decide it: redeemed within `window` and undecided."""
+        now = datetime.now(UTC)
+        chat_id: str | None = await session.scalar(
+            select(MessagingInstallState.proposed_chat_id).where(
+                MessagingInstallState.id == state_id,
+                MessagingInstallState.tenant_id == require_tenant_id(),
+                MessagingInstallState.platform == platform,
+                MessagingInstallState.consumed_at > now - window,
+                MessagingInstallState.decided_at.is_(None),
+            )
+        )
+        return chat_id
+
     async def decide_state(
         self,
         session: AsyncSession,
@@ -122,14 +153,21 @@ class MessagingInstallStore:
         state_id: str,
         platform: str,
         window: timedelta,
+        proposed_in: str | None = None,
     ) -> MessagingInstallState:
         """Record the approver's Connect or Cancel on a redeemed state, or raise.
 
         One statement for the same reason as `redeem_state`: two submissions
         of the same confirmation page must not both go through. Only a state
-        redeemed within `window` can be decided.
+        redeemed within `window` can be decided, and with `proposed_in` only
+        one proposed in that chat.
         """
         now = datetime.now(UTC)
+        proposed = (
+            ()
+            if proposed_in is None
+            else (MessagingInstallState.proposed_chat_id == proposed_in,)
+        )
         result = await session.execute(
             update(MessagingInstallState)
             .where(
@@ -139,6 +177,7 @@ class MessagingInstallStore:
                 MessagingInstallState.consumed_at.is_not(None),
                 MessagingInstallState.consumed_at > now - window,
                 MessagingInstallState.decided_at.is_(None),
+                *proposed,
             )
             .values(decided_at=now)
             .returning(MessagingInstallState)

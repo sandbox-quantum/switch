@@ -22,6 +22,7 @@ def _app(**overrides: object) -> object:
         room_store=MagicMock(),
         room_group_store=MagicMock(),
         room_service=MagicMock(),
+        chat_service=MagicMock(),
         bridge_store=MagicMock(),
         client_lifecycle=MagicMock(),
         collab_lifecycle=MagicMock(),
@@ -41,6 +42,7 @@ def _app(**overrides: object) -> object:
         protocol=MagicMock(),
         install_service=None,
         invite_mailer=None,
+        connector_apps=MagicMock(**{"github_app.return_value": None}),
         config=config,
     )
 
@@ -69,6 +71,11 @@ SERVICE_ROUTES = {
     "/service-connections/{service}/key",
     "/agents/{agent_id}/service-grants",
     "/service-connections/{service}/flows",
+    "/service-connections/{service}/agents",
+    "/workspace/services",
+    "/workspace/services/{service}",
+    "/connector-apps",
+    "/connector-apps/{service}",
 }
 
 

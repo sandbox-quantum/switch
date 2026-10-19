@@ -14,12 +14,17 @@ export const serviceFlowStartSchema = z.object({
 });
 export type ServiceFlowStart = z.infer<typeof serviceFlowStartSchema>;
 
-/** `GET /service-connections/{service}/flows/{id}`. */
+/**
+ * `GET /service-connections/{service}/flows/{id}`: `connected` once the server
+ * has exchanged the code and kept the connection; `failed` with the reason.
+ */
 export const serviceFlowSchema = z.object({
-  status: z.enum(['pending', 'checking', 'ready', 'failed']),
+  status: z.enum(['pending', 'checking', 'connected', 'failed']),
   /** The connected account as people recognise it, once read. */
   account: z.string().nullable(),
   error: z.string().nullable(),
+  /** What the server said as it connected, once each. */
+  warning: z.string().nullable(),
 });
 export type ServiceFlow = z.infer<typeof serviceFlowSchema>;
 

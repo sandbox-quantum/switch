@@ -1,0 +1,590 @@
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import path from 'node:path';
+import { fetchBridges, updateBridge } from '@main/core/switch-servers/gateway-client';
+import {
+  assertManagedServerUrlFree,
+  getManagedServer,
+} from '@main/core/switch-servers/servers-store';
+import { log } from '@main/lib/logger';
+import {
+  COMPATIBLE_SWITCH_VERSION,
+  RELEASE_REPO_NAME,
+  RELEASE_REPO_OWNER,
+} from '@shared/app-identity';
+import {
+  CHECKOUT_IMAGE_TAG,
+  type DeployedTelemetry,
+  type StartLocalServerResult,
+} from '@shared/core/managed-switch-server/managed-switch-server';
+import { MAX_START_FAILURE_LINE } from '@shared/core/managed-switch-server/start-failure';
+import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
+import { currentFlintEnv } from '../../telemetry/config';
+import { currentInternalFlag } from '../../telemetry/internal-account';
+import { classifyVersionDrift, type DeployedVersion } from '../deployed-version';
+import { detectDocker } from '../docker';
+import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY } from '../env-file';
+import { errorText } from '../error-text';
+import type { LocalServerPorts } from '../free-port';
+import type { ServerHost } from '../host/types';
+import {
+  finishUpgrade,
+  type OwedUpgrade,
+  prepareUpgradeFrom,
+  type UpgradeJournal,
+} from '../managed-upgrade';
+import { registerManagedServer } from '../pipeline';
+import { clearPorts, resolvePorts } from '../ports';
+import { clearSecrets, loadOrCreateSecrets } from '../secrets';
+import { telemetryConsent } from '../telemetry-consent';
+import { materializeBundle, pruneBundleCopies, readLocalServerBundle } from './bundle';
+import {
+  CORE_ENV_FILE,
+  coreFailureLine,
+  runningCore,
+  startCore,
+  stopCore,
+  waitForCoreHealth,
+} from './core-process';
+import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
+import {
+  mattermostCallbackBaseUrl,
+  pullMattermostImage,
+  type StartMattermostParams,
+  startMattermost,
+  stopMattermost,
+} from './mattermost';
+import { type DockerExport, importIntoCluster } from './migrate-from-docker';
+import type { NativeLayout } from './native-paths';
+import {
+  findPostgresForCluster,
+  type PostgresBinaries,
+  resolvePostgres,
+} from './postgres-binaries';
+import {
+  clusterExists,
+  initCluster,
+  startCluster,
+  stopCluster,
+  stopClusterByPid,
+  syncPasswords,
+  writeClusterConfig,
+} from './postgres-cluster';
+import {
+  existingSwitchCoreInstall,
+  installSwitchCore,
+  pruneSwitchCoreInstalls,
+} from './switch-core-install';
+import { resolveUv } from './uv';
+
+/** What was last started here: the version the database has been (or is
+ * being) migrated to. Written before switch-core boots, as the Docker stack
+ * writes `SWITCH_VERSION` into `.env` before `compose up`. */
+const DEPLOYED_FILE = 'deployed.json';
+
+export type NativeStartOptions = {
+  /** Files (ports, journal) and the secrets key, shared with the Docker mode. */
+  host: ServerHost;
+  layout: NativeLayout;
+  ref: ManagedServerRef;
+  serverName: string;
+  activate: boolean;
+  onMessage: (message: string) => void;
+  onLog: (line: string) => void;
+  onUpgrade: (upgrade: OwedUpgrade) => void;
+  signal: AbortSignal;
+  /** Dev-only: run switch-core from this checkout's `core/`. */
+  checkoutRoot: string | null;
+  /** Whether to run Mattermost beside the server (needs Docker); null when
+   * the user never chose, which means yes wherever Docker is available. */
+  mattermost: boolean | null;
+  /** The app's bundled toolchain, or null in a build that ships none. */
+  bundleRoot: string | null;
+  /** A Docker stack's exported databases to import into a new cluster, when
+   * this start is the move off Docker; null for every other start. */
+  importFrom: DockerExport | null;
+};
+
+export async function readNativeDeployedVersion(layout: NativeLayout): Promise<DeployedVersion> {
+  let raw: string;
+  try {
+    raw = await readFile(path.join(layout.run, DEPLOYED_FILE), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      return { kind: 'unreadable', reason: errorText(error) };
+    }
+    // No record, but a cluster: something started it that this build cannot
+    // date, which must not read as a fresh install.
+    if (await clusterExists(layout)) {
+      return {
+        kind: 'unreadable',
+        reason: `${DEPLOYED_FILE} is missing beside an existing database`,
+      };
+    }
+    return { kind: 'absent' };
+  }
+  try {
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    if (typeof parsed.version === 'string' && parsed.version.length > 0) {
+      return { kind: 'deployed', version: parsed.version, source: 'env-file' };
+    }
+  } catch {}
+  return { kind: 'unreadable', reason: `${DEPLOYED_FILE} does not name a version` };
+}
+
+async function writeDeployedVersion(layout: NativeLayout, version: string): Promise<void> {
+  await writeFile(
+    path.join(layout.run, DEPLOYED_FILE),
+    `${JSON.stringify({ version }, null, 2)}\n`
+  );
+}
+
+/** Whether `port` can be bound on loopback right now. */
+function portFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once('error', () => resolve(false));
+    server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)));
+  });
+}
+
+/**
+ * Refuse a start whose ports something else has taken since they were chosen,
+ * in the words a failed bind uses, so the start-failure explainer offers to
+ * move the server to another port.
+ */
+async function assertPortsFree(ports: LocalServerPorts): Promise<void> {
+  for (const port of [ports.api, ports.postgres]) {
+    if (!(await portFree(port))) {
+      throw new Error(`bind 127.0.0.1:${port}: address already in use`);
+    }
+  }
+}
+
+/**
+ * Copy the data directory aside before switch-core migrates it. The cluster
+ * is stopped by then, so a file copy is a consistent backup — and it needs no
+ * `pg_dump`, which the portable build does not ship.
+ */
+async function backupDataDirectory(
+  layout: NativeLayout,
+  from: string,
+  onMessage: (message: string) => void
+): Promise<string> {
+  onMessage(
+    `Backing up the database before updating switch-core ${from} → ${COMPATIBLE_SWITCH_VERSION}…`
+  );
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const directory = path.join(layout.backups, `${stamp}-switch-core-${from}`);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await cp(layout.pgdata, path.join(directory, 'pgdata'), { recursive: true });
+  await writeFile(
+    path.join(directory, 'README.txt'),
+    [
+      `Switch Console took this backup before updating the Switch server from switch-core ${from} to ${COMPATIBLE_SWITCH_VERSION}.`,
+      '',
+      'pgdata/   a copy of the PostgreSQL data directory, taken with the server stopped',
+      '',
+      'Keep it private: it holds every message and credential the server stored. To go back,',
+      `stop the server, replace ${layout.pgdata} with this copy, and run switch-core ${from}.`,
+      '',
+    ].join('\n'),
+    { mode: 0o600 }
+  );
+  log.info(`local-switch-server: backed up the database to ${directory} before updating`);
+  return directory;
+}
+
+/** Stop whatever of the server is running, switch-core first so it is not
+ * left talking to a database that has gone. */
+async function stopProcesses(
+  layout: NativeLayout,
+  binaries: PostgresBinaries | null,
+  onLog: (line: string) => void
+): Promise<void> {
+  await stopMattermost(layout, false);
+  await stopCore(layout);
+  if (binaries !== null && (await clusterExists(layout))) {
+    await stopCluster(binaries, layout, onLog);
+  }
+}
+
+/**
+ * Start (or restart) the native local server at this build's pin.
+ *
+ * Fetches what is missing — PostgreSQL and uv when the machine has none, and
+ * this version of switch-core — creates the database on first start, backs it
+ * up before an update, then starts PostgreSQL and switch-core in the
+ * background and waits for the gateway to answer before registering the
+ * server and signing in, as the Docker pipeline does.
+ */
+export type NativeStartResult = {
+  result: StartLocalServerResult;
+  /** Brings Mattermost up beside the started server, when it is turned on;
+   * resolves once it is seeded, and throws, saying why, when it cannot be. */
+  bringUpMattermost: ((onProgress: (message: string) => void) => Promise<void>) | null;
+};
+
+/** {@link startMattermost}, first checking Docker is there to run it. */
+async function startNativeMattermost(
+  params: Omit<StartMattermostParams, 'beforeSeed'>
+): Promise<void> {
+  const docker = await detectDocker();
+  if (!docker.available) {
+    throw new Error(`Mattermost needs Docker, which is not available. ${docker.detail}`);
+  }
+  await startMattermost({
+    ...params,
+    beforeSeed: () =>
+      pointMattermostBridgeAt(
+        `http://localhost:${params.mattermostPort}`,
+        mattermostCallbackBaseUrl(process.platform, params.callbackPort)
+      ),
+  });
+}
+
+/**
+ * Point an already-registered Mattermost bridge at the addresses that work
+ * from this machine, before the seeder runs: the seeder sets the address only
+ * when it first registers the bridge, and a server moved off Docker carries
+ * one under the compose network's name for Mattermost, which the server then
+ * refuses as unresolvable. A server with no bridge yet has nothing to point —
+ * the seeder registers it with the right address.
+ */
+async function pointMattermostBridgeAt(url: string, callbackBaseUrl: string): Promise<void> {
+  const server = await getManagedServer();
+  if (!server) {
+    throw new Error('The local server is not registered, so its bridge cannot be updated.');
+  }
+  const bridge = (await fetchBridges(server)).find((candidate) => candidate.type === 'mattermost');
+  if (!bridge) return;
+  await updateBridge(server, bridge.id, {
+    connectionConfig: { url, callback_base_url: callbackBaseUrl },
+  });
+}
+
+/**
+ * Bring Mattermost up beside a server that is already running, without
+ * restarting it: Mattermost runs on its own and registers itself with the
+ * running server. For turning it on from the server page.
+ */
+export async function nativeMattermostLauncher(
+  host: ServerHost,
+  layout: NativeLayout,
+  checkoutRoot: string | null,
+  onLog: (line: string) => void
+): Promise<(onProgress: (message: string) => void) => Promise<void>> {
+  const install = await existingSwitchCoreInstall(layout, COMPATIBLE_SWITCH_VERSION, checkoutRoot);
+  if (install === null) {
+    throw new Error(
+      'The server has not been set up yet, so there is nothing to add Mattermost to.'
+    );
+  }
+  const secrets = await loadOrCreateSecrets(host);
+  const ports = await resolvePorts(host);
+  return (onProgress) =>
+    startNativeMattermost({
+      layout,
+      install,
+      secrets,
+      apiUrl: nativeApiUrl(ports.api),
+      mattermostPort: ports.mattermost,
+      postgresPort: ports.postgres,
+      callbackPort: ports.gateway,
+      onMessage: onProgress,
+      onLog,
+    });
+}
+
+export async function startNativeStack(opts: NativeStartOptions): Promise<NativeStartResult> {
+  const { host, layout, ref, serverName, activate, onMessage, onLog, onUpgrade, signal } = opts;
+  const { checkoutRoot, mattermost } = opts;
+  // PostgreSQL refuses to run as root; say so before anything is set up
+  // rather than letting initdb fail halfway through.
+  if (process.getuid?.() === 0) {
+    return {
+      result: {
+        kind: 'error',
+        message:
+          'The local server cannot run as root: PostgreSQL refuses to. Start Switch Console as ' +
+          'a normal user, then set up the server.',
+      },
+      bringUpMattermost: null,
+    };
+  }
+  await mkdir(layout.run, { recursive: true });
+
+  const secrets = await loadOrCreateSecrets(host);
+  const ports = await resolvePorts(host);
+  const apiUrl = nativeApiUrl(ports.api);
+  await assertManagedServerUrlFree(apiUrl, ref);
+
+  onMessage('Checking the deployed version…');
+  const deployed = await readNativeDeployedVersion(layout);
+  if (
+    checkoutRoot === null &&
+    deployed.kind === 'deployed' &&
+    deployed.version !== CHECKOUT_IMAGE_TAG
+  ) {
+    const drift = classifyVersionDrift(deployed.version, COMPATIBLE_SWITCH_VERSION);
+    if (drift?.direction === 'downgrade') {
+      return {
+        result: { kind: 'version-downgrade', deployed: drift.deployed, expected: drift.expected },
+        bringUpMattermost: null,
+      };
+    }
+  }
+
+  // Mattermost's image downloads while the server is set up, when it will be
+  // wanted: unless the user said otherwise, wherever Docker is available.
+  const runMattermost = mattermost ?? (await detectDocker()).available;
+  const pulled = runMattermost
+    ? pullMattermostImage(() => {}).catch((error: unknown) => {
+        log.warn('local-switch-server: could not pull Mattermost ahead of time', {
+          error: String(error),
+        });
+      })
+    : null;
+
+  const shipped = await readLocalServerBundle(opts.bundleRoot, COMPATIBLE_SWITCH_VERSION);
+  const bundle =
+    shipped === null ? null : await materializeBundle(shipped, layout.toolchain, onMessage);
+  const uv = await resolveUv(layout, bundle, onMessage);
+  const postgres = await resolvePostgres(layout, bundle, onMessage);
+  const install = await installSwitchCore({
+    layout,
+    uv,
+    bundle,
+    version: COMPATIBLE_SWITCH_VERSION,
+    owner: RELEASE_REPO_OWNER,
+    repo: RELEASE_REPO_NAME,
+    checkoutRoot,
+    onMessage,
+  });
+
+  onMessage('Stopping the running server…');
+  // PostgreSQL's own setup output goes to a file: in the UI's log tail it
+  // would push whatever actually went wrong out of sight.
+  const pgLog = fileLogger(path.join(layout.logs, 'postgres-setup.log'));
+  await stopProcesses(layout, postgres, pgLog);
+  await assertPortsFree(ports);
+
+  const passwords = { owner: secrets.dbPassword, runtime: secrets.dbRuntimePassword };
+  let upgrade: UpgradeJournal | null = null;
+  if (opts.importFrom !== null && (await clusterExists(layout))) {
+    throw new Error(
+      `A Docker-free database already exists in ${layout.pgdata}, so the Docker server's ` +
+        `data cannot be moved into it.`
+    );
+  }
+  if (await clusterExists(layout)) {
+    upgrade = await prepareUpgradeFrom(host, checkoutRoot, onMessage, onUpgrade, {
+      readDeployedVersion: () => readNativeDeployedVersion(layout),
+      backupDatabase: (from, message) => backupDataDirectory(layout, from, message),
+    });
+    await syncPasswords(postgres, layout, passwords, pgLog);
+  } else {
+    onMessage(`Creating the database (PostgreSQL ${postgres.major})…`);
+    await initCluster(postgres, layout, passwords, pgLog);
+    await writeDeployedVersion(layout, install.version);
+  }
+  await writeClusterConfig(layout, ports.postgres);
+  onMessage('Starting PostgreSQL…');
+  await startCluster(postgres, layout, pgLog);
+  // From here a failure leaves processes behind that nothing would stop; a
+  // failed start stops them again, so it does not look half-running.
+  try {
+    if (opts.importFrom !== null) {
+      await importIntoCluster(
+        opts.importFrom,
+        ports.postgres,
+        secrets.dbPassword,
+        onMessage,
+        pgLog
+      );
+    }
+    const telemetryEnabled = await telemetryConsent();
+    const settings = buildNativeCoreSettings({
+      apiPort: ports.api,
+      postgresPort: ports.postgres,
+      // No dashboard process runs natively, so the port set aside for one
+      // carries the callback listener instead of a fifth port being added.
+      callbackPort: ports.gateway,
+      secrets,
+      telemetryEnabled,
+      telemetryEnvironment: currentFlintEnv(),
+      telemetryInternal: (await currentInternalFlag()) === 'true',
+    });
+    await writeDeployedVersion(layout, install.version);
+    onMessage('Starting switch-core…');
+    const record = await startCore(layout, install, settings);
+    log.info(`local-switch-server: started switch-core ${install.version} (pid ${record.pid})`);
+
+    onMessage('Waiting for the server to become healthy…');
+    const healthy = await waitForCoreHealth(layout, apiUrl, signal);
+    if (!healthy) {
+      const alive = (await runningCore(layout)) !== null;
+      await stopAfterFailedStart(layout, postgres);
+      // Read once the process is gone: a crash's last words reach the log as
+      // it exits, after the exit is first noticed.
+      const reason = await coreFailureLine(layout);
+      // One line, reason first: the server page headlines a failure's first
+      // line alone.
+      const head = alive
+        ? 'switch-core did not become healthy in time'
+        : 'switch-core stopped during startup';
+      const tail = ` (full log: ${path.join(layout.logs, 'switch-core.log')})`;
+      // The reason is what gets shortened to fit, never the log's path.
+      const room = MAX_START_FAILURE_LINE - head.length - tail.length - 2;
+      const shown =
+        reason === null || room < 20
+          ? ''
+          : `: ${reason.length > room ? `${reason.slice(0, room - 1)}…` : reason}`;
+      return {
+        result: { kind: 'error', message: `${head}${shown}${tail}` },
+        bringUpMattermost: null,
+      };
+    }
+
+    const serverId = await registerManagedServer(
+      ref,
+      serverName,
+      { gatewayUrl: apiUrl, apiUrl },
+      secrets,
+      activate,
+      onMessage
+    );
+    if (upgrade) await finishUpgrade(host);
+
+    // Mattermost comes up after this returns, beside a server already in use:
+    // pulling and seeding it takes minutes, and nothing about the server
+    // itself waits on it.
+    const bringUpMattermost = runMattermost
+      ? async (onProgress: (message: string) => void) => {
+          await pulled;
+          await startNativeMattermost({
+            layout,
+            install,
+            secrets,
+            apiUrl,
+            mattermostPort: ports.mattermost,
+            postgresPort: ports.postgres,
+            callbackPort: ports.gateway,
+            onMessage: onProgress,
+            onLog,
+          });
+        }
+      : null;
+
+    if (checkoutRoot === null) {
+      if (bundle !== null) {
+        await pruneBundleCopies(layout.toolchain, bundle.root).catch((error: unknown) => {
+          log.warn('local-switch-server: could not remove old bundle copies', {
+            error: String(error),
+          });
+        });
+      }
+      await pruneSwitchCoreInstalls(layout, install.version).catch((error: unknown) => {
+        log.warn('local-switch-server: could not remove old switch-core installs', {
+          error: String(error),
+        });
+      });
+    }
+    return {
+      result: { kind: 'started', serverId, telemetryEnabled, warning: null },
+      bringUpMattermost,
+    };
+  } catch (error) {
+    await stopAfterFailedStart(layout, postgres);
+    throw error;
+  }
+}
+
+/** A logger appending lines to `file`, for output nobody needs on screen. */
+function fileLogger(file: string): (line: string) => void {
+  mkdirSync(path.dirname(file), { recursive: true });
+  return (line) => appendFileSync(file, `${line}\n`);
+}
+
+/** Stop what a failed start left running. Best effort: the start's own
+ * failure is what gets reported, and this one is logged beside it. */
+async function stopAfterFailedStart(layout: NativeLayout, postgres: PostgresBinaries) {
+  await stopProcesses(layout, postgres, () => {}).catch((error: unknown) => {
+    log.error('local-switch-server: could not stop the server after a failed start', {
+      error: String(error),
+    });
+  });
+}
+
+/** Stop the server. Never downloads anything: when the PostgreSQL that runs
+ * the cluster cannot be found, its postmaster is signalled directly. */
+export async function stopNativeStack(
+  layout: NativeLayout,
+  bundleRoot: string | null
+): Promise<void> {
+  const bundle = await readLocalServerBundle(bundleRoot, COMPATIBLE_SWITCH_VERSION);
+  const binaries = await findPostgresForCluster(layout, bundle);
+  await stopProcesses(layout, binaries, () => {});
+  if (binaries === null) await stopClusterByPid(layout);
+}
+
+/**
+ * Stop the server and delete its database, logs and credentials, so the next
+ * start is a fresh install. Downloaded tools and update backups are kept: the
+ * one costs a download to replace, and the other is the user's.
+ */
+export async function resetNativeStack(
+  host: ServerHost,
+  layout: NativeLayout,
+  bundleRoot: string | null
+): Promise<void> {
+  await stopNativeStack(layout, bundleRoot);
+  // Its schema goes with the cluster below; only its uploaded files are in the
+  // volume. Without Docker they cannot be removed, which is said, not hidden.
+  await stopMattermost(layout, true).catch((error: unknown) => {
+    log.error('local-switch-server: could not remove Mattermost’s files volume', {
+      error: String(error),
+    });
+  });
+  for (const dir of [layout.pgdata, `${layout.pgdata}.init`, layout.run, layout.logs]) {
+    await rm(dir, { recursive: true, force: true });
+  }
+  await clearSecrets(host);
+  await clearPorts(host);
+  await finishUpgrade(host);
+}
+
+/**
+ * Throw away a native server a move off Docker started but did not finish:
+ * its processes, database and run state. Credentials and ports stay — they
+ * are the Docker server's, which is still there to go back to.
+ */
+export async function discardNativeData(
+  layout: NativeLayout,
+  bundleRoot: string | null
+): Promise<void> {
+  await stopNativeStack(layout, bundleRoot);
+  for (const dir of [layout.pgdata, `${layout.pgdata}.init`, layout.run]) {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+export async function nativeStackRunning(layout: NativeLayout): Promise<boolean> {
+  return (await runningCore(layout)) !== null;
+}
+
+export async function nativeStartedAt(layout: NativeLayout): Promise<string | null> {
+  return (await runningCore(layout))?.startedAt ?? null;
+}
+
+/** What the running switch-core does about usage data, read from the
+ * environment it was started with — which is what it read at boot. */
+export async function readNativeTelemetry(layout: NativeLayout): Promise<DeployedTelemetry> {
+  try {
+    const env = await readFile(path.join(layout.run, CORE_ENV_FILE), 'utf8');
+    return { known: true, enabled: envFlag(readEnvValue(env, TELEMETRY_ENABLED_KEY)) };
+  } catch (error) {
+    return { known: false, reason: `${CORE_ENV_FILE}: ${errorText(error)}` };
+  }
+}

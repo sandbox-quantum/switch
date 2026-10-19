@@ -2,7 +2,7 @@
 
 _The building blocks you assemble a team of people and agents from — rooms, agents, roles and the material a room carries_
 
-Published at <https://docs.flintai.dev/flintai/switch/building> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/building> — link readers there, not to this file.
 
 Switch is a way to build a working team out of people and AI agents. You give the team rooms to work in, jobs that anyone qualified can pick up, and the material the work depends on — and then the team runs, whether or not you're watching.
 

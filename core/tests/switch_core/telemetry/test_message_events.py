@@ -50,9 +50,7 @@ def _service(sink: _RecordingSink, *, enabled: bool = True) -> TelemetryService:
         sink=sink,
         enabled=enabled,
         client_id="deployment-uuid",
-        service_name="switch-core",
         version="1.0.0",
-        environment=None,
         telemetry_environment="prod",
         telemetry_internal=False,
     )
@@ -204,6 +202,11 @@ class _Unreachable:
 async def _reported(
     messages: MessageTelemetry, service: TelemetryService, sink: _RecordingSink
 ) -> list[tuple[str, dict[str, object]]]:
+    # What was queued, reported before shutdown: `aclose` gives the queue only
+    # a fraction of a second, which a slow first lookup on a busy CI runner can
+    # outlast. The tests about what shutdown drops close it themselves.
+    async with asyncio.timeout(10):
+        await messages._queue.join()
     await messages.aclose()
     await service.aclose()
     return [(record.name, record.properties) for record in sink.sent]

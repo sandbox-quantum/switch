@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { sidebarEmptyState } from './sidebar-empty-state';
+import { showsAgentsAndRooms, sidebarEmptyState } from './sidebar-empty-state';
 
 const empty = {
   grouping: 'agent' as const,
@@ -28,4 +28,19 @@ it('says filters matched nothing only in the agent view', () => {
   const filtered = { ...empty, hasActiveFilters: true, locationCount: 2 };
   expect(sidebarEmptyState(filtered)).toBe('no-filter-match');
   expect(sidebarEmptyState({ ...filtered, grouping: 'room' })).toBeNull();
+});
+
+it('keeps Agents / Rooms, and so switch-buddy, beside legacy agents while the buddy waits on a provider', () => {
+  expect(
+    showsAgentsAndRooms({ managedAgentCount: 0, buddyPending: true, legacyAgentCount: 3 })
+  ).toBe(true);
+  expect(
+    showsAgentsAndRooms({ managedAgentCount: 0, buddyPending: false, legacyAgentCount: 3 })
+  ).toBe(false);
+  expect(
+    showsAgentsAndRooms({ managedAgentCount: 0, buddyPending: false, legacyAgentCount: 0 })
+  ).toBe(true);
+  expect(
+    showsAgentsAndRooms({ managedAgentCount: 1, buddyPending: false, legacyAgentCount: 3 })
+  ).toBe(true);
 });

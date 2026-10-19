@@ -37,6 +37,7 @@ from switch_core.db.stores.template_store import (
     TemplateStore,
 )
 from switch_core.db.stores.user_store import UserStore
+from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
     current_telemetry,
@@ -54,6 +55,13 @@ from switch_core.gateway.schemas import (
     TemplateUpdateRequest,
     TemplateValidateRequest,
     TemplateValidateResponse,
+)
+from switch_core.official_templates import (
+    OfficialTemplate,
+    is_official,
+    matches,
+    official_template,
+    official_templates,
 )
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_days
@@ -114,6 +122,57 @@ def _summary(
         created_at=str(row.created_at),
         updated_at=str(row.updated_at),
     )
+
+
+def _official_detail(template: OfficialTemplate) -> TemplateDetail:
+    return TemplateDetail(
+        id=template.id,
+        owner_id=None,
+        owner_name="Switch",
+        name=template.name,
+        description=template.description,
+        kind=template.kind,
+        read_visibility=template.read_visibility,
+        write_visibility=template.write_visibility,
+        official=True,
+        can_edit=False,
+        can_manage=False,
+        version=template.version,
+        size_bytes=_size_bytes(template.content),
+        created_at="",
+        updated_at="",
+        content=template.content,
+    )
+
+
+def _official_or_none(
+    template_id: str, config: SwitchConfig
+) -> OfficialTemplate | None:
+    """The official template an ``official:`` id names, or a 404 for one
+    this release does not ship; None for any other id."""
+    if not is_official(template_id):
+        return None
+    template = official_template(
+        template_id,
+        config.feature_flags[AGENT_MANAGEMENT],
+        config.feature_flags[SWITCH_BUDDY],
+    )
+    if template is None:
+        raise HTTPException(
+            status_code=404, detail=f"Template not found: {template_id}"
+        )
+    return template
+
+
+def _refuse_official(template_id: str) -> None:
+    if is_official(template_id):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This template comes with Switch, so nobody can change or delete it. "
+                "Save your own copy under another name to change it."
+            ),
+        )
 
 
 def _detail(
@@ -234,6 +293,7 @@ async def list_templates(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
     q: Annotated[str | None, Query()] = None,
     kind: Annotated[str | None, Query()] = None,
     owner_id: Annotated[str | None, Query()] = None,
@@ -249,7 +309,20 @@ async def list_templates(
     )
     names = await _owner_names(session, user_store, {r.owner_id for r in rows})
     principal = Principal(user.id, is_admin)
-    return [_summary(r, names.get(r.owner_id), principal) for r in rows]
+    # The ones that come with Switch first, as nobody's own.
+    official = (
+        []
+        if owner_id
+        else [
+            TemplateSummary(**_official_detail(t).model_dump(exclude={"content"}))
+            for t in official_templates(
+                config.feature_flags[AGENT_MANAGEMENT],
+                config.feature_flags[SWITCH_BUDDY],
+            )
+            if matches(t, q, kind)
+        ]
+    )
+    return official + [_summary(r, names.get(r.owner_id), principal) for r in rows]
 
 
 @router.post("/templates", status_code=201)
@@ -341,7 +414,11 @@ async def get_template(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TemplateDetail:
+    official = _official_or_none(template_id, config)
+    if official is not None:
+        return _official_detail(official)
     template = await _load_for(
         "read", session, template_store, template_id, user, is_admin
     )
@@ -359,11 +436,16 @@ async def get_template_content(
     template_store: Annotated[TemplateStore, Depends(get_template_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> Response:
     """The stored document itself, byte for byte, with no envelope around it."""
-    template = await _load_for(
-        "read", session, template_store, template_id, user, is_admin
+    template: Template | OfficialTemplate | None = _official_or_none(
+        template_id, config
     )
+    if template is None:
+        template = await _load_for(
+            "read", session, template_store, template_id, user, is_admin
+        )
     return Response(
         content=template.content.encode("utf-8"),
         media_type="application/x-yaml",
@@ -387,6 +469,7 @@ async def patch_template(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> TemplateDetail:
+    _refuse_official(template_id)
     current = await _load_for(
         "write", session, template_store, template_id, user, is_admin
     )
@@ -457,6 +540,7 @@ async def delete_template(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> TemplateDeleteResponse:
+    _refuse_official(template_id)
     template = await _load_for(
         "delete", session, template_store, template_id, user, is_admin
     )

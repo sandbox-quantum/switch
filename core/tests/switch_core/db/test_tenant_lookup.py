@@ -106,6 +106,7 @@ _ADDED_SINCE = {
     "tenants_of_cloud_machine": "b6e1c9d4a7f2",
     "tenants_inviting_email": "4b8e2d61c9f7",
     "tenants_open_to_domain": "7d3f5a19e2c8",
+    "tenant_of_sign_in_flow": "e5956cbd3bdc",
 }
 
 # A third kind of change, and the quietest: a lookup whose body a later

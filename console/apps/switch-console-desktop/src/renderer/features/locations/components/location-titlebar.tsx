@@ -1,7 +1,9 @@
 import { Bot, ExternalLink, MoreVertical, RotateCcw, Server, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
+import { useLocalAgentTab } from '@renderer/features/locations/hooks/use-local-agent-tab';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import { localAgentTabStore } from '@renderer/features/locations/stores/local-agent-tabs';
 import {
   asMounted,
   getLocationStore,
@@ -28,6 +30,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
+import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import type { Agent } from '@shared/core/agents/agents';
 
@@ -48,7 +51,13 @@ const AgentCrumb = observer(function AgentCrumb({ agent }: { agent: Agent | null
           // provider logo that used to sit here says what it runs on, which is
           // not what a crumb naming one agent is for.
           icon: agent ? (
-            <AgentAvatar name={label} iconUrl={iconUrl} size={16} className="bg-transparent" />
+            <AgentAvatar
+              name={label}
+              iconUrl={iconUrl}
+              serverId={agent.serverId}
+              size={16}
+              className="bg-transparent"
+            />
           ) : (
             <Bot className="size-3.5 shrink-0" />
           ),
@@ -181,16 +190,29 @@ export const LocationTitlebar = observer(function LocationTitlebar() {
     : null;
 
   const mounted = locationViewKind(store) === 'ready' ? asMounted(store) : undefined;
+  const { tabs, tab } = useLocalAgentTab(agent);
 
   return (
     <Titlebar
+      leftClassName="min-w-0"
       leftSlot={
-        <div className="flex items-center gap-2">
-          <AgentCrumb agent={agent} />
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="min-w-0 truncate">
+            <AgentCrumb agent={agent} />
+          </div>
           {agent?.ownerName && (
-            <span className="text-xs text-foreground-tertiary-passive">
+            <span className="shrink-0 text-xs text-foreground-tertiary-passive">
               loaded · by {agent.ownerName}
             </span>
+          )}
+          {agent && tabs && (
+            <SegmentedControl
+              className="shrink-0"
+              value={tab}
+              onChange={(next) => localAgentTabStore.setTab(agent.id, next)}
+              options={tabs}
+              ariaLabel="Agent view"
+            />
           )}
         </div>
       }

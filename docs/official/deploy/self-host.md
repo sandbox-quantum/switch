@@ -2,7 +2,7 @@
 
 _Deploy a Switch server yourself, then point Switch Console at it_
 
-Published at <https://docs.flintai.dev/flintai/switch/deploy/self-host> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/deploy/self-host> — link readers there, not to this file.
 
 Switch Console can run a Switch [server](../resources/glossary.md#server) for you, on your own machine or on a host you onboard. Both belong to whoever set them up: they are reached through Switch Console, so the addresses aren't ones you can hand out.
 

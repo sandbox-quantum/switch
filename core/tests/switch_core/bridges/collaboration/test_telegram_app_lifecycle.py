@@ -49,6 +49,7 @@ from switch_core.bridges.collaboration.telegram.install import (
 from switch_core.db.models import CollaborationBridge
 from switch_core.gateway.collaborations import update_bridge
 from switch_core.gateway.schemas import BridgeUpdateRequest
+from tests.ownership import SoleOwner
 
 _SECRET = "placeholder-secret"
 
@@ -420,6 +421,8 @@ def _lifecycle() -> CollaborationBridgeLifecycleService:
         session_activity_listener=None,  # type: ignore[arg-type]
         session_activity_service=None,  # type: ignore[arg-type]
         connections=None,  # type: ignore[arg-type]
+        ownership=SoleOwner(),
+        cursor_writer=SoleOwner.cursor_writer(None),
     )
     lifecycle.register_adapter("telegram", TelegramAdapter, TelegramConnectionConfig)
     return lifecycle

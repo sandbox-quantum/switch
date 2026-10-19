@@ -34,7 +34,6 @@ a wait gets exactly that wait.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import secrets
 from collections import OrderedDict
@@ -257,12 +256,20 @@ class AgentSessionActivityPublisher:
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None
-        for task in self._tasks:
+        tasks, self._tasks = self._tasks, []
+        for task in tasks:
             task.cancel()
-        for task in self._tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        self._tasks = []
+        # A task that had already died is logged rather than raised: the
+        # bridge stopping this publisher goes on to close its platform
+        # connection, and a second stop has nothing left to raise.
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for task, result in zip(tasks, results, strict=True):
+            if isinstance(result, Exception):
+                logger.error(
+                    "Session activity task %s had stopped on an error",
+                    task.get_name(),
+                    exc_info=result,
+                )
 
     # ── Listener callbacks: queue only ────────────────────────────────────────
 

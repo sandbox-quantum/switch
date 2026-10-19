@@ -101,6 +101,7 @@ class ServiceConnectionStore:
         account_id: str,
         external_identity: str,
         encrypted_secret: str,
+        oauth_client_id: str | None,
     ) -> None:
         """Connect, or re-link in place: the grants on it are kept.
 
@@ -114,6 +115,7 @@ class ServiceConnectionStore:
             "account_id": account_id,
             "external_identity": external_identity,
             "encrypted_secret": encrypted_secret,
+            "oauth_client_id": oauth_client_id,
             "error_code": None,
         }
         await session.execute(

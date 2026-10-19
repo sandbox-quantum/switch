@@ -92,6 +92,9 @@ class ApiKeyAdapter:
         self._sign_in = sign_in
         self._http = http
 
+    def current_client_id(self) -> str | None:
+        return None
+
     def checked_fields(self, submitted: dict[str, str]) -> dict[str, str]:
         """The submitted fields, each as the entry allows, and nothing else."""
         expected = {field.name: field for field in self._sign_in.fields}

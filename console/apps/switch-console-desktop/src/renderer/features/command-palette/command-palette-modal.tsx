@@ -3,10 +3,12 @@ import { Command } from 'cmdk';
 import { Activity, DoorOpen, Globe, type LucideIcon, MessageSquare, Server } from 'lucide-react';
 import { observer, useObserver } from 'mobx-react-lite';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { agentChatsFlag } from '@renderer/features/chats/stores/agent-chats-flag';
 import { REMOTE_HOSTS_QUERY_KEY } from '@renderer/features/remote-hosts/views/remote-hosts-view';
 import { getSessionStore } from '@renderer/features/sessions/stores/session-selectors';
 import { agentExpandKey } from '@renderer/features/sidebar/sidebar-store';
 import { openRoom } from '@renderer/features/switch-rooms/open-room';
+import { isConsoleDirectChat } from '@renderer/features/switch-servers/room-filters';
 import { serverIcon } from '@renderer/features/switch-servers/server-icon';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -272,7 +274,13 @@ export function CommandPaletteModal({
   // span every server, not the active one: you search precisely because you do
   // not know where a thing is.
   const roomResults = useObserver(() =>
-    matchRooms(switchRoomsStore.listedRoomsInAllWorkspaces, debouncedQuery)
+    matchRooms(
+      switchRoomsStore.listedRoomsInAllWorkspaces.filter((room) => {
+        const serverId = switchRoomsStore.roomServerId(room.id);
+        return !(serverId && agentChatsFlag(serverId) && isConsoleDirectChat(room));
+      }),
+      debouncedQuery
+    )
   );
   const serverResults = useObserver(() => matchServers(switchServersStore.servers, debouncedQuery));
 

@@ -30,6 +30,8 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
+from switch_core.db.models import TENANT_ZERO_ID
 
 AGENT_ID = "agent-1"
 CONN_ID = "conn-1"
@@ -40,9 +42,9 @@ ROOM_B = "!room-b"
 class _Protocol:
     """Enough of AgentCore for the two room-control handlers."""
 
-    def __init__(self) -> None:
+    def __init__(self, event_buffer: EventBuffer) -> None:
         self.connections = AgentConnectionRegistry()
-        self.event_buffer = EventBuffer(sequence_base=0)
+        self.event_buffer = event_buffer
         self.membership_checks: list[str] = []
 
     async def require_room_member(self, agent_id: str, room_id: str) -> None:
@@ -65,7 +67,7 @@ def _attach_declaring(protocol: _Protocol, declaration: ClientDeclaration) -> An
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=declaration,
         expected_generation=None,
     )
@@ -84,6 +86,7 @@ def _request(room_id: str, generation: int | None) -> ConnectionSubscribeRequest
 
 class _Agent:
     id = AGENT_ID
+    tenant_id = TENANT_ZERO_ID
     metadata_ = None
 
 
@@ -99,11 +102,11 @@ async def _call(
 
 
 @pytest.mark.asyncio
-async def test_a_displaced_client_cannot_claim_a_room_on_the_winners_connection() -> (
-    None
-):
+async def test_a_displaced_client_cannot_claim_a_room_on_the_winners_connection(
+    db_buffer: EventBuffer,
+) -> None:
     """The reviewer's trigger: A owns N, B takes N+1, A claims with N."""
-    protocol = _Protocol()
+    protocol = _Protocol(db_buffer)
     displaced = _attach(protocol).stream_generation  # A
     conn = _attach(protocol)  # B takes over
     held = conn.stream_generation
@@ -121,13 +124,15 @@ async def test_a_displaced_client_cannot_claim_a_room_on_the_winners_connection(
 
 
 @pytest.mark.asyncio
-async def test_the_refusal_comes_before_the_membership_check() -> None:
+async def test_the_refusal_comes_before_the_membership_check(
+    db_buffer: EventBuffer,
+) -> None:
     """A refused caller must not reach anything, not merely fail to write.
 
     The membership check is a database read on a room the caller named. A
     displaced client should not be able to drive it at all.
     """
-    protocol = _Protocol()
+    protocol = _Protocol(db_buffer)
     displaced = _attach(protocol).stream_generation
     _attach(protocol)
 
@@ -138,8 +143,10 @@ async def test_the_refusal_comes_before_the_membership_check() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_displaced_client_cannot_release_the_winners_room() -> None:
-    protocol = _Protocol()
+async def test_a_displaced_client_cannot_release_the_winners_room(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     displaced = _attach(protocol).stream_generation
     conn = _attach(protocol)
     await _call(connection_subscribe, protocol, ROOM_B, conn.stream_generation)
@@ -152,9 +159,11 @@ async def test_a_displaced_client_cannot_release_the_winners_room() -> None:
 
 
 @pytest.mark.asyncio
-async def test_releasing_without_an_incarnation_is_refused_too() -> None:
+async def test_releasing_without_an_incarnation_is_refused_too(
+    db_buffer: EventBuffer,
+) -> None:
     """Each handler answers for itself, so each is asked."""
-    protocol = _Protocol()
+    protocol = _Protocol(db_buffer)
     _attach(protocol)
     conn = _attach(protocol)
     await _call(connection_subscribe, protocol, ROOM_B, conn.stream_generation)
@@ -168,20 +177,22 @@ async def test_releasing_without_an_incarnation_is_refused_too() -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_room_holder_is_evicted_by_a_refused_claim() -> None:
+async def test_no_room_holder_is_evicted_by_a_refused_claim(
+    db_buffer: EventBuffer,
+) -> None:
     """The sharpest edge: claiming is what evicts, so a refusal must not.
 
     A second connection of the same agent holds the room. A displaced client
     asking for it with takeover would otherwise throw that holder off.
     """
-    protocol = _Protocol()
+    protocol = _Protocol(db_buffer)
     holder = protocol.connections.open(
         agent_id=AGENT_ID,
         connection_id="conn-holder",
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
@@ -200,8 +211,8 @@ async def test_no_room_holder_is_evicted_by_a_refused_claim() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_current_client_is_admitted() -> None:
-    protocol = _Protocol()
+async def test_the_current_client_is_admitted(db_buffer: EventBuffer) -> None:
+    protocol = _Protocol(db_buffer)
     conn = _attach(protocol)
 
     result = await _call(connection_subscribe, protocol, ROOM_A, conn.stream_generation)
@@ -211,7 +222,9 @@ async def test_the_current_client_is_admitted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_client_claiming_nothing_is_refused_once_the_holder_is_fenced() -> None:
+async def test_a_client_claiming_nothing_is_refused_once_the_holder_is_fenced(
+    db_buffer: EventBuffer,
+) -> None:
     """Claiming nothing must not be the way past the claim.
 
     The displaced client here is one that never saw the first frame of its
@@ -219,7 +232,7 @@ async def test_a_client_claiming_nothing_is_refused_once_the_holder_is_fenced() 
     it can be displaced without knowing it. Reading its silence as "too old to
     fence" would leave the whole check optional at the caller's discretion.
     """
-    protocol = _Protocol()
+    protocol = _Protocol(db_buffer)
     _attach(protocol)
     conn = _attach(protocol)
     held = conn.stream_generation
@@ -235,13 +248,15 @@ async def test_a_client_claiming_nothing_is_refused_once_the_holder_is_fenced() 
 
 
 @pytest.mark.asyncio
-async def test_a_holder_too_old_to_be_fenced_keeps_the_unchecked_behaviour() -> None:
+async def test_a_holder_too_old_to_be_fenced_keeps_the_unchecked_behaviour(
+    db_buffer: EventBuffer,
+) -> None:
     """The declaration read is the holder's, so who cannot be fenced stays served.
 
     A client built before the incarnation existed has nothing to name, and
     refusing it would lock it out of its own rooms rather than close a hole.
     """
-    protocol = _Protocol()
+    protocol = _Protocol(db_buffer)
     conn = _attach_declaring(protocol, ClientDeclaration())
 
     result = await _call(connection_subscribe, protocol, ROOM_A, None)

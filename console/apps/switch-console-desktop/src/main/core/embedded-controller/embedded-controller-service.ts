@@ -88,9 +88,18 @@ export type EmbeddedControllerDeps = {
   stopTimeoutMs: number;
   /** The Console agents moved onto this computer's controller for the server, by name. */
   movedAgents: (serverId: string) => Promise<string[]>;
+  /** Provider checks made ahead of the controller, for it to take, or null when there are none. */
+  providerSeed: () => string | null;
 };
 
 const SUPPORTED_PLATFORMS: readonly NodeJS.Platform[] = ['darwin', 'linux', 'win32'];
+
+/** Every provider's sign-in check runs at once; the slowest allows itself 15 seconds. */
+const RECHECK_TIMEOUT_MS = 60_000;
+
+function providerSeedArgs(file: string | null): string[] {
+  return file === null ? [] : ['--provider-seed', file];
+}
 
 /** Why managed agents cannot run on `platform`, or null when they can. */
 export function unsupportedPlatformReason(platform: NodeJS.Platform): string | null {
@@ -248,6 +257,17 @@ export class EmbeddedControllerService {
       this.phases.delete(serverId);
       this.startRunner(serverId);
     });
+  }
+
+  /**
+   * Has this computer's controller for `serverId` check every provider again
+   * now and report it, after the user installed or signed in to one. Resolves
+   * once Switch holds the fresh report.
+   */
+  async recheckProviders(serverId: string): Promise<void> {
+    const runner = this.runners.get(serverId);
+    if (!runner) throw new Error('This computer does not run managed agents for this server.');
+    await runner.supervisor.recheckProviders(RECHECK_TIMEOUT_MS);
   }
 
   /**
@@ -465,6 +485,7 @@ export class EmbeddedControllerService {
         '--credential-stdin',
         '--shared-host-bundle',
         this.deps.bundles.sharedHost(),
+        ...providerSeedArgs(this.deps.providerSeed()),
       ],
       env: {
         ...this.deps.env(),

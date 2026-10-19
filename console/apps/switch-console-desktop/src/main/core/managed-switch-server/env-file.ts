@@ -1,3 +1,4 @@
+import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import type { TelemetryFlintEnv } from '../telemetry/config';
 import {
   LOCAL_SERVER_ADMIN_EMAIL,
@@ -33,9 +34,29 @@ export type LocalServerEnvParams = {
   telemetryInternal: boolean;
 };
 
-/** The feature flags every managed stack is started with. Empty: a managed
- * stack starts with no feature flags on (agent management included). */
-export const MANAGED_SERVER_FEATURE_FLAGS = [] as const;
+/**
+ * The feature flags a server Console runs is started with, in a build with the
+ * new first run: what switch-buddy needs (agent management, its chat and the
+ * buddy itself), addressing an agent without tagging it, and connectors such
+ * as GitHub (service connections). A build without it
+ * starts them with none, as before.
+ */
+export function managedServerFeatureFlags(newFirstRun: boolean): readonly string[] {
+  return newFirstRun
+    ? [
+        'agent_management',
+        'agent_chats',
+        'switch_buddy',
+        'follow_the_conversation',
+        'service_connections',
+      ]
+    : [];
+}
+
+/** The feature flags every managed stack is started with, in this build. */
+export const MANAGED_SERVER_FEATURE_FLAGS = managedServerFeatureFlags(
+  BUILD_FEATURE_FLAGS.onboarding
+);
 
 /** The variable the server reads its telemetry gate from. Named here because
  * reading the choice back off a host has to look for the same key. */
@@ -115,6 +136,9 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     `${TELEMETRY_ENABLED_KEY}=${telemetryEnabled ? 'true' : 'false'}`,
     `TELEMETRY_ENVIRONMENT=${telemetryEnvironment}`,
     `TELEMETRY_INTERNAL=${telemetryInternal ? 'true' : 'false'}`,
+    // Tells the server's agents that Switch Console runs it, so switch-buddy
+    // can tell this apart from Switch Cloud and a self-hosted server.
+    'MANAGED_BY_CONSOLE=true',
     '',
     'MATTERMOST_ADMIN_USER=admin',
     `MATTERMOST_ADMIN_PASSWORD=${secrets.mattermostAdminPassword}`,

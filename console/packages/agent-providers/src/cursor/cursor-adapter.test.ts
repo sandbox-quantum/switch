@@ -45,6 +45,7 @@ async function setup(resume = false, env: Record<string, string> = {}) {
     mcpServers: {
       switch: { transport: 'stdio', command: 'node', args: ['server.js'], env: { MODE: 'test' } },
     },
+    connectorMcpServers: [],
     ...(resume ? { resume: { nativeSessionId: 'native' } } : {}),
   });
   const server = servers.at(-1)!;
@@ -339,6 +340,7 @@ it('registers an HTTP MCP server with its headers when the agent declares HTTP',
     runtimeMode: 'approval-required',
     env: {},
     mcpServers: httpSwitch,
+    connectorMcpServers: [],
   });
   expect(servers.at(-1)!.received.find((m) => m.method === 'session/new')?.params).toMatchObject({
     mcpServers: [
@@ -362,6 +364,7 @@ it('refuses to start a session whose HTTP MCP servers the agent cannot reach', a
       runtimeMode: 'approval-required',
       env: {},
       mcpServers: httpSwitch,
+      connectorMcpServers: [],
     })
   ).rejects.toThrow('Cursor CLI does not declare MCP over HTTP');
   expect(servers.at(-1)!.received.some((m) => m.method === 'session/new')).toBe(false);

@@ -7,9 +7,15 @@ bot token, opens the socket, and **binds no tenant** — each event is routed to
 guild's inert bridge, and every tenant binding happens below, per room.
 
 It is not a bridge and does not go through the collaboration lifecycle. It is a
-single deployment-level object, started at boot alongside the bridges and living
-in the one switch-core pod (a forced singleton), so there is never a second
-owner of the socket and no leader election to arrange.
+single deployment-level object in every switch-core process, and the socket is
+owned work (`ownership.py`, kind `DISCORD_GATEWAY`): Discord delivers every
+event to every socket the bot opens, so one process opens it. Every
+shared-delivery bridge is held beside it (`DiscordAdapter.held_with`), since
+the events it receives reach a bridge in-process. Every other process logs the
+same connection in for Discord's API alone, so the quiet copies of the bridges
+there can still serve the requests that reach them. The connection object is
+the same one throughout, whichever it is doing, so a bridge attached to it
+stays attached when this process takes the socket over or hands it on.
 
 It opens the shared socket with the right intents, routes each guild message,
 each global slash invocation and each press on a card's button to the bridge its
@@ -22,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import discord
 
@@ -30,6 +36,8 @@ from switch_core.bridges.agent.commands import Command as InRoomCommand
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.discord.adapter import (
     ALLOWED_MESSAGE_TYPES,
+    DISCORD_GATEWAY,
+    DISCORD_GATEWAY_KEY,
     DiscordAdapter,
 )
 from switch_core.bridges.collaboration.discord.connection import DiscordConnection
@@ -40,6 +48,9 @@ from switch_core.bridges.collaboration.install_service import (
     WebhookWorkspaceUnknown,
 )
 from switch_core.tenant_context import no_tenant
+
+if TYPE_CHECKING:
+    from switch_core.ownership import Fence, OwnedKind, Ownership
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +79,15 @@ class DiscordGatewayClient:
         # Fired once, after the first successful connect: boot walks the running
         # bridges and attaches the ones on a shared connection (see main.py).
         self._on_connected = on_connected
-        # Set once the first connect succeeds, and never cleared: discord.py
-        # reconnects a dropped socket on the same connection object.
+        # Whether the connection is up, as the socket or for the API alone.
+        # Cleared while this process switches between the two; a socket that
+        # drops is discord.py's to reconnect, on the same connection object.
         self._live = False
+        # The connect, or the log-in for the API alone, under way in the
+        # background, retried until it succeeds.
+        self._task: asyncio.Task[None] | None = None
+        # The socket as owned work, once `own` has registered it.
+        self._owned: OwnedKind | None = None
         # command_guild_id=None → commands register globally, once for the
         # application across every guild (decision #7); guild-scoped registration
         # is the self-registered adapter's, which serves one guild.
@@ -140,26 +157,35 @@ class DiscordGatewayClient:
         )
 
     async def start_with_retry(self) -> None:
-        """Connect, retrying the initial connect with backoff, then attach.
+        """Connect, retrying the initial connect with backoff, then attach."""
+        await self._bring_up(listen=True)
 
-        Run as a supervised background task so a configured-but-unreachable
-        Discord app never blocks or fails boot. Only the *initial* connect is
-        retried here — once it is up, discord.py reconnects transient drops on
-        its own (the same connection object, so attached bridges keep working).
-        On the first success `on_connected` fires, which walks the running
+    async def _bring_up(self, *, listen: bool) -> None:
+        """Open the socket, or log in for the API alone, retrying with backoff
+        until it succeeds, then attach the bridges.
+
+        Run in the background so a configured-but-unreachable Discord app
+        never blocks or fails boot, or a take-over. Only the *initial* connect
+        is retried here — once it is up, discord.py reconnects transient drops
+        on its own (the same connection object, so attached bridges keep
+        working). On success `on_connected` fires, which walks the running
         bridges and attaches the ones on a shared connection.
         """
         delay = _INITIAL_RETRY_DELAY
         while True:
             try:
-                await self.start()
+                if listen:
+                    await self.start()
+                else:
+                    await self._connection.login()
                 break
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception(
-                    "Discord shared Gateway connection failed to start; Discord "
-                    "installs are inert until it connects. Retrying in %.0fs",
+                    "Discord shared %s failed to start; Discord installs are "
+                    "inert until it does. Retrying in %.0fs",
+                    "Gateway connection" if listen else "API log-in",
                     delay,
                 )
                 await self._connection.close()
@@ -171,8 +197,66 @@ class DiscordGatewayClient:
         self._live = True
         await self._on_connected(self._connection)
 
+    def own(self, ownership: Ownership) -> None:
+        """Make the socket owned work: opened in the one process that holds
+        it, and by the next once that one stops or dies. Before the
+        ownership's first balance, so a process that holds it at boot opens
+        it there and then."""
+        self._owned = ownership.kind(
+            DISCORD_GATEWAY, start=self._take_over, stop=self._hand_over
+        )
+        self._owned.want(DISCORD_GATEWAY_KEY)
+
+    def start_quietly(self) -> None:
+        """After the ownership's first balance: unless this process holds the
+        socket, log the connection in for the API alone."""
+        if self._task is None and (self._owned is None or not self._owned.held()):
+            self._task = asyncio.create_task(
+                self._bring_up(listen=False), name="discord-api-login"
+            )
+
+    async def _take_over(self, key: str, fence: Fence) -> None:
+        """This process now holds the socket: open it in place of the log-in
+        for the API alone. In the background, as at boot."""
+        logger.info("Taking over the Discord shared Gateway connection")
+        await self._close()
+        self._task = asyncio.create_task(
+            self._bring_up(listen=True), name="discord-gateway-start"
+        )
+
+    async def _hand_over(self, key: str) -> None:
+        """This process no longer holds the socket: close it, so it delivers
+        nothing more here before the next holder opens its own, then log in
+        again for the API alone, unless the process is shutting down."""
+        logger.info("Handing the Discord shared Gateway connection over")
+        await self._close()
+        if self._owned is not None and not self._owned.stopping:
+            self._task = asyncio.create_task(
+                self._bring_up(listen=False), name="discord-api-login"
+            )
+
+    async def _close(self) -> None:
+        """Stop whatever is being brought up, and close the connection.
+
+        Closed even when the bring-up failed after connecting, in
+        `on_connected`, and its error is raised from here: the ownership logs
+        a hand-over that raises and releases the socket's lease all the same,
+        and the next holder opens a socket of its own.
+        """
+        task, self._task = self._task, None
+        try:
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        finally:
+            self._live = False
+            await self._connection.close()
+
     async def stop(self) -> None:
-        await self._connection.close()
+        await self._close()
 
     async def _on_guild_message(self, message: discord.Message) -> None:
         """Route one guild message to the bridge its guild resolves to.

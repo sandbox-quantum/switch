@@ -5,7 +5,7 @@
  * the page rather than inside advanced configuration — and they are saved from
  * a bar shared with the other editors on the page, not a button of their own.
  * These pin what that bar owes the reader: it appears only when something is
- * genuinely unsaved, nothing is written until Save, and Revert puts back what
+ * genuinely unsaved, nothing is written until Save, and Discard puts back what
  * was stored rather than clearing the field.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -142,7 +142,7 @@ describe('an agent’s instructions', () => {
     const el = await renderPage();
     await type(field(el), 'Answer in Portuguese.');
 
-    await act(async () => button(el, /^Revert/)!.click());
+    await act(async () => button(el, /^Discard/)!.click());
 
     expect(field(el).value).toBe(STORED);
     expect(updateInstructions).not.toHaveBeenCalled();

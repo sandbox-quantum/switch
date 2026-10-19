@@ -1,9 +1,14 @@
-{{- if ne (int .Values.switchCore.replicaCount) 1 }}
-{{- fail "switchCore.replicaCount must be 1: switch-core keeps the per-agent event buffer, the invite bus, the presence bus and the message listener's subscriber registry in memory, so a second replica would never hear signals raised in the first." }}
-{{- end }}
 {{- include "switch.validateDbTls" . }}
 {{- include "switch.validateLogging" . }}
 {{- include "switch.validateObservability" . }}
+{{- include "switch.validateControllerRelease" . }}
+{{- $roll := .Values.switchCore.rollingUpdate }}
+{{- if not (has (toString $roll.maxSurge) (list "0" "1")) }}
+{{- fail (printf "switchCore.rollingUpdate.maxSurge must be 0 or 1, got %v: switch-core checks its database connection budget for at most one pod beyond replicaCount during a roll, so a larger surge could open more connections than Postgres allows." $roll.maxSurge) }}
+{{- end }}
+{{- if and (eq (toString $roll.maxSurge) "0") (eq (toString $roll.maxUnavailable) "0") }}
+{{- fail "switchCore.rollingUpdate.maxSurge and maxUnavailable are both 0, so a roll could never replace a pod. Set maxSurge to 1 (the default) or maxUnavailable above 0." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -13,12 +18,21 @@ metadata:
     {{- include "switch.selectorLabels" (dict "Release" .Release "component" "switch-core") | nindent 4 }}
 spec:
   replicas: {{ .Values.switchCore.replicaCount }}
-  # switch-core is a singleton (in-process delivery state + collaboration-bridge
-  # sessions in memory). A rolling update would briefly run two pods whose bridge/client
-  # sessions collide and leave bridges stuck; Recreate tears the old pod down
-  # before starting the new one.
+  # Each bridge, connector and reader is held by one pod at a time through a
+  # lease in Postgres, so two pods side by side during a roll do not both run
+  # it: the old pod hands its work over on SIGTERM, and the new one takes it
+  # over. One replica still uses Recreate, because switch-core sizes its
+  # connection budget and its shutdown drain for a single replica being
+  # replaced rather than rolled (CORE_REPLICAS=1).
   strategy:
+    {{- if gt (int .Values.switchCore.replicaCount) 1 }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.switchCore.rollingUpdate.maxSurge }}
+      maxUnavailable: {{ .Values.switchCore.rollingUpdate.maxUnavailable }}
+    {{- else }}
     type: Recreate
+    {{- end }}
   selector:
     matchLabels:
       {{- include "switch.selectorLabels" (dict "Release" .Release "component" "switch-core") | nindent 6 }}
@@ -30,6 +44,17 @@ spec:
     spec:
       {{- if .Values.global.imagePullSecrets }}
       {{- include "switch.imagePullSecrets" . | nindent 6 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.switchCore.terminationGracePeriodSeconds }}
+      {{- $spread := .Values.switchCore.topologySpread }}
+      {{- if and (gt (int .Values.switchCore.replicaCount) 1) $spread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ $spread.maxSkew }}
+          topologyKey: {{ $spread.topologyKey }}
+          whenUnsatisfiable: {{ $spread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "switch.selectorLabels" (dict "Release" .Release "component" "switch-core") | nindent 14 }}
       {{- end }}
       initContainers:
         {{- include "switch.waitFor" (dict "name" "postgres" "host" (include "switch.postgresHost" .) "port" (include "switch.postgresPort" .)) | nindent 8 }}
@@ -92,11 +117,13 @@ spec:
             {{- end }}
             {{- include "switch.coreEnv" (merge (dict "omitOwnerCredentials" true) .) | nindent 12 }}
           # Readiness checks the database; liveness deliberately does not.
-          # There is one replica, so a failing readiness probe empties the
-          # Service rather than shifting traffic — which is right while the
-          # database is unreachable, and would be catastrophic as a restart
-          # trigger. `/health` stays the cheap always-ok reply that liveness
-          # and the other workloads' boot waits use.
+          # With one replica a failing readiness probe empties the Service
+          # rather than shifting traffic, which is right while the database is
+          # unreachable and would be catastrophic as a restart trigger. With
+          # several, traffic shifts to the pods still ready, and a pod also
+          # leaves readiness as it starts shutting down. `/health` stays the
+          # cheap always-ok reply that liveness and the other workloads' boot
+          # waits use.
           readinessProbe:
             httpGet:
               path: /health/ready

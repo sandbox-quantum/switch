@@ -218,7 +218,9 @@ async def create_agent(
         auto_approve: Let the agent run tools without asking for approval.
         display_name: A human label shown next to `name`, or null for none.
         icon_url: An https link to the agent's icon, or null for the icon
-            its name generates, the same one Switch Console offers first.
+            its name generates, the same one Switch Console offers first. A
+            server with third-party avatars off generates none, and the agent
+            then shows each platform's default icon.
         start: Start the agent now (true) or create it stopped (false).
 
     Returns:
@@ -244,6 +246,7 @@ async def create_agent(
             instructions=instructions,
             directory=directory,
             auto_approve=auto_approve,
+            isolation="shared",
             start=start,
         ),
         get_protocol(),

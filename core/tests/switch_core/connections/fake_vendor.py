@@ -53,6 +53,11 @@ class FakeVendor:
         self.connections_revoked: list[ConnectionSecret] = []
         self.grant_error: Exception | None = None
         self.checked: list[tuple[str, dict[str, Any]]] = []
+        self.resolved: list[list[str]] = []
+        self.client_id: str | None = None
+
+    def current_client_id(self) -> str | None:
+        return self.client_id
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
         self.refreshes += 1
@@ -96,6 +101,17 @@ class FakeVendor:
 
     async def revoke_connection(self, secret: ConnectionSecret) -> None:
         self.connections_revoked.append(secret)
+
+    async def resolve_repositories(
+        self, access_token: str, names: list[str]
+    ) -> dict[str, Any]:
+        """Every repository is reachable, in installation 123, numbered from
+        456 in the order named."""
+        self.resolved.append(list(names))
+        return {
+            "installation_id": 123,
+            "repository_ids": [456 + i for i in range(len(names))],
+        }
 
     async def check_grant(
         self, access_token: str, request: IssueRequest

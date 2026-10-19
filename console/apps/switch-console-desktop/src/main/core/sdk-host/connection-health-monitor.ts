@@ -88,6 +88,15 @@ export class ConnectionHealthMonitor {
     return this.compute(serverId);
   }
 
+  /**
+   * One agent's session placements (session id → room id) as its watcher last
+   * reported them, or null while it cannot be asked. Call after
+   * {@link snapshot} has attached the agent's server.
+   */
+  placementsOf(agentId: string): Record<string, string> | null {
+    return this.entries.get(agentId)?.source?.health?.placements ?? null;
+  }
+
   /** Stops watching every agent. */
   dispose(): void {
     for (const agentId of [...this.entries.keys()]) this.detach(agentId);

@@ -12,6 +12,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
 )
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import AgentStatus
 
@@ -69,7 +70,7 @@ def _registry(
             scope=scope,  # type: ignore[arg-type]
             delivery_filter="all",
             spawn_capable=spawn_capable,
-            cursor=0,
+            position={OWN_EVENTS: 0},
             declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
             expected_generation=None,
         )

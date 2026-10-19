@@ -110,6 +110,18 @@ class AgentStore:
         result = await session.execute(select(Agent))
         return list(result.scalars().all())
 
+    async def get_by_server_connector(
+        self, session: AsyncSession, connector_id: str
+    ) -> list[Agent]:
+        """The agents a server-side connector registered, in the bound tenant:
+        each carries the connector's id in its metadata."""
+        result = await session.execute(
+            select(Agent)
+            .where(Agent.metadata_["server_connector_id"].astext == connector_id)
+            .order_by(Agent.name)
+        )
+        return list(result.scalars().all())
+
     async def get_by_owner(self, session: AsyncSession, owner_id: str) -> list[Agent]:
         """Every agent `owner_id` owns in the bound tenant.
 

@@ -7,7 +7,13 @@ from switch_core.bridges.agent.operations import (
     agent_management as _agent_management,  # noqa: E402,F401
 )
 from switch_core.bridges.agent.operations import (
+    agent_services as _agent_services,  # noqa: E402,F401
+)
+from switch_core.bridges.agent.operations import (
     definitions as _definitions,  # noqa: E402,F401
+)
+from switch_core.bridges.agent.operations import (
+    my_context as _my_context,  # noqa: E402,F401
 )
 from switch_core.bridges.agent.operations.registry import (
     Operation,

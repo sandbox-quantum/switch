@@ -12,15 +12,20 @@ once:
 - disconnected: `disconnected_at` and `disconnect_reason` (`socket_closed`,
   `server_shutdown`, `heartbeat_lapsed`, `taken_over`, `revoked`).
 
-That row, and the lease of the process it names (`process_lease.py`), are
+That row, and the lease of the process it names (`switch_core/process_lease.py`), are
 what a machine's state is read from (`placement.controller_state`).
 
-Which write wins, across processes: a connecting comes from the process
-holding the live socket, and replaces whatever the row holds. A closing is
-only written while the row still names that connection, so a process closing
-a connection the controller has since replaced through another process
-leaves the replacement standing. (Clocks are not compared: two processes'
-clocks need not agree.)
+Which write wins, across processes: each is written only while the row
+still names its connection, a connecting while that is the connection the
+controller opened last and this process holds it, a closing while this
+process holds its socket. So a write about a connection the controller has
+since replaced, or reattached through another process, leaves the newer one
+standing however late it lands. (Clocks are not compared: two processes'
+clocks need not agree.) A closing also keeps where the connection's stream
+resumes each agent, for a socket that reattaches through another process.
+
+Each transition that took effect is announced (`announce`), so every other
+process reads the row again and knows which process holds the socket now.
 
 Writes are queued, latest per controller, and written by one task (`run`),
 woken by each transition, so a socket attaching or going never waits on the
@@ -58,6 +63,7 @@ class _Transition:
     at: datetime
     # None for a connecting; why the socket went for a closing.
     disconnect_reason: str | None
+    resume_cursors: dict[str, int | None]
 
 
 class ControllerConnectionLedger:
@@ -70,8 +76,12 @@ class ControllerConnectionLedger:
         session_factory: async_sessionmaker[AsyncSession],
         controllers: AgentControllerStore,
         clock: Callable[[], datetime],
+        announce: Callable[[str, str], None],
     ) -> None:
         self._process_id = process_id
+        # Called with the tenant and the controller of each transition that
+        # took effect, once it has committed.
+        self._announce = announce
         self._session_factory = session_factory
         self._controllers = controllers
         self._clock = clock
@@ -92,6 +102,7 @@ class ControllerConnectionLedger:
             connection_id=conn.id,
             at=self._clock(),
             disconnect_reason=reason,
+            resume_cursors=dict(conn.resume_cursors),
         )
         self._wake.set()
 
@@ -132,20 +143,25 @@ class ControllerConnectionLedger:
         unwritten = list(transitions)
         try:
             for tenant_id, batch in by_tenant.items():
+                written: list[_Transition] = []
                 async with tenant_session(self._session_factory, tenant_id) as session:
                     for transition in batch:
-                        await self._write_one(session, transition)
+                        if await self._write_one(session, transition):
+                            written.append(transition)
                     await session.commit()
                 for transition in batch:
                     unwritten.remove(transition)
+                for transition in written:
+                    self._announce(transition.tenant_id, transition.controller_id)
         except BaseException:
             for transition in unwritten:
                 self._pending.setdefault(transition.controller_id, transition)
             raise
 
-    async def _write_one(self, session: AsyncSession, transition: _Transition) -> None:
+    async def _write_one(self, session: AsyncSession, transition: _Transition) -> bool:
+        """Write one transition. Returns whether it took effect."""
         if transition.disconnect_reason is None:
-            found = await self._controllers.record_connected(
+            written = await self._controllers.record_connected(
                 session,
                 transition.tenant_id,
                 transition.controller_id,
@@ -153,25 +169,30 @@ class ControllerConnectionLedger:
                 process_id=self._process_id,
                 connected_at=transition.at,
             )
-            if not found:
-                logger.warning(
-                    "Controller %s connected, but has no row to record it on",
+            if not written:
+                logger.info(
+                    "Controller %s connection %s attached, but its row names a "
+                    "newer connection or another process; left as it is",
                     transition.controller_id,
+                    transition.connection_id,
                 )
-            return
+            return written
         written = await self._controllers.record_disconnected(
             session,
             transition.tenant_id,
             transition.controller_id,
             connection_id=transition.connection_id,
+            process_id=self._process_id,
             disconnected_at=transition.at,
             reason=transition.disconnect_reason,
+            resume_cursors=transition.resume_cursors,
         )
         if not written:
             logger.info(
                 "Controller %s connection %s went (%s), but its row names a newer "
-                "connection; left as it is",
+                "connection or another process; left as it is",
                 transition.controller_id,
                 transition.connection_id,
                 transition.disconnect_reason,
             )
+        return written

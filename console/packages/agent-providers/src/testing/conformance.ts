@@ -110,6 +110,7 @@ export function describeConformance(name: string, options: ConformanceOptions): 
         runtimeMode: 'full-access',
         env: baseEnv(options.env),
         mcpServers: {},
+        connectorMcpServers: [],
         model: options.model,
         ...overrides,
       };
@@ -366,6 +367,7 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       const { adapter, recorder, sessionId, input } = await setup({
         runtimeMode: 'approval-required',
         mcpServers: options.mcpServers,
+        connectorMcpServers: [],
       });
       await adapter.startSession(input);
       const names = Object.keys(options.mcpServers).join(', ');

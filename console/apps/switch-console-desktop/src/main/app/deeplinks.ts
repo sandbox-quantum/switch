@@ -1,9 +1,11 @@
 import { resolve } from 'node:path';
 import { app } from 'electron';
+import { consoleDeeplinkChannel } from '@shared/core/deeplinks/console-link-events';
+import { CONSOLE_LINK_PREFIX } from '@shared/core/deeplinks/console-links';
 import { sessionDeeplinkChannel } from '@shared/core/switch-rooms/switchRoomEvents';
 import { events } from '../lib/events';
 import { log } from '../lib/logger';
-import { getMainWindow } from './window';
+import { focusMainWindow, getMainWindow } from './window';
 
 /**
  * Custom URL scheme Switch Console registers with the OS. Matches the scheme the
@@ -21,6 +23,12 @@ export const DEEPLINK_SCHEME = 'switchdash';
  * app. Set to `1` only when you specifically want to test deeplinks against the
  * dev build (and run `pnpm run deeplink:reset` afterwards to hand the scheme
  * back to the installed app).
+ *
+ * To test a link against one dev build, aim it at that build's Electron,
+ * which needs no registration at all:
+ * `open -a <checkout>/console/node_modules/electron/dist/Electron.app 'switchdash://…'`.
+ * With several checkouts registered, the OS picks any of them, and
+ * `deeplink:reset` only unregisters the checkout it runs in.
  */
 const DEV_REGISTER_DEEPLINK_ENV = 'SWITCHDASH_REGISTER_DEEPLINK';
 
@@ -36,6 +44,8 @@ type ParsedDeeplink = {
 // A deeplink that arrived before the renderer was ready (cold start). Flushed
 // once the window finishes loading; see flushPendingDeeplink.
 let pending: ParsedDeeplink | null = null;
+// The same, for a link to a Console page.
+let pendingPage: string | null = null;
 
 function parseSessionDeeplink(rawUrl: string): ParsedDeeplink | null {
   let url: URL;
@@ -61,20 +71,53 @@ function parseSessionDeeplink(rawUrl: string): ParsedDeeplink | null {
   return { server, agentId, roomId, sessionId };
 }
 
-function focusWindow(): void {
-  const win = getMainWindow();
-  if (!win) return;
-  if (win.isMinimized()) win.restore();
-  win.show();
-  win.focus();
+/** Deeplink target that only brings the app forward: where a sign-in in the browser hands back. */
+const FOCUS_TARGET = 'focus';
+
+/**
+ * Bring the window in front of whatever has focus, as after a sign-in that
+ * finished in the browser. macOS only lets an app that is not frontmost do so
+ * when it asks to steal focus; Windows may still only flash it in the taskbar,
+ * which is what `appReturnUrl` is for.
+ */
+export function bringToFront(): void {
+  if (process.platform === 'darwin') app.focus({ steal: true });
+  focusMainWindow();
+}
+
+/**
+ * The link a browser page can open to put the person back in this app, or
+ * null when this build is not the scheme's handler — an un-packaged dev build
+ * that did not opt in — and the link would open nothing, or something else.
+ */
+export function appReturnUrl(): string | null {
+  if (!app.isPackaged && process.env[DEV_REGISTER_DEEPLINK_ENV] !== '1') return null;
+  return `${DEEPLINK_SCHEME}://${FOCUS_TARGET}`;
 }
 
 /** Parse, focus the app, and hand the deeplink to the renderer (or buffer it
  * when the renderer isn't up yet). */
 export function handleDeeplinkUrl(rawUrl: string): void {
+  if (
+    rawUrl === `${DEEPLINK_SCHEME}://${FOCUS_TARGET}` ||
+    rawUrl === `${DEEPLINK_SCHEME}://${FOCUS_TARGET}/`
+  ) {
+    focusMainWindow();
+    return;
+  }
+  if (rawUrl.startsWith(CONSOLE_LINK_PREFIX)) {
+    focusMainWindow();
+    const win = getMainWindow();
+    if (win && !win.webContents.isLoading()) {
+      events.emit(consoleDeeplinkChannel, { url: rawUrl, coldStart: false });
+    } else {
+      pendingPage = rawUrl;
+    }
+    return;
+  }
   const parsed = parseSessionDeeplink(rawUrl);
   if (!parsed) return;
-  focusWindow();
+  focusMainWindow();
   const win = getMainWindow();
   if (win && !win.webContents.isLoading()) {
     events.emit(sessionDeeplinkChannel, { ...parsed, coldStart: false });
@@ -86,6 +129,10 @@ export function handleDeeplinkUrl(rawUrl: string): void {
 
 /** Emit any deeplink buffered during a cold start, once the window has loaded. */
 export function flushPendingDeeplink(): void {
+  if (pendingPage !== null) {
+    events.emit(consoleDeeplinkChannel, { url: pendingPage, coldStart: true });
+    pendingPage = null;
+  }
   if (pending === null) return;
   events.emit(sessionDeeplinkChannel, { ...pending, coldStart: true });
   pending = null;

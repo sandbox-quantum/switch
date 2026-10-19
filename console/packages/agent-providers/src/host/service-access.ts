@@ -9,8 +9,10 @@ import { validServiceToken } from './service-github';
  * agent's own Switch endpoint: its own key, or the agents controller's relay,
  * which forwards `/agents/{id}/...` as the controller. A grant gives the
  * session its service's skill and, through the agent host, the service's
- * tokens. A change of skills reaches a session when it next starts; a change
- * of access reaches its tokens within half a minute (`AgentServiceTokens`).
+ * tokens. A change of access reaches its tokens within half a minute
+ * (`AgentServiceTokens`); a service granted or taken away needs new tools, so
+ * the agent's watcher restarts the session's host on its own conversation
+ * once it is idle (`session-services.ts`).
  */
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;

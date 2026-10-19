@@ -16,12 +16,11 @@ const viteEnv = (import.meta as ImportMetaWithEnv).env;
  * `./relay-client`. Public rather than internal — the same endpoint a public
  * GitHub Action posts to from a customer's CI.
  *
- * It is another product's hostname, written down in an open-source repository:
- * anyone reading this learns where the app reports to, which is a thing users
- * are entitled to know but was not ours to decide unilaterally. Adopted with
- * the collaborating dev's agreement, pending the product owner's.
+ * The hostname is written down in an open-source repository on purpose: anyone
+ * reading this learns where the app reports to, which users are entitled to
+ * know. switch-core's usage telemetry defaults to the same relay.
  */
-export const TELEMETRY_RELAY_ENDPOINT = 'https://telemetry.flintai.dev/v1/logs';
+export const TELEMETRY_RELAY_ENDPOINT = 'https://telemetry.switchagents.ai/v1/logs';
 
 /** Which build sent an event, so a developer's app cannot pollute real numbers. */
 export type TelemetryBuildChannel = 'dev' | 'canary' | 'stable';

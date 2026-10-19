@@ -121,6 +121,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
         <SidebarAgentRow
           label={label}
           iconUrl={iconUrl}
+          serverId={agent.serverId}
           providerId={agent.providerId ?? null}
           isActive={isActive}
           depth={depth}

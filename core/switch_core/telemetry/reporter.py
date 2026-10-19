@@ -3,6 +3,11 @@
 Anchored to a watermark rather than to uptime, so restarts do not change the
 cadence.
 
+Every switch-core process runs this loop, so the watermark is claimed before
+anything is sent: a conditional write moves it to now only while it is still
+due, and only the process whose write took sends. Two processes polling in the
+same minute would otherwise both read "due" and both send the day's snapshot.
+
 The first pass sends the snapshot but not the room-activation events: with no
 watermark, "first interaction since then" means every room that ever went
 active, arriving at once and all dated today.
@@ -15,7 +20,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -78,13 +83,22 @@ class SnapshotReporter:
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
     async def run_once_if_due(self) -> bool:
-        """Send a snapshot if one is due. True if one was sent."""
+        """Send a snapshot if one is due and no other process has claimed
+        it. True if this process sent it."""
         now = datetime.now(UTC)
         last_sent = await self._read_watermark()
         if last_sent is not None and now - last_sent < self._interval:
             return False
-        await self.run_once(now=now, since=last_sent)
-        await self._write_watermark(now)
+        if not await self._claim(now, last_sent):
+            return False
+        try:
+            await self.run_once(now=now, since=last_sent)
+        except BaseException:
+            # Nothing was sent: `run_once` raises only before its emit. The
+            # claim is handed back so the next poll, here or in another
+            # process, tries again rather than skipping the day.
+            await self._release(now, last_sent)
+            raise
         await self._prune(now)
         return True
 
@@ -115,9 +129,9 @@ class SnapshotReporter:
             ),
         )
 
-        # And nothing after that emit may raise out of this method. The
-        # watermark advances only when `run_once` returns, and the loop retries
-        # every poll interval — so a raise here would re-send the same snapshot
+        # And nothing after that emit may raise out of this method. A raise
+        # hands the claimed watermark back, and the loop retries every poll
+        # interval, so a raise here would re-send the same snapshot
         # every five minutes for as long as the condition lasted, turning one
         # lost pass into hundreds of duplicates of a figure meant to be daily.
         # The rooms are the part that is given up instead: the window has moved
@@ -191,13 +205,45 @@ class SnapshotReporter:
         stamp = row.last_sent_at
         return stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp
 
-    async def _write_watermark(self, when: datetime) -> None:
+    async def _claim(self, now: datetime, last_sent: datetime | None) -> bool:
+        """Move the watermark from `last_sent` to `now`, if no other process
+        has moved it since this one read it. True if this process did."""
         async with self._session_factory() as session:
-            await session.execute(
-                pg_insert(TelemetrySnapshotWatermark)
-                .values(id=1, last_sent_at=when)
-                .on_conflict_do_update(
-                    index_elements=["id"], set_={"last_sent_at": when}
+            if last_sent is None:
+                result = await session.execute(
+                    pg_insert(TelemetrySnapshotWatermark)
+                    .values(id=1, last_sent_at=now)
+                    .on_conflict_do_nothing(index_elements=["id"])
+                    .returning(TelemetrySnapshotWatermark.id)
                 )
-            )
+            else:
+                result = await session.execute(
+                    update(TelemetrySnapshotWatermark)
+                    .where(
+                        TelemetrySnapshotWatermark.id == 1,
+                        TelemetrySnapshotWatermark.last_sent_at == last_sent,
+                    )
+                    .values(last_sent_at=now)
+                    .returning(TelemetrySnapshotWatermark.id)
+                )
+            claimed = result.first() is not None
+            await session.commit()
+        return claimed
+
+    async def _release(self, claimed_at: datetime, last_sent: datetime | None) -> None:
+        """Put the watermark back where it was, unless something has moved it
+        on since this process claimed it."""
+        async with self._session_factory() as session:
+            if last_sent is None:
+                await session.execute(
+                    delete(TelemetrySnapshotWatermark).where(
+                        TelemetrySnapshotWatermark.last_sent_at == claimed_at
+                    )
+                )
+            else:
+                await session.execute(
+                    update(TelemetrySnapshotWatermark)
+                    .where(TelemetrySnapshotWatermark.last_sent_at == claimed_at)
+                    .values(last_sent_at=last_sent)
+                )
             await session.commit()

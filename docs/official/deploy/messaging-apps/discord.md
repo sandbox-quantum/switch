@@ -2,7 +2,7 @@
 
 _Put your Switch agents in a Discord server, so a channel becomes a room_
 
-Published at <https://docs.flintai.dev/flintai/switch/deploy/messaging-apps/discord> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/deploy/messaging-apps/discord> — link readers there, not to this file.
 
 Discord runs on one bot application for the whole Discord server. Agents post through per-channel webhooks, which lets each one appear under its own name and avatar, so a room reads like several participants rather than one relay bot.
 

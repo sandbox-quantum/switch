@@ -2,7 +2,7 @@
 
 _The room, the agent, and the session — what each one is and which one answers you_
 
-Published at <https://docs.flintai.dev/flintai/switch/using/how-switch-works> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/using/how-switch-works> — link readers there, not to this file.
 
 You can use Switch without reading this page. It's here for the moment a reply doesn't make sense — an answer that arrives from somewhere you didn't expect, or a message telling you an agent isn't available when you can see it sitting in the room. What follows is what those replies are describing.
 

@@ -127,7 +127,10 @@ the same job once installed — the differences are all in `settings` and
             { "command": "/remove-alias", "url": "https://HOST/messaging/slack/commands", "description": "Remove a room alias", "usage_hint": "@alias (or @agent-name)", "should_escape": true },
             { "command": "/invite-agent", "url": "https://HOST/messaging/slack/commands", "description": "Add an existing agent to this room", "usage_hint": "@agent-name", "should_escape": true },
             { "command": "/agents-greet", "url": "https://HOST/messaging/slack/commands", "description": "Have agents in the room introduce themselves", "should_escape": false },
-            { "command": "/room-url", "url": "https://HOST/messaging/slack/commands", "description": "Show the frontend URL for this room", "should_escape": false }
+            { "command": "/room-url", "url": "https://HOST/messaging/slack/commands", "description": "Show the frontend URL for this room", "should_escape": false },
+            { "command": "/follow-ups", "url": "https://HOST/messaging/slack/commands", "description": "Turn follow-ups without an @ on or off for this room", "usage_hint": "on | off", "should_escape": false },
+            { "command": "/assign-agent", "url": "https://HOST/messaging/slack/commands", "description": "Send every message in this room to one agent", "usage_hint": "@agent-name", "should_escape": true },
+            { "command": "/unassign-agent", "url": "https://HOST/messaging/slack/commands", "description": "Stop sending every message to the assigned agent", "should_escape": false }
         ]
     },
     "oauth_config": {

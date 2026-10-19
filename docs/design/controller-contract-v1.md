@@ -117,14 +117,43 @@ A full snapshot every time, not a delta. It's sent on every change, and at least
 ```
 PUT /v1/management/controllers/{id}/status
   StatusReport                                     // ≤ 64 KiB
-  → 200 { assignment_revision: number, report_within_s: number }  // tells the controller if it's behind
+  → 200 {
+      assignment_revision: number,                 // tells the controller if it's behind
+      report_within_s: number,
+      controller_release: ControllerRelease | null // the release to run; null = none named
+    }
 ```
+
+```ts
+type ControllerRelease = {
+  version: string   // x.y.z, or a dev build's x.y.z-<prerelease>
+  url: string       // https, the switch-agent-controller-<version>.tgz package
+  sha256: string    // the package's SHA-256, 64 lowercase hex characters
+}
+```
+
+`controller_release` is what the deployment sets (`CONTROLLER_RELEASE_VERSION`,
+`_URL`, `_SHA256`; Helm `switchCore.controllerRelease`), and the chart from a
+Switch release names that release's controller. A controller running another
+version downloads the package, refuses it unless its SHA-256 matches, and installs
+it and restarts once no agent session is in the middle of a turn (idle sessions
+are restarted with it and resume their conversations). It says how that is going in
+its report's `update` (`{ target, state, problem? }`), which Core stores with the
+rest of the report. Rolling back is pointing the setting at the previous
+release's package. A controller older than the field ignores it. A controller
+Switch Console updates is always told null: one of kind `console` (Console's own),
+or one whose last status said `controller.updated_by: "console"` (one Console runs
+on an SSH host, which enrolls as a `daemon`). It ships with Console and updates
+with it.
 
 ```ts
 type StatusReport = {
   seq: number                          // monotonic per controller. The server drops anything older
   observed_at: Time
-  controller: { version: string; protocol: 1; assignment_revision: number }
+  controller: {
+    version: string; protocol: 1; assignment_revision: number
+    updated_by?: "self" | "console"    // who moves it onto another release: itself, following controller_release, or Switch Console, which runs it and replaces its bundle. Absent from older controllers
+  }
   machine: {
     platform: Platform
     disk_free_bytes: number; disk_total_bytes: number
@@ -135,6 +164,11 @@ type StatusReport = {
   providers: ProviderStatus[]
   tools: ToolStatus[]
   agents: AgentStatus[]
+  update?: {                           // why it does not run controller_release yet. Absent when it does, and from older controllers
+    target: string                     // the version it is moving to
+    state: "waiting_idle" | "failed" | "restart_needed"   // waiting_idle: a session on the machine is in the middle of a turn
+    problem?: string                   // human-readable, when it failed
+  }
 }
 
 type ProviderStatus = {
@@ -276,7 +310,7 @@ type ServiceResources =
 ```
 
 - **Who gets a token.** Core issues only for an agent that holds a grant to its owner's own connection. A controller must belong to that owner and be bound to the agent (§7); an agent's own key works only while it has no binding.
-- **When grants are read.** The agent's host reads its grants when a session starts, and a change of skills applies from the next session. No stream frame announces a change. While it holds a token, the host reads the grants again at most every 30 seconds, when a token is asked for, and drops the token once its grant's `revision` is not the token's `grant_revision`, so a widened, narrowed or removed grant reaches running sessions within that. A removed grant also fails the next fetch, and a GitHub token already issued is revoked at once. A pass-through service's token is its owner's own and cannot be revoked alone: a token already handed out stays valid at the vendor until it expires, and while the host cannot read the grants a removed grant stops a running session by `use_until`, within the hour.
+- **When grants are read.** The agent's host reads its grants when a session starts. No stream frame announces a change: the agent's watcher reads the grants every 30 seconds while it has live sessions, and restarts a session on its own conversation (once idle) when a service was granted or taken away, or its tools changed. While it holds a token, the host reads the grants again at most every 30 seconds, when a token is asked for, and drops the token once its grant's `revision` is not the token's `grant_revision`, so a widened, narrowed or removed grant reaches running sessions within that. A removed grant also fails the next fetch, and a GitHub token already issued is revoked at once. A pass-through service's token is its owner's own and cannot be revoked alone: a token already handed out stays valid at the vendor until it expires, and while the host cannot read the grants a removed grant stops a running session by `use_until`, within the hour.
 - **`credential.revoked` is not used for grants.** It revokes the controller itself.
 - **Templates and key tokens.** A template's `{token}` is the token as handed out; any other `{name}` is a field of a key service's token. A key service (catalog `adapter: api_key`) hands out its token as compact JSON, `{"public": {...}, "secret": {...}}`: the fields the owner pasted (`secret`) and picked (`public`, the only ones a URL may name). The host renders each server's `url` and `headers`, or a tool's `env`, from it, and redacts every `secret` value on its own as well as the whole token.
 - **Where tokens go.** The controller keeps tokens in memory and serves them to a session's tools and helpers. It never writes one to disk, a CLI's arguments or its environment, except GitHub's, which `git` receives from its credential helper and `gh` from its wrapper. A service with `mcp_servers` never reaches the CLI at all: the session's host serves each of them to the CLI on loopback, behind a key made for the run, asks for the token on each call and calls the vendor itself. A service with `cli_tools` is the same: the host serves each tool on loopback, checks every command against `allow`, `deny` and `path_flags`, asks for the token on each run, and runs `binary` itself with the token only in `token_env` of that run's environment.
