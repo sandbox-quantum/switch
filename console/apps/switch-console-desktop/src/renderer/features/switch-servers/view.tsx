@@ -176,8 +176,8 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   // button asks for, so the page should not look idle while one is in flight.
   const busy = refreshingPage || store.refreshing.has(serverId);
   const unreachable = store.isUnreachable(serverId);
-  // A local server run without Docker has no dashboard process: its gateway
-  // URL is switch-core itself, which serves the API and no pages.
+  // A local server run without Docker has no dashboard: switch-core runs there
+  // without the dashboard's pages, so its address serves the API alone.
   const servesNoDashboard =
     server.managed && server.managementKind === 'local' && localServerStore.isNative;
   const PlacementIcon = serverIcon(server);
