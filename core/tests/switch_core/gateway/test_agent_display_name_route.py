@@ -25,6 +25,17 @@ from tests.switch_core.gateway.agent_route_harness import (
     is_admin,
 )
 
+
+class _NoBridgeProtocol:
+    """Stands in for AgentCore: these routes only tell it the agent changed."""
+
+    async def update_bridge_identities(self, agent_id: str) -> list[str]:
+        return []
+
+
+_PROTOCOL = _NoBridgeProtocol()
+
+
 _AGENT_STORE = AgentStore()
 
 _NAME = "Switch Dev"
@@ -45,6 +56,7 @@ class TestUpdateAgentDisplayName:
                 UpdateAgentDisplayNameRequest(display_name=_NAME),
                 session,
                 _AGENT_STORE,
+                _PROTOCOL,  # type: ignore[arg-type]
                 owner,
                 await is_admin(session, owner),
                 _CHATS,
@@ -69,6 +81,7 @@ class TestUpdateAgentDisplayName:
                 UpdateAgentDisplayNameRequest(display_name="  Switch Dev  "),
                 session,
                 _AGENT_STORE,
+                _PROTOCOL,  # type: ignore[arg-type]
                 owner,
                 await is_admin(session, owner),
                 _CHATS,
@@ -90,6 +103,7 @@ class TestUpdateAgentDisplayName:
                 UpdateAgentDisplayNameRequest(display_name=_OTHER_NAME),
                 session,
                 _AGENT_STORE,
+                _PROTOCOL,  # type: ignore[arg-type]
                 owner,
                 await is_admin(session, owner),
                 _CHATS,
@@ -114,6 +128,7 @@ class TestUpdateAgentDisplayName:
                 UpdateAgentDisplayNameRequest(display_name=cleared),
                 session,
                 _AGENT_STORE,
+                _PROTOCOL,  # type: ignore[arg-type]
                 owner,
                 await is_admin(session, owner),
                 _CHATS,
@@ -138,6 +153,7 @@ class TestUpdateAgentDisplayName:
                     UpdateAgentDisplayNameRequest(display_name=_NAME),
                     session,
                     _AGENT_STORE,
+                    _PROTOCOL,  # type: ignore[arg-type]
                     other,
                     await is_admin(session, other),
                     _CHATS,
@@ -161,6 +177,7 @@ class TestUpdateAgentDisplayName:
                 UpdateAgentDisplayNameRequest(display_name=_NAME),
                 session,
                 _AGENT_STORE,
+                _PROTOCOL,  # type: ignore[arg-type]
                 admin,
                 await is_admin(session, admin),
                 _CHATS,
@@ -180,6 +197,7 @@ class TestUpdateAgentDisplayName:
                     UpdateAgentDisplayNameRequest(display_name=_NAME),
                     session,
                     _AGENT_STORE,
+                    _PROTOCOL,  # type: ignore[arg-type]
                     owner,
                     await is_admin(session, owner),
                     _CHATS,
@@ -211,6 +229,7 @@ class TestUpdateAgentDisplayName:
                     UpdateAgentDisplayNameRequest(display_name=bad_name),
                     session,
                     _AGENT_STORE,
+                    _PROTOCOL,  # type: ignore[arg-type]
                     owner,
                     await is_admin(session, owner),
                     _CHATS,
@@ -220,3 +239,59 @@ class TestUpdateAgentDisplayName:
             stored = await _AGENT_STORE.get(session, agent.id)
             assert stored is not None
             assert stored.display_name is None
+
+
+class _RecordingProtocol:
+    """Records which agents the route told the bridges about."""
+
+    def __init__(self) -> None:
+        self.updated: list[str] = []
+
+    async def update_bridge_identities(self, agent_id: str) -> list[str]:
+        self.updated.append(agent_id)
+        return []
+
+
+class TestBridgesHearOfTheChange:
+    async def test_a_saved_change_is_passed_to_the_bridges(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        protocol = _RecordingProtocol()
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            agent = await add_agent(session, name="switchdev", owner_id=owner.id)
+
+            await update_agent_display_name(
+                agent.id,
+                UpdateAgentDisplayNameRequest(display_name="Meeting Scribe"),
+                session,
+                _AGENT_STORE,
+                protocol,  # type: ignore[arg-type]
+                owner,
+                await is_admin(session, owner),
+                _CHATS,
+            )
+
+        assert protocol.updated == [agent.id]
+
+    async def test_a_refused_change_is_not(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        protocol = _RecordingProtocol()
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            agent = await add_agent(session, name="switchdev", owner_id=owner.id)
+
+            with pytest.raises(HTTPException):
+                await update_agent_display_name(
+                    agent.id,
+                    UpdateAgentDisplayNameRequest(display_name="Bad\nName"),
+                    session,
+                    _AGENT_STORE,
+                    protocol,  # type: ignore[arg-type]
+                    owner,
+                    await is_admin(session, owner),
+                    _CHATS,
+                )
+
+        assert protocol.updated == []

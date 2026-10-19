@@ -31,6 +31,7 @@ import { getAgents } from './getAgents';
 import { onboardAgent } from './onboard-agent';
 import type { RemoveLoadableAgentConfigParams } from './remove-loadable-agent-config';
 import { removeLoadableAgentConfig } from './remove-loadable-agent-config';
+import { renameLocalAgent } from './renameAgent';
 import { resetRemoteAgent } from './reset-remote-agent';
 import { setAgentAutoApprove, type AgentAutoApproveParams } from './setAgentAutoApprove';
 
@@ -78,6 +79,13 @@ export const agentsController = createRPCController({
   removeLoadableAgentConfig: (params: RemoveLoadableAgentConfigParams) =>
     removeLoadableAgentConfig(params),
   getAgents: (locationId?: string) => getAgents(locationId),
+  /**
+   * Give a Console agent its new name locally, after its Switch server has
+   * renamed it (`workspaces.renameAgent`): the row and the files keyed by the
+   * name. Throws `RenameLocalAgentFailed` before writing anything when the
+   * name is taken here.
+   */
+  renameLocal: (params: { agentId: string; newName: string }) => renameLocalAgent(params),
   getAgentById: (agentId: string) => getAgentById(agentId),
   deleteAgent: (params: { agentId: string } & DeleteAgentOptions) =>
     deleteAgent(params.agentId, {

@@ -554,3 +554,41 @@ def test_a_mention_of_something_gone_is_still_refused_clearly() -> None:
 
     assert commands == []
     assert interaction.responses[0]["ephemeral"] is True
+
+
+def test_free_text_goes_in_as_written() -> None:
+    """`/rename-agent` takes a display name with spaces, which a name token
+    would refuse."""
+    spec = COMMANDS_BY_NAME["rename-agent"].args_spec
+    assert (
+        reassemble_args(
+            spec,
+            {
+                "agent": "notes-taker",
+                "new_name": "meeting-scribe",
+                "display_name": "Meeting Scribe",
+            },
+        )
+        == "@notes-taker @meeting-scribe Meeting Scribe"
+    )
+
+
+def test_free_text_may_be_left_out() -> None:
+    spec = COMMANDS_BY_NAME["rename-agent"].args_spec
+    assert (
+        reassemble_args(spec, {"agent": "notes-taker", "new_name": "meeting-scribe"})
+        == "@notes-taker @meeting-scribe"
+    )
+
+
+def test_free_text_must_come_last() -> None:
+    bad = Command(
+        "x",
+        "d",
+        args_spec=(
+            CommandArg("text", "d", required=True, free_text=True),
+            CommandArg("after", "d", required=True),
+        ),
+    )
+    with pytest.raises(ValueError, match="only come last"):
+        validate_args_spec(bad)

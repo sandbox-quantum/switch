@@ -71,6 +71,7 @@ import {
   updateCanManageAgents,
   updateAgentDescription,
   updateAgentDisplayName,
+  renameAgent,
   updateAgentIcon,
   updateRoom,
   updateTemplate,
@@ -107,6 +108,7 @@ import type { ServiceGrants } from '@shared/core/switch-servers/service-grants';
 import type {
   BridgeInstallState,
   AddressingPolicy,
+  AgentRenameOutcome,
   AddTeamsTeamResult,
   AgentIconBackfill,
   AgentVerifyResult,
@@ -996,6 +998,21 @@ export const workspacesController = createRPCController({
   }): Promise<RemoteAgentSummary> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       updateAgentDisplayName(server, params.agentId, params.displayName)
+    ),
+
+  /**
+   * Rename an agent on its Switch server, with its display name in the same
+   * step. Only the server's half: a Console agent's own files follow through
+   * `agents.renameLocal`.
+   */
+  renameAgent: (params: {
+    workspaceId: string;
+    agentId: string;
+    name: string;
+    displayName: string | null;
+  }): Promise<AgentRenameOutcome> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      renameAgent(server, params.agentId, params.name, params.displayName)
     ),
 
   verifyAgent: (params: { workspaceId: string; agentId: string }): Promise<AgentVerifyResult> =>

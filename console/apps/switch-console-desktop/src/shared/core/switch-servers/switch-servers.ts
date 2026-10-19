@@ -232,6 +232,19 @@ export type RemoteAgentSummary = {
 };
 
 /**
+ * What a rename did (`PUT /agents/{id}/name`): the agent as the server now
+ * holds it, the name it had, each chat platform that could not be updated yet
+ * (the rename stands; the platform catches up when its bridge next starts),
+ * and saved templates whose text still names the old name.
+ */
+export type AgentRenameOutcome = {
+  agent: RemoteAgentSummary;
+  oldName: string;
+  bridgeFailures: string[];
+  templatesMentioningOldName: string[];
+};
+
+/**
  * What came of giving this user's icon-less agents their generated avatar
  * (CHOO-2171).
  *

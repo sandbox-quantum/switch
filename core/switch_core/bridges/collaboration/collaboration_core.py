@@ -20,9 +20,11 @@ from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import stop_control_frame
 from switch_core.bridges.collaboration.adapter import (
+    AgentIdentity,
     AgentPresentation,
     PlatformAdapter,
     SupportsSharedConnection,
+    agent_identity,
 )
 from switch_core.bridges.collaboration.models import (
     ChannelType,
@@ -318,7 +320,7 @@ class CollaborationCore:
         # Agents given an identity by this copy of the bridge, so one deleted
         # by another process is let go of here too; and whether the agents
         # changed while a provisioning run was going.
-        self._provisioned_agents: set[str] = set()
+        self._provisioned_agents: dict[str, AgentIdentity] = {}
         self._identities_stale = False
         self._channel_type_refresh_task: asyncio.Task[None] | None = None
         # Turns and request cards from the tables the host reports to, pushed
@@ -704,43 +706,52 @@ class CollaborationCore:
         ) as session:
             agents = await self._agent_store.get_all(session)
 
-        # Deleted since the last run here, wherever the deletion was served.
-        current = {agent.name for agent in agents}
-        for name in sorted(self._provisioned_agents - current):
+        # Deleted, renamed or relabelled since the last run here, wherever that
+        # was served: a change served by another process reaches this copy of
+        # the bridge only through this re-read.
+        current = {agent.id: agent_identity(agent) for agent in agents}
+        for agent_id, before in sorted(self._provisioned_agents.items()):
+            after = current.get(agent_id)
             try:
-                await self._adapter.remove_agent_identity(name)
+                if after is None:
+                    await self._adapter.remove_agent_identity(before)
+                elif after.name != before.name:
+                    await self._adapter.rename_agent_identity(before.name, after)
+                elif after != before:
+                    await self._adapter.update_agent_identity(after)
             except Exception:
                 logger.exception(
-                    "Failed to remove the %s identity of deleted agent %s",
+                    "Failed to bring the %s identity of agent %s up to date",
                     self._bridge_type,
-                    name,
+                    before.name,
                 )
-            self._provisioned_agents.discard(name)
+            if after is None:
+                del self._provisioned_agents[agent_id]
 
-        failed = 0
-        for agent in agents:
-            try:
-                await self._adapter.create_agent_identity(agent.name, agent.description)
-                self._provisioned_agents.add(agent.name)
-            except Exception:
-                failed += 1
-                logger.exception(
-                    "Failed to create %s identity for agent %s",
-                    self._bridge_type,
-                    agent.name,
-                )
+        failures = await self._adapter.sync_agent_identities(list(current.values()))
+        failed = {name for name, _ in failures}
+        for name, exc in failures:
+            logger.error(
+                "Failed to provision %s identity for agent %s: %s",
+                self._bridge_type,
+                name,
+                exc,
+                exc_info=exc,
+            )
+        for identity in current.values():
+            if identity.name not in failed:
+                self._provisioned_agents[identity.agent_id] = identity
 
         # Counts calls that returned, not identities that now exist: an adapter
         # that cannot provision at all reports that itself. Reporting the agent
         # count regardless of failures would read as success on a run where
         # every one of them failed.
-        if failed:
+        if failures:
             logger.warning(
-                "Provisioned %s identities for %d of %d agents; %d failed",
+                "Provisioned %s identities for %d agents; %d failed",
                 self._bridge_type,
-                len(agents) - failed,
                 len(agents),
-                failed,
+                len(failures),
             )
         else:
             logger.info(

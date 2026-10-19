@@ -99,6 +99,7 @@ const {
   ownsOwnerAddressedAgent,
   registerKnownAgent,
   updateAgentDisplayName,
+  renameAgent,
   updateBridge,
   AgentManagementUnavailableError,
   enrollConsoleController,
@@ -943,6 +944,56 @@ describe('agent display name', () => {
     const [, cleared] = fetchMock.mock.calls[1] as unknown as [string, { body: string }];
     expect(JSON.parse(cleared.body)).toEqual({ display_name: null });
     expect(agent.displayName).toBe('Helper');
+  });
+});
+
+describe('renameAgent', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('PUTs the name with the display name, and reads back what the rename did', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        agent: {
+          id: 'a1',
+          name: 'meeting-scribe',
+          display_name: 'Meeting Scribe',
+          description: '',
+          connector_type: 'mcp',
+          owner_name: 'Ada',
+          known_agent_type: null,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+        old_name: 'notes-taker',
+        bridge_failures: ['slack: Slack is down'],
+        templates_mentioning_old_name: ['weekly'],
+      }) as never
+    );
+
+    const outcome = await renameAgent(SERVER, 'a1', 'meeting-scribe', 'Meeting Scribe');
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(url).toBe('https://switch.example.com/gateway/agents/a1/name');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({
+      name: 'meeting-scribe',
+      display_name: 'Meeting Scribe',
+    });
+    expect(outcome.agent.name).toBe('meeting-scribe');
+    expect(outcome.agent.displayName).toBe('Meeting Scribe');
+    expect(outcome.oldName).toBe('notes-taker');
+    expect(outcome.bridgeFailures).toEqual(['slack: Slack is down']);
+    expect(outcome.templatesMentioningOldName).toEqual(['weekly']);
   });
 });
 

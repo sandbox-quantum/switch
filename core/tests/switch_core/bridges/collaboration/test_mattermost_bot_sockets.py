@@ -13,12 +13,20 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from switch_core.bridges.collaboration.adapter import AgentIdentity
 from switch_core.bridges.collaboration.mattermost.adapter import MattermostAdapter
 from tests.switch_core.bridges.collaboration.test_bridge_agent_display_names import (
     _agent,
     _bridge,
     _mattermost_identity_adapter,
     _run,
+)
+
+_SWITCHDEV = AgentIdentity(
+    agent_id="agent-1",
+    name="switchdev",
+    description="a Switch agent",
+    display_name=None,
 )
 
 
@@ -75,7 +83,7 @@ def _closed_by(close: Callable[[MattermostAdapter], Any]) -> tuple[_Bot, bool]:
     async def go() -> bool:
         adapter._main_loop = asyncio.get_running_loop()
         before = set(threading.enumerate())
-        await adapter.create_agent_identity("switchdev", "a Switch agent")
+        await adapter.create_agent_identity(_SWITCHDEV)
         thread = _socket_thread("switchdev", before)
         await _until(lambda: bot.connects == 1)
 
@@ -96,7 +104,7 @@ def test_stopping_the_adapter_closes_each_socket_for_good() -> None:
 
 
 def test_removing_an_agent_closes_its_socket_for_good() -> None:
-    bot, alive = _closed_by(lambda adapter: adapter.remove_agent_identity("switchdev"))
+    bot, alive = _closed_by(lambda adapter: adapter.remove_agent_identity(_SWITCHDEV))
 
     assert bot.disconnected.is_set()
     assert not alive

@@ -426,11 +426,12 @@ none of it is needed to take part in a conversation.
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
   memberships, live sessions and child subagents. Readable by any agent.
 - **`update_agent_detail`** — change an agent your owner owns; anyone
-  else's is refused. Pass only the fields to change; the name cannot change.
+  else's is refused. Pass only the fields to change.
   On any agent: `description`, `display_name` and `icon_url` (`""` clears
   either), and `addressing` — `"owner_only"`, `"owner_and_owner_agents"` or
-  `"anyone"`. On a managed agent (one `list_managed_agents` shows), and only
-  with "can manage agents": `provider`, `model` (`""` for the provider's
+  `"anyone"`. With "can manage agents": `name` (rename it — see below). On a
+  managed agent (one `list_managed_agents` shows), and only with "can manage
+  agents": `provider`, `model` (`""` for the provider's
   default), `advanced_config` (the provider's advanced settings, replacing
   the current ones whole: e.g. `{"effort": "high"}`, `{}` clears them; see
   `get_advanced_config`), `instructions` (its system prompt), `auto_approve`
@@ -445,6 +446,40 @@ none of it is needed to take part in a conversation.
   and a running conversation is told its new instructions.
   Returns the agent's detail plus `managed`, its `list_managed_agents` entry
   (null when it is not managed).
+
+  **Renaming** needs "can manage agents", like the managed fields; without
+  it the rename is refused with a sentence to relay. It changes the
+  identifier people type and mention, so confirm it with the person asking
+  first, and tell the room the new name: anyone used to
+  the old one will otherwise address nobody. The display name only changes if
+  you pass it too: when it is the name written out ("Notes Helper" for
+  `notes-helper`), pass the new one alongside (`display_name: "Notes Writer"`)
+  so the agent is not still shown under its old label. Rooms, roles, aliases and
+  credentials follow the agent, and its handle on each chat platform is
+  renamed too. It is refused for a name in use, one that clashes with an alias
+  or role in the agent's rooms or a handle on a chat platform, a subagent or a
+  parent of subagents, and an agent a server connector found. The response
+  carries `renamed`: `bridge_failures` lists platforms not yet updated (the
+  rename stands; each catches up when its bridge next starts) and
+  `templates_mentioning_old_name` lists saved templates still using the old
+  name — relay both.
+
+  People can do the same from a bridged chat with
+  `!rename-agent @agent new-name [Display Name]` and `!delete-agent @agent`
+  (also `/rename-agent` and `/delete-agent` on Slack, Discord and Telegram,
+  where Telegram writes them with `_`). Only the agent's owner or a workspace
+  admin may, recognised through the chat account they linked to Switch;
+  delete asks for `!delete-agent @agent confirm` within two minutes. These
+  are commands for people: when someone asks you to rename or delete an agent
+  in chat, point them at the command, or use `update_agent_detail` yourself
+  for a rename once they confirm.
+- **`request_agent_deletion`** — ask for another of your owner's agents to be
+  deleted. It deletes nothing: Switch posts the request in your connected
+  room, and only the agent's owner or a workspace admin can carry it out by
+  sending `!delete-agent <name> confirm` within two minutes. Needs "can
+  manage agents"; refused for yourself, an agent that can manage agents, and
+  a connector's agent. Confirm with the person asking first, then tell them
+  what to send.
 
 **Address by `name`, not `display_name`.** `list_agents` and
 `get_agent_detail` return both. `name` is the machine identifier and the only
@@ -993,6 +1028,7 @@ Every Switch tool you call in normal operation, one line each.
 - `list_agents` — every agent on the instance, with optional filters.
 - `get_agent_detail` — one agent's config, capabilities and sessions.
 - `update_agent_detail` — change an agent you own.
+- `request_agent_deletion` — ask for an agent to be deleted; a person confirms.
 - `list_machines` — your owner's machines, where agent management runs.
 - `get_advanced_config` — the advanced settings an agent of a provider can carry.
 - `create_agent` — create an agent for your owner on one of their machines. Confirm with the user first.

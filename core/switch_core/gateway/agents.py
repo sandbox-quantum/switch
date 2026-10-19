@@ -15,7 +15,11 @@ from switch_core.agent_icon import (
     refuse_third_party_avatar,
 )
 from switch_core.authz import Principal, require_manage
-from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
+from switch_core.bridges.agent.protocol.agent_core import (
+    AgentCore,
+    AgentExistsError,
+    AgentRenameRefused,
+)
 from switch_core.bridges.agent.protocol.agent_detail import (
     AgentOptionsNotEditable,
     apply_agent_options,
@@ -49,6 +53,7 @@ from switch_core.gateway.schemas import (
     AgentSummary,
     AvatarSettingsResponse,
     BulkRegisterResult,
+    DeleteAgentResponse,
     IconChoicesResponse,
     KnownAgentType,
     RegisterAgentResponse,
@@ -56,6 +61,8 @@ from switch_core.gateway.schemas import (
     RegisterKnownSubagentsRequest,
     RegisterKnownSubagentsResponse,
     RegisterOtherAgentRequest,
+    RenameAgentRequest,
+    RenameAgentResponse,
     UpdateAddressingPolicyRequest,
     UpdateAgentCanManageAgentsRequest,
     UpdateAgentDescriptionRequest,
@@ -88,7 +95,7 @@ async def delete_agent_by_name(
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> dict[str, bool]:
+) -> DeleteAgentResponse:
     agent = await agent_store.get_by_name(session, agent_name)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_name}")
@@ -105,12 +112,14 @@ async def delete_agent_by_name(
     # Not held across the delete, which opens its own sessions and calls every bridge.
     await session.commit()
     try:
-        await protocol.delete_agent(agent_name=agent_name)
+        deletion = await protocol.delete_agent(agent_name=agent_name)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     logger.info("Deleted agent via gateway by name: %s", agent_name)
-    return {"ok": True}
+    return DeleteAgentResponse(
+        ok=True, bridge_cleanup_failures=deletion.bridge_failures
+    )
 
 
 @router.delete("/{agent_id}")
@@ -121,7 +130,7 @@ async def delete_agent(
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> dict[str, bool]:
+) -> DeleteAgentResponse:
     agent = await agent_store.get(session, agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
@@ -138,12 +147,14 @@ async def delete_agent(
     # Not held across the delete, which opens its own sessions and calls every bridge.
     await session.commit()
     try:
-        await protocol.delete_agent(agent_id=agent_id)
+        deletion = await protocol.delete_agent(agent_id=agent_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     logger.info("Deleted agent via gateway: %s", agent_id)
-    return {"ok": True}
+    return DeleteAgentResponse(
+        ok=True, bridge_cleanup_failures=deletion.bridge_failures
+    )
 
 
 @router.get("/known-types")
@@ -475,12 +486,72 @@ async def update_agent_icon(
     return await build_agent_summary(session, agent_store, agent, owner_name)
 
 
+@router.put("/{agent_id}/name")
+async def rename_agent(
+    agent_id: str,
+    req: RenameAgentRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RenameAgentResponse:
+    """Rename an agent: change the identifier people type and mention, and
+    its display name with it.
+
+    Only its owner (or an admin) may. Refused with 400 for a malformed or
+    reserved name, or a clash with an alias, a role, or a handle on a chat
+    platform; 409 when another agent has the name. A chat platform that could
+    not be updated afterwards is listed in `bridge_failures`; the rename
+    stands.
+    """
+    agent = await agent_store.get(session, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+    try:
+        require_manage(Principal(user.id, is_admin), agent.owner_id)
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the agent's owner or an admin can rename it.",
+        )
+    # Not held across the rename, which opens its own sessions and calls every bridge.
+    await session.commit()
+    try:
+        result = await protocol.rename_agent(
+            agent_id=agent_id, new_name=req.name, display_name=req.display_name
+        )
+    except AgentExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (AgentRenameRefused, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    logger.info(
+        "Renamed agent %s from %s to %s by user %s",
+        agent_id,
+        result.old_name,
+        result.new_name,
+        user.name,
+    )
+    renamed = await agent_store.get(session, agent_id)
+    assert renamed is not None
+    await session.refresh(renamed)
+    owner_name = user.name if renamed.owner_id == user.id else None
+    return RenameAgentResponse(
+        agent=await build_agent_summary(session, agent_store, renamed, owner_name),
+        old_name=result.old_name,
+        bridge_failures=result.bridge_failures,
+        templates_mentioning_old_name=result.templates_mentioning_old_name,
+    )
+
+
 @router.put("/{agent_id}/display-name")
 async def update_agent_display_name(
     agent_id: str,
     req: UpdateAgentDisplayNameRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
@@ -518,6 +589,7 @@ async def update_agent_display_name(
     await agent_store.update(session, agent_id, display_name=display_name)
     await session.commit()
     await session.refresh(agent)
+    await protocol.update_bridge_identities(agent_id)
     await chat_service.agent_changed(require_tenant_id(), agent_id)
 
     logger.info(
@@ -537,6 +609,7 @@ async def update_agent_description(
     req: UpdateAgentDescriptionRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> AgentSummary:
@@ -561,6 +634,7 @@ async def update_agent_description(
     await agent_store.update(session, agent_id, description=description)
     await session.commit()
     await session.refresh(agent)
+    await protocol.update_bridge_identities(agent_id)
 
     logger.info("Set agent %s description by user %s", agent.name, user.name)
 

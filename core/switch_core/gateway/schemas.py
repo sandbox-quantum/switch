@@ -383,6 +383,41 @@ class UpdateAgentDescriptionRequest(BaseModel):
     description: str
 
 
+class RenameAgentRequest(BaseModel):
+    """Change an agent's name (the identifier people type and mention) and its
+    display name (the label people read) together.
+
+    ``display_name`` is required, like on the display-name route: send the
+    current one to keep it, and null or a blank string to clear it, so a
+    rename never leaves the label behind by accident."""
+
+    name: str
+    display_name: str | None
+
+
+class RenameAgentResponse(BaseModel):
+    """The renamed agent, plus what the rename could not do.
+
+    `bridge_failures` names each chat platform that could not be updated: the
+    rename stands, and that platform catches up when its bridge next starts.
+    `templates_mentioning_old_name` lists saved templates whose text still
+    says the old name."""
+
+    agent: AgentSummary
+    old_name: str
+    bridge_failures: list[str]
+    templates_mentioning_old_name: list[str]
+
+
+class DeleteAgentResponse(BaseModel):
+    """`bridge_cleanup_failures` names each chat platform whose clean-up
+    failed; the agent is deleted regardless, and the platform finishes the
+    clean-up when its bridge next starts."""
+
+    ok: bool
+    bridge_cleanup_failures: list[str]
+
+
 class UpdateAgentDisplayNameRequest(BaseModel):
     """Set (or clear) an agent's human display name.
 

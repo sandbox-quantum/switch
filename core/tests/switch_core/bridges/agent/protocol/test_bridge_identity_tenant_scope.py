@@ -29,6 +29,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.collaboration.adapter import AgentIdentity
 from switch_core.db.models import TENANT_ZERO_ID, Client, Tenant
 from switch_core.tenant_context import no_tenant
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
@@ -45,11 +46,11 @@ class _FakeAdapter:
         self.identities_created: list[tuple[str, str]] = []
         self.identities_removed: list[str] = []
 
-    async def create_agent_identity(self, name: str, description: str) -> None:
-        self.identities_created.append((name, description))
+    async def create_agent_identity(self, agent: AgentIdentity) -> None:
+        self.identities_created.append((agent.name, agent.description))
 
-    async def remove_agent_identity(self, name: str) -> None:
-        self.identities_removed.append(name)
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None:
+        self.identities_removed.append(agent.name)
 
 
 class _FakeBridge:

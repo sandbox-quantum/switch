@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { AgentIdentityActions } from '@renderer/features/agent-identity/agent-identity-actions';
 import { LocalDirectorySelector } from '@renderer/features/locations/components/add-agent-modal/local-directory-selector';
 import type {
   FormState,
@@ -27,6 +28,7 @@ import { ServiceGrantsRow } from '@renderer/features/locations/components/settin
 import { SettingRow } from '@renderer/features/locations/components/settings-view/sections/setting-row';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { toast } from '@renderer/lib/hooks/use-toast';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
@@ -106,6 +108,7 @@ function ManagedAgentPageContent({
 }) {
   const queryClient = useQueryClient();
   const showAddToRoom = useShowModal('addAgentToRoomModal');
+  const showRename = useShowModal('renameAgentModal');
   const schemaQuery = useAdvancedConfigSchema(agent.serverId);
   const machines = useManagedMachines(agent.serverId);
   const schema = schemaQuery.data?.[agent.definition.provider] ?? NO_FIELDS;
@@ -226,6 +229,44 @@ function ManagedAgentPageContent({
                 )}
                 <ManagedMachinePill agent={agent} machines={machines} />
               </>
+            }
+            titleActions={
+              <AgentIdentityActions
+                onRename={() =>
+                  showRename({
+                    workspaceId: agent.workspaceId,
+                    switchAgentId: agent.agentId,
+                    currentName: agent.name,
+                    currentDisplayName: saved.displayName.trim() || null,
+                    // Its machine keeps its files, under its own name for it.
+                    localAgentId: null,
+                    onSuccess: ({ outcome }) => {
+                      void queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY] });
+                      void queryClient.invalidateQueries({
+                        queryKey: workspaceAgentsQueryKey(agent.workspaceId),
+                      });
+                      // The display name now comes from the server, so a
+                      // pending edit of it is dropped rather than re-sent.
+                      setEdits((current) => {
+                        const { displayName: _dropped, ...values } = current.values;
+                        return { ...current, values };
+                      });
+                      toast({
+                        title: `Renamed to ${outcome.agent.displayName ?? outcome.agent.name}`,
+                        description:
+                          outcome.bridgeFailures.length > 0
+                            ? outcome.bridgeFailures
+                                .map((f) => `Not yet updated on ${f}.`)
+                                .join(' ')
+                            : undefined,
+                        variant: outcome.bridgeFailures.length > 0 ? 'destructive' : undefined,
+                      });
+                    },
+                  })
+                }
+                onDelete={remove}
+                disabled={!editIsEmpty(edit)}
+              />
             }
             machineName={title !== agent.name ? agent.name : null}
             description={

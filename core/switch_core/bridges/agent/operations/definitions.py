@@ -41,11 +41,16 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ConnectionError_,
     evicted_session_warning,
 )
-from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.agent_core import (
+    AgentCore,
+    AgentExistsError,
+    AgentRenameRefused,
+)
 from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
+from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
@@ -2334,8 +2339,48 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
 
 
 @operation
+async def request_agent_deletion(agent_id: str) -> dict[str, Any]:
+    """Ask for another agent of your owner's to be deleted. Nothing is deleted
+    by this call: a person has to confirm.
+
+    Requires the "can manage agents" capability. The request is posted in the
+    room you are connected to, and only the agent's owner or a workspace admin
+    can carry it out, by replying `!delete-agent <name> confirm` within two
+    minutes; otherwise it lapses. Confirm with the person asking before you
+    call this, and tell them what to send.
+
+    Refused for an agent of another owner, yourself, an agent that can manage
+    agents, and one a server connector found.
+
+    Args:
+        agent_id: The agent to delete (`id` from `list_agents`).
+
+    Returns:
+        {"agent_name", "status": "awaiting_confirmation", "confirm_with",
+        "expires_in_seconds"}.
+    """
+    caller_id = get_agent_id()
+    await permitted_to_manage()
+    room_id = await require_connected_room()
+    protocol = get_protocol()
+    try:
+        name = await protocol.request_agent_deletion(
+            caller_agent_id=caller_id, target_agent_id=agent_id, room_id=room_id
+        )
+    except AgentRenameRefused as exc:
+        raise ValueError(str(exc)) from exc
+    return {
+        "agent_name": name,
+        "status": "awaiting_confirmation",
+        "confirm_with": f"!delete-agent {name} confirm",
+        "expires_in_seconds": int(DELETE_CONFIRM_SECONDS),
+    }
+
+
+@operation
 async def update_agent_detail(
     agent_id: str,
+    name: str | None = None,
     description: str | None = None,
     display_name: str | None = None,
     icon_url: str | None = None,
@@ -2353,9 +2398,19 @@ async def update_agent_detail(
     """Change an agent your owner owns, and return its fresh detail.
 
     Owner-only: the agent's owner must be your own owner (a permission error
-    otherwise). Omit a field to leave it unchanged. An agent cannot be renamed.
+    otherwise). Omit a field to leave it unchanged.
 
     Any agent:
+        name: Rename it: the identifier people type and mention (lowercase
+            letters, digits, '.', '-', '_'). Requires the "can manage agents"
+            capability, like the managed fields below; without it the call is
+            refused with a sentence to relay. Pass `display_name` with it when
+            the label is the name written out ("Notes Writer" for
+            notes-writer); otherwise the label stays. Rooms, roles, aliases and
+            credentials follow; its handle on each chat platform is renamed
+            too. Refused for a name in use, one that clashes with an alias or
+            role in its rooms or a handle on a chat platform, a subagent or a
+            parent of subagents, and an agent a server connector found.
         description: What the agent is for.
         display_name: Human label shown next to its name; "" clears it.
         icon_url: An https link to its icon; "" clears it. A server with
@@ -2393,7 +2448,11 @@ async def update_agent_detail(
         The `get_agent_detail` shape plus `managed`: for a managed agent, the
         entry `list_managed_agents` shows for it (provider, model,
         advanced_config, machine, desired_state, actual, revision); null when
-        the agent is not managed or you cannot manage agents.
+        the agent is not managed or you cannot manage agents. Plus `renamed`
+        when `name` changed it: `{old_name, bridge_failures,
+        templates_mentioning_old_name}` — each chat platform that could not be
+        updated yet (the rename stands; it catches up when its bridge next
+        starts), and saved templates whose text still says the old name.
     """
     caller_id = get_agent_id()
     protocol = get_protocol()
@@ -2416,6 +2475,24 @@ async def update_agent_detail(
         machine=machine,
         desired_state=desired_state,
     )
+    rename_label: str | None = None
+    if name is not None:
+        # A rename changes what everyone types to reach the agent, so an agent
+        # may only do it with the same capability that lets it change an
+        # agent's model or machine. People rename from the gateway or with
+        # the chat commands, under the owner-or-admin rule.
+        await permitted_to_manage()
+        current = await protocol.get_agent_detail(caller_id, agent_id)
+        rename_label = current.display_name if display_name is None else display_name
+        # Checked before any managed change is made, and made after them: a
+        # refused rename then changes nothing, and a refused managed change
+        # leaves the name as it was.
+        try:
+            await protocol.check_rename(
+                agent_id=agent_id, new_name=name, display_name=rename_label
+            )
+        except AgentExistsError as exc:
+            raise ValueError(str(exc)) from exc
     port = management_port()
     managed: dict[str, Any] | None = None
     if not changes.is_empty():
@@ -2435,8 +2512,25 @@ async def update_agent_detail(
             managed = await port.managed_agent(
                 permission.tenant_id, permission.owner.id, agent_id
             )
+    renamed: dict[str, Any] | None = None
+    if name is not None:
+        try:
+            result = await protocol.rename_agent(
+                agent_id=agent_id, new_name=name, display_name=rename_label
+            )
+        except AgentExistsError as exc:
+            raise ValueError(str(exc)) from exc
+        if result.old_name != result.new_name:
+            renamed = {
+                "old_name": result.old_name,
+                "bridge_failures": result.bridge_failures,
+                "templates_mentioning_old_name": result.templates_mentioning_old_name,
+            }
     detail = await protocol.update_agent_detail(caller_id, agent_id, profile)
-    return {**detail.model_dump(), "managed": managed}
+    response = {**detail.model_dump(), "managed": managed}
+    if renamed is not None:
+        response["renamed"] = renamed
+    return response
 
 
 @operation

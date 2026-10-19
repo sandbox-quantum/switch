@@ -12,7 +12,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from pydantic import ValidationError
 
-from switch_core.bridges.collaboration.adapter import PlatformAdapter
+from switch_core.bridges.collaboration.adapter import AgentIdentity, PlatformAdapter
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -294,10 +294,10 @@ class _RecordingAdapter(PlatformAdapter):
     async def add_users_to_channel(self, *args: Any, **kwargs: Any) -> None:
         return None
 
-    async def create_agent_identity(self, *args: Any, **kwargs: Any) -> None:
+    async def create_agent_identity(self, agent: AgentIdentity) -> None:
         return None
 
-    async def remove_agent_identity(self, *args: Any, **kwargs: Any) -> None:
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None:
         return None
 
     async def get_channel_agent_names(self, *args: Any, **kwargs: Any) -> list[str]:
