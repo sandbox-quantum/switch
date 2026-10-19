@@ -1143,15 +1143,22 @@ class SwitchConfig(BaseSettings):
     def dashboard_base_url(self) -> str | None:
         """The origin links to the dashboard are built on.
 
-        FRONTEND_BASE_URL when set; otherwise the server's own origin, when
-        switch-core serves the dashboard there. Not where a browser sign-in
-        lands: that stays on the host that set the session cookie unless
-        FRONTEND_BASE_URL names another, because a split deployment's public
-        origin need not be the host its identity provider returns to.
+        FRONTEND_BASE_URL when set. Otherwise, when switch-core serves the
+        dashboard: the host browser sign-in returns to, where one is
+        configured, because a sign-in begun anywhere is sent there and leaves
+        its session there; and the server's own origin failing that. On a
+        server with one address the two are the same host. Not where a sign-in
+        lands, which stays on the host that set the session cookie unless
+        FRONTEND_BASE_URL names another.
         """
         if self.frontend_base_url:
             return self.frontend_base_url
-        if self.gateway_ui_dir is not None and self.gateway_public_url:
+        if self.gateway_ui_dir is None:
+            return None
+        if self.gateway_oidc_enabled and self.gateway_oidc_redirect_url:
+            callback = urlsplit(self.gateway_oidc_redirect_url)
+            return f"{callback.scheme}://{callback.netloc}"
+        if self.gateway_public_url:
             return self.gateway_public_url.rstrip("/")
         return None
 

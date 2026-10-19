@@ -49,6 +49,30 @@ def test_the_dashboard_origin_defaults_to_the_servers_own() -> None:
     assert config.dashboard_base_url == "https://switch.example.com"
 
 
+def test_the_dashboard_origin_follows_the_host_sign_in_returns_to() -> None:
+    # A sign-in begun on the server's own origin is sent on to the callback's
+    # host and leaves its session there, so links there find it signed in.
+    config = _config(
+        gateway_ui_dir="/app/gateway-ui",
+        gateway_public_url="https://switch-api.example.com",
+        gateway_oidc_issuer_url="https://idp.example.com",
+        gateway_oidc_client_id="cid",
+        gateway_oidc_client_secret="secret",
+        gateway_oidc_scopes="openid email profile",
+        gateway_oidc_redirect_url="https://switch.example.com/gateway/auth/oidc/callback",
+    )
+    assert config.dashboard_base_url == "https://switch.example.com"
+
+
+def test_a_callback_without_sign_in_configured_moves_nothing() -> None:
+    config = _config(
+        gateway_ui_dir="/app/gateway-ui",
+        gateway_public_url="https://switch-api.example.com",
+        gateway_oidc_redirect_url="https://switch.example.com/gateway/auth/oidc/callback",
+    )
+    assert config.dashboard_base_url == "https://switch-api.example.com"
+
+
 def test_the_default_does_not_move_where_a_sign_in_lands() -> None:
     # A browser sign-in lands on FRONTEND_BASE_URL when one is set, and on the
     # host that set its cookie otherwise. A split deployment's public origin
