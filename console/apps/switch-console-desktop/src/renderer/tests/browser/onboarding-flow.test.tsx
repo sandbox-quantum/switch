@@ -100,6 +100,10 @@ vi.mock('@renderer/features/settings/use-app-settings-key', () => ({
 }));
 
 import { OnboardingFlow } from '@renderer/features/onboarding/onboarding-flow';
+vi.mock('@renderer/lib/hooks/useTheme', () => ({
+  useTheme: () => ({ effectiveTheme: 'emlight' }),
+}));
+
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 
 let container: HTMLDivElement | null = null;
@@ -116,6 +120,8 @@ beforeEach(() => {
   connectToSwitchCloud.mockReset();
   servers.length = 0;
   onboardingStore.reset();
+  // The intro has its own test; these start on Welcome, as after it.
+  onboardingStore.introPlayed();
   Object.assign(localServer, {
     status: null,
     docker: { available: true },
@@ -207,6 +213,16 @@ async function type(input: HTMLInputElement, value: string): Promise<void> {
 }
 
 describe('the first-run flow', () => {
+  it('opens on the intro the first time, and Skip goes on to Welcome for good', async () => {
+    onboardingStore.rehearse();
+    const el = await renderFlow();
+    expect(el.textContent).not.toContain('Get started');
+    await act(async () => button(el, 'Skip').click());
+    await vi.waitFor(() => expect(el.textContent).toContain('Get started'));
+    expect(onboardingStore.introPending).toBe(false);
+    expect(localStorage.getItem('onboarding.introPlayed')).not.toBeNull();
+  });
+
   it("checks this computer's providers as it opens, for switch-buddy at the end", async () => {
     precheckProviders.mockClear();
     await renderFlow();

@@ -28,6 +28,9 @@ export type OnboardingPage =
  * a form does not: the fields belong to the page drawing them, so a stray ⌘,
  * on the connect page costs the two addresses.
  */
+/** Where this install remembers the first-run intro has played. */
+const INTRO_PLAYED_KEY = 'onboarding.introPlayed';
+
 class OnboardingStore {
   page: OnboardingPage = 'welcome';
   /** The server the connect page added, and the subject of the pages after it. */
@@ -61,6 +64,11 @@ class OnboardingStore {
    * skip, and offers a way back to the app from every page.
    */
   rehearsal = false;
+  /**
+   * The intro still to play before Welcome: on the first run of this install,
+   * and again when the pages are rehearsed.
+   */
+  introPending = localStorage.getItem(INTRO_PLAYED_KEY) === null;
 
   constructor() {
     makeAutoObservable(this);
@@ -80,6 +88,13 @@ class OnboardingStore {
   rehearse(): void {
     this.reset();
     this.rehearsal = true;
+    this.introPending = true;
+  }
+
+  /** The intro has played, or was skipped: Welcome is next, and it does not play again. */
+  introPlayed(): void {
+    localStorage.setItem(INTRO_PLAYED_KEY, new Date().toISOString());
+    this.introPending = false;
   }
 
   goTo(page: OnboardingPage): void {

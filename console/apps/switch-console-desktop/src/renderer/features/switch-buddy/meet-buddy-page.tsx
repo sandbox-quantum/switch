@@ -156,6 +156,7 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
   if (settingUp)
     return (
       <OnboardingSurface
+        key="setup"
         exit={exit}
         footer={
           <>
@@ -175,7 +176,10 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
 
   return (
     <OnboardingSurface
+      key="meet"
       exit={exit}
+      // The opening scene stages its own entrance.
+      enter={introPlayed.current}
       footer={
         existing ? (
           <Button
