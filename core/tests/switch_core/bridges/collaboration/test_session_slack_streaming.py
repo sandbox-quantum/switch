@@ -49,9 +49,7 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
-from switch_core.deeplinks import deeplink_for_platform
 from switch_core.sessions.contract import Item, TurnUpsert
-from switch_core.sessions.presentation import session_console_url
 
 from .slack_fakes import FakeResponse, FakeWebClient
 
@@ -304,16 +302,10 @@ async def test_a_detail_is_rich_text_because_that_is_what_a_card_takes() -> None
         TurnActivity(
             [_tool("t1", "Read", status="completed", text="312 lines")],
             _turn(),
-            session_url="https://switch.example/session",
         ),
         THREAD,
     )
 
-    assert _cards(client)[0]["details"]["elements"][0]["elements"][0] == {
-        "type": "link",
-        "url": "https://switch.example/session",
-        "text": "Open in Console app",
-    }
     assert _steps(client)[0]["details"]["type"] == "rich_text"
     assert _steps(client)[0]["details"]["elements"][0]["elements"][0] == {
         "type": "text",
@@ -321,53 +313,20 @@ async def test_a_detail_is_rich_text_because_that_is_what_a_card_takes() -> None
     }
 
 
-async def test_the_link_is_the_card_rather_than_a_line_under_a_label() -> None:
-    """A row reading "Switch session" above one reading "Open in Console app"
-    says the same thing twice.
-
-    The link names what it opens, so the title above it is a row of nothing —
-    and it is a row a reader has to look past to reach the one control the
-    stream offers them.
-    """
-    client = FakeWebClient()
-    adapter = _adapter(client)
-
-    await adapter.post_rich(
-        CHANNEL,
-        "Agent",
-        TurnActivity(
-            [_tool("t1", "Read")],
-            _turn(),
-            session_url="https://switch.example/session",
-        ),
-        THREAD,
-    )
-
-    assert _cards(client)[0]["hide_title"] is True
-
-
-async def test_the_link_is_in_every_section_rather_than_only_the_first() -> None:
-    """A reader opens one section. A link in the other one is a link they have
-    to go looking for, and the section they opened is the section they chose."""
+async def test_the_session_card_is_in_every_section() -> None:
     client = FakeWebClient()
     adapter = _adapter(client)
     many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(60)]
-    url = "https://switch.example/session"
 
-    await adapter.post_rich(
-        CHANNEL, "Agent", TurnActivity(many, _turn(), 9.0, session_url=url), THREAD
-    )
+    await adapter.post_rich(CHANNEL, "Agent", TurnActivity(many, _turn(), 9.0), THREAD)
 
     assert len(_pages(client)) == 2
-    assert [
-        card["details"]["elements"][0]["elements"][0]["url"] for card in _cards(client)
-    ] == [url, url]
+    assert [card["title"] for card in _cards(client)] == ["Switch session"] * 2
 
 
-async def test_a_card_with_no_link_in_it_still_says_what_it_is() -> None:
-    """Hiding the title is the link earning the row. With no link there is no
-    second row to earn it, and a card hiding the only thing it holds is blank —
-    in a section that is drawn before the turn has anything else to put in it."""
+async def test_the_session_card_says_what_it_is_and_links_nowhere() -> None:
+    """The card is drawn before the turn has anything else to put in its
+    section, so its title is what the section shows."""
     client = FakeWebClient()
     adapter = _adapter(client)
 
@@ -377,99 +336,8 @@ async def test_a_card_with_no_link_in_it_still_says_what_it_is() -> None:
 
     card = _cards(client)[0]
     assert "hide_title" not in card
+    assert "details" not in card
     assert card["title"] == "Switch session"
-
-
-@pytest.mark.parametrize("renders_custom_schemes", [True, False])
-async def test_a_real_console_link_arrives_whole(renders_custom_schemes: bool) -> None:
-    """Built by the code that builds it in production, not by hand.
-
-    Both forms of the link run past two hundred characters — the raw
-    `switchdash://` one and the gateway redirect Slack gets instead, because
-    Slack will not render a custom scheme. A hand-written short url in a test
-    proves nothing about either. The whole url has to be in the card: a link cut
-    to fit goes somewhere that is not the session, or nowhere at all.
-    """
-    client = FakeWebClient()
-    adapter = _adapter(client)
-    url = deeplink_for_platform(
-        session_console_url(
-            "https://switch.example",
-            "3f2b8c1e-5d47-4a19-9b6e-0c8a21d4f7b3",
-            "6e927fce-ef10-4248-afaa-34f660cd815d",
-            "a91c4d02-7e35-4f68-b2a1-8d5c93e07f4a",
-        ),
-        "https://switch.example/gateway",
-        renders_custom_schemes,
-    )
-    assert url is not None and len(url) > 150
-
-    await adapter.post_rich(
-        CHANNEL,
-        "Agent",
-        TurnActivity([_tool("t1", "Read")], _turn(), session_url=url),
-        THREAD,
-    )
-
-    assert _cards(client)[0]["details"]["elements"][0]["elements"][0]["url"] == url
-
-
-async def test_the_console_link_is_drawn_once_however_often_it_is_sent() -> None:
-    """A block is replaced whole, so a link re-sent is the same link, not a
-    second one.
-
-    This is what moving the card out of the stream's own plan bought. `details`
-    on a `task_update` chunk *appends* to what the card already holds rather
-    than replacing it, so the link had to be tracked and dropped from every
-    chunk after the one that carried it, or the card came back holding it twice
-    — and again on every redraw after that.
-    """
-    client = FakeWebClient()
-    adapter = _adapter(client)
-    tool = _tool("t1", "Read")
-    url = "https://switch.example/session"
-
-    ref = await adapter.post_rich(
-        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0, session_url=url), THREAD
-    )
-    for elapsed in (10.0, 20.0, 30.0):
-        await adapter.update_rich(
-            CHANNEL,
-            "Agent",
-            ref,
-            TurnActivity([tool], _turn(), elapsed, session_url=url),
-            THREAD,
-        )
-
-    assert len(_cards(client)) == 1
-    links = [
-        element
-        for card in _cards(client)
-        for element in card["details"]["elements"][0]["elements"]
-    ]
-    assert [element["url"] for element in links] == [url]
-
-
-async def test_a_link_that_only_turns_up_later_is_still_drawn() -> None:
-    """The session url is built from configuration and three ids, and a publish
-    can be drawn before the code that builds it has them all."""
-    client = FakeWebClient()
-    adapter = _adapter(client)
-    tool = _tool("t1", "Read")
-    url = "https://switch.example/session"
-
-    ref = await adapter.post_rich(
-        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
-    )
-    await adapter.update_rich(
-        CHANNEL,
-        "Agent",
-        ref,
-        TurnActivity([tool], _turn(), 9.0, session_url=url),
-        THREAD,
-    )
-
-    assert _cards(client)[0]["details"]["elements"][0]["elements"][0]["url"] == url
 
 
 async def test_the_live_section_spins_while_the_turn_runs_and_settles_with_it() -> None:
@@ -485,18 +353,13 @@ async def test_the_live_section_spins_while_the_turn_runs_and_settles_with_it() 
     client = FakeWebClient()
     adapter = _adapter(client)
     many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(60)]
-    url = "https://switch.example/session"
 
     ref = await adapter.post_rich(
-        CHANNEL, "Agent", TurnActivity(many, _turn(), 1.0, session_url=url), THREAD
+        CHANNEL, "Agent", TurnActivity(many, _turn(), 1.0), THREAD
     )
     running = [card["status"] for card in _cards(client)]
     await adapter.update_rich(
-        CHANNEL,
-        "Agent",
-        ref,
-        TurnActivity(many, _turn("completed"), 9.0, session_url=url),
-        THREAD,
+        CHANNEL, "Agent", ref, TurnActivity(many, _turn("completed"), 9.0), THREAD
     )
 
     assert running == ["complete", "in_progress"]
@@ -1147,7 +1010,7 @@ async def test_a_turn_that_never_left_one_section_is_still_redrawn() -> None:
     client = FakeWebClient()
     adapter = _adapter(client)
     tool = _tool("t1", "Read", status="completed")
-    url = "https://switch.example/session"
+    late = _tool("t1", "Read", status="completed", text="312 lines")
 
     ref = await adapter.post_rich(
         CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
@@ -1156,11 +1019,7 @@ async def test_a_turn_that_never_left_one_section_is_still_redrawn() -> None:
         CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
     )
     await adapter.update_rich(
-        CHANNEL,
-        "Agent",
-        ref,
-        TurnActivity([tool], _turn("completed"), 9.0, session_url=url),
-        THREAD,
+        CHANNEL, "Agent", ref, TurnActivity([late], _turn("completed"), 9.0), THREAD
     )
 
     assert [call["ts"] for call in client.updated] == ["1.0"]

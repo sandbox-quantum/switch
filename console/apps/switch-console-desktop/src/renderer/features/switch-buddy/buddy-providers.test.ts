@@ -30,10 +30,10 @@ describe('buddyProviders', () => {
     const states = buddyProviders(
       PROVIDERS,
       machine([
-        { provider: 'claude', ready: true, problem: null },
-        { provider: 'codex', ready: false, problem: 'not logged in' },
-        { provider: 'opencode', ready: false, problem: 'not installed' },
-        { provider: 'cursor', ready: false, problem: 'login not checked yet' },
+        { provider: 'claude', ready: true, problem: null, detail: null },
+        { provider: 'codex', ready: false, problem: 'not logged in', detail: null },
+        { provider: 'opencode', ready: false, problem: 'not installed', detail: null },
+        { provider: 'cursor', ready: false, problem: 'login not checked yet', detail: null },
       ])
     );
     expect(states.map((p) => [p.id, p.state])).toEqual([
@@ -45,6 +45,21 @@ describe('buddyProviders', () => {
     ]);
   });
 
+  it('asks to sign in, with the reason, when a login could not be checked', () => {
+    const [claude] = buddyProviders(
+      PROVIDERS,
+      machine([
+        {
+          provider: 'claude',
+          ready: false,
+          problem: 'login could not be checked',
+          detail: 'It may be too old.',
+        },
+      ])
+    );
+    expect(claude).toMatchObject({ id: 'claude', state: 'sign-in', detail: 'It may be too old.' });
+  });
+
   it('is still checking everything before this computer reports', () => {
     expect(buddyProviders(PROVIDERS, null).every((p) => p.state === 'checking')).toBe(true);
   });
@@ -52,7 +67,11 @@ describe('buddyProviders', () => {
 
 describe('startButtons', () => {
   const states = (entries: Record<string, BuddyProvider['state']>): BuddyProvider[] =>
-    PROVIDERS.map((provider) => ({ ...provider, state: entries[provider.id] ?? 'checking' }));
+    PROVIDERS.map((provider) => ({
+      ...provider,
+      state: entries[provider.id] ?? 'checking',
+      detail: null,
+    }));
   const ids = (buttons: BuddyProvider[] | null) => buttons?.map((provider) => provider.id) ?? null;
 
   it('decides as soon as Claude Code and Codex are known and one is ready', () => {

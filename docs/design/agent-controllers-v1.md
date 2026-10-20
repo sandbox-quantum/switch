@@ -205,9 +205,16 @@ Any change that affects a controller bumps its `assignment_revision` and nudges 
 ### Definition (v1)
 ```json
 {"provider": "claude|codex|opencode|antigravity|cursor",
- "model": null, "advanced_config": {}, "instructions": "", "auto_approve": false,
- "directory": null, "isolation": "shared"}
+ "model": null, "advanced_config": {}, "instructions": "", "auto_mode": true,
+ "auto_approve": false, "directory": null, "isolation": "shared"}
 ```
+
+`auto_mode` (default `true` on create) asks the provider for its own automatic review:
+safe actions run, risky ones still ask a person. `auto_approve` is bypass, every permission
+check skipped, and wins over `auto_mode`. A definition stored before `auto_mode` existed has
+no such key and reads as `false` (`schemas.stored_definition`): the managed-agent view, the
+assignment entry and an agent's update all fill it in that way, so an existing agent keeps
+its behaviour until someone turns auto mode on.
 
 ### Advanced configuration
 `advanced_config` carries the provider's "Advanced configuration", the per-provider settings
@@ -269,7 +276,8 @@ registers every declared operation and filters by the registry per request).
 - `get_advanced_config(provider)`: the provider's advanced-configuration fields, as the
   gateway serves them.
 - `create_agent(name, description, machine, provider, model=None, advanced_config=None,
-  instructions="", directory=None, auto_approve=False, display_name=None, icon_url=None,
+  instructions="", directory=None, auto_mode=True, auto_approve=False, display_name=None,
+  icon_url=None,
   start=True)`: builds the same
   `CreateManagedAgentRequest` the gateway route takes and calls
   `ManagementService.create_managed_agent`, so validation, placement checks, owner-only
@@ -279,7 +287,8 @@ registers every declared operation and filters by the registry per request).
   The agent is owned by the calling agent's owner, with `auto_session` true and the
   capability off. Returns `{agent_id, name, machine: {id, name}, desired_state, hint}`.
 - `list_managed_agents()`: the owner's managed agents, each `{agent_id, name, display_name,
-  description, provider, model, advanced_config, machine: {id, name, state} | null,
+  description, provider, model, advanced_config, auto_mode, auto_approve,
+  machine: {id, name, state} | null,
   desired_state, actual:
   {process, reason, detail, applied_revision, since, directory} | null, revision}`, `actual`
   being the agent's entry in its controller's last status, plus top-level `directory`, the one

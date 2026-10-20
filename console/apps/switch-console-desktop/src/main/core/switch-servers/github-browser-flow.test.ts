@@ -21,7 +21,7 @@ vi.mock('./gateway-client', () => ({
   getGitHubFlow: vi.fn(),
   startGitHubConnection: vi.fn(),
 }));
-const server = { id: 'server', gatewayUrl: 'https://switch.example.test' } as SwitchServer;
+const server = { id: 'server', url: 'https://switch.example.test' } as SwitchServer;
 const flows: string[] = [];
 afterEach(async () => {
   for (const id of flows.splice(0)) await cancelGitHubBrowserFlow(server, id);

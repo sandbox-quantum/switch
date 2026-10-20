@@ -31,6 +31,8 @@ from pydantic import field_validator
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivitySnapshot,
+    AgentIdentity,
+    AgentIdentityConflict,
     PlatformAdapter,
     RemovalFailed,
     RequestCard,
@@ -67,6 +69,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_ACTION,
@@ -300,6 +303,7 @@ def _ephemeral(text: str) -> dict[str, Any]:
 
 class MattermostAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Mattermost"
+    channel_on_delete = "archived"
     docs_slug: ClassVar[str | None] = "mattermost"
     # A quiet Mattermost bridge opens no websocket and mints no bot token: it
     # knows each agent's bot by id, for mentions, and calls the API as the
@@ -792,7 +796,6 @@ class MattermostAdapter(PlatformAdapter):
             limit=max(1, self.rich_fallback_limit() - len(stamp) - 1),
             markup=self.rich_markup(),
             elapsed_seconds=snapshot.elapsed_seconds,
-            session_url=snapshot.session_url,
             heading=True,
         )
         return f"{body}\n{stamp}"
@@ -1159,7 +1162,6 @@ class MattermostAdapter(PlatformAdapter):
                     limit=max(1, limit - len(tail)),
                     markup=markup,
                     elapsed_seconds=content.elapsed_seconds,
-                    session_url=content.session_url,
                     mention=mention,
                     error_summary=content.error_summary,
                     tool_detail=True,
@@ -1923,6 +1925,21 @@ class MattermostAdapter(PlatformAdapter):
         await self._add_default_member(channel_id)
         return channel_id
 
+    async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
+        """Archive the channel: Mattermost's channel DELETE archives unless
+        asked to delete permanently."""
+        if not self._admin_driver or not self._main_loop:
+            raise RuntimeError("Mattermost client not connected")
+        try:
+            await self._main_loop.run_in_executor(
+                None, self._admin_driver.channels.delete_channel, external_channel_id
+            )
+        except Exception as e:
+            return RetireOutcome.failed(
+                f"Mattermost refused to archive the channel: {e}"
+            )
+        return RetireOutcome(outcome="archived")
+
     async def _add_default_member(self, channel_id: str) -> None:
         """Add the deployment's human account to a channel we just created.
 
@@ -2084,13 +2101,89 @@ class MattermostAdapter(PlatformAdapter):
 
     # ── Agent identity ───────────────────────────────────────────────────────
 
-    async def create_agent_identity(
-        self, agent_name: str, agent_description: str
-    ) -> None:
+    async def create_agent_identity(self, agent: AgentIdentity) -> None:
         # The Mattermost calls inside yield, so two overlapping registrations
         # of one agent would each mint a token and open a second socket.
-        async with self._identity_locks.setdefault(agent_name, asyncio.Lock()):
-            await self._create_agent_identity(agent_name, agent_description)
+        async with self._identity_locks.setdefault(agent.agent_id, asyncio.Lock()):
+            await self._create_agent_identity(agent.name, agent.description)
+
+    async def check_agent_identity_name(self, agent_id: str, new_name: str) -> None:
+        if not self._admin_driver or not self._main_loop:
+            return
+        # The plural lookup answers an empty list for a free username, where
+        # the singular one answers 404 and the driver logs it as an error.
+        users = await self._main_loop.run_in_executor(
+            None, self._admin_driver.users.get_users_by_usernames, [new_name]
+        )
+        for user in users or []:
+            user_id = str(user.get("id", ""))
+            if not user_id or user_id in self._bot_id_to_username:
+                continue
+            raise AgentIdentityConflict(
+                f"The Mattermost username '{new_name}' is already used by an "
+                "account that is not a Switch agent. Pick another name."
+            )
+
+    async def rename_agent_identity(self, old_name: str, agent: AgentIdentity) -> None:
+        """Rename the agent's bot in place: same account, new username.
+
+        The username is the routing handle here, so it must follow the agent's
+        name. Keeping the account keeps its channel memberships, its posts and
+        its token, so nothing has to be re-provisioned."""
+        async with self._identity_locks.setdefault(agent.agent_id, asyncio.Lock()):
+            if not self._admin_driver or not self._main_loop:
+                raise RuntimeError(
+                    f"Cannot rename agent identity '{old_name}': adapter not started"
+                )
+            bot = self._agent_bots.get(old_name)
+            bot_id = str(bot["bot_id"]) if bot else None
+            if not self._listening:
+                # The process holding the bridge renames the bot; this copy
+                # only follows it under the new name.
+                self._agent_bots.pop(old_name, None)
+                if bot_id is not None:
+                    self._bot_id_to_username.pop(bot_id, None)
+                await self._create_agent_identity(agent.name, agent.description)
+                return
+            if bot_id is None:
+                existing = await self._find_existing_bot(old_name)
+                bot_id = str(existing["user_id"]) if existing else None
+            if bot_id is None:
+                await self._create_agent_identity(agent.name, agent.description)
+                return
+
+            label = (await self.agent_rendering(agent.name)).field_label
+            await self._mm_api(
+                "put",
+                f"/bots/{bot_id}",
+                {"username": agent.name, "display_name": label},
+            )
+            self._bot_id_to_username[bot_id] = agent.name
+            logger.info(
+                "Renamed Mattermost bot %s from %s to %s", bot_id, old_name, agent.name
+            )
+            if bot is None:
+                # Found by its old username but never provisioned in this run:
+                # adopt it under the new one, which gives it its token and
+                # socket like any other agent's bot.
+                await self._create_agent_identity(agent.name, agent.description)
+                return
+            self._agent_bots[agent.name] = {**bot, "username": agent.name}
+            self._agent_bots.pop(old_name, None)
+            driver = self._bot_drivers.pop(old_name, None)
+            if driver is not None:
+                self._bot_drivers[agent.name] = driver
+            stop = self._ws_stops.pop(old_name, None)
+            if stop is not None:
+                self._ws_stops[agent.name] = stop
+
+    async def update_agent_identity(self, agent: AgentIdentity) -> None:
+        """Show the agent's new display name on its bot."""
+        bot = self._agent_bots.get(agent.name)
+        if bot is None or not self._listening:
+            return
+        label = (await self.agent_rendering(agent.name)).field_label
+        await self._mm_api("put", f"/bots/{bot['bot_id']}", {"display_name": label})
 
     async def _create_agent_identity(
         self, agent_name: str, agent_description: str
@@ -2205,7 +2298,10 @@ class MattermostAdapter(PlatformAdapter):
             async def _handler(event_data: str) -> None:
                 if stopped.is_set():
                     return
-                await self._ws_handler(event_data, name)
+                # Read per event: a rename moves the bot to a new name while
+                # this socket keeps running.
+                current = self._bot_id_to_username.get(bot_id, name)
+                await self._ws_handler(event_data, current)
 
             if stopped.wait(1):
                 return
@@ -2378,10 +2474,10 @@ class MattermostAdapter(PlatformAdapter):
             # follows will surface a real failure.
             pass
 
-    async def remove_agent_identity(self, agent_name: str) -> None:
-        self._close_bot_socket(agent_name)
-        self._agent_bots.pop(agent_name, None)
-        self._bot_drivers.pop(agent_name, None)
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None:
+        self._close_bot_socket(agent.name)
+        self._agent_bots.pop(agent.name, None)
+        self._bot_drivers.pop(agent.name, None)
 
     async def get_channel_agent_names(self, channel_id: str) -> list[str]:
         if not self._admin_driver or not self._main_loop:

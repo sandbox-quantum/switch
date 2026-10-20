@@ -50,6 +50,7 @@ class NewManagedAgent:
     advanced_config: dict[str, Any]
     instructions: str
     directory: str | None
+    auto_mode: bool
     auto_approve: bool
     isolation: str
     start: bool
@@ -78,6 +79,7 @@ class ManagedAgentChanges:
     model: str | None
     advanced_config: dict[str, Any] | None
     instructions: str | None
+    auto_mode: bool | None
     auto_approve: bool | None
     directory: str | None
     isolation: str | None
@@ -91,6 +93,7 @@ class ManagedAgentChanges:
             "model": self.model,
             "advanced_config": self.advanced_config,
             "instructions": self.instructions,
+            "auto_mode": self.auto_mode,
             "auto_approve": self.auto_approve,
             "directory": self.directory,
             "isolation": self.isolation,

@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { generateSealingKeyPair, sealProviderLogin } from '@switch-console/agent-providers';
+import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
@@ -43,6 +44,7 @@ function entry(overrides: Partial<AgentAssignment> = {}): AgentAssignment {
       advanced_config: {},
       instructions: '',
       auto_approve: false,
+      auto_mode: false,
       directory: null,
       isolation: 'shared',
     },
@@ -253,6 +255,14 @@ describe('providerStatusFrom', () => {
       auth: 'unknown',
       auth_source: null,
     });
+    expect(
+      providerStatusFrom(
+        'claude',
+        located,
+        { status: 'unknown', message: 'Claude Code may be too old.', models: [] },
+        at
+      )
+    ).toMatchObject({ auth: 'unknown', auth_problem: 'Claude Code may be too old.' });
     expect(providerStatusFrom('claude', located, null, at)).toMatchObject({
       auth: 'unknown',
       reason: 'internal',
@@ -292,6 +302,61 @@ describe('ProviderStatuses', () => {
     await statuses.check('claude');
     expect(changes).toBe(6);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
+  });
+});
+
+describe('ProviderStatuses trying a login with a test prompt', () => {
+  function build(answer: () => ProviderReadiness) {
+    const runtime = new FakeRuntime();
+    const tried: string[] = [];
+    const providers = new ProviderStatuses({
+      locator: new FakeLocator(),
+      runtime,
+      sealed: null,
+      probeCwd: '/tmp',
+      verify: (provider) => {
+        if (provider !== 'claude') return null;
+        tried.push(provider);
+        return Promise.resolve(answer());
+      },
+      now: () => 0,
+      log: silentLogger,
+      onChange: () => {},
+    });
+    return { providers, tried };
+  }
+  const works: ProviderReadiness = { status: 'authenticated', message: 'OK', models: [] };
+  const fails: ProviderReadiness = {
+    status: 'unauthenticated',
+    message: 'Claude Code is signed in but could not answer a test prompt ("Invalid API key").',
+    models: [],
+  };
+
+  it('reports a login that is there but cannot answer as missing, saying why', async () => {
+    const { providers } = build(() => fails);
+    expect(await providers.check('claude')).toMatchObject({
+      auth: 'missing',
+      reason: 'provider_login_missing',
+      auth_problem: fails.message,
+    });
+  });
+
+  it('tries a login once it works, then again only when asked', async () => {
+    const { providers, tried } = build(() => works);
+    expect((await providers.check('claude')).auth).toBe('ok');
+    await providers.check('claude');
+    expect(tried).toHaveLength(1);
+    await providers.check('claude', { verify: true });
+    expect(tried).toHaveLength(2);
+  });
+
+  it('keeps trying a login that has not worked yet', async () => {
+    let answer = fails;
+    const { providers, tried } = build(() => answer);
+    await providers.check('claude');
+    answer = works;
+    expect((await providers.check('claude')).auth).toBe('ok');
+    expect(tried).toHaveLength(2);
   });
 });
 
@@ -740,5 +805,29 @@ describe('StatusCollector', () => {
       since: new Date(clock).toISOString(),
     });
     expect(statusFingerprint(third)).not.toBe(statusFingerprint(resolved));
+  });
+});
+
+describe('statusFingerprint', () => {
+  it('changes when only a provider’s auth problem changes', () => {
+    const report = (authProblem?: string) =>
+      ({
+        controller: { assignment_revision: 1 },
+        providers: [
+          {
+            provider: 'claude',
+            installed: true,
+            version: '2.1.0',
+            auth: 'missing',
+            ...(authProblem ? { auth_problem: authProblem } : {}),
+          },
+        ],
+        tools: [],
+        agents: [],
+      }) as unknown as Parameters<typeof statusFingerprint>[0];
+    expect(statusFingerprint(report('Invalid API key'))).not.toBe(
+      statusFingerprint(report('Not logged in'))
+    );
+    expect(statusFingerprint(report())).not.toBe(statusFingerprint(report('Invalid API key')));
   });
 });

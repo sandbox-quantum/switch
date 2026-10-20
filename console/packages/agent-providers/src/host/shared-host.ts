@@ -166,9 +166,6 @@ export const ROOM_POSTING_TOOLS = new Set([
   'post_message',
   'send_targeted_message',
   'send_attachment',
-  'delegate_task',
-  'update_task',
-  'finalise_task',
 ]);
 
 /** Whether a Switch tool result is a post that landed. */

@@ -4,6 +4,11 @@ import type { ReactNode } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ChatHeaderControls } from '@renderer/features/chats/components/chat-header';
 import { useAgentActivities } from '@renderer/features/chats/components/chat-panel';
+import {
+  embeddedRoomFallbackTab,
+  OpenInMessagingApp,
+  RoomTabs,
+} from '@renderer/features/switch-rooms/view';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import {
   ServerStatusPill,
@@ -27,13 +32,8 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
-import {
-  AgentChats,
-  agentSectionLabel,
-  openAgentChat,
-  openAgentRoom,
-  useAgentSection,
-} from './agent-chats';
+import { AgentChats, openAgentChat, openAgentRoom, useAgentSection } from './agent-chats';
+import { agentSectionLabel } from './agent-profile';
 import { type AgentSection, isAgentSection } from './agent-sections';
 import { ManagedAgentPage } from './managed-agent-page';
 import { managedAgentLabel } from './managed-agent-state';
@@ -48,7 +48,7 @@ type ManagedAgentParams = {
   roomId?: string;
   /** Shown instead of a chat when set. */
   section?: AgentSection;
-  /** A room the agent is in, summarised instead of a chat when set. */
+  /** A room the agent is in, shown instead of a chat when set. */
   room?: string;
 };
 
@@ -96,21 +96,30 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
     );
   return (
     <Titlebar
-      className="border-b border-border pr-[7px]"
+      className="pr-0"
       leftClassName="w-[300px] shrink-0 self-stretch border-r border-border [-webkit-app-region:drag]"
-      leftSlot={<TitlebarBreadcrumb crumbs={[{ ...crumb, maxWidthClassName: 'max-w-none' }]} />}
-      rightClassName="min-w-0 flex-1 justify-between gap-3 pl-4 [-webkit-app-region:drag]"
+      rightClassName="min-w-0 flex-1 justify-between gap-3 self-stretch border-b border-border pr-[7px] pl-4 [-webkit-app-region:drag]"
       rightSlot={
         <>
-          <span className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium">
-            {room && hasBridgeIcon(roomBridge) && <BridgeIcon bridgeType={roomBridge} size={16} />}
-            {section
-              ? agentSectionLabel(section)
-              : room
-                ? (switchRoomsStore.roomNameById(room) ?? room)
-                : chat?.name}
-          </span>
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium">
+              {room && hasBridgeIcon(roomBridge) && (
+                <BridgeIcon bridgeType={roomBridge} size={16} />
+              )}
+              {section
+                ? agentSectionLabel(section)
+                : room
+                  ? (switchRoomsStore.roomNameById(room) ?? room)
+                  : chat?.name}
+            </span>
+            {room && (
+              <span className="shrink-0 [-webkit-app-region:no-drag]">
+                <RoomTabs roomId={room} fallback={embeddedRoomFallbackTab(room)} />
+              </span>
+            )}
+          </div>
           <div className="flex shrink-0 items-center gap-1.5 [-webkit-app-region:no-drag]">
+            {room && <OpenInMessagingApp roomId={room} />}
             {server &&
               serverState(server) !== 'connected' &&
               serverState(server) !== 'running-local' &&

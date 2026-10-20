@@ -36,10 +36,10 @@ export function addableAgents(agents: ConnectionAgent[], filter: string): Connec
 
 /** What the section says when the person has no agents in the workspace. */
 export function noAgentsText(serviceName: string): string {
-  return `You have no agents in this workspace yet. Once you add one, turn ${serviceName} on for it from the agent's Connections.`;
+  return `You have no agents in this workspace yet. Once you add one, turn ${serviceName} on for it from the agent's Connectors.`;
 }
 
 /** What stands in for the agents on a server that cannot list them. */
 export function agentsUnlistedText(serviceName: string): string {
-  return `This server can't list your agents here. Turn ${serviceName} on for an agent from the agent's Connections.`;
+  return `This server can't list your agents here. Turn ${serviceName} on for an agent from the agent's Connectors.`;
 }

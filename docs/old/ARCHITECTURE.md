@@ -94,7 +94,7 @@ flowchart LR
 
 | Component | Where | Responsibility |
 |-----------|-------|----------------|
-| Agent Bridge | `bridges/agent/` | Server-side entry point for agents: HTTP API + MCP server, event delivery, task protocol, mediation, moderation. |
+| Agent Bridge | `bridges/agent/` | Server-side entry point for agents: HTTP API + MCP server, event delivery, mediation, moderation. |
 | Server-side connectors | `bridges/agent/server_connectors/` | Switch-hosted connectors that drive an external agent host (e.g. OpenCode) from the server, rather than the agent connecting in. Registered by type at startup and managed via `/gateway/connectors`. |
 | Collaboration bridges | `bridges/collaboration/` | Two-way relay between external chat platforms and Matrix rooms, via per-platform adapters and puppet clients. |
 | Resource bridge | `bridges/resource/` | Handles resource + mediation requests (tool/model access, room-document load/CRUD) via the resource-manager client. |
@@ -143,8 +143,8 @@ The relational schema is defined in
   **RoomLink** provide navigation grouping and directed room-to-room pointers.
 - **RoomRole** / **RoleLease** — assumable, optionally exclusive room roles; a
   lease tracks the current holder.
-- **Task** — the task-protocol record (`pending` → `ongoing` → `finalised` /
-  `cancelled`).
+- **Task** — rows left by the removed task protocol. Nothing writes or reads
+  them; the table awaits a cleanup migration.
 - **Reference** / **Document** / **Package** — the attachable resource library
   (external pointers, internal docs, and bundles), each with independent
   read/write visibility.
@@ -227,21 +227,21 @@ dimensions (room, room group, sender-user, sender-agent) plus two symbolic
 subjects resolved at delivery, `owner` (the agent's owner, whoever that
 currently is) and `owner_agents` (any agent that same person owns), governing
 *who* may address it. With no policy an agent is open to any room participant;
-agents created since CHOO-2137 instead start **owner-only** — a single rule
-admitting the owner anywhere and nobody else, which the owner can widen to
-their own agents. Pre-existing agents are left open rather than migrated.
+new agents instead start on **the owner and the owner's agents**
+(`default_agent_policy`) — a single rule admitting the owner and any agent the
+owner runs, anywhere, and nobody else. The owner can narrow it to themselves
+alone or widen it. Existing agents keep the policy they were created with
+(open, for those that predate scoped addressing) rather than being migrated.
 
 A message is never blocked at the sender: `send_targeted_message` posts, and
 reports `not_permitted` for that target instead of a reachability status, so the
 refusal happens in the room where everyone can see it rather than only in the
-sender's account of it. `delegate_task` is the exception and raises — a task is
-a row someone is expected to work, not something a room can decline.
+sender's account of it.
 
 When the sender is not permitted, `AgentClient` demotes the message to
 unaddressed room chatter and posts a one-shot reply to the sender; commands are
 gated the same way (a command naming the agent draws a reply, a room-wide one is
-declined quietly); `delegate_task` and `send_targeted_message` — explicit,
-tracked addressing vectors — instead fail loud with a `PermissionError`.
+declined quietly).
 
 The `owner` flag is a **symbolic subject resolved at delivery time**, not a
 stored id: `external_user_claims` records which Switch users have claimed a
@@ -284,7 +284,7 @@ agent's name/icon, preserving threads and attachments.
   authoritative spec.
 - **The long poll survives as a compatibility path.** `GET /agents/{id}/events`
   without the SSE `Accept` header, `GET /agents/{id}/rooms/{room_id}/events`,
-  and `GET /agents/{id}/notifications` (addressed messages, task events,
+  and `GET /agents/{id}/notifications` (addressed messages and
   opted-in room-joins) all return `204` on timeout and are served **from the
   same buffer** — each is a filtered view with a server-held cursor, so no path
   can diverge from another or destroy what another has yet to read. They are

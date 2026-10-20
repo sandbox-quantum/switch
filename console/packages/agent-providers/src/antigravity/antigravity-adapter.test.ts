@@ -35,7 +35,7 @@ vi.mock('node:child_process', () => ({
     return server;
   },
 }));
-const { createAntigravityAdapter } = await import('./antigravity-adapter');
+const { antigravityAcp, createAntigravityAdapter } = await import('./antigravity-adapter');
 beforeEach(() => {
   servers.length = 0;
   acp.http = true;
@@ -242,6 +242,12 @@ it('authenticates once on the session process before creating the session', asyn
     'authenticate',
     'session/new',
   ]);
+});
+it('puts auto mode in auto-edit, Antigravity having no reviewer of its own', () => {
+  expect(antigravityAcp.sessionMode?.('approval-required')).toBe('default');
+  expect(antigravityAcp.sessionMode?.('auto-accept-edits')).toBe('auto_edit');
+  expect(antigravityAcp.sessionMode?.('auto')).toBe('auto_edit');
+  expect(antigravityAcp.sessionMode?.('full-access')).toBe('yolo');
 });
 it('refuses legacy CLI conversation IDs before starting a process', async () => {
   await expect(

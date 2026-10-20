@@ -17,6 +17,7 @@ vi.mock("../../data/AuthContext", () => ({
 const agent: AgentDetail = {
   id: "a1",
   name: "helper",
+  display_name: null,
   description: "Helps",
   connector_type: "claude_code",
   connection_model: "auto_session",

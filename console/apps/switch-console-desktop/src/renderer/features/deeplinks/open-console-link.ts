@@ -1,8 +1,10 @@
 import { toast } from 'sonner';
+import type { AdminSection } from '@renderer/features/admin/admin-sections';
 import { isAgentSection } from '@renderer/features/managed-agents/agent-sections';
 import type { SettingsPageTab } from '@renderer/features/settings/components/SettingsPage';
 import { isBuddy } from '@renderer/features/switch-buddy/buddy-identity';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { administersWorkspaceInScope } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
 import { showModal } from '@renderer/lib/modal/modal-provider';
@@ -46,8 +48,11 @@ function serverFor(link: ConsoleLink): string | null {
     return active;
   }
   const origin = originOf(link.server);
+  // An older server's link may name the separate host its dashboard is on.
   const match = switchServersStore.servers.find(
-    (server) => origin !== null && originOf(server.gatewayUrl) === origin
+    (server) =>
+      origin !== null &&
+      [server.url, server.dashboardUrl].some((own) => own !== null && originOf(own) === origin)
   );
   if (!match) {
     toast.error('Could not open that link', {
@@ -71,6 +76,9 @@ async function openOnServer(serverId: string, link: ConsoleLink): Promise<void> 
   switch (link.page) {
     case 'home':
       navigation.navigate('server', { serverId });
+      return;
+    case 'server':
+      openServerSettings(serverId);
       return;
     case 'agents':
       navigation.navigate('serverAgents', { serverId });
@@ -121,9 +129,51 @@ async function openOnServer(serverId: string, link: ConsoleLink): Promise<void> 
       showModal('invitePeopleModal', { workspaceId });
       return;
     }
+    case 'admin':
+      openAdmin(serverId, link.tab);
+      return;
     case 'settings':
       return;
   }
+}
+
+/**
+ * The Server page exists only for a server this Console runs; for any other
+ * the link lands on its home and says why.
+ */
+function openServerSettings(serverId: string): void {
+  const server = switchServersStore.servers.find((listed) => listed.id === serverId);
+  if (server?.managed) {
+    appState.navigation.navigate('managedServer', { serverId });
+    return;
+  }
+  appState.navigation.navigate('server', { serverId });
+  toast.error('This server has no Server page here', {
+    description:
+      "Someone else runs it, so its start, stop, update and Mattermost settings aren't in this Switch Console.",
+  });
+}
+
+/**
+ * Admin is for the workspace's admins, and for whoever runs the server, who
+ * finds its Status page there; anyone else lands on the home and is told why.
+ */
+function openAdmin(serverId: string, tab: string | null): void {
+  if (!administersWorkspaceInScope(serverId)) {
+    if (switchServersStore.servers.find((listed) => listed.id === serverId)?.managed) {
+      appState.navigation.navigate('managedServer', { serverId });
+      return;
+    }
+    appState.navigation.navigate('server', { serverId });
+    toast.error('Admin is for workspace admins', {
+      description: 'Ask an owner or admin of this workspace to change these.',
+    });
+    return;
+  }
+  appState.navigation.navigate('admin', {
+    serverId,
+    ...(tab ? { section: tab as AdminSection } : {}),
+  });
 }
 
 /**

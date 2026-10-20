@@ -2,6 +2,10 @@ import { useQuery } from '@tanstack/react-query';
 import { CircleAlert, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
+import {
+  PERMISSION_COPY,
+  UnsafeBadge,
+} from '@renderer/features/locations/components/settings-view/sections/permission-settings-section';
 import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
 import { AddressingPolicyControl } from '@renderer/features/switch-servers/addressing-policy-control';
 import type { OptionItem } from '@renderer/features/switch-servers/addressing-policy-editor';
@@ -23,7 +27,7 @@ import type { ConfigureAgentFormState } from './modes';
 /**
  * Create form for a new Switch agent in a directory. Collects the target server,
  * Switch agent name, and description, then the managed-session options
- * (auto-session, bypass permissions, addressing policy). Switch Console always
+ * (auto mode, bypass permissions, addressing policy). Switch Console always
  * registers the agent as a managed, session-addressable identity — there is no
  * run-mode or notify-handle choice (CHOO-1440); advanced definition attributes
  * live in the collapsed Advanced section.
@@ -107,8 +111,8 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
   const ownerUnreachable =
     policyNamesOwner(form.addressingPolicy) && unlinkedApps !== null && unlinkedApps.length > 0;
 
-  // Folded is right until the defaults are wrong. The owner-only default admits
-  // nobody in an app with no account linked, and a warning nothing on screen
+  // Folded is right until the defaults are wrong. The default policy admits no
+  // person in an app with no account linked, and a warning nothing on screen
   // hints at is a warning nobody reads — so the section opens itself the first
   // time that is true. Once only: closing it again is an answer, not an
   // oversight, and the queries behind `unlinkedApps` settle after mount.
@@ -149,27 +153,22 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
         />
         {settingsOpen && (
           <FieldGroup className="pt-3">
-            <Field>
-              <label className="-mx-2 flex cursor-pointer items-start justify-between gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-[var(--sel-soft)]">
-                <span className="flex flex-col gap-0.5">
-                  <span className="flex items-center gap-1.5 text-sm">
-                    Bypass permissions
-                    <InfoTooltip
-                      label="More info about bypassing permissions"
-                      content="Sessions start with the provider's auto-approve flag, including ones started automatically. Turn it on only for agents you trust to run unattended."
-                    />
-                  </span>
-                  <span className="text-xs text-foreground-muted">
-                    Run this agent&apos;s sessions without permission prompts.
-                  </span>
-                </span>
-                <Switch
-                  className="mt-0.5"
-                  checked={form.autoApprove}
-                  onCheckedChange={(checked) => form.setAutoApprove(checked)}
-                />
-              </label>
-            </Field>
+            <PermissionToggle
+              setting="autoMode"
+              description={
+                form.autoApprove
+                  ? `${PERMISSION_COPY.autoMode.description} ${PERMISSION_COPY.autoMode.overridden}`
+                  : PERMISSION_COPY.autoMode.description
+              }
+              checked={form.autoMode}
+              onCheckedChange={form.setAutoMode}
+            />
+            <PermissionToggle
+              setting="autoApprove"
+              description={PERMISSION_COPY.autoApprove.description}
+              checked={form.autoApprove}
+              onCheckedChange={form.setAutoApprove}
+            />
 
             <Field>
               {/* FieldTitle rather than FieldLabel: this is a settings row like
@@ -180,7 +179,7 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
                   Who can talk to your agent
                   <InfoTooltip
                     label="More info about addressing"
-                    content="Talking to an agent means an @mention, a targeted message, or a delegated task. A new agent answers only you; grant other agents to let them delegate to it. You can change this later from the agent's settings."
+                    content="Talking to an agent means an @mention or a targeted message. A new agent answers you and your own agents; choose Only me to shut your agents out, or let others in. You can change this later from the agent's settings."
                   />
                 </span>
               </FieldTitle>
@@ -338,5 +337,40 @@ export function AgentIdentityFields({
         />
       </Field>
     </FieldGroup>
+  );
+}
+
+/** One permission setting of the create form: a whole-row label around its switch. */
+function PermissionToggle({
+  setting,
+  description,
+  checked,
+  onCheckedChange,
+}: {
+  setting: keyof typeof PERMISSION_COPY;
+  description: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  const copy = PERMISSION_COPY[setting];
+  return (
+    <Field>
+      <label className="-mx-2 flex cursor-pointer items-start justify-between gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-[var(--sel-soft)]">
+        <span className="flex flex-col gap-0.5">
+          <span className="flex items-center gap-1.5 text-sm">
+            {copy.title}
+            {setting === 'autoApprove' && <UnsafeBadge />}
+            <InfoTooltip label={copy.infoLabel} content={copy.info} />
+          </span>
+          <span className="text-xs text-foreground-muted">{description}</span>
+        </span>
+        <Switch
+          className="mt-0.5"
+          aria-label={copy.title}
+          checked={checked}
+          onCheckedChange={(next) => onCheckedChange(next)}
+        />
+      </label>
+    </Field>
   );
 }

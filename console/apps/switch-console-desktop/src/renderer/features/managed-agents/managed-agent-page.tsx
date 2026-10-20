@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { AgentIdentityActions } from '@renderer/features/agent-identity/agent-identity-actions';
 import { LocalDirectorySelector } from '@renderer/features/locations/components/add-agent-modal/local-directory-selector';
 import type {
   FormState,
@@ -21,12 +22,17 @@ import {
   AdvancedConfigDisclosure,
   summariseValues,
 } from '@renderer/features/locations/components/settings-view/sections/advanced-config-disclosure';
-import { AutoApproveRow } from '@renderer/features/locations/components/settings-view/sections/auto-approve-settings-section';
 import { CanManageAgentsRow } from '@renderer/features/locations/components/settings-view/sections/can-manage-agents-settings-section';
+import {
+  AutoApproveRow,
+  AutoModeRow,
+  PERMISSION_COPY,
+} from '@renderer/features/locations/components/settings-view/sections/permission-settings-section';
 import { ServiceGrantsRow } from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
 import { SettingRow } from '@renderer/features/locations/components/settings-view/sections/setting-row';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { toast } from '@renderer/lib/hooks/use-toast';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
@@ -106,6 +112,7 @@ function ManagedAgentPageContent({
 }) {
   const queryClient = useQueryClient();
   const showAddToRoom = useShowModal('addAgentToRoomModal');
+  const showRename = useShowModal('renameAgentModal');
   const schemaQuery = useAdvancedConfigSchema(agent.serverId);
   const machines = useManagedMachines(agent.serverId);
   const schema = schemaQuery.data?.[agent.definition.provider] ?? NO_FIELDS;
@@ -227,6 +234,44 @@ function ManagedAgentPageContent({
                 <ManagedMachinePill agent={agent} machines={machines} />
               </>
             }
+            titleActions={
+              <AgentIdentityActions
+                onRename={() =>
+                  showRename({
+                    workspaceId: agent.workspaceId,
+                    switchAgentId: agent.agentId,
+                    currentName: agent.name,
+                    currentDisplayName: saved.displayName.trim() || null,
+                    // Its machine keeps its files, under its own name for it.
+                    localAgentId: null,
+                    onSuccess: ({ outcome }) => {
+                      void queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY] });
+                      void queryClient.invalidateQueries({
+                        queryKey: workspaceAgentsQueryKey(agent.workspaceId),
+                      });
+                      // The display name now comes from the server, so a
+                      // pending edit of it is dropped rather than re-sent.
+                      setEdits((current) => {
+                        const { displayName: _dropped, ...values } = current.values;
+                        return { ...current, values };
+                      });
+                      toast({
+                        title: `Renamed to ${outcome.agent.displayName ?? outcome.agent.name}`,
+                        description:
+                          outcome.bridgeFailures.length > 0
+                            ? outcome.bridgeFailures
+                                .map((f) => `Not yet updated on ${f}.`)
+                                .join(' ')
+                            : undefined,
+                        variant: outcome.bridgeFailures.length > 0 ? 'destructive' : undefined,
+                      });
+                    },
+                  })
+                }
+                onDelete={remove}
+                disabled={!editIsEmpty(edit)}
+              />
+            }
             machineName={title !== agent.name ? agent.name : null}
             description={
               <InlineEditableText
@@ -272,24 +317,20 @@ function ManagedAgentPageContent({
             />
             <section className="flex flex-col gap-6">
               <SectionLabel>General</SectionLabel>
-              <SettingRow
-                title="Auto-create a session on notify"
-                info={{
-                  label: 'More info about auto-created sessions',
-                  content:
-                    'A session starts by itself when the agent is addressed, so a message never waits for someone to open one.',
-                }}
-                description="Start a session when this agent is addressed."
+              <AutoModeRow
+                overridden={draft.autoApprove}
                 control={
-                  <WithReason reason="Agents on a machine always start a session when addressed.">
-                    <Switch aria-label="Auto-create a session on notify" checked disabled />
-                  </WithReason>
+                  <Switch
+                    aria-label={PERMISSION_COPY.autoMode.title}
+                    checked={draft.autoMode}
+                    onCheckedChange={(checked) => setValue('autoMode', checked)}
+                  />
                 }
               />
               <AutoApproveRow
                 control={
                   <Switch
-                    aria-label="Bypass permissions"
+                    aria-label={PERMISSION_COPY.autoApprove.title}
                     checked={draft.autoApprove}
                     onCheckedChange={(checked) => setValue('autoApprove', checked)}
                   />
@@ -389,19 +430,6 @@ function ManagedAgentPageContent({
             </div>
           </div>
 
-          <section className="relative flex w-full flex-col gap-2">
-            <div className="flex items-center justify-between gap-2">
-              <SectionLabel>Sessions</SectionLabel>
-              <WithReason reason={SESSIONS_START_WHEN_ADDRESSED}>
-                <Button variant="ghost" size="icon-xs" aria-label="New session" disabled>
-                  <Plus className="size-4" />
-                </Button>
-              </WithReason>
-            </div>
-            <p className="py-2 text-sm text-foreground-muted">
-              Sessions of agents on a machine are not listed here yet.
-            </p>
-          </section>
           {chatsOn && (
             <section className="flex flex-col gap-6">
               <SectionLabel>Danger zone</SectionLabel>

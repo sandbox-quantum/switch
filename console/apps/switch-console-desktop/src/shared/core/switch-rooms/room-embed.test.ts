@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
+  bridgeCanEmbed,
   channelUrlFromDeeplink,
   embedIsStale,
   mattermostPartition,
   type RoomEmbed,
 } from './room-embed';
+
+describe('bridgeCanEmbed', () => {
+  it('draws only Mattermost inline', () => {
+    expect(bridgeCanEmbed('mattermost')).toBe(true);
+    expect(bridgeCanEmbed('slack')).toBe(false);
+    expect(bridgeCanEmbed(null)).toBe(false);
+  });
+});
 
 describe('channelUrlFromDeeplink', () => {
   it('rewrites a Mattermost deeplink onto the origin we serve it from', () => {

@@ -1005,7 +1005,7 @@ class ChatService:
                 try:
                     created = await self._room_service.create_room(
                         RoomCreateConfig(
-                            name=name or "New chat",
+                            name=name or "New Chat",
                             description="Switch Console chat with "
                             + ", ".join(agent.name for agent in agents),
                             agent_ids=[agent.id for agent in agents],

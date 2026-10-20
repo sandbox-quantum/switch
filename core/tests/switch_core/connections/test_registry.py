@@ -166,7 +166,9 @@ def test_a_core_callback_without_a_public_address_stops_the_server(
         )
 
 
-def _broker(catalog: dict, session_factory, adapters: dict) -> ServiceBroker:
+def _broker(
+    catalog: dict, session_factory, adapters: dict, public_url: str | None
+) -> ServiceBroker:
     return ServiceBroker(
         session_factory=session_factory,
         keyring=TEST_KEYRING,
@@ -177,25 +179,67 @@ def _broker(catalog: dict, session_factory, adapters: dict) -> ServiceBroker:
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
+        public_url=public_url,
     )
 
 
 def test_an_app_not_set_up_here_says_who_sets_it_up(
     tmp_path: Path, session_factory
 ) -> None:
-    broker = _broker(_catalog(tmp_path, STATIC), session_factory, {})
+    broker = _broker(_catalog(tmp_path, STATIC), session_factory, {}, None)
     reason = (
-        "{} is not set up on this server. Ask whoever runs your Switch server "
-        "to add it under Connectors in the Switch dashboard."
+        "{} is not set up on this server. Whoever runs your Switch server can "
+        "set it up in Switch Console, under Admin → Connector apps."
     )
     assert broker.availability("example") == reason.format("Example")
     assert broker.availability("github") == reason.format("GitHub")
     assert broker.connectable("example") is False
+    for service in ("example", "github"):
+        unavailable = broker.unavailable(service)
+        assert unavailable is not None and unavailable.code == "app_not_set_up"
+        assert broker.server_setup_needed(service) is True
+
+
+def test_github_cannot_work_on_a_server_without_an_https_address(
+    tmp_path: Path, session_factory
+) -> None:
+    catalog = _catalog(tmp_path, STATIC)
+    broker = _broker(catalog, session_factory, {}, "http://127.0.0.1:8000")
+    github = broker.unavailable("github")
+    assert github is not None
+    assert github.code == "needs_https"
+    assert github.reason == (
+        "GitHub can't be used on this server: it needs the server to have an "
+        "https address."
+    )
+    assert broker.server_setup_needed("github") is False
+    # Google and the like take an http address back, so their app still can be.
+    example = broker.unavailable("example")
+    assert example is not None and example.code == "app_not_set_up"
+
+    https = _broker(catalog, session_factory, {}, "https://switch.example.com")
+    github = https.unavailable("github")
+    assert github is not None and github.code == "app_not_set_up"
+
+
+def test_a_service_with_no_app_to_set_up_is_just_not_set_up(
+    tmp_path: Path, session_factory
+) -> None:
+    broker = _broker(_catalog(tmp_path, STATIC), session_factory, {}, None)
+    datadog = broker.unavailable("datadog")
+    assert datadog is not None
+    assert (datadog.code, datadog.reason) == (
+        "not_set_up",
+        "Datadog is not set up on this server.",
+    )
+    assert broker.server_setup_needed("datadog") is False
+    asana = broker.unavailable("asana")
+    assert asana is not None and asana.code == "coming_soon"
 
 
 def test_a_replaced_adapter_is_used_at_once(tmp_path: Path, session_factory) -> None:
     catalog = _catalog(tmp_path, STATIC)
-    broker = _broker(catalog, session_factory, {})
+    broker = _broker(catalog, session_factory, {}, None)
     adapter = build_adapters(
         catalog,
         github_app=None,

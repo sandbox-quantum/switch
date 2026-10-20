@@ -729,9 +729,7 @@ async def test_a_status_stays_inside_one_mattermost_post() -> None:
 
 async def test_a_turn_that_failed_says_so_instead_of_listing_its_tools() -> None:
     adapter = _adapter()
-    content = replace(
-        _activity(), error_summary="The session host is offline.", session_url=None
-    )
+    content = replace(_activity(), error_summary="The session host is offline.")
 
     await adapter.post_rich("chan-1", "worker", content)
 
@@ -748,7 +746,6 @@ async def test_a_problem_with_nobody_to_name_admits_that_it_told_no_one() -> Non
         _activity(),
         error_summary="The agent host is offline.",
         notify_unreachable=True,
-        session_url=None,
     )
 
     await adapter.post_rich("chan-1", "worker", content)
@@ -816,7 +813,6 @@ async def test_a_reachable_recipient_is_named_and_told_nothing_about_linking() -
         _activity(),
         error_summary="The agent host is offline.",
         notify_external_id="u-owner",
-        session_url=None,
     )
 
     await adapter.post_rich("chan-1", "worker", content)

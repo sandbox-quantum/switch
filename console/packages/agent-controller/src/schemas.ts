@@ -161,6 +161,8 @@ export const agentDefinitionSchema = z.object({
   ),
   instructions: z.string(),
   auto_approve: z.boolean(),
+  /** The provider's own automatic review. Absent from servers older than the setting. */
+  auto_mode: z.boolean().default(false),
   directory: z.string().nullable(),
   /** `shared`: the agent host runs in this controller's process; `isolated`: in a process of its own. */
   isolation: receivedEnum(['shared', 'isolated']),
@@ -207,7 +209,7 @@ export const providerStatusSchema = z.object({
   reason: reasonCode.optional(),
   /** Why no version was read from an installed CLI. */
   version_problem: z.string().max(300).optional(),
-  /** Why a login given to the machine is not used, in the controller's words. */
+  /** Why the provider's login does not work, or a login given to the machine is not used, in so many words. */
   auth_problem: z.string().max(300).optional(),
 });
 export type ProviderStatus = z.infer<typeof providerStatusSchema>;

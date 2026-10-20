@@ -28,9 +28,13 @@ export type Agent = {
   serverId: string | null;
   status: string | null;
   /** When true, Switch Console launches this agent's CLI with its auto-approve /
-   * "bypass permissions" flag. Defaults false for local agents and true for
-   * remote agents (seeded at onboarding); editable per agent. */
+   * "bypass permissions" flag, skipping every permission check. Wins over
+   * `autoMode`. Off for new agents; editable per agent. */
   autoApprove: boolean;
+  /** When true, sessions run in the provider's own auto mode: safe actions run
+   * without asking, risky ones still ask. On for new agents, off for agents
+   * that predate it; editable per agent. */
+  autoMode: boolean;
   /** The agent's owner on the Switch server, set when the agent was loaded from
    * another install. Null for agents this Console created. */
   ownerName: string | null;
@@ -52,11 +56,16 @@ export type CreateAgentParams = {
    * chosen and verified at onboarding (legacy rows may still be null until the
    * user assigns one). */
   workspaceId: string;
-  /** Seed for the per-agent bypass-permissions flag: false for local agents,
-   * true for remote agents. */
+  /** Seed for the per-agent bypass-permissions flag. */
   autoApprove: boolean;
+  /** Seed for the per-agent auto mode flag. */
+  autoMode: boolean;
   /** The agent's owner on the Switch server, when loaded from another install. */
   ownerName?: string | null;
   /** Optional per-agent provider config set at creation. */
   providerConfig?: AgentProviderConfig | null;
 };
+
+/** The permission settings a new agent starts with, wherever it runs: the
+ * provider's auto mode on, bypass off. */
+export const NEW_AGENT_PERMISSIONS = { autoApprove: false, autoMode: true } as const;

@@ -4,13 +4,18 @@ import {
   type ServerFeatureFlags,
 } from '@shared/core/feature-flags/feature-flags';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
-import type { ConnectorCardState } from './connector-card-state';
+import type { ConnectorCardState, ConnectorFix } from './connector-card-state';
 
 export type ConnectorsTab = 'yours' | 'discover';
 
 /** Whether a service belongs on Yours: the person has a connection to it, working or not. */
 export function isYours(entry: ConnectionCatalogEntry): boolean {
   return entry.status !== 'not_connected' && entry.status !== 'coming_soon';
+}
+
+/** The tab the page opens on: Yours once the person has a connection, Discover until then. */
+export function defaultConnectorsTab(entries: readonly ConnectionCatalogEntry[]): ConnectorsTab {
+  return entries.some(isYours) ? 'yours' : 'discover';
 }
 
 /**
@@ -36,17 +41,20 @@ export function connectorsInTab(
 }
 
 /**
- * The card's own control, beside the part that opens the profile: a way to
- * connect where the profile would offer Connect, and a mark (not a button)
- * only when the card's one state is connected. A connection the server or
- * the workspace has made unusable shows that state instead, and is still
- * there to disconnect on the profile. Disconnecting stays on the profile, so
- * the grid can never remove anyone's access by a stray click.
+ * The card's own control, beside the part that opens the profile: the fix
+ * its state offers the person looking (set the app up, turn it on for the
+ * workspace), a way to connect where the profile would offer Connect, and a
+ * mark (not a button) only when the card's one state is connected. A
+ * connection the server or the workspace has made unusable shows that state
+ * instead, and is still there to disconnect on the profile. Disconnecting
+ * stays on the profile, so the grid can never remove anyone's access by a
+ * stray click.
  */
 export function cardQuickAction(
   entry: ConnectionCatalogEntry,
   state: ConnectorCardState
-): 'connect' | 'connected' | null {
+): 'connect' | 'connected' | ConnectorFix | null {
+  if (state.fix !== null) return state.fix;
   if (state.kind === 'connected') return 'connected';
   return profileConnectAction(entry) === 'connect' && entry.connectable ? 'connect' : null;
 }
@@ -83,14 +91,18 @@ export function workspaceOffNotice(
 /**
  * The profile's way to connect: connect, sign in again, (GitHub) choose
  * repositories, or replace a connected key. None while the workspace has the
- * service off, whose notice says what to do instead. A reason the server
- * gives does not take it away: a service can often be connected where it
- * cannot be granted, and the button is disabled where it cannot.
+ * service off, whose notice says what to do instead, nor where the server
+ * says nothing can be connected until its app is set up, or ever on this
+ * server. Another reason the server gives does not take it away: a service
+ * can often be connected where it cannot be granted, and the button is
+ * disabled where it cannot.
  */
 export function profileConnectAction(
   entry: ConnectionCatalogEntry
 ): 'connect' | 'reconnect' | 'replace' | null {
   if (entry.status === 'coming_soon' || entry.workspace_enabled === false) return null;
+  if (entry.unavailable_code === 'app_not_set_up' || entry.unavailable_code === 'needs_https')
+    return null;
   if (entry.status === 'not_connected') return 'connect';
   if (entry.status === 'needs_reauthorization' || entry.status === 'error') return 'reconnect';
   return entry.auth_type === 'api_key' ? 'replace' : null;

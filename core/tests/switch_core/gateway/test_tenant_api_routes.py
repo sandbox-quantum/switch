@@ -164,6 +164,7 @@ def _app(
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
+        public_url=None,
     )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=_KEYRING,
@@ -172,7 +173,7 @@ def _app(
         gateway_max_workspaces_per_user=max_workspaces_per_user,
         gateway_signup_mode=signup_mode,
         gateway_invite_emails_per_day=invite_emails_per_day,
-        frontend_base_url="https://switch.example.com/",
+        dashboard_base_url="https://switch.example.com/",
     )
     return app
 
@@ -1546,6 +1547,7 @@ class TestMemberRoutes:
             token_retention=timedelta(days=30),
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
+            public_url=None,
         )
         async with _client(app, token) as client:
             response = await client.delete(f"/tenants/{TENANT_A}/members/{target_id}")

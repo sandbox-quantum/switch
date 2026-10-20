@@ -4,6 +4,7 @@ import {
   controllerConnectionId,
   EXECUTION_INHERIT_ENV,
   providerRuntime,
+  runtimeModeFor,
   type ProviderCapabilities,
   type SharedHostConfig,
   sharedConfigSchema,
@@ -90,7 +91,7 @@ export function buildWatcherTemplate(input: {
   provider: Provider;
   definition: Pick<
     AgentDefinition,
-    'name' | 'model' | 'advanced_config' | 'instructions' | 'auto_approve'
+    'name' | 'model' | 'advanced_config' | 'instructions' | 'auto_approve' | 'auto_mode'
   >;
   cwd: string;
   credentialsPath: string;
@@ -100,6 +101,10 @@ export function buildWatcherTemplate(input: {
   const capabilities = adapterCapabilities(provider);
   const sessionId = watcherSessionId(input.agentId);
   const launch = launchFor(provider, input.definition, input.cwd);
+  const runtimeMode = runtimeModeFor({
+    autoApprove: input.definition.auto_approve,
+    autoMode: input.definition.auto_mode,
+  });
   return sharedConfigSchema.parse({
     session: {
       sessionId,
@@ -126,7 +131,7 @@ export function buildWatcherTemplate(input: {
       input: {
         sessionId,
         cwd: input.cwd,
-        runtimeMode: input.definition.auto_approve ? 'full-access' : 'approval-required',
+        runtimeMode,
         env: {},
         mcpServers: {},
         ...(launch.agent
@@ -145,7 +150,7 @@ export function buildWatcherTemplate(input: {
       ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}),
       codexConfig:
         provider === 'codex'
-          ? withManagedCodexSandbox(launch.codexConfig, input.definition.auto_approve)
+          ? withManagedCodexSandbox(launch.codexConfig, runtimeMode)
           : launch.codexConfig,
       skill: launch.skill,
       context: launch.context,

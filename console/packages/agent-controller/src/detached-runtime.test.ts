@@ -59,6 +59,7 @@ function template(cwd = '/work/scout', provider: 'claude' | 'codex' = 'claude') 
       advanced_config: {},
       instructions: '',
       auto_approve: false,
+      auto_mode: false,
     },
     cwd,
     credentialsPath: join(dir, 'data', 'agents', 'agent-1', 'credentials.json'),

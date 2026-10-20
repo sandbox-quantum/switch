@@ -54,8 +54,8 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
 const SERVER = vi.hoisted(() => ({
   id: 'srv-1',
   name: 'switch.example.com',
-  gatewayUrl: 'https://switch.example.com',
-  apiUrl: 'https://switch.example.com:8000',
+  url: 'https://switch.example.com:8000',
+  dashboardUrl: 'https://switch.example.com',
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
@@ -142,7 +142,7 @@ afterEach(async () => {
 
 /** The flow, opened at the page that follows a successful sign-in. */
 async function renderAtPickWorkspace(): Promise<HTMLDivElement> {
-  onboardingStore.connected(SERVER as never, 'external');
+  onboardingStore.connected(SERVER as never, 'external', false);
   onboardingStore.goTo('pickWorkspace');
 
   container = document.createElement('div');

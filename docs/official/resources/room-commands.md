@@ -81,13 +81,16 @@ Console rather than `!list-switch-agents`.
 
 ---
 
-## Bring an agent in, and give it a shorter name
+## Bring an agent in or take it out, and give it a shorter name
 
 Switch answers these itself too.
 
 ```text
 # Add an agent already registered on the server to this room
 !invite-agent @agent-name
+
+# Take an agent out of this room — its name or its alias here
+!remove-agent @agent-name
 
 # Give that agent a short name to use in this room
 !set-alias @agent-name @alias
@@ -97,6 +100,12 @@ Switch answers these itself too.
 ```
 
 Each takes its arguments in the order shown, and each one is required.
+
+You can remove an agent you're allowed to address, which by default means one
+you own. A workspace admin can remove any agent. Agents can remove agents too,
+with the `remove_agent_from_room` tool: one that may address the agent, or one
+with **Can manage agents** removing an agent that belongs to its own owner.
+Removing an agent disconnects any session it had in the room.
 
 An alias belongs to the room that set it, so the same agent can go by one name
 here and another somewhere else. See

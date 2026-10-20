@@ -7,7 +7,7 @@
  * the app on the page; a click inside the app's own chat moves it there
  * directly.
  *
- * `server` names the Switch server the link means, by its gateway address.
+ * `server` names the Switch server the link means, by its address.
  * Without it the link opens on the server the person is looking at, which is
  * what an agent wants: it talks to them on that server and does not know the
  * address Console reaches it by.
@@ -30,6 +30,10 @@ type PageSpec = {
 
 export const CONSOLE_PAGES = {
   home: { description: "The server's home: messaging apps, guardrails and who you are." },
+  server: {
+    description:
+      "This server's own settings, where this Switch Console runs it: start, stop, update, the Mattermost beside it.",
+  },
   agents: { description: 'Every agent on the server.' },
   'agents/new': { description: 'Add a new agent.' },
   agent: {
@@ -48,6 +52,11 @@ export const CONSOLE_PAGES = {
   },
   connections: { description: 'Connectors: services such as GitHub, for you and your agents.' },
   invite: { description: 'Invite people to the workspace.' },
+  admin: {
+    description:
+      "Admin, for the workspace's admins: which connectors the workspace offers, and the apps they sign in through.",
+    tabs: ['connectors', 'apps'],
+  },
   settings: {
     description: "Switch Console's settings.",
     tabs: ['general', 'clis-models', 'remote-hosts', 'managed-agents', 'interface'],
@@ -61,7 +70,7 @@ export type ConsoleLink = {
   /** The agent, room or template the page shows; null for a page with no id. */
   id: string | null;
   tab: string | null;
-  /** The gateway address of the server the link means, or null for the current one. */
+  /** The address of the server the link means, or null for the current one. */
   server: string | null;
 };
 

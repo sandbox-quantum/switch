@@ -32,14 +32,15 @@ export async function listRemoteListeningPorts(ctx: IExecutionContext): Promise<
 }
 
 /** Host ports already claimed by other managed servers (the local stack and any
- * other remote hosts), parsed from their registered URLs. Mirrored remote ports
- * are bound on the desktop loopback too, so two managed stacks must not share a
- * number — this keeps the desktop listeners (and the unique gateway-URL index)
- * from colliding. */
+ * other remote hosts), parsed from their registered addresses. Mirrored remote
+ * ports are bound on the desktop loopback too, so two managed stacks must not
+ * share a number — this keeps the desktop listeners (and the servers'
+ * addresses) from colliding. */
 async function reservedManagedPorts(): Promise<Set<number>> {
   const reserved = new Set<number>();
   for (const server of await listManagedServers()) {
-    for (const url of [server.gatewayUrl, server.apiUrl]) {
+    for (const url of [server.url, server.dashboardUrl]) {
+      if (url === null) continue;
       const port = Number.parseInt(new URL(url).port, 10);
       if (Number.isFinite(port) && port > 0) reserved.add(port);
     }

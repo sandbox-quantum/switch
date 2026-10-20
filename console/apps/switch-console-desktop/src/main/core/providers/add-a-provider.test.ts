@@ -101,7 +101,7 @@ describe('a provider added as a plugin and a runtime', () => {
       name: 'Build box',
       kind: 'linux',
       state: 'online',
-      providers: [{ provider: 'dummy', ready: true, problem: null }],
+      providers: [{ provider: 'dummy', ready: true, problem: null, detail: null }],
       acceptsLogins: false,
       cloud: false,
       workspacesDir: null,

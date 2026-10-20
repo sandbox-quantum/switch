@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from html import escape
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from switch_core.deeplinks import gateway_query_to_switchdash
+from switch_core.deeplinks import (
+    CONSOLE_LINK_REDIRECT_PATH,
+    GET_SWITCH_CONSOLE_URL,
+    gateway_query_to_switchdash,
+    parse_console_link_path,
+)
 
 router = APIRouter()
 
@@ -55,6 +60,7 @@ _HANDOFF_PAGE = """<!doctype html>
     color: #243a31; text-decoration: underline;
     text-underline-offset: 2px; font-size: 0.9em;
   }}
+  .detail {{ margin: 1.5rem 0 0; font-size: 0.9em; opacity: 0.8; }}
   #check circle {{ fill: #009966; }}
   #check path {{ stroke: #009966; }}
   @media (prefers-color-scheme: dark) {{
@@ -82,7 +88,7 @@ _HANDOFF_PAGE = """<!doctype html>
   <h1 id="title">Opening Switch Console…</h1>
   <p id="subtitle">Your browser should prompt you to open the app.</p>
   <a id="target" class="manual-link" href="{target}">Open manually</a>
-</main>
+{detail}</main>
 <script>
   (function () {{
     var target = document.getElementById("target");
@@ -125,4 +131,41 @@ async def redirect_session_deeplink(request: Request) -> HTMLResponse:
     (its `/deeplink` prefix is in the Bearer middleware's public allowlist).
     """
     target = gateway_query_to_switchdash(request.url.query)
-    return HTMLResponse(_HANDOFF_PAGE.format(target=escape(target, quote=True)))
+    return HTMLResponse(
+        _HANDOFF_PAGE.format(target=escape(target, quote=True), detail="")
+    )
+
+
+# What the page says under the manual link for a Console page: which page the
+# link is for, and where to get Switch Console for a reader who does not have it
+# — the one this page cannot hand off to anything.
+_CONSOLE_PAGE_DETAIL = """  <p class="detail">This link opens {page_name} in Switch Console.</p>
+  <p class="detail">Don’t have Switch Console?
+    <a class="manual-link" href="{get_console}">Get Switch Console</a></p>
+"""
+
+
+@router.get(CONSOLE_LINK_REDIRECT_PATH + "/{path:path}")
+async def redirect_console_link(path: str, request: Request) -> HTMLResponse:
+    """Hand the browser off to the `switchdash://open/<path>?…` Console link.
+
+    The https form of a link to a Switch Console page, which bridges post on
+    platforms that cannot open the custom scheme. Only pages Switch Console
+    opens are served; any other path is a 404, so the route cannot be made to
+    hand off to an arbitrary target. The query is carried across verbatim, and
+    the scheme and host are fixed constants. Public for the same reason as
+    `/deeplink/session`.
+    """
+    link = parse_console_link_path(path, request.url.query)
+    if link is None:
+        raise HTTPException(status_code=404, detail="Switch Console has no such page")
+    page_name = link.page_name
+    detail = _CONSOLE_PAGE_DETAIL.format(
+        page_name=escape(page_name, quote=True),
+        get_console=escape(GET_SWITCH_CONSOLE_URL, quote=True),
+    )
+    return HTMLResponse(
+        _HANDOFF_PAGE.format(
+            target=escape(link.switchdash_url, quote=True), detail=detail
+        )
+    )

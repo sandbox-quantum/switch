@@ -36,6 +36,7 @@ from switch_core.management.schemas import (
     DefinitionV1,
     PatchManagedAgentRequest,
     agent_status_from,
+    stored_definition,
     wire_time_or_none,
     workspaces_dir_of,
 )
@@ -221,6 +222,7 @@ class ManagementAgentOperations:
                     model=spec.model,
                     advanced_config=spec.advanced_config,
                     instructions=spec.instructions,
+                    auto_mode=spec.auto_mode,
                     auto_approve=spec.auto_approve,
                     directory=spec.directory,
                     isolation=spec.isolation,  # type: ignore[arg-type]
@@ -305,6 +307,8 @@ class ManagementAgentOperations:
             "provider": row.definition.get("provider"),
             "model": row.definition.get("model"),
             "advanced_config": row.definition.get("advanced_config", {}),
+            "auto_mode": row.definition.get("auto_mode", False),
+            "auto_approve": row.definition.get("auto_approve", False),
             "directory": row.definition.get("directory"),
             "machine": None
             if controller is None
@@ -411,7 +415,10 @@ class ManagementAgentOperations:
             definition_changes = changes.definition_changes()
             body: dict[str, Any] = {}
             if definition_changes:
-                body["definition"] = {**row.definition, **definition_changes}
+                body["definition"] = {
+                    **stored_definition(row.definition),
+                    **definition_changes,
+                }
             if changes.desired_state is not None:
                 body["desired_state"] = changes.desired_state
             if changes.machine is not None:

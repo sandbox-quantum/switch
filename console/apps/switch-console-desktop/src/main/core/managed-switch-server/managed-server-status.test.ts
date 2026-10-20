@@ -41,8 +41,8 @@ function server(overrides: Record<string, unknown>) {
   return {
     id: 'srv',
     name: 'S',
-    gatewayUrl: 'http://localhost:3300',
-    apiUrl: 'http://localhost:8000',
+    url: 'http://localhost:8000',
+    dashboardUrl: 'http://localhost:3300',
     managed: true,
     managementKind: 'local',
     sshHost: null,

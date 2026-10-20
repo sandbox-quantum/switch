@@ -4,8 +4,8 @@ import { AgentInstructionsSection } from '@renderer/features/locations/component
 import { SectionLabel } from '@renderer/features/locations/components/main-panel/agent-page-section';
 import { AddressingPolicySettingsSection } from '@renderer/features/locations/components/settings-view/sections/addressing-policy-settings-section';
 import { AgentAdvancedSettingsSection } from '@renderer/features/locations/components/settings-view/sections/agent-advanced-settings-section';
-import { AutoApproveSettingsSection } from '@renderer/features/locations/components/settings-view/sections/auto-approve-settings-section';
 import { CanManageAgentsSettingsSection } from '@renderer/features/locations/components/settings-view/sections/can-manage-agents-settings-section';
+import { PermissionSettingsSection } from '@renderer/features/locations/components/settings-view/sections/permission-settings-section';
 import { ProviderSignInSettingsSection } from '@renderer/features/locations/components/settings-view/sections/provider-sign-in-settings-section';
 import { ServiceGrantsSettingsSection } from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
 import { useLocalAgentTab } from '@renderer/features/locations/hooks/use-local-agent-tab';
@@ -51,7 +51,7 @@ export const SettingsPanel = observer(function SettingsPanel() {
       <section className="flex flex-col gap-6">
         <SectionLabel>General</SectionLabel>
         <ProviderSignInSettingsSection locationId={locationId} agentId={agentId} />
-        <AutoApproveSettingsSection locationId={locationId} agentId={agentId} />
+        <PermissionSettingsSection locationId={locationId} agentId={agentId} />
         <AddressingPolicySettingsSection locationId={locationId} agentId={agentId} />
         <CanManageAgentsSettingsSection locationId={locationId} agentId={agentId} />
         {tabs === null && (

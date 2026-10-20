@@ -12,6 +12,7 @@ from switch_core.bridges.agent.commands import (
     Command,
     CommandArg,
 )
+from switch_core.bridges.collaboration.discord import slash
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
@@ -157,7 +158,11 @@ async def _noop(interaction: Any, command: Any, values: Any) -> None:
 
 def test_every_visible_registry_command_is_registered() -> None:
     built = {c.name for c in build_app_commands(_noop)}
-    expected = {c.name for c in COMMANDS if not c.hidden and c.description}
+    expected = {
+        c.name
+        for c in COMMANDS
+        if not c.hidden and c.handler is not None and c.description
+    }
     # The registry is the single source of truth — a command added there must
     # appear as a slash command without anyone editing a second list.
     assert built == expected
@@ -200,11 +205,33 @@ def test_required_after_optional_is_rejected() -> None:
         validate_args_spec(bad)
 
 
-def test_hidden_command_is_not_registered() -> None:
-    # `admin` exists only to absorb Slack's manifest-declared `/admin`; it is
-    # hidden and carries an empty description, which Discord would reject.
-    assert COMMANDS_BY_NAME["admin"].hidden
-    assert "admin" not in {c.name for c in build_app_commands(_noop)}
+def test_hidden_and_handlerless_commands_are_not_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A hidden command is absent from `!help` for a reason, and one with no
+    # handler would answer nothing.
+    async def _handler(*_args: Any) -> None:
+        return None
+
+    monkeypatch.setattr(
+        slash,
+        "COMMANDS",
+        [
+            *COMMANDS,
+            Command("kept-quiet", "Hidden.", handler=_handler, hidden=True),
+            Command("does-nothing", "Says it does something."),
+        ],
+    )
+
+    built = {c.name for c in build_app_commands(_noop)}
+    assert "kept-quiet" not in built
+    assert "does-nothing" not in built
+    assert "admin" not in built
+
+
+def test_every_registered_command_has_a_handler() -> None:
+    for command in build_app_commands(_noop):
+        assert COMMANDS_BY_NAME[command.name].handler is not None, command.name
 
 
 def test_registered_descriptions_fit_discord_cap() -> None:
@@ -560,3 +587,41 @@ def test_a_mention_of_something_gone_is_still_refused_clearly() -> None:
 
     assert commands == []
     assert interaction.responses[0]["ephemeral"] is True
+
+
+def test_free_text_goes_in_as_written() -> None:
+    """`/rename-agent` takes a display name with spaces, which a name token
+    would refuse."""
+    spec = COMMANDS_BY_NAME["rename-agent"].args_spec
+    assert (
+        reassemble_args(
+            spec,
+            {
+                "agent": "notes-taker",
+                "new_name": "meeting-scribe",
+                "display_name": "Meeting Scribe",
+            },
+        )
+        == "@notes-taker @meeting-scribe Meeting Scribe"
+    )
+
+
+def test_free_text_may_be_left_out() -> None:
+    spec = COMMANDS_BY_NAME["rename-agent"].args_spec
+    assert (
+        reassemble_args(spec, {"agent": "notes-taker", "new_name": "meeting-scribe"})
+        == "@notes-taker @meeting-scribe"
+    )
+
+
+def test_free_text_must_come_last() -> None:
+    bad = Command(
+        "x",
+        "d",
+        args_spec=(
+            CommandArg("text", "d", required=True, free_text=True),
+            CommandArg("after", "d", required=True),
+        ),
+    )
+    with pytest.raises(ValueError, match="only come last"):
+        validate_args_spec(bad)

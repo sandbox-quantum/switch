@@ -1003,6 +1003,7 @@ def test_definition_helper_is_the_v1_shape() -> None:
         "provider",
         "model",
         "instructions",
+        "auto_mode",
         "auto_approve",
         "directory",
         "isolation",

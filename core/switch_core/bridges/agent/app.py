@@ -36,7 +36,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.db.stores.task_store import TaskStore
+from switch_core.gateway.ui import GatewayUi, GatewayUiMiddleware
 from switch_core.logging_context import log_context
 from switch_core.observability.http import MetricsMiddleware
 from switch_core.refusal_breaker import RefusalBreaker
@@ -60,7 +60,6 @@ def create_agent_bridge_app(
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
     event_buffer: EventBuffer,
-    task_store: TaskStore,
     resource_service: ResourceService,
     api_key_store: ApiKeyStore,
     external_user_store: ExternalUserStore,
@@ -70,6 +69,7 @@ def create_agent_bridge_app(
     approval_outcomes: ApprovalOutcomes,
     controller_auth: ControllerAuthenticator | None,
     trust_client: TrustClient,
+    gateway_ui: GatewayUi | None,
     connections: AgentConnectionRegistry | None = None,
     telemetry: TelemetryService | None = None,
 ) -> tuple[FastAPI, AgentCore]:
@@ -97,7 +97,6 @@ def create_agent_bridge_app(
         collab_lifecycle=collab_lifecycle,
         event_buffer=event_buffer,
         connections=connections,
-        task_store=task_store,
         resource_service=resource_service,
         api_key_store=api_key_store,
         api_key_cache=api_key_cache,
@@ -180,6 +179,10 @@ def create_agent_bridge_app(
     # Outside the bearer middleware, so a caller that keeps repeating a refused
     # request is answered before its credential is looked up again.
     app.add_middleware(RefusalBreaker, clock=time.monotonic)
+    # Outside the bearer middleware and the breaker, because a page load carries
+    # a cookie and no agent key; inside the metrics, so page loads are counted.
+    if gateway_ui is not None:
+        app.add_middleware(GatewayUiMiddleware, ui=gateway_ui, router=app.router)
     # Outside the bearer middleware, so a request rejected for bad credentials
     # is still counted and timed — an authentication failure is traffic, and a
     # spike of it is the thing you most want a dashboard to show.

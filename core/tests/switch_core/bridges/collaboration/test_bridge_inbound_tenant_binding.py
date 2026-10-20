@@ -285,8 +285,10 @@ class TestBridgeLevelWorkBindsTheBridgesTenant:
         inside: list[str | None] = []
 
         class _Adapter:
-            async def create_agent_identity(self, *_: object) -> None:
-                return None
+            async def sync_agent_identities(
+                self, agents: object
+            ) -> list[tuple[str, BaseException]]:
+                return []
 
         bridge._adapter = _Adapter()  # type: ignore[assignment]
 

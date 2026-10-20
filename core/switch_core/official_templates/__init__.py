@@ -6,7 +6,9 @@ release ships and nobody can change or delete one. A template a deployment
 can only use where agents are managed comes in two documents, and the
 server's ``agent_management`` feature flag picks which it serves.
 switch-buddy only makes sense as a managed agent, and is served only with both
-``agent_management`` and ``switch_buddy`` on.
+``agent_management`` and ``switch_buddy`` on. The Switch expert is served only
+where switch-buddy is not: buddy covers what it does, and offering both would
+give a new user two built-in assistants to choose between.
 
 Each lives in a directory here: ``template.yaml`` (for agent management),
 optionally ``template.console.yaml`` (for a server without it, whose agents
@@ -21,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -54,9 +56,11 @@ class _Shipped:
     name: str
     description: str
     kind: str
-    # Served only with agent management and the switch_buddy flag on: it has
-    # no Console-run document, and Console asks for it only where offered.
-    buddy: bool
+    # Where the server serves it, relative to switch-buddy: "buddy" only with
+    # agent management and the switch_buddy flag on (it has no Console-run
+    # document, and Console asks for it only where offered); "without_buddy"
+    # only where switch-buddy is not served.
+    served: Literal["buddy", "without_buddy"]
 
 
 _SHIPPED = (
@@ -68,7 +72,7 @@ _SHIPPED = (
             "up or why something is off."
         ),
         kind="agent",
-        buddy=False,
+        served="without_buddy",
     ),
     _Shipped(
         slug="switch-buddy",
@@ -78,7 +82,7 @@ _SHIPPED = (
             "answers anything about Switch and helps with any task."
         ),
         kind="agent",
-        buddy=True,
+        served="buddy",
     ),
 )
 
@@ -144,7 +148,7 @@ def official_templates(
             content=_document(shipped.slug, agent_management),
         )
         for shipped in _SHIPPED
-        if not shipped.buddy or (agent_management and switch_buddy)
+        if (shipped.served == "buddy") == (agent_management and switch_buddy)
     ]
 
 

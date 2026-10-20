@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -111,3 +112,49 @@ class TestDeeplinkIsPublic:
 
         assert resp.status_code == 200
         assert "switchdash://session?" in resp.text
+
+
+class TestConsolePageHandoff:
+    """`/deeplink/open/<page>`: the https form of a link to a Console page,
+    which bridges post where the platform cannot open `switchdash://`."""
+
+    def test_a_valid_page_hands_off_to_its_console_link(self) -> None:
+        resp = _client().get("/deeplink/open/agent/abc", params={"tab": "settings"})
+
+        assert resp.status_code == 200
+        assert 'href="switchdash://open/agent/abc?tab=settings"' in resp.text
+        assert "your agent&#x27;s settings" in resp.text
+        assert "Get Switch Console" in resp.text
+        assert "Open manually" in resp.text
+
+    def test_a_page_whose_name_has_a_slash(self) -> None:
+        resp = _client().get("/deeplink/open/messaging-apps/connect")
+
+        assert resp.status_code == 200
+        assert 'href="switchdash://open/messaging-apps/connect"' in resp.text
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/deeplink/open/nowhere",
+            "/deeplink/open/agent",
+            "/deeplink/open/",
+            "/deeplink/open/agent/abc?tab=logs",
+            "/deeplink/open/room/%3Cscript%3E",
+        ],
+    )
+    def test_anything_console_does_not_open_is_not_found(self, path: str) -> None:
+        assert _client().get(path).status_code == 404
+
+    def test_the_query_cannot_break_out_of_the_attribute(self) -> None:
+        resp = _client().get('/deeplink/open/home?server="><script>alert(1)</script>')
+
+        assert resp.status_code == 200
+        assert "<script>alert(1)</script>" not in resp.text
+
+    def test_it_is_public(self) -> None:
+        assert _is_public_path("/deeplink/open/home") is True
+        resp = _client_with_auth().get("/deeplink/open/rooms")
+
+        assert resp.status_code == 200
+        assert 'href="switchdash://open/rooms"' in resp.text

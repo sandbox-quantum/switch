@@ -19,6 +19,8 @@ import { switchConsoleReleaseUrl } from '@shared/urls';
 
 const LAST_NOTIFIED_KEY = 'switchdash:update:lastNotified';
 const SNOOZE_HOURS = 6;
+/** One "Update Available" toast at a time: a repeat replaces it, and it goes once the update moves on. */
+export const UPDATE_AVAILABLE_TOAST_ID = 'console-update-available';
 
 type DownloadProgress = {
   percent?: number;
@@ -166,12 +168,14 @@ export class UpdateStore {
     });
 
     events.on(updateNotAvailableEvent, () => {
+      this._dismissAvailableToast();
       runInAction(() => {
         this.state = { status: 'not-available' };
       });
     });
 
     events.on(updateDownloadingEvent, (_d) => {
+      this._dismissAvailableToast();
       runInAction(() => {
         this.state = { status: 'downloading', progress: { percent: 0 } };
       });
@@ -192,6 +196,7 @@ export class UpdateStore {
     });
 
     events.on(updateDownloadedEvent, (d) => {
+      this._dismissAvailableToast();
       runInAction(() => {
         if (d?.version) this.availableVersion = d.version;
         this.state = { status: 'downloaded' };
@@ -199,6 +204,7 @@ export class UpdateStore {
     });
 
     events.on(updateInstallingEvent, () => {
+      this._dismissAvailableToast();
       runInAction(() => {
         this.state = { status: 'installing' };
       });
@@ -336,6 +342,7 @@ export class UpdateStore {
 
   private _showAvailableToast(version: string): void {
     toast('Update Available', {
+      id: UPDATE_AVAILABLE_TOAST_ID,
       description: `Version ${version} is available to download and install.`,
       duration: 10_000,
       classNames: {
@@ -352,6 +359,10 @@ export class UpdateStore {
         },
       },
     });
+  }
+
+  private _dismissAvailableToast(): void {
+    toast.dismiss(UPDATE_AVAILABLE_TOAST_ID);
   }
 
   private _shouldNotify(version: string): boolean {

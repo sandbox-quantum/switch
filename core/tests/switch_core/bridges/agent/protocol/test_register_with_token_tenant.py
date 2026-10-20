@@ -69,7 +69,7 @@ class TestRegistrationTokenDecidesTheTenant:
             description="discovered by a connector",
             connector_type="server-side:test",
             integration_profile=PROFILE,
-            owner_only=False,
+            addressing_policy=None,
         )
 
         async with session_factory() as session:
@@ -99,7 +99,7 @@ class TestRegistrationTokenDecidesTheTenant:
             description="d",
             connector_type="server-side:test",
             integration_profile=PROFILE,
-            owner_only=False,
+            addressing_policy=None,
         )
         assert current_tenant_id() is None
 
@@ -119,7 +119,7 @@ class TestRegistrationTokenDecidesTheTenant:
             description="d",
             connector_type="server-side:test",
             integration_profile=PROFILE,
-            owner_only=False,
+            addressing_policy=None,
         )
 
         async with session_factory() as session:

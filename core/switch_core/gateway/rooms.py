@@ -15,7 +15,9 @@ from switch_core.bridges.agent.operations.agent_management import management_por
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
+    ChannelRetirement,
     ChannelType,
+    RetireOutcome,
 )
 from switch_core.db.models import Room, RoomGroup, User, require_tenant_id
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -45,6 +47,7 @@ from switch_core.gateway.schemas import (
     RoomAgentsRequest,
     RoomAgentUpdateRequest,
     RoomCreateRequest,
+    RoomDeleteResponse,
     RoomDetail,
     RoomObserveRequest,
     RoomProtectionRequest,
@@ -145,6 +148,20 @@ async def _external_channel_url(room: Room) -> str | None:
         return None
 
 
+def _channel_on_delete(room: Room, bridge_type: str | None) -> ChannelRetirement | None:
+    """What deleting the room will do to its platform channel, as the
+    platform's adapter declares it. None when the room has no channel, or its
+    platform is not one this build ships."""
+    if not room.external_channel_id or bridge_type is None:
+        return None
+    if room.channel_type == "direct":
+        return "kept"
+    adapter_cls = get_collab_lifecycle().adapter_class(bridge_type)
+    if adapter_cls is None:
+        return None
+    return adapter_cls.channel_on_delete
+
+
 async def _build_room_detail(
     session: AsyncSession,
     room: Room,
@@ -221,6 +238,7 @@ async def _build_room_detail(
         roles=roles,
         join_event_listeners=join_event_listeners,
         archived_at=str(room.archived_at) if room.archived_at else None,
+        channel_on_delete=_channel_on_delete(room, bridge_type),
     )
 
 
@@ -507,6 +525,8 @@ class TemplateAgentBody(BaseModel):
     model: str | None
     advanced_config: dict[str, Any]
     isolation: Literal["shared", "isolated"]
+    # Older Consoles do not send it; a new agent runs in auto mode.
+    auto_mode: bool = True
     auto_approve: bool
     directory: str | None
     addressing: Literal["owner", "owner-agents", "anyone"]
@@ -527,6 +547,7 @@ class TemplateAgentBody(BaseModel):
             model=self.model,
             advanced_config=self.advanced_config,
             isolation=self.isolation,
+            auto_mode=self.auto_mode,
             auto_approve=self.auto_approve,
             directory=self.directory,
             addressing=self.addressing,
@@ -1224,13 +1245,17 @@ async def delete_room(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> dict[str, bool]:
+    # Also archive, delete or leave the room's platform channel. Off unless
+    # asked: people often delete a room to take the agents out of a channel
+    # they keep using.
+    retire_channel: Annotated[bool, Query()] = False,
+) -> RoomDeleteResponse:
     await _require_room_released(session, room_store, room_id, user, "delete", is_admin)
     try:
-        await room_service.delete_room(room_id)
+        channel = await room_service.delete_room(room_id, retire_channel=retire_channel)
     except ValueError:
         raise HTTPException(status_code=404, detail="Room not found")
-    return {"ok": True}
+    return RoomDeleteResponse(ok=True, channel=channel)
 
 
 @router.post("/bulk-delete")
@@ -1244,6 +1269,7 @@ async def bulk_delete_rooms(
 ) -> BulkDeleteResponse:
     principal = Principal(user.id, is_admin)
     deleted = 0
+    channels: dict[str, RetireOutcome] = {}
     for room_id in req.room_ids:
         room = await room_store.get(session, room_id)
         if room is None:
@@ -1256,9 +1282,13 @@ async def bulk_delete_rooms(
             continue
         # See `_require_room_released`.
         await session.commit()
-        await room_service.delete_room(room_id)
+        channel = await room_service.delete_room(
+            room_id, retire_channel=req.retire_channel
+        )
+        if channel is not None:
+            channels[room_id] = channel
         deleted += 1
-    return BulkDeleteResponse(deleted=deleted)
+    return BulkDeleteResponse(deleted=deleted, channels=channels)
 
 
 @router.post("/bulk-archive")

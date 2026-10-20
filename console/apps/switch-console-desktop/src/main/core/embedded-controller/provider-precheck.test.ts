@@ -92,8 +92,8 @@ describe('ProviderPrecheck', () => {
     expect(await service.results()).toBeNull();
     service.start();
     expect(await service.results()).toEqual([
-      { provider: 'claude', installed: true, auth: 'ok' },
-      { provider: 'codex', installed: true, auth: 'missing' },
+      { provider: 'claude', installed: true, auth: 'ok', problem: null },
+      { provider: 'codex', installed: true, auth: 'missing', problem: null },
     ]);
     advance(10 * 60 * 1000 + 1_000);
     expect(await service.results()).toEqual([]);

@@ -26,6 +26,7 @@ from sqlalchemy.pool import NullPool
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.clients.actor import AgentActor, SystemActor
 from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
+from switch_core.clients.agent_admin import AgentAdministration, AgentDeletionRequests
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.command_consumer import CommandConsumer
@@ -45,6 +46,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.messages.notify import MessageListener
 from switch_core.ownership import Ownership
 from switch_core.process_lease import ProcessLease
@@ -129,6 +131,9 @@ async def _process(
         reference_store=ReferenceStore(),
         agent_session_store=AgentSessionStore(),
         room_service=MagicMock(),
+        user_store=UserStore(),
+        agent_admin=AgentAdministration(),
+        deletion_requests=AgentDeletionRequests(),
         connections=AgentConnectionRegistry(),
         frontend_base_url=None,
         follow_the_conversation_enabled=False,

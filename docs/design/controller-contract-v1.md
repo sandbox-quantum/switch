@@ -95,7 +95,8 @@ type AgentDefinition = {
   advanced_config: Record<string, string | number | boolean | string[]> // the provider's "Advanced configuration", checked by the server against its schema for the provider (GET /gateway/management/advanced-config); an unset field is left out; {} for none
   instructions: string                // ≤ 32 KiB
   provider_definition: string | null  // e.g. the Claude agent definition file
-  auto_approve: boolean               // CLI runs with its bypass-permissions flag
+  auto_mode: boolean                  // the provider's own automatic review: safe actions run, risky ones ask. Absent from definitions stored before it existed, which read as false
+  auto_approve: boolean               // CLI runs with its bypass-permissions flag; wins over auto_mode
   isolation: "shared" | "isolated"    // agent host in the controller, or a process of its own
   session_limit: number
   repo: { kind: "github"; installation_id: number; repository_id: number } | null

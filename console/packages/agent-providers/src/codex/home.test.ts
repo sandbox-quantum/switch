@@ -91,22 +91,26 @@ it('links the user’s own Codex skills into a session home that has no skills f
 
 describe('withManagedCodexSandbox', () => {
   it('lets a managed agent write in its workspace, or anywhere when it bypasses permissions', () => {
-    expect(parse(withManagedCodexSandbox('web_search = true\n', false))).toEqual({
+    expect(parse(withManagedCodexSandbox('web_search = true\n', 'approval-required'))).toEqual({
       sandbox_mode: 'workspace-write',
       web_search: true,
     });
-    expect(parse(withManagedCodexSandbox('', true))).toEqual({
+    expect(parse(withManagedCodexSandbox('', 'full-access'))).toEqual({
       sandbox_mode: 'danger-full-access',
     });
   });
 
+  it('keeps an agent in auto mode in its workspace sandbox', () => {
+    expect(parse(withManagedCodexSandbox('', 'auto'))).toEqual({ sandbox_mode: 'workspace-write' });
+  });
+
   it('keeps a sandbox the configuration already names', () => {
     const config = 'sandbox_mode = "read-only"\n[mcp_servers.x]\ncommand = "x"\n';
-    expect(withManagedCodexSandbox(config, true)).toBe(config);
+    expect(withManagedCodexSandbox(config, 'full-access')).toBe(config);
   });
 
   it('puts the sandbox before any table, where TOML reads it as top level', () => {
-    const merged = withManagedCodexSandbox('[mcp_servers.x]\ncommand = "x"\n', false);
+    const merged = withManagedCodexSandbox('[mcp_servers.x]\ncommand = "x"\n', 'approval-required');
     expect(parse(merged)).toMatchObject({ sandbox_mode: 'workspace-write' });
   });
 });

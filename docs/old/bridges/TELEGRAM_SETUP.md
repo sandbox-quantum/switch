@@ -307,7 +307,7 @@ message and edits it in place as the agent's activity changes: "Working… 41s"
 while the turn runs, "Worked for 2m 14s." when it finishes. It stays in the chat
 afterwards as the record of the turn, which is why it is kept short — a chat is
 the conversation itself, so the finished message carries the state, the
-duration, the agent's name, one Switch Console link and, where a tool call
+duration, the agent's name and, where a tool call
 failed or was declined, the tally saying so. There is no tool log and no
 line naming the tool of the moment; Telegram declines both.
 

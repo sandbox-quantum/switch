@@ -1028,8 +1028,9 @@ async def delete_bridge(
     }
     # Not held across the deletes, which open their own sessions and call Matrix.
     await session.commit()
+    # The channels stay: the bot may already have lost its access to them.
     for room in rooms:
-        await room_service.delete_room(room.id)
+        await room_service.delete_room(room.id, retire_channel=False)
 
     await collab_lifecycle.remove(bridge_id)
     await record_audit_event(

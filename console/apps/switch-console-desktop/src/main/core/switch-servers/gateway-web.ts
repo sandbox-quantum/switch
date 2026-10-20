@@ -1,6 +1,6 @@
 import { BrowserWindow, session as electronSession } from 'electron';
 import { log } from '@main/lib/logger';
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { dashboardOrigin, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { reauthenticateManagedServer } from './auth';
 import { consoleIdentityHeaders } from './console-identity';
 import { getSessionCookie } from './servers-store';
@@ -17,17 +17,17 @@ const SWITCH_AUTH_COOKIE = 'switch_auth';
  * authenticated; other servers open with whatever session is stored, falling
  * back to the gateway's own sign-in page if none.
  *
- * `url` must live on the server's gateway origin — the caller builds it from
- * `server.gatewayUrl` — so the injected cookie is only ever exposed to the
- * gateway itself.
+ * `url` must live on the origin the server's dashboard is served from — the
+ * caller builds it from `dashboardOrigin(server)` — so the injected cookie is
+ * only ever exposed to the server itself.
  */
 export async function openAuthenticatedGatewayPage(
   server: SwitchServer,
   url: string
 ): Promise<void> {
-  const gatewayOrigin = new URL(server.gatewayUrl).origin;
+  const gatewayOrigin = new URL(dashboardOrigin(server)).origin;
   if (new URL(url).origin !== gatewayOrigin) {
-    throw new Error(`Refusing to open ${url}: not on the gateway origin ${gatewayOrigin}`);
+    throw new Error(`Refusing to open ${url}: not on the dashboard origin ${gatewayOrigin}`);
   }
 
   let jwt = await getSessionCookie(server.id);

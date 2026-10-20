@@ -20,7 +20,7 @@ import { useParams } from '@renderer/lib/layout/navigation-provider';
  *
  * It used to be three tabs down a side nav, which asked the reader to know
  * which of them held what before they could look at anything. The page is short
- * enough to scroll instead. The one exception is Connections, a page of its
+ * enough to scroll instead. The one exception is Connectors, a page of its
  * own as on a managed agent's page, for an agent registered on a server with
  * service connections on.
  */
@@ -33,10 +33,11 @@ export const ActiveLocation = observer(function ActiveLocation() {
   const { tab } = useLocalAgentTab(agent);
 
   if (!store) return null;
-  if (tab === 'connections' && agent?.workspaceId && agent.switchAgentId)
+  if (tab === 'connections' && agent?.serverId && agent.workspaceId && agent.switchAgentId)
     return (
       <AgentConnectionsTab
         key={agent.id}
+        serverId={agent.serverId}
         workspaceId={agent.workspaceId}
         agentId={agent.switchAgentId}
         agentName={agent.name}

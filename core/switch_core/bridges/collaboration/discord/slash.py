@@ -97,7 +97,8 @@ def reassemble_args(spec: tuple[CommandArg, ...], values: dict[str, Any]) -> str
 
     The handlers read their arguments by *position* out of the mention tokens in
     `args`, so the declared values are re-emitted in `spec` order, each with
-    exactly one leading `@` — whether or not the user typed one.
+    exactly one leading `@` — whether or not the user typed one. A trailing
+    free-text argument goes in as written.
 
     Raises SlashArgError when a value is supplied after an earlier optional one
     was left out. Discord submits options by name and happily allows that, but
@@ -124,6 +125,9 @@ def reassemble_args(spec: tuple[CommandArg, ...], values: dict[str, Any]) -> str
             )
 
         token = str(raw).strip()
+        if arg.free_text:
+            parts.append(token)
+            continue
         match = _TOKEN.match(token)
         if match is None:
             raise SlashArgError(
@@ -160,6 +164,12 @@ def validate_args_spec(command: Command) -> None:
             )
         if not arg.required:
             seen_optional = arg.name
+        if arg.free_text and arg is not command.args_spec[-1]:
+            raise ValueError(
+                f"Command '{command.name}' declares free-text argument "
+                f"'{arg.name}' before another argument. Free text takes the rest "
+                "of the line, so it can only come last."
+            )
 
 
 def _make_callback(command: Command, invoke: SlashInvoke) -> Any:
@@ -211,11 +221,12 @@ def build_app_commands(
     """Build one Discord application command per registered in-room command.
 
     Hidden commands are skipped: they are absent from `!help` for a reason, and
-    Discord rejects the empty description they carry anyway.
+    Discord rejects the empty description they carry anyway. So is a command
+    with no handler, which would answer nothing.
     """
     built: list[app_commands.Command[Any, ..., Any]] = []
     for command in COMMANDS:
-        if command.hidden:
+        if command.hidden or command.handler is None:
             continue
         if not command.description:
             logger.warning(

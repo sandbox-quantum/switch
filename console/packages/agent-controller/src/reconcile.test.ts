@@ -28,6 +28,7 @@ function agent(overrides: Partial<AgentAssignment> = {}, definition = {}): Agent
       advanced_config: {},
       instructions: '',
       auto_approve: false,
+      auto_mode: false,
       directory: null,
       isolation: 'shared',
       ...definition,

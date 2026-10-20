@@ -204,7 +204,9 @@ export const chatsController = createRPCController({
   archive: (serverId: string, roomId: string): Promise<void> =>
     onServer(serverId, (server) => archiveChat(server, roomId)),
   delete: (serverId: string, roomId: string): Promise<void> =>
-    onServer(serverId, (server) => deleteRoom(server, roomId)),
+    onServer(serverId, async (server) => {
+      await deleteRoom(server, roomId);
+    }),
   rename: (serverId: string, roomId: string, name: string): Promise<void> =>
     onServer(serverId, (server) => renameChat(server, roomId, name)),
   /** A short chat name from its first message, from the user's local Claude CLI. */

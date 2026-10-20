@@ -30,7 +30,6 @@ from switch_core.bridges.agent.protocol.types import (
     CommandPayload,
     MessagePayload,
     RoomJoinPayload,
-    TaskDelegatePayload,
 )
 from switch_core.db.models import (
     AGENT_EVENT_BOOT_MAX,
@@ -84,18 +83,24 @@ def _room_join(listening: bool) -> AgentEvent:
     )
 
 
-def _task_delegate() -> AgentEvent:
-    return AgentEvent(
-        type="task_delegate",
-        room_id=ROOM,
-        payload=TaskDelegatePayload(
-            task_id="t1",
-            requester_agent_id="r",
-            performer_agent_id=AGENT,
-            summary="s",
-            description="d",
-        ),
-    )
+class _RetiredTaskEvent:
+    """An own event of a type the server no longer writes, as an older server
+    stored it. It no longer parses as an `AgentEvent`."""
+
+    type = "task_delegate"
+
+    def model_dump(self, mode: str) -> dict[str, Any]:
+        return {
+            "type": self.type,
+            "room_id": ROOM,
+            "payload": {
+                "task_id": "t1",
+                "requester_agent_id": "r",
+                "performer_agent_id": AGENT,
+                "summary": "s",
+                "description": "d",
+            },
+        }
 
 
 def _command() -> AgentEvent:
@@ -181,12 +186,22 @@ async def test_unaddressed_message_does_not_fan_out(
     assert chatter.payload.addressed is False
 
 
-async def test_task_event_fans_out(db_buffer: EventBuffer) -> None:
+async def test_a_retired_own_event_is_skipped_on_read(db_buffer: EventBuffer) -> None:
     q = db_buffer
-    await _keep(q, _task_delegate())
-    notifs = await q.poll_notifications(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM})
-    assert len(notifs) == 1
-    assert notifs[0].type == "task_delegate"
+    await q.enqueue(
+        TENANT_ZERO_ID,
+        AGENT,
+        ROOM,
+        _RetiredTaskEvent(),  # type: ignore[arg-type]
+        room_seq=0,
+        message_key=None,
+    )
+    await _keep(q, _message(True))
+
+    [event] = await q.read_from(TENANT_ZERO_ID, AGENT, 0)
+    assert event.event.type == "message"
+    [notif] = await q.poll_notifications(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM})
+    assert notif.type == "message"
 
 
 async def test_room_join_fans_out_only_when_listening(

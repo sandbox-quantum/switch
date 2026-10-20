@@ -7,6 +7,7 @@ import {
   removeJoinDomain,
   revokeInvitation,
 } from '@main/core/switch-servers/gateway-client';
+import { dashboardOrigin } from '@shared/core/switch-servers/switch-servers';
 import {
   inviteLink,
   type CreatedInvitation,
@@ -54,7 +55,7 @@ export async function createWorkspaceInvitation({
     const created = await createInvitation(server, tenantId, params);
     return {
       invitation: created.invitation,
-      link: inviteLink(server.gatewayUrl, created.token),
+      link: inviteLink(dashboardOrigin(server), created.token),
       emailDelivery: created.emailDelivery,
     };
   });

@@ -187,8 +187,8 @@ function fakeHost() {
 const RECORD = {
   id: 'srv-1',
   name: 'Team server',
-  gatewayUrl: 'http://localhost:41000',
-  apiUrl: 'http://localhost:41001',
+  url: 'http://localhost:41001',
+  dashboardUrl: 'http://localhost:41000',
   managed: true,
   managementKind: 'remote',
   sshHost: 'vm-1',
@@ -509,8 +509,8 @@ describe('picking a shared stack back up', () => {
     inspectStack.mockResolvedValue(present(true));
     getRemoteManagedServer.mockResolvedValue({
       ...RECORD,
-      gatewayUrl: 'http://localhost:3300',
-      apiUrl: 'http://localhost:8000',
+      url: 'http://localhost:8000',
+      dashboardUrl: 'http://localhost:3300',
     });
     const service = await loadService();
 
@@ -519,8 +519,8 @@ describe('picking a shared stack back up', () => {
     expect(ensureManagedServer).toHaveBeenCalledWith(
       {
         name: 'Team server',
-        gatewayUrl: 'http://localhost:41000',
-        apiUrl: 'http://localhost:41001',
+        url: 'http://localhost:41001',
+        dashboardUrl: 'http://localhost:41000',
       },
       { kind: 'remote', sshHost: 'vm-1' }
     );

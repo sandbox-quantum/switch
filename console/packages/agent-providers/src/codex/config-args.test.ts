@@ -141,6 +141,7 @@ describe('connector servers', () => {
   it.each([
     ['approval-required', false],
     ['auto-accept-edits', false],
+    ['auto', false],
     ['full-access', true],
   ] as const)('in %s, connectors keep the approve key: %s', (mode, connectorApproved) => {
     const { args } = mcpServerConfigArgs(servers, ['atlassian', 'gws'], mode);

@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import re
+import time
+from pathlib import Path
+
 import pytest
 
 from switch_core.deeplinks import (
+    CONSOLE_PAGES,
     DEEPLINK_REDIRECT_PATH,
     deeplink_for_platform,
     gateway_query_to_switchdash,
     gateway_url_is_loopback,
     gateway_url_warning,
+    parse_console_link,
+    rewrite_console_links,
     switchdash_to_gateway,
 )
 
@@ -154,3 +161,110 @@ class TestGatewayQueryToSwitchdash:
         assert gateway is not None
         query = gateway.split(DEEPLINK_REDIRECT_PATH + "?", 1)[1]
         assert gateway_query_to_switchdash(query) == _DEEPLINK
+
+
+_CONSOLE_LINKS_TS = (
+    Path(__file__).resolve().parents[3]
+    / "console/apps/switch-console-desktop/src/shared/core/deeplinks/console-links.ts"
+)
+
+
+def _console_catalogue() -> dict[str, tuple[bool, list[str]]]:
+    """Switch Console's `CONSOLE_PAGES`: each page, whether it names an id,
+    and its tabs, read from the source the app is built from."""
+    source = _CONSOLE_LINKS_TS.read_text()
+    block = source.split("export const CONSOLE_PAGES = {", 1)[1].split("} as const", 1)[
+        0
+    ]
+    entries = re.split(r"^  '?([a-z/-]+)'?: \{", block, flags=re.MULTILINE)[1:]
+    catalogue: dict[str, tuple[bool, list[str]]] = {}
+    for name, body in zip(entries[::2], entries[1::2], strict=True):
+        tabs = re.search(r"tabs: \[([^\]]*)\]", body)
+        catalogue[name] = (
+            "id: '" in body,
+            re.findall(r"'([^']+)'", tabs.group(1)) if tabs else [],
+        )
+    return catalogue
+
+
+class TestConsoleCatalogue:
+    """The pages the server hands off to are the pages Switch Console opens."""
+
+    def test_the_server_knows_every_page_console_opens_and_no_other(self) -> None:
+        catalogue = _console_catalogue()
+        assert len(catalogue) > 10
+        assert {
+            page: (spec.has_id, sorted(spec.tabs))
+            for page, spec in CONSOLE_PAGES.items()
+        } == {
+            page: (has_id, sorted(tabs)) for page, (has_id, tabs) in catalogue.items()
+        }
+
+
+class TestParseConsoleLink:
+    """The same rules Switch Console reads a link by (`parseConsoleLink`)."""
+
+    def test_reads_a_page_its_id_and_its_tab(self) -> None:
+        link = parse_console_link("switchdash://open/agent/a-1?tab=settings&server=x")
+        assert link is not None
+        assert (link.page, link.id, link.tab) == ("agent", "a-1", "settings")
+        assert link.page_name == "your agent's settings"
+        assert link.switchdash_url == (
+            "switchdash://open/agent/a-1?tab=settings&server=x"
+        )
+
+    def test_reads_a_page_whose_name_has_a_slash(self) -> None:
+        link = parse_console_link("switchdash://open/messaging-apps/connect")
+        assert link is not None
+        assert (link.page, link.id) == ("messaging-apps/connect", None)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "switchdash://session?room=r",
+            "switchdash://open/nowhere",
+            "switchdash://open/agent",
+            "switchdash://open/agents/x",
+            "switchdash://open/room/<room-id>",
+            "switchdash://open/agent/a-1?tab=logs",
+            "switchdash://open/home?tab=general",
+            "https://open/home",
+        ],
+    )
+    def test_refuses_what_console_would_refuse(self, url: str) -> None:
+        assert parse_console_link(url) is None
+
+
+class TestRewriteConsoleLinks:
+    def test_a_link_becomes_the_https_route_keeping_its_label(self) -> None:
+        assert (
+            rewrite_console_links(
+                "See [Rooms](switchdash://open/rooms).", "https://gw.example/"
+            )
+            == "See [Rooms](https://gw.example/deeplink/open/rooms)."
+        )
+
+    def test_without_a_public_address_the_page_is_named(self) -> None:
+        assert (
+            rewrite_console_links(
+                "[Connect Slack](switchdash://open/messaging-apps/connect)", None
+            )
+            == "Connect Slack (in Switch Console: the page to connect a messaging app)"
+        )
+
+    def test_every_link_in_a_body_is_rewritten(self) -> None:
+        body = "[A](switchdash://open/home) and [B](switchdash://open/invite)"
+        assert rewrite_console_links(body, "https://gw") == (
+            "[A](https://gw/deeplink/open/home) and [B](https://gw/deeplink/open/invite)"
+        )
+
+    def test_a_fenced_block_is_left_as_written(self) -> None:
+        body = "```\n[A](switchdash://open/home)\n```"
+        assert rewrite_console_links(body, "https://gw") == body
+
+    def test_unmatched_brackets_do_not_stall_the_bridge(self) -> None:
+        body = "switchdash://open/home " + "[unclosed " * 20_000
+
+        started = time.monotonic()
+        assert rewrite_console_links(body, "https://gw") == body
+        assert time.monotonic() - started < 1.0

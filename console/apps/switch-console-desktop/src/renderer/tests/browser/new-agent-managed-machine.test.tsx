@@ -318,9 +318,9 @@ const BOX: OwnedMachine = {
   workspacesDir: null,
   os: null,
   providers: [
-    { provider: 'claude', ready: true, problem: null },
-    { provider: 'codex', ready: false, problem: 'not logged in' },
-    { provider: 'opencode', ready: false, problem: 'not installed' },
+    { provider: 'claude', ready: true, problem: null, detail: null },
+    { provider: 'codex', ready: false, problem: 'not logged in', detail: null },
+    { provider: 'opencode', ready: false, problem: 'not installed', detail: null },
   ],
 };
 

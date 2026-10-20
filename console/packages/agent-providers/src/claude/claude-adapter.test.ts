@@ -290,6 +290,7 @@ describe('ClaudeAdapter session lifecycle', () => {
     for (const [runtimeMode, permissionMode] of [
       ['approval-required', 'default'],
       ['auto-accept-edits', 'acceptEdits'],
+      ['auto', 'auto'],
       ['full-access', 'bypassPermissions'],
     ] as const) {
       const sdk = createFakeSdk();
@@ -297,6 +298,21 @@ describe('ClaudeAdapter session lifecycle', () => {
       await adapter.startSession(startInput({ runtimeMode }));
       expect(sdk.options().permissionMode).toBe(permissionMode);
     }
+  });
+
+  it('asks a person about what auto mode’s classifier leaves to the callback', async () => {
+    const { sdk, adapter, recorder } = await startSession('auto');
+    expect(sdk.options().allowDangerouslySkipPermissions).toBeUndefined();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const decision = sdk.canUseTool()(
+      'Bash',
+      { command: 'rm -rf build' },
+      { signal: new AbortController().signal, toolUseID: 't1', requestId: 'control-t1' }
+    );
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    expect(opened.requestType).toBe('command_execution_approval');
+    await adapter.respondToRequest(SESSION, opened.requestId, 'accept');
+    expect(await decision).toMatchObject({ behavior: 'allow' });
   });
 
   it('never leaves approval-required to the person’s own default mode', async () => {
@@ -1238,7 +1254,7 @@ describe('ClaudeAdapter background subagents', () => {
 });
 
 describe('ClaudeAdapter connector tools', () => {
-  const MODES: RuntimeMode[] = ['approval-required', 'auto-accept-edits', 'full-access'];
+  const MODES: RuntimeMode[] = ['approval-required', 'auto-accept-edits', 'auto', 'full-access'];
   const stdio = { transport: 'stdio' as const, command: 'node', args: ['server.mjs'] };
   const toolOptions = (toolUseID: string, extra: Record<string, unknown> = {}) => ({
     signal: new AbortController().signal,

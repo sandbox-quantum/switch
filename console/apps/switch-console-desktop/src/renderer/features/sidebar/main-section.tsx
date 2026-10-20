@@ -96,9 +96,9 @@ const PendingBuddyRow = observer(function PendingBuddyRow({ serverId }: { server
       title={`${name} — connect an AI provider to start it`}
       onMouseDown={(event) => event.preventDefault()}
       onClick={() => appState.navigation.navigate('switchBuddy', { serverId })}
-      className="h-[30px] py-0 text-[13px]"
+      className="h-[32px] py-0 text-[13.5px]"
     >
-      <BuddyAvatar size={17} shape="round" />
+      <BuddyAvatar size={20} shape="round" />
       <span className="min-w-0 flex-1 truncate">{name}</span>
     </SidebarMenuRow>
   );

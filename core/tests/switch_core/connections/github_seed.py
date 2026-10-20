@@ -89,4 +89,5 @@ def github_broker(
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
+        public_url=None,
     )

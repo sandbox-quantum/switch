@@ -78,6 +78,7 @@ function agent(overrides: Partial<Agent> = {}): Agent {
     serverId: 'server-1',
     status: null,
     autoApprove: false,
+    autoMode: false,
     ownerName: null,
     providerConfig: null,
     createdAt: '2026-05-28T00:00:00.000Z',

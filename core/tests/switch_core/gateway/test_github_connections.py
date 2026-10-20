@@ -121,6 +121,7 @@ def _process(github, identity, session_factory, workspace_gate: bool) -> FastAPI
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=workspace_gate,
+        public_url=None,
     )
     app.include_router(router, prefix="/gateway")
     app.dependency_overrides[get_current_user] = lambda: identity["user"]

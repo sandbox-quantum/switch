@@ -319,13 +319,6 @@ export const NewAgentForm = observer(function NewAgentForm({
     setProviderId(null);
   }, [runHost, setProviderId]);
 
-  const { suggestAutoApprove } = form;
-  const runsElsewhere =
-    isRemoteRun || isCloudRun || (isMachineRun && serverMachine?.local?.kind !== 'this-computer');
-  useEffect(() => {
-    suggestAutoApprove(runsElsewhere);
-  }, [runsElsewhere, suggestAutoApprove]);
-
   // Advanced definition attributes (model, effort, tools, system prompt, …) the
   // user set in the collapsed Advanced section. Held in a ref (not state) so the
   // section can report changes without re-rendering the modal.
@@ -580,6 +573,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         instructions: form.instructions,
         iconUrl: form.iconUrl,
         autoApprove: form.autoApprove,
+        autoMode: form.autoMode,
         entryPoint,
       };
       if (managedRun) {

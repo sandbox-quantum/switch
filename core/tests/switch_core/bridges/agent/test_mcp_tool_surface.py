@@ -23,7 +23,9 @@ from switch_core.bridges.agent.operations.registry import (
     enable_operation_group,
 )
 
-TASK_PROTOCOL_TOOLS = {
+# The task protocol, taken off the server. None of its tools may come back
+# without a decision to revive it.
+REMOVED_TASK_TOOLS = {
     "delegate_task",
     "accept_task",
     "update_task",
@@ -64,15 +66,13 @@ async def test_agent_management_tools_exist_only_with_their_group_enabled() -> N
     assert AGENT_MANAGEMENT_TOOLS <= names
 
 
-async def test_task_protocol_is_fully_exposed(tool_names: set[str]) -> None:
-    """Every stage of the task lifecycle is still callable over MCP.
+async def test_task_tools_are_not_registered(tool_names: set[str]) -> None:
+    assert not REMOVED_TASK_TOOLS & tool_names
 
-    The skills no longer document the protocol — it is not ready for use — but
-    the tools remain registered, and a half-present lifecycle is worse than
-    either a whole one or none. `cancel_task` in particular is the requester's
-    abort path: without it an opened task has no exit.
-    """
-    assert TASK_PROTOCOL_TOOLS <= tool_names
+
+async def test_task_tools_are_not_operations() -> None:
+    """Not served over the HTTP front door either, which shares the operations."""
+    assert not REMOVED_TASK_TOOLS & set(all_operations())
 
 
 async def test_documented_tools_exist(tool_names: set[str]) -> None:
@@ -157,13 +157,6 @@ SKILL = (
 # this server's registrations would fail on tools that are working correctly.
 RUNTIME_TOOLS = {"send_attachment", "download_attachment"}
 
-# Registered, and deliberately kept out of the skill. The task protocol is not
-# ready to be used, so the skill carries a section telling agents not to call
-# these rather than a workflow that exercises them. The tools stay on the server
-# — nothing here removes them — and this set is what keeps that gap deliberate:
-# empty it when the protocol is either documented again or taken off the server.
-UNDOCUMENTED_TOOLS = TASK_PROTOCOL_TOOLS
-
 
 def _indexed_tools(skill: Path) -> list[str]:
     """The tool names listed in the skill's `## Tool index` section.
@@ -201,28 +194,16 @@ async def test_every_registered_tool_is_indexed(tool_names: set[str]) -> None:
     list is easy to shorten by accident. Without this, deleting a bullet passes
     every other check in the file: the registration test only ever objects to
     *extra* names.
-
-    `UNDOCUMENTED_TOOLS` is the one sanctioned way past this: a tool leaves the
-    index by being named there, not by a bullet quietly going missing.
     """
     indexed = set(_indexed_tools(SKILL))
-    missing = tool_names - indexed - UNDOCUMENTED_TOOLS
+    missing = tool_names - indexed
     assert not missing, f"{SKILL} does not index registered tools: {sorted(missing)}"
 
 
-async def test_undocumented_tools_are_disclaimed() -> None:
-    """A tool kept out of the index is named as off-limits, not just omitted.
-
-    Silence would read as the tool not existing, and an agent that meets one in
-    an event or an error message has nothing to go on. The skill has to spell
-    out that these are registered and must not be called.
-    """
+async def test_skill_does_not_mention_task_tools() -> None:
     body = SKILL.read_text()
-    unmentioned = {tool for tool in UNDOCUMENTED_TOOLS if f"`{tool}`" not in body}
-    assert not unmentioned, (
-        f"{SKILL} drops registered tools without saying they are off-limits: "
-        f"{sorted(unmentioned)}"
-    )
+    mentioned = {tool for tool in REMOVED_TASK_TOOLS if tool in body}
+    assert not mentioned, f"{SKILL} still names removed task tools: {sorted(mentioned)}"
 
 
 async def test_skill_indexed_tools_are_registered(tool_names: set[str]) -> None:

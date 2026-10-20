@@ -31,6 +31,7 @@ vi.mock('./getAgentById', () => ({
     workspaceId: 'workspace',
     providerId: 'codex',
     autoApprove: false,
+    autoMode: false,
   }),
 }));
 vi.mock('@main/core/workspaces/workspace-session', () => ({

@@ -9,7 +9,6 @@ from switch_core.bridges.agent.protocol.types import (
     CommandCapabilities,
     IntegrationProfile,
     ModelSpec,
-    TaskProtocolConfig,
     ToolSpec,
 )
 from switch_core.providers.registry import (
@@ -125,7 +124,6 @@ class ClaudeCodeKnownAgent(KnownAgent):
             pre_invocation_mediation=["tool_calls"],
             post_invocation_mediation=[],
             event_reporting=["tool_calls"],
-            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
             # Reset / compact / interrupt work only on a session that Switch
             # Console (or its sidecar or an agents controller) is running, so
             # all three resolve per live session via AgentRuntimeState.
@@ -186,7 +184,6 @@ class GenericKnownAgent(KnownAgent):
             pre_invocation_mediation=[],
             post_invocation_mediation=[],
             event_reporting=[],
-            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
             # Reset / compact / interrupt only work while Switch Console drives
             # the session; a standalone CLI cannot be controlled, so all three
             # resolve per live session via AgentRuntimeState.

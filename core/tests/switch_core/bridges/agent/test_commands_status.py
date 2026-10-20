@@ -19,32 +19,29 @@ def _agent(
     agent_type: str,
     *,
     display_name: str | None = None,
-    can_delegate: bool = False,
-    can_accept: bool = False,
+    integration_profile: dict[str, object] | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=agent_id,
         name=name,
         display_name=display_name,
         agent_type=agent_type,
-        integration_profile={
-            "task_protocol": {
-                "can_delegate": can_delegate,
-                "can_accept": can_accept,
-            }
-        },
+        integration_profile=integration_profile or {},
     )
 
 
 class TestFormatStatusLines:
-    def test_renders_emoji_type_and_capabilities_sorted_by_name(self) -> None:
+    def test_renders_emoji_and_type_sorted_by_name(self) -> None:
+        # A profile stored before the task protocol was removed still carries
+        # its flags; they are not shown.
         agents = [
             _agent(
                 "w",
                 "worker",
                 "session_addressable",
-                can_delegate=True,
-                can_accept=True,
+                integration_profile={
+                    "task_protocol": {"can_delegate": True, "can_accept": True}
+                },
             ),
             _agent("m", "moderator", "always_on"),
         ]
@@ -56,9 +53,7 @@ class TestFormatStatusLines:
         assert lines[0] == "**Agent status in this room:**"
         # Sorted by name: moderator before worker.
         assert lines[1] == "- 🟢 **moderator** — live · always_on"
-        assert lines[2] == (
-            "- ⚪ **worker** — no session · session_addressable · delegate+accept"
-        )
+        assert lines[2] == "- ⚪ **worker** — no session · session_addressable"
 
     def test_each_status_maps_to_its_emoji(self) -> None:
         agents = [

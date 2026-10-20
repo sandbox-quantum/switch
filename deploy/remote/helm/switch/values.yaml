@@ -310,6 +310,8 @@ switchCore:
     enabled: true
 
   # Public base URL the gateway is served on (used for links / OIDC redirects).
+  # Empty while serveDashboard is on, links to the dashboard use
+  # gatewayPublicUrl, and a sign-in lands back on the host that set its cookie.
   frontendBaseUrl: ""
   # Public origin (scheme + host, no path) of the gateway HTTP API itself, used
   # to build the switchdash:// deeplink HTTP redirect so the "Open in Switch
@@ -317,6 +319,13 @@ switchCore:
   # platforms. Leave empty to
   # post the raw switchdash:// deeplink.
   gatewayPublicUrl: ""
+  # switch-core serves the operator dashboard on its own port beside the API,
+  # from the build in its image. Its pages answer without credentials, as the
+  # gateway's do, and include /agents and /agents/<id>, which agentApiPaths
+  # route to switch-core. Turn it off to keep switch-core to the API, e.g. where
+  # its host is public and the dashboard is not; gateway.enabled must then
+  # stay on, or there is no dashboard at all.
+  serveDashboard: true
   # Set the Secure flag on the switch_auth session cookie. True here because the
   # gateway is served over HTTPS (ALB / Tailscale); keep false only for plain-HTTP
   # local dev.
@@ -695,7 +704,19 @@ switchCore:
       cpu: "1000m"
 
 # ── Gateway (React + nginx) ──────────────────────────────────────────────────
+# A separate container serving the operator dashboard and forwarding /gateway
+# to switch-core. switch-core now serves the same dashboard itself, on its own
+# port, so the server has one address; set enabled: false to drop this
+# Deployment, and with ingress.mode=managed the Ingress then sends every path
+# to switch-core. Left on by default so the chart renders what it did before.
+#
+# While both run, a hard refresh of /agents or /agents/<id> (agentApiPaths, so
+# switch-core) loads switch-core's copy of the page, which then fetches its
+# hashed /assets/* from this container. That holds while both images are built
+# from one commit, as a published chart pins them; pin this image and
+# switchCore's to different releases and those pages load blank.
 gateway:
+  enabled: true
   image: gateway:latest
   # Empty: IfNotPresent when the image is pinned by digest (as in a published
   # chart), Always otherwise. Set it to override.

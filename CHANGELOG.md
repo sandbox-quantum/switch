@@ -136,6 +136,25 @@ version of their own to them without also giving them a release of their own.
   agents with whether each holds a grant and whether others can address it.
 
 #### Changed
+- **Console links work on chat platforms.** A `switchdash://open/...` link an
+  agent posts reaches Slack, Discord, Telegram and Teams as a clickable https
+  link to the new public `GET /deeplink/open/{page}`, which opens that page in
+  Switch Console. A server with no public address (`GATEWAY_PUBLIC_URL`) sends
+  the link's label and the page's name instead. Mattermost servers that allow
+  the `switchdash` scheme get the link unchanged.
+- **Deleting a room can retire its channel.** `DELETE /gateway/rooms/{id}`
+  and bulk delete take `retire_channel` (default false). When it is set,
+  Switch archives the room's Slack or Mattermost channel, deletes its Discord
+  channel, or has the bot leave its Telegram chat; Teams channels and direct
+  messages stay. Without it, the channel is left as it is. The delete
+  responses say what happened (`channel`), and room detail says what retiring
+  would do (`channel_on_delete`). A channel that could not be retired is
+  reported, and the room is still deleted. Disconnecting a messaging app
+  leaves channels as they are.
+- **The Switch expert is offered only where switch-buddy is not.** A server
+  with agent management and switch-buddy on serves switch-buddy alone; every
+  other server keeps the official Switch expert. Agents made from it are
+  unchanged.
 - **Usage telemetry goes to `telemetry.switchagents.ai` by default.** The
   default `TELEMETRY_ENDPOINT` (Helm `switchCore.telemetry.endpoint`) was
   `https://telemetry.flintai.dev`, an older name for the same relay that is
@@ -163,6 +182,31 @@ version of their own to them without also giving them a release of their own.
   route is gone, for GitHub's flow as well; a Switch Console from before this
   release cannot finish a sign-in against this server, so update both
   together. Migration `bf016e18bc16`, expand-only.
+- **New agents answer their owner and the owner's own agents.** Every path
+  that creates an agent without an addressing choice (registration,
+  `create_agent`, template runs, switch-buddy's template) now gives it the
+  "me and my agents" policy instead of owner-only, so the agents one person
+  creates can address each other out of the box. A template agent with no
+  `addressing` gets `owner-agents`. Other people and their agents stay out,
+  an explicit owner-only choice is kept, and existing agents keep their
+  policy. The "others can use these grants" warning no longer counts the
+  owner's own agents.
+#### Removed
+- **The `/admin` command.** It did nothing and is no longer offered in rooms
+  or registered with Slack, Discord or Telegram; a command without a handler
+  is never registered.
+- **Breaking (agent-facing): the task protocol is removed.** The
+  `delegate_task`, `accept_task`, `update_task`, `finalise_task`,
+  `cancel_task` and `list_tasks` tools are gone from MCP and the operations
+  door, the `/agents/{id}/tasks…` HTTP routes answer `404`, and no task events
+  are delivered. The documentation has said not to use them since 0.9.x. Agents
+  coordinate with `post_message` and `send_targeted_message`, and the
+  instructions they receive no longer mention tasks. `connect_to_room` drops
+  each participant's `can_delegate` and `can_accept`, and neither `!status`
+  nor the dashboard shows them. Stored
+  integration profiles that still carry `task_protocol` load as before, with
+  the key ignored. Existing rows in the `tasks` table are left in place; no
+  migration.
 #### Security
 - **An agent icon URL must spell its host plainly.** A link with a backslash,
   or a host with percent-encoding or non-ASCII characters, is refused: browsers
@@ -1801,6 +1845,21 @@ version of their own to them without also giving them a release of their own.
   before. Older versions of Console load those images whatever the server says.
 
 #### Changed
+- **Link your account right after adding a messaging app.** Every way into
+  connecting an app, including a Console link from switch-buddy, now ends by
+  offering to link your own account on it (Telegram explains how instead).
+  The server's Home page keeps a **Link your … account** prompt until you do.
+- **The delete-room dialog asks about the channel.** Deleting a room keeps
+  its channel unless you tick **Also archive the … channel** (or delete it on
+  Discord, or have the bot leave on Telegram); the dialog says what will
+  happen either way, and shows what to clean up by hand when the server could
+  not retire it. Teams channels always stay. Needs a server from this
+  release; an older one gets "the channel may remain".
+- **A new agent starts on "Me and my agents".** "Who can talk to your agent"
+  now opens on **Me and my agents (default)**: you and any agent you own.
+  **Only me** is still one choice away, and agents that already exist keep
+  their setting. A template agent with no `addressing` is created the same
+  way.
 - **Usage data goes to `telemetry.switchagents.ai`.** Console reported to
   `telemetry.flintai.dev`, an older name for the same relay that is being
   retired. Only where it is sent changes; what is sent, and the opt-out, do not.
@@ -1882,6 +1941,26 @@ version of their own to them without also giving them a release of their own.
   the same as it resumes, so it does not look for tools it no longer has.
 
 #### Fixed
+- **Switch buddy stops waiting on a Claude Code it cannot check.** A Claude
+  Code from before `claude auth status` left the AI provider screen on
+  "Checking" until its timeout; it now asks to sign in and says the CLI may be
+  too old. A login that is there but cannot answer a test prompt shows Claude's
+  own error next to Sign in.
+- **Settings → Agent providers finds a CLI installed since Console started.**
+  Console now looks in `~/.local/bin`, where the Claude Code and OpenCode
+  installers put their CLI, at start and on every refresh, as this computer's
+  agents controller already did. Before, a Claude Code installed by hand showed
+  "CLI not installed" there while Switch buddy was using it.
+- **Settings → Agent providers and Switch buddy agree on this computer's
+  providers.** When this computer's agents controller has reported to a
+  signed-in server, Settings shows that report, the one buddy and Switch go
+  by, and its refresh asks the controller to check again. Console's own check
+  is used only when there is no such report. Install and update still run
+  through Console's own check.
+- **A failed agent install says why.** Installing Claude Code, Codex or another
+  provider from Switch buddy showed only "Install command failed." It now says
+  when the disk is full, and otherwise adds the line of the install output that
+  says what failed.
 - **Signing in to a service through Core works on a server whose gateway and
   API are on different hosts.** Core sends the browser through its own
   authorize step at its public address, the API's host, where the vendor
@@ -3684,6 +3763,13 @@ tags; see RELEASING.md.
   can run (16 by default).
 
 #### Fixed
+- **A Claude Code login that is there but does not work is reported as not
+  signed in.** `claude auth status` only says a login or key is present, so a
+  key left by an old install read as signed in while every session failed.
+  When setting up, on a recheck, and whenever a login was not yet known to
+  work, the controller now sends Claude Code one short test prompt and reports
+  what it said if it fails. A Claude Code too old to have `auth status` is
+  reported as such instead of as a check that never finished.
 - **A controller updates to the release Switch names while sessions sit idle.**
   It waited until no session existed on the machine, and a session connected to
   a room counted even with nothing to do, so a machine with long-lived sessions

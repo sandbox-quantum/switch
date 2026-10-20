@@ -62,11 +62,15 @@ A condition reads one param: "{param}" (true when it has a value) or
   model: text | "{param}"        # optional; the provider's default if absent
   advanced_config: {key: value}  # optional; see get_advanced_config(provider)
   isolation: shared | isolated   # optional; default shared
-  auto_approve: true | false     # optional; default false
+  auto_mode: true | false        # optional; default true. The provider's own
+                                 # review: safe actions run, risky ones ask
+  auto_approve: true | false     # optional; default false. Bypass: no
+                                 # permission checks at all; overrides auto_mode
   can_manage_agents: true | false  # optional; default false. It may create
                                  # agents on the deployer's machines
   addressing: owner | owner-agents | anyone | {anyone_in: [room keys]}
-                                 # optional; default owner (only the deployer)
+                                 # optional; default owner-agents (the deployer
+                                 # and the deployer's agents)
   connections:                   # optional; the deployer's connections it gets
     - {service: github, access: read | write, repos: [owner/name]}
     - atlassian                  #   or just the service's name
@@ -160,8 +164,8 @@ An agent starts working when a message addresses it, so a room's kickoff
 mentions each agent it needs: kickoff: "@{lead.name} start on the brief."
 When you run the template, the kickoff speaks for you, not your owner: an
 agent that would not accept messages from you makes the run fail before
-anything is created (give a new agent addressing owner-agents, or anyone_in
-its room). Asking again for a room with the same kickoff you already used
+anything is created (leave a new agent on the default, owner-agents, or give
+it anyone_in its room; owner shuts you out). Asking again for a room with the same kickoff you already used
 further up the same path pauses the run until your owner lets it continue.
 
 ## Example

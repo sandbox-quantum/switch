@@ -85,6 +85,7 @@ const pmAgent: ManagedAgent = {
     provider: "claude",
     model: null,
     instructions: "",
+    auto_mode: false,
     auto_approve: false,
     directory: null,
     isolation: "shared",
@@ -363,6 +364,50 @@ describe("MachinesPage", () => {
     fireEvent.mouseDown(await screen.findByRole("combobox", { name: "Provider" }));
     const options = (await screen.findAllByRole("option")).map((o) => o.textContent);
     expect(options).toEqual(["Claude Code", "Codex", "New CLI"]);
+  });
+
+  it("creates a new agent in auto mode, with bypass off, unless told otherwise", async () => {
+    const calls = mockManagement({
+      "GET /controllers": [200, [laptop]],
+      "GET /agents": [200, []],
+      "GET /operations": [200, []],
+      "POST /agents": [201, pmAgent],
+    });
+    render(<MachinesPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "New managed agent" }));
+    const autoMode = (await screen.findByLabelText(/^Auto mode/)) as HTMLInputElement;
+    const bypass = screen.getByLabelText(/^Bypass permissions/) as HTMLInputElement;
+    expect(autoMode.checked).toBe(true);
+    expect(bypass.checked).toBe(false);
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: "pm-agent" } });
+    fireEvent.change(screen.getByLabelText(/^Description/), { target: { value: "Writes PRDs" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === "POST")?.body).toMatchObject({
+        definition: { auto_mode: true, auto_approve: false },
+      }),
+    );
+  });
+
+  it("keeps an agent's auto mode as it is and greys it out under bypass", async () => {
+    const calls = mockManagement({
+      "GET /controllers": [200, [laptop]],
+      "GET /agents": [200, [pmAgent]],
+      "GET /operations": [200, []],
+      "PATCH /agents/a1": [200, pmAgent],
+    });
+    render(<MachinesPage />);
+    fireEvent.click(await screen.findByLabelText("Edit pm-agent"));
+    const autoMode = (await screen.findByLabelText(/^Auto mode/)) as HTMLInputElement;
+    expect(autoMode.checked).toBe(false);
+    fireEvent.click(screen.getByLabelText(/^Bypass permissions/));
+    expect(autoMode.disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === "PATCH")?.body).toMatchObject({
+        definition: { auto_mode: false, auto_approve: true },
+      }),
+    );
   });
 
   it("says when the provider list cannot load, and shows providers by id", async () => {

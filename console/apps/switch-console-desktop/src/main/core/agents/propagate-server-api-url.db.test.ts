@@ -59,14 +59,14 @@ describe('propagateServerApiUrl', () => {
       {
         id: 'pilot',
         name: 'Pilot',
-        gatewayUrl: 'https://pilot-gateway.example.com',
-        apiUrl: 'https://old-api.example.com',
+        url: 'https://old-api.example.com',
+        dashboardUrl: 'https://pilot-gateway.example.com',
       },
       {
         id: 'other',
         name: 'Other',
-        gatewayUrl: 'https://other-gateway.example.com',
-        apiUrl: 'https://other-api.example.com',
+        url: 'https://other-api.example.com',
+        dashboardUrl: 'https://other-gateway.example.com',
       },
     ]);
 

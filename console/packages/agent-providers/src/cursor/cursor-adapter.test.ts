@@ -28,7 +28,7 @@ vi.mock('node:child_process', () => ({
     return server;
   },
 }));
-const { createCursorAdapter } = await import('./cursor-adapter');
+const { createCursorAdapter, cursorAcp } = await import('./cursor-adapter');
 beforeEach(() => {
   servers.length = 0;
   acp.http = true;
@@ -52,6 +52,11 @@ async function setup(resume = false, env: Record<string, string> = {}) {
   return { adapter, events, server, session };
 }
 const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+it('keeps Cursor in its agent workflow in every runtime mode, auto included', () => {
+  for (const mode of ['approval-required', 'auto-accept-edits', 'auto', 'full-access'] as const)
+    expect(cursorAcp.sessionMode?.(mode)).toBe('agent');
+});
 
 it('signs in with cursor_login only when it was given no API key', async () => {
   const signedIn = await setup();

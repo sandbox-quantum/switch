@@ -84,6 +84,7 @@ function template(agentId: string, cwd: string, binaryPath = '/usr/bin/claude') 
       advanced_config: {},
       instructions: '',
       auto_approve: false,
+      auto_mode: false,
     },
     cwd,
     credentialsPath: runtime.credentialsPath(agentId),

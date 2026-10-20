@@ -117,6 +117,8 @@ export const provider = registerPluginBehavior(plugin, {
         // permissions" promises unattended approval, not unattended filesystem
         // and network access.
         autoApproveFlag: '-c approval_policy="never"',
+        // Codex's automatic reviewer answers what the sandbox escalates.
+        autoModeFlag: '-c approval_policy="on-request" -c approvals_reviewer="auto_review"',
         initialPromptFlag: '',
         resumeFlag: 'resume',
         sessionIdFlag: ' ',

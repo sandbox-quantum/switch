@@ -20,6 +20,9 @@ export type ManagedDefinition = {
   /** The provider's advanced configuration, keyed by its field keys; unset fields are absent. */
   advanced_config: AdvancedConfig;
   instructions: string;
+  /** The provider's own automatic review: safe actions run, risky ones ask. */
+  auto_mode: boolean;
+  /** Bypass: every permission check skipped. Wins over `auto_mode`. */
   auto_approve: boolean;
   directory: string | null;
 };
@@ -108,6 +111,7 @@ export type DefinitionSource = {
   specialization: Record<string, string | undefined> | undefined;
   /** The provider agent definition the agent launches as (Claude Code's `--agent`), if any. */
   providerDefinition: RepoAgentLaunchDefinition | undefined;
+  autoMode: boolean;
   autoApprove: boolean;
   /** The agent's working directory, as an absolute path on its machine; null for a workspace the machine chooses. */
   directory: string | null;
@@ -178,6 +182,7 @@ export function buildManagedDefinition(source: DefinitionSource): BuiltDefinitio
       model,
       advanced_config: advancedConfig,
       instructions,
+      auto_mode: source.autoMode,
       auto_approve: source.autoApprove,
       directory: source.directory,
     },

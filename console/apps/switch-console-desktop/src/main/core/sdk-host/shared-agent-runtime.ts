@@ -20,6 +20,7 @@ import {
   controllerConnectionId,
   EXECUTION_INHERIT_ENV,
   type HostStartSource,
+  runtimeModeFor,
   SessionHostFailedError,
   sharedConfigSchema,
   sharedSessionRoot,
@@ -463,7 +464,7 @@ export async function buildSharedHostConfig(
       input: {
         sessionId: session.id,
         cwd: params.sessionPath,
-        runtimeMode: agent.autoApprove ? 'full-access' : 'approval-required',
+        runtimeMode: runtimeModeFor(agent),
         env: params.sessionEnvVars,
         mcpServers: {},
         ...(session.providerSessionId

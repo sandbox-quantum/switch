@@ -44,7 +44,6 @@ from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     RegistrationResult,
-    TaskProtocolConfig,
 )
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
@@ -82,7 +81,6 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
-from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
@@ -173,7 +171,6 @@ class SessionEnv:
     agent_session_store: AgentSessionStore
     room_store: RoomStore
     client_store: ClientStore
-    task_store: TaskStore
     bridge_store: CollaborationBridgeStore
     external_user_store: ExternalUserStore
     api_key_store: ApiKeyStore
@@ -255,7 +252,6 @@ _PROFILE = IntegrationProfile(
     pre_invocation_mediation=[],
     post_invocation_mediation=[],
     event_reporting=[],
-    task_protocol=TaskProtocolConfig(can_delegate=False, can_accept=False),
 )
 
 
@@ -310,10 +306,9 @@ class Harness:
             integration_profile=_PROFILE,
             owner_id=self.owner_id,
             overwrite=True,
-            # Harness agents address each other; the owner-only default would
-            # block every agent-to-agent message. Tests that exercise scoped
-            # addressing set a policy explicitly.
-            owner_only=False,
+            # Harness agents are open, so any test sender reaches them. Tests
+            # that exercise scoped addressing set a policy explicitly.
+            addressing_policy=None,
         )
         self._registered.append(result.agent_id)
         return result
@@ -331,7 +326,7 @@ class Harness:
             connector_type="test",
             integration_profile=_PROFILE,
             overwrite=True,
-            owner_only=False,
+            addressing_policy=None,
         )
         self._registered.append(result.agent_id)
         return result
@@ -486,7 +481,6 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
         agent_session_store=AgentSessionStore(),
         room_store=RoomStore(),
         client_store=ClientStore(),
-        task_store=TaskStore(),
         bridge_store=CollaborationBridgeStore(),
         external_user_store=ExternalUserStore(),
         api_key_store=ApiKeyStore(),
@@ -624,7 +618,7 @@ async def harness(
                 room_role_store=session_env.room_role_store,
                 external_user_store=session_env.external_user_store,
                 connections=connections,
-                frontend_base_url=config.frontend_base_url,
+                frontend_base_url=config.dashboard_base_url,
                 message_telemetry=message_telemetry,
             ),
             message_store=session_env.message_store,
@@ -754,7 +748,6 @@ async def harness(
             client_lifecycle=client_lifecycle,
             collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
             event_buffer=event_buffer,
-            task_store=session_env.task_store,
             resource_service=resource_service,
             api_key_store=session_env.api_key_store,
             api_key_cache=ApiKeyCache(

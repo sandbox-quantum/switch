@@ -77,7 +77,7 @@ class TestBootstrapTokenRegistration:
             description="d",
             connector_type="test",
             integration_profile=PROFILE,
-            owner_only=False,
+            addressing_policy=None,
         )
 
         async with session_factory() as session:
@@ -105,7 +105,7 @@ class TestBootstrapTokenRegistration:
             description="d",
             connector_type="test",
             integration_profile=PROFILE,
-            owner_only=False,
+            addressing_policy=None,
         )
 
         async with session_factory() as session:

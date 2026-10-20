@@ -14,6 +14,7 @@ import { getPlugin } from '@main/core/providers/plugin-registry';
 import { locateSharedHost } from '@main/core/sdk-host/shared-host-deployment';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { log } from '@main/lib/logger';
+import { ensureUserBinDirsInPath } from '@main/utils/userEnv';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
 /**
@@ -145,6 +146,7 @@ export async function getProviderReadiness(
   params = { ...params, dir: params.dir.trim() || (params.sshHost ? '.' : homedir()) };
   let installed: boolean | null = null;
   let ctx: IExecutionContext | undefined;
+  if (!params.sshHost) ensureUserBinDirsInPath();
   try {
     const transport = locationTransport(params);
     const host = await resolveHost(params.sshHost, params.dir);

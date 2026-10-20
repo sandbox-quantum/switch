@@ -133,8 +133,8 @@ function server(overrides: Record<string, unknown>) {
   return {
     id: 'srv',
     name: 'S',
-    gatewayUrl: 'http://localhost:3300',
-    apiUrl: 'http://localhost:8000',
+    url: 'http://localhost:8000',
+    dashboardUrl: 'http://localhost:3300',
     managed: false,
     managementKind: null,
     sshHost: null,
@@ -184,6 +184,39 @@ describe('disconnecting a bridge', () => {
         outcome: 'failure',
       })
     );
+  });
+});
+
+describe('deleting a room', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    managedServerHostBlocked.mockReturnValue(null);
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+  });
+
+  it('keeps the platform channel unless asked', async () => {
+    deleteRoom.mockResolvedValue(null);
+
+    await expect(
+      workspacesController.deleteRoom({ workspaceId: 'ws', roomId: 'r1' })
+    ).resolves.toBeNull();
+
+    expect(deleteRoom).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'r1', {
+      retireChannel: false,
+    });
+  });
+
+  it('passes on a request to retire the channel, and what became of it', async () => {
+    deleteRoom.mockResolvedValue({ outcome: 'archived', reason: null });
+
+    await expect(
+      workspacesController.deleteRoom({ workspaceId: 'ws', roomId: 'r1', retireChannel: true })
+    ).resolves.toEqual({ outcome: 'archived', reason: null });
+
+    expect(deleteRoom).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'r1', {
+      retireChannel: true,
+    });
   });
 });
 

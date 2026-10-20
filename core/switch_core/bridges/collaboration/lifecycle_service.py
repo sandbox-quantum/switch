@@ -1151,6 +1151,7 @@ class CollaborationBridgeLifecycleService:
             adapter = adapter_cls(config=typed_config)  # type: ignore[call-arg]
             adapter.set_listening(active)
             adapter.set_tenant_id(tenant_id)
+            adapter.set_bridge_id(bridge_id)
             adapter.set_outbound_policy(self._config.outbound_policy)
             adapter.set_service_url_persister(
                 lambda service_url: self._persist_service_url(
@@ -1167,6 +1168,7 @@ class CollaborationBridgeLifecycleService:
             )
             adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
             adapter.set_third_party_avatars(self._config.third_party_avatars_enabled)
+            adapter.set_gateway_public_url(self._config.gateway_public_url)
 
             callback_endpoint = self._callback_ingress.endpoint_for(
                 bridge.type, bridge_id
@@ -1209,7 +1211,6 @@ class CollaborationBridgeLifecycleService:
                 id_server_name=self._config.id_server_name,
                 workspace_consumer_transport_user_id=workspace_consumer_record.transport_user_id,
                 max_attachment_bytes=self._config.agent_media_max_bytes,
-                gateway_public_url=self._config.gateway_public_url,
                 session_activity_listener=self._session_activity_listener,
                 session_activity_service=self._session_activity_service,
                 connections=self._connections,

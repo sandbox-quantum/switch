@@ -25,6 +25,8 @@ const state = vi.hoisted(() => ({
   remoteStop: vi.fn(),
   remoteReset: vi.fn(),
   cancelWait: vi.fn(),
+  serviceConnections: false,
+  administers: false,
 }));
 
 vi.mock('@renderer/lib/layout/navigation-provider', () => ({
@@ -44,8 +46,16 @@ vi.mock('@renderer/lib/ipc', () => ({
 vi.mock('@renderer/features/settings/use-app-settings-key', () => ({
   useAppSettingsKey: () => ({ value: { enabled: true } }),
 }));
+vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
+  useFeatureFlags: () => ({ service_connections: state.serviceConnections }),
+}));
+vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
+  administersWorkspaceInScope: () => state.administers,
+  operatesServer: () => state.administers,
+}));
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: {
+    onServerInScope: () => ({ id: 'w1', name: 'Default', tenantId: 't1' }),
     onServer: () => [
       { id: 'w1', name: 'Default', tenantId: 't1' },
       { id: 'w2', name: 'Scratch', tenantId: 't2' },
@@ -118,8 +128,8 @@ import '@renderer/index.css';
 const LOCAL = {
   id: 'srv-1',
   name: 'Local dev',
-  gatewayUrl: 'http://localhost:41000',
-  apiUrl: 'http://localhost:41001',
+  url: 'http://localhost:41001',
+  dashboardUrl: 'http://localhost:41000',
   managed: true,
   managementKind: 'local' as const,
   sshHost: null,
@@ -170,6 +180,8 @@ beforeEach(() => {
   state.register = ALONE;
   state.startedAt = null;
   state.activity = [];
+  state.serviceConnections = false;
+  state.administers = false;
   for (const fn of [
     state.localStart,
     state.localStop,
@@ -236,6 +248,31 @@ function dialogText(): string {
 async function click(element: HTMLElement): Promise<void> {
   await act(async () => element.click());
 }
+
+describe('in the Admin menu', () => {
+  function menuGroup(label: string): Element | null {
+    return container?.querySelector(`nav [role="group"][aria-label="${label}"]`) ?? null;
+  }
+
+  it('is the Status entry under Server, with its dot, for whoever runs it', async () => {
+    await render();
+
+    const server = menuGroup('Server')!;
+    expect(server.textContent).toContain('Server · Local dev');
+    expect(server.querySelector('[aria-current="page"]')!.textContent).toContain('Status');
+    expect(server.querySelector('[aria-current="page"] [role="img"]')).not.toBeNull();
+    expect(menuGroup('Workspace')).toBeNull();
+  });
+
+  it('sits beside the connector sections for an admin where service connections are on', async () => {
+    state.serviceConnections = true;
+    state.administers = true;
+    await render();
+
+    expect(menuGroup('Workspace')!.textContent).toContain('Connectors');
+    expect(menuGroup('Server')!.textContent).toContain('StatusConnector apps');
+  });
+});
 
 describe('a running server', () => {
   it('says it is running and up to date, offers Restart and Stop, and has no message', async () => {

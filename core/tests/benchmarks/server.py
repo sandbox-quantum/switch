@@ -39,7 +39,6 @@ from switch_core.bridges.agent.protocol.agent_event_listener import AgentEventLi
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
-    TaskProtocolConfig,
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import Actor, AgentActor, HumanActor
@@ -115,7 +114,6 @@ BENCH_PROFILE = IntegrationProfile(
     pre_invocation_mediation=[],
     post_invocation_mediation=[],
     event_reporting=[],
-    task_protocol=TaskProtocolConfig(can_delegate=False, can_accept=False),
 )
 
 
@@ -266,7 +264,7 @@ class BenchServer:
             integration_profile=BENCH_PROFILE,
             owner_id=self.owner_id,
             overwrite=True,
-            owner_only=False,
+            addressing_policy=None,
         )
         agent = BenchAgent(agent_id=result.agent_id, name=name, api_key=result.api_key)
         self._agents.append(agent)
@@ -525,7 +523,7 @@ async def _serve(
             room_role_store=session_env.room_role_store,
             external_user_store=session_env.external_user_store,
             connections=connections,
-            frontend_base_url=config.frontend_base_url,
+            frontend_base_url=config.dashboard_base_url,
             message_telemetry=message_telemetry,
         ),
         message_store=session_env.message_store,
@@ -629,7 +627,6 @@ async def _serve(
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
         event_buffer=event_buffer,
-        task_store=session_env.task_store,
         resource_service=resource_service,
         api_key_store=session_env.api_key_store,
         external_user_store=session_env.external_user_store,
@@ -639,6 +636,7 @@ async def _serve(
         approval_outcomes=ApprovalOutcomes(activity_listener, activity),
         controller_auth=None,
         trust_client=NullTrustClient(),
+        gateway_ui=None,
         connections=connections,
     )
 

@@ -293,6 +293,7 @@ function onOff(
     connectable: true,
     status,
     unavailable_reason: null,
+    unavailable_code: null,
     pass_through: true,
     token_lifetime: 3600,
     loopback_ports: null,

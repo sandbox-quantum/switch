@@ -76,6 +76,8 @@ export const provider = registerPluginBehavior(plugin, {
     buildCommand: (ctx) =>
       buildStandardCommand(ctx, {
         autoApproveFlag: '-f --approve-mcps',
+        // No documented CLI flag selects Cursor's Auto-review run mode, so auto
+        // mode launches it asking as approval-required does.
         initialPromptFlag: '',
         resumeFlag: '--resume',
       }),

@@ -239,7 +239,28 @@ describe('EmptyChatFinder', () => {
     expect(finder.find('agent-1')).toBe(chat);
   });
 
-  it('returns chat named "New chat" with an agent greeting', () => {
+  it('returns chat named "New Chat" with an agent greeting', () => {
+    const chat = makeChat({
+      roomId: 'room-1',
+      name: 'New Chat',
+      agents: [{ id: 'agent-1', name: 'Agent', displayName: null, iconUrl: null, provider: null }],
+      lastMessage: {
+        seq: 1,
+        sentAt: '2024-01-01T00:00:00Z',
+        preview: 'Hello',
+        senderName: 'Agent',
+      },
+    });
+    const finder = new EmptyChatFinder({
+      chatsOfAgent: () => [chat],
+      userId: () => 'user-1',
+      timeline: () => undefined,
+    });
+
+    expect(finder.find('agent-1')).toBe(chat);
+  });
+
+  it('returns chat with the earlier "New chat" name and an agent greeting', () => {
     const chat = makeChat({
       roomId: 'room-1',
       name: 'New chat',

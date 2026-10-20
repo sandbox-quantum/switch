@@ -50,6 +50,7 @@ function agent(agentId: string, name: string): AgentAssignment {
       advanced_config: {},
       instructions: '',
       auto_approve: false,
+      auto_mode: false,
       directory: null,
       isolation: 'shared',
     },

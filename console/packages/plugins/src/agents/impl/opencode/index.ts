@@ -88,6 +88,8 @@ export const provider = registerPluginBehavior(plugin, {
     buildCommand: (ctx) =>
       buildStandardCommand(ctx, {
         extraEnv: ctx.autoApprove ? { OPENCODE_PERMISSION: '{"*":"allow"}' } : {},
+        // Approves every ask but keeps what the person's own config denies.
+        autoModeFlag: '--auto',
         initialPromptFlag: '--prompt',
         resumeFlag: '--session',
         sessionIdFlag: '--session',

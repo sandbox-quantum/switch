@@ -8,11 +8,17 @@
  *
  * A claim-based app (Telegram) is offered alongside: its link and code are
  * shown here, and a workspace's first chat is watched for like an install.
+ *
+ * However the dialog was opened — the server page, a Console link buddy
+ * posted, onboarding — adding an app ends with offering to link the person's
+ * own account on it, or saying how, where the directory cannot be searched.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as UseToast from '@renderer/lib/hooks/use-toast';
+import type * as ModalProvider from '@renderer/lib/modal/modal-provider';
 
 const listBridgeTypes = vi.hoisted(() => vi.fn());
 const listMessagingApps = vi.hoisted(() => vi.fn());
@@ -21,6 +27,8 @@ const beginChatClaim = vi.hoisted(() => vi.fn());
 const listBridges = vi.hoisted(() => vi.fn());
 const createBridge = vi.hoisted(() => vi.fn());
 const openExternalUrl = vi.hoisted(() => vi.fn());
+const showModal = vi.hoisted(() => vi.fn());
+const toast = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -44,6 +52,17 @@ vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {}, emit: () => {} },
 }));
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }));
+vi.mock('@renderer/lib/modal/modal-provider', async (importOriginal) => ({
+  ...(await importOriginal<typeof ModalProvider>()),
+  showModal,
+}));
+vi.mock('@renderer/lib/hooks/use-toast', async (importOriginal) => ({
+  ...(await importOriginal<typeof UseToast>()),
+  toast,
+}));
+vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
+  switchRoomsStore: { refreshRoomState: () => Promise.resolve() },
+}));
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: { idOnServerInScope: () => 'ws-1' },
 }));
@@ -92,6 +111,8 @@ beforeEach(() => {
   listBridges.mockReset().mockResolvedValue([bridge('b-old', 'slack')]);
   createBridge.mockReset();
   openExternalUrl.mockReset().mockResolvedValue(true);
+  showModal.mockReset();
+  toast.mockReset();
   onSuccess.mockReset();
   onClose.mockReset();
 });
@@ -327,5 +348,110 @@ describe('connecting a Telegram chat from the dialog', () => {
 
     expect(el.textContent).toContain('Could not start connecting a Telegram chat');
     expect(findButton(el, 'Add to Telegram')).toBeDefined();
+  });
+});
+
+describe('linking your account once an app is added', () => {
+  // The Console link buddy posts opens the dialog with nothing but the server
+  // and a close callback, so the step has to come from the dialog itself.
+  async function renderFromConsoleLink(): Promise<HTMLElement> {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    await act(async () =>
+      root!.render(
+        <QueryClientProvider client={client}>
+          <Dialog open onOpenChange={() => {}}>
+            <ConnectMessagingAppModal
+              serverId="srv-1"
+              onClosed={() => {}}
+              onSuccess={() => {}}
+              onClose={() => {}}
+            />
+          </Dialog>
+        </QueryClientProvider>
+      )
+    );
+    await settle();
+    return document.body;
+  }
+
+  it('offers to link your Slack account after adding Slack', async () => {
+    const el = await renderFromConsoleLink();
+    listBridges
+      .mockResolvedValueOnce([bridge('b-old', 'slack')])
+      .mockResolvedValue([bridge('b-old', 'slack'), bridge('b-new', 'slack')]);
+
+    await act(async () => button(el, 'Add to Slack').click());
+    await settle();
+
+    expect(showModal).toHaveBeenCalledWith('claimIdentityModal', {
+      workspaceId: 'ws-1',
+      bridgeId: 'b-new',
+    });
+    expect(toast).not.toHaveBeenCalled();
+  });
+
+  it('offers it after connecting your own app with tokens too', async () => {
+    listMessagingApps.mockResolvedValue({ installable: [], claimable: [] });
+    createBridge.mockResolvedValue({
+      kind: 'created',
+      bridge: { ...bridge('b-own', 'slack'), receivesWebhooks: false, webhookUrl: null },
+    });
+    const el = await renderFromConsoleLink();
+
+    await act(async () => {
+      const trigger = el.querySelector<HTMLElement>('[role="combobox"]');
+      trigger!.click();
+    });
+    await settle();
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) =>
+      o.textContent?.includes('Slack')
+    );
+    await act(async () => option!.click());
+    await settle();
+    const name = el.querySelector<HTMLInputElement>('input[placeholder^="e.g."]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(name, 'Our Slack');
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => button(el, 'Connect').click());
+    await settle();
+
+    expect(showModal).toHaveBeenCalledWith('claimIdentityModal', {
+      workspaceId: 'ws-1',
+      bridgeId: 'b-own',
+    });
+  });
+
+  it('explains how to link a Telegram account instead of offering a search', async () => {
+    listBridgeTypes.mockResolvedValue([
+      { key: 'slack', fields: [], channelCreationSupported: true, directorySearchSupported: true },
+      {
+        key: 'telegram',
+        fields: [],
+        channelCreationSupported: false,
+        directorySearchSupported: false,
+      },
+    ]);
+    listMessagingApps.mockResolvedValue({
+      installable: [],
+      claimable: [{ platform: 'telegram', connected: false, canAddChat: true }],
+    });
+    const el = await renderFromConsoleLink();
+    listBridges
+      .mockResolvedValueOnce([bridge('b-old', 'slack')])
+      .mockResolvedValue([bridge('b-old', 'slack'), bridge('b-tg', 'telegram')]);
+
+    await act(async () => button(el, 'Add to Telegram').click());
+    await settle();
+
+    expect(showModal).not.toHaveBeenCalledWith('claimIdentityModal', expect.anything());
+    expect(toast).toHaveBeenCalledWith({
+      title: 'Link your telegram b-tg account',
+      description: expect.stringContaining('has no directory of users to search'),
+    });
   });
 });

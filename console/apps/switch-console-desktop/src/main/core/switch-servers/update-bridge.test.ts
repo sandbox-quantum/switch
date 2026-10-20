@@ -23,7 +23,7 @@ const { updateBridgeOnServer } = await import('./update-bridge');
 const SERVER = {
   id: 'srv-1',
   name: 'S',
-  gatewayUrl: 'https://switch.example.com',
+  url: 'https://switch.example.com',
   managed: false,
 } as never;
 
@@ -46,7 +46,7 @@ function response(status: number, body: unknown): Response {
     status,
     ok: status >= 200 && status < 300,
     json: async () => (typeof body === 'string' ? {} : body),
-    headers: { getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => [] },
     text: async () => text,
   } as unknown as Response;
 }

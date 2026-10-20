@@ -93,9 +93,6 @@ vi.mock('@main/core/locations/path-utils', () => ({ checkIsValidDirectory: () =>
 vi.mock('@main/core/locations/location-manager', () => ({
   locationManager: { openLocation: vi.fn(async () => {}) },
 }));
-vi.mock('./setAgentAutoSession', () => ({
-  reconcileAgentAutoSessionFromGateway: vi.fn(async () => {}),
-}));
 vi.mock('./agent-events', () => ({ agentEvents: { _emit: vi.fn() } }));
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: vi.fn() }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
@@ -116,7 +113,7 @@ vi.mock('@main/core/workspaces/workspaces-store', () => ({
   requireWorkspaceForServer: vi.fn(async (serverId: string) => ({ id: `ws-${serverId}` })),
 }));
 
-const mockServer = vi.hoisted(() => ({ id: 'srv-1', apiUrl: 'https://switch.example.com' }));
+const mockServer = vi.hoisted(() => ({ id: 'srv-1', url: 'https://switch.example.com' }));
 
 const { addAgent } = await import('./add-agent');
 const { trackEvent } = await import('@main/core/telemetry/telemetry-service');
@@ -131,8 +128,8 @@ function params(overrides: Record<string, unknown> = {}) {
     description: 'Codex running in repo',
     displayName: null,
     iconUrl: null,
-    autoSession: false,
     autoApprove: false,
+    autoMode: true,
     instructions: '',
     definitionAttributes: {},
     entryPoint: 'unknown' as const,
@@ -328,6 +325,14 @@ describe('addAgent', () => {
     expect(h.registerAgentIdentity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ iconUrl: agentAvatarUrlForName('codex-hoot') })
+    );
+  });
+
+  it('creates the row with the permission settings the form chose', async () => {
+    await addAgent(params({ autoApprove: true, autoMode: false }));
+
+    expect(h.createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ autoApprove: true, autoMode: false })
     );
   });
 

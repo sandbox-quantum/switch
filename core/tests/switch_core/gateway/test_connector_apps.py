@@ -169,6 +169,7 @@ class World:
             token_retention=timedelta(days=30),
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
+            public_url=self.public_url,
         )
         app = self.harness.gateway_app
         app.state.service_broker = broker
@@ -537,6 +538,25 @@ class TestGitHubNeedsHttps:
             f"{HTTP_PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         )
 
+    async def test_the_catalog_says_github_cannot_work_here(
+        self, http_world: World, operator
+    ) -> None:
+        await http_world.install()
+        async with http_world.harness.client() as client:
+            listed = await client.get(
+                "/gateway/service-connections", cookies=cookies_for(operator)
+            )
+        assert listed.status_code == 200, listed.text
+        services = {entry["slug"]: entry for entry in listed.json()["connections"]}
+        assert services["github"]["unavailable_code"] == "needs_https"
+        assert services["github"]["unavailable_reason"] == (
+            "GitHub can't be used on this server: it needs the server to have an "
+            "https address."
+        )
+        assert services["github"]["server_setup_needed"] is False
+        assert services[GOOGLE]["unavailable_code"] == "app_not_set_up"
+        assert services[GOOGLE]["server_setup_needed"] is True
+
     async def test_saving_and_checking_github_are_refused_before_github_is_asked(
         self, http_world: World, operator, session_factory
     ) -> None:
@@ -647,6 +667,7 @@ class TestImportAndRemove:
         assert await _rows(session_factory) == []
         [google] = [c for c in listed.json()["connections"] if c["slug"] == GOOGLE]
         assert google["server_setup_needed"] is True
+        assert google["unavailable_code"] == "app_not_set_up"
         assert google["unavailable_reason"].startswith(
             "Google Workspace is not set up on this server."
         )

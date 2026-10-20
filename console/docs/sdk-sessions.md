@@ -237,8 +237,8 @@ requires an account with available usage.
 A host binds its live room connection to its SDK session through the server.
 Console refreshes this binding for existing and newly discovered sessions, including
 room detachment. Owner-issued room controls use the same durable command path as
-Console controls. Addressed messages, subscribed join notifications, and task events
-retain durable delivery identities. Room attachments are copied from authenticated
+Console controls. Addressed messages and subscribed join notifications retain
+durable delivery identities. Room attachments are copied from authenticated
 server media into session-owned storage; missing media is reported alongside the
 message instead of silently dropping the text.
 
@@ -263,15 +263,35 @@ requires a POSIX host. Use a POSIX SSH execution host.
 Codex and Cursor do not advertise interactive questions until their native execution
 mode can support that interaction. Approvals remain separate capabilities.
 
+### Permission settings
+
+Each agent has two permission settings, applied to every session it starts,
+resumes or attaches, including ones started automatically:
+
+- **Auto mode** — the provider's own automatic review: safe actions run without
+  asking, risky ones still ask. Claude runs in its auto mode, Codex uses its
+  automatic reviewer and keeps its sandbox, OpenCode runs with `--auto`, Cursor
+  uses Smart Auto, and Antigravity approves edits and asks before commands.
+- **Bypass permissions** — every permission check skipped. Unsafe; it overrides
+  auto mode when both are on.
+
+Together they select the session's runtime mode (`runtimeModeFor` in
+`@switch-console/agent-providers`): `full-access` with bypass on, `auto` with
+only auto mode on, `approval-required` with both off. New agents start with auto
+mode on and bypass off, on this computer, on SSH hosts and as managed agents.
+Agents that existed before auto mode keep the behaviour they had: auto mode
+reads as off for them until someone turns it on.
+
 ### Claude permission settings
 
-With Bypass permissions off, Claude resolves the permission mode from its own
-user, project and local settings on the execution host. Switch does not force
-`default` or add a hook that overrides native permission decisions. Claude still
-applies its settings precedence, trust rules and mode availability. Requests that
-need a human are sent to Console through the SDK permission callback. Enabling
-bypass explicitly selects `bypassPermissions`. Restart the host after changing
-permission settings.
+Switch names Claude's permission mode for every session, so a `defaultMode` in
+the person's own Claude settings cannot settle tool calls before Console is
+asked. With both settings off Claude runs in `default` mode; auto mode selects
+Claude's `auto` mode, where its classifier settles what it judges safe and only
+the rest is asked; bypass selects `bypassPermissions`. Claude still applies the
+permission rules in its user, project and local settings on the execution host.
+Requests that need a human are sent to Console through the SDK permission
+callback. Restart the host after changing permission settings.
 
 
 ### Provider sign-in checks

@@ -55,7 +55,6 @@ def _served_prefixes() -> set[str]:
         client_lifecycle=object(),  # type: ignore[arg-type]
         collab_lifecycle=object(),  # type: ignore[arg-type]
         event_buffer=EventBuffer(object(), sequence_base=0, rooms=QuietRooms()),  # type: ignore[arg-type]
-        task_store=object(),  # type: ignore[arg-type]
         resource_service=object(),  # type: ignore[arg-type]
         api_key_store=object(),  # type: ignore[arg-type]
         external_user_store=object(),  # type: ignore[arg-type]
@@ -65,6 +64,7 @@ def _served_prefixes() -> set[str]:
         approval_outcomes=object(),  # type: ignore[arg-type]
         controller_auth=None,
         trust_client=NullTrustClient(),
+        gateway_ui=None,
     )
     prefixes = set(_ADDED_IN_MAIN)
     # The agents controller's routes join the agent bridge app only when agent

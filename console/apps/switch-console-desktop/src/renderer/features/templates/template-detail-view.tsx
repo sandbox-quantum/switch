@@ -439,7 +439,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                 </FactRow>
               )}
               <FactRow label="Answers">
-                {ADDRESSING_LABEL[singleAgent.addressing ?? 'owner']}
+                {ADDRESSING_LABEL[singleAgent.addressing ?? 'owner-agents']}
               </FactRow>
               {loaded.room?.kickoff && (
                 <FactRow label="Kickoff">

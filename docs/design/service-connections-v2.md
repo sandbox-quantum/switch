@@ -303,6 +303,24 @@ The service list (`GET /gateway/service-connections`) carries
 `workspace_enabled` per service, `true` for every service when the flag is
 off.
 
+Beside `unavailable_reason`, the sentence people read, each entry carries
+`unavailable_code`, null when the service can be granted, so a client can say
+what each person can do about it (`UnavailableCode` in
+`connections/broker.py`):
+
+- `coming_soon`: the catalog has it switched off.
+- `switched_off`: the operator switched it off (`DISABLED_SERVICES`).
+- `needs_https`: its app can't work on this server: GitHub's App needs
+  `GATEWAY_PUBLIC_URL` to be https, as it is not on a server Switch Console
+  runs at `http://127.0.0.1`.
+- `app_not_set_up`: its app is the operator's to set up, under Admin →
+  Connector apps, and is not (`server_setup_needed` is true for exactly this).
+- `not_set_up`: nothing on this server connects it, and no app would.
+- `not_fully_set_up`: it can be connected but not granted: its app lacks a
+  part (a GitHub App configured with no signing key).
+
+`get_my_context`'s `services` carry the same code.
+
 ## Keys
 
 For a vendor whose people connect with a key rather than a sign-in (Datadog,

@@ -351,7 +351,7 @@ class Markup:
     """The marks the neutral renderer makes, in one platform's spelling.
 
     Emphasis, a literal a reader is meant to copy, the command a card is asking
-    about, and a link. Everything else the renderer writes is plain text. They
+    about. Everything else the renderer writes is plain text. They
     live behind this rather than being written into the renderer because a
     platform that does not parse Markdown is otherwise forced to choose between
     a renderer of its own — the whole of the budget and faithfulness logic,
@@ -409,12 +409,6 @@ class Markup:
         card that already has two.
         """
         return self.code(text)
-
-    def link(self, label: str, url: str) -> str:
-        # A `)` inside the destination closes the link early and spills the
-        # rest of the URL into the body as text. Percent-encoding is the one
-        # transform that keeps the link working and cannot be read as syntax.
-        return f"[{label}]({url.replace(')', '%29')})"
 
 
 MARKDOWN = Markup()

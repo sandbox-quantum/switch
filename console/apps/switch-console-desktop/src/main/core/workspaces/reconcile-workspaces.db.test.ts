@@ -66,8 +66,8 @@ describe('reconcile-workspaces', () => {
     await fixture.db.insert(switchServers).values({
       id: 'srv-1',
       name: 'Local dev',
-      gatewayUrl: 'https://srv-1.example.com',
-      apiUrl: 'https://api-srv-1.example.com',
+      url: 'https://api-srv-1.example.com',
+      dashboardUrl: 'https://srv-1.example.com',
     });
     listServers.mockResolvedValue([{ id: 'srv-1' }]);
   });
@@ -482,8 +482,8 @@ describe('reconcile-workspaces', () => {
       await fixture.db.insert(switchServers).values({
         id: 'srv-2',
         name: 'Staging',
-        gatewayUrl: 'https://srv-2.example.com',
-        apiUrl: 'https://api-srv-2.example.com',
+        url: 'https://api-srv-2.example.com',
+        dashboardUrl: 'https://srv-2.example.com',
       });
       await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
       await ensureServerWorkspace({ id: 'srv-2', name: 'Staging' });

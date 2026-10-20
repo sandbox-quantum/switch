@@ -91,11 +91,16 @@ class Management:
         agent_bridge_app.include_router(controller_router)
         gateway_app.include_router(gateway_router, prefix=GATEWAY_PREFIX)
         protocol.set_agent_removal_listener(self.agent_removed)
+        protocol.set_agent_rename_listener(self.agent_renamed)
         enable_agent_management(self.agent_operations)
 
     async def agent_removed(self, tenant_id: str, agent_id: str) -> None:
         async with tenant_session(self.session_factory, tenant_id) as session:
             await self.service.forget_deleted_agent(session, tenant_id, agent_id)
+
+    async def agent_renamed(self, tenant_id: str, agent_id: str, old_name: str) -> None:
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            await self.service.agent_renamed(session, tenant_id, agent_id, old_name)
 
     async def run(self) -> None:
         """Write connection transitions as they happen, until cancelled. The

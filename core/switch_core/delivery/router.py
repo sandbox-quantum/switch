@@ -1,8 +1,7 @@
 """Deciding, as a room row is written, which agents it is for.
 
 Every row written to a room goes through `MessageRouter.store`, in the
-transaction that writes it: a message, a file, a command, a task event, an
-arrival. The router decides, for every agent member of the room, whether the
+transaction that writes it: a message, a file, a command, an arrival. The router decides, for every agent member of the room, whether the
 row is one of that agent's own events (`delivery/recipient.py` holds the
 rules), and stores those events (`agent_events`) in the same transaction.
 What the decisions leave to say in the room (a refusal, an offline notice, a
@@ -106,14 +105,6 @@ from switch_core.delivery.recipient import (
     command_event,
     file_index,
 )
-from switch_core.events import (
-    SwitchEvent,
-    TaskAccept,
-    TaskCancel,
-    TaskDelegate,
-    TaskFinalise,
-    TaskUpdate,
-)
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import ROUTING_FAILURES
 from switch_core.observability.metrics import metrics
@@ -154,15 +145,8 @@ ATTACHMENT_GROUP_TIMEOUT_SECONDS = 5.0
 # what decides a post whose writer has stopped since.
 GROUP_SWEEP_SECONDS = 5.0
 
-# The custom events an agent can be part of, by type. The rest (reports,
+# The one custom event an agent can be part of. The rest (reports,
 # observations) are the platform's own bookkeeping and are nobody's own event.
-_TASK_EVENTS: dict[str, type[SwitchEvent]] = {
-    "com.switch.task.delegate": TaskDelegate,
-    "com.switch.task.accept": TaskAccept,
-    "com.switch.task.update": TaskUpdate,
-    "com.switch.task.finalise": TaskFinalise,
-    "com.switch.task.cancel": TaskCancel,
-}
 _COMMAND_EVENT = "com.switch.command"
 
 
@@ -1238,43 +1222,28 @@ class MessageRouter:
     async def _decide_custom(
         self, recipients: list[AgentRecipient], event: InboundCustomEvent
     ) -> _Plan:
-        if event.event_type == _COMMAND_EVENT:
-            try:
-                command = command_event(event)
-            except Exception:
-                logger.exception(
-                    "Failed to parse %s event in %s", event.event_type, event.room_id
-                )
-                return _Plan()
-            # A command that is queued for the agent is decided here, so it
-            # is numbered for the agent before anything written after it;
-            # the rest are decided by their handlers once they have committed.
-            return _Plan(
-                deliveries=[
-                    (
-                        recipient,
-                        await _decided(
-                            recipient,
-                            event,
-                            lambda: recipient.decide_command(command),
-                        ),
-                    )
-                    for recipient in recipients
-                ]
-            )
-        kind = _TASK_EVENTS.get(event.event_type)
-        if kind is None:
+        if event.event_type != _COMMAND_EVENT:
             return _Plan()
         try:
-            typed = kind(**event.content)
+            command = command_event(event)
         except Exception:
             logger.exception(
                 "Failed to parse %s event in %s", event.event_type, event.room_id
             )
             return _Plan()
+        # A command that is queued for the agent is decided here, so it
+        # is numbered for the agent before anything written after it;
+        # the rest are decided by their handlers once they have committed.
         return _Plan(
             deliveries=[
-                (recipient, await _decided(recipient, event, _task(recipient, typed)))
+                (
+                    recipient,
+                    await _decided(
+                        recipient,
+                        event,
+                        lambda: recipient.decide_command(command),
+                    ),
+                )
                 for recipient in recipients
             ]
         )
@@ -1680,15 +1649,6 @@ async def _decided(
             exc_info=True,
         )
         return NOTHING
-
-
-def _task(
-    recipient: AgentRecipient, event: SwitchEvent
-) -> Callable[[], Awaitable[Delivery]]:
-    async def decide() -> Delivery:
-        return recipient.decide_task(event)
-
-    return decide
 
 
 def _unwritten(message: Message) -> _Unwritten:

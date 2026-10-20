@@ -1,9 +1,10 @@
+import { isYours } from '@renderer/features/connectors/connectors-catalog';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import type { ServiceGrant, ServiceGrants } from '@shared/core/switch-servers/service-grants';
 
 /**
- * One card on an agent's Connections tab. GitHub's grant names repositories;
+ * One card on an agent's Connectors tab. GitHub's grant names repositories;
  * an on/off service hands the agent the owner's own token; `other` is a grant
  * on a service this page has nothing to change on, which can only be removed.
  */
@@ -28,7 +29,7 @@ function grantable(service: ConnectionCatalogEntry): boolean {
 }
 
 /**
- * The cards on an agent's Connections tab, in catalog order: every service
+ * The cards on an agent's Connectors tab, in catalog order: every service
  * the owner has connected that a grant can be made on, and every grant the
  * agent holds, whatever its connection's state, so a grant is never hidden.
  * `unconnected` names the grantable services the owner has not connected.
@@ -82,6 +83,11 @@ export function connectionCardDetail(card: AgentConnectionCard): string {
   if (service.status === 'needs_reauthorization' || service.status === 'error')
     return `Your ${service.name} connection needs reconnecting. Reconnect it from Connectors.`;
   return service.description;
+}
+
+/** Whether the owner has not connected anything yet, working or not. */
+export function noConnectorsSetUp(services: readonly ConnectionCatalogEntry[]): boolean {
+  return !services.some(isYours);
 }
 
 /** The note under the cards naming the services not connected yet; null when there are none. */

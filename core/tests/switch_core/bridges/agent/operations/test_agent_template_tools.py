@@ -865,3 +865,14 @@ async def test_an_official_template_is_read_and_never_changed(tools, caplog):
         await _as(
             tools["agent_id"], delete_template, template_id="official:switch-expert"
         )
+
+
+@pytest.mark.asyncio
+async def test_a_server_with_switch_buddy_offers_it_instead_of_the_expert(tools):
+    tools["protocol"].config.feature_flags = {
+        "agent_management": True,
+        "switch_buddy": True,
+    }
+    ids = {r["id"] for r in await _as(tools["agent_id"], list_templates)}
+    assert "official:switch-buddy" in ids
+    assert "official:switch-expert" not in ids

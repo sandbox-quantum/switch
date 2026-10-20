@@ -19,7 +19,6 @@ import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar'
 import { workspaceTitle } from '@renderer/features/workspaces/workspace-title';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { toast } from '@renderer/lib/hooks/use-toast';
-import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
@@ -33,10 +32,11 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { dashboardOrigin, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { GuardrailsSection } from './GuardrailsSection';
 import { localServerStore } from './local-server-store';
 import { MessagingAppsCard } from './MessagingAppsCard';
+import { openServerPage } from './open-server-page';
 import { remoteServerStore } from './remote-server-store';
 import { serverIcon } from './server-icon';
 import { serverPlacementLabel } from './server-presentation';
@@ -176,8 +176,8 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   // button asks for, so the page should not look idle while one is in flight.
   const busy = refreshingPage || store.refreshing.has(serverId);
   const unreachable = store.isUnreachable(serverId);
-  // A local server run without Docker has no dashboard process: its gateway
-  // URL is switch-core itself, which serves the API and no pages.
+  // A local server run without Docker has no dashboard: switch-core runs there
+  // without the dashboard's pages, so its address serves the API alone.
   const servesNoDashboard =
     server.managed && server.managementKind === 'local' && localServerStore.isNative;
   const PlacementIcon = serverIcon(server);
@@ -246,8 +246,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
                       showEditServerModal({
                         serverId,
                         initialName: server.name,
-                        initialGatewayUrl: server.gatewayUrl,
-                        initialApiUrl: server.apiUrl,
+                        initialUrl: server.url,
                       })
                     }
                   >
@@ -325,12 +324,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
               variant="outline"
               size="sm"
               className="shrink-0"
-              onClick={() =>
-                void rpc.switchServers.openGatewayPage({
-                  serverId: server.id,
-                  url: server.gatewayUrl,
-                })
-              }
+              onClick={() => void openServerPage(server.id, dashboardOrigin(server))}
             >
               <ExternalLink className="size-4" />
               Open

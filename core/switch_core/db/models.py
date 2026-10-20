@@ -2473,9 +2473,8 @@ class AgentEventRow(TenantScoped, Base):
 
     The router (`delivery/router.py`) writes a row, in the transaction that
     writes the room row, when that room row is for the agent: a message
-    addressed to it, a join it is set to listen for, or a task event it is part
-    of. A room command's handler writes one for a command it passes on to the
-    agent. Whether a row is for the agent depends on the room's state at the
+    addressed to it or a join it is set to listen for. A room command's
+    handler writes one for a command it passes on to the agent. Whether a row is for the agent depends on the room's state at the
     moment it is written, so the decision is recorded here instead of being
     worked out again at read time. The rest of a room's conversation is not
     copied here; a reader that wants it reads `messages`.
@@ -3775,7 +3774,8 @@ class AgentDefinition(TenantScoped, Base):
     nowhere. `revision` bumps on every change to the definition, its desired
     state or its placement; controllers use it to fence out stale revisions.
     `definition` is the v1 definition document (provider, model, instructions,
-    auto_approve, directory).
+    auto_mode, auto_approve, directory); a document stored before `auto_mode`
+    existed lacks it, which reads as off.
     """
 
     __tablename__ = "agent_definitions"

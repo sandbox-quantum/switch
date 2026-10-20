@@ -169,7 +169,7 @@ export class OpencodeAdapter implements ProviderAdapter {
       createdAt: new Date().toISOString(),
     });
 
-    // A connector's tools ask unless the mode allows everything; the rest of
+    // A connector's tools ask unless the mode approves every ask; the rest of
     // the registered servers', Switch's own above all, never ask.
     const autoApproved = Object.keys(input.mcpServers).filter(
       (name) => !input.connectorMcpServers.includes(name)
@@ -664,13 +664,15 @@ export class OpencodeAdapter implements ProviderAdapter {
       });
       return;
     }
-    if (record.runtimeMode === 'full-access') {
+    if (record.runtimeMode === 'full-access' || record.runtimeMode === 'auto') {
       // Doom-loop detection and subagent sessions are evaluated against rules
       // that never include the session ruleset, so full access still has to
-      // answer them. `once` rather than `always`: OpenCode remembers `always`
+      // answer them; in auto mode every ask is answered, as OpenCode's own
+      // `--auto` does. `once` rather than `always`: OpenCode remembers `always`
       // per directory, where another session could inherit it.
-      this.logger.debug('opencode: auto-allowing a permission ask in full access', {
+      this.logger.debug('opencode: auto-allowing a permission ask', {
         sessionId: record.sessionId,
+        runtimeMode: record.runtimeMode,
         permission,
       });
       await record.transport.replyPermission(id, 'once').catch((error: unknown) => {

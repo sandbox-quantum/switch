@@ -326,6 +326,7 @@ agent:
   model: claude-sonnet
   advanced_config: { effort: high }
   isolation: isolated
+  auto_mode: false
   auto_approve: true
   connections:
     - { service: github, access: write, repos: [acme/widgets] }
@@ -336,6 +337,7 @@ agent:
       model: 'claude-sonnet',
       advancedConfig: { effort: 'high' },
       isolation: 'isolated',
+      autoMode: false,
       autoApprove: true,
       connections: [
         { service: 'github', access: 'write', repos: ['acme/widgets'] },

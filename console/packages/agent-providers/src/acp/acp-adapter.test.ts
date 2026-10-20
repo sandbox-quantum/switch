@@ -250,11 +250,13 @@ it('offers allow-for-session, maps it to the agent option, and answers decline w
   });
 });
 
-it('approves without asking in full access, and approves only edits in auto-accept-edits', async () => {
+it('approves without asking in full access, approves only edits in auto-accept-edits, and asks in auto', async () => {
   for (const [runtimeMode, kind, prompted] of [
     ['full-access', 'execute', 0],
     ['auto-accept-edits', 'edit', 0],
     ['auto-accept-edits', 'execute', 1],
+    ['auto', 'edit', 1],
+    ['auto', 'execute', 1],
   ] as const) {
     const { adapter, events, server } = await start(dummy, { runtimeMode });
     await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
@@ -357,6 +359,10 @@ it.each([
   ['auto-accept-edits', 'other', false],
   ['auto-accept-edits', 'atlassian', true],
   ['auto-accept-edits', 'gws', true],
+  ['auto', 'switch', false],
+  ['auto', 'other', false],
+  ['auto', 'atlassian', true],
+  ['auto', 'gws', true],
   ['full-access', 'switch', false],
   ['full-access', 'atlassian', false],
   ['full-access', 'gws', false],

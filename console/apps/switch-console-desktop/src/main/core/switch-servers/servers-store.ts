@@ -18,8 +18,10 @@ import { db } from '@main/db/client';
 import { type SwitchServerRow, switchServers } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 import {
+  normaliseServerUrl,
   urlOrigin,
   type AddServerParams,
+  type ManagedServerParams,
   type ManagedServerRef,
   type RenameServerParams,
   type SwitchServer,
@@ -45,8 +47,8 @@ function mapRow(row: SwitchServerRow): SwitchServer {
   return {
     id: row.id,
     name: row.name,
-    gatewayUrl: row.gatewayUrl,
-    apiUrl: row.apiUrl,
+    url: row.url,
+    dashboardUrl: row.dashboardUrl ?? null,
     managed: row.managed,
     managementKind,
     sshHost: row.sshHost ?? null,
@@ -55,21 +57,19 @@ function mapRow(row: SwitchServerRow): SwitchServer {
   };
 }
 
-/** Strip a trailing slash so `${url}/gateway` never doubles up. */
-function normaliseUrl(url: string): string {
-  return url.trim().replace(/\/+$/, '');
-}
+/** The spelling an address is stored and compared in; see {@link normaliseServerUrl}. */
+const normaliseUrl = normaliseServerUrl;
 
 /**
  * Find the registered server an agent endpoint belongs to, by matching the
- * endpoint's origin against each server's API (agent bridge) URL — the endpoint
- * an agent's `SWITCH_API_ENDPOINT` points at. Returns null when none matches.
+ * endpoint's origin against each server's address — what an agent's
+ * `SWITCH_API_ENDPOINT` points at. Returns null when none matches.
  */
 export async function findServerByEndpoint(endpoint: string): Promise<SwitchServer | null> {
   const target = urlOrigin(endpoint);
   if (!target) return null;
   const servers = await listServers();
-  return servers.find((s) => urlOrigin(s.apiUrl) === target) ?? null;
+  return servers.find((s) => urlOrigin(s.url) === target) ?? null;
 }
 
 export async function listServers(): Promise<SwitchServer[]> {
@@ -128,12 +128,12 @@ function managedPlace(server: SwitchServer): string {
     : 'on this computer';
 }
 
-/** Two server records cannot share a gateway URL, and a shared remote stack's
+/** Two server records cannot share an address, and a shared remote stack's
  * mirrored `localhost` port may be one this Console already gave another server. */
 export class ManagedServerUrlConflictError extends Error {
-  constructor(gatewayUrl: string, holder: SwitchServer, target: string) {
+  constructor(url: string, holder: SwitchServer, target: string) {
     super(
-      `${gatewayUrl} is already the address of “${holder.name}”` +
+      `${url} is already the address of “${holder.name}”` +
         (holder.managed ? ` (the server Switch Console runs ${managedPlace(holder)})` : '') +
         `, and the server ${target} uses the same port. Switch Console reaches a remote ` +
         `server through the same port number on this computer, so both cannot be registered. ` +
@@ -143,18 +143,32 @@ export class ManagedServerUrlConflictError extends Error {
   }
 }
 
-/** The record `ref` already has, and the one at `gatewayUrl`, refusing a
- * clash as {@link ensureManagedServer} describes. */
+/** The record `ref` already has, and the one at `url`, refusing a clash as
+ * {@link ensureManagedServer} describes. */
 async function managedServerSlot(
-  gatewayUrl: string,
+  url: string,
   ref: ManagedServerRef
 ): Promise<{ existingForTarget: SwitchServer | null; atUrl: SwitchServer | null }> {
+  return slotAmong(await listServers(), url, ref);
+}
+
+/** {@link managedServerSlot} over servers already read, so that a transaction
+ * can decide and write on one reading. */
+function slotAmong(
+  servers: SwitchServer[],
+  url: string,
+  ref: ManagedServerRef
+): { existingForTarget: SwitchServer | null; atUrl: SwitchServer | null } {
   const existingForTarget =
-    ref.kind === 'remote' ? await getRemoteManagedServer(ref.sshHost) : await getManagedServer();
-  const atUrl = await getServerByGatewayUrl(gatewayUrl);
+    servers.find((server) =>
+      ref.kind === 'remote'
+        ? server.managementKind === 'remote' && server.sshHost === ref.sshHost
+        : server.managementKind === 'local'
+    ) ?? null;
+  const atUrl = servers.find((server) => normaliseUrl(server.url) === url) ?? null;
   if (atUrl && atUrl.id !== existingForTarget?.id && (existingForTarget || atUrl.managed)) {
     throw new ManagedServerUrlConflictError(
-      gatewayUrl,
+      url,
       atUrl,
       ref.kind === 'remote' ? `on ${ref.sshHost}` : 'on this computer'
     );
@@ -165,17 +179,17 @@ async function managedServerSlot(
 /** Throw {@link ManagedServerUrlConflictError} when {@link ensureManagedServer}
  * would, without writing anything, so a start can check before changing the stack. */
 export async function assertManagedServerUrlFree(
-  gatewayUrl: string,
+  url: string,
   ref: ManagedServerRef
 ): Promise<void> {
-  await managedServerSlot(normaliseUrl(gatewayUrl), ref);
+  await managedServerSlot(normaliseUrl(url), ref);
 }
 
 /**
  * Upsert a managed server record for the given target (the single local stack,
  * or the stack on a specific remote host). Reuses the existing row for that
- * target if there is one (updating its URLs, which change when ports are
- * repicked), else adopts an external row already at this gateway URL, else
+ * target if there is one (updating its addresses, which change when ports are
+ * repicked), else adopts an external row already at this address, else
  * inserts. Keeps exactly one row per managed target rather than duplicating on
  * URL changes.
  *
@@ -184,83 +198,138 @@ export async function assertManagedServerUrlFree(
  * throw {@link ManagedServerUrlConflictError}.
  */
 export async function ensureManagedServer(
-  params: AddServerParams,
+  params: ManagedServerParams,
   ref: ManagedServerRef
 ): Promise<SwitchServer> {
-  const gatewayUrl = normaliseUrl(params.gatewayUrl);
-  const apiUrl = normaliseUrl(params.apiUrl);
+  const url = normaliseUrl(params.url);
+  const dashboardUrl = params.dashboardUrl === null ? null : normaliseUrl(params.dashboardUrl);
   const managementKind = ref.kind;
   const sshHost = ref.kind === 'remote' ? ref.sshHost : null;
-  const { existingForTarget, atUrl } = await managedServerSlot(gatewayUrl, ref);
-  const existing = existingForTarget ?? atUrl;
-  if (existing) {
-    // Preserve the stored name on restart: the name is set once at creation and
-    // then owned by the user (rename). Only the URLs/kind refresh when a managed
-    // stack restarts (ports can change), so overwriting name here would clobber a
-    // rename — the local stack always restarts with a hardcoded default name.
-    const [row] = await db
-      .update(switchServers)
-      .set({
-        gatewayUrl,
-        apiUrl,
-        managed: true,
-        managementKind,
-        sshHost,
-        updatedAt: sql`CURRENT_TIMESTAMP`,
-      })
-      .where(eq(switchServers.id, existing.id))
-      .returning();
-    const server = mapRow(row);
-    await ensureServerWorkspace(server);
-    return server;
-  }
-  const [row] = await db
-    .insert(switchServers)
-    .values({
-      id: randomUUID(),
-      name: params.name.trim(),
-      gatewayUrl,
-      apiUrl,
-      managed: true,
-      managementKind,
-      sshHost,
-      updatedAt: sql`CURRENT_TIMESTAMP`,
-    })
-    .returning();
-  const server = mapRow(row);
-  await ensureServerWorkspace(server);
-  // Only the insert: this function also runs on every restart of a stack that
-  // already exists, and that is not a server being added.
-  trackEvent('server_added', {
-    server_kind: ref.kind === 'remote' ? 'remote_managed' : 'local',
-    outcome: 'success',
-  });
-  return server;
-}
-
-/** The server registered at a gateway URL, compared the way it was stored. */
-export async function findServerByGatewayUrl(gatewayUrl: string): Promise<SwitchServer | null> {
-  return getServerByGatewayUrl(normaliseUrl(gatewayUrl));
-}
-
-async function getServerByGatewayUrl(gatewayUrl: string): Promise<SwitchServer | null> {
-  const [row] = await db
-    .select()
-    .from(switchServers)
-    .where(eq(switchServers.gatewayUrl, gatewayUrl))
-    .limit(1);
-  return row ? mapRow(row) : null;
-}
-
-export async function addServer(params: AddServerParams): Promise<SwitchServer> {
-  const server = db.transaction((tx) => {
+  // One transaction for the decision and the write: with no unique index on
+  // the address, two registrations at once must not both insert.
+  const { server, inserted } = db.transaction((tx) => {
+    const servers = tx
+      .select()
+      .from(switchServers)
+      .orderBy(desc(switchServers.createdAt))
+      .all()
+      .map(mapRow);
+    const { existingForTarget, atUrl } = slotAmong(servers, url, ref);
+    const existing = existingForTarget ?? atUrl;
+    if (existing) {
+      // Preserve the stored name on restart: the name is set once at creation and
+      // then owned by the user (rename). Only the addresses/kind refresh when a managed
+      // stack restarts (ports can change), so overwriting name here would clobber a
+      // rename — the local stack always restarts with a hardcoded default name.
+      const [row] = tx
+        .update(switchServers)
+        .set({
+          url,
+          dashboardUrl,
+          managed: true,
+          managementKind,
+          sshHost,
+          updatedAt: sql`CURRENT_TIMESTAMP`,
+        })
+        .where(eq(switchServers.id, existing.id))
+        .returning()
+        .all();
+      return { server: mapRow(row!), inserted: false };
+    }
     const [row] = tx
       .insert(switchServers)
       .values({
         id: randomUUID(),
         name: params.name.trim(),
-        gatewayUrl: normaliseUrl(params.gatewayUrl),
-        apiUrl: normaliseUrl(params.apiUrl),
+        url,
+        dashboardUrl,
+        managed: true,
+        managementKind,
+        sshHost,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .returning()
+      .all();
+    return { server: mapRow(row!), inserted: true };
+  });
+  await ensureServerWorkspace(server);
+  // Only the insert: this function also runs on every restart of a stack that
+  // already exists, and that is not a server being added.
+  if (inserted) {
+    trackEvent('server_added', {
+      server_kind: ref.kind === 'remote' ? 'remote_managed' : 'local',
+      outcome: 'success',
+    });
+  }
+  return server;
+}
+
+/** The server registered at an address, compared the way it was stored. */
+export async function findServerByUrl(url: string): Promise<SwitchServer | null> {
+  return getServerByUrl(normaliseUrl(url));
+}
+
+/**
+ * The server a web address belongs to: its own address, or the separate
+ * dashboard address it still keeps. An invite link carries the dashboard's
+ * address, which on an older server is not the server's own.
+ */
+export async function findServerByWebAddress(address: string): Promise<SwitchServer | null> {
+  const target = urlOrigin(address);
+  if (!target) return null;
+  const servers = await listServers();
+  return (
+    servers.find((s) => urlOrigin(s.url) === target) ??
+    servers.find((s) => s.dashboardUrl !== null && urlOrigin(s.dashboardUrl) === target) ??
+    null
+  );
+}
+
+/**
+ * Compared in the normalised spelling on both sides rather than by the column:
+ * a row saved before addresses were normalised, or carried over by migration
+ * 0052, may be stored in another spelling of the same address.
+ */
+async function getServerByUrl(url: string): Promise<SwitchServer | null> {
+  const target = normaliseUrl(url);
+  return (await listServers()).find((server) => normaliseUrl(server.url) === target) ?? null;
+}
+
+/** A server is already registered at the address being saved. */
+export class DuplicateServerUrlError extends Error {
+  constructor(url: string, holder: SwitchServer) {
+    super(`${url} is already the address of “${holder.name}”.`);
+    this.name = 'DuplicateServerUrlError';
+  }
+}
+
+type StoreTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Refuse `url` when a server other than `exceptId` already has it. Read inside
+ * the transaction that writes the row: with no unique index to fall back on,
+ * that is what keeps two saves of one address from both passing the check.
+ */
+function assertUrlFree(tx: StoreTransaction, url: string, exceptId: string | null): void {
+  const holder = tx
+    .select()
+    .from(switchServers)
+    .all()
+    .map(mapRow)
+    .find((server) => normaliseUrl(server.url) === url && server.id !== exceptId);
+  if (holder) throw new DuplicateServerUrlError(url, holder);
+}
+
+export async function addServer(params: AddServerParams): Promise<SwitchServer> {
+  const url = normaliseUrl(params.url);
+  const server = db.transaction((tx) => {
+    assertUrlFree(tx, url, null);
+    const [row] = tx
+      .insert(switchServers)
+      .values({
+        id: randomUUID(),
+        name: params.name.trim(),
+        url,
         updatedAt: sql`CURRENT_TIMESTAMP`,
       })
       .returning()
@@ -277,22 +346,61 @@ export async function addServer(params: AddServerParams): Promise<SwitchServer> 
   return server;
 }
 
+/**
+ * Save an edited server. A changed address also drops any separate dashboard
+ * address: that belonged to the address being replaced, and the new one is
+ * checked for its own dashboard the next time it is reached.
+ */
 export async function updateServer(params: UpdateServerParams): Promise<SwitchServer> {
-  const [row] = await db
-    .update(switchServers)
-    .set({
-      name: params.name.trim(),
-      gatewayUrl: normaliseUrl(params.gatewayUrl),
-      apiUrl: normaliseUrl(params.apiUrl),
-      updatedAt: sql`CURRENT_TIMESTAMP`,
-    })
-    .where(eq(switchServers.id, params.id))
-    .returning();
-  if (!row) {
-    throw new Error(`No Switch server with id ${params.id}`);
-  }
+  const url = normaliseUrl(params.url);
+  const row = db.transaction((tx) => {
+    const [previous] = tx.select().from(switchServers).where(eq(switchServers.id, params.id)).all();
+    if (!previous) throw new Error(`No Switch server with id ${params.id}`);
+    // Only a new address is checked: rows that already share one (migration
+    // 0052 keeps them) stay editable.
+    const urlChanged = normaliseUrl(previous.url) !== url;
+    if (urlChanged) assertUrlFree(tx, url, params.id);
+    const [updated] = tx
+      .update(switchServers)
+      .set({
+        name: params.name.trim(),
+        url,
+        ...(urlChanged ? { dashboardUrl: null } : {}),
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(switchServers.id, params.id))
+      .returning()
+      .all();
+    return updated!;
+  });
   await renameServerWorkspaces(params.id, params.name.trim());
   return mapRow(row);
+}
+
+/**
+ * Record a server's separate dashboard address, or forget it with null. Leaves
+ * the row alone when the address it was checked against is no longer the
+ * server's, so a check that raced an edit cannot write the dashboard of the
+ * address that replaced it.
+ */
+export async function setDashboardUrl(
+  id: string,
+  checkedUrl: string,
+  dashboardUrl: string | null
+): Promise<void> {
+  await db
+    .update(switchServers)
+    .set({
+      dashboardUrl: dashboardUrl === null ? null : normaliseUrl(dashboardUrl),
+      updatedAt: sql`CURRENT_TIMESTAMP`,
+    })
+    .where(and(eq(switchServers.id, id), eq(switchServers.url, checkedUrl)));
+}
+
+/** Forget a server's separate dashboard address, once its own address has been
+ * seen serving the dashboard; see {@link setDashboardUrl}. */
+export async function clearDashboardUrl(id: string, checkedUrl: string): Promise<void> {
+  await setDashboardUrl(id, checkedUrl, null);
 }
 
 export async function renameServer(params: RenameServerParams): Promise<SwitchServer> {

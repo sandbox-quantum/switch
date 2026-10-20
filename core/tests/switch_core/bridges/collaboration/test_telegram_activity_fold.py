@@ -27,7 +27,7 @@ from switch_core.bridges.collaboration.telegram.chunking import MAX_MESSAGE
 
 from .session_fixtures import _item, _turn
 from .test_telegram_adapter import _adapter, _bot
-from .test_telegram_sdk_only import CHANNEL, SESSION_URL, _card, _running
+from .test_telegram_sdk_only import CHANNEL, _card, _running
 
 _FOLD_RE = re.compile(r"<blockquote expandable>(.*)</blockquote>", re.DOTALL)
 
@@ -143,18 +143,14 @@ async def test_a_request_card_is_offered_its_options_rather_than_a_fold() -> Non
 
 
 async def test_the_log_does_not_repeat_the_status_it_is_folded_under() -> None:
-    """The status sits immediately above and carries the turn's state and its
-    Console link. Printing both again as the log's first line is the message
-    saying the same sentence twice, a centimetre apart."""
+    """The status sits immediately above and carries the turn's state.
+    Printing it again as the log's first line is the message saying the same
+    sentence twice, a centimetre apart."""
     adapter = _adapter()
 
-    await adapter.post_rich(
-        CHANNEL, "my-agent", _ended("Ran a test", session_url=SESSION_URL), None
-    )
+    await adapter.post_rich(CHANNEL, "my-agent", _ended("Ran a test"), None)
 
-    text = _sent(adapter)
-    assert SESSION_URL in text
-    assert _fold(text) == ["⌗ ✓ Ran a test"]
+    assert _fold(_sent(adapter)) == ["⌗ ✓ Ran a test"]
 
 
 async def test_the_calls_read_oldest_first_so_the_newest_is_where_it_ended() -> None:
@@ -270,22 +266,16 @@ async def test_a_folded_turn_still_fits_in_one_telegram_message() -> None:
 
 async def test_the_status_is_not_made_smaller_to_make_room_for_the_log() -> None:
     """The fold spends what the status left, not the other way round. A turn's
-    state and its Console link are what a reader gets either way."""
+    state is what a reader gets either way."""
     adapter = _adapter()
-    await adapter.post_rich(
-        CHANNEL, "my-agent", _ended("Ran a test", session_url=SESSION_URL), None
-    )
+    await adapter.post_rich(CHANNEL, "my-agent", _ended("Ran a test"), None)
     short = _sent(adapter).split("\n<blockquote")[0]
 
     adapter = _adapter()
     await adapter.post_rich(
-        CHANNEL,
-        "my-agent",
-        _ended(*[f"Call {n}" for n in range(400)], session_url=SESSION_URL),
-        None,
+        CHANNEL, "my-agent", _ended(*[f"Call {n}" for n in range(400)]), None
     )
 
-    assert SESSION_URL in short
     assert _sent(adapter).split("\n<blockquote")[0] == short
 
 

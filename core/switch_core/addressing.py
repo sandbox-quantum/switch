@@ -1,9 +1,9 @@
 """Scoped agent-addressing permissions (CHOO-1585).
 
 Controls WHO may *address* an agent — i.e. cause it to receive a message it is
-expected to respond to (an `@name` / `@alias` / `@role` mention, a targeted
-message, or a task delegation). By default any room participant can address any
-agent; this module adds an opt-in allow-list model per agent.
+expected to respond to (an `@name` / `@alias` / `@role` mention or a targeted
+message). An agent with no policy is open to any room
+participant; this module adds a per-agent allow-list model.
 
 Model:
   - Each agent carries an `AddressingPolicy`: an ordered list of allow-rules.
@@ -42,8 +42,9 @@ Defaults / precedence:
     pre-CHOO-2137 agent carries, and it is preserved rather than migrated.
   - With rules present it is **deny-by-default**: only attempts matching a rule
     are permitted.
-  - Agents created from CHOO-2137 onwards start owner-only (see
-    `owner_only_policy`) rather than open.
+  - New agents start on `default_agent_policy`: their owner and the owner's
+    own agents, rather than open. Agents created earlier keep whatever policy
+    they were created with.
   - **Platform senders are always deny-by-default**, even for an open
     policy. An agent needs a rule with ``platform=True`` to receive the
     platform's own messages. A platform message sent on a person's behalf is
@@ -203,26 +204,19 @@ class AddressingPolicy(BaseModel):
 
         An open policy does; so does any rule that admits every human
         (``"*"``, whatever its rooms), a human by an identity the owner has
-        not claimed, or any agent at all: ``owner_agents``, a named agent, or
-        ``"*"``. The owner's own agents count as others because an agent
-        sender is not the person. Whoever addressed that agent can have it
-        pass the request on, and the grant is then used on their behalf, not
-        the owner's: a confused-deputy path. `owner_identity_ids` are the
-        platform identities the owner has claimed. A platform rule is not
-        counted: the platform acting for a person is judged as that person
+        not claimed, or any agent named by id or ``"*"``. The owner's own
+        agents (``owner_agents``) do not count: they already act for the
+        owner, so the default policy raises no warning. `owner_identity_ids`
+        are the platform identities the owner has claimed. A platform rule is
+        not counted: the platform acting for a person is judged as that person
         (`allows_on_behalf_of`).
 
-        This only reports the exposure; it does not refuse anything. An
-        ``owner_agents`` rule still lets the owner's agents address the agent
-        (`allows`), and closing that path needs the originating person carried
-        on agent-to-agent messages.
+        This only reports the exposure; it does not refuse anything.
         """
         if self.is_open():
             return True
         return any(
-            _admits_beyond(rule.users, owner_identity_ids)
-            or rule.owner_agents
-            or rule.agents != []
+            _admits_beyond(rule.users, owner_identity_ids) or rule.agents != []
             for rule in self.rules
         )
 
@@ -282,11 +276,11 @@ def owner_only_policy(allowed_agent_ids: list[str]) -> AddressingPolicy:
 def owner_and_owner_agents_policy() -> AddressingPolicy:
     """The owner, plus any agent that owner runs (CHOO-2137).
 
-    The default a Switch Console agent is created on. Strict owner-only is one
-    step too strict to be the thing everyone starts on: an owner's manager
-    agent dispatching their worker is still the owner acting, and an agent that
-    refuses its own owner's orchestration looks broken rather than private.
-    Somebody else's agent is admitted by neither.
+    What every new agent starts on (`default_agent_policy`). Strict owner-only
+    is one step too strict to be the thing everyone starts on: an owner's
+    manager agent dispatching their worker is still the owner acting, and an
+    agent that refuses its own owner's orchestration looks broken rather than
+    private. Somebody else's agent is admitted by neither.
     """
     return AddressingPolicy(
         rules=[
@@ -300,6 +294,16 @@ def owner_and_owner_agents_policy() -> AddressingPolicy:
             )
         ]
     )
+
+
+def default_agent_policy() -> AddressingPolicy:
+    """The policy a new agent gets when its creator makes no choice.
+
+    The one place the default is decided: registration, `create_agent`,
+    template runs and Switch Console all start from it. Agents that already
+    exist keep the policy they were created with.
+    """
+    return owner_and_owner_agents_policy()
 
 
 def platform_allowed_policy() -> AddressingPolicy:

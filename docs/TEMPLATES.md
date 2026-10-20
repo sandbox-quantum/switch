@@ -274,6 +274,7 @@ agent:
   model:          text | "{param}"
   advanced_config: { key: value }
   isolation:      shared | isolated
+  auto_mode:      true | false
   auto_approve:   true | false
   can_manage_agents: true | false
   connections:    [ service, or {service, access, repos} ]
@@ -373,8 +374,12 @@ setting.
 **`isolation`**. `shared` (the default) runs the agent inside its machine's
 controller; `isolated` runs it as a process of its own.
 
-**`auto_approve`**. Whether the agent runs tools without asking for
-approval. Default `false`.
+**`auto_mode`**. Auto mode: the provider's own automatic review decides
+which actions need approval, so safe ones run without asking and risky ones
+still ask a person. Default `true`.
+
+**`auto_approve`**. Bypass: the agent runs every tool without any permission
+check. It overrides `auto_mode`, and is unsafe. Default `false`.
 
 **`icon_url`**. The agent's picture: an absolute `https://` URL, checked as
 an icon set on the agent's page is. Without one it gets the picture drawn

@@ -17,6 +17,7 @@ import { providerLoginExitChannel, providerLoginLineChannel } from '@shared/even
 import { type BuddyProvider, buddyProviders } from './buddy-providers';
 import { reportBuddyStep } from './buddy-telemetry';
 import { createBuddy } from './create-buddy';
+import { installOutputSummary } from './install-output-summary';
 import { type ThisComputer, useThisComputer } from './use-this-computer';
 
 /** How many lines of a sign-in command's output are kept on screen. */
@@ -340,6 +341,9 @@ function SelectedPanel({
                 ? 'Finish signing in in your browser. This page moves on by itself once it’s done.'
                 : 'It opens your browser to sign in with your own account.'}
             </p>
+            {provider.detail && !running && (
+              <p className="text-xs text-foreground-warning">{provider.detail}</p>
+            )}
           </div>
           {login && <LogTail lines={login.lines} placeholder="Starting the sign-in…" />}
           {links.length > 0 && (
@@ -402,8 +406,13 @@ function installFailure(name: string, error: AgentInstallError): string {
     case 'no-install-command':
     case 'unknown-dependency':
       return `Switch Console can’t install ${name} on this computer. Install it yourself, then press Check again.`;
+    case 'command-failed': {
+      const last = installOutputSummary(error.output);
+      return last
+        ? `Installing ${name} failed: ${error.message} Output: ${last}`
+        : `Installing ${name} failed: ${error.message}`;
+    }
     case 'permission-denied':
-    case 'command-failed':
     case 'process-open-failed':
       return `Installing ${name} failed: ${error.message}`;
   }

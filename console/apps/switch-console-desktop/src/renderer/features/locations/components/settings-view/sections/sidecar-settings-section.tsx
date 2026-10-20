@@ -37,7 +37,6 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey }),
         queryClient.invalidateQueries({ queryKey: roomHealthKey(agent?.serverId ?? null) }),
-        queryClient.invalidateQueries({ queryKey: ['agent-auto-session', agentId] }),
         queryClient.invalidateQueries({ queryKey: ['shared-host-logs', agentId] }),
       ]);
     },

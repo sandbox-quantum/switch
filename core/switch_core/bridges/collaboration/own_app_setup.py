@@ -51,8 +51,9 @@ def slack_manifest() -> dict[str, Any]:
     """The manifest of a Slack app that does everything this server uses."""
     commands = []
     for command in COMMANDS:
-        # A command with no description is one kept out of the listing.
-        if not command.description.strip():
+        # Only a command that does something is registered with Slack, and a
+        # hidden one or one with no description is kept out of the listing.
+        if command.handler is None or command.hidden or not command.description.strip():
             continue
         entry: dict[str, Any] = {
             "command": f"/{command.name}",

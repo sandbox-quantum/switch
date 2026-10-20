@@ -16,7 +16,6 @@ import {
 import { KV } from '@main/db/kv';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
 import {
   type ConnectRemoteServerResult,
   type DockerAvailability,
@@ -41,7 +40,7 @@ import {
 import { coreStartedAt } from './compose';
 import { hostAccount, readRegister, writeRecord } from './console-register';
 import { readVersionStatus } from './deployed-version';
-import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
+import { managedServerAddresses, type LocalServerPorts } from './free-port';
 import { createRemoteServerHost, type RemoteServerHost } from './host/remote-host';
 import { hostSlug, remoteSecretsKey } from './host/remote-identity';
 import {
@@ -62,6 +61,7 @@ import {
 } from './pipeline';
 import { clearPorts } from './ports';
 import { clearSecrets } from './secrets';
+import { managedSwitchVersion } from './server-version';
 import {
   acquireServerLock,
   CONSOLE_INSTANCE,
@@ -104,7 +104,7 @@ function initialStatus(sshHost: string): RemoteServerStatus {
     checked: false,
     upgrade: null,
     serverId: null,
-    version: COMPATIBLE_SWITCH_VERSION,
+    version: managedSwitchVersion(),
     deployedVersion: null,
     drift: null,
     // A remote host builds nothing: its stack always runs the pinned released
@@ -581,7 +581,7 @@ export class RemoteServerService {
           );
         });
       }
-      const version = await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION);
+      const version = await readVersionStatus(host, managedSwitchVersion());
       let journal: UpgradeJournal | null;
       try {
         journal = await readUpgradeJournal(host);
@@ -591,7 +591,7 @@ export class RemoteServerService {
           upgrade: {
             state: 'failed',
             from: version.deployedVersion ?? 'an unknown version',
-            to: COMPATIBLE_SWITCH_VERSION,
+            to: managedSwitchVersion(),
             error: error instanceof Error ? error.message : String(error),
           },
         });
@@ -724,19 +724,16 @@ export class RemoteServerService {
     serverId: string,
     ports: LocalServerPorts
   ): Promise<boolean> {
-    const gatewayUrl = gatewayUrlFor(ports);
-    const apiUrl = apiUrlFor(ports);
+    const addresses = managedServerAddresses(ports);
     const record = await getRemoteManagedServer(sshHost);
-    if (!record || (record.gatewayUrl === gatewayUrl && record.apiUrl === apiUrl)) return false;
+    if (!record || (record.url === addresses.url && record.dashboardUrl === addresses.dashboardUrl))
+      return false;
     log.info(`remote-switch-server: the stack on ${sshHost} now publishes different ports`, {
       serverId,
-      from: record.gatewayUrl,
-      to: gatewayUrl,
+      from: record.url,
+      to: addresses.url,
     });
-    await ensureManagedServer(
-      { name: record.name, gatewayUrl, apiUrl },
-      { kind: 'remote', sshHost }
-    );
+    await ensureManagedServer({ name: record.name, ...addresses }, { kind: 'remote', sshHost });
     return true;
   }
 
@@ -847,7 +844,7 @@ export class RemoteServerService {
           serverId: result.serverId,
           message: null,
           error: null,
-          deployedVersion: COMPATIBLE_SWITCH_VERSION,
+          deployedVersion: managedSwitchVersion(),
           drift: null,
           upgrade: null,
           deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
@@ -959,7 +956,7 @@ export class RemoteServerService {
         // Sessions and watchers turned away while an update was owed can run
         // now; the ones waiting out that update carry on by themselves.
         this.releaseRefused(sshHost, result.serverId);
-        this.setStatus(sshHost, await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION));
+        this.setStatus(sshHost, await readVersionStatus(host, managedSwitchVersion()));
         this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
         this.removedHere.delete(sshHost);
         await this.record(sshHost, host, 'connected');
@@ -1014,7 +1011,7 @@ export class RemoteServerService {
         return {
           kind: 'connected',
           serverId: result.serverId,
-          deployedVersion: COMPATIBLE_SWITCH_VERSION,
+          deployedVersion: managedSwitchVersion(),
         };
       case 'docker-unavailable':
       case 'cancelled':

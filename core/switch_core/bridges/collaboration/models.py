@@ -1,4 +1,4 @@
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import AfterValidator, BaseModel
 
@@ -14,6 +14,29 @@ once, rather than in each adapter.
 """
 
 ChannelType = Literal["lobby", "channel_public", "channel_private", "group", "direct"]
+
+ChannelRetirement = Literal["archived", "deleted", "left", "kept"]
+"""What deleting a room does to its platform channel when all goes to plan.
+
+`left` is the bot leaving a chat it cannot archive or delete; `kept` is a
+channel Switch has no permission to touch, which somebody removes on the
+platform itself.
+"""
+
+
+class RetireOutcome(BaseModel):
+    """What happened to a room's platform channel when the room was deleted.
+
+    `failed` means the channel is still there and needs cleaning up by hand;
+    `reason` says why, in the platform's or the bridge's words.
+    """
+
+    outcome: Literal["archived", "deleted", "left", "kept", "failed"]
+    reason: str | None = None
+
+    @classmethod
+    def failed(cls, reason: str) -> Self:
+        return cls(outcome="failed", reason=reason)
 
 
 class ChannelCreationUnsupported(ValueError):

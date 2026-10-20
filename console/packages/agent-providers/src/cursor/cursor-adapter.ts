@@ -133,7 +133,9 @@ export const cursorAcp: AcpProviderHooks = {
   authMethodId: (env) => (env.CURSOR_API_KEY?.trim() ? undefined : 'cursor_login'),
   promptCapabilities: { image: true },
   // Cursor's own modes are workflows (agent, plan, ask), not permission
-  // levels, so the runtime mode is enforced on its permission requests.
+  // levels, so the runtime mode is enforced on its permission requests. Its
+  // Auto-review classifier is not offered over ACP, so auto mode asks the way
+  // approval-required does.
   sessionMode: () => 'agent',
   mcpServerOf: (toolCall) => {
     const server = toolCall.rawInput?.providerIdentifier;

@@ -24,6 +24,7 @@ export function mapAgentRowToAgent(row: AgentRow, serverId: string | null): Agen
     serverId,
     status: row.status ?? null,
     autoApprove: row.autoApprove,
+    autoMode: row.autoMode,
     ownerName: row.ownerName ?? null,
     providerConfig: row.providerConfig ?? null,
     createdAt: row.createdAt,

@@ -40,6 +40,7 @@ const BUILT: BuiltDefinition = {
     model: 'sonnet',
     advanced_config: { effort: 'high' },
     instructions: 'Build things.',
+    auto_mode: false,
     auto_approve: false,
     directory: '/work/builder',
   },

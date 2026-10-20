@@ -1,6 +1,6 @@
 import { ExternalLink, Loader2, MessagesSquare, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -10,9 +10,11 @@ import { appState } from '@renderer/lib/stores/app-state';
 import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
 import { embedIsStale, type RoomEmbed } from '@shared/core/switch-rooms/room-embed';
+import { roomEmbedSlotStore } from './room-embed-slot';
 import { openRoomChannel } from './room-links';
 import { roomTabStore } from './room-tab-store';
 import { currentMattermostTheme } from './theme-tokens';
+import { embeddedRoomFallbackTab } from './view';
 import { WEBVIEW_ALLOW_POPUPS } from './webview-attrs';
 
 /**
@@ -49,6 +51,43 @@ function RoomNotice({
   );
 }
 
+type Box = { top: number; left: number; width: number; height: number };
+
+/**
+ * Where `target` sits inside the layer's parent, which the layer is positioned
+ * against, followed as either is resized; null while there is no target.
+ * The parent rather than `offsetParent`, which is null while the layer is hidden.
+ */
+function useBoxWithin(
+  target: HTMLElement | null,
+  layer: React.RefObject<HTMLDivElement | null>
+): Box | null {
+  const [box, setBox] = useState<Box | null>(null);
+  useLayoutEffect(() => {
+    const container = layer.current?.parentElement ?? null;
+    if (!target || !container) {
+      setBox(null);
+      return;
+    }
+    const measure = () => {
+      const inner = target.getBoundingClientRect();
+      const outer = container.getBoundingClientRect();
+      setBox({
+        top: inner.top - outer.top,
+        left: inner.left - outer.left,
+        width: inner.width,
+        height: inner.height,
+      });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(target);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [target, layer]);
+  return box;
+}
+
 /**
  * Persistent host for room conversations.
  *
@@ -60,12 +99,20 @@ function RoomNotice({
  *
  * Rooms visited earlier stay mounted (bounded by MAX_LIVE_EMBEDS) so switching
  * between two rooms is instant in both directions.
+ *
+ * It fills the main panel under the room view's title bar, or — when a page
+ * shows a room inside itself, as an agent's page does — the box that page
+ * claimed in `roomEmbedSlotStore`.
  */
 export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
   const { effectiveTheme } = useTheme();
   const isRoomView = appState.navigation.currentViewId === 'room';
-  const activeRoomId =
+  const navigatedRoomId =
     (appState.navigation.viewParamsStore.room as { roomId?: string } | undefined)?.roomId ?? null;
+  const slot = roomEmbedSlotStore.slot;
+  const activeRoomId = slot?.roomId ?? navigatedRoomId;
+  const layerRef = useRef<HTMLDivElement>(null);
+  const slotBox = useBoxWithin(slot?.element ?? null, layerRef);
 
   const [states, setStates] = useState<Map<string, EmbedState>>(new Map());
   // Visit order, oldest first — drives eviction.
@@ -181,13 +228,19 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
   // applies to a room showing its settings: the conversation is still there,
   // just not on screen.
   const visible =
-    isRoomView && activeRoomId !== null && roomTabStore.tabFor(activeRoomId) === 'chat';
+    (slot ? slotBox !== null : isRoomView) &&
+    activeRoomId !== null &&
+    roomTabStore.tabFor(activeRoomId, slot ? embeddedRoomFallbackTab(activeRoomId) : 'chat') ===
+      'chat';
   const active = activeState;
 
   return (
     <div
+      ref={layerRef}
+      style={slot && slotBox ? slotBox : undefined}
       className={cn(
-        'absolute inset-x-0 top-10 bottom-0 overflow-hidden rounded-b-[10px] bg-background',
+        'absolute overflow-hidden bg-background',
+        slot ? 'rounded-br-[10px]' : 'inset-x-0 top-10 bottom-0 rounded-b-[10px]',
         visible ? 'block' : 'hidden'
       )}
     >

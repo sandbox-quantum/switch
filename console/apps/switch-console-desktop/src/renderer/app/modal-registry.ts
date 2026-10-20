@@ -4,6 +4,7 @@ import {
   ConnectorAppSecretDialog,
   ConnectorAppSetupDialog,
 } from '@renderer/features/admin/connector-app-dialogs';
+import { RenameAgentModal } from '@renderer/features/agent-identity/rename-agent-modal';
 import { RenameChatModal } from '@renderer/features/chats/components/chat-modals';
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
 import { ConnectServiceModal } from '@renderer/features/connectors/connect-service-modal';
@@ -70,6 +71,7 @@ export const modalRegistry = {
   saveTemplateModal: createModal(SaveTemplateModal, { size: 'sm', dismissOnOutsideClick: false }),
   confirmActionModal: createModal(ConfirmActionDialog, { size: 'xs' }),
   deleteAgentModal: createModal(DeleteAgentModal, { size: 'sm' }),
+  renameAgentModal: createModal(RenameAgentModal, { size: 'sm', dismissOnOutsideClick: false }),
   removeAgentConfigModal: createModal(RemoveAgentConfigModal, { size: 'sm' }),
   resetAgentModal: createModal(ResetAgentModal, { size: 'sm' }),
   confirmExternalLinkModal: createModal(ExternalLinkChoiceDialog, { size: 'sm' }),

@@ -45,8 +45,6 @@ Running the agent on a remote host is what closes that gap. Switch Console deplo
 
 The limit is worth knowing before you rely on it: **a host reboot stops the agent, and it takes a Switch Console launch to bring it back.** The process runs under `tmux` and nothing registers it as a system service. Your machine closing is fine; the host restarting is not.
 
-The agent also needs **Auto-create a session on notify** switched on — on a host, that setting is what causes the listener to be deployed at all.
-
 [Onboard a remote host](../host-remotely.md) covers what the machine has to be and how to set it up.
 
 ## Next steps

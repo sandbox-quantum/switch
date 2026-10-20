@@ -17,6 +17,37 @@ export const serviceKeyFormSchema = z.object({
 });
 export type ServiceKeyForm = z.infer<typeof serviceKeyFormSchema>;
 
+/**
+ * Why a service can't be used on the server, for the screens to say what
+ * each person can do about it (`UnavailableCode` in Core's
+ * `connections/broker.py`):
+ * - `coming_soon`: not built yet.
+ * - `switched_off`: the server's operator switched it off in its settings.
+ * - `needs_https`: it can't work on this server: GitHub's App needs the
+ *   server to have an https address.
+ * - `app_not_set_up`: its app is the operator's to set up, under Admin →
+ *   Connector apps, and isn't yet.
+ * - `not_set_up`: nothing on this server connects it.
+ * - `not_fully_set_up`: it can be connected but not granted to agents.
+ */
+export const UNAVAILABLE_CODES = [
+  'coming_soon',
+  'switched_off',
+  'needs_https',
+  'app_not_set_up',
+  'not_set_up',
+  'not_fully_set_up',
+] as const;
+export type UnavailableCode = (typeof UNAVAILABLE_CODES)[number];
+
+/**
+ * A code as the screens act on it: null for none, and for one a newer server
+ * sends that this Console doesn't know, whose reason is then shown as it is.
+ */
+export function knownUnavailableCode(code: string | null): UnavailableCode | null {
+  return UNAVAILABLE_CODES.find((known) => known === code) ?? null;
+}
+
 export const connectionCatalogEntrySchema = z.object({
   slug: z.string(),
   name: z.string(),
@@ -29,6 +60,11 @@ export const connectionCatalogEntrySchema = z.object({
   status: z.enum(['connected', 'not_connected', 'needs_reauthorization', 'error', 'coming_soon']),
   /** Why the service cannot be granted to agents on this server; null when it can. */
   unavailable_reason: z.string().nullable(),
+  /**
+   * The same, as a code to act on. Null when it can be granted, and from a
+   * server that predates the codes, where only the reason is shown.
+   */
+  unavailable_code: z.enum(UNAVAILABLE_CODES).nullable(),
   /**
    * Whether a grant hands the agent the owner's own token: on or off, at the
    * connection's level. False for GitHub, whose grant names repositories.
@@ -63,6 +99,7 @@ export const connectionCatalogSchema = z.object({
         status: true,
         connectable: true,
         unavailable_reason: true,
+        unavailable_code: true,
         pass_through: true,
         token_lifetime: true,
         loopback_ports: true,
@@ -89,6 +126,7 @@ export const serviceConnectionsSchema = z.object({
       configured: z.boolean(),
       unavailable_reason: z.string().nullable(),
       // Absent from a Switch that predates them.
+      unavailable_code: z.string().nullable().default(null),
       pass_through: z.boolean().default(false),
       token_lifetime: z.number().nullable().default(null),
       loopback_ports: z.array(z.number().int()).nullable().default(null),

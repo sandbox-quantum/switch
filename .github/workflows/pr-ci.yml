@@ -91,6 +91,10 @@ jobs:
             backend:
               - *shared
               - 'core/**'
+              # switch-core serves the dashboard's pages from a list that
+              # core/tests holds equal to this file's routes, so a new page
+              # here has to run them too.
+              - 'gateway/src/App.tsx'
               # Tested from core/tests, so a change to it alone still runs them.
               - 'scripts/check_migration_heads_for_open_prs.py'
               - 'scripts/pin_chart_images.py'

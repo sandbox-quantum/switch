@@ -118,8 +118,10 @@ class SearchService {
     this.seedCommands();
   }
 
-  search({ query, context }: CommandPaletteQuery): SearchResult {
-    if (!query.trim()) return { items: this.recents(context), status: 'recents' };
+  search({ query, includeSessions, context }: CommandPaletteQuery): SearchResult {
+    if (!query.trim()) {
+      return { items: includeSessions ? this.recents(context) : [], status: 'recents' };
+    }
 
     const terms = queryTerms(query);
 
@@ -129,7 +131,10 @@ class SearchService {
     // as matches.
     const indexable = terms.filter((t) => t.length >= MIN_INDEXABLE_TERM);
     if (indexable.length === 0) {
-      return { items: this.recents(context), status: 'query-too-short' };
+      return {
+        items: includeSessions ? this.recents(context) : [],
+        status: 'query-too-short',
+      };
     }
 
     // Only the indexable terms narrow the candidate set; `matchTier` then holds
@@ -145,10 +150,11 @@ class SearchService {
                   bm25(search_index) AS rank
            FROM search_index
            WHERE search_index MATCH ?
+             AND (? OR item_type != 'session')
            ORDER BY rank
            LIMIT ?`
         )
-        .all(ftsQuery, FTS_CANDIDATE_LIMIT) as FtsRow[];
+        .all(ftsQuery, includeSessions ? 1 : 0, FTS_CANDIDATE_LIMIT) as FtsRow[];
     } catch (e) {
       log.error('SearchService: FTS query failed', { query, error: String(e) });
       return { items: [], status: 'failed' };

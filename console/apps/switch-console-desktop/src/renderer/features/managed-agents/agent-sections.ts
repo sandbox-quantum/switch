@@ -32,7 +32,7 @@ export function shownAgentSection(
 }
 
 /**
- * The room whose summary shows: the one chosen, unless a section shows instead
+ * The room that shows: the one chosen, unless a section shows instead
  * or the agent is no longer in it. While its rooms load it is taken on trust,
  * so a reopened page does not flash a chat first.
  */

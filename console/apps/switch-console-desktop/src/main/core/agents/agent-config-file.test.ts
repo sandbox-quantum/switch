@@ -210,7 +210,7 @@ describe('decideArtifactSync', () => {
 });
 
 describe('template origin', () => {
-  it('round-trips the template an agent was created from', () => {
+  it('round-trips the bundled template an older agent was created from', () => {
     const text = serialiseAgentConfigFile({
       instructions: 'i',
       template: { id: 'bundled:switch-expert', name: 'Switch expert', source: 'bundled' },

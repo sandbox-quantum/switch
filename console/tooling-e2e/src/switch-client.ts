@@ -278,6 +278,58 @@ export class SwitchClient {
     return typeof status === 'string' ? status : null;
   }
 
+  /**
+   * `PUT /gateway/agents/{id}/name` — rename an agent and set its display name
+   * in the same step. Returns the name the server now holds.
+   */
+  async renameAgent(
+    agentId: string,
+    name: string,
+    displayName: string | null
+  ): Promise<{ name: string; displayName: string | null; bridgeFailures: string[] }> {
+    const body = await this.gateway<{
+      agent: { name: string; display_name: string | null };
+      bridge_failures: string[];
+    }>('PUT', `/agents/${agentId}/name`, { name, display_name: displayName });
+    return {
+      name: body.agent.name,
+      displayName: body.agent.display_name,
+      bridgeFailures: body.bridge_failures,
+    };
+  }
+
+  /**
+   * `PUT /gateway/agents/{id}/addressing-policy` with no policy, so anyone in
+   * the room may address the agent, not only its owner.
+   */
+  async openAddressing(agentId: string): Promise<void> {
+    await this.gateway('PUT', `/agents/${agentId}/addressing-policy`, { policy: null });
+  }
+
+  /**
+   * `POST /gateway/collaborations/{bridge}/identities` on the default bridge
+   * of `bridgeType` — link a chat account to the signed-in Switch user, so
+   * Switch can recognise that person in a room (what the rename and delete
+   * chat commands check).
+   */
+  async claimIdentity(
+    bridgeType: string,
+    externalUserId: string,
+    username: string
+  ): Promise<void> {
+    const bridges = await this.gateway<
+      { bridge_id: string; bridge_type: string; is_default?: boolean }[]
+    >('GET', '/collaborations');
+    const ofType = bridges.filter((row) => row.bridge_type === bridgeType);
+    const bridge = ofType.find((row) => row.is_default) ?? ofType[0];
+    if (!bridge) throw new Error(`No ${bridgeType} collaboration bridge on this Switch server`);
+    await this.gateway('POST', `/collaborations/${bridge.bridge_id}/identities`, {
+      external_user_id: externalUserId,
+      username,
+      user_id: null,
+    });
+  }
+
   async listAgents(): Promise<AgentSummary[]> {
     const rows = await this.gateway<{ id: string; name: string }[]>('GET', '/agents');
     return rows.map((row) => ({ id: row.id, name: row.name }));
@@ -382,7 +434,7 @@ export class SwitchClient {
 
   /**
    * Long-poll `GET /agents/{id}/notifications?timeout=` as the agent. Returns
-   * only *notifiable* events (addressed messages, task events, listened-for
+   * only *notifiable* events (addressed messages and listened-for
    * joins) and never drains the per-room queues a live session polls, so the
    * harness can watch the same stream Switch Console's auto-session watcher
    * watches without stealing a running session's events.

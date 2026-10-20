@@ -8,7 +8,10 @@ export default defineConfig({
     proxy: {
       "/gateway": {
         target: "http://127.0.0.1:8000",
-        changeOrigin: true,
+        // Keep the browser's Host, as the gateway container's nginx does:
+        // switch-core starts a sign-in on the callback's host when the request
+        // names another, so a rewritten Host costs every sign-in a redirect.
+        changeOrigin: false,
       },
     },
   },

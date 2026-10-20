@@ -159,6 +159,13 @@ CONVERSATION_RECHECK_SECONDS = 2.0
 # `agent_event_boot`), so the server can tell a ticket from an own event number
 # when a client sends one back.
 
+# Own event types no code writes any more. Rows of these types can still be in
+# `agent_events` until retention deletes them, and are skipped on read because
+# they no longer parse as an `AgentEvent`.
+RETIRED_EVENT_TYPES = frozenset(
+    {"task_delegate", "task_accept", "task_update", "task_finalise", "task_cancel"}
+)
+
 _READ = {"operation": "read"}
 _UNREAD = {"operation": "unread"}
 
@@ -221,8 +228,8 @@ class CursorExpiredError(Exception):
 def is_notifiable(event: AgentEvent) -> bool:
     """Whether an event is addressed at the agent rather than ambient context.
 
-    Addressed messages, task events, and room_join events the agent is
-    configured to listen for. Excludes conversation and admin command events.
+    Addressed messages and the room_join events the agent is configured to
+    listen for. Excludes conversation and admin command events.
     This is the `addressed` delivery filter: a supervising connection watching
     every room wants only these, while a session in a single room wants
     everything.
@@ -231,10 +238,7 @@ def is_notifiable(event: AgentEvent) -> bool:
         return getattr(event.payload, "addressed", False)
     if event.type == "room_join":
         return getattr(event.payload, "listening", False)
-    if event.type == "command":
-        return False
-    # All task_* events are enqueued only for the directly-involved agent.
-    return event.type.startswith("task_")
+    return False
 
 
 @dataclass(frozen=True)
@@ -733,7 +737,11 @@ class EventBuffer:
         started = time.perf_counter()
         query = (
             select(AgentEventRow)
-            .where(AgentEventRow.agent_id == agent_id, AgentEventRow.seq > after_seq)
+            .where(
+                AgentEventRow.agent_id == agent_id,
+                AgentEventRow.seq > after_seq,
+                AgentEventRow.type.not_in(RETIRED_EVENT_TYPES),
+            )
             .order_by(AgentEventRow.seq)
         )
         if rooms is not None:

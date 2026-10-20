@@ -1,8 +1,8 @@
 """Which sent events belong in the message log.
 
 The log and the bus are two different things. The bus carries everything a
-running system says to itself — a typing indicator, an RPC request, a task
-transition. The log is the conversation: what a person reading the room later
+running system says to itself — a typing indicator, an RPC request, a
+runtime state change. The log is the conversation: what a person reading the room later
 would expect to find there. Only the second belongs in `messages`.
 
 This is a denylist rather than an allowlist on purpose. A type nobody
@@ -21,17 +21,6 @@ MEMBERSHIP_EVENT_TYPE = "m.room.member"
 
 # Ephemeral: presence-like state, superseded by the next one, null body.
 EPHEMERAL = frozenset({"com.switch.agent.runtime_state"})
-
-# Already durable in the `tasks` table, which is the record readers query.
-PERSISTED_ELSEWHERE = frozenset(
-    {
-        "com.switch.task.delegate",
-        "com.switch.task.accept",
-        "com.switch.task.update",
-        "com.switch.task.finalise",
-        "com.switch.task.cancel",
-    }
-)
 
 # Measurements of a run, not utterances in a room. If these are worth keeping
 # they want a table shaped for querying them, not the conversation log.
@@ -65,10 +54,16 @@ RETIRED = frozenset(
         # Deleted as dead since the initial import.
         "com.switch.permission.request",
         "com.switch.permission.response",
+        # Deleted with the task protocol. Their record is the `tasks` table.
+        "com.switch.task.delegate",
+        "com.switch.task.accept",
+        "com.switch.task.update",
+        "com.switch.task.finalise",
+        "com.switch.task.cancel",
     }
 )
 
-NOT_RECORDED = EPHEMERAL | PERSISTED_ELSEWHERE | TELEMETRY | RETIRED
+NOT_RECORDED = EPHEMERAL | TELEMETRY | RETIRED
 
 # The observe prefix is reserved and unimplemented; no type under it exists to
 # name individually yet.

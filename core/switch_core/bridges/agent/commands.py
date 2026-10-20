@@ -7,11 +7,20 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
-from switch_core.agent_display_name import agent_label, agent_label_with_identifier
+from switch_core.agent_display_name import (
+    agent_label,
+    agent_label_with_identifier,
+    label_after_rename,
+)
 from switch_core.aliases import (
     AliasError,
     check_alias_collisions,
     validate_alias_format,
+)
+from switch_core.authz import Principal, require_manage
+from switch_core.bridges.agent.protocol.agent_core import (
+    AgentExistsError,
+    AgentRenameRefused,
 )
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
@@ -19,8 +28,11 @@ from switch_core.bridges.agent.protocol.types import (
     AgentStatus,
     CommandPayload,
 )
+from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.clients.mentions import mention_tokens as _mention_tokens
-from switch_core.db.models import CollaborationBridge, Room
+from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.models import CollaborationBridge, Room, User, require_tenant_id
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
@@ -187,8 +199,9 @@ class CommandArg:
     Every argument declared today is a mention-style token (`@agent`, `@role`,
     `@alias`) matching `mentions.NAME_CHAR`, so a bridge can round-trip a
     declared value back into the positional `args` string the handlers parse.
-    A command taking genuine free text is not representable here and would need
-    a kind/type field adding before it could be declared.
+    The one exception is `free_text`: the last argument may take the rest of
+    the line as written, spaces and all (a display name), and a bridge passes
+    it through untouched.
 
     `name` is what the user sees as the field label on platforms that render
     one, so it must be lowercase and match Discord's `^[-_a-z0-9]{1,32}$`.
@@ -197,6 +210,7 @@ class CommandArg:
     name: str
     description: str
     required: bool
+    free_text: bool = False
 
 
 @dataclass(frozen=True)
@@ -1104,6 +1118,368 @@ async def _cmd_invite(
     )
 
 
+async def _cmd_remove_agent(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+
+    tokens = _mention_tokens(event.args)
+    if not tokens:
+        await _reply(
+            client,
+            room,
+            event,
+            "Usage: `!remove-agent @agent-name` — the agent to remove from this room.",
+        )
+        return
+    token = tokens[0]
+
+    # `remove-agent` is admin-owned, so only the always-present admin client
+    # runs this handler.
+    host = cast("CommandConsumer", client)
+    async with tenant_session(host.session_factory, host.tenant_id) as session:
+        target = await _room_agent_by_name_or_alias(
+            client, session, meta.room_id, token
+        )
+        if target is None:
+            await _reply(
+                client,
+                room,
+                event,
+                f"No agent named `{token}` in this room. Run `!list-agents`.",
+            )
+            return
+        if not await _may_remove_agent(host, session, target, meta.room_id, event):
+            await _reply(
+                client,
+                room,
+                event,
+                f"You can't remove **{_label(target)}**: it doesn't take "
+                "instructions from you. Ask a workspace admin, or whoever it "
+                "answers to.",
+            )
+            return
+
+    await host._room_service.remove_agents_from_room(meta.room_id, [target.id])
+    await _reply(client, room, event, f"Removed **{_label(target)}** from this room.")
+
+
+async def _may_remove_agent(
+    host: CommandConsumer,
+    session: AsyncSession,
+    target: Agent,
+    room_id: str,
+    event: CommandEvent,
+) -> bool:
+    """Whether the command's sender may take `target` out of the room.
+
+    Anyone the agent would take instructions from may; so may a workspace
+    admin, and an agent that manages agents for the target's owner.
+    """
+    resolver = AddressingResolver(
+        room_store=host._room_store,
+        room_role_store=host._room_role_store,
+        client_store=host.client_store,
+        agent_store=host._agent_store,
+        external_user_store=host._external_user_store,
+        live_connection_ids=host._connections.live_connection_ids,
+    )
+    decision = await resolver.permitted(
+        session, agent=target, room_id=room_id, sender=event.user_id
+    )
+    if decision.allowed:
+        return True
+    principal = await resolver.resolve_sender(session, event.user_id)
+    if principal is None:
+        return False
+    if principal.kind == "user":
+        for user_id in principal.user_ids:
+            user = await session.get(User, user_id)
+            if user is not None and await host._user_store.administers(session, user):
+                return True
+        return False
+    if principal.kind == "agent":
+        sender = await host._agent_store.get(session, principal.id)
+        return (
+            sender is not None
+            and sender.can_manage_agents
+            and sender.owner_id is not None
+            and sender.owner_id == target.owner_id
+        )
+    return False
+
+
+# ── Rename and delete ─────────────────────────────────────────────────────────
+
+
+def _bare_name(token: str) -> str:
+    return token.strip().lstrip("@")
+
+
+def _strip_quotes(text: str) -> str:
+    text = text.strip()
+    for opening, closing in (('"', '"'), ("'", "'"), ("\u201c", "\u201d")):
+        if len(text) >= 2 and text.startswith(opening) and text.endswith(closing):
+            return text[1:-1].strip()
+    return text
+
+
+@dataclass(frozen=True)
+class _Authority:
+    """Whether this command's sender may rename or delete an agent: the Switch
+    user they act as when they may, or why not when they may not."""
+
+    user_id: str | None
+    refusal: str | None
+
+
+async def _manage_authority(
+    host: CommandConsumer, session: AsyncSession, event: CommandEvent, agent: Agent
+) -> _Authority:
+    """Whether this command's sender may rename or delete `agent`.
+
+    The same rule as the gateway: the agent's owner, or an admin of the
+    workspace. The sender is a person on a chat platform, known to Switch
+    through the Switch users who have linked that platform account; an
+    account nobody has linked cannot be told apart from anyone else, so it is
+    refused with what to do about it.
+    """
+    client = await host.client_store.get_by_transport_user_id(session, event.user_id)
+    external = (
+        await host._external_user_store.get_by_client_id(session, client.id)
+        if client is not None
+        else None
+    )
+    if external is None:
+        return _Authority(
+            None,
+            "Only a person can rename or delete an agent, from their own chat account.",
+        )
+    claimants = await host._external_user_store.claimant_ids(session, external.id)
+    if not claimants:
+        return _Authority(
+            None,
+            "This chat account isn't linked to a Switch user, so I can't tell "
+            "whether you own this agent. Link it to your Switch user in Switch "
+            "Console (Messaging apps), then try again.",
+        )
+    for user_id in claimants:
+        user = await host._user_store.get(session, user_id)
+        if user is None:
+            continue
+        try:
+            require_manage(
+                Principal(user.id, await host._user_store.administers(session, user)),
+                agent.owner_id,
+            )
+            return _Authority(user.id, None)
+        except PermissionError:
+            continue
+    return _Authority(
+        None, "Only the agent's owner or a workspace admin can rename or delete it."
+    )
+
+
+async def _cmd_rename_agent(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    host = cast("CommandConsumer", client)
+    usage = (
+        "Usage: `!rename-agent @agent new-name [Display Name]`. Leave out the "
+        "display name to keep it, or to have it follow the new name when it is "
+        "just the old name written out."
+    )
+    parts = (event.args or "").split(maxsplit=2)
+    if len(parts) < 2:
+        await _reply(host, room, event, usage)
+        return
+    old, new_name = _bare_name(parts[0]), _bare_name(parts[1])
+    given_label = _strip_quotes(parts[2]) if len(parts) == 3 else None
+
+    async with host.session_factory() as session:
+        agent = await host._agent_store.get_by_name_insensitive(session, old)
+        if agent is None:
+            await _reply(
+                host,
+                room,
+                event,
+                f"No agent named `{old}`. Run `!list-switch-agents` to see registered agents.",
+            )
+            return
+        refusal = (await _manage_authority(host, session, event, agent)).refusal
+        agent_id, old_name, old_label = agent.id, agent.name, agent.display_name
+        # Not held across the rename, which opens its own sessions and calls
+        # every bridge.
+        await session.commit()
+    if refusal is not None:
+        await _reply(host, room, event, f"⚠️ {refusal}")
+        return
+
+    display_name = (
+        given_label
+        if given_label is not None
+        else label_after_rename(old_label, old_name, new_name)
+    )
+    try:
+        result = await host._agent_admin.core.rename_agent(
+            agent_id=agent_id, new_name=new_name, display_name=display_name
+        )
+    except (AgentExistsError, AgentRenameRefused, ValueError) as exc:
+        await _reply(host, room, event, f"⚠️ Not renamed: {exc}")
+        return
+
+    label = agent_label_with_identifier(result.display_name, result.new_name)
+    if result.old_name == result.new_name:
+        lines = [f"Updated **{label}**."]
+    else:
+        lines = [
+            f"Renamed `{result.old_name}` to **{label}**. Mention it by its new "
+            "name from now on."
+        ]
+    if result.bridge_failures:
+        lines.append(
+            "Not yet updated on "
+            + "; ".join(result.bridge_failures)
+            + ". It catches up when that bridge next starts."
+        )
+    if result.templates_mentioning_old_name:
+        lines.append(
+            "Saved templates still naming the old name: "
+            + ", ".join(f"`{name}`" for name in result.templates_mentioning_old_name)
+            + "."
+        )
+    logger.info(
+        "Renamed agent %s from %s to %s by in-room command from %s",
+        agent_id,
+        result.old_name,
+        result.new_name,
+        event.user_id,
+    )
+    await _reply(host, room, event, "\n".join(lines))
+
+
+async def _cmd_delete_agent(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    host = cast("CommandConsumer", client)
+    parts = (event.args or "").split()
+    if not parts:
+        await _reply(
+            host,
+            room,
+            event,
+            "Usage: `!delete-agent @agent`, then `!delete-agent @agent confirm` to go ahead.",
+        )
+        return
+    name = _bare_name(parts[0])
+    confirming = len(parts) > 1 and _bare_name(parts[1]).lower() == "confirm"
+
+    async with host.session_factory() as session:
+        agent = await host._agent_store.get_by_name_insensitive(session, name)
+        if agent is None:
+            await _reply(
+                host,
+                room,
+                event,
+                f"No agent named `{name}`. Run `!list-switch-agents` to see registered agents.",
+            )
+            return
+        authority = await _manage_authority(host, session, event, agent)
+        agent_id, agent_name = agent.id, agent.name
+        label = agent_label_with_identifier(agent.display_name, agent.name)
+        other_rooms = [
+            r.transport_room_id
+            for r in await host._room_store.get_rooms_for_agent(session, agent.id)
+            if r.transport_room_id != room.room_id
+        ]
+        await session.commit()
+    if authority.refusal is not None:
+        await _reply(host, room, event, f"⚠️ {authority.refusal}")
+        return
+
+    meta = await host._resolve_room_meta(room.room_id)
+    agent_request = (
+        host._deletion_requests.take(meta.room_id, agent_id)
+        if confirming and meta is not None
+        else None
+    )
+    person_request = confirming and host.take_delete_request(
+        room.room_id, event.user_id, agent_id
+    )
+    if not (agent_request or person_request):
+        host.request_delete(room.room_id, event.user_id, agent_id)
+        await _reply(
+            host,
+            room,
+            event,
+            f"This permanently deletes **{label}**: its credentials, its place in "
+            "every room, and its handle on connected chat platforms. To go ahead, "
+            f"send `!delete-agent {agent_name} confirm` within 2 minutes.",
+        )
+        return
+
+    try:
+        deletion = await host._agent_admin.core.delete_agent(agent_id=agent_id)
+    except ValueError as exc:
+        await _reply(host, room, event, f"⚠️ Not deleted: {exc}")
+        return
+    async with host.session_factory() as session:
+        await record_audit_event(
+            session,
+            tenant_id=require_tenant_id(),
+            actor_user_id=authority.user_id,
+            action=AuditAction.AGENT_DELETED,
+            target_type="agent",
+            target_id=agent_id,
+            details={
+                "agent_name": agent_name,
+                "via": "chat command",
+                "requested_by_agent_name": (
+                    agent_request.requested_by if agent_request else None
+                ),
+            },
+        )
+        await session.commit()
+    asked = (
+        f", as {agent_request.requested_by} asked" if agent_request is not None else ""
+    )
+    for other in other_rooms:
+        try:
+            await host.actor.send_admin(
+                other,
+                f"🗑️ **{label}** was deleted{asked}. It no longer answers here.",
+                message_type=AdminMessageType.AGENT_LIFECYCLE,
+                thread_root_id=None,
+            )
+        except Exception:
+            logger.warning(
+                "Could not announce the deletion of agent %s in %s",
+                agent_id,
+                other,
+                exc_info=True,
+            )
+    lines = [f"Deleted **{label}**{asked}."]
+    if deletion.bridge_failures:
+        lines.append(
+            "Clean-up still to finish on "
+            + "; ".join(deletion.bridge_failures)
+            + ". It finishes when that bridge next starts."
+        )
+    logger.info(
+        "Deleted agent %s (%s) by in-room command from %s",
+        agent_id,
+        agent_name,
+        event.user_id,
+    )
+    await _reply(host, room, event, "\n".join(lines))
+
+
 # Emoji + label shown per status by the !status command.
 _STATUS_DISPLAY: dict[AgentStatus, tuple[str, str]] = {
     AgentStatus.LIVE: ("🟢", "live"),
@@ -1129,7 +1505,7 @@ def _format_status_lines(
 ) -> str:
     """Render the !status summary: one line per agent (sorted by the name it is
     shown under) with its presence emoji + label, runtime state (if any),
-    agent_type, task capabilities, and a Switch Console deeplink to its session
+    agent_type, and a Switch Console deeplink to its session
     when one is known.
 
     The deeplink is shown only for an agent whose session is LIVE in this room:
@@ -1146,14 +1522,6 @@ def _format_status_lines(
         if runtime is not None:
             head += f" · {runtime}"
         parts = [head, agent.agent_type]
-        task_protocol = (agent.integration_profile or {}).get("task_protocol", {})
-        caps = []
-        if task_protocol.get("can_delegate"):
-            caps.append("delegate")
-        if task_protocol.get("can_accept"):
-            caps.append("accept")
-        if caps:
-            parts.append("+".join(caps))
         deeplink = deeplinks.get(agent.id)
         if deeplink and status == AgentStatus.LIVE:
             parts.append(f"[Open in Switch Console]({deeplink})")
@@ -1568,6 +1936,45 @@ COMMANDS: list[Command] = [
         admin_owned=True,
     ),
     Command(
+        "remove-agent",
+        "Remove an agent from this room. Usage: `!remove-agent @agent-name`.",
+        _cmd_remove_agent,
+        args_spec=(
+            CommandArg("agent", "The agent to remove from this room", required=True),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "rename-agent",
+        "Rename an agent, and its display name with it. Owner or admin only. "
+        "Usage: `!rename-agent @agent new-name [Display Name]`.",
+        _cmd_rename_agent,
+        args_spec=(
+            CommandArg("agent", "The agent to rename", required=True),
+            CommandArg(
+                "new_name", "Its new name (lowercase, no spaces)", required=True
+            ),
+            CommandArg(
+                "display_name",
+                "Its new display name (leave empty to keep it)",
+                required=False,
+                free_text=True,
+            ),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "delete-agent",
+        "Delete an agent everywhere, after a confirmation. Owner or admin only. "
+        "Usage: `!delete-agent @agent`, then `!delete-agent @agent confirm`.",
+        _cmd_delete_agent,
+        args_spec=(
+            CommandArg("agent", "The agent to delete", required=True),
+            CommandArg("confirm", "Type confirm to go ahead", required=False),
+        ),
+        admin_owned=True,
+    ),
+    Command(
         "room-url",
         "Show the frontend URL for this room.",
         _cmd_room_url,
@@ -1583,9 +1990,6 @@ COMMANDS: list[Command] = [
         "agents-greet",
         "Have agents in the room introduce themselves.",
         _cmd_agents_greet,
-    ),
-    Command(
-        "admin", "Toggle admin mode on/off for this room.", handler=None, hidden=True
     ),
 ]
 

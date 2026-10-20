@@ -32,7 +32,6 @@ import re
 from dataclasses import dataclass
 from html import unescape
 from typing import Any
-from urllib.parse import urlsplit
 
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn, plain_text
 from switch_core.sessions.contract import (
@@ -239,9 +238,8 @@ STREAM_SLOTS = (
     "switch-steps-bottom",
 )
 
-# The first card of every section, carrying the Console link. The same id in
-# both sections is deliberate and Slack takes it: a reader opens one section or
-# the other, and the link has to be in whichever one they chose.
+# The first card of every section. The same id in both sections is deliberate
+# and Slack takes it.
 _SESSION_CARD = "switch-session"
 
 # Slack's three task states against the contract's four. `declined` is not an
@@ -958,45 +956,25 @@ def _answered_questions(request: SnapshotRequest, content: QuestionsContent) -> 
 # ── Activity ─────────────────────────────────────────────────────────────────
 
 
-def with_session_context(
-    message: SlackMessage,
-    *,
-    session_url: str | None = None,
-    notify_external_id: str | None = None,
+def with_mention(
+    message: SlackMessage, *, notify_external_id: str | None
 ) -> SlackMessage:
-    """Add the Console link and the mention a status post carries beside it.
+    """Add the mention a post asking somebody to act carries.
 
-    Both go under the message rather than into it, and in one row rather than
-    one each. What they sit under is a card — a warning, or where the turn got
-    to — and the card is what is being read; a link and a mention are notes
-    beside it, and two rows of furniture under one sentence is one too many.
-
-    The link is here at all because a post drawn this way holds no activity of
-    its own: it is one line about a turn, and the turn itself is elsewhere. A
-    post asking somebody to act is the one they most need to be able to ask
-    what happened from, so it is the one that has to say where to ask.
+    The note goes under the message rather than into it: what it sits under is
+    a card — a warning, a request, or where the turn got to — and the card is
+    what is being read.
     """
-    text = message.text
-    linked = session_url is not None and urlsplit(session_url).scheme in {
-        "https",
-        "http",
-        "switchdash",
-    }
-    note = []
-    if notify_external_id and re.fullmatch(r"[UW][A-Z0-9]+", notify_external_id):
-        mention = f"<@{notify_external_id}>"
-        note.append(f"Needs attention: {mention}")
-        text = f"{mention} {text}"
-    if linked:
-        note.append(f"<{session_url}|Open in Console app>")
-    if note:
-        message.blocks.append(
-            {
-                "type": "context",
-                "elements": [{"type": "mrkdwn", "text": " · ".join(note)}],
-            }
-        )
-    return SlackMessage(text=text, blocks=message.blocks)
+    if not notify_external_id or not re.fullmatch(r"[UW][A-Z0-9]+", notify_external_id):
+        return message
+    mention = f"<@{notify_external_id}>"
+    message.blocks.append(
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"Needs attention: {mention}"}],
+        }
+    )
+    return SlackMessage(text=f"{mention} {message.text}", blocks=message.blocks)
 
 
 def render_attention(summary: str) -> SlackMessage:
@@ -1209,7 +1187,6 @@ def render_activity_plan(
     turn: TurnUpsert,
     *,
     elapsed_seconds: float | None = None,
-    session_url: str | None = None,
     interrupt_turn_id: str | None = None,
 ) -> SlackMessage:
     """A turn's activity as one plan block: the header, and the steps behind it.
@@ -1248,7 +1225,7 @@ def render_activity_plan(
             "type": "plan",
             "title": _truncate(title, _MAX_PLAN_TITLE),
             "tasks": [
-                _session_card(session_url, live=turn.status not in TURN_ENDED),
+                _session_card(live=turn.status not in TURN_ENDED),
                 *(_settled(_plan_task(item), item, turn) for item in kept),
             ],
         }
@@ -1294,7 +1271,6 @@ def render_activity_stream(
     turn: TurnUpsert,
     *,
     elapsed_seconds: float | None = None,
-    session_url: str | None = None,
     interrupt_turn_id: str | None = None,
 ) -> StreamedActivity:
     """The same turn as `render_activity_plan`, shaped for `chat.appendStream`.
@@ -1322,7 +1298,6 @@ def render_activity_stream(
         [_settled(_plan_task(item), item, turn) for item in shown],
         _running(shown, turn),
         turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds),
-        session_url,
         turn.status not in TURN_ENDED,
     )
     _fit_details(blocks, _MAX_STREAM_BYTES)
@@ -1361,66 +1336,22 @@ def _spent_control(block_id: str) -> dict[str, Any]:
     return {"type": "divider", "block_id": block_id}
 
 
-def _session_card(session_url: str | None, *, live: bool) -> dict[str, Any]:
-    """The first card of a section, and where the Console link lives.
-
-    Asked for as the first row of the block rather than a line beside it: a
-    link on its own line is a line every reader pays for and few use, and the
-    same expansion that opens the turn's activity is the one a reader reaches
-    for when they want the session itself.
-
-    It is repeated in every section on purpose. A reader opens one section, and
-    a link that is only in the other one is a link they have to go looking for.
+def _session_card(*, live: bool) -> dict[str, Any]:
+    """The first card of a section, which holds the section's glyph.
 
     `live` rather than the turn's status, because only the section holding the
     live end of the turn should spin: Slack draws a block's glyph from the cards
     in it, and a settled section showing a spinner would point at a place where
     nothing is happening. On the live section it is this card that guarantees
     the spinner, which the steps cannot — between two calls every step card is
-    settled, and the heading would show a check beside "Working…".
-
-    The whole url goes in or the card carries no link at all. A session url is
-    built from a configured origin and three ids rather than written by an
-    agent, so its length is the deployment's, not something to defend against —
-    and half a url is not a link, it is a line of text that looks like one and
-    goes nowhere.
-
-    With the link there, the title is hidden and the link is the whole card: a
-    row reading "Switch session" above a row reading "Open in Console app" says
-    the same thing twice, and the second row says it better. Without the link
-    the title is all there is, so it stays — the card is still what holds the
-    section's glyph, and a section is still drawn for a turn that has not done
-    anything yet.
+    settled, and the heading would show a check beside "Working…". A section is
+    still drawn for a turn that has not done anything yet, and this card is what
+    it holds.
     """
-    card: dict[str, Any] = {
+    return {
         "task_id": _SESSION_CARD,
         "title": "Switch session",
         "status": "in_progress" if live else "complete",
-    }
-    if not session_url or urlsplit(session_url).scheme not in {
-        "https",
-        "http",
-        "switchdash",
-    }:
-        return card
-    return {
-        **card,
-        "hide_title": True,
-        "details": {
-            "type": "rich_text",
-            "elements": [
-                {
-                    "type": "rich_text_section",
-                    "elements": [
-                        {
-                            "type": "link",
-                            "url": session_url,
-                            "text": "Open in Console app",
-                        }
-                    ],
-                }
-            ],
-        },
     }
 
 
@@ -1488,7 +1419,6 @@ def _step_blocks(
     steps: list[dict[str, Any]],
     running: tuple[int, str] | None,
     header: str,
-    session_url: str | None,
     live: bool,
 ) -> list[dict[str, Any]]:
     """The turn as the three blocks that hold it: what is gone, then two sections.
@@ -1518,9 +1448,7 @@ def _step_blocks(
     if last < 2:
         pages = (first, second)
         return [
-            _step_page(
-                steps, page, pages[page], running, header, session_url, live, last
-            )
+            _step_page(steps, page, pages[page], running, header, live, last)
             for page in range(last + 1)
         ]
     gone = (last - 1) * _MAX_SECTION_ITEMS
@@ -1532,8 +1460,8 @@ def _step_blocks(
                 {"type": "mrkdwn", "text": f"_Activity 1–{gone} no longer shown_"}
             ],
         },
-        _step_page(steps, last - 1, second, running, header, session_url, live, last),
-        _step_page(steps, last, third, running, header, session_url, live, last),
+        _step_page(steps, last - 1, second, running, header, live, last),
+        _step_page(steps, last, third, running, header, live, last),
     ]
 
 
@@ -1543,7 +1471,6 @@ def _step_page(
     block_id: str,
     running: tuple[int, str] | None,
     header: str,
-    session_url: str | None,
     live: bool,
     newest: int,
 ) -> dict[str, Any]:
@@ -1572,7 +1499,7 @@ def _step_page(
         "type": "plan",
         "block_id": block_id,
         "title": _truncate(title, _MAX_PLAN_TITLE),
-        "tasks": [_session_card(session_url, live=live and page == newest), *shown],
+        "tasks": [_session_card(live=live and page == newest), *shown],
     }
 
 

@@ -44,6 +44,14 @@ describe('noninteractive install commands', () => {
     );
     expect(result).toMatchObject({ success: false, error: { type: 'process-open-failed' } });
   });
+  it('says when the disk is full', () => {
+    const error = classifyInstallCommandFailure({
+      exitCode: 1,
+      output: 'npm ERR! code ENOSPC\nnpm ERR! nospc ENOSPC: no space left on device, write',
+    });
+    expect(error.type).toBe('command-failed');
+    expect(error.message).toMatch(/not enough free disk space/i);
+  });
   it('classifies command failures', () => {
     expect(classifyInstallCommandFailure({ exitCode: 1, output: 'failed' }).type).toBe(
       'command-failed'

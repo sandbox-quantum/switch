@@ -64,44 +64,6 @@ class LlmCallReport(SwitchEvent):
     cost: float | None = None
 
 
-# ── Task protocol ─────────────────────────────────────────────────────────────
-
-
-class TaskDelegate(SwitchEvent):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    summary: str
-    description: str
-
-
-class TaskAccept(SwitchEvent):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-
-
-class TaskUpdate(SwitchEvent):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    update: str
-
-
-class TaskFinalise(SwitchEvent):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    outcome: str
-
-
-class TaskCancel(SwitchEvent):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    reason: str
-
-
 # ── Agent runtime state ───────────────────────────────────────────────────────
 
 

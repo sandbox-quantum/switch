@@ -82,6 +82,7 @@ def broker(
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
+        public_url=None,
     )
 
 
@@ -455,6 +456,7 @@ class TestChecks:
             token_retention=timedelta(days=30),
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
+            public_url=None,
         )
         world = await _world(session_factory)
         refused = await _refused(broker, session_factory, world.agent.id)
@@ -741,11 +743,15 @@ class TestConnectOnly:
             token_retention=timedelta(days=30),
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
+            public_url=None,
         )
         world = await _world(session_factory, expires_in=60)
 
         reason = broker.availability("github")
         assert reason is not None and "not granted to agents" in reason
+        unavailable = broker.unavailable("github")
+        assert unavailable is not None and unavailable.code == "not_fully_set_up"
+        assert broker.server_setup_needed("github") is False
         assert broker.connectable("github") is True
         assert broker.connectable("asana") is False
         refused = await _refused(broker, session_factory, world.agent.id)
@@ -814,6 +820,7 @@ def _switched_off(
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
+        public_url=None,
     )
 
 
@@ -826,6 +833,8 @@ class TestSwitchedOff:
         world = await _world(session_factory)
 
         assert broker.availability("github") == reason
+        unavailable = broker.unavailable("github")
+        assert unavailable is not None and unavailable.code == "switched_off"
         assert broker.connectable("github") is False
         refused = await _refused(broker, session_factory, world.agent.id)
         assert (refused.status_code, refused.code, refused.retryable) == (
@@ -928,6 +937,7 @@ async def _pass_through(
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
+        public_url=None,
     )
     async with session_factory() as session:
         owner = await _user(session, "ada")
@@ -1224,6 +1234,7 @@ async def _gated(
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=gate,
+        public_url=None,
     )
     world = await _world(session_factory)
     async with session_factory() as session:

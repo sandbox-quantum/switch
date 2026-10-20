@@ -12,7 +12,6 @@ from switch_core.bridges.agent.protocol.types import (
     CommandPayload,
     IntegrationProfile,
     MessagePayload,
-    TaskProtocolConfig,
     ToolCallReport,
 )
 from switch_core.bridges.agent.server_connectors.base import (
@@ -40,7 +39,6 @@ _INTEGRATION_PROFILE = IntegrationProfile(
     pre_invocation_mediation=[],
     post_invocation_mediation=[],
     event_reporting=["tool_calls"],
-    task_protocol=TaskProtocolConfig(can_delegate=False, can_accept=False),
     # An always-on server-side session can always be reset from the room (the
     # connector receives the queued command event and starts a fresh session).
     # Compact / interrupt aren't modelled for this connector.

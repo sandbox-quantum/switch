@@ -12,6 +12,7 @@ import {
   managedAgentState,
 } from '@renderer/features/managed-agents/managed-agent-state';
 import {
+  useMachineLabel,
   useManagedAgents,
   withoutManaged,
 } from '@renderer/features/managed-agents/use-managed-agents';
@@ -37,6 +38,7 @@ import type { Agent } from '@shared/core/agents/agents';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { isFrozenServer } from './managed-server-state';
+import { openServerPage } from './open-server-page';
 import { ServerPage } from './server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { switchRoomsStore } from './switch-rooms-store';
@@ -120,6 +122,7 @@ function ManagedAgentCard({ agent }: { agent: ManagedAgentView }) {
   const label = managedAgentLabel(agent);
   const state = managedAgentState(agent);
   const provider = providerDisplayName(agent.definition.provider) ?? agent.definition.provider;
+  const machine = useMachineLabel(agent);
   return (
     <div className="group relative flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] transition-colors hover:bg-[var(--fill)]">
       <button
@@ -141,7 +144,7 @@ function ManagedAgentCard({ agent }: { agent: ManagedAgentView }) {
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-foreground">{label}</div>
           <div className="truncate text-xs text-foreground-muted">
-            {provider} · {agent.machine?.name ?? 'no machine'}
+            {provider} · {machine ?? 'no machine'}
           </div>
         </div>
       </div>
@@ -224,11 +227,7 @@ const AgentCard = observer(function AgentCard({
           />
           <DropdownMenuContent align="end">
             {gatewayUrl && (
-              <DropdownMenuItem
-                onClick={() =>
-                  void rpc.switchServers.openGatewayPage({ serverId, url: gatewayUrl })
-                }
-              >
+              <DropdownMenuItem onClick={() => void openServerPage(serverId, gatewayUrl)}>
                 <ExternalLink className="size-4" />
                 Open in gateway
               </DropdownMenuItem>

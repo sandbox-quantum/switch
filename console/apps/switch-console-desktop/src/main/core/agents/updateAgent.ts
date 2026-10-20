@@ -13,6 +13,7 @@ export type UpdateAgentParams = {
   apiEndpoint?: string | null;
   workspaceId?: string;
   autoApprove?: boolean;
+  autoMode?: boolean;
   /** Null clears the agent's specialization, putting it back on provider defaults. */
   providerConfig?: AgentProviderConfig | null;
 };
@@ -26,6 +27,7 @@ export async function updateAgent(params: UpdateAgentParams): Promise<Agent | un
   if (params.apiEndpoint !== undefined) set.apiEndpoint = params.apiEndpoint;
   if (params.workspaceId !== undefined) set.workspaceId = params.workspaceId;
   if (params.autoApprove !== undefined) set.autoApprove = params.autoApprove;
+  if (params.autoMode !== undefined) set.autoMode = params.autoMode;
   if (params.providerConfig !== undefined) set.providerConfig = params.providerConfig;
 
   const [row] = await db.update(agents).set(set).where(eq(agents.id, params.agentId)).returning();

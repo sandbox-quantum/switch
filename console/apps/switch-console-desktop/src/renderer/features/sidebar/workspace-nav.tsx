@@ -1,13 +1,4 @@
-import {
-  Bot,
-  DoorOpen,
-  FileText,
-  House,
-  type LucideIcon,
-  Plug,
-  Server,
-  ShieldCheck,
-} from 'lucide-react';
+import { Bot, DoorOpen, FileText, House, type LucideIcon, Plug, ShieldCheck } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useRoomHealth } from '@renderer/features/switch-rooms/connection-health';
 import { ManagedServerDot } from '@renderer/features/switch-servers/managed-server-dot';
@@ -20,7 +11,7 @@ import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { cn } from '@renderer/utils/utils';
 import { connectionNeedsAttention } from '@shared/core/switch-rooms/connection-health';
 import { SidebarMenu, SidebarMenuButton } from './sidebar-primitives';
-import { type WorkspaceNavView, workspaceNavViews } from './workspace-nav-views';
+import { adminNavTarget, type WorkspaceNavView, workspaceNavViews } from './workspace-nav-views';
 
 /**
  * The active server's own destinations, under the workspace switcher.
@@ -48,6 +39,13 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   // While the server can't answer, only the way to it stays live.
   const frozen = isFrozenServer(active);
 
+  const administers = administersWorkspaceInScope(active.id);
+  // Admin also holds the status of a server this Console runs, a view of its own.
+  const adminTarget = adminNavTarget({ serviceConnections, administers, frozen });
+  const onAdmin = isCurrentView(currentView, 'admin') && adminParams?.serverId === active.id;
+  const onStatus =
+    isCurrentView(currentView, 'managedServer') && managedServerParams?.serverId === active.id;
+
   const destinations: Record<
     WorkspaceNavView,
     { icon: LucideIcon; label: string; params: { serverId?: string } | undefined }
@@ -58,13 +56,8 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
     connectors: { icon: Plug, label: 'Connectors', params: connectorsParams },
     templates: { icon: FileText, label: 'Templates', params: templatesParams },
     admin: { icon: ShieldCheck, label: 'Admin', params: adminParams },
-    managedServer: { icon: Server, label: 'Server', params: managedServerParams },
   };
-  const shown = workspaceNavViews({
-    managed: active.managed,
-    serviceConnections,
-    administers: administersWorkspaceInScope(active.id),
-  });
+  const shown = workspaceNavViews({ managed: active.managed, serviceConnections, administers });
 
   return (
     <SidebarMenu className="flex flex-col gap-[2px] px-2 pt-2">
@@ -73,13 +66,17 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
         return (
           <SidebarMenuButton
             key={view}
-            isActive={isCurrentView(currentView, view) && params?.serverId === active.id}
-            onClick={() => navigate(view, { serverId: active.id })}
-            className={cn(frozen && view !== 'managedServer' && FROZEN)}
+            isActive={
+              view === 'admin'
+                ? onAdmin || onStatus
+                : isCurrentView(currentView, view) && params?.serverId === active.id
+            }
+            onClick={() => navigate(view === 'admin' ? adminTarget : view, { serverId: active.id })}
+            className={cn(frozen && view !== 'admin' && FROZEN)}
           >
             <Icon className="size-[15px] shrink-0" />
             {label}
-            {view === 'managedServer' && (
+            {view === 'admin' && active.managed && (
               <span className="ml-auto flex items-center pr-0.5">
                 <ManagedServerDot server={active} size={7} />
               </span>

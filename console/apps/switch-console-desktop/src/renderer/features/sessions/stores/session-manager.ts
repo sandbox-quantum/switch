@@ -221,6 +221,7 @@ export class SessionManagerStore {
         isInitialSession: true,
         isPinned: false,
         autoApprove: agent.autoApprove,
+        autoMode: agent.autoMode,
         agentName: params.agentName,
         createdAt: now,
         updatedAt: now,

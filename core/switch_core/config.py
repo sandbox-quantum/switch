@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from switch_core.feature_flags import (
@@ -561,6 +561,24 @@ class SwitchConfig(BaseSettings):
     # `--server` an agents controller enrolls against, which the gateway's Add
     # machine dialog shows; unset, it shows no enrollment command.
     gateway_public_url: str | None = None
+
+    # The operator dashboard's build output (the `dist/` that `npm run build`
+    # writes in gateway/). Set, and switch-core serves the dashboard on its own
+    # port beside the API, so the server has one address; the image sets it.
+    # Unset or empty, it serves no dashboard: a development run uses the Vite
+    # dev server instead. Set to a directory with no build in it is a startup
+    # error. With it set, links to the dashboard default to GATEWAY_PUBLIC_URL
+    # when FRONTEND_BASE_URL is unset (`dashboard_base_url`).
+    gateway_ui_dir: Path | None = None
+
+    @field_validator("gateway_ui_dir", mode="before")
+    @classmethod
+    def _blank_gateway_ui_dir_is_unset(cls, value: object) -> object:
+        # `GATEWAY_UI_DIR=` is how an env file or a chart turns it off, and
+        # `Path("")` would otherwise be the working directory.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     # Credentials of the distributed Slack app *we* registered — the one a
     # customer installs by clicking a button, as opposed to the app an operator
@@ -1121,6 +1139,29 @@ class SwitchConfig(BaseSettings):
     def invite_email_enabled(self) -> bool:
         return bool(self.gateway_smtp_host)
 
+    @property
+    def dashboard_base_url(self) -> str | None:
+        """The origin links to the dashboard are built on.
+
+        FRONTEND_BASE_URL when set. Otherwise, when switch-core serves the
+        dashboard: the host browser sign-in returns to, where one is
+        configured, because a sign-in begun anywhere is sent there and leaves
+        its session there; and the server's own origin failing that. On a
+        server with one address the two are the same host. Not where a sign-in
+        lands, which stays on the host that set the session cookie unless
+        FRONTEND_BASE_URL names another.
+        """
+        if self.frontend_base_url:
+            return self.frontend_base_url
+        if self.gateway_ui_dir is None:
+            return None
+        if self.gateway_oidc_enabled and self.gateway_oidc_redirect_url:
+            callback = urlsplit(self.gateway_oidc_redirect_url)
+            return f"{callback.scheme}://{callback.netloc}"
+        if self.gateway_public_url:
+            return self.gateway_public_url.rstrip("/")
+        return None
+
     @model_validator(mode="after")
     def _validate_smtp(self) -> "SwitchConfig":
         if self.gateway_invite_emails_per_day < 1:
@@ -1140,7 +1181,7 @@ class SwitchConfig(BaseSettings):
                 "GATEWAY_SMTP_FROM is required when GATEWAY_SMTP_HOST is set: "
                 "it is the address invitation e-mails are sent from."
             )
-        if not self.frontend_base_url:
+        if not self.dashboard_base_url:
             raise ValueError(
                 "FRONTEND_BASE_URL is required when GATEWAY_SMTP_HOST is set: "
                 "invitation e-mails link to the dashboard at that origin."

@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ProviderConversationUnavailableError } from '../adapter';
+import { ProviderConversationUnavailableError, type RuntimeMode } from '../adapter';
 import type { ProviderRuntimeEvent, ProviderRuntimeEventType } from '../events';
 import { FakeAppServer, type FakeJsonRpcMessage } from './fake-app-server';
 
@@ -37,9 +37,7 @@ function eventsOf<T extends ProviderRuntimeEventType>(
   );
 }
 
-async function start(
-  runtimeMode: 'full-access' | 'approval-required' | 'auto-accept-edits' = 'full-access'
-) {
+async function start(runtimeMode: RuntimeMode = 'full-access') {
   const adapter = createCodexAdapter();
   const events: ProviderRuntimeEvent[] = [];
   adapter.subscribe((event) => events.push(event));
@@ -193,6 +191,58 @@ describe('CodexAdapter', () => {
       expect(threadStart?.params).toMatchObject({ approvalPolicy });
       const args = (server as unknown as { spawnArgs: string[] }).spawnArgs;
       expect(args.some((arg) => arg.startsWith('projects='))).toBe(false);
+    }
+  });
+
+  it('leaves approvals to the person in every mode but auto', async () => {
+    for (const mode of ['approval-required', 'auto-accept-edits', 'full-access'] as const) {
+      const { server } = await start(mode);
+      const threadStart = server.received.find((message) => message.method === 'thread/start');
+      expect(threadStart?.params).toMatchObject({ approvalsReviewer: 'user' });
+    }
+  });
+
+  it("sends on-request with Codex's automatic reviewer in auto mode", async () => {
+    const { server } = await start('auto');
+    const threadStart = server.received.find((message) => message.method === 'thread/start');
+    expect(threadStart?.params).toMatchObject({
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'auto_review',
+    });
+    expect(threadStart?.params).not.toHaveProperty('sandbox');
+    const args = (server as unknown as { spawnArgs: string[] }).spawnArgs;
+    expect(args.some((arg) => arg.startsWith('projects='))).toBe(false);
+  });
+
+  it('keeps the configured sandbox in auto mode, but never runs it unsandboxed', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'codex-home-'));
+    try {
+      for (const [configured, sent, warned] of [
+        ['read-only', 'read-only', false],
+        ['workspace-write', 'workspace-write', false],
+        ['danger-full-access', 'workspace-write', true],
+      ] as const) {
+        await writeFile(join(home, 'config.toml'), `sandbox_mode = "${configured}"\n`);
+        const adapter = createCodexAdapter();
+        const events: ProviderRuntimeEvent[] = [];
+        adapter.subscribe((event) => events.push(event));
+        await adapter.startSession({
+          sessionId: `auto-${configured}`,
+          cwd: '/work',
+          runtimeMode: 'auto',
+          env: { PATH: '/usr/bin', CODEX_HOME: home },
+          mcpServers: {},
+          connectorMcpServers: [],
+        });
+        const threadStart = servers
+          .at(-1)!
+          .received.find((message) => message.method === 'thread/start');
+        expect(threadStart?.params).toMatchObject({ sandbox: sent });
+        expect(eventsOf(events, 'runtime.warning').length > 0).toBe(warned);
+        await adapter.stopAll();
+      }
+    } finally {
+      await rm(home, { recursive: true, force: true });
     }
   });
 

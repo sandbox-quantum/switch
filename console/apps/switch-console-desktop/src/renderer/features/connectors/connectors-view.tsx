@@ -4,9 +4,15 @@ import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
-import { administersWorkspaceInScope } from '@renderer/features/switch-servers/workspace-admin';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import {
+  administersWorkspaceInScope,
+  operatesServer,
+} from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { toast } from '@renderer/lib/hooks/use-toast';
+import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
@@ -15,7 +21,13 @@ import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
-import { TONE_BADGE, connectorCardState } from './connector-card-state';
+import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
+import {
+  type ConnectorViewer,
+  FIX_LABEL,
+  TONE_BADGE,
+  connectorCardState,
+} from './connector-card-state';
 import { ConnectorProfile } from './connector-profile';
 import { ConnectorTile } from './connector-tile';
 import {
@@ -23,8 +35,13 @@ import {
   cardQuickAction,
   connectorsInTab,
   connectorsPageAccess,
+  defaultConnectorsTab,
 } from './connectors-catalog';
-import { useConnectorCatalog, useServerFeatureFlags } from './connectors-queries';
+import {
+  useConnectorCatalog,
+  useReloadConnectors,
+  useServerFeatureFlags,
+} from './connectors-queries';
 import { offersAddAgent } from './grant-agents';
 import { useConnectService } from './use-connect-service';
 
@@ -49,6 +66,12 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
   const { navigate } = useNavigate();
   const access = connectorsPageAccess(useServerFeatureFlags(serverId));
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  const server = switchServersStore.servers.find((s) => s.id === serverId);
+  const viewer: ConnectorViewer = {
+    operator: operatesServer(serverId),
+    administers: administersWorkspaceInScope(serverId),
+    onThisComputer: server !== undefined && runsOnThisComputer(server),
+  };
   useEffect(() => {
     if (access === 'absent') navigate('serverAgents', { serverId });
   }, [access, navigate, serverId]);
@@ -61,12 +84,7 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
     );
   // Keyed so a workspace switch starts from the catalog, not another workspace's profile.
   return (
-    <Connectors
-      key={workspaceId}
-      serverId={serverId}
-      workspaceId={workspaceId}
-      administers={administersWorkspaceInScope(serverId)}
-    />
+    <Connectors key={workspaceId} serverId={serverId} workspaceId={workspaceId} viewer={viewer} />
   );
 });
 
@@ -80,14 +98,20 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
 function Connectors({
   serverId,
   workspaceId,
-  administers,
+  viewer,
 }: {
   serverId: string;
   workspaceId: string;
-  administers: boolean;
+  viewer: ConnectorViewer;
 }) {
   const catalog = useConnectorCatalog(workspaceId);
-  const [tab, setTab] = useState<ConnectorsTab>('yours');
+  // Null until the person picks a tab or the catalog first arrives; from then
+  // on it stays put, so a connection made on Discover does not move them.
+  const [chosenTab, setTab] = useState<ConnectorsTab | null>(null);
+  const tab = chosenTab ?? (catalog.data ? defaultConnectorsTab(catalog.data) : 'yours');
+  useEffect(() => {
+    if (chosenTab === null && catalog.data) setTab(defaultConnectorsTab(catalog.data));
+  }, [chosenTab, catalog.data]);
   const [query, setQuery] = useState('');
   const { navigate } = useNavigate();
   const open = useParams('connectors').params.connector ?? null;
@@ -100,6 +124,30 @@ function Connectors({
   }, [open, justConnected]);
   const openProfile = (slug: string) => navigate('connectors', { serverId, connector: slug });
   const connect = useConnectService(serverId, workspaceId);
+  const reload = useReloadConnectors(workspaceId);
+  const [turningOn, setTurningOn] = useState<ReadonlySet<string>>(new Set());
+  const turnOn = async (entry: ConnectionCatalogEntry) => {
+    setTurningOn((now) => new Set(now).add(entry.slug));
+    try {
+      await rpc.workspaces.setWorkspaceService({
+        workspaceId,
+        service: entry.slug,
+        enabled: true,
+      });
+      await reload();
+    } catch (cause) {
+      toast({
+        title: failureText(cause, `Could not turn ${entry.name} on for the workspace.`),
+        variant: 'destructive',
+      });
+    } finally {
+      setTurningOn((now) => {
+        const next = new Set(now);
+        next.delete(entry.slug);
+        return next;
+      });
+    }
+  };
 
   const tabs = [
     { value: 'yours', label: 'Yours' },
@@ -125,7 +173,7 @@ function Connectors({
               serverId={serverId}
               workspaceId={workspaceId}
               connection={opened}
-              administers={administers}
+              viewer={viewer}
               justConnected={
                 justConnected?.slug === opened.slug ? { warning: justConnected.warning } : null
               }
@@ -144,7 +192,7 @@ function Connectors({
       action={
         // Turning a service on or off for everyone is the Admin page's; only
         // the way there is here, for whoever may.
-        administers && (
+        viewer.administers && (
           <Button
             variant="ghost"
             size="sm"
@@ -156,16 +204,19 @@ function Connectors({
         )
       }
     >
-      <div className="flex items-center gap-3">
-        <SegmentedControl ariaLabel="Connectors" value={tab} onChange={setTab} options={tabs} />
-        <SearchInput
-          containerClassName="flex-1"
-          aria-label="Search connectors"
-          placeholder="Search by name, category or description"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-      </div>
+      {/* Which tab opens depends on the catalog, so the tabs wait for it rather than flick over. */}
+      {catalog.data && (
+        <div className="flex items-center gap-3">
+          <SegmentedControl ariaLabel="Connectors" value={tab} onChange={setTab} options={tabs} />
+          <SearchInput
+            containerClassName="flex-1"
+            aria-label="Search connectors"
+            placeholder="Search by name, category or description"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+      )}
       {catalog.isError ? (
         <CatalogError error={catalog.error} onRetry={() => void catalog.refetch()} />
       ) : !catalog.data ? (
@@ -177,7 +228,11 @@ function Connectors({
           entries={connectorsInTab(catalog.data, tab, query)}
           tab={tab}
           query={query}
+          viewer={viewer}
+          turningOn={turningOn}
           onOpen={openProfile}
+          onSetUp={(entry) => navigate('admin', { serverId, section: 'apps', app: entry.slug })}
+          onTurnOn={(entry) => void turnOn(entry)}
           onConnect={(entry) =>
             connect(entry, 'connect', (warning) => {
               if (!offersAddAgent(entry)) return;
@@ -208,13 +263,22 @@ function ConnectorGrid({
   entries,
   tab,
   query,
+  viewer,
+  turningOn,
   onOpen,
+  onSetUp,
+  onTurnOn,
   onConnect,
 }: {
   entries: ConnectionCatalogEntry[];
   tab: ConnectorsTab;
   query: string;
+  viewer: ConnectorViewer;
+  /** The services being turned on for the workspace from their card. */
+  turningOn: ReadonlySet<string>;
   onOpen: (slug: string) => void;
+  onSetUp: (entry: ConnectionCatalogEntry) => void;
+  onTurnOn: (entry: ConnectionCatalogEntry) => void;
   onConnect: (entry: ConnectionCatalogEntry) => void;
 }) {
   if (entries.length === 0)
@@ -237,7 +301,11 @@ function ConnectorGrid({
         <ConnectorCard
           key={entry.slug}
           entry={entry}
+          viewer={viewer}
+          turningOn={turningOn.has(entry.slug)}
           onOpen={() => onOpen(entry.slug)}
+          onSetUp={() => onSetUp(entry)}
+          onTurnOn={() => onTurnOn(entry)}
           onConnect={() => onConnect(entry)}
         />
       ))}
@@ -247,19 +315,29 @@ function ConnectorGrid({
 
 /**
  * One catalog card, showing one state with its reason. The whole card opens
- * the profile; the control at its top right connects in one click, or marks
- * a connection that is there and usable. Disconnecting is only on the profile.
+ * the profile; the control at its top right is the fix the person looking
+ * can make (set the app up, turn it on for the workspace), connects in one
+ * click, or marks a connection that is there and usable. Disconnecting is
+ * only on the profile.
  */
 function ConnectorCard({
   entry,
+  viewer,
+  turningOn,
   onOpen,
+  onSetUp,
+  onTurnOn,
   onConnect,
 }: {
   entry: ConnectionCatalogEntry;
+  viewer: ConnectorViewer;
+  turningOn: boolean;
   onOpen: () => void;
+  onSetUp: () => void;
+  onTurnOn: () => void;
   onConnect: () => void;
 }) {
-  const state = connectorCardState(entry);
+  const state = connectorCardState(entry, viewer);
   const quick = cardQuickAction(entry, state);
   return (
     <ConnectorTile
@@ -268,7 +346,17 @@ function ConnectorCard({
       inert={state.kind === 'coming_soon'}
       onOpen={onOpen}
       control={
-        quick === 'connect' ? (
+        quick === 'set_up' || quick === 'turn_on' ? (
+          <Button
+            size="sm"
+            aria-label={`${FIX_LABEL[quick]} ${entry.name}`}
+            disabled={turningOn}
+            onClick={quick === 'set_up' ? onSetUp : onTurnOn}
+          >
+            {turningOn && <Spinner />}
+            {FIX_LABEL[quick]}
+          </Button>
+        ) : quick === 'connect' ? (
           <Button
             variant="outline"
             size="icon"

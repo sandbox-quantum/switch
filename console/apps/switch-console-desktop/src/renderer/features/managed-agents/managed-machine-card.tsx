@@ -38,7 +38,11 @@ export function ManagedMachinePill({
             className="flex h-5 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-background-tertiary px-2 text-[11px] text-foreground-muted hover:text-foreground"
           >
             <span aria-hidden className={cn('size-1.5 shrink-0 rounded-full', DOT[tone])} />
-            {agent.machine ? `on ${agent.machine.name}` : 'on no machine'}
+            {machine?.local?.kind === 'this-computer'
+              ? 'on this computer'
+              : agent.machine
+                ? `on ${agent.machine.name}`
+                : 'on no machine'}
             <ChevronDown className="size-3" />
           </button>
         }

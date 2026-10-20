@@ -11,7 +11,13 @@ import type { AgentProviderDefinition } from '@shared/core/providers/agent-provi
  */
 export type BuddyProviderState = 'ready' | 'sign-in' | 'install' | 'checking';
 
-export type BuddyProvider = { id: string; name: string; state: BuddyProviderState };
+export type BuddyProvider = {
+  id: string;
+  name: string;
+  state: BuddyProviderState;
+  /** What the machine said about its login, when it is not ready; null when nothing. */
+  detail: string | null;
+};
 
 export function buddyProviders(
   providers: readonly Pick<AgentProviderDefinition, 'id' | 'name'>[],
@@ -28,7 +34,7 @@ export function buddyProviders(
           : reported.problem === 'login not checked yet'
             ? 'checking'
             : 'sign-in';
-    return { id: provider.id, name: provider.name, state };
+    return { id: provider.id, name: provider.name, state, detail: reported?.detail ?? null };
   });
 }
 

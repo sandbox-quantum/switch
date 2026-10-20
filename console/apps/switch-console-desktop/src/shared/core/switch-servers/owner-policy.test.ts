@@ -3,6 +3,7 @@ import type { AddressingPolicy } from '@shared/core/switch-servers/switch-server
 import {
   type AddressingMode,
   addressingModeOf,
+  defaultAgentPolicy,
   ownerAndMyAgentsPolicy,
   ownerOnlyPolicy,
   policyForMode,
@@ -39,6 +40,13 @@ describe('the two owner-scoped shapes', () => {
     const [strict] = ownerOnlyPolicy().rules;
     const [withAgents] = ownerAndMyAgentsPolicy().rules;
     expect({ ...strict, owner_agents: true }).toEqual(withAgents);
+  });
+});
+
+describe('defaultAgentPolicy', () => {
+  it('is the owner and the owner’s agents, the "Me and my agents" choice', () => {
+    expect(defaultAgentPolicy()).toEqual(ownerAndMyAgentsPolicy());
+    expect(addressingModeOf(defaultAgentPolicy())).toBe('ownerAndAgents');
   });
 });
 

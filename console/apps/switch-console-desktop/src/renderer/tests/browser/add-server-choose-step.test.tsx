@@ -47,8 +47,8 @@ function server(url: string): SwitchServer {
   return {
     id: url,
     name: url,
-    gatewayUrl: url,
-    apiUrl: url,
+    url,
+    dashboardUrl: null,
     managed: false,
     managementKind: null,
     sshHost: null,

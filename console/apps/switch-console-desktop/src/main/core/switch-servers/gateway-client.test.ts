@@ -92,6 +92,7 @@ const {
   fetchInviteEmailEnabled,
   createRoom,
   deleteBridge,
+  deleteRoom,
   ensureCloudMachine,
   fetchAuthConfig,
   fetchBridges,
@@ -99,6 +100,7 @@ const {
   ownsOwnerAddressedAgent,
   registerKnownAgent,
   updateAgentDisplayName,
+  renameAgent,
   updateBridge,
   AgentManagementUnavailableError,
   enrollConsoleController,
@@ -122,14 +124,14 @@ const {
 const SERVER = {
   id: 'srv-1',
   name: 'S',
-  gatewayUrl: 'https://switch.example.com',
-  apiUrl: 'https://switch-api.example.com',
+  url: 'https://switch.example.com',
+  dashboardUrl: null,
   managed: false,
 } as never;
 const MANAGED = {
   id: 'srv-local',
   name: 'Local',
-  gatewayUrl: 'https://switch.example.com',
+  url: 'https://switch.example.com',
   managed: true,
 } as never;
 
@@ -138,7 +140,7 @@ const MANAGED = {
  * means it cannot be spread. Used where a test needs several distinct servers
  * (e.g. the per-server avatar-settings cache) without redeclaring every field. */
 function serverWithId(id: string): typeof SERVER {
-  return { id, name: 'S', gatewayUrl: 'https://switch.example.com', managed: false } as never;
+  return { id, name: 'S', url: 'https://switch.example.com', managed: false } as never;
 }
 
 /** A structurally-valid JWT whose payload `exp` is `secondsFromNow` in the
@@ -156,7 +158,7 @@ function okMeResponse(): Response {
     status: 200,
     ok: true,
     json: async () => ({ id: 'u1', name: 'Ada', email: 'ada@example.com', role: 'user' }),
-    headers: { getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => [] },
     text: async () => '',
   } as unknown as Response;
 }
@@ -166,7 +168,7 @@ function unauthorizedResponse(): Response {
     status: 401,
     ok: false,
     json: async () => ({}),
-    headers: { getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => [] },
     text: async () => 'Token expired',
   } as unknown as Response;
 }
@@ -460,7 +462,7 @@ function jsonResponse(body: unknown): Response {
     status: 200,
     ok: true,
     json: async () => body,
-    headers: { getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => [] },
     text: async () => JSON.stringify(body),
   } as unknown as Response;
 }
@@ -470,7 +472,7 @@ function errorResponse(status: number, body: string): Response {
     status,
     ok: false,
     json: async () => ({}),
-    headers: { getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => [] },
     text: async () => body,
   } as unknown as Response;
 }
@@ -740,7 +742,7 @@ describe('registerKnownAgent', () => {
           status: 200,
           ok: true,
           json: async () => ({ id: 'sw-1', api_key: 'tok-123' }),
-          headers: { getSetCookie: () => [] },
+          headers: { get: () => null, getSetCookie: () => [] },
           text: async () => '',
         }) as unknown as Response
     );
@@ -946,6 +948,56 @@ describe('agent display name', () => {
   });
 });
 
+describe('renameAgent', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('PUTs the name with the display name, and reads back what the rename did', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        agent: {
+          id: 'a1',
+          name: 'meeting-scribe',
+          display_name: 'Meeting Scribe',
+          description: '',
+          connector_type: 'mcp',
+          owner_name: 'Ada',
+          known_agent_type: null,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+        old_name: 'notes-taker',
+        bridge_failures: ['slack: Slack is down'],
+        templates_mentioning_old_name: ['weekly'],
+      }) as never
+    );
+
+    const outcome = await renameAgent(SERVER, 'a1', 'meeting-scribe', 'Meeting Scribe');
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(url).toBe('https://switch.example.com/gateway/agents/a1/name');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({
+      name: 'meeting-scribe',
+      display_name: 'Meeting Scribe',
+    });
+    expect(outcome.agent.name).toBe('meeting-scribe');
+    expect(outcome.agent.displayName).toBe('Meeting Scribe');
+    expect(outcome.oldName).toBe('notes-taker');
+    expect(outcome.bridgeFailures).toEqual(['slack: Slack is down']);
+    expect(outcome.templatesMentioningOldName).toEqual(['weekly']);
+  });
+});
+
 describe('updateBridge', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1077,6 +1129,42 @@ describe('deleteBridge', () => {
   });
 });
 
+describe('deleteRoom', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the channel unless asked, leaving the request as it was', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ok: true, channel: null }) as never);
+
+    await expect(deleteRoom(SERVER, 'r/1')).resolves.toBeNull();
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe('https://switch.example.com/gateway/rooms/r%2F1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('asks for the channel to be retired, and reports what became of it', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ ok: true, channel: { outcome: 'failed', reason: 'not in channel' } }) as never
+    );
+
+    await expect(deleteRoom(SERVER, 'r1', { retireChannel: true })).resolves.toEqual({
+      outcome: 'failed',
+      reason: 'not in channel',
+    });
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/rooms/r1?retire_channel=true');
+  });
+});
+
 describe('GitHub connection transport', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1128,6 +1216,25 @@ describe('GitHub connection transport', () => {
         completion_secret: 'b'.repeat(43),
       })
     ).rejects.toThrow('invalid GitHub authorization URL');
+  });
+  it('accepts the server’s own address on an older server that keeps its dashboard apart', async () => {
+    const state = 'a'.repeat(43);
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: state,
+          url: `https://switch-api.example.com/gateway/provider-connections/github/authorize?state=${state}`,
+        })
+      )
+    );
+    const split = {
+      ...(SERVER as object),
+      url: 'https://switch-api.example.com',
+      dashboardUrl: 'https://switch.example.com',
+    } as never;
+    await expect(
+      startGitHubConnection(split, { port: 12345, state, completion_secret: 'b'.repeat(43) })
+    ).resolves.toMatchObject({ id: state });
   });
   it('checks state matches the returned authorization id', async () => {
     fetchMock.mockResolvedValueOnce(
@@ -1204,7 +1311,8 @@ describe('GitHub connection transport', () => {
         connectable: true,
         status: 'needs_reauthorization',
         unavailable_reason: entry.unavailable_reason,
-        // A server that predates them says neither.
+        // A server that predates them says none of these.
+        unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
         loopback_ports: null,
@@ -1225,6 +1333,41 @@ describe('GitHub connection transport', () => {
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
     expect(url).toBe('https://switch.example.com/gateway/service-connections');
   });
+  it('reads why a service cannot be used as a code, dropping one it does not know', async () => {
+    const entry = {
+      slug: 'github',
+      name: 'GitHub',
+      category: 'Source control',
+      description: 'Repositories.',
+      enabled: true,
+      auth_type: 'oauth',
+      connectable: false,
+      configured: false,
+      unavailable_reason: "GitHub can't be used on this server.",
+      unavailable_code: 'needs_https',
+      status: 'not_connected',
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          connections: [
+            entry,
+            { ...entry, slug: 'example', unavailable_code: 'some_later_reason' },
+            { ...entry, slug: 'jira', enabled: false, unavailable_code: 'coming_soon' },
+          ],
+        })
+      )
+    );
+    const catalog = await getConnectionCatalog(SERVER);
+    expect(
+      catalog.map((item) => [item.slug, item.unavailable_code, item.unavailable_reason])
+    ).toEqual([
+      ['github', 'needs_https', entry.unavailable_reason],
+      // A newer server's code this Console doesn't know: its reason is shown as it is.
+      ['example', null, entry.unavailable_reason],
+      ['jira', null, null],
+    ]);
+  });
   it('reads the older catalog from a server without service connections', async () => {
     const github = {
       slug: 'github',
@@ -1243,6 +1386,7 @@ describe('GitHub connection transport', () => {
         ...github,
         connectable: true,
         unavailable_reason: null,
+        unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
         loopback_ports: null,
@@ -1547,6 +1691,11 @@ describe('a service sign-in', () => {
   const state = 'a'.repeat(43);
   const input = { port: 12345, state, completion_secret: 'b'.repeat(43) };
   const flows = 'https://switch.example.com/gateway/service-connections/example/flows';
+  // An older server that still keeps its dashboard on a host of its own.
+  const SPLIT = {
+    ...(SERVER as object),
+    dashboardUrl: 'https://switch-dashboard.example.com',
+  } as never;
   const vendor = (query: Record<string, string>) =>
     `https://auth.example.test/authorize?${new URLSearchParams(query)}`;
   const answer = (body: object) =>
@@ -1584,17 +1733,17 @@ describe('a service sign-in', () => {
     );
   });
 
-  it('accepts Core’s authorize step on the server’s API host, where it returns', async () => {
-    const url = `https://switch-api.example.com/gateway/service-connections/example/flows/authorize?state=${state}`;
+  it('accepts Core’s authorize step on the separate dashboard host an older server keeps', async () => {
+    const url = `https://switch-dashboard.example.com/gateway/service-connections/example/flows/authorize?state=${state}`;
     answer({ id: state, mode: 'core', url });
-    expect((await startServiceConnection(SERVER, 'example', input)).url).toBe(url);
+    expect((await startServiceConnection(SPLIT, 'example', input)).url).toBe(url);
   });
 
   it.each([
     [
-      'the server’s API host over plain HTTP',
+      'the separate dashboard host over plain HTTP',
       'core',
-      `http://switch-api.example.com/gateway/service-connections/example/flows/authorize?state=${state}`,
+      `http://switch-dashboard.example.com/gateway/service-connections/example/flows/authorize?state=${state}`,
     ],
     [
       'another server in core mode',
@@ -1623,7 +1772,7 @@ describe('a service sign-in', () => {
     ],
   ])('refuses %s', async (_name, mode, url) => {
     answer({ id: state, mode, url });
-    await expect(startServiceConnection(SERVER, 'example', input)).rejects.toThrow(
+    await expect(startServiceConnection(SPLIT, 'example', input)).rejects.toThrow(
       'invalid sign-in URL'
     );
   });
@@ -1746,6 +1895,35 @@ describe('sign-up support', () => {
   it('treats a server predating sign-up as not offering it', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(config));
     expect((await fetchAuthConfig(SERVER)).signupEnabled).toBe(false);
+  });
+
+  it.each([200, 404])(
+    'says the address does not route /gateway when a web page answers it (HTTP %i)',
+    async (status) => {
+      fetchMock.mockResolvedValueOnce(
+        new Response('<!doctype html><title>dashboard</title>', {
+          status,
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        })
+      );
+      await expect(fetchAuthConfig(SERVER)).rejects.toMatchObject({
+        name: 'NoManagementApiError',
+        message: expect.stringContaining('route /gateway on https://switch.example.com'),
+      });
+    }
+  );
+
+  it('reports a proxy’s 502 page as the failure it is, not as a missing route', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('<html>Bad Gateway</html>', {
+        status: 502,
+        headers: { 'content-type': 'text/html' },
+      })
+    );
+    await expect(fetchAuthConfig(SERVER)).rejects.toMatchObject({
+      name: 'GatewayError',
+      status: 502,
+    });
   });
 
   it('warms the cloud machine with an authenticated POST', async () => {
@@ -2054,7 +2232,7 @@ describe('distributed Teams team placement', () => {
       status: 200,
       ok: true,
       json: async () => ({}),
-      headers: { getSetCookie: () => [] },
+      headers: { get: () => null, getSetCookie: () => [] },
       text: async () => '',
       arrayBuffer: async () => bytes,
     } as unknown as Response);
@@ -2154,7 +2332,7 @@ describe('acceptInvitation', () => {
       status: 200,
       ok: true,
       json: async () => ({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' }),
-      headers: { getSetCookie: () => setCookies },
+      headers: { get: () => null, getSetCookie: () => setCookies },
       text: async () => '',
     } as unknown as Response;
   }
@@ -2404,7 +2582,7 @@ describe('invitations addressed to the signed-in account', () => {
       status: 200,
       ok: true,
       json: async () => ({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' }),
-      headers: { getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
+      headers: { get: () => null, getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
       text: async () => '',
     } as never);
 
@@ -2468,7 +2646,7 @@ describe('joining a workspace by e-mail domain', () => {
       status: 200,
       ok: true,
       json: async () => ({ id: 't9', slug: 'skunk', name: 'Skunkworks', role: 'member' }),
-      headers: { getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
+      headers: { get: () => null, getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
       text: async () => '',
     } as never);
 
@@ -2551,7 +2729,7 @@ describe('workspace invitations', () => {
       status: 200,
       ok: true,
       json: async () => body,
-      headers: { getSetCookie: () => [] },
+      headers: { get: () => null, getSetCookie: () => [] },
       text: async () => '',
     } as unknown as Response;
   }
@@ -2663,7 +2841,7 @@ describe('agent management calls', () => {
       status,
       ok: status >= 200 && status < 300,
       json: async () => JSON.parse(text),
-      headers: { getSetCookie: () => [] },
+      headers: { get: () => null, getSetCookie: () => [] },
       text: async () => text,
     } as unknown as Response;
   }
@@ -2798,7 +2976,7 @@ describe('agent management calls', () => {
     expect(JSON.parse(String(init.body))).toEqual({ sealed });
     await expect(
       giveMachineLogin(
-        { ...(SERVER as object), gatewayUrl: 'http://switch.example.com' } as never,
+        { ...(SERVER as object), url: 'http://switch.example.com' } as never,
         'c',
         'claude',
         sealed
@@ -2875,9 +3053,9 @@ describe('agent management calls', () => {
       [
         'reported',
         [
-          { provider: 'claude', installed: true, auth: 'ok' },
-          { provider: 'codex', installed: true, auth: 'unknown' },
-          { provider: 'opencode', installed: false, auth: 'unknown' },
+          { provider: 'claude', installed: true, auth: 'ok', problem: null },
+          { provider: 'codex', installed: true, auth: 'unknown', problem: null },
+          { provider: 'opencode', installed: false, auth: 'unknown', problem: null },
         ],
       ],
       ['silent', []],
@@ -2958,6 +3136,7 @@ describe('agent management calls', () => {
             model: 'opus',
             advanced_config: { effort: 'high', maxTurns: 4, background: true, tools: ['Read'] },
             instructions: 'Be brief.',
+            auto_mode: true,
             auto_approve: true,
             directory: '/work/scout',
             isolation: 'isolated',
@@ -3007,6 +3186,7 @@ describe('agent management calls', () => {
         instructions: 'Be brief.',
         isolation: 'isolated',
         directory: '/work/scout',
+        autoMode: true,
         autoApprove: true,
         status: {
           process: 'failed',
@@ -3031,6 +3211,7 @@ describe('agent management calls', () => {
         instructions: '',
         isolation: 'shared',
         directory: null,
+        autoMode: false,
         autoApprove: false,
         status: { process: 'running', attached: true, reason: null, detail: null, directory: null },
       },
@@ -3050,6 +3231,7 @@ describe('agent management calls', () => {
         instructions: '',
         isolation: 'shared',
         directory: null,
+        autoMode: false,
         autoApprove: false,
         status: null,
       },

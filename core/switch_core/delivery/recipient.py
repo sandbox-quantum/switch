@@ -48,11 +48,6 @@ from switch_core.bridges.agent.protocol.presence import (
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     CommandPayload,
-    TaskAcceptPayload,
-    TaskCancelPayload,
-    TaskDelegatePayload,
-    TaskFinalisePayload,
-    TaskUpdatePayload,
 )
 from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.admin_messages import (
@@ -83,12 +78,6 @@ from switch_core.delivery.addressing import (
 )
 from switch_core.events import (
     CommandEvent,
-    SwitchEvent,
-    TaskAccept,
-    TaskCancel,
-    TaskDelegate,
-    TaskFinalise,
-    TaskUpdate,
 )
 from switch_core.gateway.cloud_controllers import wake_controller_machine
 from switch_core.gateway.known_agents import known_agent_for
@@ -1196,97 +1185,6 @@ class AgentRecipient:
             )
             return None
         return self._meta
-
-    # ── Tasks ─────────────────────────────────────────────────────────────────
-
-    def decide_task(self, event: SwitchEvent) -> Delivery:
-        """Whether a task event is one of the agent's own events: it is for
-        the agent doing the task when it is delegated or cancelled, and for
-        the agent that asked when it is accepted, updated or finalised."""
-        meta = self._meta
-        me = self.agent.id
-        payload: (
-            TaskDelegatePayload
-            | TaskAcceptPayload
-            | TaskUpdatePayload
-            | TaskFinalisePayload
-            | TaskCancelPayload
-        )
-        if isinstance(event, TaskDelegate):
-            if event.performer_agent_id != me:
-                return NOTHING
-            kind = "task_delegate"
-            payload = TaskDelegatePayload(
-                task_id=event.task_id,
-                requester_agent_id=event.requester_agent_id,
-                performer_agent_id=event.performer_agent_id,
-                summary=event.summary,
-                description=event.description,
-            )
-        elif isinstance(event, TaskAccept):
-            if event.requester_agent_id != me:
-                return NOTHING
-            kind = "task_accept"
-            payload = TaskAcceptPayload(
-                task_id=event.task_id,
-                requester_agent_id=event.requester_agent_id,
-                performer_agent_id=event.performer_agent_id,
-            )
-        elif isinstance(event, TaskUpdate):
-            if event.requester_agent_id != me:
-                return NOTHING
-            kind = "task_update"
-            payload = TaskUpdatePayload(
-                task_id=event.task_id,
-                requester_agent_id=event.requester_agent_id,
-                performer_agent_id=event.performer_agent_id,
-                update=event.update,
-            )
-        elif isinstance(event, TaskFinalise):
-            if event.requester_agent_id != me:
-                return NOTHING
-            kind = "task_finalise"
-            payload = TaskFinalisePayload(
-                task_id=event.task_id,
-                requester_agent_id=event.requester_agent_id,
-                performer_agent_id=event.performer_agent_id,
-                outcome=event.outcome,
-            )
-        elif isinstance(event, TaskCancel):
-            if event.performer_agent_id != me:
-                return NOTHING
-            kind = "task_cancel"
-            payload = TaskCancelPayload(
-                task_id=event.task_id,
-                requester_agent_id=event.requester_agent_id,
-                performer_agent_id=event.performer_agent_id,
-                reason=event.reason,
-            )
-        else:
-            return NOTHING
-
-        def own_event(row: InboundEvent) -> OwnEvent:
-            return OwnEvent(
-                AgentEvent(
-                    type=kind,
-                    room_id=meta.room_id,
-                    bridge_id=meta.bridge_id,
-                    channel_type=meta.channel_type,
-                    payload=payload,
-                ),
-                room_seq=row.seq,
-                message_key=row.event_id,
-            )
-
-        async def working_on_it(_row: InboundEvent) -> None:
-            await self.actor.send_message(
-                self._room.room_id, "Working on it.", format="markdown", metered=False
-            )
-
-        return Delivery(
-            own_event=own_event,
-            after=working_on_it if isinstance(event, TaskDelegate) else None,
-        )
 
     # ── Offline and refusal notices ───────────────────────────────────────────
 

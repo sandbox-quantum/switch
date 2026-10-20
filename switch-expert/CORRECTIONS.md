@@ -32,7 +32,7 @@ and describe what was asked.
 - **Said:** the agent's working directory is "a field you set in Switch Console when you
   create the agent (and you can change it later in the agent's settings)".
 - **Actually:** it is fixed at creation. Switch Console's new-agent dialog is the only place
-  it can be set; the agent's settings expose instructions, auto-session, auto-approve,
+  it can be set; the agent's settings expose instructions, auto-approve,
   addressing and advanced provider configuration, and show the directory read-only at most.
   Moving an agent means removing it and adding it again. The editable "Repo dir" on the web
   dashboard's agent page (and via the agent-update tool) does not decide where the agent

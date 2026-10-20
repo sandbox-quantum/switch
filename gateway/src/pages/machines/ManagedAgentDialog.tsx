@@ -35,6 +35,7 @@ interface Form {
   model: string;
   instructions: string;
   directory: string;
+  autoMode: boolean;
   autoApprove: boolean;
   isolation: Isolation;
   /** Not edited here; kept as it is so saving does not clear it. */
@@ -56,6 +57,7 @@ function initialForm(
       model: agent.definition.model ?? "",
       instructions: agent.definition.instructions,
       directory: agent.definition.directory ?? "",
+      autoMode: agent.definition.auto_mode,
       autoApprove: agent.definition.auto_approve,
       isolation: agent.definition.isolation,
       advancedConfig: agent.definition.advanced_config,
@@ -70,6 +72,7 @@ function initialForm(
     model: "",
     instructions: "",
     directory: "",
+    autoMode: true,
     autoApprove: false,
     isolation: "shared",
     advancedConfig: {},
@@ -82,6 +85,7 @@ function definitionFrom(form: Form): Definition {
     provider: form.provider,
     model: form.model.trim() || null,
     instructions: form.instructions,
+    auto_mode: form.autoMode,
     auto_approve: form.autoApprove,
     directory: form.directory.trim() || null,
     isolation: form.isolation,
@@ -261,11 +265,21 @@ export default function ManagedAgentDialog({
           <FormControlLabel
             control={
               <Switch
+                checked={form.autoMode}
+                disabled={form.autoApprove}
+                onChange={(e) => set("autoMode", e.target.checked)}
+              />
+            }
+            label="Auto mode (the provider reviews each action: safe ones run, risky ones still ask)"
+          />
+          <FormControlLabel
+            control={
+              <Switch
                 checked={form.autoApprove}
                 onChange={(e) => set("autoApprove", e.target.checked)}
               />
             }
-            label="Auto-approve tool use (runs the CLI without permission prompts)"
+            label="Bypass permissions (unsafe: runs every action without asking; overrides auto mode)"
           />
           <FormControlLabel
             control={

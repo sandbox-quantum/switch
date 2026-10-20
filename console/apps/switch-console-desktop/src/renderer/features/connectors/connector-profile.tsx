@@ -3,13 +3,19 @@ import { useState } from 'react';
 import { ConnectionIcon } from '@renderer/features/switch-servers/connection-icon';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
+import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { ConnectorAgentsSection } from './connector-agents-section';
-import { TONE_BADGE, connectorCardState } from './connector-card-state';
+import {
+  type ConnectorViewer,
+  FIX_LABEL,
+  TONE_BADGE,
+  connectorCardState,
+} from './connector-card-state';
 import {
   connectedAsLine,
   isYours,
@@ -33,26 +39,28 @@ const ACTION_LABEL = {
  * One connector, in place of the catalog: who the person is connected as and
  * what they allowed, which of their agents use it, and the way to connect,
  * reconnect or disconnect. When the workspace has it off, a member is told
- * who can switch it on and an admin is offered the switch. Opened right after
- * connecting, the Add agent search under the agents starts open.
+ * who can switch it on and an admin is offered the switch; when its app is
+ * not set up, the server's operator is offered to set it up. Opened right
+ * after connecting, the Add agent search under the agents starts open.
  */
 export function ConnectorProfile({
   serverId,
   workspaceId,
   connection,
-  administers,
+  viewer,
   justConnected,
   onBack,
 }: {
   serverId: string;
   workspaceId: string;
   connection: ConnectionCatalogEntry;
-  administers: boolean;
+  viewer: ConnectorViewer;
   /** Set when the profile opens because the service was just connected, with the warning Switch gave. */
   justConnected: { warning: string | null } | null;
   onBack: () => void;
 }) {
   const reload = useReloadConnectors(workspaceId);
+  const { navigate } = useNavigate();
   const connect = useConnectService(serverId, workspaceId);
   const showDisconnect = useShowModal('disconnectServiceModal');
   const [enabling, setEnabling] = useState(false);
@@ -65,8 +73,8 @@ export function ConnectorProfile({
     setAdding(true);
   };
 
-  const state = connectorCardState(connection);
-  const offNotice = workspaceOffNotice(connection, administers);
+  const state = connectorCardState(connection, viewer);
+  const offNotice = workspaceOffNotice(connection, viewer.administers);
   // Whatever the server or workspace says, a connection the person has can be disconnected.
   const hasConnection = isYours(connection);
   const connectedAs = connectedAsLine(connection);
@@ -111,9 +119,21 @@ export function ConnectorProfile({
             </div>
             <p className="text-sm text-foreground-muted">{connection.description}</p>
             {connectedAs && <p className="text-sm">{connectedAs}</p>}
-            {state.detail && <p className="text-sm text-foreground-muted">{state.detail}</p>}
+            {/* The workspace's own notice below says it, with the switch for whoever may. */}
+            {state.detail && state.kind !== 'workspace_off' && (
+              <p className="text-sm text-foreground-muted">{state.detail}</p>
+            )}
           </div>
           <div className="flex shrink-0 gap-2">
+            {state.fix === 'set_up' && (
+              <Button
+                onClick={() =>
+                  navigate('admin', { serverId, section: 'apps', app: connection.slug })
+                }
+              >
+                {FIX_LABEL.set_up}
+              </Button>
+            )}
             {action && (
               <Button
                 variant={action === 'replace' ? 'outline' : 'default'}

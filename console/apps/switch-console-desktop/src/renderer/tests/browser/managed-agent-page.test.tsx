@@ -90,6 +90,7 @@ const AGENT: ManagedAgentView = {
     advancedConfig: { effort: 'high', tools: ['Read'] },
     instructions: 'Be brief.',
     autoApprove: false,
+    autoMode: false,
     directory: '/work/pm',
     isolation: 'shared',
   },
@@ -99,7 +100,7 @@ const AGENT: ManagedAgentView = {
 const LAPTOP: OwnedMachine = {
   ...AGENT.machine!,
   local: { kind: 'this-computer' },
-  providers: [{ provider: 'claude', ready: true, problem: null }],
+  providers: [{ provider: 'claude', ready: true, problem: null, detail: null }],
   acceptsLogins: false,
   cloud: false,
   workspacesDir: '/home/me/workspaces',
@@ -191,7 +192,7 @@ it('lays out the agent the way a Console agent’s page does', () => {
   for (const heading of ['General', 'Sessions'])
     expect([...container.querySelectorAll('h2')].map((h) => h.textContent)).toContain(heading);
   for (const row of [
-    'Auto-create a session on notify',
+    'Auto mode',
     'Bypass permissions',
     'Can manage agents',
     'Who can talk to your agent',

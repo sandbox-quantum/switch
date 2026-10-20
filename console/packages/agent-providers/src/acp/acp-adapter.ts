@@ -497,6 +497,8 @@ export class AcpAdapter implements ProviderAdapter {
     const { toolCall } = request;
     const once = request.options.find((option) => option.kind === 'allow_once');
     const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
+    // In auto mode whatever automatic review the agent has ran before it
+    // asked (see `sessionMode`), so a request that reaches here goes to a person.
     if (
       once &&
       ((server !== undefined && state.autoApprovedMcpNames.has(server)) ||

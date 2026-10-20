@@ -5,7 +5,10 @@ import {
   connectFlowReducer,
   initialConnectFlow,
 } from '@renderer/features/connectors/connect-flow';
-import { connectorCardState } from '@renderer/features/connectors/connector-card-state';
+import {
+  type ConnectorViewer,
+  connectorCardState,
+} from '@renderer/features/connectors/connector-card-state';
 import {
   disconnectCopy,
   switchOffConfirmation,
@@ -16,6 +19,7 @@ import {
   connectedAsLine,
   connectorsInTab,
   connectorsPageAccess,
+  defaultConnectorsTab,
   keyAccessText,
   profileConnectAction,
   signInLabel,
@@ -43,7 +47,7 @@ import {
   noAgentsText,
   offersAddAgent,
 } from '@renderer/features/connectors/grant-agents';
-import { workspaceNavViews } from '@renderer/features/sidebar/workspace-nav-views';
+import { adminNavTarget, workspaceNavViews } from '@renderer/features/sidebar/workspace-nav-views';
 import {
   FLAGS_NOT_READ_YET,
   allFeatureFlagsOff,
@@ -63,6 +67,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
     connectable: true,
     status: 'not_connected',
     unavailable_reason: null,
+    unavailable_code: null,
     pass_through: true,
     token_lifetime: 3600,
     loopback_ports: null,
@@ -74,38 +79,41 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
   };
 }
 
+const MEMBER: ConnectorViewer = { operator: false, administers: false, onThisComputer: false };
+
 describe('the state a connector card shows', () => {
   it('shows each state on its own', () => {
-    expect(connectorCardState(entry({ status: 'coming_soon', enabled: false })).kind).toBe(
+    expect(connectorCardState(entry({ status: 'coming_soon', enabled: false }), MEMBER).kind).toBe(
       'coming_soon'
     );
     expect(
-      connectorCardState(entry({ unavailable_reason: 'Maintenance', connectable: false }))
+      connectorCardState(entry({ unavailable_reason: 'Maintenance', connectable: false }), MEMBER)
     ).toMatchObject({ kind: 'unavailable', detail: 'Maintenance' });
-    expect(connectorCardState(entry({ workspace_enabled: false }))).toMatchObject({
+    expect(connectorCardState(entry({ workspace_enabled: false }), MEMBER)).toMatchObject({
       kind: 'workspace_off',
       label: 'Off in this workspace',
-      detail: 'A workspace admin has switched it off.',
+      detail: 'Ask a workspace admin to turn it on.',
+      fix: null,
     });
-    expect(connectorCardState(entry({ status: 'needs_reauthorization' }))).toMatchObject({
+    expect(connectorCardState(entry({ status: 'needs_reauthorization' }), MEMBER)).toMatchObject({
       kind: 'reconnect',
       label: 'Reconnect needed',
       detail: 'Switch can no longer use your Example connection. Connect again.',
       tone: 'problem',
     });
-    expect(connectorCardState(entry({ status: 'error' }))).toMatchObject({
+    expect(connectorCardState(entry({ status: 'error' }), MEMBER)).toMatchObject({
       kind: 'reconnect',
       label: 'Connection failed',
     });
-    expect(connectorCardState(entry({ status: 'connected' })).kind).toBe('connected');
-    expect(connectorCardState(entry()).kind).toBe('connect');
+    expect(connectorCardState(entry({ status: 'connected' }), MEMBER).kind).toBe('connected');
+    expect(connectorCardState(entry(), MEMBER).kind).toBe('connect');
   });
 
   it('reads a server without the workspace switch as on', () => {
-    expect(connectorCardState(entry({ workspace_enabled: null })).kind).toBe('connect');
-    expect(connectorCardState(entry({ workspace_enabled: null, status: 'connected' })).kind).toBe(
-      'connected'
-    );
+    expect(connectorCardState(entry({ workspace_enabled: null }), MEMBER).kind).toBe('connect');
+    expect(
+      connectorCardState(entry({ workspace_enabled: null, status: 'connected' }), MEMBER).kind
+    ).toBe('connected');
   });
 
   it('picks the first that applies when several do', () => {
@@ -114,16 +122,145 @@ describe('the state a connector card shows', () => {
       unavailable_reason: 'Maintenance',
       workspace_enabled: false,
     });
-    expect(connectorCardState({ ...everything, status: 'coming_soon' }).kind).toBe('coming_soon');
+    expect(connectorCardState({ ...everything, status: 'coming_soon' }, MEMBER).kind).toBe(
+      'coming_soon'
+    );
     // The server's reason wins over the workspace's switch.
-    expect(connectorCardState(everything).kind).toBe('unavailable');
+    expect(connectorCardState(everything, MEMBER).kind).toBe('unavailable');
     // Off in the workspace wins over a sign-in that needs renewing.
-    expect(connectorCardState({ ...everything, unavailable_reason: null }).kind).toBe(
+    expect(connectorCardState({ ...everything, unavailable_reason: null }, MEMBER).kind).toBe(
       'workspace_off'
     );
     expect(
-      connectorCardState({ ...everything, unavailable_reason: null, status: 'connected' }).kind
+      connectorCardState({ ...everything, unavailable_reason: null, status: 'connected' }, MEMBER)
+        .kind
     ).toBe('workspace_off');
+  });
+});
+
+describe('what each person is told about a connector that cannot be used', () => {
+  const OPERATOR: ConnectorViewer = { operator: true, administers: true, onThisComputer: false };
+  const ADMIN: ConnectorViewer = { operator: false, administers: true, onThisComputer: false };
+  const viewers = { operator: OPERATOR, admin: ADMIN, member: MEMBER };
+  const notSetUp = entry({
+    connectable: false,
+    unavailable_reason: 'Example is not set up on this server.',
+    unavailable_code: 'app_not_set_up',
+  });
+  const github = entry({
+    slug: 'github',
+    name: 'GitHub',
+    connectable: false,
+    unavailable_reason: "GitHub can't be used on this server.",
+    unavailable_code: 'needs_https',
+  });
+
+  it('offers the operator to set up an app that is not set up', () => {
+    expect(connectorCardState(notSetUp, OPERATOR)).toEqual({
+      kind: 'needs_setup',
+      label: 'Needs setup',
+      detail: 'Set up its app once, and everyone on this server can connect Example.',
+      tone: 'muted',
+      fix: 'set_up',
+    });
+  });
+
+  it('tells everyone else who sets it up, without a button', () => {
+    for (const viewer of [ADMIN, MEMBER])
+      expect(connectorCardState(notSetUp, viewer)).toEqual({
+        kind: 'unavailable',
+        label: 'Unavailable',
+        detail: 'Ask whoever runs your Switch server to set it up.',
+        tone: 'muted',
+        fix: null,
+      });
+  });
+
+  it('offers nobody a fix for a service that cannot work on this server', () => {
+    for (const viewer of Object.values(viewers))
+      expect(connectorCardState(github, viewer)).toMatchObject({
+        kind: 'unavailable',
+        label: 'Unavailable',
+        detail: "GitHub needs a server with an https address, so it can't work on this one.",
+        fix: null,
+      });
+  });
+
+  it("points at this computer's own GitHub sign-in where the server runs on it", () => {
+    const here = { ...MEMBER, onThisComputer: true };
+    expect(connectorCardState(github, here).detail).toBe(
+      "GitHub needs a server with an https address, so it can't work on this one. Agents can use this computer's own GitHub sign-in (gh or git) instead."
+    );
+    // Only GitHub has a sign-in of its own on the computer to fall back on.
+    expect(connectorCardState({ ...github, slug: 'example', name: 'Example' }, here).detail).toBe(
+      "Example needs a server with an https address, so it can't work on this one."
+    );
+  });
+
+  it('shows any other reason as the server words it, to everyone', () => {
+    for (const code of ['switched_off', 'not_set_up', 'not_fully_set_up'] as const)
+      for (const viewer of Object.values(viewers))
+        expect(
+          connectorCardState(
+            entry({ unavailable_reason: 'Maintenance', unavailable_code: code }),
+            viewer
+          )
+        ).toMatchObject({ kind: 'unavailable', detail: 'Maintenance', fix: null });
+  });
+
+  it('shows the reason as it is from a server that sends no code, guessing nothing', () => {
+    const older = entry({
+      connectable: false,
+      unavailable_reason:
+        'Example is not set up on this server. Ask whoever runs your Switch server to add it under Connectors in the Switch dashboard.',
+    });
+    for (const viewer of Object.values(viewers))
+      expect(connectorCardState(older, viewer)).toMatchObject({
+        kind: 'unavailable',
+        detail: older.unavailable_reason,
+        fix: null,
+      });
+  });
+
+  it('offers workspace admins, and the operator, to turn on a service the workspace has off', () => {
+    const off = entry({ workspace_enabled: false });
+    for (const viewer of [OPERATOR, ADMIN])
+      expect(connectorCardState(off, viewer)).toEqual({
+        kind: 'workspace_off',
+        label: 'Off in this workspace',
+        detail: 'Turn it on so people in this workspace can connect it.',
+        tone: 'muted',
+        fix: 'turn_on',
+      });
+    expect(connectorCardState(off, MEMBER)).toMatchObject({
+      detail: 'Ask a workspace admin to turn it on.',
+      fix: null,
+    });
+  });
+
+  it('puts the fix on the card in place of Connect, and nothing where there is none', () => {
+    const quick = (item: ConnectionCatalogEntry, viewer: ConnectorViewer) =>
+      cardQuickAction(item, connectorCardState(item, viewer));
+    expect(quick(notSetUp, OPERATOR)).toBe('set_up');
+    expect(quick(notSetUp, MEMBER)).toBeNull();
+    expect(quick(github, OPERATOR)).toBeNull();
+    expect(quick(entry({ workspace_enabled: false }), ADMIN)).toBe('turn_on');
+    expect(quick(entry({ workspace_enabled: false }), MEMBER)).toBeNull();
+    // A server's reason still wins over the workspace's switch, fix and all.
+    expect(quick({ ...notSetUp, workspace_enabled: false }, OPERATOR)).toBe('set_up');
+    expect(quick({ ...github, workspace_enabled: false }, ADMIN)).toBeNull();
+  });
+
+  it('takes Connect off the profile where nothing could be connected', () => {
+    expect(profileConnectAction(notSetUp)).toBeNull();
+    expect(profileConnectAction(github)).toBeNull();
+    expect(profileConnectAction({ ...github, status: 'error' })).toBeNull();
+    // Connectable where it cannot be granted: still offered.
+    expect(
+      profileConnectAction(
+        entry({ unavailable_reason: 'Not fully set up.', unavailable_code: 'not_fully_set_up' })
+      )
+    ).toBe('connect');
   });
 });
 
@@ -162,6 +299,15 @@ describe('the Yours and Discover tabs', () => {
     ]);
   });
 
+  it('opens on Yours once the person has a connection, working or not, and on Discover before', () => {
+    expect(defaultConnectorsTab(catalog)).toBe('yours');
+    expect(defaultConnectorsTab([entry({ status: 'needs_reauthorization' })])).toBe('yours');
+    expect(
+      defaultConnectorsTab([entry({ status: 'not_connected' }), entry({ status: 'coming_soon' })])
+    ).toBe('discover');
+    expect(defaultConnectorsTab([])).toBe('discover');
+  });
+
   it('searches within the tab by name, category or description', () => {
     expect(names(connectorsInTab(catalog, 'discover', 'project'))).toEqual(['Atlassian', 'Linear']);
     expect(names(connectorsInTab(catalog, 'yours', 'project'))).toEqual(['Linear']);
@@ -174,7 +320,7 @@ describe('the Yours and Discover tabs', () => {
 describe("a card's own control", () => {
   const quick = (overrides: Partial<ConnectionCatalogEntry>) => {
     const item = entry(overrides);
-    return cardQuickAction(item, connectorCardState(item));
+    return cardQuickAction(item, connectorCardState(item, MEMBER));
   };
 
   it('connects where the profile would offer Connect', () => {
@@ -425,15 +571,15 @@ describe('the agents on a connector page', () => {
     expect(OPEN_AGENT_NOTE).toBe('Others can address it; it would act as you.');
   });
 
-  it("sends the person to the agent's Connections where the server cannot list agents", () => {
+  it("sends the person to the agent's Connectors where the server cannot list agents", () => {
     expect(agentsUnlistedText('Example')).toBe(
-      "This server can't list your agents here. Turn Example on for an agent from the agent's Connections."
+      "This server can't list your agents here. Turn Example on for an agent from the agent's Connectors."
     );
   });
 
   it('says so when the person has no agents yet', () => {
     expect(noAgentsText('Example')).toBe(
-      "You have no agents in this workspace yet. Once you add one, turn Example on for it from the agent's Connections."
+      "You have no agents in this workspace yet. Once you add one, turn Example on for it from the agent's Connectors."
     );
   });
 });
@@ -600,21 +746,33 @@ describe('with the service_connections flag off', () => {
     expect(shown).not.toContain('admin');
     expect(
       workspaceNavViews({ managed: true, serviceConnections: true, administers: true })
-    ).toEqual([
-      'server',
-      'serverAgents',
-      'serverRooms',
-      'connectors',
-      'templates',
-      'admin',
-      'managedServer',
-    ]);
+    ).toEqual(['server', 'serverAgents', 'serverRooms', 'connectors', 'templates', 'admin']);
   });
 
-  it('shows Admin only to whoever administers the workspace', () => {
+  it('shows Admin only to whoever administers the workspace or runs its server', () => {
     expect(
       workspaceNavViews({ managed: false, serviceConnections: true, administers: false })
     ).toEqual(['server', 'serverAgents', 'serverRooms', 'connectors', 'templates']);
+    // The server's status lives under Admin, for whoever runs it, flag or role aside.
+    expect(
+      workspaceNavViews({ managed: true, serviceConnections: false, administers: false })
+    ).toEqual(['server', 'serverAgents', 'serverRooms', 'templates', 'admin']);
+  });
+
+  it('opens Admin on its sections, or on the server’s status where there are none to use', () => {
+    expect(adminNavTarget({ serviceConnections: true, administers: true, frozen: false })).toBe(
+      'admin'
+    );
+    expect(adminNavTarget({ serviceConnections: false, administers: true, frozen: false })).toBe(
+      'managedServer'
+    );
+    expect(adminNavTarget({ serviceConnections: true, administers: false, frozen: false })).toBe(
+      'managedServer'
+    );
+    // While the server can't answer, its status is the only entry that works.
+    expect(adminNavTarget({ serviceConnections: true, administers: true, frozen: true })).toBe(
+      'managedServer'
+    );
   });
 
   it('has no page to show, rather than an empty one', () => {

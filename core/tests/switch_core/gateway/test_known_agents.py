@@ -7,7 +7,6 @@ import pytest
 from switch_core.bridges.agent.protocol.types import (
     CommandCapabilities,
     IntegrationProfile,
-    TaskProtocolConfig,
 )
 from switch_core.gateway.known_agents import (
     ClaudeCodeKnownAgent,
@@ -89,11 +88,6 @@ class TestCodexKnownAgent:
         assert profile.pre_invocation_mediation == []
         assert profile.event_reporting == []
 
-    def test_can_delegate_and_accept_tasks(self) -> None:
-        profile = CODEX.build_profile(GenericAgentOptions())
-        assert profile.task_protocol.can_delegate is True
-        assert profile.task_protocol.can_accept is True
-
     def test_commands_are_session_dependent(self) -> None:
         # Codex is a TUI driven by Switch Console keystroke injection, same as Claude
         # Code — so reset/compact/interrupt depend on a live managed session.
@@ -156,11 +150,6 @@ class TestOpenCodeKnownAgent:
         assert profile.pre_invocation_mediation == []
         assert profile.post_invocation_mediation == []
         assert profile.event_reporting == []
-
-    def test_can_delegate_and_accept_tasks(self) -> None:
-        profile = OPENCODE.build_profile(GenericAgentOptions())
-        assert profile.task_protocol.can_delegate is True
-        assert profile.task_protocol.can_accept is True
 
     def test_commands_are_session_dependent(self) -> None:
         # Must stay in step with `BY_PROVIDER.opencode` in Switch Console's
@@ -411,6 +400,5 @@ def test_every_stored_known_agent_type_resolves_as_before(
             pre_invocation_mediation=reported,
             post_invocation_mediation=[],
             event_reporting=reported,
-            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
             command_capabilities=_SESSION_DEPENDENT,
         )
