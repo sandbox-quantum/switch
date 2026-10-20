@@ -65,8 +65,8 @@ export const appSettingsController = createRPCController({
    * comparable.
    *
    * Resetting `telemetry` is not an agreement to share usage data and is not
-   * reported as one. Its default is off and never-asked, so a reset can only
-   * ever land on the answer that has nothing to report.
+   * reported as one. Its default is on and never-asked, so a reset puts it back
+   * where a new install starts: sharing, with the first-run notice asking again.
    */
   reset: async <T extends AppSettingsKey>(key: T): Promise<void> => {
     await appSettingsService.reset(key);
