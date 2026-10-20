@@ -26,7 +26,7 @@ const CONTEXT: TelemetryContext = {
   osType: 'darwin',
   osVersion: '24.3.0',
   build: 'stable',
-  flintEnv: 'prod',
+  telemetryEnv: 'prod',
   internal: 'false',
   timeMs: 1_700_000_000_000,
 };

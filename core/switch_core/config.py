@@ -506,7 +506,7 @@ class SwitchConfig(BaseSettings):
     telemetry_snapshot_interval_hours: float = 24.0
 
     # Which Amplitude project this deployment's usage lands in, sent as
-    # `flint_env`. The relay keeps one project per environment and files an
+    # `switch_trust.env`. The relay keeps one project per environment and files an
     # event naming none, or `prod`, under production — which is what every
     # customer's deployment is, and why it is the default. Our own non-customer
     # servers say so here: `dev` for the development deployment, `local` for a
@@ -516,7 +516,7 @@ class SwitchConfig(BaseSettings):
     telemetry_environment: Literal["prod", "staging", "dev", "local"] = "prod"
 
     # Whether this deployment is one of the company's own, sent as
-    # `flint_internal` so staff usage can be told from adoption. A customer's
+    # `switch_trust.internal` so staff usage can be told from adoption. A customer's
     # deployment never sets it. Within a deployment, staff accounts are counted
     # separately by email domain whether or not this is set.
     telemetry_internal: bool = False

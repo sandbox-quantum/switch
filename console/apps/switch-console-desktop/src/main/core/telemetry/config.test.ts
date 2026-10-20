@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  flintEnvFor,
+  telemetryEnvFor,
   resolveTelemetryEnvironment,
   TELEMETRY_RELAY_ENDPOINT,
   type TelemetryBuildChannel,
@@ -23,7 +23,7 @@ describe('a dev run', () => {
   it('reports to the relay once opted in', () => {
     expect(resolve('dev', { SWITCHDASH_TELEMETRY_DEV: '1' })).toEqual({
       enabled: true,
-      config: { endpoint: TELEMETRY_RELAY_ENDPOINT, build: 'dev', flintEnv: 'local' },
+      config: { endpoint: TELEMETRY_RELAY_ENDPOINT, build: 'dev', telemetryEnv: 'local' },
     });
   });
 
@@ -55,7 +55,7 @@ describe.each(['stable', 'canary'] as const)('a %s build', (build) => {
       config: {
         endpoint: TELEMETRY_RELAY_ENDPOINT,
         build,
-        flintEnv: build === 'canary' ? 'staging' : 'prod',
+        telemetryEnv: build === 'canary' ? 'staging' : 'prod',
       },
     });
   });
@@ -79,7 +79,7 @@ describe.each(['stable', 'canary'] as const)('a %s build', (build) => {
 });
 
 describe('the Amplitude project a build reports to', () => {
-  // The relay files each event under the project its flint_env names, so only a
+  // The relay files each event under the project its switch_trust.env names, so only a
   // released stable build's events are production's.
   it.each([
     ['stable', true, 'prod'],
@@ -89,12 +89,12 @@ describe('the Amplitude project a build reports to', () => {
     ['dev', false, 'local'],
     ['dev', true, 'local'],
   ] as const)('is %s, released %s → %s', (build, release, environment) => {
-    expect(flintEnvFor({ build, release })).toBe(environment);
+    expect(telemetryEnvFor({ build, release })).toBe(environment);
   });
 
   it('is carried in the resolved config, so every event of a build agrees', () => {
     const resolution = resolve('stable', {}, false);
 
-    expect(resolution.enabled && resolution.config.flintEnv).toBe('dev');
+    expect(resolution.enabled && resolution.config.telemetryEnv).toBe('dev');
   });
 });

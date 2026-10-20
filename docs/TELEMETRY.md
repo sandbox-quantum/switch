@@ -35,9 +35,9 @@ abbreviated:
   "resource": {
     "service.name": "switch-console",
     "service.version": "0.9.14",
-    "flint.client_id": "3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83",
-    "flint_env": "prod",
-    "flint_internal": "false",
+    "switch_trust.client_id": "3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83",
+    "switch_trust.env": "prod",
+    "switch_trust.internal": "false",
     "os.type": "darwin",
     "os.version": "23.6.0"
   },
@@ -74,11 +74,11 @@ machine, in what repository, or what the prompt said.
 | `service.name` | constant | `switch-console` |
 | `service.version` | app version | `0.9.14`, `1.0.2` |
 | `build` | release channel | `dev`, `canary`, `stable` |
-| `flint_env` | which analytics project the event is filed under | `prod` (a released stable build), `staging` (a released canary), `dev` (a packaged build that is not a release), `local` (running from source) |
-| `flint_internal` | whether an account this app is signed in to a Switch server with has a SandboxAQ email address — **only the yes/no is sent, never the address** | `true`, `false`, `unknown` (no account, or only the one a local server signs in with) |
+| `switch_trust.env` | which analytics project the event is filed under | `prod` (a released stable build), `staging` (a released canary), `dev` (a packaged build that is not a release), `local` (running from source) |
+| `switch_trust.internal` | whether an account this app is signed in to a Switch server with has a SandboxAQ email address — **only the yes/no is sent, never the address** | `true`, `false`, `unknown` (no account, or only the one a local server signs in with) |
 | `os.type` | OS family | `darwin`, `windows`, `linux`, `other` |
 | `os.version` | OS release string | `23.6.0`, `10.0.22631`, `6.1.0-53-cloud-amd64` |
-| `flint.client_id` | random install UUID | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |
+| `switch_trust.client_id` | random install UUID | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |
 | `event.name` | the event | `session_started` |
 | timestamp | event time | `1789572278158000000` |
 
@@ -291,7 +291,7 @@ hold it back again.
 
 ## 5. The identifier
 
-Exactly one identifier is attached: `flint.client_id`, e.g.
+Exactly one identifier is attached: `switch_trust.client_id`, e.g.
 `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` — a random UUID generated on the machine
 the first time telemetry runs, stored in the app's local database.
 

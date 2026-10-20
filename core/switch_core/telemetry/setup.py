@@ -70,7 +70,7 @@ async def build_telemetry(
             None,
         )
 
-    # Both streams send `flint.client_id`, so a deployment reporting both must
+    # Both streams send `switch_trust.client_id`, so a deployment reporting both must
     # be one subject downstream. The operator's value wins; the generated one
     # cannot be copied between deployments and carries the install date.
     client_id = config.deployment_id or generated_id
