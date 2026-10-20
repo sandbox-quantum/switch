@@ -5,8 +5,9 @@ repository** (`sandbox-quantum/switch`). The repo is public, so the downloads
 need no account, token or sign-up. No need to build from source.
 
 > Builds are currently **macOS arm64 (Apple Silicon) and x64 (Intel)**, **Linux
-> x64 and arm64** and **Windows x64**. On Windows, agents run on an SSH host
-> rather than on the PC itself — see [Install (Windows x64)](#install-windows-x64).
+> x64 and arm64** and **Windows x64**. On Windows, an agent runs on the PC
+> itself as a managed agent, on a server with agent management on; otherwise it
+> needs an SSH host — see [Install (Windows x64)](#install-windows-x64).
 
 ## Download
 
@@ -137,12 +138,18 @@ Two caveats:
 The `.msi` supports the usual `msiexec` flow if you would rather not run the
 installer interactively.
 
-### Agents run on an SSH host, not on the PC
+### Where agents run on Windows
 
-Agent sessions need a POSIX execution host, so Windows Console cannot run an
-agent on the PC itself. It asks you to pick an SSH host instead: a Linux or
-macOS machine you can reach over SSH, set up from **Settings → Remote hosts**.
-Connecting to a Switch server and working in rooms are unaffected.
+On a server with agent management on (a local server Console runs has it), a
+new agent on **This computer** runs on the PC as a managed agent: Console's
+built-in agents controller runs it, once **Run managed agents on this computer**
+is on. Antigravity has no Windows build, so it can't run there.
+
+On a server without agent management, Console runs the agent itself, and those
+sessions need a POSIX execution host, so Windows Console asks you to pick an SSH
+host instead: a Linux or macOS machine you can reach over SSH, set up from
+**Settings → Remote hosts**. Connecting to a Switch server and working in rooms
+are unaffected either way.
 
 ### Running a server through Docker
 
