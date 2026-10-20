@@ -150,13 +150,11 @@ class KnownAgent(ABC):
 
 class ClaudeCodeOptions(KnownAgentOptions):
     channels_enabled: bool = True
-    """Whether the Claude Code installation can run with
-    `--dangerously-load-development-channels plugin:switch-connector@switch-plugins`
-    so the channel server delivers inbound room events. Defaults to True for
-    backwards compatibility. Set to False for installations that cannot enable
-    that flag (e.g. Vertex AI or other managed setups without a Claude
-    subscription); the registered profile then becomes `session_passive`
-    instead of `session_addressable`."""
+    """Whether the Claude Code installation can receive inbound room events as
+    live channel pushes. Defaults to True for backwards compatibility. Set to
+    False for installations that cannot (e.g. Vertex AI or other managed setups
+    without a Claude subscription); the registered profile then becomes
+    `session_passive` instead of `session_addressable`."""
 
     auto_session: bool = False
     """When True, the operator's connector (Switch Console) watches every room this
@@ -238,14 +236,6 @@ class ClaudeCodeKnownAgent(KnownAgent):
         assume_role: str | None,
     ) -> str | None:
         assert isinstance(options, ClaudeCodeOptions)
-        # Channels-enabled installations need the dev-channels flag so the
-        # plugin can deliver inbound events; without channels the flag is a
-        # no-op (e.g. Vertex AI / Bedrock installations).
-        flag = (
-            " --dangerously-load-development-channels plugin:switch-connector@switch-plugins"
-            if options.channels_enabled
-            else ""
-        )
         # Use a `<claude-dir>` placeholder when the operator hasn't configured
         # a directory — the command is still useful, the operator just has to
         # substitute their own path.
@@ -271,7 +261,7 @@ class ClaudeCodeKnownAgent(KnownAgent):
             assume_role,
             also_pull=not options.channels_enabled,
         )
-        return f'cd {dir_token} && claude "{prompt}"{subagent_flags}{flag}'
+        return f'cd {dir_token} && claude "{prompt}"{subagent_flags}'
 
     def start_session_instructions(
         self,

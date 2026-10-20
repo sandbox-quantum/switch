@@ -82,18 +82,16 @@ class TestBuildProfileCommandCapabilities:
 
 
 class TestStartSessionInstructions:
-    def test_channels_enabled_appends_dev_flag_after_prompt(self) -> None:
+    def test_channels_enabled_command_names_no_plugin(self) -> None:
         opts = ClaudeCodeOptions(channels_enabled=True, repo_dir="/Users/x/aq-switch")
         msg = CLAUDE.start_session_instructions(opts, _agent({}), "hub", None)
         assert msg is not None
-        # The flag must come AFTER the prompt argument so claude treats the
-        # quoted text as the initial prompt, not as a value for the flag.
         assert (
-            f'claude "connect to switch room hub{_identity("claude-code.test")}" '
-            "--dangerously-load-development-channels "
-            "plugin:switch-connector@switch-plugins"
+            f'cd /Users/x/aq-switch && claude "connect to switch room hub'
+            f'{_identity("claude-code.test")}"\n'
         ) in msg
-        assert "cd /Users/x/aq-switch" in msg
+        assert "--dangerously-load-development-channels" not in msg
+        assert "switch-connector" not in msg
 
     def test_channels_disabled_passive_message_shape(self) -> None:
         opts = ClaudeCodeOptions(channels_enabled=False, repo_dir="/srv/agent")
@@ -138,20 +136,17 @@ class TestStartSessionInstructions:
             opts, _agent({}), "ops", None, connected_not_live=True
         )
         assert msg is not None
-        # Acknowledges a connected-but-not-live session and steers to relaunch
-        # with live channels (the flag is in the command), rather than implying
-        # there is no session.
+        # Acknowledges a connected-but-not-live session and steers to relaunch,
+        # rather than implying there is no session.
         assert "isn't reporting as live" in msg
         assert "I don't have a session connected to this room." not in msg
-        assert "--dangerously-load-development-channels" in msg
+        assert 'cd /srv/agent && claude "connect to switch room ops' in msg
 
     def test_no_repo_dir_uses_placeholder(self) -> None:
         opts = ClaudeCodeOptions(channels_enabled=True, repo_dir=None)
         msg = CLAUDE.start_session_instructions(opts, _agent({}), "triage", None)
         assert msg is not None
         assert "cd <claude-dir>" in msg
-        # Still the channels flag because channels_enabled is True.
-        assert "--dangerously-load-development-channels" in msg
         # No user-facing mention of the option name.
         assert "repo_dir" not in msg
 
@@ -203,15 +198,12 @@ class TestStartSessionInstructions:
         )
         msg = CLAUDE.start_session_instructions(opts, _agent({}), "hub", None)
         assert msg is not None
-        # --agent / --settings come after the quoted prompt and before the
-        # dev-channels flag; the settings path matches what the configure skill
-        # writes the subagent credentials to.
+        # --agent / --settings come after the quoted prompt; the settings path
+        # matches what the configure skill writes the subagent credentials to.
         assert (
             f'claude "connect to switch room hub{_identity("claude-code.test")}" '
             "--agent seo-writer "
-            "--settings .claude/switch-subagents/seo-writer.settings.json "
-            "--dangerously-load-development-channels "
-            "plugin:switch-connector@switch-plugins"
+            "--settings .claude/switch-subagents/seo-writer.settings.json\n"
         ) in msg
 
     def test_subagent_flags_present_without_channels(self) -> None:

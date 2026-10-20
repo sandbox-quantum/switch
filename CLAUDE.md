@@ -143,10 +143,6 @@ exported as `@switch-console/plugins/switch-skill`. OpenCode loads it as a skill
 file; Claude Code, Codex, Cursor and Antigravity get it (without its
 frontmatter) as system context.
 
-`connectors/` still holds the old Claude Code and Codex plugins, frozen, for
-Consoles 0.35 and older, which install them from the default branch. Do not
-edit or delete them — `connectors/DEPRECATED.md` says why and when they go.
-
 When you change how agents interact with Switch — new/changed MCP tools, in-room
 commands, room workflow, event delivery, or anything an agent needs to know —
 update that file. It covers every host, so host-specific behavior is named in

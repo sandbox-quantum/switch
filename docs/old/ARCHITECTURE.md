@@ -426,7 +426,6 @@ A quick index for navigation:
 | Gateway API (backend) | `core/switch_core/gateway/` |
 | Operator dashboard (SPA) | `gateway/` (top level) |
 | Desktop app | `console/` |
-| Connector plugins (Claude Code, Codex) | `connectors/` |
 | Deployment assets (Helm, Compose) | `deploy/` |
 
 ---

@@ -19,7 +19,6 @@ body:
         - switch-core (control plane)
         - gateway (operator dashboard)
         - Switch Console (desktop app)
-        - Connector plugin (Claude Code / Codex)
         - Collaboration bridge (Slack / Mattermost)
         - Deployment (Docker Compose / Helm)
         - Not sure

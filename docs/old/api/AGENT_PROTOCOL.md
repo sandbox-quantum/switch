@@ -1030,8 +1030,8 @@ Matrix's continuation token, pages backwards for `before`, and reports
 `truncated` when it stops short, which matters now that "re-read context" is
 the documented recovery path for a gap.
 
-Both connector skills (`claude-code-plugin`, `codex-plugin`) and both plugin
-versions must be updated when the agent-facing contract changes.
+The Switch skill (`console/packages/plugins/src/switch-skill/SKILL.md`) must be
+updated when the agent-facing contract changes.
 
 ---
 
