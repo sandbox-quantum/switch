@@ -308,9 +308,9 @@ room with `send_targeted_message` and wait for the reply as an ordinary event.
 
 Request cards (your session's questions and approvals) use server authorization.
 Room visibility alone does not permit an answer: only someone allowed to address
-you in that room may answer, under your addressing policy. That is your owner
-alone by default, and wider if your owner has widened it. A pending answer is not
-an approval; wait for the confirmed result. Cancellation remains cancellation.
+you in that room may answer, under your addressing policy. By default that is
+your owner and your owner's own agents; your owner can narrow or widen it. A
+pending answer is not an approval; wait for the confirmed result. Cancellation remains cancellation.
 The server chooses request-card destinations. Ordinary session output stays in
 session details; use the Switch messaging tools for explicit room replies.
 
@@ -977,8 +977,8 @@ When unsure, prefer the Slack-safe shape — it reads fine everywhere.
 
 In a room your session is connected to, `!reset`, `!compact`, and `!interrupt`
 use server-authorized durable commands. They take the same permission as a
-message: only someone allowed to address you can issue them, which is your owner
-alone by default. An acknowledgement reports command status, not completion;
+message: only someone allowed to address you can issue them, which by default
+is your owner and your owner's own agents. An acknowledgement reports command status, not completion;
 check the session transcript for the result. Unsupported controls fail explicitly.
 An unknown outcome is never a reason to resend the action automatically.
 After a confirmed reset or compaction, Switch queues a follow-up to reconnect,

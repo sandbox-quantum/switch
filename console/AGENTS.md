@@ -662,8 +662,8 @@ pnpm run test
   because the install runner's shell may be either PowerShell or cmd.exe, and
   each would expand one of them before `powershell -c` ran.
 - An auto-approving Codex session opens its app-server thread with
-  `approvalPolicy: 'never'` (plus `approvalsReviewer: 'user'`, which every Codex thread
-  gets). The sandbox is deliberately **not** overridden: "Bypass
+  `approvalPolicy: 'never'` (plus `approvalsReviewer: 'user'`, which every mode
+  but `auto` gets). The sandbox is deliberately **not** overridden: "Bypass
   permissions" promises unattended approvals, not unattended filesystem and
   network access, so the user's own `sandbox_mode` from `~/.codex/config.toml`
   stands. See `packages/agent-providers/src/codex/codex-adapter.ts`.

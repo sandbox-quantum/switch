@@ -90,7 +90,7 @@ Switch runs on many servers and the details differ per server. You ship with **n
 them. At the start of a setup conversation, ask for what you need and remember it for the
 conversation:
 
-- The server's Gateway and API URLs.
+- The server's address.
 - How they sign in.
 - Any network prerequisite to reach it (a VPN, an allow-list, nothing at all).
 - Which chat platform their rooms are bridged to, if any.
