@@ -18,9 +18,10 @@ const viteEnv = (import.meta as ImportMetaWithEnv).env;
  *
  * The hostname is written down in an open-source repository on purpose: anyone
  * reading this learns where the app reports to, which users are entitled to
- * know. switch-core's usage telemetry defaults to the same relay.
+ * know.
  */
-export const TELEMETRY_RELAY_ENDPOINT = 'https://telemetry.switchagents.ai/v1/logs';
+export const TELEMETRY_RELAY_ORIGIN = 'https://telemetry.switchagents.ai';
+export const TELEMETRY_RELAY_ENDPOINT = `${TELEMETRY_RELAY_ORIGIN}/v1/logs`;
 
 /** Which build sent an event, so a developer's app cannot pollute real numbers. */
 export type TelemetryBuildChannel = 'dev' | 'canary' | 'stable';

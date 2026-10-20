@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { TELEMETRY_RELAY_ENDPOINT, TELEMETRY_RELAY_ORIGIN } from '../telemetry/config';
 import {
   buildEnvFile,
   keysDisagreeing,
@@ -244,6 +245,14 @@ describe('buildEnvFile', () => {
     expect(forStaff).toContain('TELEMETRY_INTERNAL=true');
     expect(vars.TELEMETRY_INTERNAL).toBe('false');
     expect(composeYaml).toMatch(/^\s+TELEMETRY_INTERNAL:\s*$/m);
+  });
+
+  it('sends the server’s usage to the relay this app reports to, not to its own default', () => {
+    // The server a stable build pins defaults to the relay's retired name, so
+    // leaving this to the server would leave its events going nowhere.
+    expect(vars.TELEMETRY_ENDPOINT).toBe(TELEMETRY_RELAY_ORIGIN);
+    expect(TELEMETRY_RELAY_ENDPOINT).toBe(`${vars.TELEMETRY_ENDPOINT}/v1/logs`);
+    expect(composeYaml).toMatch(/^\s+TELEMETRY_ENDPOINT:\s*$/m);
   });
 
   it('is the only thing the compose file needs to forward the gate', () => {

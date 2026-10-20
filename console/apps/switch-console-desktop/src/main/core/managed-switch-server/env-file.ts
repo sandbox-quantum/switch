@@ -1,5 +1,5 @@
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
-import type { TelemetryFlintEnv } from '../telemetry/config';
+import { TELEMETRY_RELAY_ORIGIN, type TelemetryFlintEnv } from '../telemetry/config';
 import {
   LOCAL_SERVER_ADMIN_EMAIL,
   LOCAL_SERVER_BIND_ADDR,
@@ -136,6 +136,10 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     `${TELEMETRY_ENABLED_KEY}=${telemetryEnabled ? 'true' : 'false'}`,
     `TELEMETRY_ENVIRONMENT=${telemetryEnvironment}`,
     `TELEMETRY_INTERNAL=${telemetryInternal ? 'true' : 'false'}`,
+    // Named rather than left to the server's default: the server a stable
+    // build pins predates the relay's current name and defaults to the one
+    // being retired, which would leave its events going nowhere.
+    `TELEMETRY_ENDPOINT=${TELEMETRY_RELAY_ORIGIN}`,
     // Tells the server's agents that Switch Console runs it, so switch-buddy
     // can tell this apart from Switch Cloud and a self-hosted server.
     'MANAGED_BY_CONSOLE=true',

@@ -1,4 +1,4 @@
-import type { TelemetryFlintEnv } from '../../telemetry/config';
+import { TELEMETRY_RELAY_ORIGIN, type TelemetryFlintEnv } from '../../telemetry/config';
 import { LOCAL_SERVER_ADMIN_EMAIL, LOCAL_SERVER_BIND_ADDR } from '../constants';
 import { MANAGED_SERVER_FEATURE_FLAGS, TELEMETRY_ENABLED_KEY } from '../env-file';
 import type { LocalServerSecrets } from '../secret-values';
@@ -60,6 +60,8 @@ export function buildNativeCoreSettings(params: NativeCoreSettingsParams): Recor
     [TELEMETRY_ENABLED_KEY]: telemetryEnabled ? 'true' : 'false',
     TELEMETRY_ENVIRONMENT: params.telemetryEnvironment,
     TELEMETRY_INTERNAL: params.telemetryInternal ? 'true' : 'false',
+    // Named for the same reason the Docker stack's `.env` names it.
+    TELEMETRY_ENDPOINT: TELEMETRY_RELAY_ORIGIN,
     // Tells the server's agents that Switch Console runs it, as the Docker
     // stack's `.env` does.
     MANAGED_BY_CONSOLE: 'true',

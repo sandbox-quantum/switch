@@ -247,7 +247,9 @@ Switch Console can run a Switch server for the user — as containers on their o
 machine, or on a host they have given it over SSH. That server has product-usage
 telemetry of its own, off unless its configuration turns it on, and the Console's
 toggle is what turns it on: the answer is written into the server's configuration
-every time the Console starts it, in both directions. "No" is written down
+every time the Console starts it, in both directions, together with the address
+to send to — the same relay the app reports to, rather than whatever the
+server's own version defaults to. "No" is written down
 explicitly rather than left out, because a stack started under a "yes" would
 otherwise keep the setting it started with.
 
