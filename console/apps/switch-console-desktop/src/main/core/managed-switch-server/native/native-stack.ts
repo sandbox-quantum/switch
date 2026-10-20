@@ -16,7 +16,12 @@ import {
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { MAX_START_FAILURE_LINE } from '@shared/core/managed-switch-server/start-failure';
 import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
-import { currentFlintEnv, managedServerTelemetryEndpoint } from '../../telemetry/config';
+import {
+  currentFlintEnv,
+  resolveTelemetryConfig,
+  sameMachineServerTelemetryEndpointFor,
+  TELEMETRY_RELAY_ORIGIN,
+} from '../../telemetry/config';
 import { currentInternalFlag } from '../../telemetry/internal-account';
 import { classifyVersionDrift, type DeployedVersion } from '../deployed-version';
 import { detectDocker } from '../docker';
@@ -412,7 +417,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       telemetryEnabled,
       telemetryEnvironment: currentFlintEnv(),
       telemetryInternal: (await currentInternalFlag()) === 'true',
-      telemetryEndpoint: managedServerTelemetryEndpoint(),
+      telemetryEndpoint: nativeServerTelemetryEndpoint(),
     });
     await writeDeployedVersion(layout, install.version);
     onMessage('Starting switch-core…');
@@ -578,10 +583,27 @@ export async function nativeStartedAt(layout: NativeLayout): Promise<string | nu
 
 /** What the running switch-core does about usage data, read from the
  * environment it was started with — which is what it read at boot. */
+/**
+ * Where the native server sends its usage: the relay, or a dev run's local
+ * listener. A listener no server could post to is set aside for the relay,
+ * with a warning, rather than left to stop the server starting.
+ */
+export function nativeServerTelemetryEndpoint(): string {
+  const endpoint = sameMachineServerTelemetryEndpointFor(resolveTelemetryConfig());
+  if (endpoint !== null) return endpoint;
+  log.warn(
+    'SWITCHDASH_TELEMETRY_ENDPOINT is not an http(s) URL; the local server reports to the relay',
+    {
+      event: 'telemetry_endpoint_override_ignored',
+    }
+  );
+  return TELEMETRY_RELAY_ORIGIN;
+}
+
 export async function readNativeTelemetry(layout: NativeLayout): Promise<DeployedTelemetry> {
   try {
     const env = await readFile(path.join(layout.run, CORE_ENV_FILE), 'utf8');
-    return deployedTelemetryOf((key) => readEnvValue(env, key));
+    return deployedTelemetryOf((key) => readEnvValue(env, key), nativeServerTelemetryEndpoint());
   } catch (error) {
     return { known: false, reason: `${CORE_ENV_FILE}: ${errorText(error)}` };
   }

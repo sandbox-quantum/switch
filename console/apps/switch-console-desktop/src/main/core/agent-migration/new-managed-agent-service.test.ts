@@ -40,6 +40,9 @@ const READY: TargetLookup = {
   controller: { controllerId: 'controller-1', state: 'running' },
 };
 
+/** What the session seam throws when there is no sign-in to use. */
+class SignedOut extends Error {}
+
 type Config = {
   lookup: TargetLookup;
   management: boolean;
@@ -76,6 +79,7 @@ function harness(): Harness {
         return config.createOutcome;
       },
       reportCreate: (_input, failure) => reported.push(failure),
+      thrownFailure: (error) => (error instanceof SignedOut ? 'unauthenticated' : 'error'),
       log: { info: () => {}, warn: () => {}, error: () => {} },
     },
   };
@@ -207,12 +211,18 @@ describe('NewManagedAgentService.add reporting', () => {
     }
   });
 
-  it('reports instructions it turned away before asking the server', async () => {
+  it('reports instructions it turned away before asking the server as invalid', async () => {
     await new NewManagedAgentService(h.deps).add({
       ...PARAMS,
       instructions: 'x'.repeat(33 * 1024),
     });
-    expect(h.reported).toEqual(['error']);
+    expect(h.reported).toEqual(['invalid']);
+  });
+
+  it('reports a create the session seam refused for want of a sign-in as unauthenticated', async () => {
+    h.set({ createOutcome: new SignedOut('Not signed in to this Switch server.') });
+    await expect(new NewManagedAgentService(h.deps).add(PARAMS)).rejects.toThrow('Not signed in');
+    expect(h.reported).toEqual(['unauthenticated']);
   });
 
   it('reports a create that threw, once, and still throws it', async () => {

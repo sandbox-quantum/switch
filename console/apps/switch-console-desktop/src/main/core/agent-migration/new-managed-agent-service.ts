@@ -101,6 +101,11 @@ export type NewManagedAgentDeps = {
    * awaited: describing the agent must not hold up making it.
    */
   reportCreate(input: AddManagedAgentParams, failure: TelemetryAgentCreateFailure): void;
+  /**
+   * A create that threw, as a reportable reason: a sign-in the session seam
+   * found missing or expired before anything reached Switch, or else a fault.
+   */
+  thrownFailure(error: unknown): Extract<TelemetryAgentCreateFailure, 'unauthenticated' | 'error'>;
   log: MigrationLog;
 };
 
@@ -138,8 +143,8 @@ export class NewManagedAgentService {
     try {
       return await this.createAgent(input);
     } catch (error) {
-      // What is not a typed return: the server unreachable, or a fault in it.
-      this.deps.reportCreate(input, 'error');
+      // What is not a typed return: no sign-in, the server unreachable, or a fault.
+      this.deps.reportCreate(input, this.deps.thrownFailure(error));
       throw error;
     }
   }
@@ -150,7 +155,8 @@ export class NewManagedAgentService {
     try {
       assertInstructionsFit(input.instructions);
     } catch (error) {
-      this.deps.reportCreate(input, 'error');
+      // The same mistake Switch would refuse as an invalid field, caught first.
+      this.deps.reportCreate(input, 'invalid');
       return { kind: 'error', message: message(error) };
     }
     const definition: ManagedDefinition = {

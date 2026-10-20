@@ -34,8 +34,8 @@ export function TelemetryConsentNotice({
         }
       : notice.kind === 'stale-endpoint'
         ? {
-            title: 'This server may not be delivering its usage data',
-            body: 'It was set up before Switch Console told it where to send usage data, so it uses an address it shipped with that may no longer work. Restart to point it at the current one.',
+            title: 'This server is not sending usage data to the current address',
+            body: 'Its usage data may not be arriving. Restart to point it at the address Switch Console uses now.',
           }
         : notice.consent
           ? {

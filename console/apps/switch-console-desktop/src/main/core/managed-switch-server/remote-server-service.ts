@@ -847,12 +847,9 @@ export class RemoteServerService {
           deployedVersion: managedSwitchVersion(),
           drift: null,
           upgrade: null,
-          // The start just wrote this build's relay along with the answer.
-          deployedTelemetry: {
-            known: true,
-            enabled: result.telemetryEnabled,
-            endpointCurrent: true,
-          },
+          // Read off the server just started, as at launch: what it runs with,
+          // not what was written for it.
+          deployedTelemetry: await readDeployedTelemetry(host),
           notice: result.warning,
         });
         this.releaseRefused(sshHost, result.serverId);

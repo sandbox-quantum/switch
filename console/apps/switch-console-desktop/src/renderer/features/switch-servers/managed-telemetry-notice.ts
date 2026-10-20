@@ -14,10 +14,10 @@ import type { DeployedTelemetry } from '@shared/core/managed-switch-server/manag
  * read says so rather than borrowing either answer — the whole point of
  * checking is that assuming was what went wrong.
  *
- * A server sharing as asked can still be sending to an address this build no
- * longer names — one set up before Console wrote the relay down runs on its
- * own version's default — and that is out of step too: its events may be
- * going nowhere, and a restart is what points it at the current relay.
+ * A server sharing as asked can still be sending somewhere other than the
+ * address this build gives it — most often one started before Console named
+ * the relay, running on its own version's default — and that is out of step
+ * too: its events may be going nowhere, and a restart points it at the relay.
  */
 export type ManagedTelemetryNotice =
   | { kind: 'in-step' }

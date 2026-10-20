@@ -133,19 +133,28 @@ export function resolveTelemetryConfig(): TelemetryResolution {
 }
 
 /**
- * Where a Switch server this app runs sends its own usage: wherever this app
- * sends its own, so the two are always one pipeline whatever server version
- * is pinned, and a dev run pointed at a local listener sees both halves.
+ * Where a Switch server running as a process on this machine sends its usage:
+ * wherever this app sends its own, so a dev run pointed at a local listener
+ * sees both halves. Null when that is not an http(s) URL a server could post
+ * to, for the caller to fall back to the relay and say so.
  *
  * An origin, because switch-core appends the signal path itself and refuses a
  * value that already carries one. A build that sends nothing still names the
  * relay: whether the server reports is the consent gate's to decide, not this.
+ *
+ * Only a server on this machine follows a dev listener. A container's loopback
+ * is its own and an SSH host's is another machine's, and a host other people
+ * share must never be pointed at one person's listener, so those servers are
+ * always given {@link TELEMETRY_RELAY_ORIGIN}.
  */
-export function managedServerTelemetryEndpointFor(resolution: TelemetryResolution): string {
-  return resolution.enabled ? new URL(resolution.config.endpoint).origin : TELEMETRY_RELAY_ORIGIN;
-}
-
-/** The same, for the build that is actually running. */
-export function managedServerTelemetryEndpoint(): string {
-  return managedServerTelemetryEndpointFor(resolveTelemetryConfig());
+export function sameMachineServerTelemetryEndpointFor(
+  resolution: TelemetryResolution
+): string | null {
+  if (!resolution.enabled) return TELEMETRY_RELAY_ORIGIN;
+  try {
+    const url = new URL(resolution.config.endpoint);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null;
+  } catch {
+    return null;
+  }
 }

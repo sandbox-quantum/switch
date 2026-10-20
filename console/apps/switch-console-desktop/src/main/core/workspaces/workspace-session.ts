@@ -189,6 +189,33 @@ export async function withWorkspaceSession<T>(
 }
 
 /**
+ * Run `fn` against the server hosting `workspaceId` only if the session already
+ * selects that workspace: without switching to it and without a lease, so it
+ * can neither redirect nor hold up whatever the person does next. Resolves to
+ * null, having called nothing, when the session selects another workspace or
+ * the server's host is unreachable.
+ *
+ * For work done only to describe something that already happened, such as a
+ * telemetry read-back. Holding no lease, a switch can land while `fn` runs, so
+ * use it only for reads by id, which the gateway answers for the selected
+ * tenant alone: a read that loses that race fails rather than answering for
+ * another workspace.
+ */
+export async function withWorkspaceIfSelected<T>(
+  workspaceId: string,
+  fn: (server: SwitchServer) => Promise<T>
+): Promise<T | null> {
+  const workspace = await requireAddressableWorkspace(workspaceId);
+  const server = await requireServer(workspace.serverId);
+  if (hostUnreachable(server)) return null;
+  if (workspace.tenantId !== null) {
+    const cookie = await getSessionCookie(server.id);
+    if (!cookie || decodeJwtTenantId(cookie) !== workspace.tenantId) return null;
+  }
+  return fn(server);
+}
+
+/**
  * {@link withWorkspaceSession}, refusing to touch the gateway while the host
  * the server is managed on is unreachable (CHOO-1780).
  *

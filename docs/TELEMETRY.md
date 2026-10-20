@@ -186,8 +186,10 @@ template. A template run reports each room it made, and each agent as
 from the first run and `switch_buddy` from its chat later. What a run does not
 already say — a room's platform, agent count and whether it has instructions, the
 provider of an agent the server chose — is read back from the server once it
-exists, and only when sharing is on. A template run that fails reports nothing:
-it made nothing, and how many rooms it would have made is not known.
+exists, only when sharing is on, and only while the run's workspace is still the
+one open: the app never switches back to it just to describe the run. A template
+run that fails reports nothing: it made nothing, and how many rooms it would have
+made is not known.
 
 **Remote hosts**
 

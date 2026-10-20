@@ -18,7 +18,12 @@ const runTemplateWithAgents = vi.hoisted(() => vi.fn());
 const runTemplateDocument = vi.hoisted(() => vi.fn());
 const fetchRoomDetail = vi.hoisted(() => vi.fn());
 const fetchManagedAgent = vi.hoisted(() => vi.fn());
-const managedAgentLocation = vi.hoisted(() => vi.fn(async () => 'local'));
+const managedAgentLocator = vi.hoisted(() =>
+  vi.fn(async () => (controllerId: string) => (controllerId === 'c1' ? 'local' : 'remote'))
+);
+const trackEventAt = vi.hoisted(() =>
+  vi.fn((name: string, properties: unknown, _at: number) => trackEvent(name, properties))
+);
 const canSend = vi.hoisted(() => vi.fn(async () => true));
 const getServer = vi.hoisted(() => vi.fn());
 const getSessionCookie = vi.hoisted(() => vi.fn());
@@ -59,12 +64,13 @@ vi.mock('@main/core/locations/location-transport', () => ({ sshConnectionIdForHo
 vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({ ensureSshConnected: vi.fn() }));
 vi.mock('@main/core/telemetry/telemetry-service', () => ({
   trackEvent,
+  trackEventAt,
   telemetryService: { canSend },
 }));
 // The provider registry is built at app startup; what is asserted below is that
 // the agent's provider reaches the event, not how an id is validated.
 vi.mock('@main/core/telemetry/agent-type', () => ({ agentTypeOf: (id: string) => id }));
-vi.mock('@main/core/agent-migration/managed-agent-location', () => ({ managedAgentLocation }));
+vi.mock('@main/core/agent-migration/managed-agent-location', () => ({ managedAgentLocator }));
 vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   isManagedServerRunning: vi.fn(() => true),
   managedServerHostBlocked,
@@ -424,7 +430,7 @@ describe('reporting what a template made', () => {
         entry_point: 'template',
       })
     );
-    expect(managedAgentLocation).toHaveBeenCalledWith('srv', 'c1');
+    expect(managedAgentLocator).toHaveBeenCalledWith('srv');
     expect(fetchManagedAgent).not.toHaveBeenCalled();
   });
 
@@ -456,6 +462,49 @@ describe('reporting what a template made', () => {
       'room_created',
       expect.objectContaining({ source: 'template', agent_count: 2 })
     );
+  });
+
+  it('stamps what a run made with when the run finished, not when the reads came back', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    fetchRoomDetail.mockImplementation(async (_server: unknown, roomId: string) => {
+      now.mockReturnValue(9_000);
+      return { id: roomId, agentCount: 1, bridgeType: null, instructions: null };
+    });
+    createRoomFromTemplate.mockResolvedValue({
+      kind: 'room',
+      roomId: 'r1',
+      roomName: 'A',
+      failedAttachments: [],
+    });
+
+    await workspacesController.createRoomFromTemplate('ws', 'version: 1', {}, 'T');
+
+    await vi.waitFor(() =>
+      expect(trackEventAt).toHaveBeenCalledWith('room_created', expect.anything(), 1_000)
+    );
+    now.mockRestore();
+  });
+
+  it('does not switch back to the run’s workspace to describe it', async () => {
+    requireWorkspace.mockResolvedValue(workspace('tenant-a'));
+    // The cookie names no tenant this run's workspace has, as when the person
+    // has already moved on to another workspace on the server.
+    getSessionCookie.mockResolvedValue('cookie-for-another-workspace');
+    createRoomFromTemplate.mockResolvedValue({
+      kind: 'room',
+      roomId: 'r1',
+      roomName: 'A',
+      failedAttachments: [],
+    });
+
+    await workspacesController.createRoomFromTemplate('ws', 'version: 1', {}, 'T');
+
+    await vi.waitFor(() => expect(canSend).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Once, for the run itself; never again for the report.
+    expect(switchTenant).toHaveBeenCalledTimes(1);
+    expect(fetchRoomDetail).not.toHaveBeenCalled();
+    expect(trackEvent).not.toHaveBeenCalled();
   });
 
   it('asks the server nothing when nothing it read could be sent', async () => {

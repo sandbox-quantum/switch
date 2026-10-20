@@ -1,4 +1,4 @@
-import { managedAgentLocation } from '@main/core/agent-migration/managed-agent-location';
+import { managedAgentLocator } from '@main/core/agent-migration/managed-agent-location';
 import { appService } from '@main/core/app/service';
 import { backfillAgentIcons } from '@main/core/switch-servers/backfill-agent-icons';
 import { withResolvedHomeUrls } from '@main/core/switch-servers/bridge-home-url';
@@ -103,7 +103,7 @@ import type {
   TelemetryServerKind,
 } from '@main/core/telemetry/events';
 import { entryPointOf, roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
-import { telemetryService, trackEvent } from '@main/core/telemetry/telemetry-service';
+import { telemetryService, trackEvent, trackEventAt } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import type {
   SlackOwnAppSetup,
@@ -161,6 +161,7 @@ import {
 import { listServersWithoutMembership } from './reconcile-workspaces';
 import {
   withReachableWorkspaceSession,
+  withWorkspaceIfSelected,
   withWorkspaceSession,
   workspaceServer,
 } from './workspace-session';
@@ -242,13 +243,14 @@ function bridgePlatformOnServer(
  * Report once the platform is known, without anyone waiting for it.
  *
  * The event arrives a moment after the action rather than with it, which costs
- * nothing: it carries its own timestamp, taken when the work happened.
+ * nothing: it carries its own timestamp, taken here, when the work happened.
  */
 function reportWithBridge(
   platform: Promise<TelemetryBridgePlatform>,
-  emit: (platform: TelemetryBridgePlatform) => void
+  emit: (platform: TelemetryBridgePlatform, at: number) => void
 ): void {
-  void platform.then(emit).catch(() => {});
+  const at = Date.now();
+  void platform.then((known) => emit(known, at)).catch(() => {});
 }
 
 /** The same, for a room create whose other properties are already known. */
@@ -263,12 +265,16 @@ function reportRoomCreated(
     source: TelemetryRoomCreateSource;
   }
 ): void {
-  reportWithBridge(bridgePlatformOf(workspaceId, bridgeId), (bridge_platform) =>
-    trackEvent('room_created', {
-      ...rest,
-      bridge_platform,
-      outcome: rest.failure_reason === 'none' ? 'success' : 'failure',
-    })
+  reportWithBridge(bridgePlatformOf(workspaceId, bridgeId), (bridge_platform, at) =>
+    trackEventAt(
+      'room_created',
+      {
+        ...rest,
+        bridge_platform,
+        outcome: rest.failure_reason === 'none' ? 'success' : 'failure',
+      },
+      at
+    )
   );
 }
 
@@ -296,113 +302,136 @@ type TemplateMade = {
   } | null;
 };
 
-function logUnreported(what: 'room' | 'agent' | 'room or agent', error: unknown): void {
-  log.warn(`A ${what} a template made could not be read back to report it`, {
+function logUnreported(what: string, error: unknown): void {
+  log.warn(`${what} a template made could not be read back to report it`, {
     event: 'telemetry_template_made',
     errorCode: error instanceof GatewayError ? error.kind : 'error',
+    error: String(error),
   });
 }
 
 /**
  * Report what a template made: each room as `room_created` from a template,
- * and each agent as `agent_created`.
+ * and each agent as `agent_created`, all stamped with the moment the run
+ * finished.
  *
  * The run's result names what it made and little else, so what the events
  * carry that nobody declared — a room's platform, agents and instructions, the
  * provider of an agent a document run chose — is read back from the server.
  * That is work done only to describe the run, so it is done only when an event
- * could be sent, all under one lease taken after the run's own has ended, and
- * nobody waits for it. What cannot be read back is logged, not guessed.
+ * could be sent, and only while the session still selects the run's workspace:
+ * it never switches back to it or holds a lease, so it cannot redirect or hold
+ * up whatever the person did next. What cannot be read back is logged, not
+ * guessed.
  */
 async function reportTemplateMade(
   workspaceId: string,
   server: SwitchServer,
-  made: TemplateMade
+  made: TemplateMade,
+  at: number
 ): Promise<void> {
   const roomIds = templateRoomIds(made.room);
   const agents = made.agents;
   if (roomIds.length === 0 && (agents === null || agents.created.length === 0)) return;
   if (!(await telemetryService.canSend())) return;
 
-  const [rooms, providers] = await withWorkspaceSession(workspaceId, (leased) =>
+  const read = await withWorkspaceIfSelected(workspaceId, (selected) =>
     Promise.all([
-      Promise.allSettled(roomIds.map((roomId) => fetchRoomDetail(leased, roomId))),
+      Promise.allSettled(roomIds.map((roomId) => fetchRoomDetail(selected, roomId))),
       Promise.allSettled(
         (agents?.created ?? []).map(async (agent) => {
           const declared = agents?.declaredProviders.get(agent.slot);
           if (declared !== undefined) return declared;
-          const managed = await fetchManagedAgent(leased, agent.agentId);
+          const managed = await fetchManagedAgent(selected, agent.agentId);
           if (!managed) throw new Error('The agent the run made is not a managed agent.');
           return managed.provider;
         })
       ),
     ])
   );
+  if (read === null) {
+    log.warn('What a template made was not reported: its workspace is no longer selected', {
+      event: 'telemetry_template_made',
+      errorCode: 'workspace_not_selected',
+    });
+    return;
+  }
+  const [rooms, providers] = read;
 
   const serverKind = serverKindOf(server);
   for (const room of rooms) {
     if (room.status === 'rejected') {
-      logUnreported('room', room.reason);
+      logUnreported('A room', room.reason);
       continue;
     }
-    trackEvent('room_created', {
-      server_kind: serverKind,
-      bridge_platform: bridgePlatformOfType(room.value.bridgeType),
-      agent_count: room.value.agentCount,
-      has_instructions: (room.value.instructions?.trim().length ?? 0) > 0,
-      outcome: 'success',
-      failure_reason: 'none',
-      source: 'template',
-    });
+    trackEventAt(
+      'room_created',
+      {
+        server_kind: serverKind,
+        bridge_platform: bridgePlatformOfType(room.value.bridgeType),
+        agent_count: room.value.agentCount,
+        has_instructions: (room.value.instructions?.trim().length ?? 0) > 0,
+        outcome: 'success',
+        failure_reason: 'none',
+        source: 'template',
+      },
+      at
+    );
   }
 
-  if (agents === null) return;
+  if (agents === null || agents.created.length === 0) return;
+  const locate = await managedAgentLocator(server.id);
   for (const [i, provider] of providers.entries()) {
     if (provider.status === 'rejected') {
-      logUnreported('agent', provider.reason);
+      logUnreported('An agent', provider.reason);
       continue;
     }
-    trackEvent('agent_created', {
-      agent_type: agentTypeOf(provider.value),
-      location: await managedAgentLocation(server.id, agents.created[i].machine.id),
-      outcome: 'success',
-      failure_reason: 'none',
-      entry_point: entryPointOf(agents.entryPoint),
-    });
+    trackEventAt(
+      'agent_created',
+      {
+        agent_type: agentTypeOf(provider.value),
+        location: locate(agents.created[i].machine.id),
+        outcome: 'success',
+        failure_reason: 'none',
+        entry_point: entryPointOf(agents.entryPoint),
+      },
+      at
+    );
   }
-}
-
-/** Start {@link reportTemplateMade} without anyone waiting for it, or for its failure. */
-function reportTemplateMadeLater(
-  workspaceId: string,
-  server: SwitchServer,
-  made: TemplateMade
-): void {
-  void reportTemplateMade(workspaceId, server, made).catch((error: unknown) =>
-    logUnreported('room or agent', error)
-  );
 }
 
 /**
- * Run a template that may create agents, and report what it made once the
- * run's lease has ended. Nothing is reported for a refused run: it made nothing.
+ * Run a template call, then report what it made once the call's lease has
+ * ended, without anyone waiting for the report or its failure. `made` says
+ * what that was, or null for a result that made nothing — a refused run.
  */
-async function runTemplateReported(
+async function runTemplateReported<R>(
   workspaceId: string,
-  agents: { entryPoint: UiEntryPoint; declaredProviders: ReadonlyMap<string, string> },
-  run: (server: SwitchServer) => Promise<TemplateRunResult>
-): Promise<TemplateRunResult> {
+  run: (server: SwitchServer) => Promise<R>,
+  made: (result: R) => TemplateMade | null
+): Promise<R> {
   const { result, server } = await withWorkspaceSession(workspaceId, async (leased) => ({
     result: await run(leased),
     server: leased,
   }));
-  if (result.kind === 'created') {
-    reportTemplateMadeLater(workspaceId, server, {
-      room: result.room,
-      agents: { created: result.createdAgents, ...agents },
-    });
+  const report = made(result);
+  if (report !== null) {
+    void reportTemplateMade(workspaceId, server, report, Date.now()).catch((error: unknown) =>
+      logUnreported('What', error)
+    );
   }
   return result;
+}
+
+/** What a run that may create agents made: nothing when it was refused. */
+function madeByRun(agents: {
+  entryPoint: UiEntryPoint;
+  declaredProviders: ReadonlyMap<string, string>;
+}): (result: TemplateRunResult) => TemplateMade | null {
+  return (result) =>
+    result.kind === 'created'
+      ? { room: result.room, agents: { created: result.createdAgents, ...agents } }
+      : null;
 }
 
 /**
@@ -701,19 +730,17 @@ export const workspacesController = createRPCController({
     return result;
   },
 
-  createRoomFromTemplate: async (
+  createRoomFromTemplate: (
     workspaceId: string,
     yamlText: string,
     inputs: Record<string, string | number | boolean>,
     templateName: string
-  ): Promise<ProvisionFromTemplateResult> => {
-    const { result, server } = await withWorkspaceSession(workspaceId, async (leased) => ({
-      result: await createRoomFromTemplate(leased, yamlText, inputs, templateName),
-      server: leased,
-    }));
-    reportTemplateMadeLater(workspaceId, server, { room: result, agents: null });
-    return result;
-  },
+  ): Promise<ProvisionFromTemplateResult> =>
+    runTemplateReported(
+      workspaceId,
+      (server) => createRoomFromTemplate(server, yamlText, inputs, templateName),
+      (room) => ({ room, agents: null })
+    ),
 
   /**
    * Run a template that creates agents in one request: the agents as managed
@@ -734,8 +761,10 @@ export const workspacesController = createRPCController({
     const { entryPoint, ...run } = body;
     // The caller named each agent's provider, so none has to be read back.
     const declaredProviders = new Map(run.agents.map((agent) => [agent.slot, agent.provider]));
-    return runTemplateReported(workspaceId, { entryPoint, declaredProviders }, (server) =>
-      runTemplateWithAgents(server, run)
+    return runTemplateReported(
+      workspaceId,
+      (server) => runTemplateWithAgents(server, run),
+      madeByRun({ entryPoint, declaredProviders })
     );
   },
 
@@ -752,12 +781,12 @@ export const workspacesController = createRPCController({
     }
   ): Promise<TemplateRunResult> => {
     const { entryPoint, ...run } = body;
-    // The server chooses the agents from the document, so their providers are
-    // read back rather than declared.
+    // The server chooses the agents' providers from the document's conditions,
+    // so they are read back rather than declared.
     return runTemplateReported(
       workspaceId,
-      { entryPoint, declaredProviders: new Map() },
-      (server) => runTemplateDocument(server, run)
+      (server) => runTemplateDocument(server, run),
+      madeByRun({ entryPoint, declaredProviders: new Map() })
     );
   },
 
@@ -959,11 +988,15 @@ export const workspacesController = createRPCController({
     );
     // Reported after the lease, not inside it: the platform lookup takes a lease
     // of its own, and the bridge is still there to read afterwards.
-    reportWithBridge(bridgePlatformOf(params.workspaceId, params.bridgeId), (bridge_platform) =>
-      trackEvent('bridge_identity_claimed', {
-        bridge_platform,
-        outcome: result.kind === 'claimed' ? 'success' : 'failure',
-      })
+    reportWithBridge(bridgePlatformOf(params.workspaceId, params.bridgeId), (bridge_platform, at) =>
+      trackEventAt(
+        'bridge_identity_claimed',
+        {
+          bridge_platform,
+          outcome: result.kind === 'claimed' ? 'success' : 'failure',
+        },
+        at
+      )
     );
     return result;
   },

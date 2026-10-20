@@ -8,12 +8,12 @@ import {
 } from '@main/core/switch-servers/gateway-client';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { entryPointOf } from '@main/core/telemetry/narrow';
-import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import { trackEventAt } from '@main/core/telemetry/telemetry-service';
 import { withReachableWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import { resolveMachine } from './agent-migration';
-import { managedAgentLocation } from './managed-agent-location';
+import { managedAgentLocator } from './managed-agent-location';
 import { managedCreateFailureOf, NewManagedAgentService } from './new-managed-agent-service';
 
 export const newManagedAgentService = new NewManagedAgentService({
@@ -46,16 +46,23 @@ export const newManagedAgentService = new NewManagedAgentService({
       }
     }),
   reportCreate: (input, failure_reason) => {
-    void managedAgentLocation(input.serverId, input.machineId).then((location) =>
-      trackEvent('agent_created', {
-        agent_type: agentTypeOf(input.providerId),
-        location,
-        outcome: failure_reason === 'none' ? 'success' : 'failure',
-        failure_reason,
-        entry_point: entryPointOf(input.entryPoint),
-      })
+    const at = Date.now();
+    void managedAgentLocator(input.serverId).then((locate) =>
+      trackEventAt(
+        'agent_created',
+        {
+          agent_type: agentTypeOf(input.providerId),
+          location: locate(input.machineId),
+          outcome: failure_reason === 'none' ? 'success' : 'failure',
+          failure_reason,
+          entry_point: entryPointOf(input.entryPoint),
+        },
+        at
+      )
     );
   },
+  thrownFailure: (error) =>
+    error instanceof GatewayError && error.kind === 'unauthorized' ? 'unauthenticated' : 'error',
   log: {
     info: (message, fields) => log.info(message, { event: 'new_managed_agent', ...fields }),
     warn: (message, fields) => log.warn(message, { event: 'new_managed_agent', ...fields }),

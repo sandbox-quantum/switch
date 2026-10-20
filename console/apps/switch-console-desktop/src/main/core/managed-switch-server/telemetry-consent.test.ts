@@ -19,7 +19,7 @@ vi.mock('@main/core/settings/settings-service', () => ({
 }));
 
 const { readDeployedTelemetry } = await import('./telemetry-consent');
-const { managedServerTelemetryEndpoint } = await import('../telemetry/config');
+const { TELEMETRY_RELAY_ORIGIN } = await import('../telemetry/config');
 
 function host(readFile: () => Promise<string | null>): ServerHost {
   return { label: 'this computer', readFile } as unknown as ServerHost;
@@ -87,11 +87,11 @@ describe('readDeployedTelemetry', () => {
     expect(result).toEqual({ known: true, enabled: true, endpointCurrent: false });
   });
 
-  it('reads whether the server sends to the relay this build names', async () => {
+  it('reads whether a Docker or SSH server sends to the relay', async () => {
     runningServiceEnvMock.mockResolvedValue(
       new Map([
         ['TELEMETRY_ENABLED', 'true'],
-        ['TELEMETRY_ENDPOINT', managedServerTelemetryEndpoint()],
+        ['TELEMETRY_ENDPOINT', TELEMETRY_RELAY_ORIGIN],
       ])
     );
 

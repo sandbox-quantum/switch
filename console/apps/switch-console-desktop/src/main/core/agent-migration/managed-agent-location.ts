@@ -3,27 +3,26 @@ import type { TelemetryLocationKind } from '@main/core/telemetry/events';
 import { log } from '@main/lib/logger';
 
 /**
- * Where a managed agent runs, as `agent_created` reports it: `local` when its
- * machine is the controller this computer is enrolled as on the server,
- * `remote` for any other machine — an SSH host, a cloud machine, someone's
- * other computer.
+ * Tells where managed agents on `serverId` run, as `agent_created` reports it,
+ * from one read of which controller this computer is enrolled as: `local` for
+ * an agent on that controller, `remote` for any other machine — an SSH host, a
+ * cloud machine, someone's other computer.
  *
  * Best effort, like the platform lookups beside other reports: it only
- * describes an agent that already exists, so a lookup that fails reports
- * `unknown`, and says so in the log, rather than failing anything.
+ * describes agents that already exist, so a read that fails tells `unknown`
+ * for every agent, and says so in the log, rather than failing anything.
  */
-export async function managedAgentLocation(
-  serverId: string,
-  controllerId: string
-): Promise<TelemetryLocationKind> {
+export async function managedAgentLocator(
+  serverId: string
+): Promise<(controllerId: string) => TelemetryLocationKind> {
   try {
     const thisComputer = await embeddedControllerService.enrolledControllerId(serverId);
-    return thisComputer === controllerId ? 'local' : 'remote';
+    return (controllerId) => (thisComputer === controllerId ? 'local' : 'remote');
   } catch (error) {
-    log.warn('Could not tell whether a managed agent runs on this computer; reporting unknown', {
+    log.warn('Could not tell whether managed agents run on this computer; reporting unknown', {
       event: 'telemetry_managed_agent_location',
       error: String(error),
     });
-    return 'unknown';
+    return () => 'unknown';
   }
 }

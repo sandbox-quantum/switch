@@ -1,6 +1,6 @@
 import { appSettingsService } from '@main/core/settings/settings-service';
 import type { DeployedTelemetry } from '@shared/core/managed-switch-server/managed-switch-server';
-import { managedServerTelemetryEndpoint } from '../telemetry/config';
+import { TELEMETRY_RELAY_ORIGIN } from '../telemetry/config';
 import { runningServiceEnv } from './compose';
 import { CORE_SERVICE, ENV_FILE_NAME } from './constants';
 import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY, TELEMETRY_ENDPOINT_KEY } from './env-file';
@@ -26,17 +26,18 @@ export async function telemetryConsent(): Promise<boolean> {
 
 /**
  * What a stack's settings say about usage data, read the same way wherever
- * they were found: whether it shares, and whether it sends to the relay this
- * build would name. A stack whose settings name no relay runs on its version's
- * default, which this build has not chosen, so it is not counted as current.
+ * they were found: whether it shares, and whether it sends to `expected`, the
+ * address this build would give it. A stack whose settings name none runs on
+ * its version's default, which this build has not chosen, so it is not current.
  */
 export function deployedTelemetryOf(
-  read: (key: string) => string | null | undefined
+  read: (key: string) => string | null | undefined,
+  expected: string
 ): DeployedTelemetry {
   return {
     known: true,
     enabled: envFlag(read(TELEMETRY_ENABLED_KEY)),
-    endpointCurrent: read(TELEMETRY_ENDPOINT_KEY) === managedServerTelemetryEndpoint(),
+    endpointCurrent: read(TELEMETRY_ENDPOINT_KEY) === expected,
   };
 }
 
@@ -56,7 +57,7 @@ export async function readDeployedTelemetry(host: ServerHost): Promise<DeployedT
 
   try {
     const env = await runningServiceEnv(host, CORE_SERVICE);
-    if (env) return deployedTelemetryOf((key) => env.get(key));
+    if (env) return deployedTelemetryOf((key) => env.get(key), TELEMETRY_RELAY_ORIGIN);
     failures.push(`the ${CORE_SERVICE} service has no running container`);
   } catch (error) {
     failures.push(`container environment: ${errorText(error)}`);
@@ -65,7 +66,7 @@ export async function readDeployedTelemetry(host: ServerHost): Promise<DeployedT
   try {
     const env = await host.readFile(ENV_FILE_NAME);
     if (env !== null) {
-      return deployedTelemetryOf((key) => readEnvValue(env, key));
+      return deployedTelemetryOf((key) => readEnvValue(env, key), TELEMETRY_RELAY_ORIGIN);
     }
     failures.push(`${ENV_FILE_NAME}: not on the host`);
   } catch (error) {
