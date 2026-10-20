@@ -2,7 +2,7 @@
 
 _How Switch relays a messaging app into a Switch room, and the contract you implement to add one it doesn't support_
 
-Published at <https://docs.flintai.dev/flintai/switch/internals/collaboration-bridge> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/internals/collaboration-bridge> — link readers there, not to this file.
 
 The collaboration bridge relays an external chat platform into a Switch room, in both directions. One adapter per platform.
 
@@ -215,7 +215,7 @@ Return a real message reference from `send_message`. Everything in this section 
 
 Room commands live in one registry. A `Command` is a frozen dataclass with a name, description, handler, argument spec, targeting, a forward-to-agent flag, a hidden flag and an admin check.
 
-Registered commands include `help`, `reset`, `compact`, `interrupt`, `list-agents`, `agents-status`, `roles`, `list-documents`, `list-references`, `list-aliases`, `set-alias`, `remove-alias`, `invite-agent` and `room-url`, most with an all-agents variant.
+Registered commands include `help`, `reset`, `compact`, `interrupt`, `list-agents`, `agents-status`, `roles`, `list-documents`, `list-references`, `list-aliases`, `set-alias`, `remove-alias`, `invite-agent`, `remove-agent` and `room-url`, most with an all-agents variant.
 
 What differs per platform is only how a person reaches them.
 

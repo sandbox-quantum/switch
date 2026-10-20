@@ -1,4 +1,3 @@
-from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
 
@@ -7,7 +6,6 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
-    StringConstraints,
     field_validator,
 )
 
@@ -15,27 +13,10 @@ from pydantic import (
 class HostedControllerSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    tenant_id: str = Field(min_length=1)
+    # The workspaces whose members may use cloud machines; null for every one.
+    allowed_tenant_ids: list[Annotated[str, Field(min_length=1)]] | None
     token: SecretStr = Field(min_length=32)
-    machine_slots: list[
-        Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{2,39}$")]
-    ] = Field(min_length=1, max_length=100)
-    github_private_key_path: Path
     agent_api_endpoint: str
-
-    @field_validator("machine_slots")
-    @classmethod
-    def unique_slots(cls, value: list[str]) -> list[str]:
-        if len(set(value)) != len(value):
-            raise ValueError("Cloud machine slots must be unique.")
-        return value
-
-    @field_validator("github_private_key_path")
-    @classmethod
-    def absolute_key_path(cls, value: Path) -> Path:
-        if not value.is_absolute():
-            raise ValueError("The GitHub signing key requires an absolute path.")
-        return value
 
     @field_validator("agent_api_endpoint")
     @classmethod

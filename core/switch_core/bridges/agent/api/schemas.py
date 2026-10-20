@@ -142,13 +142,13 @@ class ConnectionBeatRequest(BaseModel):
     """The heartbeat of a connection held over the event stream (CHOO-1857).
 
     Kept for clients built before the WebSocket, whose socket carries the
-    heartbeat itself, for a compatibility window. Proves the client is alive
-    *and* consuming, and reports how far it has read so the event buffer knows
-    what has been seen.
+    heartbeat itself, for a compatibility window. Proves the client is alive.
+    Clients also send how far they have read (`cursor`, `position`); the
+    server does not read it, because a client resumes from the position it
+    sends when it reopens.
     """
 
     connection_id: str
-    cursor: int = 0
     #: The incarnation of the connection this client is attached to, as the
     #: server told it on `connection_state`. Fences the tick: a client that has
     #: been displaced still holds the id and the token, and is otherwise
@@ -321,57 +321,7 @@ class ReportEventsRequest(BaseModel):
     events: list[ToolCallReport | LlmCallReport]
 
 
-# ── Tasks ────────────────────────────────────────────────────────────────────
-
-
-class DelegateTaskRequest(BaseModel):
-    room_id: str
-    performer_agent_id: str
-    summary: str
-    description: str
-
-
-class AcceptTaskRequest(BaseModel):
-    task_id: str
-
-
-class UpdateTaskRequest(BaseModel):
-    task_id: str
-    update: str
-
-
-class FinaliseTaskRequest(BaseModel):
-    task_id: str
-    outcome: str
-
-
-class CancelTaskRequest(BaseModel):
-    task_id: str
-    reason: str
-
-
-class TaskInfo(BaseModel):
-    id: str
-    room_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    summary: str
-    description: str
-    status: str
-    updates: list[str]
-    outcome: str | None = None
-    created_at: str
-    accepted_at: str | None = None
-    finalised_at: str | None = None
-
-
-class TaskListResponse(BaseModel):
-    tasks: list[TaskInfo]
-
-
-class DelegateTaskResponse(BaseModel):
-    task: TaskInfo
-    target_status: AgentStatus
+# ── Agents ───────────────────────────────────────────────────────────────────
 
 
 class AgentInfo(BaseModel):
@@ -379,10 +329,6 @@ class AgentInfo(BaseModel):
     name: str
     description: str
     display_name: str | None
-
-
-class TaskAgentsResponse(BaseModel):
-    agents: list[AgentInfo]
 
 
 # ── Moderation ───────────────────────────────────────────────────────────────
@@ -463,10 +409,6 @@ class RoomListResponse(BaseModel):
 
 class AgentListResponse(BaseModel):
     agents: list[AgentInfo]
-
-
-class SetFeatureFlagRequest(BaseModel):
-    enabled: bool
 
 
 class FeatureFlagInfo(BaseModel):

@@ -33,8 +33,8 @@ function admitsAgent(target: HandoffAgent, source: HandoffAgent): boolean {
 
 /**
  * The pairs of agents in a room that cannot talk to each other. A template
- * with a hand-off only works if it goes through, and an agent created from
- * the Console starts owner-only, so the wizard warns before the room exists.
+ * with a hand-off only works if it goes through, and an agent can be set to
+ * refuse other agents, so the wizard warns before the room exists.
  */
 export function blockedHandoffs(agents: HandoffAgent[]): BlockedHandoff[] {
   const blocked: BlockedHandoff[] = [];

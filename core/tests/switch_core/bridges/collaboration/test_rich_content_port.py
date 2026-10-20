@@ -11,11 +11,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
 from switch_core.bridges.collaboration.adapter import (
+    AgentIdentity,
     PlatformAdapter,
     RequestCard,
     RichContentFailed,
@@ -36,6 +37,8 @@ class _BareAdapter(PlatformAdapter):
     adapters — some return `None` on failure, some raise (Teams does), and
     this base has to turn either into `RichContentFailed`.
     """
+
+    display_name: ClassVar[str] = "Stub"
 
     def __init__(
         self,
@@ -79,8 +82,8 @@ class _BareAdapter(PlatformAdapter):
     async def get_channel_agent_names(self, *a: Any, **k: Any) -> Any: ...
     async def add_agents_to_channel(self, *a: Any, **k: Any) -> Any: ...
     async def add_users_to_channel(self, *a: Any, **k: Any) -> Any: ...
-    async def create_agent_identity(self, *a: Any, **k: Any) -> Any: ...
-    async def remove_agent_identity(self, *a: Any, **k: Any) -> Any: ...
+    async def create_agent_identity(self, agent: AgentIdentity) -> None: ...
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None: ...
     def translate_inbound(self, *a: Any, **k: Any) -> Any: ...
 
 

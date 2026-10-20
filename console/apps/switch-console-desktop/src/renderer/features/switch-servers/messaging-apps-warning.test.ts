@@ -3,6 +3,7 @@ import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/s
 import {
   hasUnlinkedMessagingApp,
   identityLinkOrderingNote,
+  messagingAppsToLink,
   shouldOfferIdentityLinkOnConnect,
   unrecognisedMessagingApps,
   unrecognisedMessagingAppsMessage,
@@ -19,6 +20,11 @@ function bridge(id: string, displayName: string): RemoteBridge {
     channelCreationSupported: true,
     canCreateChannels: true,
     directorySearchSupported: true,
+    attention: null,
+    teamPlacementSupported: false,
+    channelIdsRefused: null,
+    receivesWebhooks: false,
+    webhookUrl: null,
   };
 }
 
@@ -175,7 +181,7 @@ describe('what is said instead, where the link step is withheld', () => {
 
     expect(note).toContain('Telegram louis');
     // Be seen first, link second — the part that cannot be guessed.
-    expect(note).toContain('send a message');
+    expect(note).toContain('Send a message in a connected group');
     expect(note).toContain('link your account');
   });
 
@@ -187,5 +193,26 @@ describe('what is said instead, where the link step is withheld', () => {
       const note = identityLinkOrderingNote({ displayName: 'X', directorySearchSupported });
       expect(offered).toBe(note === null);
     }
+  });
+});
+
+describe('messagingAppsToLink', () => {
+  const slack = bridge('b-slack', 'Slack');
+  const discord = bridge('b-discord', 'Discord');
+
+  it('names every active app with no linked account', () => {
+    expect(messagingAppsToLink([slack, discord], [identity('b-discord')])).toEqual([slack]);
+  });
+
+  it('names nothing once every app is linked', () => {
+    expect(messagingAppsToLink([slack], [identity('b-slack')])).toEqual([]);
+  });
+
+  it('names nothing while the linked accounts are unknown', () => {
+    expect(messagingAppsToLink([slack], null)).toEqual([]);
+  });
+
+  it('leaves out a connection that is down', () => {
+    expect(messagingAppsToLink([{ ...slack, status: 'error' }], [])).toEqual([]);
   });
 });

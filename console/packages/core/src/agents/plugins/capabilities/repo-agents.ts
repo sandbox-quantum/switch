@@ -61,6 +61,26 @@ export const RECOGNISED_SWITCH_TOOL_RULES: readonly string[] = [
  */
 export const SWITCH_AGENT_SETTINGS_DIR = '.switch/agents';
 
+/**
+ * The shape of value a provider applies for one advanced setting at launch:
+ * a string (a server field of type `text`, `textarea` or `select`), a finite
+ * number, a boolean, or a list of strings.
+ */
+export type AdvancedSettingKind = 'text' | 'number' | 'boolean' | 'list';
+
+/**
+ * The advanced settings a provider applies when a session launches, keyed by
+ * the key of the server's advanced configuration field each comes from.
+ *
+ * The fields themselves — label, type, help, choices — are defined only by the
+ * Switch server (`core/switch_core/providers/advanced_fields.py`) and served
+ * to every client; a plugin declares only what it turns into launch inputs, so
+ * a value it does not apply is refused rather than dropped. Empty for a
+ * provider that applies none. The agent's main attributes — name, description,
+ * model, instructions — are not advanced settings.
+ */
+export type AdvancedSettings = Readonly<Record<string, AdvancedSettingKind>>;
+
 /** A renderable input type for an agent attribute field. */
 export type RepoAgentFieldType = 'text' | 'textarea' | 'select' | 'list' | 'number' | 'boolean';
 
@@ -87,10 +107,10 @@ export type RepoAgentFieldCatalogue =
   | { kind: 'model-variant'; modelField: string };
 
 /**
- * One editable attribute of an agent, declared by the agent provider. The
- * renderer builds the create/edit form from these descriptors, so the set of
- * attributes — and how they are presented — is provider-specific. `key` is the
- * attribute name in the {@link RepoAgentAttributes} map the provider serializes.
+ * One editable attribute of an agent, as a form renders it: the server's
+ * advanced configuration fields for the agent's provider, and the model. `key`
+ * is the attribute name in the {@link RepoAgentAttributes} map the provider
+ * serializes.
  */
 export type RepoAgentField = {
   key: string;
@@ -114,8 +134,8 @@ export type RepoAgentField = {
 /** A single attribute value; shape depends on the field's `type`. */
 export type RepoAgentAttributeValue = string | string[] | number | boolean | null;
 
-/** An agent's attributes, keyed by {@link RepoAgentField.key}. Always carries
- * `name` and `description`; the rest are provider-defined. */
+/** An agent's attributes, keyed by {@link RepoAgentField.key}: its main
+ * attributes and the advanced settings its provider applies. */
 export type RepoAgentAttributes = Record<string, RepoAgentAttributeValue>;
 
 /**
@@ -147,9 +167,8 @@ export type IRepoAgentsBehavior = {
   launchArgs(workingDir: string, agentName: string): string[];
   /** The named agent's Switch credentials as env vars, for the launched session. */
   readLaunchEnv(workdirFs: PluginFs, agentName: string): Promise<Record<string, string>>;
-  /** The attribute fields this provider supports, in display order. Drives the
-   * create/edit form; the first two are always `name` and `description`. */
-  attributeFields(): RepoAgentField[];
+  /** The advanced settings a definition carries, in the order it is written. */
+  advancedSettings(): AdvancedSettings;
   /**
    * The definition file's exact text for these attributes, without writing it.
    *
@@ -169,8 +188,9 @@ export type IRepoAgentsBehavior = {
   /** Create or overwrite a named agent's on-disk definition from its attributes
    * (workdir scope). `attributes.name` selects the agent. */
   writeDefinition(workdirFs: PluginFs, attributes: RepoAgentAttributes): Promise<void>;
-  /** The current attribute values for an existing agent definition, keyed to
-   * {@link attributeFields}, or null if no definition exists. */
+  /** The current attribute values for an existing agent definition — its
+   * main attributes and {@link advancedSettings} — or null if no definition
+   * exists. */
   readDefinition(workdirFs: PluginFs, name: string): Promise<RepoAgentAttributes | null>;
   /** Remove a named agent's provider-specific files — its definition and any
    * legacy per-agent settings (workdir scope). The provider-neutral Switch

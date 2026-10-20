@@ -2,6 +2,7 @@ import { useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-q
 import { Check, Copy, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { JoinDomainsSection } from '@renderer/features/workspaces/join-domains-section';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -28,6 +29,7 @@ import {
   SelectValue,
 } from '@renderer/lib/ui/select';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
 import {
   invitationStatus,
   type CreatedInvitation,
@@ -118,6 +120,9 @@ function deliveryNotice(
  * empty makes a link for anyone who holds it. Either way the link is shown
  * once, on creation — the server keeps only a hash of it, so nothing can show
  * it again afterwards.
+ *
+ * On a server running on this computer it says why there is nothing to offer
+ * instead: nobody elsewhere can reach that server.
  */
 export const InvitePeopleModal = observer(function InvitePeopleModal({
   workspaceId,
@@ -126,11 +131,14 @@ export const InvitePeopleModal = observer(function InvitePeopleModal({
   const { setCloseGuard } = useModalContext();
   const queryClient = useQueryClient();
   const workspace = workspacesStore.byId(workspaceId);
+  const server = workspace ? switchServersStore.serverById(workspace.serverId) : null;
+  const onThisComputer = server !== null && runsOnThisComputer(server);
   const queryKey = ['workspace-invitations', workspaceId];
 
   const query = useQuery({
     queryKey,
     queryFn: () => rpc.workspaces.listInvitations(workspaceId),
+    enabled: !onThisComputer,
   });
   const emailEnabled = query.data?.emailEnabled;
 
@@ -168,6 +176,26 @@ export const InvitePeopleModal = observer(function InvitePeopleModal({
           <Button variant="outline" onClick={onClose}>
             Close
           </Button>
+        </DialogFooter>
+      </>
+    );
+  }
+
+  if (onThisComputer) {
+    return (
+      <>
+        <DialogHeader showCloseButton={false}>
+          <DialogTitle>Invite people to {workspace.name}</DialogTitle>
+        </DialogHeader>
+        <DialogContentArea className="pt-0">
+          <p className="text-sm text-foreground-muted">
+            {workspace.name} is on a Switch server running on this computer. People elsewhere can’t
+            reach it, so an invitation would lead them nowhere. To work with others, use a Switch
+            server they can reach too.
+          </p>
+        </DialogContentArea>
+        <DialogFooter>
+          <Button onClick={onClose}>Close</Button>
         </DialogFooter>
       </>
     );

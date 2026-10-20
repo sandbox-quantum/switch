@@ -13,12 +13,12 @@ Use **Switch Console**. It creates the agent, gives it its identity and credenti
 holds its instructions — an agent set up outside it does not connect to Switch properly.
 
 **The short way: the template.** Open **Templates** in Switch Console, pick **Switch
-expert**, choose the provider it runs on, and click **Add agent and open its room**. The
-Console fills in the name, description and instructions from this folder, creates a
-working directory for it with this repository cloned inside, puts it in a room with you,
-and says hello so it starts answering. That is the whole setup. The template is
-[`template.yaml`](template.yaml); it is also the worked example of the agent template
-format.
+expert**, choose where it starts (on its own, in a new room made for it, or in a room
+you pick), and click Create. The server creates it on one of your machines (the first
+online one that can run it, unless you choose under Advanced), with this repository to
+clone into its working directory, and, for a new room, puts it there with you and says
+hello so it starts answering. It needs a server that runs agent management. The template
+is [`template.yaml`](template.yaml), written in version 2 of the template format.
 
 **The long way, by hand:**
 

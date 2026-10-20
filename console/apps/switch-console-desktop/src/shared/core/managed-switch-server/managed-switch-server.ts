@@ -1,10 +1,19 @@
 /**
- * Shared types for local-server mode: Switch Console runs a full Switch stack on the
- * user's machine via `docker compose`, using the standalone compose artifact
- * bundled into the app (pinned to COMPATIBLE_SWITCH_VERSION). The main process
- * owns the container lifecycle; the renderer drives it through these types and
- * subscribes to the status event.
+ * Shared types for local-server mode: Switch Console runs a full Switch server on
+ * the user's machine at COMPATIBLE_SWITCH_VERSION — natively (PostgreSQL and
+ * switch-core as plain processes), or, for a server set up before that, via
+ * `docker compose` and the standalone compose artifact bundled into the app.
+ * The main process owns the lifecycle; the renderer drives it through these
+ * types and subscribes to the status event.
  */
+
+/**
+ * How the local server runs. `native` — PostgreSQL and switch-core as plain
+ * processes on this machine, no Docker — is what a new install gets. `docker`
+ * is a server set up before that, which stays on its compose stack (and its
+ * data volume) until it is reset.
+ */
+export type LocalServerRuntime = 'native' | 'docker';
 
 /** Lifecycle phase of the managed local stack. */
 export type LocalServerPhase = 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
@@ -108,6 +117,10 @@ export type CheckoutBuild = {
   root: string;
   /** Whether the option is on. Applies from the next start onwards. */
   enabled: boolean;
+  /** The environment setting that decides `enabled` for this run instead of
+   * the toggle (e.g. `SWITCH_CONSOLE_SERVER_VERSION=checkout`), or null when
+   * the toggle decides. */
+  forcedBy: string | null;
 };
 
 /**
@@ -165,11 +178,29 @@ export function managedServerUpgradeBlockedReason(
 /** Snapshot of the managed local server, emitted on every transition. */
 export type LocalServerStatus = {
   phase: LocalServerPhase;
+  /** How this server runs, once read at boot; null until then. */
+  runtime: LocalServerRuntime | null;
+  /** Whether Mattermost is turned on for a native server (it needs Docker);
+   * null when the user never chose, which means on wherever Docker is
+   * available. A Docker server always runs it, so this is null there. */
+  mattermost: boolean | null;
+  /** How the Mattermost beside a native server is doing since the last start:
+   * it comes up after the server does. Null when it is off, or when nothing has
+   * been seen of it since Console launched. */
+  mattermostState: 'starting' | 'running' | 'failed' | null;
+  /** Something the last start could not do that did not stop it (Mattermost
+   * skipped or failed, say), for the server page to say; else null. */
+  notice: string | null;
+  /** Whether the stack's state has been read since launch. Until it has, a
+   * `stopped` phase is only the starting value, not something observed. */
+  checked: boolean;
   /** Set while the stack is behind this build's pin and not yet upgraded. */
   upgrade: ManagedServerUpgrade | null;
   /** The registered server's id once the stack is up, else null. */
   serverId: string | null;
-  /** The pinned switch-core version this build runs. */
+  /** The released switch-core version this build runs: its pin, or in a dev
+   * build the one SWITCH_CONSOLE_SERVER_VERSION names. A checkout build
+   * replaces it on the local server — see {@link checkoutBuild}. */
   version: string;
   /** The version the stack on the host is actually deployed at, once observed.
    * Null when nothing is deployed yet or it could not be read. */
@@ -189,6 +220,10 @@ export type LocalServerStatus = {
   message: string | null;
   /** Populated only when `phase === 'error'`. */
   error: string | null;
+  /** What failed when `phase === 'error'` and it was not a start: a stop or a
+   * reset that broke partway. Null for a failed start, and whenever the phase
+   * is anything else. */
+  failedTo: 'stop' | 'reset' | null;
 };
 
 /**
@@ -216,7 +251,7 @@ export class ManagedServerStoppedError extends Error {
 /** Human-readable one-liner for a stopped managed stack, used in errors and the UI. */
 export function managedServerStoppedReason(serverName: string, phase: LocalServerPhase): string {
   if (phase === 'error') {
-    return `${serverName}'s Switch stack failed to start, so its gateway is not running. Fix the error on the server's page, then start it again.`;
+    return `${serverName} isn't running: its last start or stop failed. See the server's page.`;
   }
   return `${serverName}'s Switch stack is not running. Start it from the server's page, then retry.`;
 }
@@ -272,6 +307,19 @@ export type ConnectRemoteServerResult =
   /** The user stopped waiting for another Console's hold on the stack. */
   | { kind: 'cancelled' }
   | { kind: 'error'; message: string };
+
+/** Something that happened to the stack on this computer, as Console recorded it. */
+export type LocalActivityAction = 'started' | 'stopped' | 'start-failed' | 'updated' | 'reset';
+
+/** One entry of the local stack's history. Only this Console acts on it, so
+ * there is no "who". */
+export type LocalActivityEntry = {
+  /** ISO timestamp. */
+  at: string;
+  action: LocalActivityAction;
+  /** The version an update moved to, or why a start failed; else null. */
+  detail: string | null;
+};
 
 /** Something a Console did to a shared remote stack, as recorded on its host. */
 export type StackActivityAction = 'started' | 'connected' | 'stopped' | 'reset' | 'disconnected';

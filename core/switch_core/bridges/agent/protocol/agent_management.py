@@ -50,8 +50,21 @@ class NewManagedAgent:
     advanced_config: dict[str, Any]
     instructions: str
     directory: str | None
+    auto_mode: bool
     auto_approve: bool
+    isolation: str
     start: bool
+
+
+@dataclass(frozen=True)
+class CheckedPlacement:
+    """Where a new managed agent would go, once management has checked that
+    the machine can take it. `workspaces_dir` is where the machine keeps
+    agents' workspaces, None when it has not reported one."""
+
+    machine_id: str
+    machine_name: str
+    workspaces_dir: str | None
 
 
 @dataclass(frozen=True)
@@ -66,6 +79,7 @@ class ManagedAgentChanges:
     model: str | None
     advanced_config: dict[str, Any] | None
     instructions: str | None
+    auto_mode: bool | None
     auto_approve: bool | None
     directory: str | None
     isolation: str | None
@@ -79,6 +93,7 @@ class ManagedAgentChanges:
             "model": self.model,
             "advanced_config": self.advanced_config,
             "instructions": self.instructions,
+            "auto_mode": self.auto_mode,
             "auto_approve": self.auto_approve,
             "directory": self.directory,
             "isolation": self.isolation,
@@ -117,6 +132,15 @@ class AgentManagementPort(Protocol):
         protocol: AgentCore,
     ) -> dict[str, Any]:
         """Create and place a managed agent owned by `owner_id`."""
+        ...
+
+    async def check_new_agent(
+        self, tenant_id: str, owner_id: str, spec: NewManagedAgent
+    ) -> CheckedPlacement:
+        """Every check `create_agent` makes before it registers anything (the
+        machine is the owner's and can run the provider now, the definition
+        validates), without creating anything. Refused as `create_agent` would
+        be."""
         ...
 
     async def list_managed_agents(

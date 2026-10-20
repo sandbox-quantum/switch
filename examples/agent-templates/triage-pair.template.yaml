@@ -22,6 +22,11 @@ params:
     description: The machine both run on.
     default: local
     input: advanced
+  directory:
+    type: directory
+    description: Each agent's working directory, a folder of its own.
+    default: "{$agents_dir}/{agent}"
+    input: advanced
   bridge:
     type: bridge
     description: Where the room is mirrored. The server's default app is chosen.
@@ -33,6 +38,7 @@ agents:
     addressing: anyone
     provider: "{provider}"
     location: "{location}"
+    directory: "{directory}"
     instructions: |
       You are the triager of a small team. Reports arrive in your room from
       people and from other agents. For each one:
@@ -50,6 +56,7 @@ agents:
     addressing: owner-agents
     provider: "{provider}"
     location: "{location}"
+    directory: "{directory}"
     instructions: |
       You reproduce bugs the triager hands you. For each one, work in your
       directory: write the smallest script or command that shows the

@@ -12,9 +12,14 @@ from switch_core.agent_icon import (
     InvalidIconUrl,
     generated_icon_choices,
     normalise_icon_url,
+    refuse_third_party_avatar,
 )
 from switch_core.authz import Principal, require_manage
-from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
+from switch_core.bridges.agent.protocol.agent_core import (
+    AgentCore,
+    AgentExistsError,
+    AgentRenameRefused,
+)
 from switch_core.bridges.agent.protocol.agent_detail import (
     AgentOptionsNotEditable,
     apply_agent_options,
@@ -22,35 +27,41 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     build_agent_summary,
     list_agent_summaries,
 )
-from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
-    TaskProtocolConfig,
 )
-from switch_core.db.models import Agent, User
+from switch_core.chats.service import ChatService
+from switch_core.config import SwitchConfig
+from switch_core.db.models import User, require_tenant_id
 from switch_core.db.stores.agent_store import AgentStore
-from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
+from switch_core.gateway.chats import get_chat_service
 from switch_core.gateway.dependencies import (
     get_agent_store,
+    get_config,
     get_protocol,
     get_room_store,
     get_session,
     get_user_store,
 )
-from switch_core.gateway.known_agents import KNOWN_AGENTS
+from switch_core.gateway.known_agents import known_agent, known_agents
 from switch_core.gateway.schemas import (
     AgentDetail,
     AgentSummary,
+    AvatarSettingsResponse,
     BulkRegisterResult,
+    DeleteAgentResponse,
+    IconChoicesResponse,
     KnownAgentType,
     RegisterAgentResponse,
     RegisterKnownAgentRequest,
     RegisterKnownSubagentsRequest,
     RegisterKnownSubagentsResponse,
     RegisterOtherAgentRequest,
+    RenameAgentRequest,
+    RenameAgentResponse,
     UpdateAddressingPolicyRequest,
     UpdateAgentCanManageAgentsRequest,
     UpdateAgentDescriptionRequest,
@@ -63,17 +74,6 @@ from switch_core.gateway.subagent_registration import derive_subagent_registrati
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-CLOUD_AGENT_DELETE_REFUSED = (
-    "This is a cloud agent. Remove it from Switch Console's cloud agents instead."
-)
-
-
-async def _sync_hosted_spec(session: AsyncSession, agent: Agent, changes: dict) -> None:
-    """Keep a cloud agent's launch spec, which registers it again, on the agent's values."""
-    launch_id = hosted_launch_of(agent.metadata_)
-    if launch_id is not None:
-        await HostedLaunchStore().merge_spec(session, launch_id, changes)
 
 
 @router.get("")
@@ -94,7 +94,7 @@ async def delete_agent_by_name(
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> dict[str, bool]:
+) -> DeleteAgentResponse:
     agent = await agent_store.get_by_name(session, agent_name)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_name}")
@@ -108,17 +108,17 @@ async def delete_agent_by_name(
             status_code=403,
             detail="Only the agent's owner or an admin can delete it.",
         )
-    if hosted_launch_of(agent.metadata_) is not None:
-        raise HTTPException(status_code=409, detail=CLOUD_AGENT_DELETE_REFUSED)
     # Not held across the delete, which opens its own sessions and calls every bridge.
     await session.commit()
     try:
-        await protocol.delete_agent(agent_name=agent_name)
+        deletion = await protocol.delete_agent(agent_name=agent_name)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     logger.info("Deleted agent via gateway by name: %s", agent_name)
-    return {"ok": True}
+    return DeleteAgentResponse(
+        ok=True, bridge_cleanup_failures=deletion.bridge_failures
+    )
 
 
 @router.delete("/{agent_id}")
@@ -129,7 +129,7 @@ async def delete_agent(
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> dict[str, bool]:
+) -> DeleteAgentResponse:
     agent = await agent_store.get(session, agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
@@ -143,17 +143,17 @@ async def delete_agent(
             status_code=403,
             detail="Only the agent's owner or an admin can delete it.",
         )
-    if hosted_launch_of(agent.metadata_) is not None:
-        raise HTTPException(status_code=409, detail=CLOUD_AGENT_DELETE_REFUSED)
     # Not held across the delete, which opens its own sessions and calls every bridge.
     await session.commit()
     try:
-        await protocol.delete_agent(agent_id=agent_id)
+        deletion = await protocol.delete_agent(agent_id=agent_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     logger.info("Deleted agent via gateway: %s", agent_id)
-    return {"ok": True}
+    return DeleteAgentResponse(
+        ok=True, bridge_cleanup_failures=deletion.bridge_failures
+    )
 
 
 @router.get("/known-types")
@@ -165,19 +165,38 @@ async def list_known_agent_types() -> list[KnownAgentType]:
             tool_count=len(spec.tools),
             options_schema=spec.options_schema.model_json_schema(),
         )
-        for key, spec in KNOWN_AGENTS.items()
+        for key, spec in known_agents().items()
     ]
+
+
+@router.get("/avatar-settings")
+async def get_avatar_settings(
+    _user: Annotated[User, Depends(get_current_user)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> AvatarSettingsResponse:
+    """Whether a client may draw agents with icons from outside avatar
+    services. Switch Console builds the same generated icons the bridges do,
+    so it asks here rather than sending names the operator has kept in."""
+    return AvatarSettingsResponse(
+        third_party_avatars_enabled=config.third_party_avatars_enabled
+    )
 
 
 @router.get("/icon-choices")
 async def list_icon_choices(
     _user: Annotated[User, Depends(get_current_user)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
     name: Annotated[str, Query(min_length=1, max_length=128)],
     page: Annotated[int, Query(ge=0, le=1000)] = 0,
-) -> dict[str, list[str]]:
+) -> IconChoicesResponse:
     """One page of generated icons for an agent called `name`: page 0 leads
-    with the one an agent of that name gets when nobody picks an icon."""
-    return {"choices": generated_icon_choices(name, page)}
+    with the one an agent of that name gets when nobody picks an icon. An
+    empty page, flagged as such, when third-party avatars are off."""
+    if not config.third_party_avatars_enabled:
+        return IconChoicesResponse(choices=[], third_party_avatars_enabled=False)
+    return IconChoicesResponse(
+        choices=generated_icon_choices(name, page), third_party_avatars_enabled=True
+    )
 
 
 @router.post("/register")
@@ -186,7 +205,7 @@ async def register_known_agent(
     user: Annotated[User, Depends(get_current_user)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> RegisterAgentResponse:
-    spec = KNOWN_AGENTS.get(req.agent_type)
+    spec = known_agent(req.agent_type)
     if spec is None:
         raise HTTPException(
             status_code=400,
@@ -250,7 +269,7 @@ async def register_known_subagents(
     inherit the parent's `channels_enabled` / `repo_dir` unless overridden in
     `options`.
     """
-    spec = KNOWN_AGENTS.get(req.agent_type)
+    spec = known_agent(req.agent_type)
     if spec is None:
         raise HTTPException(
             status_code=400, detail=f"Unknown agent type: {req.agent_type}"
@@ -409,6 +428,8 @@ async def update_agent_icon(
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ) -> AgentSummary:
     """Set, change, or clear an agent's icon (CHOO-2171).
 
@@ -421,7 +442,9 @@ async def update_agent_icon(
     a private network — Switch dereferences it when a bridge needs the image
     as bytes, so an unconstrained URL would be a request made on the caller's
     behalf from inside our network. A rejected URL returns 400 rather than
-    being stored and failing later at render time.
+    being stored and failing later at render time. So is an icon on an avatar
+    service while the server has third-party avatars off, which no bridge
+    would show.
     """
     agent = await agent_store.get(session, agent_id)
     if agent is None:
@@ -439,14 +462,17 @@ async def update_agent_icon(
         )
 
     try:
-        icon_url = normalise_icon_url(req.icon_url)
+        icon_url = refuse_third_party_avatar(
+            normalise_icon_url(req.icon_url),
+            third_party_avatars=config.third_party_avatars_enabled,
+        )
     except InvalidIconUrl as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     await agent_store.update(session, agent_id, icon_url=icon_url)
-    await _sync_hosted_spec(session, agent, {"icon_url": icon_url})
     await session.commit()
     await session.refresh(agent)
+    await chat_service.agent_changed(require_tenant_id(), agent_id)
 
     logger.info(
         "%s agent %s icon by user %s",
@@ -459,14 +485,75 @@ async def update_agent_icon(
     return await build_agent_summary(session, agent_store, agent, owner_name)
 
 
+@router.put("/{agent_id}/name")
+async def rename_agent(
+    agent_id: str,
+    req: RenameAgentRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RenameAgentResponse:
+    """Rename an agent: change the identifier people type and mention, and
+    its display name with it.
+
+    Only its owner (or an admin) may. Refused with 400 for a malformed or
+    reserved name, or a clash with an alias, a role, or a handle on a chat
+    platform; 409 when another agent has the name. A chat platform that could
+    not be updated afterwards is listed in `bridge_failures`; the rename
+    stands.
+    """
+    agent = await agent_store.get(session, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+    try:
+        require_manage(Principal(user.id, is_admin), agent.owner_id)
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the agent's owner or an admin can rename it.",
+        )
+    # Not held across the rename, which opens its own sessions and calls every bridge.
+    await session.commit()
+    try:
+        result = await protocol.rename_agent(
+            agent_id=agent_id, new_name=req.name, display_name=req.display_name
+        )
+    except AgentExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (AgentRenameRefused, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    logger.info(
+        "Renamed agent %s from %s to %s by user %s",
+        agent_id,
+        result.old_name,
+        result.new_name,
+        user.name,
+    )
+    renamed = await agent_store.get(session, agent_id)
+    assert renamed is not None
+    await session.refresh(renamed)
+    owner_name = user.name if renamed.owner_id == user.id else None
+    return RenameAgentResponse(
+        agent=await build_agent_summary(session, agent_store, renamed, owner_name),
+        old_name=result.old_name,
+        bridge_failures=result.bridge_failures,
+        templates_mentioning_old_name=result.templates_mentioning_old_name,
+    )
+
+
 @router.put("/{agent_id}/display-name")
 async def update_agent_display_name(
     agent_id: str,
     req: UpdateAgentDisplayNameRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ) -> AgentSummary:
     """Set, change, or clear an agent's human display name.
 
@@ -499,9 +586,10 @@ async def update_agent_display_name(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     await agent_store.update(session, agent_id, display_name=display_name)
-    await _sync_hosted_spec(session, agent, {"display_name": display_name})
     await session.commit()
     await session.refresh(agent)
+    await protocol.update_bridge_identities(agent_id)
+    await chat_service.agent_changed(require_tenant_id(), agent_id)
 
     logger.info(
         "%s agent %s display name by user %s",
@@ -520,6 +608,7 @@ async def update_agent_description(
     req: UpdateAgentDescriptionRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> AgentSummary:
@@ -542,9 +631,9 @@ async def update_agent_description(
         raise HTTPException(status_code=400, detail="description must not be blank")
 
     await agent_store.update(session, agent_id, description=description)
-    await _sync_hosted_spec(session, agent, {"description": description})
     await session.commit()
     await session.refresh(agent)
+    await protocol.update_bridge_identities(agent_id)
 
     logger.info("Set agent %s description by user %s", agent.name, user.name)
 
@@ -559,14 +648,13 @@ async def register_other_agent(
     protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> RegisterAgentResponse:
     # External agent registered without a known profile — give it a conservative
-    # default profile (session_passive, no task capabilities).
+    # default profile (session_passive).
     default_profile = IntegrationProfile(
         connection_model="session_passive",
         message_exchange=True,
         pre_invocation_mediation=[],
         post_invocation_mediation=[],
         event_reporting=[],
-        task_protocol=TaskProtocolConfig(can_delegate=False, can_accept=False),
     )
 
     try:
@@ -628,7 +716,6 @@ async def update_addressing_policy(
 
     stored = req.policy.model_dump() if req.policy is not None else None
     await agent_store.update(session, agent_id, addressing_policy=stored)
-    await _sync_hosted_spec(session, agent, {"addressing_policy": stored})
     await session.commit()
 
     logger.info(

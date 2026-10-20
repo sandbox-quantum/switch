@@ -1,5 +1,4 @@
 import {
-  CloudRelayError,
   liveSupervisor,
   SessionHostFailedError,
   SessionUnavailableError,
@@ -15,7 +14,6 @@ import {
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { hydrateSession } from '@main/core/sessions/operations/hydrateSession';
-import { cloudControl, isCloudAgent, runCloudSessionOperation } from './cloud-control';
 import { localSessionLinks } from './local-host';
 import { withSidecar } from './sidecar-control';
 
@@ -23,10 +21,10 @@ import { withSidecar } from './sidecar-control';
  * Commands for a shared session, sent to its host directly.
  *
  * A local session's host is Console's child; a remote one's is a child of
- * the agent's sidecar, which Console reaches over SSH, or of a cloud worker,
- * reached through its Switch server's relay. Either way the command goes down
- * the host's IPC pipe and the host answers with what it recorded. A host that parked itself after sitting idle is
- * started again and the command sent once it is back.
+ * the agent's sidecar, which Console reaches over SSH. Either way the command
+ * goes down the host's IPC pipe and the host answers with what it recorded. A
+ * host that parked itself after sitting idle is started again and the command
+ * sent once it is back.
  */
 
 export class CommandNotRecordedError extends Error {
@@ -51,7 +49,6 @@ export async function askHost(
   sessionId: string,
   request: SessionRequest
 ): Promise<unknown> {
-  if (isCloudAgent(agentId)) return (await cloudControl(agentId)).request(sessionId, request);
   if (await isLocal(agentId)) {
     const root = sharedSessionRoot(sessionId);
     // Waits for a host that is starting, not for one nothing is running.
@@ -89,21 +86,8 @@ export async function submitSessionCommand(
   }
   const notRestarted = 'The session is not running and could not be started again: ';
   try {
-    if (isCloudAgent(agentId)) {
-      const outcome = await runCloudSessionOperation(
-        agentId,
-        command.sessionId,
-        crypto.randomUUID(),
-        'restart'
-      );
-      // Coded the way the relay codes the same refusal, so the composer holds
-      // the message while the machine wakes or says what the user must do.
-      if (outcome.state === 'failed' && outcome.code !== null)
-        throw new CloudRelayError(outcome.code, `${notRestarted}${outcome.message}`, 409, false);
-      if (outcome.state !== 'applied') throw new Error(outcome.message);
-    } else await hydrateSession(command.sessionId);
+    await hydrateSession(command.sessionId);
   } catch (error) {
-    if (error instanceof CloudRelayError) throw error;
     throw new Error(`${notRestarted}${error instanceof Error ? error.message : String(error)}`);
   }
   return commandStatusSchema.parse(await askHost(agentId, command.sessionId, request));

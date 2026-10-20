@@ -15,12 +15,10 @@ import { type GuardResult, type ViewDefinition } from '@renderer/app/view-regist
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { HostUnreachablePanel } from '@renderer/features/remote-hosts/host-unreachable-panel';
-import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar';
 import { workspaceTitle } from '@renderer/features/workspaces/workspace-title';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { toast } from '@renderer/lib/hooks/use-toast';
-import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
@@ -34,22 +32,14 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { dashboardOrigin, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { GuardrailsSection } from './GuardrailsSection';
 import { localServerStore } from './local-server-store';
-import { LocalServerControls } from './LocalServerControls';
-import { managedTelemetryNotice } from './managed-telemetry-notice';
 import { MessagingAppsCard } from './MessagingAppsCard';
+import { openServerPage } from './open-server-page';
 import { remoteServerStore } from './remote-server-store';
-import { RemoteServerControls } from './RemoteServerControls';
 import { serverIcon } from './server-icon';
-import {
-  serverDeployedTelemetry,
-  serverDrift,
-  serverPlacementLabel,
-  serverProgress,
-  serverUpgrade,
-} from './server-presentation';
-import { ServerResetSection } from './server-reset-section';
+import { serverPlacementLabel } from './server-presentation';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import {
   machineUnavailableReason,
@@ -58,15 +48,11 @@ import {
   useServerSignIn,
 } from './server-sign-in';
 import { ServerStatTiles } from './server-stat-tiles';
-import { useSharedActionConfirm } from './shared-action-confirm';
-import { SharedConsolesSection } from './shared-consoles-section';
+import { loadSwitchCloudOrigin, managedCloudServerId } from './switch-cloud-origin';
 import { isSwitchCloudServer } from './switch-cloud-store';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
-import { TelemetryConsentNotice } from './TelemetryConsentNotice';
-import { loadSwitchCloudOrigin, managedCloudServerId } from './use-cloud-launches';
 import { myIdentitiesQueryKey } from './use-my-identities';
-import { VersionDriftNotice } from './VersionDriftNotice';
 
 /** Whether a managed server's stack is currently running (via the store that
  * owns its lifecycle). Non-managed servers are always "reachable". */
@@ -75,16 +61,6 @@ function isManagedRunning(server: SwitchServer): boolean {
     return remoteServerStore.isRunning(server.sshHost);
   }
   return localServerStore.isRunning;
-}
-
-/** Re-running the start pipeline is what picks up a new switch-core pin, so
- * "restart to update" and "restart" are the same call on either store. */
-function restartStack(server: SwitchServer): void {
-  if (server.managementKind === 'remote' && server.sshHost) {
-    void remoteServerStore.start(server.sshHost, server.name);
-    return;
-  }
-  void localServerStore.start();
 }
 
 const card = 'rounded-lg border border-border bg-card p-4';
@@ -105,9 +81,6 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   const serverId = useServerId();
   const store = switchServersStore;
   const server = store.servers.find((s) => s.id === serverId);
-  // A remote server is shared, so restarting it from a notice reaches everyone.
-  const remoteHost = server?.managementKind === 'remote' ? server.sshHost : null;
-  const confirm = useSharedActionConfirm(remoteHost);
   const showEditServerModal = useShowModal('addServerModal');
   const showRenameServerModal = useShowModal('renameServerModal');
   const showDeleteServerModal = useShowModal('deleteServerModal');
@@ -115,10 +88,6 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   const queryClient = useQueryClient();
 
   const [refreshingPage, setRefreshingPage] = useState(false);
-  // The same answer the Console checks before its own events. Read here rather
-  // than pushed with the stack's status so that flipping the toggle in Settings
-  // updates this page at once, without waiting for the server to be re-probed.
-  const { value: telemetry } = useAppSettingsKey('telemetry');
 
   /**
    * Everything the page is showing, re-read.
@@ -207,14 +176,12 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   // button asks for, so the page should not look idle while one is in flight.
   const busy = refreshingPage || store.refreshing.has(serverId);
   const unreachable = store.isUnreachable(serverId);
+  // A local server run without Docker has no dashboard: switch-core runs there
+  // without the dashboard's pages, so its address serves the API alone.
+  const servesNoDashboard =
+    server.managed && server.managementKind === 'local' && localServerStore.isNative;
   const PlacementIcon = serverIcon(server);
-  const drift = serverDrift(server);
   const title = workspaceTitle(server);
-  const stackTransitioning =
-    server.managementKind === 'remote' && server.sshHost
-      ? remoteServerStore.isTransitioning(server.sshHost) ||
-        remoteServerStore.isHostBlocked(server.sshHost)
-      : localServerStore.isTransitioning;
 
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
@@ -279,8 +246,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
                       showEditServerModal({
                         serverId,
                         initialName: server.name,
-                        initialGatewayUrl: server.gatewayUrl,
-                        initialApiUrl: server.apiUrl,
+                        initialUrl: server.url,
                       })
                     }
                   >
@@ -322,38 +288,6 @@ const ServerMainPanel = observer(function ServerMainPanel() {
           </Alert>
         )}
 
-        {/* An available update is about the whole server, so it leads the page
-          rather than waiting inside the stack card further down. */}
-        <VersionDriftNotice
-          drift={drift}
-          upgrade={serverUpgrade(server)}
-          progress={serverProgress(server)}
-          disabled={stackTransitioning}
-          affected={confirm.who}
-          onRestart={() =>
-            // A held update names who it reaches on its own button; a stopped
-            // server reaches nobody.
-            isManagedRunning(server) && serverUpgrade(server)?.state !== 'held'
-              ? confirm.request('restart', () => restartStack(server))
-              : restartStack(server)
-          }
-        />
-
-        {/* Same placement, and for the same reason: a consent decision that has
-            not reached this server is about the server, not about one card on
-            its page. */}
-        <TelemetryConsentNotice
-          notice={managedTelemetryNotice({
-            running: server.managed && isManagedRunning(server),
-            deployed: serverDeployedTelemetry(server),
-            consent: telemetry?.enabled ?? true,
-            sharedWithOthers: confirm.shared,
-          })}
-          disabled={stackTransitioning}
-          onRestart={() => confirm.request('restart', () => restartStack(server))}
-        />
-        {confirm.dialog}
-
         {detailsVisible && unreachable && <ServerUnreachableCard serverId={serverId} />}
 
         {detailsVisible && !unreachable && (
@@ -374,21 +308,11 @@ const ServerMainPanel = observer(function ServerMainPanel() {
 
             {connected && <ServerStatTiles serverId={serverId} />}
             {connected && <MessagingAppsCard serverId={serverId} />}
+            {connected && <GuardrailsSection serverId={serverId} />}
           </>
         )}
 
-        {server.managed &&
-          (server.managementKind === 'remote' && server.sshHost ? (
-            <RemoteServerControls sshHost={server.sshHost} name={server.name} />
-          ) : (
-            <LocalServerControls />
-          ))}
-
-        {server.managed && server.managementKind === 'remote' && server.sshHost && (
-          <SharedConsolesSection sshHost={server.sshHost} />
-        )}
-
-        {detailsVisible && !unreachable && (
+        {detailsVisible && !unreachable && !servesNoDashboard && (
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0 space-y-0.5">
               <h3 className="text-sm font-medium text-foreground">Full admin interface</h3>
@@ -400,37 +324,12 @@ const ServerMainPanel = observer(function ServerMainPanel() {
               variant="outline"
               size="sm"
               className="shrink-0"
-              onClick={() =>
-                void rpc.switchServers.openGatewayPage({
-                  serverId: server.id,
-                  url: server.gatewayUrl,
-                })
-              }
+              onClick={() => void openServerPage(server.id, dashboardOrigin(server))}
             >
               <ExternalLink className="size-4" />
               Open
             </Button>
           </div>
-        )}
-
-        {server.managed && (
-          <ServerResetSection
-            dialogTitle={
-              server.managementKind === 'remote' && server.sshHost
-                ? `Reset server on ${server.sshHost}`
-                : 'Reset server on this computer'
-            }
-            shared={server.managementKind === 'remote'}
-            affected={confirm.who}
-            disabled={stackTransitioning}
-            onConfirm={() => {
-              if (server.managementKind === 'remote' && server.sshHost) {
-                void remoteServerStore.reset(server.sshHost);
-                return;
-              }
-              void localServerStore.reset();
-            }}
-          />
         )}
       </div>
     </div>
@@ -447,6 +346,8 @@ const ServerMainPanel = observer(function ServerMainPanel() {
 const SignedInCard = observer(function SignedInCard({ serverId }: { serverId: string }) {
   const store = switchServersStore;
   const user = store.statusFor(serverId)?.user;
+  const showDeleteAccount = useShowModal('deleteAccountModal');
+  const serverName = store.serverById(serverId)?.name ?? 'this server';
   const displayName = user?.name || user?.email || 'Signed in';
   const initial = displayName.trim().charAt(0).toUpperCase() || '?';
 
@@ -468,6 +369,16 @@ const SignedInCard = observer(function SignedInCard({ serverId }: { serverId: st
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {user?.role && <Badge variant="secondary">{user.role}</Badge>}
+        {user?.email && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-destructive hover:text-destructive"
+            onClick={() => showDeleteAccount({ serverId, serverName, email: user.email })}
+          >
+            Delete account
+          </Button>
+        )}
         <Button variant="outline" size="sm" onClick={() => void store.logout(serverId)}>
           Sign out
         </Button>

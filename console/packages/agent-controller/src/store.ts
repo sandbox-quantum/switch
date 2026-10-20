@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { ConfigurationError } from './errors';
 import { errorMessage } from './log';
 import { type Assignment, assignmentSchema, type ReasonCode } from './schemas';
+import type { UpdateAttempt } from './self-update';
 
 /**
  * The controller's local state, in one SQLite file: who it is, the last
@@ -62,6 +63,13 @@ const MIGRATIONS: readonly string[] = [
      agent_id TEXT PRIMARY KEY,
      cursor INTEGER NOT NULL,
      updated_at TEXT NOT NULL
+   );`,
+  // Which of the Linux users set up for agents each agent runs as, when the
+  // controller runs every agent as a user of its own.
+  `CREATE TABLE agent_users (
+     slot INTEGER PRIMARY KEY,
+     agent_id TEXT NOT NULL UNIQUE,
+     claimed_at TEXT NOT NULL
    );`,
 ];
 
@@ -276,6 +284,42 @@ export class ControllerStore {
       .run(agentId, cursor, at);
   }
 
+  /** The agent user (`1`…) the agent runs as, or null when it holds none. */
+  agentUser(agentId: string): number | null {
+    const row = this.db.prepare('SELECT slot FROM agent_users WHERE agent_id = ?').get(agentId) as
+      | Row
+      | undefined;
+    return row ? Number(row.slot) : null;
+  }
+
+  /**
+   * The agent user the agent runs as, claiming the lowest free one of
+   * `1`…`count` when it holds none; null when every one is taken.
+   */
+  claimAgentUser(agentId: string, count: number, at: string): number | null {
+    return this.transaction(() => {
+      const held = this.agentUser(agentId);
+      if (held !== null) return held;
+      const taken = new Set(
+        (this.db.prepare('SELECT slot FROM agent_users').all() as Row[]).map((row) =>
+          Number(row.slot)
+        )
+      );
+      for (let slot = 1; slot <= count; slot++)
+        if (!taken.has(slot)) {
+          this.db
+            .prepare('INSERT INTO agent_users (slot, agent_id, claimed_at) VALUES (?, ?, ?)')
+            .run(slot, agentId, at);
+          return slot;
+        }
+      return null;
+    });
+  }
+
+  releaseAgentUser(agentId: string): void {
+    this.db.prepare('DELETE FROM agent_users WHERE agent_id = ?').run(agentId);
+  }
+
   /** The loopback port the relay last listened on, which running watchers were given. */
   relayPort(): number | null {
     const value = this.meta('relay_port');
@@ -313,6 +357,29 @@ export class ControllerStore {
       this.setMeta('status_seq', String(next));
       return next;
     });
+  }
+
+  /** The last attempt at updating to a release Switch named; see `SelfUpdater`. */
+  updateAttempt(): UpdateAttempt | null {
+    const value = this.meta('update_attempt');
+    if (value === null) return null;
+    try {
+      const parsed = JSON.parse(value) as Partial<UpdateAttempt>;
+      if (typeof parsed.target === 'string' && typeof parsed.at === 'number')
+        return {
+          target: parsed.target,
+          at: parsed.at,
+          problem: typeof parsed.problem === 'string' ? parsed.problem : null,
+        };
+    } catch {
+      // Unreadable: as if no attempt was recorded.
+    }
+    return null;
+  }
+
+  saveUpdateAttempt(attempt: UpdateAttempt | null): void {
+    if (attempt === null) this.db.prepare("DELETE FROM meta WHERE key = 'update_attempt'").run();
+    else this.setMeta('update_attempt', JSON.stringify(attempt));
   }
 
   private meta(key: string): string | null {

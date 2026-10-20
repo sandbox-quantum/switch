@@ -1,10 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EVICTION_CREDENTIALS_REJECTED,
-  EVICTION_LAUNCH_SUPERSEDED,
   EVICTION_TAKEN_OVER,
   SwitchEventStream,
-  WORKER_CAPABILITY_OBSOLETE,
   type Eviction,
   type SwitchEventStreamDeps,
 } from './event-stream';
@@ -214,7 +212,6 @@ function makeStream(
     onEvent: () => {},
     onGap: () => {},
     onEvicted: () => {},
-    worker: null,
     log,
     signal: abort.signal,
     ...deps,
@@ -277,7 +274,7 @@ describe('the heartbeat', () => {
     server.sockets[0]!.ping();
     await flush();
 
-    expect(server.sockets[0]!.sent).toEqual([{ type: 'pong', cursor: 3 }]);
+    expect(server.sockets[0]!.sent).toEqual([{ type: 'pong', cursor: 3, position: { s: 3 } }]);
     abort.abort();
   });
 
@@ -302,15 +299,15 @@ describe('the heartbeat', () => {
     server.sockets[0]!.ping();
     await flush();
     // The cursor it names is the last event fully handled, not the one in hand.
-    expect(server.sockets[0]!.sent).toEqual([{ type: 'pong', cursor: 6 }]);
+    expect(server.sockets[0]!.sent).toEqual([{ type: 'pong', cursor: 6, position: { s: 6 } }]);
 
     finish();
     await flush();
     server.sockets[0]!.ping();
     await flush();
     expect(server.sockets[0]!.sent).toEqual([
-      { type: 'pong', cursor: 6 },
-      { type: 'pong', cursor: 7 },
+      { type: 'pong', cursor: 6, position: { s: 6 } },
+      { type: 'pong', cursor: 7, position: { s: 7 } },
     ]);
     abort.abort();
   });
@@ -857,9 +854,9 @@ describe('the cursor', () => {
     });
     const { stream, abort } = makeStream({ rooms: ['room'], startCursor: 6, onEvent });
     await vi.waitFor(() => expect(onEvent).toHaveBeenCalledOnce());
-    expect(stream.position).toBe(6);
+    expect(stream.position).toEqual({ s: 6 });
     finish();
-    await vi.waitFor(() => expect(stream.position).toBe(7));
+    await vi.waitFor(() => expect(stream.position).toEqual({ s: 7 }));
     abort.abort();
   });
 
@@ -914,10 +911,10 @@ describe('the cursor', () => {
         cursorReset: true,
         reason: 'buffer reset',
       });
-      expect(stream.position).toBe(4);
+      expect(stream.position).toEqual({ s: 4 });
       expect(onEvent).not.toHaveBeenCalled();
       finish();
-      await vi.waitFor(() => expect(stream.position).toBe(1));
+      await vi.waitFor(() => expect(stream.position).toEqual({ s: 1 }));
       expect(onEvent).toHaveBeenCalledOnce();
     } finally {
       abort.abort();
@@ -933,8 +930,124 @@ describe('the cursor', () => {
     const { stream, abort } = makeStream({ rooms: ['room'], startCursor: 4, onGap, onEvent });
     try {
       await vi.waitFor(() => expect(onGap).toHaveBeenCalledOnce());
-      expect(stream.position).toBe(4);
+      expect(stream.position).toEqual({ s: 4 });
       expect(onEvent).not.toHaveBeenCalled();
+    } finally {
+      abort.abort();
+    }
+  });
+});
+
+describe('the position (agent-protocol 9)', () => {
+  /** Open, and say where the stream starts, as a server that speaks positions does. */
+  const startingAt =
+    (position: Record<string, number>): Script =>
+    (socket) => {
+      socket.open();
+      socket.frame('connection_state', { connection_id: 'conn-1', generation: 0, position });
+    };
+
+  it('keeps each source’s place, and resumes from all of them', async () => {
+    // A room's conversation is numbered in the room, so its events carry no
+    // number of the agent's own: only the position says where they were.
+    vi.useFakeTimers();
+    serve((socket, index) => {
+      startingAt({ s: 5 })(socket, index);
+      if (index === 0) {
+        socket.frame('message', { type: 'message', room_id: 'room', position: { s: 6 } }, 6);
+        socket.frame('message', { type: 'message', room_id: 'room', position: { 'r:room': 40 } });
+        socket.drop();
+      }
+    });
+    const { abort } = makeStream({ rooms: ['room'] });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(server.sockets.map((socket) => socket.params.get('start_at'))).toEqual([
+      'head',
+      JSON.stringify({ s: 6, 'r:room': 40 }),
+    ]);
+    // What a server from before positions reads instead.
+    expect(server.sockets[1]?.params.get('start_from')).toBe('6');
+    abort.abort();
+  });
+
+  it('resumes an open at head from where head was, not from where it has got to', async () => {
+    // Nothing arrived before the socket dropped, so the only record of where
+    // this stream started is what the server said when it opened. Without it
+    // the reopen asks for head again and skips whatever landed in between.
+    vi.useFakeTimers();
+    serve((socket, index) => {
+      startingAt({ s: 9 })(socket, index);
+      if (index === 0) socket.drop();
+    });
+    const { abort } = makeStream({ rooms: ['room'] });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(server.sockets[1]?.params.get('start_at')).toBe(JSON.stringify({ s: 9 }));
+    abort.abort();
+  });
+
+  it('takes a gap’s resumed position whole, even where it moves back', async () => {
+    const onGap = vi.fn();
+    serve((socket) => {
+      socket.open();
+      socket.frame('gap', {
+        from_sequence: 4,
+        resumed_at: 2,
+        resumed_position: { s: 2, 'r:room': 7 },
+        reason: 'the server restarted',
+      });
+      socket.frame('message', { type: 'message', room_id: 'room', position: { s: 3 } }, 3);
+    });
+    const { stream, abort } = makeStream({
+      rooms: ['room'],
+      startCursor: 4,
+      onGap,
+    });
+    try {
+      await vi.waitFor(() => expect(stream.position).toEqual({ s: 3, 'r:room': 7 }));
+      expect(onGap).toHaveBeenCalledWith(
+        expect.objectContaining({ resumedAt: 2, cursorReset: true })
+      );
+    } finally {
+      abort.abort();
+    }
+  });
+
+  it('refuses a gap whose resumed position is not one, and moves nowhere', async () => {
+    const onGap = vi.fn();
+    serve((socket) => {
+      socket.open();
+      socket.frame('gap', { from_sequence: 4, resumed_position: { s: -1 }, reason: 'x' });
+    });
+    const { stream, abort } = makeStream({ rooms: ['room'], startCursor: 4, onGap });
+    try {
+      await flush();
+      expect(onGap).not.toHaveBeenCalled();
+      expect(stream.position).toEqual({ s: 4 });
+    } finally {
+      abort.abort();
+    }
+  });
+
+  it('answers a ping with its whole position beside the cursor', async () => {
+    serve((socket) => {
+      attach(socket, 0);
+      socket.frame('message', { type: 'message', room_id: 'room', position: { 'r:room': 12 } });
+    });
+    const onEvent = vi.fn();
+    const { abort } = makeStream({ rooms: ['room'], onEvent });
+    try {
+      // A pong reports what has been handled, so the ping waits for the event.
+      await vi.waitFor(() => expect(onEvent).toHaveBeenCalledOnce());
+      server.sockets[0]!.ping();
+      await vi.waitFor(() =>
+        expect(server.sockets[0]!.sent).toEqual([
+          { type: 'pong', cursor: 0, position: { 'r:room': 12 } },
+        ])
+      );
     } finally {
       abort.abort();
     }
@@ -1072,7 +1185,7 @@ describe('frames that are not room events', () => {
     try {
       await vi.waitFor(() => expect(onCommands).toHaveBeenCalledWith(['session']));
       expect(onEvent).not.toHaveBeenCalled();
-      expect(stream.position).toBe(0);
+      expect(stream.position).toEqual({});
     } finally {
       abort.abort();
     }
@@ -1291,104 +1404,6 @@ describe('placements', () => {
     try {
       await expect(stream.replacePlacements({ session: 'room' })).rejects.toThrow('409');
       expect(evicted.map((eviction) => eviction.code)).toEqual([EVICTION_TAKEN_OVER]);
-    } finally {
-      abort.abort();
-    }
-  });
-});
-
-describe('a hosted worker over the socket', () => {
-  const worker = { capability: 'cap-1', bootId: 'boot-1', instanceId: 'i-1', stateVersion: 1 };
-
-  it('states its capability and host on the socket it opens', async () => {
-    const { abort } = makeStream({ rooms: [], worker });
-    await flush();
-    expect(server.sockets[0]?.headers).toEqual({
-      Authorization: 'Bearer tok',
-      'X-Switch-Worker-Capability': 'cap-1',
-      'X-Switch-Host-Boot-Id': 'boot-1',
-      'X-Switch-Host-Instance-Id': 'i-1',
-      'X-Switch-Worker-State-Version': '1',
-    });
-    abort.abort();
-  });
-
-  it('sends no worker headers when it is not a worker', async () => {
-    const { abort } = makeStream({ rooms: [] });
-    await flush();
-    expect(server.sockets[0]?.headers).toEqual({ Authorization: 'Bearer tok' });
-    abort.abort();
-  });
-
-  it.each([
-    [403, WORKER_CAPABILITY_OBSOLETE],
-    [403, 'worker_capability_required'],
-    [426, 'upgrade_required'],
-    [403, 'hosted_worker_only'],
-  ])('stops for good on a %i %s refusal, and does not try the stream', async (status, code) => {
-    vi.useFakeTimers();
-    serve((socket) => socket.refuse(status, { code, message: code }));
-    const evicted: Eviction[] = [];
-    const { abort, fetchMock } = makeStream({
-      rooms: [],
-      worker,
-      onEvicted: (e) => evicted.push(e),
-    });
-    await vi.advanceTimersByTimeAsync(5 * 60_000);
-    expect(server.sockets).toHaveLength(1);
-    expect(postsTo(fetchMock, '/events')).toEqual([]);
-    expect(evicted.map((e) => e.code)).toEqual([code]);
-    abort.abort();
-  });
-
-  it('backs off and retries while another worker is attached', async () => {
-    vi.useFakeTimers();
-    serve((socket) => socket.refuse(409, { code: 'worker_already_attached', message: 'attached' }));
-    const evicted: Eviction[] = [];
-    const { abort } = makeStream({ rooms: [], worker, onEvicted: (e) => evicted.push(e) });
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(server.sockets.length).toBeGreaterThan(1);
-    expect(server.sockets.length).toBeLessThan(6);
-    expect(evicted).toEqual([]);
-    abort.abort();
-  });
-
-  it('halts on a launch_superseded eviction', async () => {
-    vi.useFakeTimers();
-    serve((socket) => {
-      attach(socket, 0);
-      socket.frame('evicted', { code: 'launch_superseded', reason: 'bumped', room_id: null });
-      socket.drop();
-    });
-    const evicted: Eviction[] = [];
-    const { abort } = makeStream({ rooms: [], worker, onEvicted: (e) => evicted.push(e) });
-    await vi.advanceTimersByTimeAsync(5 * 60_000);
-    expect(server.sockets).toHaveLength(1);
-    expect(evicted.map((e) => e.code)).toEqual([EVICTION_LAUNCH_SUPERSEDED]);
-    abort.abort();
-  });
-
-  it('hands worker frames over in order and not as room events', async () => {
-    serve((socket) => {
-      attach(socket, 0);
-      socket.frame('worker_attached', { launch_revision: 3 });
-      socket.frame('operation', { id: 'op-1' });
-    });
-    const frames: [string, unknown][] = [];
-    const onEvent = vi.fn();
-    const { abort } = makeStream({
-      rooms: [],
-      worker,
-      onEvent,
-      onWorkerFrame: (name, data) => void frames.push([name, data]),
-    });
-    try {
-      await vi.waitFor(() => expect(frames).toHaveLength(2));
-      expect(frames).toEqual([
-        ['worker_attached', { launch_revision: 3 }],
-        ['operation', { id: 'op-1' }],
-      ]);
-      expect(onEvent).not.toHaveBeenCalled();
     } finally {
       abort.abort();
     }

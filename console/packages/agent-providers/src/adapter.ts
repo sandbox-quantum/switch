@@ -1,4 +1,4 @@
-import type { ModelChoice } from '@switch-console/shared/session-v1';
+import type { ModelChoice, SessionContext } from '@switch-console/shared/session-v1';
 import type {
   ApprovalDecision,
   ProviderKind,
@@ -26,8 +26,20 @@ export type AgentLaunchDefinition = {
 /**
  * How much the agent may do without asking. Maps onto each vendor's own
  * permission model inside the adapter; orchestration only ever sees this.
+ * `auto` is the vendor's own automatic review: safe actions run, risky ones
+ * still ask.
  */
-export type RuntimeMode = 'approval-required' | 'auto-accept-edits' | 'full-access';
+export type RuntimeMode = 'approval-required' | 'auto-accept-edits' | 'auto' | 'full-access';
+
+/**
+ * The runtime mode an agent's two permission settings select. Bypass
+ * (`autoApprove`) wins over auto mode.
+ */
+export function runtimeModeFor(settings: { autoApprove: boolean; autoMode: boolean }): RuntimeMode {
+  if (settings.autoApprove) return 'full-access';
+  if (settings.autoMode) return 'auto';
+  return 'approval-required';
+}
 
 export interface StdioMcpServerSpec {
   transport: 'stdio';
@@ -63,6 +75,12 @@ export interface ProviderSessionStartInput {
   env: Record<string, string>;
   /** MCP servers the session must expose to the agent, keyed by server name. */
   mcpServers: Record<string, McpServerSpec>;
+  /**
+   * Servers whose tools follow `runtimeMode` instead of being auto-approved:
+   * the granted connectors' (`host/shared-config.ts`). Every other server in
+   * {@link mcpServers}, Switch's own above all, is auto-approved in every mode.
+   */
+  connectorMcpServers: string[];
   /** Extra system-level context appended to whatever the vendor loads itself. */
   systemContext?: string;
   /**
@@ -145,6 +163,11 @@ export interface ProviderAdapter {
   canCompact?(sessionId: string): Promise<boolean>;
   listModels?(sessionId: string): Promise<ModelChoice[]>;
   setModel?(sessionId: string, model: ModelSelection): Promise<void>;
+  /**
+   * How full the conversation's context window is now, as the provider
+   * measures it; null when it has not said. Absent means it never reports one.
+   */
+  contextUsage?(sessionId: string): Promise<Omit<SessionContext, 'updatedAt'> | null>;
   /**
    * Adds a developer message to the conversation, read by the model before
    * the next turn with a developer message's weight. Absent means the provider

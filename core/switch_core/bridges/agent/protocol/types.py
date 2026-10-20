@@ -3,14 +3,9 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 # ── Agent integration profile ─────────────────────────────────────────────────
-
-
-class TaskProtocolConfig(BaseModel):
-    can_delegate: bool
-    can_accept: bool
 
 
 # How an agent-type supports a session-control command (reset / compact /
@@ -31,6 +26,10 @@ class CommandCapabilities(BaseModel):
 
 
 class IntegrationProfile(BaseModel):
+    # Profiles stored by older servers carry a retired `task_protocol` key;
+    # unknown keys are dropped so those profiles still load.
+    model_config = ConfigDict(extra="ignore")
+
     connection_model: Literal[
         "always_on", "session_addressable", "session_passive", "auto_session"
     ]
@@ -38,7 +37,6 @@ class IntegrationProfile(BaseModel):
     pre_invocation_mediation: list[str]
     post_invocation_mediation: list[str]
     event_reporting: list[str]
-    task_protocol: TaskProtocolConfig
     # Defaults to all-"unsupported" so integration profiles persisted before
     # this feature (which lack the key) re-validate cleanly and behave as
     # "no session-control support" until the agent is re-registered.
@@ -145,19 +143,12 @@ class SendTargetedResult(BaseModel):
     target_statuses: dict[str, AgentStatus | RoomWideMentionStatus]
 
 
-class DelegateTaskResult(BaseModel):
-    task_id: str
-    target_status: AgentStatus
-
-
 class ParticipantDescriptor(BaseModel):
     id: str
     name: str
     type: Literal["agent", "user"]
     agent_type: str | None = None
     display_name: str | None = None
-    can_delegate: bool = False
-    can_accept: bool = False
     status: AgentStatus | None = None
     # The room-scoped role this agent currently (live-lease) holds, if any.
     room_role: str | None = None
@@ -207,11 +198,6 @@ EventType = Literal[
     "message",
     "command",
     "room_join",
-    "task_delegate",
-    "task_accept",
-    "task_update",
-    "task_finalise",
-    "task_cancel",
 ]
 
 
@@ -245,6 +231,14 @@ class MessagePayload(BaseModel):
     timestamp: int
     thread_id: str | None = None
     attachments: list[AttachmentRef] = []
+    # The words this chat opened with, posted in the agent's name as it
+    # joined (a Switch Console chat's welcome), so the agent can be told what
+    # it said; None everywhere else.
+    opening_message: str | None = None
+    # The sending person's role in the room's workspace when the message
+    # arrived: "owner", "admin" or "member". None for an agent, the platform,
+    # or a person no Switch user has claimed.
+    sender_role: str | None = None
 
 
 class CommandPayload(BaseModel):
@@ -271,61 +265,12 @@ class RoomJoinPayload(BaseModel):
     listening: bool
 
 
-class TaskDelegatePayload(BaseModel):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    summary: str
-    description: str
-
-
-class TaskAcceptPayload(BaseModel):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-
-
-class TaskUpdatePayload(BaseModel):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    update: str
-
-
-class TaskFinalisePayload(BaseModel):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    outcome: str
-
-
-class TaskCancelPayload(BaseModel):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    reason: str
-
-
-Payload = (
-    MessagePayload
-    | CommandPayload
-    | RoomJoinPayload
-    | TaskDelegatePayload
-    | TaskAcceptPayload
-    | TaskUpdatePayload
-    | TaskFinalisePayload
-    | TaskCancelPayload
-)
+Payload = MessagePayload | CommandPayload | RoomJoinPayload
 
 _PAYLOAD_TYPE: dict[str, type[BaseModel]] = {
     "message": MessagePayload,
     "command": CommandPayload,
     "room_join": RoomJoinPayload,
-    "task_delegate": TaskDelegatePayload,
-    "task_accept": TaskAcceptPayload,
-    "task_update": TaskUpdatePayload,
-    "task_finalise": TaskFinalisePayload,
-    "task_cancel": TaskCancelPayload,
 }
 
 

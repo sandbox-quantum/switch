@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -9,17 +10,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from switch_core.bridges.agent.api.activity_routes import router as activity_router
 from switch_core.bridges.agent.api.handlers import router as api_router
-from switch_core.bridges.agent.api.hosted_cutover_routes import (
-    router as hosted_cutover_router,
-)
-from switch_core.bridges.agent.api.hosted_machine_routes import (
-    router as hosted_machine_router,
-)
-from switch_core.bridges.agent.api.hosted_routes import router as hosted_router
-from switch_core.bridges.agent.api.hosted_worker_routes import (
-    router as hosted_worker_router,
-)
 from switch_core.bridges.agent.api.operations import router as operations_router
+from switch_core.bridges.agent.api.service_routes import router as service_router
 from switch_core.bridges.agent.api.version_routes import router as version_router
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import (
@@ -44,9 +36,10 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.db.stores.task_store import TaskStore
+from switch_core.gateway.ui import GatewayUi, GatewayUiMiddleware
 from switch_core.logging_context import log_context
 from switch_core.observability.http import MetricsMiddleware
+from switch_core.refusal_breaker import RefusalBreaker
 from switch_core.request_context import RequestContextMiddleware
 from switch_core.room_service import RoomService
 from switch_core.session_activity.outcomes import ApprovalOutcomes
@@ -67,7 +60,6 @@ def create_agent_bridge_app(
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
     event_buffer: EventBuffer,
-    task_store: TaskStore,
     resource_service: ResourceService,
     api_key_store: ApiKeyStore,
     external_user_store: ExternalUserStore,
@@ -77,6 +69,7 @@ def create_agent_bridge_app(
     approval_outcomes: ApprovalOutcomes,
     controller_auth: ControllerAuthenticator | None,
     trust_client: TrustClient,
+    gateway_ui: GatewayUi | None,
     connections: AgentConnectionRegistry | None = None,
     telemetry: TelemetryService | None = None,
 ) -> tuple[FastAPI, AgentCore]:
@@ -104,7 +97,6 @@ def create_agent_bridge_app(
         collab_lifecycle=collab_lifecycle,
         event_buffer=event_buffer,
         connections=connections,
-        task_store=task_store,
         resource_service=resource_service,
         api_key_store=api_key_store,
         api_key_cache=api_key_cache,
@@ -157,10 +149,10 @@ def create_agent_bridge_app(
     app.add_exception_handler(SessionError, session_error_response)
     app.include_router(activity_router, tags=["session activity"])
     app.include_router(api_router, prefix="/agents", tags=["api"])
-    app.include_router(hosted_worker_router, prefix="/agents", tags=["hosted"])
-    app.include_router(hosted_cutover_router, prefix="/agents", tags=["hosted"])
-    app.include_router(hosted_router, tags=["hosted"])
-    app.include_router(hosted_machine_router, tags=["hosted"])
+    if config.service_connections_enabled:
+        app.include_router(
+            service_router, prefix="/agents", tags=["service connections"]
+        )
     app.include_router(operations_router)
     app.include_router(deeplink_router, tags=["deeplink"])
     app.include_router(version_router, tags=["version"])
@@ -184,6 +176,13 @@ def create_agent_bridge_app(
         session_factory=session_factory,  # type: ignore[arg-type]
         controller_auth=controller_auth,
     )
+    # Outside the bearer middleware, so a caller that keeps repeating a refused
+    # request is answered before its credential is looked up again.
+    app.add_middleware(RefusalBreaker, clock=time.monotonic)
+    # Outside the bearer middleware and the breaker, because a page load carries
+    # a cookie and no agent key; inside the metrics, so page loads are counted.
+    if gateway_ui is not None:
+        app.add_middleware(GatewayUiMiddleware, ui=gateway_ui, router=app.router)
     # Outside the bearer middleware, so a request rejected for bad credentials
     # is still counted and timed — an authentication failure is traffic, and a
     # spike of it is the thing you most want a dashboard to show.

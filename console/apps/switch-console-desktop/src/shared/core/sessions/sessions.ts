@@ -42,6 +42,7 @@ export type Session = {
   archivedAt?: string;
   lastInteractedAt?: string;
   autoApprove?: boolean;
+  autoMode?: boolean;
   /** The session's agent's name, read live from the agent row on every load
    *  (so it follows a rename). Absent only for a row that predates named agents. */
   agentName?: string;

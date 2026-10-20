@@ -266,9 +266,7 @@ class TestRegisteringRecordsTheFlag:
             sink=sink,  # type: ignore[arg-type]
             enabled=True,
             client_id="deployment-uuid",
-            service_name="switch-core",
             version=None,
-            environment=None,
             telemetry_environment="prod",
             telemetry_internal=False,
         )
@@ -294,6 +292,6 @@ class TestRegisteringRecordsTheFlag:
         assert row.preconfigured is preconfigured
         [configured] = await _events(service, sink, "connector_configured")
         assert configured == {
-            "bridge_platform": "none",
+            "bridge_platform": "recording",
             "is_preconfigured": preconfigured,
         }

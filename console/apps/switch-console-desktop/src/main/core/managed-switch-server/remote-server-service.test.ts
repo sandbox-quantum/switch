@@ -155,6 +155,7 @@ const secrets = {
   agentRegistrationToken: 'agent-token',
   jwtSecretKey: 'jwt',
   secretKeys: 'console:secret-keys',
+  controllerTokenSecret: 'controller-token-secret-value',
   gatewayAdminPassword: 'admin-pw',
   mattermostAdminPassword: 'mm-admin',
   mattermostUserPassword: 'mm-user',
@@ -186,8 +187,8 @@ function fakeHost() {
 const RECORD = {
   id: 'srv-1',
   name: 'Team server',
-  gatewayUrl: 'http://localhost:41000',
-  apiUrl: 'http://localhost:41001',
+  url: 'http://localhost:41001',
+  dashboardUrl: 'http://localhost:41000',
   managed: true,
   managementKind: 'remote',
   sshHost: 'vm-1',
@@ -508,8 +509,8 @@ describe('picking a shared stack back up', () => {
     inspectStack.mockResolvedValue(present(true));
     getRemoteManagedServer.mockResolvedValue({
       ...RECORD,
-      gatewayUrl: 'http://localhost:3300',
-      apiUrl: 'http://localhost:8000',
+      url: 'http://localhost:8000',
+      dashboardUrl: 'http://localhost:3300',
     });
     const service = await loadService();
 
@@ -518,8 +519,8 @@ describe('picking a shared stack back up', () => {
     expect(ensureManagedServer).toHaveBeenCalledWith(
       {
         name: 'Team server',
-        gatewayUrl: 'http://localhost:41000',
-        apiUrl: 'http://localhost:41001',
+        url: 'http://localhost:41001',
+        dashboardUrl: 'http://localhost:41000',
       },
       { kind: 'remote', sshHost: 'vm-1' }
     );
@@ -921,18 +922,38 @@ describe('stopping and resetting a shared stack', () => {
 
   it('reports a stop that failed, and gives the forward back', async () => {
     const host = fakeHost();
-    createRemoteServerHost.mockResolvedValue(host);
+    const look = fakeHost();
+    createRemoteServerHost.mockResolvedValueOnce(host).mockResolvedValueOnce(look);
     stopStack.mockRejectedValueOnce(new Error('compose down failed'));
+    inspectStack.mockResolvedValue(present(true));
     const service = await loadService();
 
     await expect(service.stop('vm-1')).rejects.toThrow(/compose down failed/);
 
     expect(service.getStatus('vm-1')).toMatchObject({
       phase: 'error',
+      failedTo: 'stop',
       error: 'compose down failed',
     });
     expect(writeRecord).not.toHaveBeenCalled();
     expect(host.dispose).toHaveBeenCalledOnce();
+    expect(look.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('reports a stop that errored but left the containers down as stopped, and says so', async () => {
+    createRemoteServerHost.mockResolvedValueOnce(fakeHost()).mockResolvedValueOnce(fakeHost());
+    stopStack.mockRejectedValueOnce(new Error('SSH transport failure: No response from server'));
+    inspectStack.mockResolvedValue(present(false));
+    const service = await loadService();
+
+    await expect(service.stop('vm-1')).resolves.toBeUndefined();
+
+    expect(service.getStatus('vm-1')).toMatchObject({
+      phase: 'stopped',
+      error: null,
+      failedTo: null,
+      notice: "The stop on vm-1 reported an error, but the server's containers are down.",
+    });
   });
 
   it('resets it, deleting its agents first and keeping who did it on the host', async () => {

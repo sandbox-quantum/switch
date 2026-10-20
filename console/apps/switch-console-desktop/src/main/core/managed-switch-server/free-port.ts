@@ -74,3 +74,17 @@ export function gatewayUrlFor(ports: LocalServerPorts): string {
 export function apiUrlFor(ports: LocalServerPorts): string {
   return `http://localhost:${ports.api}`;
 }
+
+/**
+ * The addresses a managed stack is registered with: switch-core's port as the
+ * server's one address, and the dashboard container's port as where its pages
+ * open. The compose Switch Console runs still starts that container, and the
+ * switch-core it pins may predate serving the dashboard itself; once neither
+ * holds, the dashboard address goes and so does this pairing.
+ */
+export function managedServerAddresses(ports: LocalServerPorts): {
+  url: string;
+  dashboardUrl: string;
+} {
+  return { url: apiUrlFor(ports), dashboardUrl: gatewayUrlFor(ports) };
+}

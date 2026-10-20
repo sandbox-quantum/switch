@@ -6,7 +6,7 @@ import math
 import re
 import uuid
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, ClassVar, Literal, NoReturn
@@ -24,6 +24,8 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
+    AgentIdentity,
+    AgentIdentityConflict,
     PlatformAdapter,
     RemovalFailed,
     RequestCard,
@@ -41,6 +43,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     ChannelType,
     DirectoryUser,
+    FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -48,6 +51,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers.slack import (
     STREAM_SLOTS,
@@ -58,12 +62,15 @@ from switch_core.bridges.collaboration.session.renderers.slack import (
     render_attention,
     render_request,
     render_turn_with_request,
-    with_session_context,
+    with_mention,
 )
 from switch_core.bridges.collaboration.slack.agent_groups import (
     SlackAgentGroupDirectory,
 )
-from switch_core.bridges.collaboration.slack.avatar import on_slack_background
+from switch_core.bridges.collaboration.slack.avatar import (
+    on_slack_background,
+    slack_icon_argument,
+)
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
@@ -89,6 +96,11 @@ _SLACK_MASS_MENTION_WORD = re.compile(
 # Stamped on the description of every user group we mint for an agent, so a
 # reload can tell ours apart from the workspace's own groups.
 _AGENT_GROUP_MARKER = "Switch agent — "
+
+# How long an event from Socket Mode may take to be stored before it is
+# acknowledged anyway. Slack sends an event again unless it is acknowledged
+# within three seconds; the rest is left for the acknowledgement to arrive.
+SOCKET_ACK_WITHIN_SECONDS = 2.0
 
 # User group calls are rate-limited at roughly 20/minute, and the Slack client
 # retries connection errors but not throttling.
@@ -142,12 +154,64 @@ _USERGROUPS_UNAVAILABLE_ERRORS = {
 _GROUP_DESCRIPTION_MAX = 140
 
 
-def _group_description(agent_description: str) -> str:
-    """The marker, plus as much of the agent's description as will fit."""
-    full = f"{_AGENT_GROUP_MARKER}{agent_description}".strip()
-    if len(full) <= _GROUP_DESCRIPTION_MAX:
-        return full
-    return full[: _GROUP_DESCRIPTION_MAX - 1].rstrip() + "…"
+# Ends the description of every group we mint: `[<bridge>:<agent id>]`. The
+# agent id ties the group to its agent through a rename on either side; the
+# bridge mark (the first eight characters of the bridge's id) keeps clean-up
+# away from groups another Switch installation made in the same workspace.
+_AGENT_GROUP_TAG = re.compile(r"\[([0-9a-f]{8})?:([0-9A-Za-z-]{36})\]\s*$")
+
+
+def _group_tag(agent_id: str, bridge_mark: str | None) -> str:
+    return f"[{bridge_mark or ''}:{agent_id}]"
+
+
+def _group_description(agent_description: str, tag: str) -> str:
+    """The marker and the tag, with as much of the description between them as
+    will fit."""
+    blurb = " ".join(agent_description.split())
+    room = _GROUP_DESCRIPTION_MAX - len(_AGENT_GROUP_MARKER) - len(tag) - 1
+    if len(blurb) > room:
+        blurb = blurb[: room - 1].rstrip() + "…" if room > 1 else ""
+    if not blurb:
+        return f"{_AGENT_GROUP_MARKER}{tag}"
+    return f"{_AGENT_GROUP_MARKER}{blurb} {tag}"
+
+
+@dataclass
+class _AgentGroup:
+    """One user group in the workspace, as this bridge last saw it.
+
+    `ours` is whether it carries our marker; `agent_id` and `bridge_mark` are
+    read from the tag, and are None on a group from before groups carried one.
+    """
+
+    group_id: str
+    name: str
+    handle: str
+    description: str
+    disabled: bool
+    ours: bool
+    agent_id: str | None
+    bridge_mark: str | None
+
+    @classmethod
+    def from_slack(cls, raw: dict[str, Any]) -> _AgentGroup | None:
+        group_id = str(raw.get("id", ""))
+        if not group_id:
+            return None
+        description = str(raw.get("description", ""))
+        ours = description.startswith(_AGENT_GROUP_MARKER)
+        tag = _AGENT_GROUP_TAG.search(description) if ours else None
+        return cls(
+            group_id=group_id,
+            name=str(raw.get("name", "")),
+            handle=str(raw.get("handle", "")),
+            description=description,
+            disabled=bool(raw.get("date_delete")),
+            ours=ours,
+            agent_id=tag.group(2) if tag else None,
+            bridge_mark=tag.group(1) if tag else None,
+        )
 
 
 # Reactions on the message an SDK turn is handling: one for work under way,
@@ -332,7 +396,66 @@ class _ActivityStream:
     blocks: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
+# Slack error codes that mean the credentials themselves are rejected, as
+# opposed to Slack refusing a call for some other reason (rate limited, a
+# scope not granted, an internal error). `SlackApiError` carries no separate
+# type for this — the distinction lives entirely in `response["error"]`.
+_SLACK_AUTH_ERROR_CODES = frozenset(
+    {
+        "invalid_auth",
+        "not_authed",
+        "account_inactive",
+        "token_revoked",
+        "token_expired",
+    }
+)
+
+
+def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
+    """`auth_failed` for a rejected token, `platform_error` for everything else
+    Slack refuses a call for (rate limits, a missing scope, an outage). Both
+    arrive as the same `SlackApiError`, so the code inside the response — not
+    the exception's type — is what tells them apart.
+
+    A revoked or rotated bot token is the most common bridge failure in the
+    field, and reporting it as `platform_error` would send an operator to
+    Slack's status page instead of their own token.
+    """
+    # `.response` is not always a mapping. On the async client slack_sdk
+    # raises `SlackApiError(message, res)` with the raw `aiohttp.ClientResponse`
+    # whenever the body it was handed is not the JSON the content type claimed
+    # — an empty 502, a proxy's error page. That object has no `.get`, and this
+    # is evaluated inside the argument list of the `emit_safely` that reports
+    # the failure, so an `AttributeError` here would replace the bridge's real
+    # exception with a meaningless one *and* suppress the event. Nor does a
+    # `.get` promise a mapping: `AsyncSlackResponse.get` itself raises when
+    # the body it holds is text, as a proxy's plain-text 5xx is.
+    response = getattr(exc, "response", None)
+    reader = getattr(response, "get", None)
+    try:
+        code = reader("error") if callable(reader) else None
+    except Exception:
+        code = None
+    if code in _SLACK_AUTH_ERROR_CODES:
+        return "auth_failed"
+    return "platform_error"
+
+
 class SlackAdapter(PlatformAdapter):
+    display_name: ClassVar[str] = "Slack"
+    # Slack apps cannot delete a channel outside Enterprise Grid's admin API.
+    channel_on_delete = "archived"
+    docs_slug: ClassVar[str | None] = "slack"
+    # A quiet Slack bridge opens no Socket Mode connection. One over the
+    # Events API opens none anywhere: Slack posts each event to one process.
+    keeps_quiet_unless_listening: ClassVar[bool] = True
+
+    @classmethod
+    def classify_failure(cls, exc: BaseException) -> FailureReason | None:
+        if isinstance(exc, SlackApiError):
+            return _slack_failure_reason(exc)
+        return None
+
     draws_session_activity: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "<!channel>"
@@ -354,6 +477,10 @@ class SlackAdapter(PlatformAdapter):
     #: metadata, so a status is as findable as a card despite printing no
     #: handle of its own.
     carries_publication_marker: ClassVar[bool] = True
+
+    #: Slack writes a `switchdash://` link as `<switchdash://…|label>`, which
+    #: its clients do not open, so it needs the https redirect too.
+    renders_custom_url_schemes: ClassVar[bool] = False
 
     # Every Slack bridge in this process shares one, because resolving a
     # mention that crossed a workspace boundary means reading a group another
@@ -437,23 +564,24 @@ class SlackAdapter(PlatformAdapter):
         # topped up as new ones are resolved.
         self._username_to_id: dict[str, str] = {}
         self._thinking_ts: dict[tuple[str, str], str] = {}
-        # Agent user groups, when enabled. Slack owns these objects, so the maps
-        # are built by reading them back rather than stored alongside the agent:
-        # a group edited or removed in Slack would otherwise leave us pointing
-        # at an id that no longer means what we think it does.
+        # Agent user groups, when enabled. Slack owns these objects, so they are
+        # read back from Slack rather than stored alongside the agent; each of
+        # ours carries its agent's id, which is what ties it to the agent.
+        # Every group in the workspace, by id, as last seen.
+        self._groups: dict[str, _AgentGroup] = {}
         # Folded agent name → subteam id, and subteam id → agent name.
         self._agent_group_ids: dict[str, str] = {}
         self._agent_group_names: dict[str, str] = {}
-        # Retired agents keep their group in a disabled state — Slack has no
-        # delete — so re-adding an agent re-enables rather than colliding.
-        self._agent_groups_disabled: dict[str, str] = {}
+        # Agent id → subteam id.
+        self._agent_group_by_agent: dict[str, str] = {}
+        # The agents this bridge has been told about, by id: what each group
+        # should look like, so a change made in Slack can be put back.
+        self._known_agents: dict[str, AgentIdentity] = {}
         # Every group in the workspace, id → handle, so a mention of one we do
         # not own still renders as a handle instead of raw markup.
         self._group_handles: dict[str, str] = {}
-        # Groups without our marker, keyed by folded handle and folded name, so
-        # an agent can claim one that was created by hand.
-        self._unadopted_groups: dict[str, str] = {}
         self._agent_groups_loaded = False
+        self._bridge_id: str | None = None
         # Set to Slack's error code once the workspace has told us it cannot
         # host user groups, so the bridge stops asking and says so only once.
         self._agent_usergroups_off_reason: str | None = None
@@ -525,6 +653,13 @@ class SlackAdapter(PlatformAdapter):
             logger.info(
                 "Slack adapter listening over HTTP; events arrive at the "
                 "messaging install endpoint rather than over Socket Mode"
+            )
+        elif not self._listening:
+            # Another switch-core process holds the bridge and keeps its
+            # Socket Mode connection. This one only calls the Web API.
+            logger.info(
+                "Slack adapter running quietly: another process holds this "
+                "bridge's Socket Mode connection"
             )
         else:
             # Narrowing for the type checker; the config validator is what
@@ -601,7 +736,7 @@ class SlackAdapter(PlatformAdapter):
                 channel=channel_id,
                 text=content,
                 username=agent.field_label,
-                icon_url=agent.icon_url,
+                icon_url=slack_icon_argument(agent.icon_url, sender_name),
                 thread_ts=thread_ts,
                 unfurl_links=False,
                 unfurl_media=False,
@@ -644,7 +779,7 @@ class SlackAdapter(PlatformAdapter):
             text=text,
             blocks=blocks,
             username=agent.field_label,
-            icon_url=agent.icon_url,
+            icon_url=slack_icon_argument(agent.icon_url, sender_name),
             thread_ts=thread_ts,
             unfurl_links=False,
             unfurl_media=False,
@@ -1235,7 +1370,9 @@ class SlackAdapter(PlatformAdapter):
                 recipient_team_id=self._team_id,
                 task_display_mode="plan",
                 username=agent_name,
-                icon_url=await self.agent_icon_url(agent_name),
+                icon_url=slack_icon_argument(
+                    await self.agent_icon_url(agent_name), agent_name
+                ),
             )
         except SlackApiError as error:
             logger.warning(
@@ -1346,7 +1483,6 @@ class SlackAdapter(PlatformAdapter):
             content.items,
             content.turn,
             elapsed_seconds=content.elapsed_seconds,
-            session_url=content.session_url,
             interrupt_turn_id=content.interrupt_turn_id,
         )
         blocks = drawn.blocks
@@ -1474,7 +1610,6 @@ class SlackAdapter(PlatformAdapter):
                     content.items,
                     content.turn,
                     elapsed_seconds=content.elapsed_seconds,
-                    session_url=content.session_url,
                     interrupt_turn_id=content.interrupt_turn_id,
                 )
                 if not content.status_only
@@ -1485,10 +1620,8 @@ class SlackAdapter(PlatformAdapter):
                     status_only=content.status_only,
                 )
             )
-            message = with_session_context(
-                message,
-                session_url=content.session_url if content.status_only else None,
-                notify_external_id=content.notify_external_id,
+            message = with_mention(
+                message, notify_external_id=content.notify_external_id
             )
             if content.publication_token and message.blocks:
                 message.blocks[0]["block_id"] = (
@@ -1512,7 +1645,7 @@ class SlackAdapter(PlatformAdapter):
                 responder_name=responder_name,
                 unavailable_reason=content.unavailable_reason,
             )
-        return with_session_context(
+        return with_mention(
             message,
             notify_external_id=content.notify_external_id
             if content.request.state == "open"
@@ -1615,11 +1748,11 @@ class SlackAdapter(PlatformAdapter):
                 text,
             )
 
-    def adapt_icon_url(self, raw: str | None, agent_name: str) -> str:
+    def adapt_icon_url(self, icon_url: str) -> str:
         # Overridden for Slack alone: it flattens a transparent avatar onto
         # white. Adjusting here rather than at each call site keeps every place
         # that posts as an agent on the same background.
-        return on_slack_background(super().adapt_icon_url(raw, agent_name))
+        return on_slack_background(super().adapt_icon_url(icon_url))
 
     def slash_invite_hint(self) -> str:
         # Slack passes a slash command's whole tail through as free text, so the
@@ -1915,7 +2048,7 @@ class SlackAdapter(PlatformAdapter):
                     channel=channel_id,
                     text="_thinking..._",
                     username=agent.field_label,
-                    icon_url=agent.icon_url,
+                    icon_url=slack_icon_argument(agent.icon_url, sender_name),
                     thread_ts=thread_ts,
                 )
                 ts = result.get("ts")
@@ -2125,6 +2258,25 @@ class SlackAdapter(PlatformAdapter):
 
         return channel_id
 
+    async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
+        if not self._web_client:
+            raise RuntimeError("Slack client not connected")
+        try:
+            await self._web_client.conversations_archive(channel=external_channel_id)
+        except SlackApiError as e:
+            error = e.response.get("error")
+            if error == "already_archived":
+                return RetireOutcome(outcome="archived")
+            if error == "not_in_channel":
+                return RetireOutcome.failed(
+                    "The Switch app is no longer in this Slack channel, so it "
+                    "cannot archive it"
+                )
+            return RetireOutcome.failed(
+                f"Slack refused to archive the channel: {error}"
+            )
+        return RetireOutcome(outcome="archived")
+
     async def create_dm_channel(
         self,
         *,
@@ -2222,9 +2374,10 @@ class SlackAdapter(PlatformAdapter):
 
     # ── Agent identity ───────────────────────────────────────────────────────
 
-    async def create_agent_identity(
-        self, agent_name: str, agent_description: str
-    ) -> None:
+    def set_bridge_id(self, bridge_id: str) -> None:
+        self._bridge_id = bridge_id
+
+    async def create_agent_identity(self, agent: AgentIdentity) -> None:
         """Give the agent a Slack user group so its name completes on `@`.
 
         Slack only offers autocomplete for things it knows about, and an agent
@@ -2233,101 +2386,203 @@ class SlackAdapter(PlatformAdapter):
         menu, so each agent gets one. The group is left empty: it exists to be
         completable and to arrive as a structured mention, and mentioning it
         notifies nobody.
+
+        The group carries the agent's id in its description, so it stays the
+        agent's whatever either side calls it. An existing group is brought in
+        line with the agent rather than duplicated.
+        """
+        if not await self._agent_groups_ready("create an agent user group"):
+            return
+        self._known_agents[agent.agent_id] = agent
+        group_id = self._find_agent_group(agent)
+        if group_id is None:
+            await self._create_agent_group(agent)
+            return
+        try:
+            await self._align_agent_group(group_id, agent)
+        except SlackApiError:
+            # The group exists and answers to the agent's handle; what failed
+            # is bringing its name or marker in line. Mentions still work, so
+            # keep the group and say what is out of step rather than leaving
+            # the agent unmentionable.
+            self._remember_agent_group(group_id, agent)
+            logger.warning(
+                "Slack user group %s for agent %s could not be brought in line "
+                "with the agent (its name, handle or marker may be out of date); "
+                "it is retried when the bridge next starts.",
+                group_id,
+                agent.name,
+                exc_info=True,
+            )
+
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None:
+        """Retire the agent's group: free its handle, then disable it.
+
+        Slack has no delete for user groups, so disabling is the way to retire
+        one. Freeing the handle first lets the name be used again in Slack,
+        by a later agent or by anything else. Found by the agent's id, so a
+        group renamed in Slack is still found.
+        """
+        if not await self._agent_groups_ready("remove an agent user group"):
+            return
+        self._known_agents.pop(agent.agent_id, None)
+        group_id = self._agent_group_by_agent.get(
+            agent.agent_id
+        ) or self._agent_group_ids.get(agent.name.casefold())
+        if group_id is None:
+            legacy = self._legacy_group_named(agent.name)
+            group_id = legacy.group_id if legacy else None
+        if group_id is None:
+            return
+        await self._retire_agent_group(group_id, agent.name)
+
+    async def check_agent_identity_name(self, agent_id: str, new_name: str) -> None:
+        if not await self._agent_groups_ready("check a Slack handle"):
+            return
+        handle = self._usergroup_handle(new_name)
+        for group in self._groups.values():
+            if group.handle.casefold() != handle.casefold():
+                continue
+            if group.agent_id == agent_id or (group.ours and group.disabled):
+                continue
+            raise AgentIdentityConflict(
+                f"The Slack handle @{handle} is already used by the user group "
+                f"'{group.name}', which is not this agent's. Pick another name, "
+                "or free the handle in Slack first."
+            )
+
+    async def rename_agent_identity(self, old_name: str, agent: AgentIdentity) -> None:
+        """Rename the agent's group in place: same group, new name and handle.
+
+        Renaming keeps the group's id, so mentions already posted in Slack
+        still point at it and still reach the agent."""
+        if not await self._agent_groups_ready("rename an agent user group"):
+            return
+        self._known_agents[agent.agent_id] = agent
+        group_id = self._agent_group_by_agent.get(
+            agent.agent_id
+        ) or self._agent_group_ids.get(old_name.casefold())
+        if group_id is None:
+            await self.create_agent_identity(agent)
+            return
+        await self._align_agent_group(group_id, agent)
+
+    async def update_agent_identity(self, agent: AgentIdentity) -> None:
+        """The display name or description changed: the group's visible name
+        and description follow it."""
+        await self.create_agent_identity(agent)
+
+    async def sync_agent_identities(
+        self, agents: Sequence[AgentIdentity]
+    ) -> list[tuple[str, BaseException]]:
+        """Bring every agent's group in line, then retire groups this bridge
+        made for agents that no longer exist.
+
+        That second half is what finishes a delete that could not reach Slack
+        at the time. Only groups carrying this bridge's mark are retired: a
+        group another Switch installation made in the same workspace, or one
+        from before groups carried ids, is never touched.
         """
         if not self._agent_usergroups_available():
-            return
+            return []
         if not self._web_client:
-            raise RuntimeError("Cannot create agent user group: Slack not connected")
-
-        await self._ensure_agent_groups_loaded()
+            raise RuntimeError("Cannot sync agent user groups: Slack not connected")
+        self._known_agents = {agent.agent_id: agent for agent in agents}
+        await self._load_agent_usergroups()
         if not self._agent_usergroups_available():
-            return
-        folded = agent_name.casefold()
-        if folded in self._agent_group_ids:
-            return
+            return []
 
-        handle = self._usergroup_handle(agent_name)
-        adopted_id = self._unadopted_groups.get(folded) or self._unadopted_groups.get(
-            handle.casefold()
-        )
-        if adopted_id:
-            await self._adopt_group(adopted_id, agent_name)
-            return
+        failures: list[tuple[str, BaseException]] = []
+        for agent in agents:
+            try:
+                await self.create_agent_identity(agent)
+            except Exception as exc:
+                failures.append((agent.name, exc))
 
-        disabled_id = self._agent_groups_disabled.get(folded)
-        if disabled_id:
-            await self._web_client.usergroups_enable(usergroup=disabled_id)
-            self._agent_groups_disabled.pop(folded, None)
-            self._remember_agent_group(disabled_id, agent_name)
-            logger.info(
-                "Re-enabled Slack user group %s for agent %s", disabled_id, agent_name
+        mine = self._bridge_mark()
+        if mine is None:
+            logger.warning(
+                "Slack bridge has no bridge id, so user groups left behind by "
+                "deleted agents were not looked for"
             )
-            return
+            return failures
 
-        try:
-            result = await self._rate_limited(
-                lambda: self._create_usergroup(agent_name, handle, agent_description),
-                what=f"create a Slack user group for agent '{agent_name}'",
+        live = {agent.agent_id for agent in agents}
+        leftovers = [
+            group
+            for group in self._groups.values()
+            if group.ours
+            and not group.disabled
+            and group.agent_id is not None
+            and group.agent_id not in live
+            and group.bridge_mark == mine
+        ]
+        for group in leftovers:
+            label, handle = group.name, group.handle
+            try:
+                await self._retire_agent_group(group.group_id, label)
+                logger.warning(
+                    "Retired Slack user group @%s (%s): its agent no longer exists",
+                    handle,
+                    group.group_id,
+                )
+            except Exception as exc:
+                failures.append((label, exc))
+
+        unclaimed = [
+            group
+            for group in self._groups.values()
+            if group.ours and not group.disabled and group.agent_id is None
+        ]
+        if unclaimed:
+            logger.warning(
+                "%d Slack user group(s) marked as Switch agents belong to no agent "
+                "here and were left alone, as they may belong to another Switch "
+                "installation: %s. Disable them in Slack if they are not needed.",
+                len(unclaimed),
+                ", ".join(f"@{group.handle}" for group in unclaimed),
             )
-        except SlackApiError as e:
-            error = e.response.get("error", "")
-            if error in ("handle_already_exists", "name_already_exists"):
-                # Something already owns the handle. If it is one of ours the
-                # reload adopts it; if it is a real group or a channel, say so
-                # rather than leaving the agent silently unmentionable.
-                await self._load_agent_usergroups()
-                if folded in self._agent_group_ids:
-                    return
-                raise RuntimeError(
-                    f"Cannot create a Slack user group for agent '{agent_name}': "
-                    f"the handle '@{handle}' is already taken by a channel, "
-                    "person or group that is not ours. Rename the agent or free "
-                    "the handle."
-                ) from e
-            if error in _USERGROUPS_UNAVAILABLE_ERRORS:
-                self._disable_agent_usergroups(error)
-                return
-            raise
+        return failures
 
-        group = result.get("usergroup") or {}
-        group_id = str(group.get("id", ""))
+    async def _handle_subteam_updated(self, subteam: dict[str, Any]) -> None:
+        """Someone changed a user group in Slack. If it is an agent's, put it
+        back: agents are named and deleted in Switch, and a group edited in
+        Slack would otherwise leave the agent unmentionable."""
+        group_id = str(subteam.get("id", ""))
         if not group_id:
-            raise RuntimeError(
-                f"Slack returned no user group id when creating one for agent "
-                f"'{agent_name}'"
-            )
-        self._remember_agent_group(group_id, agent_name)
-        logger.info(
-            "Created Slack user group @%s (%s) for agent %s",
-            handle,
+            return
+        record = self._groups.get(group_id)
+        if record is not None:
+            record.name = str(subteam.get("name", record.name))
+            record.handle = str(subteam.get("handle", record.handle))
+            record.description = str(subteam.get("description", record.description))
+            record.disabled = bool(subteam.get("date_delete"))
+        agent_id = next(
+            (aid for aid, gid in self._agent_group_by_agent.items() if gid == group_id),
+            None,
+        )
+        agent = self._known_agents.get(agent_id) if agent_id else None
+        if agent is None or record is None:
+            return
+        if not record.disabled and not self._group_changes(record, agent):
+            return
+        logger.warning(
+            "Slack user group %s for agent %s was changed in Slack (name %r, "
+            "handle @%s%s); putting it back. Rename or delete agents in Switch.",
             group_id,
-            agent_name,
+            agent.name,
+            record.name,
+            record.handle,
+            ", disabled" if record.disabled else "",
         )
-
-    async def remove_agent_identity(self, agent_name: str) -> None:
-        if not self._agent_usergroups_available():
-            return
-        if not self._web_client:
-            raise RuntimeError("Cannot remove agent user group: Slack not connected")
-
-        await self._ensure_agent_groups_loaded()
-        if not self._agent_usergroups_available():
-            return
-        folded = agent_name.casefold()
-        group_id = self._agent_group_ids.get(folded)
-        if not group_id:
-            return
-
-        # Slack has no delete for user groups — disabling is the documented way
-        # to retire one, and it stops the handle resolving.
-        await self._web_client.usergroups_disable(usergroup=group_id)
-        self._agent_group_ids.pop(folded, None)
-        self._agent_group_names.pop(group_id, None)
-        self.agent_group_directory.discard(
-            self._directory_tenant(), self._team_id, group_id
-        )
-        self._agent_groups_disabled[folded] = group_id
-        logger.info("Disabled Slack user group %s for agent %s", group_id, agent_name)
+        try:
+            await self._align_agent_group(group_id, agent)
+        except Exception:
+            logger.exception(
+                "Could not put back Slack user group %s for agent %s",
+                group_id,
+                agent.name,
+            )
 
     # ── Agent user groups ────────────────────────────────────────────────────
 
@@ -2396,82 +2651,321 @@ class SlackAdapter(PlatformAdapter):
                 await asyncio.sleep(delay)
         raise RuntimeError(f"Unreachable: exhausted retries to {what}")
 
-    async def _create_usergroup(
-        self, agent_name: str, handle: str, agent_description: str
-    ) -> Any:
-        """Create the group, retrying without the blurb if Slack rejects it.
+    async def _agent_groups_ready(self, what: str) -> bool:
+        if not self._agent_usergroups_available():
+            return False
+        if not self._web_client:
+            raise RuntimeError(f"Cannot {what}: Slack not connected")
+        await self._ensure_agent_groups_loaded()
+        return self._agent_usergroups_available()
 
-        An agent's description is free text and can run to a paragraph, while
-        Slack caps a user group's description and does not publish the limit —
-        so a conservative truncation can still be refused. The description is
-        decoration; the marker is the part that carries meaning. Losing an
-        agent's autocomplete over the length of its blurb would be absurd, so
-        the blurb is what gets dropped.
+    def _bridge_mark(self) -> str | None:
+        return self._bridge_id[:8] if self._bridge_id else None
+
+    def _wanted_group(self, agent: AgentIdentity) -> tuple[str, str, str]:
+        """The name, handle and description the agent's group should have.
+
+        The name is what the `@` menu shows next to the handle, so it is the
+        agent's display name where it has one; the handle is what people type,
+        so it is always the agent's name."""
+        tag = _group_tag(agent.agent_id, self._bridge_mark())
+        return (
+            agent.display_name or agent.name,
+            self._usergroup_handle(agent.name),
+            _group_description(agent.description, tag),
+        )
+
+    def _group_changes(
+        self, group: _AgentGroup, agent: AgentIdentity
+    ) -> dict[str, str]:
+        name, handle, description = self._wanted_group(agent)
+        changes: dict[str, str] = {}
+        if group.name != name:
+            changes["name"] = name
+        if group.handle != handle:
+            changes["handle"] = handle
+        if group.description != description:
+            changes["description"] = description
+        return changes
+
+    def _legacy_group_named(self, agent_name: str) -> _AgentGroup | None:
+        """A group of ours from before groups carried agent ids, which the
+        agent can claim by its name."""
+        folded = agent_name.casefold()
+        for group in self._groups.values():
+            if (
+                group.ours
+                and group.agent_id is None
+                and group.name.casefold() == folded
+            ):
+                return group
+        return None
+
+    def _find_agent_group(self, agent: AgentIdentity) -> str | None:
+        """The group that is, or should become, this agent's.
+
+        By agent id first. Then a group of ours from before groups carried
+        ids, by name. Then a group someone made by hand whose name or handle
+        is exactly the agent's: where a workspace will not let the bot create
+        groups, making them by hand is the only way to use the feature, and the
+        match has to be exact so a workspace's own group is never captured by a
+        similarly named agent. Last, a retired group of ours still holding the
+        agent's handle, so the handle is reused rather than colliding.
+        """
+        group_id = self._agent_group_by_agent.get(agent.agent_id)
+        if group_id is not None:
+            return group_id
+        tagged = sorted(
+            (g for g in self._groups.values() if g.agent_id == agent.agent_id),
+            key=lambda g: g.disabled,
+        )
+        if tagged:
+            return tagged[0].group_id
+        legacy = self._legacy_group_named(agent.name)
+        if legacy is not None:
+            return legacy.group_id
+        handle = self._usergroup_handle(agent.name).casefold()
+        folded = agent.name.casefold()
+        for group in self._groups.values():
+            if group.ours:
+                continue
+            if group.name.casefold() == folded or group.handle.casefold() == handle:
+                logger.info(
+                    "Adopting existing Slack user group %s for agent %s",
+                    group.group_id,
+                    agent.name,
+                )
+                return group.group_id
+        for group in self._groups.values():
+            if group.ours and group.disabled and group.handle.casefold() == handle:
+                return group.group_id
+        return None
+
+    async def _align_agent_group(self, group_id: str, agent: AgentIdentity) -> None:
+        """Make an existing group match the agent: enabled, named for it, and
+        marked as its own."""
+        group = self._groups[group_id]
+        if group.disabled:
+            await self._rate_limited(
+                lambda: self._require_web_client().usergroups_enable(
+                    usergroup=group_id
+                ),
+                what=f"re-enable the user group for agent '{agent.name}'",
+            )
+            group.disabled = False
+            logger.info(
+                "Re-enabled Slack user group %s for agent %s", group_id, agent.name
+            )
+        changes = self._group_changes(group, agent)
+        if changes:
+            await self._update_agent_group(group, agent, changes)
+        group.ours = True
+        group.agent_id = agent.agent_id
+        group.bridge_mark = self._bridge_mark()
+        self._remember_agent_group(group_id, agent)
+
+    async def _update_agent_group(
+        self, group: _AgentGroup, agent: AgentIdentity, changes: dict[str, str]
+    ) -> None:
+        """Write `changes` to the group, falling back where Slack refuses a
+        part that is decoration rather than meaning: a display name another
+        group already uses gives way to the agent's name, and an over-long
+        description to the bare marker and tag."""
+        while True:
+            try:
+                await self._rate_limited(
+                    lambda: self._require_web_client().usergroups_update(
+                        usergroup=group.group_id,
+                        name=changes.get("name"),
+                        handle=changes.get("handle"),
+                        description=changes.get("description"),
+                    ),
+                    what=f"update the user group for agent '{agent.name}'",
+                )
+                break
+            except SlackApiError as e:
+                error = e.response.get("error", "")
+                if error == "name_already_exists" and changes.get("name") not in (
+                    None,
+                    agent.name,
+                ):
+                    changes["name"] = agent.name
+                    if group.name == agent.name:
+                        changes.pop("name")
+                    if not changes:
+                        break
+                    continue
+                if error == "description_too_long" and "description" in changes:
+                    changes["description"] = (
+                        f"{_AGENT_GROUP_MARKER}"
+                        f"{_group_tag(agent.agent_id, self._bridge_mark())}"
+                    )
+                    continue
+                if error == "handle_already_exists":
+                    raise AgentIdentityConflict(
+                        f"Cannot give agent '{agent.name}' the Slack handle "
+                        f"@{changes.get('handle', group.handle)}: a channel, person "
+                        "or group that is not this agent's already has it."
+                    ) from e
+                raise
+        group.name = changes.get("name", group.name)
+        group.handle = changes.get("handle", group.handle)
+        group.description = changes.get("description", group.description)
+        logger.info(
+            "Updated Slack user group %s for agent %s (%s)",
+            group.group_id,
+            agent.name,
+            ", ".join(sorted(changes)),
+        )
+
+    async def _create_agent_group(self, agent: AgentIdentity) -> None:
+        name, handle, description = self._wanted_group(agent)
+        try:
+            result = await self._rate_limited(
+                lambda: self._create_usergroup(agent, name, handle, description),
+                what=f"create a Slack user group for agent '{agent.name}'",
+            )
+        except SlackApiError as e:
+            error = e.response.get("error", "")
+            if error in ("handle_already_exists", "name_already_exists"):
+                # Something already owns the handle. If it is one of ours the
+                # reload finds it; if it is a real group or a channel, say so
+                # rather than leaving the agent silently unmentionable.
+                await self._load_agent_usergroups()
+                group_id = self._find_agent_group(agent)
+                if group_id is not None:
+                    await self._align_agent_group(group_id, agent)
+                    return
+                raise RuntimeError(
+                    f"Cannot create a Slack user group for agent '{agent.name}': "
+                    f"the handle '@{handle}' is already taken by a channel, "
+                    "person or group that is not ours. Rename the agent or free "
+                    "the handle."
+                ) from e
+            if error in _USERGROUPS_UNAVAILABLE_ERRORS:
+                self._disable_agent_usergroups(error)
+                return
+            raise
+
+        created = result.get("usergroup") or {}
+        group_id = str(created.get("id", ""))
+        if not group_id:
+            raise RuntimeError(
+                f"Slack returned no user group id when creating one for agent "
+                f"'{agent.name}'"
+            )
+        self._groups[group_id] = _AgentGroup(
+            group_id=group_id,
+            name=str(created.get("name", name)),
+            handle=str(created.get("handle", handle)),
+            description=str(created.get("description", description)),
+            disabled=False,
+            ours=True,
+            agent_id=agent.agent_id,
+            bridge_mark=self._bridge_mark(),
+        )
+        self._group_handles[group_id] = handle
+        self._remember_agent_group(group_id, agent)
+        logger.info(
+            "Created Slack user group @%s (%s) for agent %s",
+            handle,
+            group_id,
+            agent.name,
+        )
+
+    async def _create_usergroup(
+        self, agent: AgentIdentity, name: str, handle: str, description: str
+    ) -> Any:
+        """Create the group, giving way on the parts that are decoration.
+
+        An agent's description is free text, and Slack caps a group's
+        description without publishing the limit, so a conservative truncation
+        can still be refused: the blurb is dropped then, keeping the marker and
+        tag that carry meaning. A display name another group already uses gives
+        way to the agent's name, which is unique.
         """
         client = self._require_web_client()
         try:
             return await client.usergroups_create(
-                name=agent_name,
-                handle=handle,
-                description=_group_description(agent_description),
+                name=name, handle=handle, description=description
             )
         except SlackApiError as e:
-            if e.response.get("error") != "description_too_long":
+            error = e.response.get("error", "")
+            if error == "name_already_exists" and name != agent.name:
+                return await self._create_usergroup(
+                    agent, agent.name, handle, description
+                )
+            if error != "description_too_long":
                 raise
             logger.warning(
                 "Slack rejected the description for agent %s's user group as too "
                 "long; creating it with just the marker instead.",
-                agent_name,
+                agent.name,
             )
             return await client.usergroups_create(
-                name=agent_name,
+                name=name,
                 handle=handle,
-                description=f"{_AGENT_GROUP_MARKER}{agent_name}",
-            )
-
-    async def _adopt_group(self, group_id: str, agent_name: str) -> None:
-        """Claim a user group someone made by hand for this agent.
-
-        Where a workspace will not let the bot create groups, making them by
-        hand is the only way to use the feature — so a group whose handle or
-        name is exactly an agent's is taken to be that agent's. The match has to
-        be exact: a workspace's own group must never be captured by an agent
-        that happens to be named similarly.
-
-        The marker is stamped on so later loads recognise it without needing
-        the agent list. That is an optimisation, not a requirement — adoption
-        happens per agent at startup either way — so failing to write it is
-        worth a warning rather than abandoning the adoption.
-        """
-        for key in (agent_name.casefold(), self._usergroup_handle(agent_name)):
-            self._unadopted_groups.pop(key, None)
-        self._remember_agent_group(group_id, agent_name)
-        logger.info(
-            "Adopted existing Slack user group %s for agent %s", group_id, agent_name
-        )
-
-        try:
-            await self._rate_limited(
-                lambda: self._require_web_client().usergroups_update(
-                    usergroup=group_id,
-                    description=f"{_AGENT_GROUP_MARKER}{agent_name}",
+                description=(
+                    f"{_AGENT_GROUP_MARKER}"
+                    f"{_group_tag(agent.agent_id, self._bridge_mark())}"
                 ),
-                what=f"mark the adopted user group for agent '{agent_name}'",
-            )
-        except (SlackApiError, RuntimeError):
-            logger.warning(
-                "Adopted Slack user group %s for agent %s but could not mark it "
-                "as ours; it will be re-adopted on each start.",
-                group_id,
-                agent_name,
-                exc_info=True,
             )
 
-    def _remember_agent_group(self, group_id: str, agent_name: str) -> None:
-        self._agent_group_ids[agent_name.casefold()] = group_id
-        self._agent_group_names[group_id] = agent_name
+    async def _retire_agent_group(self, group_id: str, agent_name: str) -> None:
+        """Free the group's handle, then disable it.
+
+        Freeing the handle is a courtesy, so failing to is a warning; failing
+        to disable is not, and raises, because the group would go on
+        answering to a deleted agent's name."""
+        group = self._groups.get(group_id)
+        suffix = group_id[-4:].lower()
+        if group is not None and f"-deleted-{suffix}" not in group.handle:
+            retired_handle = f"{group.handle}-deleted-{suffix}"
+            retired_name = f"{group.name} (deleted {suffix})"
+            try:
+                await self._rate_limited(
+                    lambda: self._require_web_client().usergroups_update(
+                        usergroup=group_id, name=retired_name, handle=retired_handle
+                    ),
+                    what=f"free the user group handle of agent '{agent_name}'",
+                )
+                group.name = retired_name
+                group.handle = retired_handle
+                self._group_handles[group_id] = retired_handle
+            except SlackApiError:
+                logger.warning(
+                    "Could not free the handle of Slack user group %s for deleted "
+                    "agent %s; disabling it with its handle still taken",
+                    group_id,
+                    agent_name,
+                    exc_info=True,
+                )
+        await self._rate_limited(
+            lambda: self._require_web_client().usergroups_disable(usergroup=group_id),
+            what=f"disable the user group of agent '{agent_name}'",
+        )
+        if group is not None:
+            group.disabled = True
+        name = self._agent_group_names.pop(group_id, None)
+        if name is not None:
+            self._agent_group_ids.pop(name.casefold(), None)
+        for agent_id, gid in list(self._agent_group_by_agent.items()):
+            if gid == group_id:
+                del self._agent_group_by_agent[agent_id]
+        self.agent_group_directory.discard(
+            self._directory_tenant(), self._team_id, group_id
+        )
+        logger.info("Retired Slack user group %s for agent %s", group_id, agent_name)
+
+    def _remember_agent_group(self, group_id: str, agent: AgentIdentity) -> None:
+        previous = self._agent_group_names.get(group_id)
+        if previous is not None and previous.casefold() != agent.name.casefold():
+            self._agent_group_ids.pop(previous.casefold(), None)
+        self._agent_group_ids[agent.name.casefold()] = group_id
+        self._agent_group_names[group_id] = agent.name
+        self._agent_group_by_agent[agent.agent_id] = group_id
         self.agent_group_directory.add(
-            self._directory_tenant(), self._team_id, group_id, agent_name
+            self._directory_tenant(), self._team_id, group_id, agent.name
         )
 
     @staticmethod
@@ -2480,9 +2974,7 @@ class SlackAdapter(PlatformAdapter):
 
         Agent names already share Slack's handle character class, so this is
         usually just a lowercase. Anything outside it collapses to a hyphen so
-        an unusual name still yields a mentionable handle; the group's `name`
-        carries the agent name verbatim, so the round trip does not depend on
-        the handle surviving unchanged.
+        an unusual name still yields a mentionable handle.
         """
         handle = re.sub(r"[^a-z0-9._-]+", "-", agent_name.casefold())
         return handle.strip("-._") or "switch-agent"
@@ -2492,12 +2984,13 @@ class SlackAdapter(PlatformAdapter):
             await self._load_agent_usergroups()
 
     async def _load_agent_usergroups(self) -> None:
-        """Rebuild the agent ↔ user group maps from Slack.
+        """Rebuild what this bridge knows about the workspace's user groups.
 
-        Only groups we created are adopted, recognised by the marker on their
-        description — a workspace's own groups must never be mistaken for an
-        agent, or mentioning one would address an agent that has nothing to do
-        with it.
+        Ours are recognised by the marker on their description, and tied to
+        their agent by the id after it — a workspace's own groups must never be
+        mistaken for an agent, or mentioning one would address an agent that
+        has nothing to do with it. A group of ours from before groups carried
+        ids is tied by its name until its agent claims it.
         """
         if not self._web_client:
             raise RuntimeError("Cannot load Slack user groups: Slack not connected")
@@ -2519,46 +3012,39 @@ class SlackAdapter(PlatformAdapter):
                 return
             raise
 
-        groups: list[dict[str, Any]] = result.get("usergroups") or []
+        listed: list[dict[str, Any]] = result.get("usergroups") or []
 
+        self._groups = {}
+        self._group_handles = {}
         self._agent_group_ids = {}
         self._agent_group_names = {}
-        self._agent_groups_disabled = {}
-        self._group_handles = {}
-        self._unadopted_groups = {}
-        for group in groups:
-            group_id = str(group.get("id", ""))
-            handle = str(group.get("handle", ""))
-            name = str(group.get("name", ""))
-            if not group_id:
+        self._agent_group_by_agent = {}
+        for raw in listed:
+            group = _AgentGroup.from_slack(raw)
+            if group is None:
                 continue
-            if handle:
-                self._group_handles[group_id] = handle
-
-            if not str(group.get("description", "")).startswith(_AGENT_GROUP_MARKER):
-                # Not ours — but it may still be an agent's, made by hand. Keyed
-                # both ways so an agent can claim it by either field.
-                for key in (handle.casefold(), name.casefold()):
-                    if key:
-                        self._unadopted_groups[key] = group_id
+            self._groups[group.group_id] = group
+            if group.handle:
+                self._group_handles[group.group_id] = group.handle
+            if not group.ours or group.disabled:
                 continue
-
-            if not name:
-                continue
-            if group.get("date_delete"):
-                self._agent_groups_disabled[name.casefold()] = group_id
-            else:
-                self._remember_agent_group(group_id, name)
+            agent = self._known_agents.get(group.agent_id) if group.agent_id else None
+            if agent is not None:
+                self._remember_agent_group(group.group_id, agent)
+            elif group.agent_id is None and group.name:
+                self._agent_group_ids[group.name.casefold()] = group.group_id
+                self._agent_group_names[group.group_id] = group.name
 
         self.agent_group_directory.replace(
             self._directory_tenant(), self._team_id, self._agent_group_names
         )
         self._agent_groups_loaded = True
+        ours = [g for g in self._groups.values() if g.ours]
         logger.info(
             "Loaded %d Slack agent user groups (%d disabled, %d other groups seen)",
-            len(self._agent_group_ids),
-            len(self._agent_groups_disabled),
-            len(self._group_handles) - len(self._agent_group_ids),
+            sum(1 for g in ours if not g.disabled),
+            sum(1 for g in ours if g.disabled),
+            len(self._groups) - len(ours),
         )
 
     async def get_channel_agent_names(self, channel_id: str) -> list[str]:
@@ -2691,10 +3177,44 @@ class SlackAdapter(PlatformAdapter):
     async def _handle_socket_event(
         self, client: SocketModeClient, req: SocketModeRequest
     ) -> None:
-        await client.send_socket_mode_response(
-            SocketModeResponse(envelope_id=req.envelope_id)
+        """Handle one Socket Mode envelope and acknowledge it.
+
+        An event (a message, someone joining a channel) is stored first and
+        acknowledged after. Slack sends an event again when it is not
+        acknowledged within three seconds, so a bridge whose process stops in
+        between is sent the event again, by then on the process that holds the
+        bridge next, instead of losing it; that copy finds the post's rows
+        written and writes nothing (`collaboration_core._post_source`). Storing
+        that takes longer than `SOCKET_ACK_WITHIN_SECONDS` is acknowledged at
+        that point and finishes after, so Slack does not send again an event
+        still being stored. Storing that fails within it is not acknowledged,
+        so Slack sends the event again.
+
+        A slash command or a button press is acknowledged first, as before:
+        Slack never sends one again, and the person waits on the answer.
+        """
+        if req.type != "events_api":
+            await client.send_socket_mode_response(
+                SocketModeResponse(envelope_id=req.envelope_id)
+            )
+            await self.dispatch_event(envelope_type=req.type, payload=req.payload)
+            return
+        dispatch = asyncio.ensure_future(
+            self.dispatch_event(envelope_type=req.type, payload=req.payload)
         )
-        await self.dispatch_event(envelope_type=req.type, payload=req.payload)
+        try:
+            await asyncio.wait({dispatch}, timeout=SOCKET_ACK_WITHIN_SECONDS)
+            failed = (
+                dispatch.done()
+                and not dispatch.cancelled()
+                and dispatch.exception() is not None
+            )
+            if not failed:
+                await client.send_socket_mode_response(
+                    SocketModeResponse(envelope_id=req.envelope_id)
+                )
+        finally:
+            await dispatch
 
     async def dispatch_event(
         self, *, envelope_type: str, payload: dict[str, Any]
@@ -2708,9 +3228,10 @@ class SlackAdapter(PlatformAdapter):
         modes would drift into behaving differently for the same event.
 
         Acknowledgement is *not* here, because the two transports acknowledge
-        incompatibly: Socket Mode replies on the socket before dispatching,
-        while HTTP acknowledges by returning 200 to the post. Both must do it
-        promptly and neither can do it for the other.
+        incompatibly: Socket Mode replies on the socket once an event is
+        stored (`_handle_socket_event`), while HTTP acknowledges by returning
+        200 to the post. Both must do it promptly and neither can do it for
+        the other.
         """
         if envelope_type == "slash_commands":
             await self._handle_slash_command(payload)
@@ -2734,6 +3255,8 @@ class SlackAdapter(PlatformAdapter):
                 await self._handle_message_event(event)
         elif event_type == "member_joined_channel":
             await self._handle_member_joined_channel(event)
+        elif event_type == "subteam_updated":
+            await self._handle_subteam_updated(event.get("subteam") or {})
 
     async def _handle_interactive(self, payload: dict[str, Any]) -> None:
         """Someone operated a Block Kit control on one of our messages.
@@ -2865,7 +3388,24 @@ class SlackAdapter(PlatformAdapter):
         self._seen_ts[message_ts] = None
         if len(self._seen_ts) > self._seen_ts_max:
             self._seen_ts.popitem(last=False)
+        try:
+            await self._deliver_message_event(event, channel_id, message_ts)
+        except BaseException:
+            # Not seen after all. An event whose handling raises within the
+            # acknowledgement window is left unacknowledged
+            # (`_handle_socket_event`), and the copy Slack sends comes back to
+            # this adapter, since only the process holding the bridge has its
+            # socket. Skipped as seen, the copy would be acknowledged and the
+            # event lost. It writes only what this attempt did not
+            # (`collaboration_core._post_source`).
+            self._seen_ts.pop(message_ts, None)
+            raise
 
+    async def _deliver_message_event(
+        self, event: dict[str, object], channel_id: str, message_ts: str
+    ) -> None:
+        """Route a post `_handle_message_event` let through to the command or
+        message callback."""
         user_id = str(event.get("user", ""))
         text = str(event.get("text", ""))
         if not text.strip():

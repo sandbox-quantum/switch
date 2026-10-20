@@ -394,3 +394,37 @@ async def test_a_service_url_write_does_not_clobber_learned_channel_teams(
         assert bridge.connection_config["channel_teams"] == {
             "19:a@thread.tacv2": "team-1"
         }
+
+
+@pytest.mark.asyncio
+async def test_an_edit_merges_into_what_the_bridge_learned_since_it_was_read(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """An edit's session reads the bridge, waits on the platform, then writes;
+    what the running bridge persisted in between must survive the write."""
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        bridge_id = await _make_bridge(session)
+        await session.commit()
+
+    async with session_factory() as editing:
+        held = await store.get(editing, bridge_id)
+        assert held is not None
+        assert "channel_teams" not in (held.connection_config or {})
+
+        async with session_factory() as learning:
+            await store.set_channel_team(
+                learning, bridge_id, "19:a@thread.tacv2", "team-1"
+            )
+            await learning.commit()
+
+        await store.merge_connection_config(editing, bridge_id, {"team_id": "team-9"})
+        await editing.commit()
+
+    async with session_factory() as session:
+        bridge = await store.get(session, bridge_id)
+        assert bridge is not None
+        assert bridge.connection_config["team_id"] == "team-9"
+        assert bridge.connection_config["channel_teams"] == {
+            "19:a@thread.tacv2": "team-1"
+        }

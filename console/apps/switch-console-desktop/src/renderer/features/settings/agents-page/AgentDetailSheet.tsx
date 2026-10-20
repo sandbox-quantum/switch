@@ -1,7 +1,7 @@
 import { observer } from 'mobx-react-lite';
-import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { useAgentSettings } from '@renderer/lib/stores/use-agent-settings';
 import { useAgents } from '@renderer/lib/stores/use-agents';
+import { useThisComputerReport } from '@renderer/lib/stores/use-this-computer-report';
 import { Field } from '@renderer/lib/ui/field';
 import { Label } from '@renderer/lib/ui/label';
 import { Sheet, SheetContent, SheetHeader } from '@renderer/lib/ui/sheet';
@@ -9,6 +9,8 @@ import { asAgentProviderId } from '@shared/core/providers/agent-provider-registr
 import { AgentSheetHeaderSection } from './AgentSheetHeaderSection';
 import { InstalledAgentContent } from './InstalledAgentContent';
 import { InstallSection } from './InstallSection';
+import { ThisComputerProviderStatus } from './this-computer-provider-status';
+import { installedHere, reportedProvider } from './this-computer-status';
 
 interface AgentDetailSheetProps {
   agentId: string | null;
@@ -26,7 +28,8 @@ const AgentDetailSheetContent = observer(function AgentDetailSheetContent({
 
   const { value: storedConfig, isOverridden, isLoading, update, reset } = useAgentSettings(agentId);
 
-  const isInstalled = agentPayload?.status === 'available';
+  const { data: report } = useThisComputerReport();
+  const isInstalled = installedHere(reportedProvider(report, agentId), agentPayload?.status);
 
   return (
     <>
@@ -35,11 +38,7 @@ const AgentDetailSheetContent = observer(function AgentDetailSheetContent({
         {agentPayload && (
           <div className="space-y-6">
             <AgentSheetHeaderSection agent={agentPayload} />
-            <ProviderConnectionStatus
-              providerId={asAgentProviderId(agentId)}
-              sshHost={null}
-              dir=""
-            />
+            <ThisComputerProviderStatus providerId={asAgentProviderId(agentId)} />
             <Field>
               <Label>Installation</Label>
               <InstallSection

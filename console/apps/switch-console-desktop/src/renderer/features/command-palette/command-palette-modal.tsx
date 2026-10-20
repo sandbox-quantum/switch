@@ -3,10 +3,13 @@ import { Command } from 'cmdk';
 import { Activity, DoorOpen, Globe, type LucideIcon, MessageSquare, Server } from 'lucide-react';
 import { observer, useObserver } from 'mobx-react-lite';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { agentChatsFlag } from '@renderer/features/chats/stores/agent-chats-flag';
 import { REMOTE_HOSTS_QUERY_KEY } from '@renderer/features/remote-hosts/views/remote-hosts-view';
 import { getSessionStore } from '@renderer/features/sessions/stores/session-selectors';
+import { useAgentManagementMode } from '@renderer/features/sidebar/sidebar-grouped-list';
 import { agentExpandKey } from '@renderer/features/sidebar/sidebar-store';
 import { openRoom } from '@renderer/features/switch-rooms/open-room';
+import { isConsoleDirectChat } from '@renderer/features/switch-servers/room-filters';
 import { serverIcon } from '@renderer/features/switch-servers/server-icon';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -32,9 +35,11 @@ import { PaletteSessionItem } from './palette-session-item';
 import { ResourceMonitorView } from './resource-monitor-view';
 import {
   applyContextAffinity,
+  indexedSearchLabel,
   matchHosts,
   matchRooms,
   matchServers,
+  paletteSearchPlaceholder,
   sectionResults,
 } from './search-utils';
 
@@ -182,6 +187,9 @@ export function CommandPaletteModal({
   const debouncedQuery = useDebounce(query, 100);
   const { navigate } = useNavigate();
   const queryClient = useQueryClient();
+  // Under agent management the sidebar files Console's own sessions under
+  // Legacy; the palette leaves them out entirely.
+  const includeSessions = !useAgentManagementMode();
 
   const handleClose = onClose;
 
@@ -200,18 +208,24 @@ export function CommandPaletteModal({
   // Prefetch recents immediately on mount so the empty-query view is instant.
   useEffect(() => {
     void queryClient.prefetchQuery({
-      queryKey: ['cmdk-search', '', locationId, sessionId],
-      queryFn: () => rpc.search.commandPalette({ query: '', context: { locationId, sessionId } }),
+      queryKey: ['cmdk-search', '', includeSessions, locationId, sessionId],
+      queryFn: () =>
+        rpc.search.commandPalette({
+          query: '',
+          includeSessions,
+          context: { locationId, sessionId },
+        }),
       staleTime: 5_000,
     });
     // oxlint-disable-next-line react/exhaustive-deps
   }, []);
 
   const { data: searchResult = EMPTY_RESULT } = useQuery({
-    queryKey: ['cmdk-search', debouncedQuery, locationId, sessionId],
+    queryKey: ['cmdk-search', debouncedQuery, includeSessions, locationId, sessionId],
     queryFn: () =>
       rpc.search.commandPalette({
         query: debouncedQuery,
+        includeSessions,
         context: { locationId, sessionId },
       }),
     // Keep results fresh for 5 s — re-opening the palette with the same query
@@ -272,7 +286,13 @@ export function CommandPaletteModal({
   // span every server, not the active one: you search precisely because you do
   // not know where a thing is.
   const roomResults = useObserver(() =>
-    matchRooms(switchRoomsStore.listedRoomsInAllWorkspaces, debouncedQuery)
+    matchRooms(
+      switchRoomsStore.listedRoomsInAllWorkspaces.filter((room) => {
+        const serverId = switchRoomsStore.roomServerId(room.id);
+        return !(serverId && agentChatsFlag(serverId) && isConsoleDirectChat(room));
+      }),
+      debouncedQuery
+    )
   );
   const serverResults = useObserver(() => matchServers(switchServersStore.servers, debouncedQuery));
 
@@ -435,7 +455,7 @@ export function CommandPaletteModal({
         <Command.Input
           value={query}
           onValueChange={setQuery}
-          placeholder="Search agents, sessions, rooms, servers, actions…"
+          placeholder={paletteSearchPlaceholder(includeSessions)}
           className="w-full bg-transparent px-3 py-3 text-sm outline-none placeholder:text-foreground/40"
           autoFocus
         />
@@ -456,7 +476,7 @@ export function CommandPaletteModal({
             )}
             {searchResult.status === 'query-too-short' && (
               <div className="px-3 py-6 text-center text-sm text-foreground/40">
-                Type at least 3 characters to search agents, sessions and commands.
+                Type at least 3 characters to search {indexedSearchLabel(includeSessions)}.
                 {rendererMatchCount > 0 &&
                   ' Rooms, servers and hosts are matched from the first character.'}
               </div>

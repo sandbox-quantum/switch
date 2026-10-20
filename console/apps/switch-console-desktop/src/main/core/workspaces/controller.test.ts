@@ -4,14 +4,32 @@ import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 const managedServerHostBlocked = vi.hoisted(() => vi.fn((): unknown => null));
 const trackEvent = vi.hoisted(() => vi.fn());
 const createRoomOnServer = vi.hoisted(() => vi.fn());
-const deleteBridge = vi.hoisted(() => vi.fn());
+const disconnectBridgeOnServer = vi.hoisted(() => vi.fn());
+const bridgeInstallState = vi.hoisted(() => vi.fn());
 const deleteRoom = vi.hoisted(() => vi.fn());
 const fetchBridges = vi.hoisted(() => vi.fn());
+const fetchBridgeTeams = vi.hoisted(() => vi.fn());
+const addBridgeTeam = vi.hoisted(() => vi.fn());
+const removeBridgeTeam = vi.hoisted(() => vi.fn());
+const updateBridgeOnServer = vi.hoisted(() => vi.fn());
+const saveTeamsPackage = vi.hoisted(() => vi.fn());
 const getServer = vi.hoisted(() => vi.fn());
 const getSessionCookie = vi.hoisted(() => vi.fn());
 const requireWorkspace = vi.hoisted(() => vi.fn());
 const listWorkspacesForServer = vi.hoisted(() => vi.fn(async () => [{ id: 'ws' }]));
 const switchTenant = vi.hoisted(() => vi.fn());
+const fetchConnectionAgents = vi.hoisted(() => vi.fn());
+const fetchWorkspaceServices = vi.hoisted(() => vi.fn());
+const setWorkspaceService = vi.hoisted(() => vi.fn());
+const connectServiceWithKey = vi.hoisted(() => vi.fn());
+const disconnectService = vi.hoisted(() => vi.fn());
+const disconnectGitHub = vi.hoisted(() => vi.fn());
+const serviceBrowserFlow = vi.hoisted(() => ({
+  startServiceBrowserFlow: vi.fn(),
+  getServiceBrowserFlow: vi.fn(),
+  cancelServiceBrowserFlow: vi.fn(),
+}));
+const openExternal = vi.hoisted(() => vi.fn());
 // Stubbed rather than reimplemented: what the tests below assert is that the
 // kind reaches the event, not how a row is read as one.
 const serverKindOf = vi.hoisted(() => vi.fn(() => 'remote_managed'));
@@ -42,21 +60,31 @@ vi.mock('@main/lib/logger', () => ({
   log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 // Reads this install's own agent rows, and through them the database client.
+vi.mock('@main/core/app/service', () => ({ appService: { openExternal } }));
+vi.mock('@main/core/switch-servers/service-browser-flow', () => serviceBrowserFlow);
 vi.mock('@main/core/switch-servers/backfill-agent-icons', () => ({ backfillAgentIcons: vi.fn() }));
 vi.mock('@main/core/switch-servers/bridge-home-url', () => ({ withResolvedHomeUrls: vi.fn() }));
 vi.mock('@main/core/switch-servers/create-bridge', () => ({ createBridgeOnServer: vi.fn() }));
 vi.mock('@main/core/switch-servers/create-room', () => ({ createRoomOnServer }));
+vi.mock('@main/core/switch-servers/disconnect-bridge', () => ({
+  disconnectBridgeOnServer,
+  bridgeInstallState,
+}));
 vi.mock('@main/core/switch-servers/identities', () => ({
   claimIdentityOnServer: vi.fn(),
   searchDirectoryOnServer: vi.fn(),
 }));
-vi.mock('@main/core/switch-servers/update-bridge', () => ({ updateBridgeOnServer: vi.fn() }));
+vi.mock('@main/core/switch-servers/teams-package', () => ({ saveTeamsPackage }));
+vi.mock('@main/core/switch-servers/update-bridge', () => ({ updateBridgeOnServer }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
+  addBridgeTeam,
   addRoomAgents: vi.fn(),
   agentExistsOnServer: vi.fn(),
+  connectServiceWithKey,
+  disconnectGitHub,
+  disconnectService,
   createRoomFromTemplate: vi.fn(),
   decodeJwtTenantId: vi.fn(() => null),
-  deleteBridge,
   deleteRoom,
   fetchAddressingPolicy: vi.fn(),
   fetchAgentDetail: vi.fn(),
@@ -64,7 +92,10 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchAgents: vi.fn(),
   fetchAllExternalUsers: vi.fn(),
   fetchBridges,
+  fetchBridgeTeams,
   fetchBridgeTypes: vi.fn(),
+  fetchConnectionAgents,
+  fetchWorkspaceServices,
   fetchMyIdentities: vi.fn(),
   fetchRoomAgentIds: vi.fn(),
   fetchRoomDetail: vi.fn(),
@@ -75,7 +106,9 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   GatewayError: class GatewayError extends Error {},
   ownsOwnerAddressedAgent: vi.fn(),
   releaseBridgeIdentity: vi.fn(),
+  removeBridgeTeam,
   removeRoomAgent: vi.fn(),
+  setWorkspaceService,
   switchTenant,
   updateAddressingPolicy: vi.fn(),
   updateAgentIcon: vi.fn(),
@@ -100,8 +133,8 @@ function server(overrides: Record<string, unknown>) {
   return {
     id: 'srv',
     name: 'S',
-    gatewayUrl: 'http://localhost:3300',
-    apiUrl: 'http://localhost:8000',
+    url: 'http://localhost:8000',
+    dashboardUrl: 'http://localhost:3300',
     managed: false,
     managementKind: null,
     sshHost: null,
@@ -126,7 +159,7 @@ describe('disconnecting a bridge', () => {
   });
 
   it('reports a disconnection the gateway carried out', async () => {
-    deleteBridge.mockResolvedValue({ kind: 'deleted' });
+    disconnectBridgeOnServer.mockResolvedValue({ kind: 'deleted' });
 
     await workspacesController.deleteBridge({ workspaceId: 'ws', bridgeId: 'b1' });
 
@@ -141,7 +174,7 @@ describe('disconnecting a bridge', () => {
   it('reports a refusal as a failure rather than as a disconnection', async () => {
     // Admin-only, and the gateway hands back the refusal instead of throwing
     // it — so the await returns exactly as it does for a bridge that went.
-    deleteBridge.mockResolvedValue({ kind: 'forbidden' });
+    disconnectBridgeOnServer.mockResolvedValue({ kind: 'forbidden' });
 
     await workspacesController.deleteBridge({ workspaceId: 'ws', bridgeId: 'b1' });
 
@@ -151,6 +184,144 @@ describe('disconnecting a bridge', () => {
         outcome: 'failure',
       })
     );
+  });
+});
+
+describe('deleting a room', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    managedServerHostBlocked.mockReturnValue(null);
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+  });
+
+  it('keeps the platform channel unless asked', async () => {
+    deleteRoom.mockResolvedValue(null);
+
+    await expect(
+      workspacesController.deleteRoom({ workspaceId: 'ws', roomId: 'r1' })
+    ).resolves.toBeNull();
+
+    expect(deleteRoom).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'r1', {
+      retireChannel: false,
+    });
+  });
+
+  it('passes on a request to retire the channel, and what became of it', async () => {
+    deleteRoom.mockResolvedValue({ outcome: 'archived', reason: null });
+
+    await expect(
+      workspacesController.deleteRoom({ workspaceId: 'ws', roomId: 'r1', retireChannel: true })
+    ).resolves.toEqual({ outcome: 'archived', reason: null });
+
+    expect(deleteRoom).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'r1', {
+      retireChannel: true,
+    });
+  });
+});
+
+describe('distributed Microsoft Teams team placement', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    managedServerHostBlocked.mockReturnValue(null);
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+  });
+
+  it('reads whether a bridge is backed by a live install, scoped to the workspace’s server', async () => {
+    bridgeInstallState.mockResolvedValue('installed');
+
+    await expect(
+      workspacesController.bridgeInstallState({ workspaceId: 'ws', bridgeId: 'b1' })
+    ).resolves.toBe('installed');
+
+    expect(bridgeInstallState).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'b1');
+  });
+
+  it('lists a bridge’s team placement', async () => {
+    const result = {
+      kind: 'listed' as const,
+      teams: [],
+      defaultTeamId: null,
+      inCatalog: true,
+      catalogProblem: null,
+    };
+    fetchBridgeTeams.mockResolvedValue(result);
+
+    await expect(
+      workspacesController.listBridgeTeams({ workspaceId: 'ws', bridgeId: 'b1' })
+    ).resolves.toEqual(result);
+
+    expect(fetchBridgeTeams).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'b1');
+  });
+
+  it('adds Switch to a team', async () => {
+    addBridgeTeam.mockResolvedValue({ kind: 'added' });
+
+    await expect(
+      workspacesController.addBridgeTeam({ workspaceId: 'ws', bridgeId: 'b1', teamId: 't1' })
+    ).resolves.toEqual({ kind: 'added' });
+
+    expect(addBridgeTeam).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'b1', 't1');
+  });
+
+  it('removes Switch from a team', async () => {
+    removeBridgeTeam.mockResolvedValue({ kind: 'removed' });
+
+    await expect(
+      workspacesController.removeBridgeTeam({ workspaceId: 'ws', bridgeId: 'b1', teamId: 't1' })
+    ).resolves.toEqual({ kind: 'removed' });
+
+    expect(removeBridgeTeam).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srv' }),
+      'b1',
+      't1'
+    );
+  });
+
+  it('chooses a default team by editing the bridge, turning channel creation on with it', async () => {
+    const updated = { kind: 'updated' as const, bridge: { id: 'b1' } as never };
+    updateBridgeOnServer.mockResolvedValue(updated);
+
+    await expect(
+      workspacesController.setDefaultTeamsTeam({ workspaceId: 'ws', bridgeId: 'b1', teamId: 't1' })
+    ).resolves.toEqual(updated);
+
+    expect(updateBridgeOnServer).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), {
+      bridgeId: 'b1',
+      channelCreationEnabled: true,
+      connectionConfig: { team_id: 't1' },
+    });
+  });
+
+  it('saves the Teams app package to disk under the chosen file name', async () => {
+    saveTeamsPackage.mockResolvedValue('/tmp/switch-teams.zip');
+
+    await expect(
+      workspacesController.downloadTeamsPackage({
+        workspaceId: 'ws',
+        bridgeId: 'b1',
+        defaultFileName: 'switch-teams.zip',
+      })
+    ).resolves.toBe('/tmp/switch-teams.zip');
+
+    expect(saveTeamsPackage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srv' }),
+      'b1',
+      'switch-teams.zip'
+    );
+  });
+
+  it('reports a cancelled save as null rather than a path', async () => {
+    saveTeamsPackage.mockResolvedValue(null);
+
+    await expect(
+      workspacesController.downloadTeamsPackage({
+        workspaceId: 'ws',
+        bridgeId: 'b1',
+        defaultFileName: 'switch-teams.zip',
+      })
+    ).resolves.toBeNull();
   });
 });
 
@@ -249,6 +420,86 @@ describe('selecting the workspace’s tenant before the call', () => {
 
     expect(switchTenant).not.toHaveBeenCalled();
     expect(getSessionCookie).not.toHaveBeenCalled();
+  });
+
+  it('reads and switches the services of the workspace named, not the active one', async () => {
+    const { decodeJwtTenantId } = await import('@main/core/switch-servers/gateway-client');
+    vi.mocked(decodeJwtTenantId).mockReturnValue('tenant-a');
+    requireWorkspace.mockResolvedValue(workspace('tenant-b'));
+    getSessionCookie.mockResolvedValue('cookie-for-tenant-a');
+    // Each call is only answered once the session selects the named workspace.
+    const selected = () => {
+      expect(switchTenant).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'tenant-b');
+      return Promise.resolve(null);
+    };
+    fetchConnectionAgents.mockImplementation(selected);
+    fetchWorkspaceServices.mockImplementation(selected);
+    setWorkspaceService.mockImplementation(selected);
+
+    await workspacesController.getConnectionAgents({ workspaceId: 'ws', service: 'example' });
+    await workspacesController.getWorkspaceServices('ws');
+    await workspacesController.setWorkspaceService({
+      workspaceId: 'ws',
+      service: 'example',
+      enabled: false,
+    });
+
+    expect(fetchConnectionAgents).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srv' }),
+      'example'
+    );
+    expect(fetchWorkspaceServices).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }));
+    expect(setWorkspaceService).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srv' }),
+      'example',
+      false
+    );
+  });
+
+  it('connects, signs in and disconnects in the workspace named, not the active one', async () => {
+    const { decodeJwtTenantId } = await import('@main/core/switch-servers/gateway-client');
+    vi.mocked(decodeJwtTenantId).mockReturnValue('tenant-a');
+    requireWorkspace.mockResolvedValue(workspace('tenant-b'));
+    getSessionCookie.mockResolvedValue('cookie-for-tenant-a');
+    const selected = () => {
+      expect(switchTenant).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'tenant-b');
+      return Promise.resolve(null);
+    };
+    for (const call of [
+      connectServiceWithKey,
+      disconnectService,
+      disconnectGitHub,
+      ...Object.values(serviceBrowserFlow),
+    ])
+      call.mockImplementation(selected);
+    const srv = expect.objectContaining({ id: 'srv' });
+    const flow = { workspaceId: 'ws', service: 'example', flowId: 'flow-1' };
+
+    await workspacesController.startServiceConnection({ workspaceId: 'ws', service: 'example' });
+    await workspacesController.getServiceFlow(flow);
+    await workspacesController.cancelServiceConnection(flow);
+    await workspacesController.connectServiceWithKey({
+      workspaceId: 'ws',
+      service: 'example',
+      fields: { api_key: 'synthetic' },
+    });
+    await workspacesController.disconnectService({ workspaceId: 'ws', service: 'example' });
+    await workspacesController.disconnectGitHub('ws');
+
+    expect(serviceBrowserFlow.startServiceBrowserFlow).toHaveBeenCalledWith(
+      srv,
+      'example',
+      expect.any(Function)
+    );
+    expect(serviceBrowserFlow.getServiceBrowserFlow).toHaveBeenCalledWith(srv, 'example', 'flow-1');
+    expect(serviceBrowserFlow.cancelServiceBrowserFlow).toHaveBeenCalledWith(
+      srv,
+      'example',
+      'flow-1'
+    );
+    expect(connectServiceWithKey).toHaveBeenCalledWith(srv, 'example', { api_key: 'synthetic' });
+    expect(disconnectService).toHaveBeenCalledWith(srv, 'example');
+    expect(disconnectGitHub).toHaveBeenCalledWith(srv);
   });
 
   it('refuses a workspace with no tenant where its server has several', async () => {

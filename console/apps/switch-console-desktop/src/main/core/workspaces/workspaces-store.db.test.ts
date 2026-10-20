@@ -45,8 +45,8 @@ describe('workspaces-store', () => {
     await fixture.db.insert(switchServers).values({
       id,
       name,
-      gatewayUrl: `https://${id}.example.com`,
-      apiUrl: `https://api-${id}.example.com`,
+      url: `https://api-${id}.example.com`,
+      dashboardUrl: `https://${id}.example.com`,
     });
   }
 

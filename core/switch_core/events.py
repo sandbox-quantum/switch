@@ -6,6 +6,16 @@ from pydantic import BaseModel, ConfigDict
 class SwitchEvent(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    # The `messages` row this event was parsed from: its `seq` in the room and
+    # its event id. Whoever parses the event off its row fills both
+    # (`Consumer` as it dispatches the event, the router as it decides it),
+    # and the agent's own event is stored with them so a reader can match it
+    # to the room row. They are not part of the
+    # event's content, and stay 0 and None for an event that did not come from
+    # a `messages` row.
+    room_seq: int = 0
+    source_event_id: str | None = None
+
 
 # ── Command ───────────────────────────────────────────────────────────────────
 
@@ -52,44 +62,6 @@ class LlmCallReport(SwitchEvent):
     usage: dict[str, object] | None = None
     duration_ms: int | None = None
     cost: float | None = None
-
-
-# ── Task protocol ─────────────────────────────────────────────────────────────
-
-
-class TaskDelegate(SwitchEvent):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    summary: str
-    description: str
-
-
-class TaskAccept(SwitchEvent):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-
-
-class TaskUpdate(SwitchEvent):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    update: str
-
-
-class TaskFinalise(SwitchEvent):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    outcome: str
-
-
-class TaskCancel(SwitchEvent):
-    task_id: str
-    requester_agent_id: str
-    performer_agent_id: str
-    reason: str
 
 
 # ── Agent runtime state ───────────────────────────────────────────────────────

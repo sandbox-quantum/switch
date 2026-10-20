@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
-import { app, BrowserWindow, Notification } from 'electron';
-import { getMainWindow } from '@main/app/window';
+import { BrowserWindow, Notification } from 'electron';
+import { focusMainWindow } from '@main/app/window';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { appSettingsService } from '@main/core/settings/settings-service';
 import { db } from '@main/db/client';
@@ -12,23 +12,6 @@ import { isAttentionNotification, type AgentEvent } from '@shared/core/providers
 import { notificationFocusSessionChannel } from '@shared/events/appEvents';
 
 const activeNotifications = new Set<Notification>();
-
-function focusAppFromNotification(): BrowserWindow | null {
-  const win = getMainWindow();
-  if (!win || win.isDestroyed()) return null;
-
-  if (win.isMinimized()) win.restore();
-  win.show();
-
-  if (process.platform === 'darwin') {
-    app.focus({ steal: true });
-  } else {
-    app.focus();
-  }
-
-  win.focus();
-  return win;
-}
 
 function getNotificationBody(event: AgentEvent): string | null {
   if (event.type === 'stop') return 'Your agent has finished working';
@@ -71,7 +54,7 @@ export async function maybeShowNotification(event: AgentEvent, appFocused: boole
     notification.on('close', releaseNotification);
     notification.on('failed', releaseNotification);
     notification.on('click', () => {
-      const win = focusAppFromNotification();
+      const win = focusMainWindow();
       if (!win) return;
 
       releaseNotification();

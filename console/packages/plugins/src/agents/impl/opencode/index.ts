@@ -8,7 +8,7 @@ import { icon } from './icon';
 import { opencodeLaunchProfileModels } from './models';
 import {
   opencodeLaunchProfile,
-  opencodeLaunchProfileFields,
+  opencodeLaunchProfileSettings,
   opencodeProfilePaths,
 } from './profile';
 
@@ -88,6 +88,8 @@ export const provider = registerPluginBehavior(plugin, {
     buildCommand: (ctx) =>
       buildStandardCommand(ctx, {
         extraEnv: ctx.autoApprove ? { OPENCODE_PERMISSION: '{"*":"allow"}' } : {},
+        // Approves every ask but keeps what the person's own config denies.
+        autoModeFlag: '--auto',
         initialPromptFlag: '--prompt',
         resumeFlag: '--session',
         sessionIdFlag: '--session',
@@ -106,7 +108,7 @@ export const provider = registerPluginBehavior(plugin, {
     // session it starts.
     launchProfile: opencodeLaunchProfile,
     launchProfilePaths: opencodeProfilePaths,
-    launchProfileFields: opencodeLaunchProfileFields,
+    launchProfileSettings: opencodeLaunchProfileSettings,
     // A variant is whatever the chosen model declares, so the only correct list
     // is the one the installed OpenCode reports. Asking also lets a typed model
     // be checked, which matters because OpenCode accepts an unknown one in

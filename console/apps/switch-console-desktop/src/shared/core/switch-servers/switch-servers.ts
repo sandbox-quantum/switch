@@ -40,17 +40,47 @@ export function sameApiEndpoint(a: string, b: string): boolean {
   return a.trim().replace(/\/+$/, '') === b.trim().replace(/\/+$/, '');
 }
 
+/**
+ * One spelling per server address, so two that name the same server compare
+ * equal: scheme and host lowercased, a default port dropped, no trailing slash,
+ * a path kept. Input that does not parse is only trimmed.
+ */
+export function normaliseServerUrl(url: string): string {
+  const trimmed = url.trim();
+  try {
+    const parsed = new URL(trimmed);
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return trimmed.replace(/\/+$/, '');
+  }
+}
+
+/** Where a server's dashboard pages open: its own address, unless it still
+ * keeps the dashboard elsewhere. */
+export function dashboardOrigin(server: Pick<SwitchServer, 'url' | 'dashboardUrl'>): string {
+  return server.dashboardUrl ?? server.url;
+}
+
 /** A registered Switch server. Non-secret connection metadata only. */
 export type SwitchServer = {
   id: string;
   name: string;
-  /** Origin of the gateway deployment, e.g. `https://switch-gateway.example.com`.
-   * The management API lives under `${gatewayUrl}/gateway`. */
-  gatewayUrl: string;
-  /** Origin of the Switch core (agent bridge) API, e.g.
-   * `https://switch-api.example.com` — what an agent's `SWITCH_API_ENDPOINT`
-   * points at, and what an onboarded agent is matched to its server by. */
-  apiUrl: string;
+  /** The server's one address, e.g. `https://switch.example.com`: the origin
+   * of switch-core, which serves the agent API at its root, the management API
+   * under `${url}/gateway`, and the dashboard. What an agent's
+   * `SWITCH_API_ENDPOINT` points at, and what an onboarded agent is matched to
+   * its server by. */
+  url: string;
+  /** Where the dashboard opens when `url` does not serve it, else null. Open
+   * dashboard pages through {@link dashboardOrigin}, never from this directly.
+   *
+   * A fallback with an end date. A server older than switch-core serving its
+   * own dashboard keeps the gateway address it was registered with (migration
+   * 0052), cleared once its `url` answers with the dashboard; a managed stack
+   * gets its dashboard container's port while the compose it runs still has
+   * one. Remove it once Console no longer supports servers that predate the
+   * built-in dashboard and the bundled compose no longer runs the container. */
+  dashboardUrl: string | null;
   /** True when Switch Console runs this server itself (docker compose). Managed
    * servers are driven by the lifecycle controls, not the add/edit-server UI. */
   managed: boolean;
@@ -65,10 +95,30 @@ export type SwitchServer = {
   updatedAt: string;
 };
 
+/**
+ * Whether Switch Console runs this server on this computer. Its stack listens
+ * on loopback only, so nobody on another computer can reach it, and an
+ * invitation would hand them a link to this machine's `localhost`. A server
+ * Console runs on an SSH host is not one: other Consoles with access to that
+ * host open the same stack.
+ */
+export function runsOnThisComputer(
+  server: Pick<SwitchServer, 'managed' | 'managementKind'>
+): boolean {
+  return server.managed && server.managementKind !== 'remote';
+}
+
 export type AddServerParams = {
   name: string;
-  gatewayUrl: string;
-  apiUrl: string;
+  url: string;
+};
+
+/** What a managed stack registers itself with: its own address, and where its
+ * dashboard container answers while it still runs one. */
+export type ManagedServerParams = {
+  name: string;
+  url: string;
+  dashboardUrl: string | null;
 };
 
 /** Identifies which managed server to upsert/look up: the single local stack,
@@ -78,8 +128,7 @@ export type ManagedServerRef = { kind: 'local' } | { kind: 'remote'; sshHost: st
 export type UpdateServerParams = {
   id: string;
   name: string;
-  gatewayUrl: string;
-  apiUrl: string;
+  url: string;
 };
 
 /** Rename a server (display name only). Works for managed and external servers;
@@ -90,7 +139,7 @@ export type RenameServerParams = {
 };
 
 /**
- * What happened to one agent when a server's API URL was cascaded to its
+ * What happened to one agent when a server's address was cascaded to its
  * members. `updated` — the agent's `SWITCH_API_ENDPOINT` was rewritten.
  * `not-provisioned` — the agent has no Switch credentials on disk yet, so there
  * was nothing to update (skipped, not an error). `failed` — the rewrite threw
@@ -98,7 +147,7 @@ export type RenameServerParams = {
  */
 export type AgentApiUrlPropagationOutcome = 'updated' | 'not-provisioned' | 'failed';
 
-/** Per-agent result of a server-API-URL cascade. */
+/** Per-agent result of a server-address cascade. */
 export type AgentApiUrlPropagation = {
   agentId: string;
   agentName: string;
@@ -109,11 +158,11 @@ export type AgentApiUrlPropagation = {
   error?: string;
 };
 
-/** Summary of cascading a server's API-URL edit to its member agents. */
+/** Summary of cascading a server's address edit to its member agents. */
 export type ServerApiUrlPropagation = {
-  /** True when the API URL actually changed, so propagation ran. When false the
-   * `agents` list is empty (the edit was name/gateway-only). */
-  apiUrlChanged: boolean;
+  /** True when the address actually changed, so propagation ran. When false the
+   * `agents` list is empty (the edit was name-only). */
+  urlChanged: boolean;
   agents: AgentApiUrlPropagation[];
 };
 
@@ -130,6 +179,11 @@ export type SwitchAuthConfig = {
   oidcEnabled: boolean;
   /** Button label for the OIDC provider (e.g. "Okta"), or null. */
   oidcProviderLabel: string | null;
+  /** One sign-in button each (Google, GitHub…); empty for one button labelled as above. */
+  oidcLoginOptions: { id: string; label: string }[];
+  /** Whether the server can hand a sign-in back to this computer, so the
+   * system browser can be used; false for a server predating it. */
+  oidcBrowserHandoff: boolean;
   /** Whether anyone may create an account with an email and password. False
    * for a server predating the field. */
   signupEnabled: boolean;
@@ -227,19 +281,35 @@ export type RemoteAgentSummary = {
 };
 
 /**
+ * What a rename did (`PUT /agents/{id}/name`): the agent as the server now
+ * holds it, the name it had, each chat platform that could not be updated yet
+ * (the rename stands; the platform catches up when its bridge next starts),
+ * and saved templates whose text still names the old name.
+ */
+export type AgentRenameOutcome = {
+  agent: RemoteAgentSummary;
+  oldName: string;
+  bridgeFailures: string[];
+  templatesMentioningOldName: string[];
+};
+
+/**
  * What came of giving this user's icon-less agents their generated avatar
  * (CHOO-2171).
  *
  * Reported rather than logged because the app cannot tell the difference on
- * screen: it draws a name-derived bot for any agent with no stored icon, so a
- * server that rejected every write still looks right here while the chat
- * platforms show the lettered avatar.
+ * screen: it draws a name-derived avatar for any agent with no stored icon, so
+ * a server that rejected every write still looks right here while an older
+ * server's chat platforms show a lettered badge.
  */
 export type AgentIconBackfill =
   | { kind: 'written'; written: number }
   /** The server has no agent-icon endpoint — it predates the feature. */
   | { kind: 'unsupported' }
-  | { kind: 'partial'; written: number; failed: number };
+  | { kind: 'partial'; written: number; failed: number }
+  /** The server disables third-party avatars, so nothing was generated or
+   * written — by the operator's own choice, not a failure. */
+  | { kind: 'disabled' };
 
 /** Read-only summary of a remote room (mirrors the gateway `RoomSummary`). */
 export type RemoteRoomSummary = {
@@ -281,6 +351,25 @@ export type RemoteRoomDetail = RemoteRoomSummary & {
   /** Display names of the people in the room, via the messaging app it is
    * bridged to. Empty for an unbridged room, which has no people in it. */
   connectedUserNames: string[];
+  /** What deleting the room does to its platform channel when the person asks
+   * for it to be retired (it is kept otherwise); null when it has none.
+   * Undefined from a server that predates the field, which says nothing about
+   * the channel either way. */
+  channelOnDelete?: ChannelRetirement | null;
+};
+
+/** What deleting a room does to its platform channel when asked to retire it
+ * and all goes to plan (mirrors the gateway's `ChannelRetirement`): archived on Slack and
+ * Mattermost, deleted on Discord, left by the bot on Telegram, and kept on
+ * Teams, where Switch may not remove it. */
+export type ChannelRetirement = 'archived' | 'deleted' | 'left' | 'kept';
+
+/** What deleting a room did to its platform channel when asked to retire it
+ * (mirrors the gateway's `RetireOutcome`). `failed` means the channel is still there and someone has
+ * to remove it by hand; `reason` says why. */
+export type RetireOutcome = {
+  outcome: ChannelRetirement | 'failed';
+  reason: string | null;
 };
 
 /** The room fields Switch Console can change. Anything omitted is left alone;
@@ -360,6 +449,83 @@ export type RemoteBridge = {
    * before Telegram had one.
    */
   directorySearchSupported: boolean;
+  /**
+   * Plain-text description of something only the platform's side can fix —
+   * the organisation's admin withdrew approval, or blocked the app outright.
+   * Shown as a visible warning on the connection regardless of its type. Null
+   * when there is nothing to say, which is also what a server predating the
+   * field reports.
+   */
+  attention: string | null;
+  /**
+   * True only for a running bridge on Switch's distributed Microsoft Teams
+   * app — the one installed by a Microsoft admin approving Switch's own app,
+   * rather than a workspace pasting in its own bot credentials. Drives
+   * whether the Teams team-placement panel is offered for this connection.
+   * False for every other bridge, and for a server predating the field.
+   */
+  teamPlacementSupported: boolean;
+  /**
+   * Why no existing chat can be bound to a room by its id on this connection,
+   * or null when one can. The server sets it for a connection whose chats
+   * arrive only by being connected with a link or code (the Switch Telegram
+   * app), which is also what marks the connection that adding a chat adds to.
+   * Null on a server predating the field.
+   */
+  channelIdsRefused: string | null;
+  /** Whether this connection receives its platform's events on an address of
+   * its own, which the operator has to give the platform. */
+  receivesWebhooks: boolean;
+  /** That address, or null where the connection takes none or the server has
+   * no public origin configured (`MESSAGING_PUBLIC_URL`) to build it from. */
+  webhookUrl: string | null;
+};
+
+/**
+ * A platform whose chats are connected one at a time with a link or code from
+ * Switch, rather than installed with a consent screen: the Switch Telegram
+ * app. `canAddChat` is the server's answer for the signed-in user — an admin
+ * connects a workspace's first chat, which creates its connection, and anyone
+ * connects more after that.
+ */
+export type ClaimablePlatform = {
+  platform: string;
+  /** The workspace already has this platform's connection. */
+  connected: boolean;
+  canAddChat: boolean;
+};
+
+/** What the server's own messaging apps offer the signed-in user. */
+export type MessagingApps = {
+  /** Platforms installed with a consent screen. Empty for anyone but an admin. */
+  installable: string[];
+  claimable: ClaimablePlatform[];
+};
+
+/**
+ * A one-time way to connect a chat: a link that adds the bot to a group and
+ * connects it, the bare code a channel admin posts as `/connect <code>`, and
+ * the bot's handle to search for when adding it to a channel. Both work once,
+ * for ten minutes.
+ */
+export type ChatClaim = {
+  url: string;
+  code: string;
+  botHandle: string;
+};
+
+/**
+ * One chat connected to a claim-based connection. Each is a room, and any
+ * member may disconnect one; the connection stays when its last chat goes.
+ */
+export type ConnectedChat = {
+  /** The install's id, which is what disconnecting it names. */
+  id: string;
+  /** The chat's room name, or null when it has none. */
+  name: string | null;
+  /** The platform's id for the chat, shown when it has no name. */
+  externalId: string;
+  connectedAt: string;
 };
 
 /**
@@ -414,6 +580,18 @@ export type BridgeConfigField = {
 export type RemoteBridgeType = {
   /** Platform key (`slack`, `mattermost`, …). */
   key: string;
+  /** How a person names the platform ("Microsoft Teams"), as its adapter
+   * declares it. Null from a server predating the field. */
+  displayName: string | null;
+  /** The platform's page under the messaging-apps docs, or null where the
+   * server has none (or predates the field). */
+  docsSlug: string | null;
+  /** The platform's logo as SVG markup, or null where the server ships none.
+   * It comes from the server, so it is drawn as an image, never inlined. */
+  iconSvg: string | null;
+  /** Whether connections of this type receive events on an address of their
+   * own, which the operator has to give the platform. */
+  receivesWebhooks: boolean;
   fields: BridgeConfigField[];
   /** Whether this platform can create channels at all — read from the
    * adapter class, so it is answerable before any connection of this type
@@ -474,6 +652,10 @@ export type UpdateBridgeParams = {
   workspaceId: string;
   bridgeId: string;
   channelCreationEnabled?: boolean;
+  /** Connection-config fields to merge into the bridge's stored config — today
+   * only the distributed Teams app's default-team choice (`{ team_id }`).
+   * Left unset, the gateway leaves the stored config untouched. */
+  connectionConfig?: Record<string, string>;
 };
 
 /** Outcome of editing a bridge. Mirrors {@link CreateBridgeResult}'s recoverable
@@ -509,6 +691,64 @@ export type DeleteBridgeResult =
   | { kind: 'unauthenticated' }
   | { kind: 'forbidden' }
   | { kind: 'not-found' }
+  | { kind: 'error'; message: string };
+
+/**
+ * Switch Trust's one server-global guardrails settings row
+ * (`GET /trust-settings`). One policy covers the whole deployment, not a
+ * workspace, so this has no `workspaceId` the way bridge-shaped types do.
+ *
+ * The API key is never returned by the gateway — `hasApiKey`/`apiKeyLast4`
+ * only confirm one is stored, so a form can show "configured" without ever
+ * holding the real value.
+ */
+export type TrustSettings = {
+  endpoint: string;
+  /** Null until a policy id has been saved — the check is off until then. */
+  policyId: string | null;
+  hasApiKey: boolean;
+  apiKeyLast4: string | null;
+  /** `policyId` and an API key are both set. */
+  enabled: boolean;
+};
+
+/** Outcome of loading Switch Trust's settings (`GET /trust-settings`).
+ * Admin-only (a deployment operator, not a workspace admin), so a signed-in
+ * non-operator gets `forbidden` rather than an empty form. */
+export type FetchTrustSettingsResult =
+  | { kind: 'loaded'; settings: TrustSettings }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
+/**
+ * Parameters for saving Switch Trust's settings (`PUT /trust-settings`).
+ * `apiKey` left unset leaves whatever key is already stored untouched, so
+ * resaving the endpoint or policy id doesn't force re-entering the secret.
+ */
+export type UpdateTrustSettingsParams = {
+  serverId: string;
+  endpoint: string;
+  policyId: string | null;
+  apiKey?: string;
+};
+
+/** Outcome of saving Switch Trust's settings. Mirrors {@link
+ * UpdateBridgeResult}'s recoverable cases. */
+export type UpdateTrustSettingsResult =
+  | { kind: 'saved'; settings: TrustSettings }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'invalid'; message: string }
+  | { kind: 'error'; message: string };
+
+/** Outcome of turning Switch Trust off (`DELETE /trust-settings`). Not
+ * `deleted`, since the row's absence is itself a valid, steady state (a
+ * deployment that has never configured it) rather than something removed. */
+export type ClearTrustSettingsResult =
+  | { kind: 'cleared'; settings: TrustSettings }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
   | { kind: 'error'; message: string };
 
 /** A bridged (external) human identity on a server. The `users` dimension of an
@@ -697,9 +937,6 @@ export type ProvisionAgentParams = {
   name: string;
   description: string;
   providerKind: AgentProviderKind;
-  /** Register with the `auto_session` connection model: Switch Console watches the
-   * agent's rooms and auto-spawns a session on notification. Defaults to off. */
-  autoSession?: boolean;
 };
 
 /**
@@ -718,8 +955,6 @@ export type ProvisionRemoteAgentParams = {
   name: string;
   description: string;
   providerKind: AgentProviderKind;
-  /** Register with the `auto_session` connection model. Defaults to off. */
-  autoSession?: boolean;
 };
 
 /**
@@ -767,9 +1002,11 @@ export type CreateRoomParams = {
   description: string;
   /** Room-specific system prompt shown to agents on connect. Optional. */
   instructions?: string;
-  bridgeId: string;
-  /** Switch agent ids to add as members. May be empty — a bridged room is
-   * valid with no agents, and members can be invited later. */
+  /** The messaging app to bridge the room to, or null for an internal room
+   * that people reach from Switch Console's chats. */
+  bridgeId: string | null;
+  /** Switch agent ids to add as members. May be empty — a room is valid with
+   * no agents, and members can be invited later. */
   agentIds: string[];
 };
 
@@ -801,4 +1038,107 @@ export type RemoteRoomRole = {
   exclusive: boolean;
   /** Display names of agents currently holding the role (empty if free). */
   heldBy: string[];
+};
+
+/**
+ * Whether a bridge is backed by a live messaging-app install, which decides
+ * what disconnecting it does to its rooms. `unknown` when the server could
+ * not be asked (an older server answers `not-installed`).
+ */
+export type BridgeInstallState = 'installed' | 'not-installed' | 'unknown';
+
+// ── Microsoft Teams team placement ──────────────────────────────────────────
+
+/**
+ * One Microsoft Teams team, from the distributed Teams app's own view of the
+ * organisation (mirrors the gateway `TeamsTeamSummary`).
+ */
+export type TeamsTeam = {
+  teamId: string;
+  name: string;
+  /** Whether Switch's app is already added to this team; null when the
+   * team's apps could not be read (archived, being deleted, restricted). */
+  hasSwitch: boolean | null;
+  /** Whether this is the bridge's default team — the one a channel lands in
+   * when a room is created without naming one. At most one team is default,
+   * and only a team with `hasSwitch` can be. */
+  isDefault: boolean;
+};
+
+/**
+ * Outcome of reading a distributed Teams bridge's team placement
+ * (`GET /collaborations/{id}/teams`, admin-only).
+ *
+ * The failure cases mirror what only this call's host — a running distributed
+ * Teams bridge talking to Microsoft Graph — can refuse: `not-distributed-teams`
+ * is a bridge this never applies to (a server older than the feature, or a
+ * bridge `team_placement_supported` already said no about), `not-running` is
+ * the bridge being stopped right now, and `microsoft-refused` is Graph itself
+ * declining the request, in its own words.
+ */
+export type TeamsTeamsResult =
+  | {
+      kind: 'listed';
+      teams: TeamsTeam[];
+      /** Redundant with `teams[].isDefault`, carried separately so "no default
+       * chosen yet" (null) is distinguishable without scanning the list. */
+      defaultTeamId: string | null;
+      /** Whether Switch's distributed app is in this organisation's own app
+       * catalogue yet. False until a Teams admin uploads the package by hand. */
+      inCatalog: boolean;
+      /** Why the app is not catalogued yet, as a sentence — present only when
+       * `inCatalog` is false. */
+      catalogProblem: string | null;
+    }
+  | { kind: 'not-distributed-teams' }
+  | { kind: 'not-running'; message: string }
+  | { kind: 'microsoft-refused'; message: string }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
+/**
+ * Outcome of adding Switch's distributed app to a team
+ * (`POST /collaborations/{id}/teams/{teamId}`, admin-only). `not-in-catalog` is
+ * its own case because it is the one failure with a next step: save the
+ * package and have a Teams admin upload it by hand.
+ */
+export type AddTeamsTeamResult =
+  | { kind: 'added' }
+  | { kind: 'not-in-catalog'; message: string }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
+/** Outcome of removing Switch's distributed app from a team
+ * (`DELETE /collaborations/{id}/teams/{teamId}`, admin-only). */
+export type RemoveTeamsTeamResult =
+  | { kind: 'removed' }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
+// ── Messaging-app installs ──────────────────────────────────────────────────
+
+/**
+ * One OAuth-consent install of a deployment's own messaging app into a
+ * workspace (mirrors the gateway `MessagingAppInstallSummary`). The bridge it
+ * backs is deleted the ordinary way; the install itself — the organisation-side
+ * registration that keeps Switch able to listen there at all — is only ended
+ * by name, which is what `endedAt === null` installs are for finding.
+ */
+export type MessagingAppInstall = {
+  id: string;
+  platform: string;
+  externalWorkspaceId: string;
+  status: string;
+  /** The platform's own spelling of what was granted, kept verbatim — the
+   * server stores and sends it as one string, not a list Switch parses. */
+  scopes: string;
+  /** The bridge this install backs, or null if none was ever created (or it
+   * was deleted without ending the install, leaving the install orphaned). */
+  bridgeId: string | null;
+  installedAt: string;
+  /** Null while the install is still active. */
+  endedAt: string | null;
 };

@@ -9,10 +9,6 @@ from switch_core.bridges.agent.protocol.types import (
     CommandPayload,
     LlmCallReport,
     MessagePayload,
-    TaskCancelPayload,
-    TaskDelegatePayload,
-    TaskFinalisePayload,
-    TaskUpdatePayload,
     ToolCallReport,
 )
 from switch_core.bridges.agent.server_connectors.base import (
@@ -68,7 +64,7 @@ class ConnectorCore:
 
     Discovers agents on the external platform, registers them through the
     in-process AgentCore, and runs per-agent poll loops that forward
-    messages and tasks between the connector and Switch.
+    messages between the connector and Switch.
 
     Server-side connectors live in the same process as Switch core, so they
     do not need HTTP — they call ``AgentCore`` directly. (External
@@ -162,9 +158,9 @@ class ConnectorCore:
                     # A server-side connector agent is a service the
                     # deployment offers everyone, not one person's assistant;
                     # it is owned by whoever holds the registration token only
-                    # in the bookkeeping sense. Owner-only would make it
-                    # answer to that account alone.
-                    owner_only=False,
+                    # in the bookkeeping sense. The default policy would
+                    # make it answer to that account alone.
+                    addressing_policy=None,
                 )
         except Exception:
             logger.exception(
@@ -230,14 +226,6 @@ class ConnectorCore:
                 await self._handle_message(handle, event.room_id, payload)
             elif isinstance(payload, CommandPayload):
                 await self._handle_command(handle, event.room_id, payload)
-            elif isinstance(payload, TaskDelegatePayload):
-                await self._handle_task_delegate(handle, event.room_id, payload)
-            elif isinstance(payload, TaskUpdatePayload):
-                await self._handle_task_update(handle, event.room_id, payload)
-            elif isinstance(payload, TaskFinalisePayload):
-                await self._handle_task_finalise(handle, event.room_id, payload)
-            elif isinstance(payload, TaskCancelPayload):
-                await self._handle_task_cancel(handle, event.room_id, payload)
 
     async def _handle_message(
         self,
@@ -287,55 +275,3 @@ class ConnectorCore:
         self, handle: _AgentHandle, room_id: str, payload: CommandPayload
     ) -> None:
         await self._connector.handle_command(handle.agent_name, room_id, payload)
-
-    async def _handle_task_delegate(
-        self, handle: _AgentHandle, room_id: str, payload: TaskDelegatePayload
-    ) -> None:
-        logger.debug(
-            "Handling task_delegate for agent %s, task %s",
-            handle.agent_name,
-            payload.task_id,
-        )
-
-        try:
-            await self._protocol.accept_task(handle.agent_id, payload.task_id)
-
-            result = await self._connector.handle_task_delegate(
-                handle.agent_name, room_id, payload
-            )
-
-            outcome = result if result else "Task failed"
-            await self._protocol.finalise_task(
-                handle.agent_id, payload.task_id, outcome
-            )
-        except Exception:
-            logger.exception(
-                "Failed to handle task_delegate for agent %s, task %s",
-                handle.agent_name,
-                payload.task_id,
-            )
-            try:
-                await self._protocol.finalise_task(
-                    handle.agent_id,
-                    payload.task_id,
-                    "Connector failed to process task",
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to report task failure for task %s", payload.task_id
-                )
-
-    async def _handle_task_update(
-        self, handle: _AgentHandle, room_id: str, payload: TaskUpdatePayload
-    ) -> None:
-        await self._connector.handle_task_update(handle.agent_name, room_id, payload)
-
-    async def _handle_task_finalise(
-        self, handle: _AgentHandle, room_id: str, payload: TaskFinalisePayload
-    ) -> None:
-        await self._connector.handle_task_finalise(handle.agent_name, room_id, payload)
-
-    async def _handle_task_cancel(
-        self, handle: _AgentHandle, room_id: str, payload: TaskCancelPayload
-    ) -> None:
-        await self._connector.handle_task_cancel(handle.agent_name, room_id, payload)

@@ -62,7 +62,6 @@ from .test_mattermost_press import (
 from .test_mattermost_sdk_only import _activity, _card, _posts
 
 CALLBACK_URL = f"{CALLBACK_BASE}/collaboration/mattermost/bridge-1/callback"
-CONSOLE_URL = "https://console.example.test/s/1"
 OTHER_CHANNEL = "chan-2"
 
 
@@ -93,7 +92,6 @@ def _snapshot(**fields: Any) -> ActivitySnapshot:
         "items": items,
         "turn": _turn("completed"),
         "elapsed_seconds": 12.0,
-        "session_url": CONSOLE_URL,
         "read_at": datetime(2026, 9, 16, 12, 34, 56, tzinfo=UTC),
     }
     return ActivitySnapshot(**{**defaults, **fields})
@@ -383,14 +381,6 @@ async def test_the_log_carries_what_the_agent_said_as_well_as_what_it_did() -> N
         "\u2317 \u2713 Ran the tests",
         "\u275d Both write to the same fixture user.",
     ]
-
-
-async def test_the_state_line_carries_the_way_into_console() -> None:
-    """The status post has the link too, but this reply is read on its own —
-    an ephemeral message has no message above it."""
-    adapter, _ = _viewer()
-
-    assert CONSOLE_URL in _shown(await adapter._handle_callback(_press()))
 
 
 async def test_it_says_when_the_read_behind_it_was_taken() -> None:

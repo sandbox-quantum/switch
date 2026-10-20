@@ -17,7 +17,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -158,6 +158,7 @@ class RunService:
         owner_name: str | None,
         from_room_id: str | None,
         kickoffs: list[tuple[str, list[str], dict[str, str]]] | None = None,
+        pending: dict[str, tuple[dict[str, Any] | None, str]] | None = None,
     ) -> AsyncIterator[AgentOrigin]:
         """Hold the agent's one creation slot while its rooms are made.
 
@@ -165,13 +166,16 @@ class RunService:
         caller creates anything, so a request is made whole or not at all.
         ``kickoffs`` lists each kickoff the request would post, with the
         agents in its room and their aliases (agent name to alias).
+        ``pending`` names the agents the request creates before its rooms,
+        with the addressing policy each will have and its owner, so a kickoff
+        is checked against them too.
         """
         async with self._one_at_a_time(agent.id):
             origin = await self._origin(agent, owner_name, from_room_id)
             await self._check_open(origin)
             hashes = [kickoff_fingerprint(text) for text, _, _ in kickoffs or []]
             await self._check_repeat(origin, hashes)
-            await self._check_audience(agent, kickoffs or [])
+            await self._check_audience(agent, kickoffs or [], pending or {})
             if kickoffs:
                 origin = replace(origin, trace=await self._trace(origin))
             yield origin
@@ -292,7 +296,10 @@ class RunService:
         )
 
     async def _check_audience(
-        self, agent: Agent, kickoffs: list[tuple[str, list[str], dict[str, str]]]
+        self,
+        agent: Agent,
+        kickoffs: list[tuple[str, list[str], dict[str, str]]],
+        pending: dict[str, tuple[dict[str, Any] | None, str]],
     ) -> None:
         """Every agent a kickoff mentions must accept this agent, or the room
         would be made and nobody would start work in it."""
@@ -304,10 +311,18 @@ class RunService:
                         text, name, aliases.get(name)
                     ):
                         continue
-                    target = await self._agent_store.get_by_name(session, name)
-                    if target is None:
-                        continue
-                    policy = parse_policy(target.addressing_policy)
+                    target_owner_id: str | None
+                    if name in pending:
+                        stored, target_owner_id = pending[name]
+                    else:
+                        target = await self._agent_store.get_by_name(session, name)
+                        if target is None:
+                            continue
+                        stored, target_owner_id = (
+                            target.addressing_policy,
+                            target.owner_id,
+                        )
+                    policy = parse_policy(stored)
                     if policy.is_open() or can_address(
                         policy,
                         # A rule scoped to a room or group cannot name a room
@@ -318,22 +333,41 @@ class RunService:
                         sender_id=agent.id,
                         sender_user_ids=[],
                         sender_owner_user_id=agent.owner_id,
-                        owner_user_id=target.owner_id,
+                        owner_user_id=target_owner_id,
                     ):
                         continue
                     if name not in refused:
                         refused.append(name)
-        if refused:
-            listed = ", ".join(refused)
-            raise RunRefused(
-                "kickoff_ignored",
-                f"Nothing was created: the kickoff mentions {listed}, and "
-                f"{'it does' if len(refused) == 1 else 'they do'} not accept "
-                f"messages from {agent.name}, so nobody would start work in the "
-                f"room. Ask their owner to let {agent.name} address them (in "
-                f"Switch Console, the agent's 'Who can talk to your agent'), or "
-                f"leave them out of the kickoff.",
+        if not refused:
+            return
+        created = [name for name in refused if name in pending]
+        existing = [name for name in refused if name not in pending]
+        reasons: list[str] = []
+        if existing:
+            listed = ", ".join(existing)
+            reasons.append(
+                f"the kickoff mentions {listed}, and "
+                f"{'it does' if len(existing) == 1 else 'they do'} not accept "
+                f"messages from {agent.name}. Ask their owner to let {agent.name} "
+                "address them (in Switch Console, the agent's 'Who can talk to "
+                "your agent'), or leave them out of the kickoff"
             )
+        if created:
+            listed = ", ".join(created)
+            reasons.append(
+                f"the kickoff mentions {listed}, which this run creates answering "
+                f"only its owner, so {agent.name}'s kickoff would not reach "
+                f"{'it' if len(created) == 1 else 'them'}. Give "
+                f"{'its entry' if len(created) == 1 else 'their entries'} "
+                "`addressing: owner-agents` (or `anyone`) in the template, or "
+                "leave them out of the kickoff"
+            )
+        raise RunRefused(
+            "kickoff_ignored",
+            "Nothing was created: "
+            + "; ".join(reasons)
+            + ". Nobody would start work in the room (kickoff_ignored).",
+        )
 
     async def _trace(self, origin: AgentOrigin) -> str | None:
         """The run so far, top down, as the woken agents are shown it."""

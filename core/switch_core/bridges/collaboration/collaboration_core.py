@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import logging
 import re
 import time
@@ -8,6 +10,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import TYPE_CHECKING, TypeVar
 
 from sqlalchemy.exc import IntegrityError
@@ -16,11 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import stop_control_frame
-from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.collaboration.adapter import (
+    AgentIdentity,
     AgentPresentation,
     PlatformAdapter,
     SupportsSharedConnection,
+    agent_identity,
 )
 from switch_core.bridges.collaboration.models import (
     ChannelType,
@@ -38,11 +42,12 @@ from switch_core.clients.actor import Actor, ClientConfig
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
     PLATFORM_MARKER,
+    SENDER_IS_APP_MARKER,
     AdminMessageType,
     platform_on_behalf_of,
 )
 from switch_core.clients.mentions import mention_regex, strip_emphasis
-from switch_core.db.models import BridgeMessageMap, ExternalUser
+from switch_core.db.models import BridgeMessageMap, Client, ExternalUser
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
@@ -58,6 +63,7 @@ from switch_core.observability.catalogue import (
     BRIDGE_EVENTS_OUT,
 )
 from switch_core.observability.metrics import metrics
+from switch_core.process_lease import LEASE_TTL, RENEW_EVERY_SECONDS
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
 from switch_core.room_wide_mention import is_room_wide_mention
@@ -82,12 +88,14 @@ from switch_core.transport import (
 from switch_core.transport import (
     RoomRef,
     TransportError,
+    writes_derived_from,
 )
 from switch_core.trust.client import (
     NullTrustClient,
     TrustClient,
     check_message,
     trust_annotation,
+    trust_redaction_notice,
 )
 
 if TYPE_CHECKING:
@@ -96,6 +104,7 @@ if TYPE_CHECKING:
     )
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.clients.workspace_consumer import WorkspaceConsumer
+    from switch_core.events import CommandEvent
     from switch_core.room_service import RoomService
 
 
@@ -119,6 +128,22 @@ HUMAN_JOIN_TIMEOUT = 30.0
 # parts that arrived, flagged as incomplete (see _schedule_outbound_group_flush).
 OUTBOUND_GROUP_TIMEOUT_SECONDS = 5.0
 
+# How old a claim on a room message going out (`_claim_outbound`) must be,
+# still with no post, before it is taken to be from a holder that died
+# between claiming and posting, and claimed again. Under the soonest the next
+# holder can read the message after such a death: the process lease lapsing
+# (`LEASE_TTL` after its last renewal, which came at most `RENEW_EVERY_SECONDS`
+# before the claim). Only one process holds the bridge at a time, so no live
+# post in flight is ever read by another holder this soon.
+_UNPOSTED_CLAIM_LAPSES_AFTER = timedelta(
+    seconds=LEASE_TTL.total_seconds() - 2 * RENEW_EVERY_SECONDS
+)
+
+# How long to wait for the person behind a human actor's client row that
+# another process has just written, before giving up on telling whose it is.
+# That process writes the `ExternalUser` right after the client.
+_HUMAN_ACTOR_MINTING_SECONDS = 2.0
+
 
 def _is_thread_reply(content: Mapping[str, object]) -> bool:
     relates = content.get("m.relates_to")
@@ -130,9 +155,16 @@ class _PendingOutboundGroup:
     """Files of a multi-attachment message seen so far, keyed by group index."""
 
     total: int
+    # The room the group is in (its transport id) and the lowest `messages.seq`
+    # among its files so far: the bridge's progress in the room is held back
+    # to before it until the group is posted (`held_from`), so whoever holds
+    # the bridge next posts it if this process stops first.
+    room_id: str
+    from_seq: int
     parts: dict[int, OutboundAttachment] = field(default_factory=dict)
+    # The room event of each file, by group index.
+    event_ids: dict[int, str] = field(default_factory=dict)
     caption: str | None = None
-    first_event_id: str | None = None
 
 
 _LOBBY_DEPRECATION_NOTICE = (
@@ -161,10 +193,25 @@ def _no_agents_notice(slash_hint: str | None) -> str:
     )
 
 
+def _post_source(bridge_id: str, channel_id: str, message_ref: str) -> str:
+    """What a platform post's room rows are numbered from: the post's own
+    reference on its channel of this bridge, the same each time the platform
+    delivers it.
+
+    A platform may deliver one post twice. Slack sends a Socket Mode event
+    again when its acknowledgement did not arrive, as when the process holding
+    the bridge stopped between storing the post and acknowledging it, and a
+    webhook platform retries a delivery it saw fail. The second delivery finds
+    the rows written and writes nothing new."""
+    return f"{bridge_id}\x1f{channel_id}\x1f{message_ref}"
+
+
 class CollaborationCore:
-    # Tests assemble a CollaborationCore with `__new__`; these read as "not wired".
+    # Tests assemble a CollaborationCore with `__new__`; these read as "not wired",
+    # and the bridge as held here, as it is in a deployment of one process.
     _activity_publisher: AgentSessionActivityPublisher | None = None
     _approval_answers: ApprovalAnswers | None = None
+    _active: bool = True
 
     def __init__(
         self,
@@ -189,10 +236,15 @@ class CollaborationCore:
         session_activity_listener: AgentSessionActivityListener,
         session_activity_service: AgentSessionActivityService,
         connections: AgentConnectionRegistry,
+        active: bool,
         trust_client: TrustClient = NullTrustClient(),
-        gateway_public_url: str | None = None,
     ) -> None:
         self._bridge_id = bridge_id
+        # Whether this process holds the bridge (`ownership.py`): it listens to
+        # the platform, relays the rooms out to it and draws session activity
+        # there. Every other process runs the bridge too, quietly, to serve
+        # the requests and webhooks that reach it.
+        self._active = active
         # The tenant of this bridge's own row. Read once here because it is
         # immutable, but never *bound* for the life of anything: each unit of
         # work binds it at the point it acts, and room-scoped work binds the
@@ -233,7 +285,11 @@ class CollaborationCore:
         # message. One-way, so a cached answer cannot go stale — see
         # _repair_placeholder_username.
         self._names_known_good: set[str] = set()
+        # Senders known to be people on this bridge, and senders known not to
+        # be: a person first seen by another process is found in the database
+        # once (`_is_human_sender`), and an agent is asked about once.
         self._human_user_ids: set[str] = set()
+        self._not_human_user_ids: set[str] = set()
         self._channel_locks: dict[str, asyncio.Lock] = {}
         self._human_actor_locks: dict[str, asyncio.Lock] = {}
         # Channels Switch is itself provisioning right now (outbound room
@@ -248,6 +304,10 @@ class CollaborationCore:
         # never completes cannot leak.
         self._outbound_groups: dict[str, _PendingOutboundGroup] = {}
         self._outbound_group_timers: dict[str, asyncio.TimerHandle] = {}
+        # Incomplete groups whose timeout is posting what arrived. Out of
+        # `_outbound_groups`, so a late file of one starts a group of its own,
+        # and still holding the room's progress back until posted.
+        self._flushing_outbound_groups: list[_PendingOutboundGroup] = []
         # Room-event -> external-post anchors written synchronously right after
         # room_send, before the durable _record_message_map commit, so a fast
         # command reply relayed during that DB await still resolves the command's
@@ -256,6 +316,11 @@ class CollaborationCore:
         self._pending_message_maps: dict[str, str] = {}
         # Identity provisioning runs in the background — see _create_agent_identities.
         self._identity_task: asyncio.Task[None] | None = None
+        # Agents given an identity by this copy of the bridge, so one deleted
+        # by another process is let go of here too; and whether the agents
+        # changed while a provisioning run was going.
+        self._provisioned_agents: dict[str, AgentIdentity] = {}
+        self._identities_stale = False
         self._channel_type_refresh_task: asyncio.Task[None] | None = None
         # Turns and request cards from the tables the host reports to, pushed
         # as they change. Only where the platform draws session activity.
@@ -270,7 +335,6 @@ class CollaborationCore:
                 listener=session_activity_listener,
                 session_factory=session_factory,
                 agent_online=connections.is_live,
-                gateway_public_url=gateway_public_url,
             )
             if adapter.draws_session_activity
             else None
@@ -456,34 +520,56 @@ class CollaborationCore:
             ),
             on_app_joined=self._traced("app_joined", self._handle_app_joined_channel),
         )
-        await self._ensure_channel_captures()
-        if self._activity_publisher is not None:
-            self._activity_publisher.start()
+        if self._active:
+            await self._ensure_channel_captures()
+            if self._activity_publisher is not None:
+                self._activity_publisher.start()
         # Deliberately not awaited. Provisioning is one call per agent against
         # the platform, and a rate-limited platform makes that minutes of
         # mostly waiting — which would hold up the bridge coming online, and
         # with it every other bridge behind it at startup and any request that
         # restarts one. Messages do not depend on it: an agent is addressable
-        # by name whether or not its platform identity exists yet.
+        # by name whether or not its platform identity exists yet. Every
+        # process provisions, the adapter deciding how much a quiet one needs.
         self._identity_task = asyncio.create_task(self._run_agent_identities())
-        # Not awaited either: one platform read per channel, and nothing waits on it.
-        self._channel_type_refresh_task = asyncio.create_task(
-            self._run_channel_type_refresh()
-        )
+        # Not awaited either: one platform read per channel, and nothing waits
+        # on it. Only where the bridge is held: one process is enough.
+        if self._active:
+            self._channel_type_refresh_task = asyncio.create_task(
+                self._run_channel_type_refresh()
+            )
+
+    @property
+    def active(self) -> bool:
+        """Whether this process holds the bridge and listens for it."""
+        return self._active
+
+    def agents_changed(self) -> None:
+        """Agents were registered or deleted in this bridge's tenant, maybe by
+        another process: give the new ones their platform identities here and
+        let go of the deleted ones'. A run already going reads the agents
+        again once it is done, in case it read them before the change."""
+        self._identities_stale = True
+        self._provision_identities_on_attach()
 
     async def stop(self) -> None:
-        if self._activity_publisher is not None:
-            await self._activity_publisher.stop()
-        if self._identity_task and not self._identity_task.done():
-            self._identity_task.cancel()
-        self._identity_task = None
-        if (
-            self._channel_type_refresh_task
-            and not self._channel_type_refresh_task.done()
-        ):
-            self._channel_type_refresh_task.cancel()
-        self._channel_type_refresh_task = None
-        await self._adapter.stop()
+        try:
+            if self._activity_publisher is not None:
+                await self._activity_publisher.stop()
+        finally:
+            # Closed whatever the publisher raised: the bridge's lease is let
+            # go of once this returns or raises, and the next holder's
+            # platform connection must not run beside this one.
+            if self._identity_task and not self._identity_task.done():
+                self._identity_task.cancel()
+            self._identity_task = None
+            if (
+                self._channel_type_refresh_task
+                and not self._channel_type_refresh_task.done()
+            ):
+                self._channel_type_refresh_task.cancel()
+            self._channel_type_refresh_task = None
+            await self._adapter.stop()
 
     # ── Startup loading ──────────────────────────────────────────────────────
 
@@ -596,7 +682,11 @@ class CollaborationCore:
 
     async def _run_agent_identities_unbound(self) -> None:
         try:
-            await self._create_agent_identities()
+            while True:
+                self._identities_stale = False
+                await self._create_agent_identities()
+                if not self._identities_stale:
+                    break
         except asyncio.CancelledError:
             logger.info(
                 "%s identity provisioning cancelled before finishing",
@@ -614,29 +704,52 @@ class CollaborationCore:
         ) as session:
             agents = await self._agent_store.get_all(session)
 
-        failed = 0
-        for agent in agents:
+        # Deleted, renamed or relabelled since the last run here, wherever that
+        # was served: a change served by another process reaches this copy of
+        # the bridge only through this re-read.
+        current = {agent.id: agent_identity(agent) for agent in agents}
+        for agent_id, before in sorted(self._provisioned_agents.items()):
+            after = current.get(agent_id)
             try:
-                await self._adapter.create_agent_identity(agent.name, agent.description)
+                if after is None:
+                    await self._adapter.remove_agent_identity(before)
+                elif after.name != before.name:
+                    await self._adapter.rename_agent_identity(before.name, after)
+                elif after != before:
+                    await self._adapter.update_agent_identity(after)
             except Exception:
-                failed += 1
                 logger.exception(
-                    "Failed to create %s identity for agent %s",
+                    "Failed to bring the %s identity of agent %s up to date",
                     self._bridge_type,
-                    agent.name,
+                    before.name,
                 )
+            if after is None:
+                del self._provisioned_agents[agent_id]
+
+        failures = await self._adapter.sync_agent_identities(list(current.values()))
+        failed = {name for name, _ in failures}
+        for name, exc in failures:
+            logger.error(
+                "Failed to provision %s identity for agent %s: %s",
+                self._bridge_type,
+                name,
+                exc,
+                exc_info=exc,
+            )
+        for identity in current.values():
+            if identity.name not in failed:
+                self._provisioned_agents[identity.agent_id] = identity
 
         # Counts calls that returned, not identities that now exist: an adapter
         # that cannot provision at all reports that itself. Reporting the agent
         # count regardless of failures would read as success on a run where
         # every one of them failed.
-        if failed:
+        if failures:
             logger.warning(
-                "Provisioned %s identities for %d of %d agents; %d failed",
+                "Provisioned %s identities for %d agents; %d failed",
                 self._bridge_type,
-                len(agents) - failed,
                 len(agents),
-                failed,
+                len(failures),
             )
         else:
             logger.info(
@@ -954,22 +1067,32 @@ class CollaborationCore:
 
         if not msg.attachments:
             check = await check_message(
-                self._trust_client, role="user", content=content
+                self._trust_client,
+                role="user",
+                content=content,
+                room_id=room_id,
             )
-            if check.blocked:
+            # A REDACTED verdict with nothing to redact with is not safe to
+            # treat as a pass: sending the original content then would be
+            # indistinguishable from not checking at all, so it is handled
+            # like a block.
+            if check.blocked or (
+                check.outcome == "redacted" and check.redacted_content is None
+            ):
                 logger.warning(
-                    "[BRIDGE-IN] message from %s blocked by Switch Trust "
-                    "(policy=%s) — not relayed into room %s",
+                    "[BRIDGE-IN] message from %s not relayed — Switch Trust "
+                    "outcome=%s (policy=%s) — room %s",
                     msg.sender_name,
+                    check.outcome,
                     check.policy_id,
                     transport_room_id,
                 )
-                await self._adapter.admin_message(
-                    msg.channel_id,
+                await self._post_trust_notice(
+                    msg,
                     "🚫 Your message was blocked by Switch Trust and was not "
-                    "delivered.",
-                    msg.root_id or msg.message_ref,
-                    message_type=AdminMessageType.TRUST_BLOCKED.value,
+                    "delivered to the room. You can still see it, but agents "
+                    "can't access it.",
+                    AdminMessageType.TRUST_BLOCKED,
                 )
                 return
             if check.redacted_content is not None:
@@ -977,13 +1100,20 @@ class CollaborationCore:
             annotation = trust_annotation(check)
             if annotation is not None:
                 content = f"{content}\n\n{annotation}"
-            event_id = await human_actor.send_message(
-                transport_room_id,
-                content,
-                format="markdown",
-                thread_root_id=thread_root_id,
-                metered=True,
-            )
+            with writes_derived_from(
+                human_actor.client_id,
+                _post_source(self._bridge_id, msg.channel_id, msg.message_ref),
+            ):
+                event_id = await human_actor.send_message(
+                    transport_room_id,
+                    content,
+                    format="markdown",
+                    thread_root_id=thread_root_id,
+                    metered=True,
+                    extra_content=(
+                        {SENDER_IS_APP_MARKER: True} if msg.sender_is_app else None
+                    ),
+                )
             if event_id is None:
                 logger.error(
                     "[BRIDGE-IN] failed to relay message from %s into room %s — "
@@ -992,6 +1122,27 @@ class CollaborationCore:
                     transport_room_id,
                 )
                 return
+            # Tell the sender what happened only now that the message is
+            # actually confirmed to have reached the room — posting this
+            # beforehand risks telling them their message was flagged/
+            # redacted when it never got there at all.
+            if check.redacted_content is not None:
+                redaction_notice = trust_redaction_notice(check)
+                if redaction_notice is not None:
+                    await self._post_trust_notice(
+                        msg, redaction_notice, AdminMessageType.TRUST_REDACTED
+                    )
+            if annotation is not None:
+                # The room itself never relays a human-authored event back out
+                # to a platform (see handle_outbound_message's human-sender
+                # skip), so without this the sender would never see the
+                # annotation their own client just appended to their message.
+                notice_type = (
+                    AdminMessageType.TRUST_ALERTED
+                    if check.outcome == "alerted"
+                    else AdminMessageType.TRUST_ERRORED
+                )
+                await self._post_trust_notice(msg, annotation, notice_type)
             # Record the correlation so a later reply (either direction) threads.
             await self._record_message_map(
                 external_channel_id=msg.channel_id,
@@ -1010,7 +1161,11 @@ class CollaborationCore:
         # A platform post hands us all its files at once, so the group is known
         # up front — no waiting on the receiving side to learn how many to
         # expect. The room carries them as `total` events sharing this id.
-        group_id = str(uuid.uuid4()) if total > 1 else None
+        # Derived from the post, as the files' rows are: a second delivery of
+        # a post whose first stopped partway writes the files still missing
+        # into the same group, which then completes.
+        source = _post_source(self._bridge_id, msg.channel_id, msg.message_ref)
+        group_id = str(uuid.uuid5(uuid.NAMESPACE_URL, source)) if total > 1 else None
         for index, attachment in enumerate(msg.attachments):
             media_uri = await human_actor.upload_media(
                 attachment.data, attachment.mimetype, attachment.filename
@@ -1018,22 +1173,25 @@ class CollaborationCore:
             msgtype = (
                 "m.image" if attachment.mimetype.startswith("image/") else "m.file"
             )
-            event_id = await human_actor.send_media(
-                transport_room_id,
-                media_uri,
-                attachment.filename,
-                attachment.mimetype,
-                len(attachment.data),
-                msgtype=msgtype,
-                caption=caption if index == 0 else None,
-                thread_root_id=thread_root_id,
-                group=(
-                    {"id": group_id, "index": index, "total": total}
-                    if group_id is not None
-                    else None
-                ),
-                metered=True,
-            )
+            # Numbered from the post and the file's place in it, as the text
+            # above is, so a second delivery of the post writes no file twice.
+            with writes_derived_from(human_actor.client_id, f"{source}\x1f{index}"):
+                event_id = await human_actor.send_media(
+                    transport_room_id,
+                    media_uri,
+                    attachment.filename,
+                    attachment.mimetype,
+                    len(attachment.data),
+                    msgtype=msgtype,
+                    caption=caption if index == 0 else None,
+                    thread_root_id=thread_root_id,
+                    group=(
+                        {"id": group_id, "index": index, "total": total}
+                        if group_id is not None
+                        else None
+                    ),
+                    metered=True,
+                )
             if event_id is None:
                 logger.error(
                     "[BRIDGE-IN] failed to relay attachment %s from %s into room %s",
@@ -1049,6 +1207,27 @@ class CollaborationCore:
                 external_channel_id=msg.channel_id,
                 transport_event_id=first_event_id,
                 external_post_id=msg.message_ref,
+            )
+
+    async def _post_trust_notice(
+        self, msg: InboundMessage, body: str, message_type: AdminMessageType
+    ) -> None:
+        """Tell the sender's platform what Switch Trust did with their message
+        — blocked, redacted, alerted, or errored. Never lets a failed notice
+        take the inbound message down with it — mirrors
+        `AgentCore._post_trust_blocked_notice`."""
+        try:
+            await self._adapter.admin_message(
+                msg.channel_id,
+                body,
+                msg.root_id or msg.message_ref,
+                message_type=message_type.value,
+            )
+        except Exception:
+            logger.warning(
+                "Could not post a Switch Trust notice to channel %s",
+                msg.channel_id,
+                exc_info=True,
             )
 
     async def _handle_inbound_command(self, cmd: InboundCommand) -> None:
@@ -1104,10 +1283,22 @@ class CollaborationCore:
                 "event_id": existing_root,
             }
 
-        try:
-            event_id = await human_actor.send_event(
-                transport_room_id, "com.switch.command", content
+        # A command post the platform delivers again (`_post_source`) is
+        # written, and so run, once. One without a post id cannot be told
+        # apart from another, and is written each time.
+        derived_from = (
+            contextlib.nullcontext()
+            if cmd.message_ref is None
+            else writes_derived_from(
+                human_actor.client_id,
+                _post_source(self._bridge_id, cmd.channel_id, cmd.message_ref),
             )
+        )
+        try:
+            with derived_from:
+                event_id = await human_actor.send_event(
+                    transport_room_id, "com.switch.command", content
+                )
         except TransportError as exc:
             logger.error(
                 "Failed to bridge command %s into %s: %s",
@@ -1636,14 +1827,7 @@ class CollaborationCore:
             thread_id=target.thread_id,
             surface=self._bridge_type,
         )
-        async with tenant_session(
-            self._session_factory, self._bridge_tenant_id
-        ) as session:
-            agent = await self._agent_store.get(session, target.agent_id)
-        hosted = agent is not None and hosted_launch_of(agent.metadata_) is not None
-        if not self._connections.relay_session_command(
-            target.agent_id, frame, worker_only=hosted
-        ):
+        if not self._connections.relay_session_command(target.agent_id, frame):
             await tell(
                 "The agent was not stopped: its controller is not connected to Switch."
             )
@@ -1880,6 +2064,12 @@ class CollaborationCore:
         existing = self._human_actors.get(external_user_id)
         if existing is not None:
             return existing
+        # Another switch-core process may have minted this person already:
+        # each process learns its bridge's people when the bridge starts, and
+        # someone who first spoke since then is known only in the database.
+        adopted = await self._adopt_human_actor(external_user_id)
+        if adopted is not None:
+            return adopted
 
         # Defence in depth against agent/user misdetection: a bridged agent
         # must never get a human actor as if it were an external user. If the
@@ -1900,12 +2090,38 @@ class CollaborationCore:
         # type (e.g. two Slack workspaces) must map to distinct clients,
         # since transport_user_id is globally unique but usernames are not.
         localpart = f"switch-{self._bridge_type}-{self._bridge_id}-{sanitized}"
+        # Two people whose names sanitize alike (`ann.marie` and `ann-marie`)
+        # would share that localpart: the one who comes second gets it with
+        # their platform id's digest appended, the same in every process.
+        digest = hashlib.blake2b(external_user_id.encode(), digest_size=4).hexdigest()
+        candidates = (localpart, f"{localpart}-{digest}")
 
-        client = await self._client_lifecycle.create_and_start(
-            client_type="user",
-            display_name=external_username,
-            localpart=localpart,
-        )
+        for localpart in candidates:
+            try:
+                client = await self._client_lifecycle.create_and_start(
+                    client_type="user",
+                    display_name=external_username,
+                    localpart=localpart,
+                )
+            except IntegrityError:
+                # Taken: by this person, minted by another process between the
+                # read above and here, or by someone else whose name
+                # sanitizes the same.
+                adopted = await self._adopt_human_actor_client(
+                    external_user_id,
+                    external_username,
+                    f"@{localpart}:{self._id_server_name}",
+                )
+                if adopted is not None:
+                    return adopted
+                continue
+            break
+        else:
+            raise RuntimeError(
+                f"No client localpart is free for external user "
+                f"{external_user_id} ({external_username!r}) on bridge "
+                f"{self._bridge_id}"
+            )
 
         ext_user = ExternalUser(
             bridge_id=self._bridge_id,
@@ -1929,6 +2145,137 @@ class CollaborationCore:
         )
         return client.client_id
 
+    async def _adopt_human_actor(self, external_user_id: str) -> str | None:
+        """The human actor another process minted for this person, started
+        here and remembered, or None when there is none yet."""
+        async with self._session_factory() as session:
+            known = await self._external_user_store.get_by_external_id(
+                session, self._bridge_id, external_user_id
+            )
+            record = (
+                None
+                if known is None
+                else await self._client_store.get(session, known.client_id)
+            )
+        if record is None or known is None:
+            return None
+        self._run_human_actor(external_user_id, known.external_username, record)
+        return record.id
+
+    async def _adopt_human_actor_client(
+        self, external_user_id: str, external_username: str, transport_user_id: str
+    ) -> str | None:
+        """The human actor whose client row was written first, when it is this
+        person's; None when it stands for someone else."""
+        deadline = time.monotonic() + _HUMAN_ACTOR_MINTING_SECONDS
+        while True:
+            async with self._session_factory() as session:
+                record = await self._client_store.get_by_transport_user_id(
+                    session, transport_user_id
+                )
+                person = (
+                    None
+                    if record is None
+                    else await self._external_user_store.get_by_client_id(
+                        session, record.id
+                    )
+                )
+            if record is None:
+                raise RuntimeError(
+                    f"Creating the human actor {transport_user_id} conflicted "
+                    "with another, which cannot be read back"
+                )
+            if person is not None:
+                break
+            # Its process writes whose it is right after the client row.
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"The human actor {transport_user_id} has no external user "
+                    f"after {_HUMAN_ACTOR_MINTING_SECONDS:.0f}s, so whose it is "
+                    "cannot be told"
+                )
+            await asyncio.sleep(0.1)
+        if (
+            person.bridge_id != self._bridge_id
+            or person.external_user_id != external_user_id
+        ):
+            return None
+        self._run_human_actor(external_user_id, external_username, record)
+        return record.id
+
+    def _run_human_actor(
+        self, external_user_id: str, external_username: str, record: Client
+    ) -> None:
+        client = self._client_lifecycle.get(record.id)
+        if client is None:
+            client = self._client_lifecycle.start_client(record)
+        self._human_actors[external_user_id] = record.id
+        self._human_user_ids.add(client.transport_user_id)
+        self._adapter.prime_mention_targets({external_username: external_user_id})
+        logger.info(
+            "Adopted human actor %s for external user %s on bridge %s, minted "
+            "by another process",
+            client.transport_user_id,
+            external_user_id,
+            self._bridge_id,
+        )
+
+    async def _channel_for_room(self, transport_room_id: str) -> str | None:
+        """The channel a room is bridged to, from memory or, on a miss, from
+        the room's row. A room bridged through another switch-core process
+        (created from the Console there, or adopted from a channel that
+        process heard of first) is mapped only there until this one reads it,
+        and this process may be the one relaying the room out."""
+        channel_id = self._find_channel(transport_room_id=transport_room_id)
+        if channel_id is not None:
+            return channel_id
+        async with self._session_factory() as session:
+            room = await self._room_store.get_by_transport_room_id(
+                session, transport_room_id
+            )
+        if (
+            room is None
+            or room.bridge_id != self._bridge_id
+            or not room.external_channel_id
+        ):
+            return None
+        self.add_room_mapping(
+            room.id, room.transport_room_id, room.external_channel_id, room.tenant_id
+        )
+        return room.external_channel_id
+
+    async def reload_channel_map(self) -> None:
+        """Map this bridge's rooms as their rows say now, after another
+        process bridged, unbridged or moved one. A mapping made here while
+        the rows were being read is newer than the read, and is kept."""
+        before = dict(self._room_to_channel)
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            rooms = await self._room_store.get_by_bridge(session, self._bridge_id)
+        stored = {
+            (room.id, room.transport_room_id): room
+            for room in rooms
+            if room.external_channel_id
+        }
+        for key, channel_id in before.items():
+            if key not in stored and self._room_to_channel.get(key) == channel_id:
+                logger.info(
+                    "Room %s is no longer bridged to channel %s; unmapping it",
+                    key[0],
+                    channel_id,
+                )
+                self.remove_room_mapping(*key)
+        for key, room in stored.items():
+            if self._room_to_channel.get(key) != room.external_channel_id:
+                assert room.external_channel_id is not None
+                self.add_room_mapping(
+                    room.id,
+                    room.transport_room_id,
+                    room.external_channel_id,
+                    room.tenant_id,
+                )
+
     def _find_channel(
         self, room_id: str | None = None, transport_room_id: str | None = None
     ) -> str | None:
@@ -1950,16 +2297,16 @@ class CollaborationCore:
             room.room_id,
             event.body[:80] if event.body else "",
         )
-        if event.sender in self._human_user_ids:
+        if event.sender == self._workspace_consumer_transport_user_id:
+            logger.debug("[BRIDGE-OUT] skipping bridge client message")
+            return
+        if await self._is_human_sender(event.sender):
             logger.debug(
                 "[BRIDGE-OUT] skipping human actor message from %s", event.sender
             )
             return
-        if event.sender == self._workspace_consumer_transport_user_id:
-            logger.debug("[BRIDGE-OUT] skipping bridge client message")
-            return
 
-        channel_id = self._find_channel(transport_room_id=room.room_id)
+        channel_id = await self._channel_for_room(room.room_id)
         if channel_id is None:
             logger.debug("[BRIDGE-OUT] no channel mapping for room %s", room.room_id)
             return
@@ -1968,6 +2315,38 @@ class CollaborationCore:
         with tenant_scope(await self._room_tenant(room_id)):
             with self._counted_outbound("message"):
                 await self._relay_outbound_message(channel_id, event)
+
+    async def handle_outbound_command(self, room: RoomRef, event: CommandEvent) -> None:
+        """Post a room command as the text that types it, so the reply threaded
+        under the command has a platform post to sit under.
+
+        A command typed on the platform names its human actor as `user_id`, so
+        `handle_outbound_message` drops it like any other message from there.
+        """
+        assert event.message_id is not None and event.thread_id is not None
+        threaded = event.thread_id != event.message_id
+        await self.handle_outbound_message(
+            room,
+            TransportMessage(
+                room_id=room.room_id,
+                event_id=event.message_id,
+                sender=event.user_id,
+                timestamp=0,
+                content=(
+                    {
+                        "m.relates_to": {
+                            "rel_type": "m.thread",
+                            "event_id": event.thread_id,
+                        }
+                    }
+                    if threaded
+                    else {}
+                ),
+                body=f"!{event.command} {event.args}".strip(),
+                sender_name=event.user_name,
+                thread_root_id=event.thread_id if threaded else None,
+            ),
+        )
 
     async def _relay_outbound_message(
         self, channel_id: str, event: TransportMessage
@@ -1998,6 +2377,33 @@ class CollaborationCore:
             event_content, channel_id
         )
 
+        if not await self._claim_outbound(channel_id, event.event_id):
+            return
+        try:
+            message_ref = await self._post_outbound_message(
+                channel_id,
+                event,
+                sender_name,
+                thread_root_ref,
+                admin_marker=admin_marker if is_system else None,
+                is_system=is_system,
+            )
+        except (Exception, asyncio.CancelledError):
+            await asyncio.shield(self._release_outbound(event.event_id))
+            raise
+        await self._settle_outbound(event.event_id, message_ref)
+
+    async def _post_outbound_message(
+        self,
+        channel_id: str,
+        event: TransportMessage,
+        sender_name: str | None,
+        thread_root_ref: str | None,
+        *,
+        admin_marker: object,
+        is_system: bool,
+    ) -> str | None:
+        event_content = event.content
         if is_system:
             message_type = (
                 admin_marker.get("type") if isinstance(admin_marker, dict) else None
@@ -2018,35 +2424,27 @@ class CollaborationCore:
                 and person.label not in body
             ):
                 body = f"On behalf of {person.label}:\n\n{body}"
-            message_ref = await self._adapter.admin_message(
+            return await self._adapter.admin_message(
                 channel_id,
                 body,
                 thread_root_ref,
                 message_type=message_type,
             )
-        else:
-            assert sender_name is not None  # guarded above
-            # Only the marker pages a channel. An `@channel` an agent wrote
-            # itself is defused by `translate_outbound` like any other text.
-            room_wide = is_room_wide_mention(event_content)
-            message_ref = await self._adapter.send_message(
-                channel_id,
-                sender_name,
-                (
-                    self._adapter.render_room_wide_mention(event.body)
-                    if room_wide
-                    else self._adapter.translate_outbound(event.body)
-                ),
-                thread_root_id=thread_root_ref,
-                room_wide_mention=room_wide,
-            )
-
-        if message_ref is not None:
-            await self._record_message_map(
-                external_channel_id=channel_id,
-                transport_event_id=event.event_id,
-                external_post_id=message_ref,
-            )
+        assert sender_name is not None  # guarded by the caller
+        # Only the marker pages a channel. An `@channel` an agent wrote
+        # itself is defused by `translate_outbound` like any other text.
+        room_wide = is_room_wide_mention(event_content)
+        return await self._adapter.send_message(
+            channel_id,
+            sender_name,
+            (
+                self._adapter.render_room_wide_mention(event.body)
+                if room_wide
+                else self._adapter.translate_outbound(event.body)
+            ),
+            thread_root_id=thread_root_ref,
+            room_wide_mention=room_wide,
+        )
 
     async def _outbound_thread_root_ref(
         self, event_content: dict[str, object], channel_id: str
@@ -2096,12 +2494,12 @@ class CollaborationCore:
             room.room_id,
             event.body[:80] if event.body else "",
         )
-        if event.sender in self._human_user_ids:
-            return
         if event.sender == self._workspace_consumer_transport_user_id:
             return
+        if await self._is_human_sender(event.sender):
+            return
 
-        channel_id = self._find_channel(transport_room_id=room.room_id)
+        channel_id = await self._channel_for_room(room.room_id)
         if channel_id is None:
             logger.debug("[BRIDGE-OUT] no channel mapping for room %s", room.room_id)
             return
@@ -2109,10 +2507,34 @@ class CollaborationCore:
         room_id, _ = self._channel_to_room[channel_id]
         with tenant_scope(await self._room_tenant(room_id)):
             with self._counted_outbound("media"):
-                await self._relay_outbound_media(channel_id, event, client)
+                await self._relay_outbound_media(room, channel_id, event, client)
+
+    async def _is_human_sender(self, sender: str) -> bool:
+        """Whether a room message was written by a person on this bridge, so
+        relaying it out would echo them back to themselves.
+
+        Kept in memory both ways, and read from the database on a miss: a
+        person whose actor another process minted is known there first.
+        """
+        if sender in self._human_user_ids:
+            return True
+        if sender in self._not_human_user_ids:
+            return False
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            human = await self._external_user_store.is_bridge_user(
+                session, self._bridge_id, sender
+            )
+        (self._human_user_ids if human else self._not_human_user_ids).add(sender)
+        return human
 
     async def _relay_outbound_media(
-        self, channel_id: str, event: TransportMedia, client: WorkspaceConsumer
+        self,
+        room: RoomRef,
+        channel_id: str,
+        event: TransportMedia,
+        client: WorkspaceConsumer,
     ) -> None:
         event_content = event.content
         sender_name = event.sender_name
@@ -2143,43 +2565,29 @@ class CollaborationCore:
             )
         )
 
-        message_ref: str | None
         data = await self._download_media(client, event.uri, filename)
-        if data is None or len(data) > self._max_attachment_bytes:
-            if data is not None:
-                logger.warning(
-                    "[BRIDGE-OUT] attachment %s is %d bytes, over the "
-                    "%d-byte relay cap",
-                    filename,
-                    len(data),
-                    self._max_attachment_bytes,
-                )
-            note = f"_sent an attachment that couldn't be relayed: {filename}_"
-            body = f"{caption}\n{note}" if caption else note
-            message_ref = await self._adapter.send_message(
-                channel_id,
-                sender_name,
-                self._adapter.translate_outbound(body),
-                thread_root_id=thread_root_ref,
-            )
-        else:
+        if data is not None and len(data) <= self._max_attachment_bytes:
             # Part of a multi-file message? Hold it until the whole group has
             # arrived, then relay all of it as one platform post.
             group = parse_attachment_group(event_content)
             if group is not None:
                 group_id, index, total = group
                 pending = self._outbound_groups.setdefault(
-                    group_id, _PendingOutboundGroup(total=total)
+                    group_id,
+                    _PendingOutboundGroup(
+                        total=total, room_id=room.room_id, from_seq=event.seq
+                    ),
                 )
+                pending.from_seq = min(pending.from_seq, event.seq)
                 pending.parts[index] = OutboundAttachment(
                     filename=filename, mimetype=mimetype, data=data
                 )
+                pending.event_ids[index] = event.event_id
                 if index == 0:
                     pending.caption = caption
-                    pending.first_event_id = event.event_id
                 if len(pending.parts) < total:
                     self._schedule_outbound_group_flush(
-                        group_id, channel_id, sender_name, thread_root_ref
+                        group_id, channel_id, sender_name, thread_root_ref, client
                     )
                     return
                 self._cancel_outbound_group_flush(group_id)
@@ -2189,22 +2597,55 @@ class CollaborationCore:
                 )
                 return
 
-            message_ref = await self._adapter.send_attachment(
-                channel_id,
-                sender_name,
-                filename,
-                mimetype,
-                data,
-                caption=caption,
-                thread_root_id=thread_root_ref,
-            )
+        if not await self._claim_outbound(channel_id, event.event_id):
+            return
+        message_ref: str | None
+        try:
+            if data is None or len(data) > self._max_attachment_bytes:
+                if data is not None:
+                    logger.warning(
+                        "[BRIDGE-OUT] attachment %s is %d bytes, over the "
+                        "%d-byte relay cap",
+                        filename,
+                        len(data),
+                        self._max_attachment_bytes,
+                    )
+                note = f"_sent an attachment that couldn't be relayed: {filename}_"
+                body = f"{caption}\n{note}" if caption else note
+                message_ref = await self._adapter.send_message(
+                    channel_id,
+                    sender_name,
+                    self._adapter.translate_outbound(body),
+                    thread_root_id=thread_root_ref,
+                )
+            else:
+                message_ref = await self._adapter.send_attachment(
+                    channel_id,
+                    sender_name,
+                    filename,
+                    mimetype,
+                    data,
+                    caption=caption,
+                    thread_root_id=thread_root_ref,
+                )
+        except (Exception, asyncio.CancelledError):
+            await asyncio.shield(self._release_outbound(event.event_id))
+            raise
+        await self._settle_outbound(event.event_id, message_ref)
 
-        if message_ref is not None:
-            await self._record_message_map(
-                external_channel_id=channel_id,
-                transport_event_id=event.event_id,
-                external_post_id=message_ref,
-            )
+    def held_from(self, room_id: str) -> int | None:
+        """The first file of a multi-file message in this room still waiting
+        for the rest: not posted yet, so the bridge's progress in the room
+        stops before it."""
+        held = [
+            pending.from_seq
+            for pending in [
+                *self._outbound_groups.values(),
+                *self._flushing_outbound_groups,
+            ]
+            if pending.room_id == room_id
+        ]
+        return min(held) if held else None
 
     def _schedule_outbound_group_flush(
         self,
@@ -2212,6 +2653,7 @@ class CollaborationCore:
         channel_id: str,
         sender_name: str,
         thread_root_ref: str | None,
+        client: WorkspaceConsumer,
     ) -> None:
         """Arm the safety net for an incomplete outbound attachment group.
 
@@ -2228,7 +2670,7 @@ class CollaborationCore:
             OUTBOUND_GROUP_TIMEOUT_SECONDS,
             lambda: asyncio.create_task(
                 self._flush_incomplete_outbound_group(
-                    group_id, channel_id, sender_name, thread_root_ref
+                    group_id, channel_id, sender_name, thread_root_ref, client
                 )
             ),
         )
@@ -2244,11 +2686,39 @@ class CollaborationCore:
         channel_id: str,
         sender_name: str,
         thread_root_ref: str | None,
+        client: WorkspaceConsumer,
     ) -> None:
         self._outbound_group_timers.pop(group_id, None)
-        pending = self._outbound_groups.pop(group_id, None)
-        if pending is None:
+        pending = self._outbound_groups.get(group_id)
+        if pending is None or not client.running:
+            # A bridge that stopped leaves the group to whoever holds it next:
+            # its progress stops before the group's first file.
             return
+        # A file of the group arriving while this posts would otherwise be
+        # added to a post already on its way without it, and never sent.
+        del self._outbound_groups[group_id]
+        self._flushing_outbound_groups.append(pending)
+        try:
+            await self._flush_outbound_group(
+                group_id, pending, channel_id, sender_name, thread_root_ref
+            )
+        finally:
+            self._flushing_outbound_groups = [
+                flushing
+                for flushing in self._flushing_outbound_groups
+                if flushing is not pending
+            ]
+            if client.transport is not None:
+                client.transport.held_back_released(pending.room_id)
+
+    async def _flush_outbound_group(
+        self,
+        group_id: str,
+        pending: _PendingOutboundGroup,
+        channel_id: str,
+        sender_name: str,
+        thread_root_ref: str | None,
+    ) -> None:
         received = len(pending.parts)
         logger.error(
             "[BRIDGE-OUT] attachment group %s incomplete: %d of %d parts arrived "
@@ -2274,19 +2744,24 @@ class CollaborationCore:
         sender_name: str,
         thread_root_ref: str | None,
     ) -> None:
-        message_ref = await self._adapter.send_attachments(
-            channel_id,
-            sender_name,
-            [pending.parts[i] for i in sorted(pending.parts)],
-            caption=pending.caption,
-            thread_root_id=thread_root_ref,
-        )
-        if message_ref is not None and pending.first_event_id is not None:
-            await self._record_message_map(
-                external_channel_id=channel_id,
-                transport_event_id=pending.first_event_id,
-                external_post_id=message_ref,
+        # Claimed, and recorded, by the earliest file that arrived: the post
+        # stands for the whole group, and that file is the first of it a reply
+        # can thread under.
+        claim_event_id = pending.event_ids[min(pending.event_ids)]
+        if not await self._claim_outbound(channel_id, claim_event_id):
+            return
+        try:
+            message_ref = await self._adapter.send_attachments(
+                channel_id,
+                sender_name,
+                [pending.parts[i] for i in sorted(pending.parts)],
+                caption=pending.caption,
+                thread_root_id=thread_root_ref,
             )
+        except (Exception, asyncio.CancelledError):
+            await asyncio.shield(self._release_outbound(claim_event_id))
+            raise
+        await self._settle_outbound(claim_event_id, message_ref)
 
     async def _download_media(
         self, client: WorkspaceConsumer, media_uri: str | None, filename: str
@@ -2329,7 +2804,7 @@ class CollaborationCore:
             mapping = await self._bridge_message_map_store.get_by_transport_event_id(
                 session, self._bridge_id, event_id
             )
-        if mapping is None:
+        if mapping is None or mapping.external_post_id is None:
             return
 
         channel_id = mapping.external_channel_id
@@ -2362,6 +2837,71 @@ class CollaborationCore:
         committed. Same discipline as begin_provisioning for the room-mapping
         race."""
         self._pending_message_maps[transport_event_id] = external_post_id
+
+    async def _claim_outbound(self, channel_id: str, transport_event_id: str) -> bool:
+        """Claim a room message for posting to the platform, before posting
+        it. False when it is claimed already: posted, or being posted, by
+        whoever held the bridge before. Claiming first is what keeps a
+        hand-over between processes from posting a message twice.
+
+        A post that fails, or is cancelled because the bridge stopped before
+        it finished, lets its claim go, so whoever holds the bridge next posts
+        it; one the platform took just before the cancel then shows twice. A
+        process that dies between the claim and the post leaves the claim,
+        which the next holder claims again once it is
+        `_UNPOSTED_CLAIM_LAPSES_AFTER` old and posts the message, twice if the
+        platform had taken it before the death."""
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            claimed = await self._bridge_message_map_store.claim(
+                session,
+                bridge_id=self._bridge_id,
+                external_channel_id=channel_id,
+                transport_event_id=transport_event_id,
+                unposted_after=_UNPOSTED_CLAIM_LAPSES_AFTER,
+            )
+            await session.commit()
+        if not claimed:
+            logger.info(
+                "[BRIDGE-OUT] %s was already posted to channel %s; not posting it "
+                "again",
+                transport_event_id,
+                channel_id,
+            )
+        return claimed
+
+    async def _settle_outbound(
+        self, transport_event_id: str, external_post_id: str | None
+    ) -> None:
+        """Record what a claimed message became on the platform, or let the
+        claim go when the platform took nothing."""
+        if external_post_id is None:
+            await self._release_outbound(transport_event_id)
+            return
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            await self._bridge_message_map_store.fill(
+                session,
+                bridge_id=self._bridge_id,
+                transport_event_id=transport_event_id,
+                external_post_id=external_post_id,
+            )
+            await session.commit()
+
+    async def _release_outbound(self, transport_event_id: str) -> None:
+        """Let a claim go after the platform refused the post, or the post
+        was cancelled before it finished."""
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            await self._bridge_message_map_store.release_claim(
+                session,
+                bridge_id=self._bridge_id,
+                transport_event_id=transport_event_id,
+            )
+            await session.commit()
 
     async def _record_message_map(
         self,
@@ -2403,6 +2943,7 @@ class CollaborationCore:
             mapping = await self._bridge_message_map_store.get_by_transport_event_id(
                 session, self._bridge_id, transport_event_id
             )
+        # A claim not filled yet maps to nothing on the platform.
         return mapping.external_post_id if mapping is not None else None
 
     # ── Room mapping management ──────────────────────────────────────────────

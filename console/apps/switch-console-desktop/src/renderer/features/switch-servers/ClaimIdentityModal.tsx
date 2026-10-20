@@ -61,7 +61,9 @@ export const ClaimIdentityModal = observer(function ClaimIdentityModal({
   // or when the named bridge has since been removed — the second is reported
   // rather than searched around.
   const selectedBridge = bridges.find((b) => b.id === bridgeId) ?? null;
-  const bridgeIsGone = !bridgesQuery.isLoading && bridges.length > 0 && selectedBridge === null;
+  // Not while re-reading: straight after an app is added the cached list does
+  // not have it yet.
+  const bridgeIsGone = !bridgesQuery.isFetching && bridges.length > 0 && selectedBridge === null;
   const alreadyLinked = (identities ?? []).find((i) => i.bridgeId === bridgeId) ?? null;
 
   return (

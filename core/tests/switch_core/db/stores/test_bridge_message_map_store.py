@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 
+from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import BridgeMessageMap, Client, CollaborationBridge
@@ -122,3 +124,46 @@ class TestBridgeMessageMapStore:
             assert (
                 await store.get_by_external_post_id(session, bridge_b, "post1") is None
             )
+
+    async def test_a_stale_claim_claimed_again_records_the_new_channel(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The holder that claimed the message died before posting it, and
+        the room moved to another channel of the bridge since. The next
+        holder posts it to the new channel, and the row says so."""
+        store = BridgeMessageMapStore()
+        unposted_after = timedelta(seconds=10)
+        async with session_factory() as session:
+            bridge_id = await _make_bridge(session)
+            assert await store.claim(
+                session,
+                bridge_id=bridge_id,
+                external_channel_id="chan-1",
+                transport_event_id="$evt1",
+                unposted_after=unposted_after,
+            )
+            await session.execute(
+                update(BridgeMessageMap)
+                .where(BridgeMessageMap.bridge_id == bridge_id)
+                .values(created_at=func.now() - timedelta(seconds=30))
+            )
+            await session.commit()
+
+            assert await store.claim(
+                session,
+                bridge_id=bridge_id,
+                external_channel_id="chan-2",
+                transport_event_id="$evt1",
+                unposted_after=unposted_after,
+            )
+            await store.fill(
+                session,
+                bridge_id=bridge_id,
+                transport_event_id="$evt1",
+                external_post_id="post1",
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            posted = await store.get_by_external_post_id(session, bridge_id, "post1")
+        assert posted is not None and posted.external_channel_id == "chan-2"

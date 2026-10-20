@@ -253,14 +253,18 @@ per-person accounts would hide each person's sessions from the others. Instead:
 **Several Consoles, one agent.** Under one account, each Console holds its own
 row for the same agent and writes the agent's one watcher on the host. Model
 and instructions come from the agent's config file on the host, so they agree.
-Auto-approve lives in each row, so what they share is the last choice a person
-made, kept beside the watcher (`auto-approve.json`): every watcher write takes
-auto-approve from it and brings the row in line, except the write that follows
-the person changing it (`pushRemoteAutoApprove`). A change goes on the host
-before the row (`keepAutoApproveChoice`), so a watcher write racing it takes
-the new value; when the watcher is not starting sessions — stopped, or
-automatic sessions off — nothing rewrites the spec now, so the change goes
-into the choice and the spec together (`recordAutoApproveOnHost`). Only an explicit
+The permission settings — bypass (`autoApprove`) and auto mode (`autoMode`) —
+live in each row, so what they share is the last choice a person made, kept
+beside the watcher as the runtime mode it selects (`auto-approve.json`, a name
+older than auto mode: `full-access`, `auto` or `approval-required`). Every
+watcher write takes the runtime mode from it and brings the row in line
+(`permissionsForRuntimeMode`; `full-access` leaves the row's auto mode alone,
+since bypass overrides it), except the write that follows the person changing
+it (`pushRemotePermissions`). A change goes on the host before the row
+(`keepRuntimeModeChoice`), so a watcher write racing it takes the new value;
+when the watcher is not starting sessions — stopped, or automatic sessions
+off — nothing rewrites the spec now, so the change goes into the choice and
+the spec together (`recordRuntimeModeOnHost`). Only an explicit
 change writes the choice: a saved spec is written from whichever row wrote the
 watcher last — an older Console's too — so it is never taken for one.
 
@@ -323,7 +327,7 @@ card on the host's page). Moves are in `src/main/core/agent-migration/`.
   moved from this Console run there: Switch keeps an agent on a revoked
   controller, where nothing runs it.
 - **What moves with an agent.** The managed definition carries provider,
-  model, instructions, auto-approve and working directory; whatever else the
+  model, instructions, auto mode, auto-approve and working directory; whatever else the
   agent's configuration says (effort or variant, a provider agent definition,
   launch-profile settings, shell setup, a pinned CLI) is listed in the move's
   confirmation as not carried. Its credentials file is removed from the

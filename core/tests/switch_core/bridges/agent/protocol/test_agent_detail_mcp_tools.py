@@ -4,17 +4,25 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import owner_and_owner_agents_policy, owner_only_policy
-from switch_core.agent_icon import InvalidIconUrl
+from switch_core.agent_icon import InvalidIconUrl, generated_icon_url
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
+from switch_core.bridges.collaboration.adapter import AgentIdentity
 from switch_core.db.models import Agent, ApiKey, Client, User
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.known_agents import KNOWN_AGENTS
+from switch_core.gateway.known_agents import known_agents
+
+
+class _NoBridges:
+    """A deployment with no collaboration bridges running."""
+
+    def bridges_for_tenant(self, tenant_id: str) -> list[object]:
+        return []
 
 
 def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
@@ -28,6 +36,7 @@ def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
     svc.user_store = UserStore()  # type: ignore[attr-defined]
     svc.agent_session_store = AgentSessionStore()  # type: ignore[attr-defined]
     svc.room_role_store = RoomRoleStore()  # type: ignore[attr-defined]
+    svc.collab_lifecycle = _NoBridges()  # type: ignore[assignment]
     return svc
 
 
@@ -62,7 +71,7 @@ async def _make_agent(
     await session.flush()
 
     if known:
-        spec = KNOWN_AGENTS["claude-code"]
+        spec = known_agents()["claude-code"]
         opts = spec.parse_options({})
         integration_profile = spec.build_profile(opts).model_dump()
         metadata_ = {
@@ -181,12 +190,14 @@ def _profile(
     display_name: str | None = None,
     icon_url: str | None = None,
     addressing: str | None = None,
+    third_party_avatars: bool = True,
 ) -> AgentProfileUpdate:
     return AgentProfileUpdate.parse(
         description=description,
         display_name=display_name,
         icon_url=icon_url,
         addressing=addressing,
+        third_party_avatars=third_party_avatars,
     )
 
 
@@ -276,6 +287,18 @@ class TestUpdateAgentDetail:
         with pytest.raises(ValueError, match="description must not be blank"):
             _profile(description="   ")
 
+    def test_an_avatar_service_icon_is_refused_only_when_the_server_turns_them_off(
+        self,
+    ) -> None:
+        dicebear = generated_icon_url("target")
+        with pytest.raises(InvalidIconUrl, match="third-party avatars turned off"):
+            _profile(icon_url=dicebear, third_party_avatars=False)
+        assert _profile(icon_url=dicebear).columns == {"icon_url": dicebear}
+        other = "https://example.com/r.png"
+        assert _profile(icon_url=other, third_party_avatars=False).columns == {
+            "icon_url": other
+        }
+
     async def test_non_owner_is_rejected(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -296,3 +319,63 @@ class TestUpdateAgentDetail:
             agent = await AgentStore().get(session, target_id)
             assert agent is not None
             assert agent.description == "target desc"
+
+
+class _RecordingAdapter:
+    def __init__(self) -> None:
+        self.updated: list[tuple[str, str | None, str]] = []
+
+    async def update_agent_identity(self, agent: AgentIdentity) -> None:
+        self.updated.append((agent.name, agent.display_name, agent.description))
+
+
+class _RecordingBridges:
+    def __init__(self, adapter: _RecordingAdapter) -> None:
+        self.adapter = adapter
+        self.bridge_type = "mattermost"
+
+    def bridges_for_tenant(self, tenant_id: str) -> list[_RecordingBridges]:
+        return [self]
+
+
+class TestUpdateAgentDetailReachesTheBridges:
+    """A platform handle that shows the label or the description follows an
+    edit made through the agent tool, not only one made in the gateway."""
+
+    @pytest.mark.parametrize(
+        ("change", "expected"),
+        [
+            ({"display_name": "Reviewer"}, ("target", "Reviewer", "target desc")),
+            ({"description": "Reviews PRs"}, ("target", None, "Reviews PRs")),
+        ],
+    )
+    async def test_a_label_or_description_change_is_passed_on(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        change: dict[str, str],
+        expected: tuple[str, str | None, str],
+    ) -> None:
+        svc = _service(session_factory)
+        adapter = _RecordingAdapter()
+        svc.collab_lifecycle = _RecordingBridges(adapter)  # type: ignore[assignment]
+        req_id, target_id = await _owned_pair(session_factory)
+
+        await svc.update_agent_detail(req_id, target_id, _profile(**change))
+
+        assert adapter.updated == [expected]
+
+    async def test_other_changes_are_not(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        adapter = _RecordingAdapter()
+        svc.collab_lifecycle = _RecordingBridges(adapter)  # type: ignore[assignment]
+        req_id, target_id = await _owned_pair(session_factory)
+
+        await svc.update_agent_detail(
+            req_id,
+            target_id,
+            _profile(icon_url="https://example.com/r.png", addressing="anyone"),
+        )
+
+        assert adapter.updated == []

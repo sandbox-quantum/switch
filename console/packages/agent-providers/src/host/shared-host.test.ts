@@ -12,7 +12,9 @@ import {
 } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { stubSwitchFetch } from '../testing/agent-sessions-server';
-import { connectParent } from './session-channel';
+import { Redactions } from './redaction';
+import { ServiceNotices } from './service-notices';
+import { connectParent, type ParentChannel } from './session-channel';
 import { parkAfterMs, RESET_HOLD_MS, runSharedHost, sessionBusy } from './shared-host';
 import { hostParked } from './shared-state';
 
@@ -89,6 +91,8 @@ type Harness = {
   switchCore: ReturnType<typeof stubSwitchFetch>;
   media: Map<string, Uint8Array>;
   parent: ReturnType<typeof fakeParent>;
+  /** The host's end of the pipe, as its Switch tools use it. */
+  channel: ParentChannel;
   stop: () => Promise<unknown>;
   snapshotEpoch: () => Promise<string>;
 };
@@ -102,6 +106,11 @@ async function start(
     /** The provider reports work, such as subagents, still running outside any turn. */
     backgroundWork?: { running: boolean };
     resettable?: boolean;
+    /**
+     * Stopping a conversation reports it stopped and exited, as every provider
+     * adapter does, and returns only after the host has had time to look.
+     */
+    stopReports?: boolean;
     /** What the launcher recorded when it created this session's root, if it did. */
     owedStart?: string;
     /** The file's text as written, for one that is not what a launcher writes. */
@@ -207,6 +216,10 @@ async function start(
     interruptTurn: vi.fn(async () => {}),
     stopSession: vi.fn(async () => {
       live = false;
+      if (!opts.stopReports) return;
+      emit({ type: 'session.state.changed', status: 'stopped' });
+      emit({ type: 'session.exited', reason: 'Stopped' });
+      await new Promise((resolve) => setTimeout(resolve, 600));
     }),
     stopAll: vi.fn(async () => {}),
     hasSession: () => live,
@@ -252,9 +265,12 @@ async function start(
   const session = structuredClone(SESSION);
   if (opts.rooms) session.capabilities.attachmentMimeTypes = ['text/plain'];
   if (opts.resettable) session.capabilities.reset = true;
+  const channel = connectParent(parent.port);
   const running = runSharedHost(
     {
       root,
+      redactions: new Redactions(),
+      serviceNotices: new ServiceNotices(),
       agentApiUrl: 'http://127.0.0.1/agent',
       token: randomUUID(),
       session,
@@ -264,9 +280,10 @@ async function start(
         runtimeMode: 'approval-required',
         env: {},
         mcpServers: {},
+        connectorMcpServers: [],
       },
       ...(opts.rooms ? { roomConnection: { connectionId: 'controller' } } : {}),
-      parent: connectParent(parent.port),
+      parent: channel,
       parkAfterMs: opts.parkAfterMs ?? null,
       instructions: opts.instructions ?? null,
     },
@@ -304,6 +321,7 @@ async function start(
     switchCore,
     media,
     parent,
+    channel,
     stop: async () => {
       stop.abort();
       return outcome;
@@ -928,6 +946,79 @@ it('tells the session to rejoin its room once a reset asked for there has applie
   }
 }, 20000);
 
+it('tells the room at once when it refuses a compaction asked for there mid-turn', async () => {
+  const host = await start({ rooms: true });
+  const asks = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask'
+    );
+  try {
+    expect(
+      await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'work on it') })
+    ).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 5000 });
+    const compact: Command = {
+      ...relayed('current', 'room-compact', { type: 'session.compact' }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'switch-web',
+        roomId: 'room',
+        threadId: 'thread',
+        messageId: 'message-9',
+      },
+    };
+    const answer = await host.parent.ask({
+      type: 'command',
+      command: compact,
+      requesterName: null,
+    });
+    expect(answer).toMatchObject({ ok: true, value: { status: 'rejected' } });
+    await vi.waitFor(() => expect(asks()).toHaveLength(1), { timeout: 5000 });
+    expect(asks()[0]!.ask).toEqual({
+      type: 'room-reply',
+      roomId: 'room',
+      threadId: 'thread',
+      body: "I can't compact my session while I'm working on a turn. Ask again once I've finished, or stop the turn first.",
+    });
+    // Asked again (a relay retried), the room is not told twice.
+    await host.parent.ask({ type: 'command', command: compact, requesterName: null });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(asks()).toHaveLength(1);
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
+it('keeps running through a reset whose provider reports the old conversation stopped', async () => {
+  const host = await start({ resettable: true, stopReports: true });
+  try {
+    const reset: Command = {
+      ...relayed('current', 'room-reset', { type: 'session.reset' }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'switch-web',
+        roomId: 'room',
+        threadId: null,
+        messageId: 'message-9',
+      },
+    };
+    const answer = await host.parent.ask({
+      type: 'command',
+      command: reset,
+      requesterName: 'louisa',
+    });
+    expect(answer).toMatchObject({
+      ok: true,
+      value: { commandId: 'room-reset', status: 'applied' },
+    });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 5000 });
+    expect(host.turns[0]!.text).toContain('Connect to Switch room "room"');
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
 it('says a session is busy for each thing that keeps it from parking, and idle otherwise', () => {
   const snapshot = (session: Partial<Session>, turns: string[], requests: string[]) =>
     ({
@@ -964,14 +1055,14 @@ it('says a session is busy for each thing that keeps it from parking, and idle o
     busy: false,
     reasons: [],
   });
-  // Subagents still at work after the turn ended keep it from parking, and its worker awake.
+  // Subagents still at work after the turn ended keep it from parking.
   expect(sessionBusy(snapshot({ status: 'ready' }, ['completed'], []), 'none', 0, true)).toEqual({
     busy: true,
     reasons: [{ kind: 'turn_running', count: 1 }],
   });
 });
 
-it('stops holding its worker awake for a reset decision after the bound, and keeps the decision', async () => {
+it('stops holding its host busy for a reset decision after the bound, and keeps the decision', async () => {
   const lastBusy = (host: Harness) =>
     host.parent.sent.filter((m) => m.kind === 'busy').at(-1) as unknown as
       | { busy: boolean; reasons: { kind: string; count: number }[] }
@@ -1204,3 +1295,62 @@ it('keeps the session running when the start record cannot even be removed', asy
     expect(await host.stop()).toBeNull();
   }
 }, 20000);
+
+it('posts for a room turn that ended without the agent posting, and not for one that posted', async () => {
+  const host = await start({ rooms: true });
+  const asks = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask'
+    );
+  const answer = (id: number, value: unknown) =>
+    host.parent.port.emit('message', { kind: 'answer', id, ok: true, value });
+  const turn = async (sequence: number) => {
+    const before = host.turns.length;
+    expect(
+      await host.parent.ask({ type: 'room', handoff: roomMessage(sequence, 'hi') })
+    ).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(before + 1), { timeout: 5000 });
+    return host.turns.at(-1)!.turnId;
+  };
+  try {
+    const silent = await turn(1);
+    host.emit({
+      type: 'turn.completed',
+      turnId: silent,
+      outcome: 'error',
+      message: 'Not signed in.',
+      usage: [],
+    });
+    await vi.waitFor(() => expect(asks()).toHaveLength(1), { timeout: 5000 });
+    expect(asks()[0]!.ask).toEqual({
+      type: 'room-reply',
+      roomId: 'room',
+      threadId: null,
+      body: 'I finished without replying. The turn failed: Not signed in.',
+    });
+    answer(asks()[0]!.id, null);
+
+    const answered = await turn(2);
+    // The provider's Switch tool call, as the session's MCP server makes it.
+    const posting = host.channel.ask({
+      type: 'tool',
+      name: 'post_message',
+      arguments: { body: 'Hi!' },
+    });
+    await vi.waitFor(() => expect(asks()).toHaveLength(2));
+    answer(asks()[1]!.id, { content: [{ type: 'text', text: '{"event_id":"e"}' }] });
+    await posting;
+    host.emit({ type: 'turn.completed', turnId: answered, outcome: 'completed', usage: [] });
+    await vi.waitFor(async () => {
+      const { value } = await host.parent.ask({ type: 'snapshot' });
+      expect((value as Snapshot).turns.find((t) => t.turnId === answered)?.status).toBe(
+        'completed'
+      );
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(asks()).toHaveLength(2);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});

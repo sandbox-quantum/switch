@@ -1,6 +1,8 @@
 import { DoorOpen, ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
+import { useLayoutEffect, useRef } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { ConsoleChatRedirect } from '@renderer/features/chats/console-chat-redirect';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
@@ -11,8 +13,9 @@ import { Button } from '@renderer/lib/ui/button';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { RoomConfigurationPanel } from './room-configuration-panel';
+import { roomEmbedSlotStore } from './room-embed-slot';
 import { openRoomChannel } from './room-links';
-import { type RoomTab, roomTabStore } from './room-tab-store';
+import { embeddedRoomTab, type RoomTab, roomTabStore } from './room-tab-store';
 
 /**
  * Opens the room's channel in the messaging app it is bridged to. The embedded
@@ -23,7 +26,11 @@ import { type RoomTab, roomTabStore } from './room-tab-store';
  * messaging app to open, and a button that quietly does nothing is worse than
  * no button.
  */
-const OpenInMessagingApp = observer(function OpenInMessagingApp({ roomId }: { roomId: string }) {
+export const OpenInMessagingApp = observer(function OpenInMessagingApp({
+  roomId,
+}: {
+  roomId: string;
+}) {
   const bridgeType = switchRoomsStore.roomBridgeTypeById(roomId);
   if (!switchRoomsStore.roomChannelUrl(roomId)) return null;
 
@@ -58,6 +65,27 @@ const TABS = [
 ] as const satisfies readonly { value: RoomTab; label: string }[];
 
 /**
+ * The two sides of a room — its conversation and its settings — to pick
+ * between; `fallback` is the side showing until one is picked.
+ */
+export const RoomTabs = observer(function RoomTabs({
+  roomId,
+  fallback,
+}: {
+  roomId: string;
+  fallback: RoomTab;
+}) {
+  return (
+    <SegmentedControl
+      value={roomTabStore.tabFor(roomId, fallback)}
+      onChange={(tab) => roomTabStore.setTab(roomId, tab)}
+      options={TABS}
+      ariaLabel="Room view"
+    />
+  );
+});
+
+/**
  * A room opened on its own is its own root: it belongs to a server and to every
  * agent in it, and picking one of those to stand in front of it would be a
  * claim about how you got here rather than about where you are.
@@ -88,12 +116,7 @@ const RoomTitlebar = observer(function RoomTitlebar() {
               },
             ]}
           />
-          <SegmentedControl
-            value={roomTabStore.tabFor(params.roomId)}
-            onChange={(tab) => roomTabStore.setTab(params.roomId, tab)}
-            options={TABS}
-            ariaLabel="Room view"
-          />
+          <RoomTabs roomId={params.roomId} fallback="chat" />
         </div>
       }
       rightSlot={
@@ -107,10 +130,46 @@ const RoomTitlebar = observer(function RoomTitlebar() {
 
 /** Settings when the room is showing them; otherwise nothing, and the
  * conversation drawn by `RoomEmbedLayer` above shows through. */
-const RoomMainPanel = observer(function RoomMainPanel() {
+const RoomMainPanel = observer(function RoomMainPanel(): React.JSX.Element {
   const { params } = useParams('room');
-  if (roomTabStore.tabFor(params.roomId) !== 'configuration') return null;
-  return <RoomConfigurationPanel roomId={params.roomId} />;
+  return (
+    <>
+      <ConsoleChatRedirect roomId={params.roomId} />
+      {roomTabStore.tabFor(params.roomId, 'chat') === 'configuration' && (
+        <RoomConfigurationPanel roomId={params.roomId} />
+      )}
+    </>
+  );
+});
+
+/** The side a room shown inside another page opens on, until one is picked. */
+export function embeddedRoomFallbackTab(roomId: string): RoomTab {
+  return embeddedRoomTab(switchRoomsStore.roomBridgeTypeById(roomId));
+}
+
+/**
+ * A room shown inside another page, as an agent's page shows one beside its
+ * column: the same conversation as the room view, which `RoomEmbedLayer` lays
+ * over this box, or the same settings — the conversation first when its
+ * platform can be drawn here, the settings first when it cannot. Fills its
+ * parent; the page puts the room's `RoomTabs` and `OpenInMessagingApp` in its
+ * own title bar.
+ */
+export const EmbeddedRoom = observer(function EmbeddedRoom({ roomId }: { roomId: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    roomEmbedSlotStore.claim({ roomId, element });
+    return () => roomEmbedSlotStore.release(element);
+  }, [roomId]);
+  return (
+    <div ref={ref} data-testid="embedded-room" className="min-h-0 flex-1">
+      {roomTabStore.tabFor(roomId, embeddedRoomFallbackTab(roomId)) === 'configuration' && (
+        <RoomConfigurationPanel roomId={roomId} />
+      )}
+    </div>
+  );
 });
 
 export const roomView = {

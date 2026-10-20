@@ -1,5 +1,9 @@
+import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
+import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
+import { getManagedServer } from '@main/core/switch-servers/servers-store';
 import type {
   DockerAvailability,
+  LocalActivityEntry,
   LocalServerStatus,
   StartLocalServerResult,
 } from '@shared/core/managed-switch-server/managed-switch-server';
@@ -21,4 +25,31 @@ export const localSwitchServerController = createRPCController({
    * next start, instead of pulling this build's pinned images. */
   setCheckoutBuild: (enabled: boolean): Promise<void> =>
     localServerService.setCheckoutBuild(enabled),
+
+  /** Turn Mattermost on or off for a server that runs without Docker; applies
+   * at the next start. */
+  setMattermost: (enabled: boolean): Promise<void> => localServerService.setMattermost(enabled),
+
+  /** When the running stack started, or null when it is not running. */
+  startedAt: (): Promise<string | null> => localServerService.startedAt(),
+
+  /** The stack's recent history, most recent first. */
+  activity: (): Promise<LocalActivityEntry[]> => localServerService.activity(),
+
+  /**
+   * Move the service on `port` elsewhere and start again. When that moves the
+   * API, the agents pointed at it follow, as they do when a server's address
+   * is edited.
+   */
+  useAnotherPort: async (port: number): Promise<StartLocalServerResult> => {
+    const before = await getManagedServer();
+    const result = await localServerService.useAnotherPort(port);
+    if (result.kind !== 'started' || !before) return result;
+    const after = await getManagedServer();
+    if (after && after.url !== before.url) {
+      await propagateServerApiUrl(after.id, after.url);
+      await embeddedControllerService.followServerApiUrl(after.id);
+    }
+    return result;
+  },
 });

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { apiUrlFor, gatewayUrlFor, isPorts, pickFreePorts } from './free-port';
+import {
+  apiUrlFor,
+  gatewayUrlFor,
+  isPorts,
+  managedServerAddresses,
+  pickFreePorts,
+} from './free-port';
 
 describe('pickFreePorts', () => {
   it('returns four distinct, positive host ports', async () => {
@@ -31,5 +37,13 @@ describe('url helpers', () => {
     const ports = { gateway: 3300, api: 8000, mattermost: 8065, postgres: 5432 };
     expect(gatewayUrlFor(ports)).toBe('http://localhost:3300');
     expect(apiUrlFor(ports)).toBe('http://localhost:8000');
+  });
+
+  it('registers a managed stack on switch-core’s port, with the dashboard on its own', () => {
+    const ports = { gateway: 3300, api: 8000, mattermost: 8065, postgres: 5432 };
+    expect(managedServerAddresses(ports)).toEqual({
+      url: 'http://localhost:8000',
+      dashboardUrl: 'http://localhost:3300',
+    });
   });
 });

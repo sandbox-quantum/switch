@@ -23,14 +23,6 @@ const UNSET = '__unset__';
 export type FormValue = string | boolean;
 export type FormState = Record<string, FormValue>;
 
-/** name/description are collected as top-level fields, not advanced ones. */
-export const TOP_LEVEL_KEYS = new Set(['name', 'description']);
-
-/** The advanced (non top-level) attribute fields, in provider display order. */
-export function advancedFields(allFields: RepoAgentField[]): RepoAgentField[] {
-  return allFields.filter((f) => !TOP_LEVEL_KEYS.has(f.key));
-}
-
 export function emptyForm(fields: RepoAgentField[]): FormState {
   const state: FormState = {};
   for (const field of fields) state[field.key] = field.type === 'boolean' ? false : '';
@@ -82,7 +74,7 @@ export function attributesFromForm(
   return attributes;
 }
 
-/** One provider-declared definition attribute, rendered by its field type. */
+/** One advanced configuration field, rendered by its type. */
 export function DefinitionFieldInput({
   field,
   value,

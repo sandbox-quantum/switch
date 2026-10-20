@@ -17,6 +17,7 @@ import {
   createOpencodeAdapter,
   fromPermissionReply,
   type OpencodeAdapter,
+  mcpToolOf,
   permissionTitle,
   subagentName,
   toolItemType,
@@ -34,6 +35,7 @@ function startInput(overrides: Partial<ProviderSessionStartInput> = {}): Provide
     runtimeMode: 'full-access',
     env: { PATH: '/usr/bin', HOME: '/home/switch' },
     mcpServers: {},
+    connectorMcpServers: [],
     model: { id: 'opencode/big-pickle' },
     ...overrides,
   };
@@ -484,26 +486,29 @@ describe('OpencodeAdapter approvals and questions', () => {
     expect(resolved.decision).toBe('acceptForSession');
   });
 
-  it('never opens a request in full access and allows the ask once instead', async () => {
-    const { adapter, session, recorder } = await setup('full-access');
-    await adapter.sendTurn({ sessionId: 'switch-session', turnId: 't1', text: 'run it' });
-    session.push(sessionStatus(NATIVE, 'busy'));
-    session.push(
-      opencodeEvent('permission.asked', {
-        id: 'per_1',
-        sessionID: NATIVE,
-        permission: 'doom_loop',
-        patterns: ['*'],
-        metadata: {},
-        always: [],
-      })
-    );
-    session.push(sessionStatus(NATIVE, 'idle'));
-    await recorder.waitFor('turn.completed', () => true, 1_000);
+  it.each(['full-access', 'auto'] as const)(
+    'never opens a request in %s and allows the ask once instead',
+    async (mode) => {
+      const { adapter, session, recorder } = await setup(mode);
+      await adapter.sendTurn({ sessionId: 'switch-session', turnId: 't1', text: 'run it' });
+      session.push(sessionStatus(NATIVE, 'busy'));
+      session.push(
+        opencodeEvent('permission.asked', {
+          id: 'per_1',
+          sessionID: NATIVE,
+          permission: 'doom_loop',
+          patterns: ['*'],
+          metadata: {},
+          always: [],
+        })
+      );
+      session.push(sessionStatus(NATIVE, 'idle'));
+      await recorder.waitFor('turn.completed', () => true, 1_000);
 
-    expect(recorder.ofType('request.opened')).toHaveLength(0);
-    expect(session.calls).toContainEqual({ method: 'replyPermission', args: ['per_1', 'once'] });
-  });
+      expect(recorder.ofType('request.opened')).toHaveLength(0);
+      expect(session.calls).toContainEqual({ method: 'replyPermission', args: ['per_1', 'once'] });
+    }
+  );
 
   it('answers questions positionally', async () => {
     const { adapter, session, recorder } = await setup();
@@ -668,6 +673,21 @@ describe('OpencodeAdapter mappings', () => {
     ).toBe('allow');
   });
 
+  it("keeps the person's own rules in auto mode: no catch-all, no asks, only Switch's allows", () => {
+    const rules = permissionRulesFor('auto', ['switch']);
+    expect(rules.every((rule) => rule.action === 'allow')).toBe(true);
+    expect(rules.some((rule) => rule.permission === '*')).toBe(false);
+    expect(rules.find((rule) => rule.permission === 'switch_*')?.action).toBe('allow');
+    expect(rules.some((rule) => rule.permission === 'bash' || rule.permission === 'edit')).toBe(
+      false
+    );
+    const config = permissionConfigFor('auto', ['switch']);
+    expect(config['*']).toBeUndefined();
+    expect(config['bash']).toBeUndefined();
+    expect(config['edit']).toBeUndefined();
+    expect(config['switch_*']).toBe('allow');
+  });
+
   it('never asks about a tool from an MCP server the caller registered', () => {
     // A session's MCP servers are the ones Switch put there — for Switch
     // Console, the room protocol. An agent that must ask the room before it may
@@ -773,4 +793,133 @@ it('sends the native model variant and clears it when returning to defaults', as
     session.calls.filter((call) => call.method === 'prompt').at(-1)?.args[0]
   ).not.toHaveProperty('variant');
   await adapter.stopAll();
+});
+
+describe('OpencodeAdapter connector tools', () => {
+  const stdio = { transport: 'stdio' as const, command: 'node', args: ['server.mjs'] };
+  const servers = { switch: stdio, atlassian: stdio, gws: stdio, other: stdio };
+  const action = (rules: { permission: string; action: string }[], permission: string) =>
+    rules.find((rule) => rule.permission === permission)?.action;
+
+  it.each(['approval-required', 'auto-accept-edits'] as const)(
+    "in %s a connector gets no allow rule and asks under '*', while Switch's own never asks",
+    async (mode) => {
+      const { session } = await setup(mode, {
+        mcpServers: servers,
+        connectorMcpServers: ['atlassian', 'gws'],
+      });
+      const { permission, config } = session.opened;
+      expect(action(permission, '*')).toBe('ask');
+      expect(action(permission, 'switch_*')).toBe('allow');
+      expect(action(permission, 'other_*')).toBe('allow');
+      expect(action(permission, 'atlassian_*')).toBeUndefined();
+      expect(action(permission, 'gws_*')).toBeUndefined();
+      expect(config.permission['switch_*']).toBe('allow');
+      expect(config.permission['atlassian_*']).toBeUndefined();
+      expect(config.permission['*']).toBe('ask');
+      expect(Object.keys(config.mcp).sort()).toEqual(['atlassian', 'gws', 'other', 'switch']);
+    }
+  );
+
+  it('allows everything in full access', async () => {
+    const { session } = await setup('full-access', {
+      mcpServers: servers,
+      connectorMcpServers: ['atlassian', 'gws'],
+    });
+    expect(session.opened.permission.every((rule) => rule.action === 'allow')).toBe(true);
+  });
+
+  it("in auto mode a connector gets no rule of Switch's, and its ask is allowed once", async () => {
+    const { adapter, session, recorder } = await setup('auto', {
+      mcpServers: servers,
+      connectorMcpServers: ['atlassian', 'gws'],
+    });
+    const { permission, config } = session.opened;
+    expect(action(permission, '*')).toBeUndefined();
+    expect(action(permission, 'switch_*')).toBe('allow');
+    expect(action(permission, 'atlassian_*')).toBeUndefined();
+    expect(config.permission['*']).toBeUndefined();
+    await adapter.sendTurn({ sessionId: 'switch-session', turnId: 't1', text: 'search' });
+    session.push(sessionStatus(NATIVE, 'busy'));
+    session.push(
+      opencodeEvent('permission.asked', {
+        id: 'per_1',
+        sessionID: NATIVE,
+        permission: 'atlassian_search',
+        patterns: ['*'],
+        metadata: {},
+        always: [],
+      })
+    );
+    session.push(sessionStatus(NATIVE, 'idle'));
+    await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(recorder.ofType('request.opened')).toHaveLength(0);
+    expect(session.calls).toContainEqual({ method: 'replyPermission', args: ['per_1', 'once'] });
+  });
+
+  it("still types a connector's tools as MCP tool approvals", () => {
+    expect(toRequestType('atlassian_search', ['switch', 'atlassian'])).toBe('mcp_tool_approval');
+  });
+
+  it('names the connector on the card it opens', async () => {
+    const { adapter, session, recorder } = await setup('approval-required', {
+      mcpServers: servers,
+      connectorMcpServers: ['atlassian', 'gws'],
+    });
+    await adapter.sendTurn({ sessionId: 'switch-session', turnId: 't1', text: 'search' });
+    session.push(sessionStatus(NATIVE, 'busy'));
+    session.push(
+      opencodeEvent('permission.asked', {
+        id: 'per_1',
+        sessionID: NATIVE,
+        permission: 'atlassian_search',
+        patterns: ['*'],
+        metadata: {},
+        always: ['*'],
+      })
+    );
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    expect(opened).toMatchObject({ requestType: 'mcp_tool_approval', connector: 'atlassian' });
+  });
+
+  it('says which server wants to run which tool, with the input it will run', async () => {
+    const { adapter, session, recorder } = await setup('approval-required', {
+      mcpServers: servers,
+      connectorMcpServers: ['atlassian', 'gws'],
+    });
+    await adapter.sendTurn({ sessionId: 'switch-session', turnId: 't1', text: 'comment' });
+    session.push(sessionStatus(NATIVE, 'busy'));
+    session.push(messageUpdated(NATIVE, 'msg1', 'assistant'));
+    session.push(
+      toolPart(NATIVE, 'msg1', 'c1', 'atlassian_addCommentToJiraIssue', {
+        status: 'running',
+        input: { issueIdOrKey: 'PROJ-1', commentBody: 'Shipped in 1.2.' },
+        time: { start: 0 },
+      })
+    );
+    session.push(
+      opencodeEvent('permission.asked', {
+        id: 'per_1',
+        sessionID: NATIVE,
+        permission: 'atlassian_addCommentToJiraIssue',
+        patterns: ['*'],
+        metadata: {},
+        always: ['*'],
+        tool: { messageID: 'msg1', callID: 'c1' },
+      })
+    );
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    expect(opened).toMatchObject({
+      title: 'atlassian wants to run addCommentToJiraIssue',
+      detail: '{"issueIdOrKey":"PROJ-1","commentBody":"Shipped in 1.2."}',
+    });
+  });
+
+  it('splits a tool name by the longest server it starts with', () => {
+    expect(mcpToolOf('switch_echo_run', ['switch', 'switch_echo'])).toEqual({
+      server: 'switch_echo',
+      tool: 'run',
+    });
+    expect(mcpToolOf('bash', ['switch'])).toBeUndefined();
+  });
 });

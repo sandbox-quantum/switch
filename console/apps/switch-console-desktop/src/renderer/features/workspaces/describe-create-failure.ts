@@ -4,28 +4,26 @@ import { RpcError } from '@shared/lib/ipc/rpc-error';
 /**
  * What to put under the name field when creating a workspace fails.
  *
- * The name being taken is by far the likeliest way this form fails, and it is
- * the only failure the person at the keyboard can fix. The gateway derives a
- * slug from the name and refuses a duplicate with `Slug already taken:
- * acme-robotics` — no terminal punctuation, so the generic description does not
- * read it as a sentence and shows it as diagnostic text instead: a status code
- * and a slug the user never typed, for the one refusal that is about what they
- * did type.
+ * A conflict from the gateway is never about the name: a slug already taken is
+ * retried with a suffix, so the name is free to repeat. What it refuses with
+ * 409 is a deployment that keeps to one workspace (it is not isolating tenants)
+ * or a second create racing the first, and only the server can say which, in a
+ * sentence of its own. So its words are shown as they are, said to come from
+ * the server, rather than turned into advice to rename.
  *
- * Only that route's conflict is rewritten. Everything else keeps the shared
- * description, because a name-specific sentence over an expired session or an
- * unreachable server would blame the name for something it had nothing to do
- * with.
+ * Everything else keeps the shared description.
  */
 export function createWorkspaceFailureText(
   error: unknown,
   serverName: string,
   fallback: string
 ): string {
-  const conflict =
+  const detail =
     error instanceof RpcError &&
     error.code === 'GatewayError' &&
-    error.numberField('status') === 409;
-  if (!conflict) return failureText(error, fallback);
-  return `A workspace on ${serverName} already goes by that name. Capitalisation and punctuation do not make it a different one, so pick a name that stands apart.`;
+    error.numberField('status') === 409
+      ? error.stringField('detail')?.trim()
+      : undefined;
+  if (!detail) return failureText(error, fallback);
+  return `${serverName} could not create it: ${detail}`;
 }

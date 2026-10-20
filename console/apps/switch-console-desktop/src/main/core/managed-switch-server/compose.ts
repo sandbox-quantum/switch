@@ -140,6 +140,12 @@ export async function composeDown(host: ServerHost, removeVolumes: boolean): Pro
   );
 }
 
+/** Stop the stack's containers without removing them or anything else. */
+export async function composeStop(host: ServerHost): Promise<void> {
+  log.info(`local-switch-server: docker compose stop (${host.label})`);
+  await runDocker(host, [...baseArgs(host, []), 'stop'], 5 * 60 * 1000);
+}
+
 /**
  * Bring up one service of the stack as it is currently configured on the host
  * — the compose file and `.env` already there, not this build's — without its
@@ -162,6 +168,23 @@ export async function serviceContainerId(host: ServerHost, service: string): Pro
     throw new Error(`Could not identify the ${service} container on ${host.label}.`);
   }
   return id;
+}
+
+/**
+ * When the core container last started, as Docker reports it (ISO-8601), or
+ * null when it is not running. Throws when Docker could not be asked.
+ */
+export async function coreStartedAt(host: ServerHost): Promise<string | null> {
+  if (!(await isStackRunning(host))) return null;
+  const id = await serviceContainerId(host, CORE_SERVICE);
+  const stdout = await runDocker(host, ['inspect', '--format', '{{.State.StartedAt}}', id], 30_000);
+  const startedAt = stdout.trim();
+  if (Number.isNaN(Date.parse(startedAt))) {
+    throw new Error(
+      `Docker reported an unreadable start time for the core container: ${startedAt}`
+    );
+  }
+  return new Date(startedAt).toISOString();
 }
 
 /** Service names currently in the `running` state for the managed project. */

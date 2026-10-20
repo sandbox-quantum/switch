@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -13,7 +14,11 @@ from pydantic import (
 )
 
 from switch_core.addressing import AddressingPolicy
-from switch_core.bridges.collaboration.models import BridgeInstallLink
+from switch_core.bridges.collaboration.models import (
+    BridgeInstallLink,
+    ChannelRetirement,
+    RetireOutcome,
+)
 from switch_core.db.models import (
     MAX_BUDGET_AMOUNT,
     MAX_BUDGET_PERIOD_HOURS,
@@ -99,6 +104,9 @@ class RoomDetail(RoomSummary):
     join_event_listeners: list[str] = []
     # ISO timestamp of when the room was archived, or null if active.
     archived_at: str | None = None
+    # What deleting the room will do to its platform channel ("archived",
+    # "deleted", "left", "kept"), or null when the room has no channel.
+    channel_on_delete: ChannelRetirement | None = None
 
 
 class RoomCreateRequest(BaseModel):
@@ -167,10 +175,25 @@ class RoomObserveRequest(BaseModel):
 
 class BulkDeleteRequest(BaseModel):
     room_ids: list[str]
+    # Also archive, delete or leave each room's platform channel, as its
+    # platform allows. Off unless asked: deleting a room is often about taking
+    # the agents out of a channel people keep using.
+    retire_channel: bool = False
+
+
+class RoomDeleteResponse(BaseModel):
+    ok: bool
+    # What became of the room's platform channel; null when the room had none
+    # or the caller kept it. `failed` means it is still there and needs
+    # removing by hand.
+    channel: RetireOutcome | None
 
 
 class BulkDeleteResponse(BaseModel):
     deleted: int
+    # Per deleted room id, what became of its platform channel. Rooms without
+    # one are absent.
+    channels: dict[str, RetireOutcome]
 
 
 class BulkArchiveRequest(BaseModel):
@@ -252,7 +275,7 @@ class AgentSummary(BaseModel):
     # under the user's main agent). The UI nests children under their parent.
     parent_agent_id: str | None = None
     # `known_agent_type` is set when this agent was registered via
-    # `/agents/register` with one of the KNOWN_AGENTS specs (e.g. "claude-code").
+    # `/agents/register` with one of the `known_agents()` specs (e.g. "claude-code").
     # `known_agent_options` is the last validated options payload. Together
     # they let the UI render an "edit options" form against the spec's schema.
     known_agent_type: str | None = None
@@ -358,11 +381,63 @@ class UpdateAgentIconRequest(BaseModel):
     icon_url: str | None
 
 
+class AvatarSettingsResponse(BaseModel):
+    """Whether this server lets icons drawn by outside avatar services through
+    (`THIRD_PARTY_AVATARS_ENABLED`). A client that draws agents itself follows
+    it, so turning it off covers the client as well as the bridges."""
+
+    third_party_avatars_enabled: bool
+
+
+class IconChoicesResponse(BaseModel):
+    """One page of generated icons to choose from. `choices` is empty when
+    `third_party_avatars_enabled` is false: the server generates none, rather
+    than having none to offer."""
+
+    choices: list[str]
+    third_party_avatars_enabled: bool
+
+
 class UpdateAgentDescriptionRequest(BaseModel):
     """Change what an agent is for. A description is required, so a blank one
     is refused rather than stored."""
 
     description: str
+
+
+class RenameAgentRequest(BaseModel):
+    """Change an agent's name (the identifier people type and mention) and its
+    display name (the label people read) together.
+
+    ``display_name`` is required, like on the display-name route: send the
+    current one to keep it, and null or a blank string to clear it, so a
+    rename never leaves the label behind by accident."""
+
+    name: str
+    display_name: str | None
+
+
+class RenameAgentResponse(BaseModel):
+    """The renamed agent, plus what the rename could not do.
+
+    `bridge_failures` names each chat platform that could not be updated: the
+    rename stands, and that platform catches up when its bridge next starts.
+    `templates_mentioning_old_name` lists saved templates whose text still
+    says the old name."""
+
+    agent: AgentSummary
+    old_name: str
+    bridge_failures: list[str]
+    templates_mentioning_old_name: list[str]
+
+
+class DeleteAgentResponse(BaseModel):
+    """`bridge_cleanup_failures` names each chat platform whose clean-up
+    failed; the agent is deleted regardless, and the platform finishes the
+    clean-up when its bridge next starts."""
+
+    ok: bool
+    bridge_cleanup_failures: list[str]
 
 
 class UpdateAgentDisplayNameRequest(BaseModel):
@@ -517,6 +592,15 @@ class BridgeDetail(BaseModel):
     # What those links do not cover, in the platform's own terms — the kinds of
     # chat that have to be joined by hand. None when there is nothing to add.
     install_note: str | None = None
+    # Something only the platform's side can fix, found while the bridge runs
+    # — an approval withdrawn, the app blocked by the organisation's admin — in
+    # plain words for a banner on the connection. None while nothing is known
+    # to be wrong, or the bridge is not running.
+    attention: str | None = None
+    # Whether the workspace chooses, here, which of the platform's teams the
+    # connection's app is in (the distributed Teams app); see
+    # `/collaborations/{id}/teams`. False while the bridge is not running.
+    team_placement_supported: bool = False
     # Whether the platform can create a channel from Switch at all, and whether
     # an operator permits this connection to. The two are separate so a UI can
     # tell "your organisation turned this off" (changeable here) from "Telegram
@@ -524,12 +608,22 @@ class BridgeDetail(BaseModel):
     # switch you can flip, the second a disabled switch with a reason.
     channel_creation_supported: bool = True
     channel_creation_enabled: bool = True
+    # Why no existing channel can be bound to a room by id on this connection,
+    # or None when one can. Set for a connection whose chats arrive only one
+    # way, so the room form can say so instead of offering the choice.
+    channel_ids_refused: str | None = None
     # Whether the platform has a user directory Switch can search. False where
     # the only people Switch can name are those who have spoken to it, which
     # makes "pick yourself from the directory" an empty list on a connection
     # nobody has used yet — a question worth not asking rather than asking
     # badly.
     directory_search_supported: bool = True
+    # Whether this connection receives its platform's events on an address of
+    # its own, and that address — the one the operator gives the platform. The
+    # address is None where the deployment has not set `MESSAGING_PUBLIC_URL`,
+    # which is then what stands between this connection and its events.
+    receives_webhooks: bool = False
+    webhook_url: str | None = None
 
 
 class BridgeUpdateRequest(BaseModel):
@@ -550,6 +644,19 @@ class BridgeUpdateRequest(BaseModel):
 
 class BridgeTypeInfo(BaseModel):
     key: str
+    # How a person names the platform ("Microsoft Teams"). Clients label the
+    # platform with this rather than keeping a list of names of their own.
+    display_name: str
+    # The platform's page under the messaging-apps docs, or None where there
+    # is none yet.
+    docs_slug: str | None
+    # The platform's logo as SVG markup, or None where the adapter ships none.
+    # Draw it as an image (a data: URL), never inline it into a page.
+    icon_svg: str | None
+    # Whether connections of this type receive their events over HTTP on an
+    # address of their own (`/messaging/bridges/<id>/events`), which the operator has to
+    # give the platform.
+    receives_webhooks: bool
     config_schema: dict[str, Any]
     # Whether this platform can create channels at all. Read from the adapter
     # class, so it is answerable before any connection of this type exists —
@@ -708,6 +815,13 @@ PASSWORD_MIN_LENGTH = 8
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str = Field(min_length=PASSWORD_MIN_LENGTH)
+
+
+class DeleteAccountRequest(BaseModel):
+    """The account's own email, typed by the person as their confirmation:
+    an SSO account has no password to ask for."""
+
+    email: str
 
 
 class SignupRequest(BaseModel):
@@ -964,6 +1078,11 @@ class MemberUpdateRequest(BaseModel):
     role: str
 
 
+class OidcLoginOptionView(BaseModel):
+    id: str
+    label: str
+
+
 class AuthConfigResponse(BaseModel):
     # Read unauthenticated by the login page to decide which login methods to
     # show. `oidc_provider_label` is the button text (e.g. "Okta").
@@ -975,6 +1094,12 @@ class AuthConfigResponse(BaseModel):
     signup_enabled: bool
     oidc_enabled: bool
     oidc_provider_label: str | None
+    # The sign-in buttons for the OIDC provider (`id`, `label`); empty for one
+    # button labelled `oidc_provider_label`.
+    oidc_login_options: list[OidcLoginOptionView]
+    # Whether `/auth/oidc/login` can hand the sign-in back to an app listening
+    # on this computer (`return_to`), so the app may use the system browser.
+    oidc_browser_handoff: bool
     # Where a first sign-in lands (`SwitchConfig.gateway_signup_mode`), so the
     # page can say whether signing in also creates an account of your own.
     signup_mode: Literal["default_tenant", "invite_only", "open"]
@@ -1334,13 +1459,17 @@ class TemplateSummary(BaseModel):
     """
 
     id: str
-    owner_id: str
+    # None for an official template, which comes with Switch.
+    owner_id: str | None
     owner_name: str | None = None
     name: str
     description: str
     kind: str
     read_visibility: str
     write_visibility: str
+    # Comes with Switch: served by the server on every workspace, and changed
+    # by nobody (see `official_templates`).
+    official: bool = False
     # What the caller may do with it, so a client shows Edit and Remove only
     # where the server would say yes. Admin here means the tenant's, which a
     # client cannot tell from the user's global role.
@@ -1463,3 +1592,101 @@ class BudgetResponse(BaseModel):
     spent: int
     resets_at: datetime
     exhausted: bool
+
+
+# ── Switch Trust ──────────────────────────────────────────────────────────────
+
+
+class TrustSettingsResponse(BaseModel):
+    """Switch Trust's one server-global settings row. The API key itself is
+    never returned — `has_api_key`/`api_key_last4` only confirm one is set,
+    the way the stored secret is surfaced everywhere else in the gateway."""
+
+    endpoint: str
+    policy_id: str | None
+    has_api_key: bool
+    api_key_last4: str | None
+    enabled: bool
+
+
+class TrustSettingsUpdateRequest(BaseModel):
+    """`api_key` omitted (or null) leaves whatever key is already stored
+    untouched, so changing the endpoint or policy id doesn't force re-entering
+    the secret. Use `DELETE /trust-settings` to turn Switch Trust off.
+
+    No `timeout_seconds` here: unlike the rest of Switch Trust's settings,
+    the check timeout is fixed at deploy time (`SwitchConfig.
+    switch_trust_timeout_seconds`), not admin-editable."""
+
+    endpoint: str
+    policy_id: str | None
+    api_key: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_endpoint(self) -> TrustSettingsUpdateRequest:
+        value = self.endpoint
+        if value != value.strip():
+            raise ValueError("endpoint has leading or trailing whitespace")
+        parts = urlsplit(value)
+        if parts.scheme not in ("http", "https"):
+            raise ValueError("endpoint must be an http(s) URL")
+        if not parts.netloc:
+            raise ValueError("endpoint must include a host")
+        if parts.path.strip("/"):
+            raise ValueError(
+                "endpoint is the service's base URL — /guardrails/check is "
+                "appended to it, so it must have no path of its own"
+            )
+        if parts.query or parts.fragment:
+            raise ValueError(
+                "endpoint must be a bare base URL: a query or fragment is "
+                "dropped when /guardrails/check is appended, so it would "
+                "silently never be sent"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_api_key(self) -> TrustSettingsUpdateRequest:
+        if self.api_key is not None and not self.api_key.strip():
+            raise ValueError(
+                "api_key must not be blank; omit it to leave the stored key "
+                "unchanged, or use DELETE /trust-settings to turn Switch "
+                "Trust off"
+            )
+        return self
+
+    @field_validator("policy_id")
+    @classmethod
+    def _blank_policy_id_is_unset(cls, value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None
+
+
+# ── Feature flags ────────────────────────────────────────────────────────────
+
+
+class FeatureFlagState(BaseModel):
+    key: str
+    enabled: bool
+
+
+class FeatureFlagsResponse(BaseModel):
+    flags: list[FeatureFlagState]
+
+
+class SlackOwnAppSetup(BaseModel):
+    """What it takes to create a Slack app of your own for this server."""
+
+    manifest: dict[str, Any]
+    #: Slack's create-app page, already filled in with `manifest`.
+    create_url: str
+
+
+class SlackTokensCheck(BaseModel):
+    bot_token: str
+    app_token: str
+
+
+class SlackTokensChecked(BaseModel):
+    workspace_id: str
+    workspace_name: str
+    bot_name: str

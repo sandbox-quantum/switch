@@ -15,6 +15,7 @@ from switch_core.telemetry.catalogue import (
     CATALOGUE,
     EVENT_NAME_PREFIX,
     TelemetryCatalogueError,
+    event_spec,
     validate,
     wire_name,
 )
@@ -56,7 +57,7 @@ def _one_valid_value(spec: object) -> object:
 
 
 def _valid_payload(event: str) -> dict[str, object]:
-    return {name: _one_valid_value(spec) for name, spec in CATALOGUE[event].items()}
+    return {name: _one_valid_value(spec) for name, spec in event_spec(event).items()}
 
 
 class TestNothingIdentifyingCanBeSent:
@@ -69,13 +70,14 @@ class TestNothingIdentifyingCanBeSent:
         """
         offenders = {
             f"{event}.{name}"
-            for event, spec in CATALOGUE.items()
+            for event, spec in ((e, event_spec(e)) for e in CATALOGUE)
             for name in spec
             if name in FORBIDDEN_PROPERTIES
         }
         assert not offenders, (
             f"{sorted(offenders)} name something inside a deployment. Telemetry "
-            "reports counts and durations only — see docs/old/telemetry-events.md. "
+            "never identifies anything inside a deployment — see "
+            "docs/old/telemetry-events.md. "
             "If a new property genuinely needs to identify something, that is a "
             "decision for the InfoSec review, not for this file."
         )
@@ -166,7 +168,7 @@ class TestNaming:
     def test_every_property_is_snake_case(self) -> None:
         offenders = [
             f"{event}.{name}"
-            for event, spec in CATALOGUE.items()
+            for event, spec in ((e, event_spec(e)) for e in CATALOGUE)
             for name in spec
             if not name.replace("_", "").isalnum() or name != name.lower()
         ]
@@ -177,3 +179,23 @@ class TestNaming:
         keeps `room_created` here apart from the Console's."""
         assert wire_name("room_created") == f"{EVENT_NAME_PREFIX}.room_created"
         assert EVENT_NAME_PREFIX == "switch_core"
+
+
+class TestAgentRuntimes:
+    """`unknown` is a lookup that failed, so only the event that looks the
+    agent up may carry it. Everywhere else the runtime comes from an agent in
+    hand, and `unknown` there would be a bug hiding as a value."""
+
+    def test_the_sent_event_may_say_its_runtime_is_unknown(self) -> None:
+        payload = _valid_payload("agent_message_sent")
+        payload["known_agent_type"] = "unknown"
+        validate("agent_message_sent", payload)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "event", ["agent_message_received", "first_agent_registered"]
+    )
+    def test_events_with_the_agent_in_hand_may_not(self, event: str) -> None:
+        payload = _valid_payload(event)
+        payload["known_agent_type"] = "unknown"
+        with pytest.raises(TelemetryCatalogueError, match="expected one of"):
+            validate(event, payload)  # type: ignore[arg-type]

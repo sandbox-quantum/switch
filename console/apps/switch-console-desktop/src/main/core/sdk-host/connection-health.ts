@@ -52,3 +52,15 @@ const monitor = new ConnectionHealthMonitor({
 export function connectionHealth(serverId: string) {
   return monitor.snapshot(serverId);
 }
+
+/**
+ * One linked agent's session placements, session id → room id, from its room
+ * watcher; null while the watcher cannot be asked.
+ */
+export async function agentPlacements(
+  serverId: string,
+  agentId: string
+): Promise<Record<string, string> | null> {
+  await monitor.snapshot(serverId);
+  return monitor.placementsOf(agentId);
+}

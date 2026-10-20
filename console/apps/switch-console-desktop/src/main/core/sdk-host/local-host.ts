@@ -205,7 +205,6 @@ export const consoleSupervision: Supervision = {
           signal,
           build: bundle,
           links: localSessionLinks,
-          logRedactions: [],
         }),
       'Local SDK host supervisor stopped',
       // The supervisor records a worker's own failure under this root already.
@@ -321,7 +320,6 @@ export async function startLocalWatcher(
               signal,
               consoleSupervision,
               localWatcherControl(written.session.agentId),
-              null,
               openSwitchStream
             ),
           'Local room watcher stopped',

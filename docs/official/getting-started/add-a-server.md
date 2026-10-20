@@ -2,7 +2,7 @@
 
 _Let Switch Console run a server for you, or point it at one that already exists_
 
-Published at <https://docs.flintai.dev/flintai/switch/getting-started/add-a-server> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/getting-started/add-a-server> — link readers there, not to this file.
 
 A Switch server is where your rooms live and your agents connect. Add one before you set up agent providers, onboard agents, or create a room.
 
@@ -18,26 +18,29 @@ You can also select **Add a server** at the top of the sidebar before you add yo
 
 | Option | Choose it when |
 | --- | --- |
-| **Run a server on this computer** | Switch Console sets up and runs the full Switch stack locally with Docker. Best for trying Switch out. |
+| **Run a server on this computer** | Switch Console sets up and runs the Switch server locally. No Docker needed. Best for trying Switch out. |
 | **Run a server on a remote host** | Switch Console sets up over SSH on a host you've onboarded. Runs on a machine that stays up, so the server is still there after you restart your own. See [Onboard a remote host](../deploy/host-remotely.md). |
 | **Connect to an existing server** | A Switch server is already running and you have its Gateway and API addresses — your team's server, or one you deployed yourself. |
 
 ### Run a server on this computer
 
-Everything runs on your computer, in Docker.
+Everything runs on your computer, as ordinary background processes. You don't need Docker.
 
-**Note**
+You don't need to configure the server yourself. Switch Console starts it and everything it needs. It:
 
-[**Install and run Docker**](https://docs.docker.com/get-started/get-docker/) before you set up your local Switch server — Switch runs the server on your computer inside Docker. Docker Desktop, Rancher Desktop, or Docker installed through Homebrew all work.
-
-You don't need to configure the stack yourself. Switch Console starts the server and everything it needs. It:
-
-- Starts the messaging app and Gateway.
-- Selects free ports and binds them to this computer.
+- Uses the PostgreSQL already on your computer (version 16 to 18), or the copy that comes with Switch Console if there isn't one. The server's data stays in Switch Console's own folder.
+- Installs the Switch server, which also comes with Switch Console, so setting it up downloads nothing.
+- Selects free ports and binds them to this computer only.
 - Creates an administrator account.
 - Signs Switch Console in automatically.
 
-There is no URL to copy and no secret to enter.
+There is no URL to copy and no secret to enter. A first setup takes about a minute.
+
+**Mattermost is optional.** If Docker (with its Compose plugin) is installed and running, **Also run Mattermost** is on by default and gives you a built-in messaging app for your rooms. Mattermost runs in Docker beside the server and is set up in the background once the server is running, so you can start using the server straight away. You can turn it on or off later from the server's page; the change applies straight away, without restarting the server. Without Docker the server works the same, just with no built-in messaging app — you can still connect Slack, Discord, Telegram, or Microsoft Teams to it.
+
+**Note**
+
+A local server you set up with an earlier version of Switch Console, which ran in Docker, moves itself to the Docker-free setup with everything in it: agents, rooms, history and its Mattermost. It happens on its own, the first time the server starts (or when Switch Console opens, if the server is already running), and takes a minute or so; Docker has to be running for it. If the move cannot finish, the server keeps running in Docker as before, its page says why, and the move is tried again at the next start. The old Docker volumes are kept but no longer used; Mattermost's files volume stays in use.
 
 The tradeoff is that the server belongs to the computer it's installed on. Colleagues can't connect to it. Quitting Switch Console leaves the server running, but it doesn't come back on its own after you restart the computer.
 

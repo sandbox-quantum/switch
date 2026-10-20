@@ -2,12 +2,10 @@
 
 Integrates Switch with **Switch Trust**, a guardrails service that evaluates a
 message against a policy and returns a block/allow verdict. The service
-exposes a `/guardrails/check` endpoint (see
-[hoot#2397](https://github.com/sandbox-quantum/hoot/pull/2397) and its
-[README](https://github.com/sandbox-quantum/hoot/blob/300cece9ec3625a5327a06aea66681c444c53139/services/aispm/guardrails/common/externalprocessor/README.md))
-that takes a provider-agnostic `messages` array and returns an `outcome` plus
-findings. This doc covers v1: a global, env-configured gate in front of every
-message Switch sends, blocking on a `BLOCKED` outcome.
+exposes a `/guardrails/check` endpoint on its external processor (server
+side) that takes a provider-agnostic `messages` array and returns an
+`outcome` plus findings. This doc covers v1: a global, env-configured gate in
+front of every message Switch sends, blocking on a `BLOCKED` outcome.
 
 ## Scope
 
@@ -51,15 +49,29 @@ interception point further down the stack.
 
 ## Enforcement flow
 
-1. Map the outgoing message to the hoot request shape:
+1. Map the outgoing message to the external processor's request shape:
    ```json
    {"messages": [{"role": "<mapped>", "content": "<body>"}]}
    ```
    Role mapping: `agent` → `assistant`, `human`/`bridge` → `user`.
 2. `POST {switch_trust_endpoint}/guardrails/check` — the check-only endpoint
-   added in [hoot#2397](https://github.com/sandbox-quantum/hoot/pull/2397) —
-   with headers `x-guardrails-policy-id` and `x-flintai-api-key`, short
-   timeout (2s default).
+   on the guardrails external processor (server side) — with headers
+   `x-guardrails-policy-id`, `x-flintai-api-key`, and three
+   always-set identity headers Switch Trust uses to group checks:
+   - `x-agent-name`: a constant, `Switch Rooms Agents` — Switch has no single agent
+     to attribute a check to (a room can hold several, and a human-authored
+     message has none at all), so every check is reported under one identity
+     rather than inventing a per-sender one Switch Trust has no use for.
+   - `x-agent-session-id`: the Switch room id — a room is the closest thing
+     Switch has to an agentic session.
+   - `x-agent-turn-id`: a fresh UUID per check. Switch has no stable
+     "invocation" or "turn" id to hand it at either call site (the closest
+     existing concept, session-activity's host-supplied `turn_id`, belongs to
+     a different subsystem, is opaque to Switch, and doesn't exist for
+     human-authored messages at all), so this is generated per call instead
+     of reused.
+
+   Short timeout (2s default).
 3. The outcome (mapped from the wire's `GUARDRAIL_RESULT_OUTCOME_*` values —
    `ok` / `blocked` / `redacted` / `alerted` / `errored`) decides what happens
    next — see §Outcome handling.
@@ -84,9 +96,11 @@ on `TrustCheckResult.outcome`:
     (`core/switch_core/clients/admin_messages.py`). Every collaboration adapter
     (Slack, Mattermost, Discord, Teams, Telegram) already renders
     `admin_message()` as a platform-native system notice, distinct from an
-    ordinary chat bubble — this is "visually stands out" for free. The
-    agent's tool/API call gets back an error (HTTP 422 / an MCP tool error) so
-    it knows its response was blocked.
+    ordinary chat bubble — this is "visually stands out" for free. The notice
+    names the agent (`@<agent-name> was blocked...`) so a room with several
+    agents can tell whose response was withheld. The agent's tool/API call
+    gets back an error (HTTP 422 / an MCP tool error) so it knows its response
+    was blocked.
   - **Human-authored**: catch it in `CollaborationCore._handle_inbound_message`
     and call the adapter's `admin_message(...)` back to the **originating
     platform channel** directly (`msg.channel_id`, `msg.root_id or
@@ -101,9 +115,13 @@ on `TrustCheckResult.outcome`:
   accidentally end up in a log line or a notice the way it could if findings
   carried it around. The caller swaps in `redacted_content` before sending if
   it's set. (The endpoint's own response doesn't carry a pre-sanitized
-  message — hoot's "SanitizedMessages" is dashboard-ingestion-only state, not
-  part of the `/guardrails/check` JSON body — so this redaction is Switch's
-  own, built from the findings' detected text.)
+  message — the processor's "SanitizedMessages" is dashboard-ingestion-only
+  state, not part of the `/guardrails/check` JSON body — so this redaction is
+  Switch's own, built from the findings' detected text.) **Human-authored**: the
+  redacted content is what reaches the room, but the sender would otherwise
+  never know their own words were altered — `CollaborationCore` also calls
+  the adapter's `admin_message(...)` back to the originating channel (a new
+  `AdminMessageType.TRUST_REDACTED`) naming the finding categories redacted.
 - **`alerted`** / **`errored`** (including a failed check, per above) — not
   blocking. The caller appends a short line to the message body itself via
   `trust_annotation()`, e.g. `⚠️ _Switch Trust: pii/email (not blocked)_` for
@@ -131,33 +149,14 @@ to the message it's about, rather than becoming a second thing to read.
 
 ## Config
 
-New fields on `SwitchConfig` (`core/switch_core/config.py`), mirroring the
-existing all-or-nothing settings groups (`_validate_slack_app`,
-`core/switch_core/config.py:986`):
-
-```python
-switch_trust_endpoint: str = "https://api.flintai.dev"
-switch_trust_api_key: str = ""
-switch_trust_policy_id: str = ""
-switch_trust_timeout_seconds: float = 2.0
-```
-
-`switch_trust_endpoint` is a base URL; the client appends
-`/guardrails/check` — the check-only route added in
-[hoot#2397](https://github.com/sandbox-quantum/hoot/pull/2397) — rather than
-treating the configured value as the full check URL. This default will change
-once Switch Trust has its own deployment — see Follow-ups.
-
-A `trust_enabled` property returns `bool(switch_trust_api_key and
-switch_trust_policy_id)`. A `_validate_switch_trust` model validator checks
-the endpoint's URL shape (scheme/host, no path/query — mirroring
-`_validate_observability`'s OTLP check) when it's overridden from the default,
-and that `switch_trust_api_key`/`switch_trust_policy_id` are both set or both
-empty.
-
-When `trust_enabled` is false, a `NullTrustClient` is injected — mirrors
-`telemetry/sink.py`'s `NullSink`: off is a client that always allows, so no
-call site has to branch on whether the feature is on.
+v1 shipped as four env-var fields on `SwitchConfig`
+(`switch_trust_endpoint`/`switch_trust_api_key`/`switch_trust_policy_id`/
+`switch_trust_timeout_seconds`, with a `trust_enabled` property and a
+`_validate_switch_trust` validator), with `NullTrustClient` injected whenever
+`trust_enabled` was false — mirroring `telemetry/sink.py`'s `NullSink`, so no
+call site had to branch on whether the feature was on. These env vars were a
+bootstrap stopgap, never a real deployment's config, and are gone: see
+§Settings UI below for what replaced them.
 
 ## Execution plan
 
@@ -190,18 +189,20 @@ call site has to branch on whether the feature is on.
    results in a `TRUST_BLOCKED` admin row instead of the real content; an
    allowed message is unaffected; a Switch Trust timeout/error still delivers
    the message (fail-open, annotated).
-8. **`docs/old/`**: note the new config block in whichever doc lists
-   deployment env vars (none currently fully enumerates `SwitchConfig`, so
-   likely just a short mention near the other optional-integration blocks, if
-   one exists).
 
 ## Resolved decisions
 
-- Prod default for `switch_trust_endpoint`: `https://api.flintai.dev` (base
-  URL; the client appends `/guardrails/check`). Expected to change once Switch
-  Trust has its own deployment — tracked in Follow-ups.
+- Prod default for `switch_trust_endpoint`: `https://api.switchagents.ai`
+  (base URL; the client appends `/guardrails/check`).
 - 2s timeout default, and `x-guardrails-policy-id` / `x-flintai-api-key`
   headers, confirmed as-is.
+- `x-agent-name` / `x-agent-session-id` / `x-agent-turn-id` are always set,
+  never omitted: a deployment-side bug report showed a check going out with no
+  agent attribution at all. `x-agent-name` is a fixed constant rather than
+  per-caller, since nothing in Switch maps cleanly to the "one agent" these
+  headers assume — see the header list above. `TrustClient.check` takes
+  `room_id` as a required parameter (no default) precisely so a call site
+  cannot forget it; the other two headers need no caller input at all.
 - The hook point moved from the originally-sketched `Actor.send_message` to
   three `AgentCore` methods plus `CollaborationCore`'s inbound handler, to
   avoid checking Switch's own canned/system text — see §Where it hooks in.
@@ -213,29 +214,84 @@ call site has to branch on whether the feature is on.
 
 ## Follow-ups (explicitly out of v1 scope)
 
-- **`switch_trust_endpoint` default will change**: `https://api.flintai.dev`
-  is a placeholder base URL for now; Switch Trust is expected to get its own
-  dedicated endpoint later, at which point the default should move.
 - **Conversation history**: send the last N room messages as context so the
   policy can catch things that only make sense across turns (e.g. a PII leak
   split across messages). Needs a role-mapping strategy for Switch's
   multi-party rooms (which don't have a strict two-party turn structure) and a
   decision on including/excluding system/admin notices.
-- **Tool calls / tool results**: the hoot endpoint supports `tool_calls` and
-  `tool_result` message fields; Switch doesn't yet have an obvious mapping
-  from its agent-protocol tool use onto that shape.
-- **A real cross-platform status indicator**: the inline-annotation approach
-  for `ALERTED`/`ERRORED` (§Outcome handling) is a pragmatic v1 choice. A
-  dedicated, Switch-level (not per-agent) reaction or status primitive across
-  adapters would be a nicer fast-follow, if the inline text proves too noisy
-  in practice.
+- **Tool calls / tool results**: the external processor's endpoint supports
+  `tool_calls` and `tool_result` message fields; Switch doesn't yet have an
+  obvious mapping from its agent-protocol tool use onto that shape.
 - **Per-tenant / per-workspace policy**: today it's one global policy for the
   whole deployment. Multiple tenants wanting different policies needs a DB
   table, migration, and an admin API — a materially bigger lift than the env
   var config in this doc.
-- **Settings UI**: a dedicated Switch Trust section, either in the gateway
-  operator dashboard or in Console's "server properties" — neither surface has
-  an existing settings page to extend today, so this is new UI work in either
-  home.
 - **Media/attachment checks**: images and files aren't sent to Switch Trust in
   v1.
+
+## Settings UI
+
+The env-var config above was always a bootstrap stopgap, not the intended
+long-term home: it requires a deploy to change, and it isn't visible from
+anywhere a deployment operator actually looks. This section replaces it with
+a DB-backed, editable settings surface — still one global policy for the whole
+deployment (no per-tenant override; that's still the bigger lift described
+above).
+
+**Storage**: a new `trust_settings` table — a single row (`endpoint`,
+`policy_id`, `api_key_encrypted`, `updated_at`), upserted in place rather than
+modeled as a list. `api_key_encrypted` is encrypted via `config.keyring`, the
+same mechanism `ProviderConnection` already uses for per-user provider
+credentials. The table starts empty — there is no migration step to carry
+over the old `SWITCH_TRUST_*` env vars, since those never had a real
+deployment depending on them. The `switch_trust_endpoint`,
+`switch_trust_api_key`, `switch_trust_policy_id` fields, `trust_enabled`
+property, and `_validate_switch_trust` validator are removed from
+`SwitchConfig` entirely; endpoint URL-shape validation moves to the new
+settings' write path.
+
+The check timeout is the one exception: `switch_trust_timeout_seconds` stays
+a `SwitchConfig` field (default 2s, validated positive), fixed at deploy time
+rather than joining the DB-backed settings. Getting the endpoint, policy or
+key wrong locks guardrails out entirely, which an operator needs to fix
+without a restart — but the timeout is a tuning knob with a safe default, not
+something to expose to day-to-day editing or surface in the settings UI.
+
+**Resolution**: `TrustClient` gains a `DynamicTrustClient` implementation that
+reads the current row on every `check()` call (via the new
+`TrustSettingsStore`) instead of a client built once at boot from static
+config, using `SwitchConfig.switch_trust_timeout_seconds` for the timeout on
+every call. No row, or an incomplete one (missing `api_key`/`policy_id`),
+behaves exactly like today's `NullTrustClient` — `outcome="ok"`, no request
+made — except decided per call rather than at startup, so a settings change
+takes effect on the next message with no restart. `trust/setup.py::build_trust_client`
+now always returns a `DynamicTrustClient` wired to the store; `NullTrustClient`
+remains for tests that want no DB involved at all.
+
+**Gateway API**: a new router, `core/switch_core/gateway/trust_settings.py`,
+deployment-scoped (no `{tenant_id}` in the path) and gated by `require_admin`
+— the existing deployment-operator check (`users.role == "admin"`), distinct
+from `require_tenant_admin` — since this setting applies to the whole
+deployment, not one tenant.
+
+- `GET /trust-settings` — `endpoint`, `policy_id`, `has_api_key`,
+  `api_key_last4`, and a derived `enabled`. The real API key is never
+  returned.
+- `PUT /trust-settings` — full update of the non-secret fields; `api_key`
+  omitted or `null` leaves the stored key untouched, so changing the endpoint
+  or policy id doesn't force re-entering the secret.
+- `DELETE /trust-settings` — clears the row, equivalent to turning guardrails
+  off.
+
+**Console UI**: a new section on the server's Home page, between "Messaging
+apps" and "Full admin interface" — not a separate view, since there's little
+enough here to configure that a full page would be a detour rather than a
+destination. Gated on the connected server's reported `user.role === "admin"`
+directly — not the broader `administersWorkspaceInScope()` helper, which also
+admits a plain workspace owner and would be too wide for a deployment-level
+setting — and hidden entirely for anyone else, since there's nothing read-only
+to show a non-operator. Labeled "Switch Trust Endpoint", "Guardrails Policy
+ID" and "Switch Trust API key" rather than the gateway's own field names, to
+read as Switch Trust's settings rather than generic form fields; the timeout
+is not surfaced at all. The key field shows "configured, ending •••1234"
+instead of ever prefilling the real value, matching the write-only API above.

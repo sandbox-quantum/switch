@@ -32,11 +32,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 @dataclass
 class CheckoutScope:
-    """One request's connections: how many it holds now, and the most at once."""
+    """One request's connections: how many it holds now, the most at once,
+    and how many it borrowed in all."""
 
     label: str
     held: int = 0
     peak: int = 0
+    taken: int = 0
 
 
 _current: ContextVar[CheckoutScope | None] = ContextVar(
@@ -61,6 +63,7 @@ class PoolCheckouts:
         if scope is None:
             return
         scope.held += 1
+        scope.taken += 1
         scope.peak = max(scope.peak, scope.held)
         self._owners[id(record)] = scope
 

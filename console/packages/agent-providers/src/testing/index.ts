@@ -1,4 +1,10 @@
 export { EventRecorder } from './event-recorder';
+export { writeNodeCli } from './node-cli';
 export type { ConformanceOptions, ConformanceScenario } from './conformance';
 export { conformanceScenarios, describeConformance } from './conformance';
 export { echoMcpServerSpec } from './fixtures/index';
+export {
+  AUTHORIZED_USER_FIXTURE,
+  SERVICE_ACCOUNT_KEY_FIXTURE,
+  vertexCredentialFixture,
+} from './vertex-fixtures';

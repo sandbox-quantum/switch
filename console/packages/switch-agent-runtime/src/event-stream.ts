@@ -1,4 +1,5 @@
 import { contractRange } from './artifacts';
+import { furthest, OWN_EVENTS, type Position, readPosition } from './positions';
 import { ReattachFence } from './reattach-fence';
 import { readSse } from './sse';
 import type { AgentBridgeEvent, SwitchCredentials } from './types';
@@ -25,11 +26,14 @@ const AGENT_PROTOCOL = contractRange('agent-protocol', RUNTIME_ARTIFACT);
  * `openFrames`). That path is kept for a compatibility window and goes when
  * those servers are gone.
  *
- * Every event carries a sequence number, and a reconnect names the last one we
- * handled, so we get exactly what we missed. A gap is never silent: if the
- * server cannot serve our cursor it says so, and `onGap` fires so the caller
- * can tell the agent to re-read context rather than carry on believing it saw
- * everything.
+ * Each event frame says where the event is numbered, and on reconnect we tell
+ * the server how far we have read, so it sends exactly the events we missed. A
+ * server that speaks agent-protocol 9 tracks this as a position: one number for
+ * the agent's own events and one for each room's conversation (see `Position`).
+ * An older server understands only the own-events number, so we send that
+ * number as well. A gap is never silent: if the server cannot serve our
+ * position it says so, and `onGap` fires so the caller can tell the agent to
+ * re-read context rather than carry on believing it saw everything.
  */
 
 /** How long a request on the side (a room claim, placements, a beat) may take. */
@@ -98,6 +102,8 @@ export class PlacementsRefusedError extends Error {
 export type StreamScope = 'single' | 'all';
 export type DeliveryFilter = 'all' | 'addressed';
 
+export type { Position } from './positions';
+
 /**
  * Why a stream ended, in the form a caller can branch on.
  *
@@ -123,49 +129,6 @@ export const EVICTION_TAKEN_OVER = 'taken_over';
 export const EVICTION_HEARTBEAT_LAPSED = 'heartbeat_lapsed';
 export const EVICTION_CLOSED = 'closed';
 export const EVICTION_CREDENTIALS_REJECTED = 'credentials_rejected';
-/** A hosted worker's launch moved to a newer revision. Terminal, like `taken_over`. */
-export const EVICTION_LAUNCH_SUPERSEDED = 'launch_superseded';
-/** Switch refused a hosted worker's open or up-call for good; `code` names why. */
-export const WORKER_CAPABILITY_OBSOLETE = 'worker_capability_obsolete';
-const TERMINAL_WORKER_REFUSALS = new Set([
-  WORKER_CAPABILITY_OBSOLETE,
-  'worker_capability_required',
-  'upgrade_required',
-  'hosted_worker_only',
-]);
-
-/** The frames of agent-protocol 7, sent only to an attached hosted worker. */
-export const WORKER_FRAMES = [
-  'worker_attached',
-  'relay',
-  'relay_cancel',
-  'wake',
-  'mailbox_cancel',
-  'operation',
-  'credential',
-] as const;
-export type WorkerFrameName = (typeof WORKER_FRAMES)[number];
-
-/** Who a hosted worker is, stated on every open. */
-export interface WorkerIdentity {
-  capability: string;
-  bootId: string;
-  instanceId: string;
-  /** The layout version of the worker's volume; Switch refuses one older than it requires. */
-  stateVersion: number;
-}
-
-/** A hosted up-call Switch answered with anything but success. */
-export class WorkerCallError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string | null,
-    detail: string
-  ) {
-    super(`Switch refused ${detail} (HTTP ${status}${code ? `, ${code}` : ''})`);
-    this.name = 'WorkerCallError';
-  }
-}
 
 /**
  * Read the code off an `evicted` frame, falling back to its prose.
@@ -345,19 +308,16 @@ export interface SwitchEventStreamDeps {
     reason: string;
     /** The rooms that lost events. Absent from a server that predates naming them. */
     rooms?: string[];
+    /** The own-events number (`s`) the server resumes sending from after the gap. */
     resumedAt?: number;
+    /** True when `resumedAt` is behind the own-events number we had already read,
+     * which means the server restarted its numbering. */
     cursorReset?: boolean;
   }): void | Promise<void>;
   /** Fired when another stream took this connection over, or it was closed.
    * A `taken_over` eviction has already halted the connection before this runs:
    * there is nothing left to reconnect, only something to report. */
   onEvicted(eviction: Eviction): void;
-  /**
-   * Open as the agent's hosted worker. Null for every other client. A worker
-   * is handed the protocol-7 frames through `onWorkerFrame`, in order.
-   */
-  worker: WorkerIdentity | null;
-  onWorkerFrame?: (frame: WorkerFrameName, data: Record<string, unknown>) => Promise<void> | void;
   log: EventStreamLogger;
   /** Aborts the connection. */
   signal: AbortSignal;
@@ -402,10 +362,12 @@ type HeaderedWebSocket = new (url: string, init: { headers: Record<string, strin
 
 export class SwitchEventStream {
   private readonly deps: SwitchEventStreamDeps;
-  /** Highest sequence number received. Sent with every pong and as
-   * `start_from` when reopening. Seeded from `startCursor` when the caller
-   * needs to begin behind head rather than at it. */
-  private cursor: number;
+  /** How far this stream has read. We send it in every WebSocket pong and SSE
+   * beat, and as `start_at` when we reopen. When the caller passes
+   * `startCursor`, it becomes the own-events number, so the stream resumes from
+   * a saved point instead of starting at the current end of the agent's own
+   * events. */
+  private _position: Position;
   /** Aborts only the current socket, so a reconnect can replace it without
    * tearing down the connection. */
   private socketAbort: AbortController | null = null;
@@ -487,13 +449,20 @@ export class SwitchEventStream {
   constructor(deps: SwitchEventStreamDeps) {
     this.deps = deps;
     this.rooms = [...deps.rooms];
-    this.cursor = deps.startCursor ?? 0;
+    this._position = deps.startCursor === undefined ? {} : { [OWN_EVENTS]: deps.startCursor };
     this.spawnCapable = deps.spawnCapable === true;
     this.declaredSpawnCapable = this.spawnCapable;
   }
 
-  get position(): number {
-    return this.cursor;
+  get position(): Position {
+    return { ...this._position };
+  }
+
+  /** The own-events number (`s`) from our position. A server older than
+   * agent-protocol 9 understands only this number, so we also send it as
+   * `start_from`, as `Last-Event-ID`, and as `cursor` in pongs and beats. */
+  private get cursor(): number {
+    return this._position[OWN_EVENTS] ?? 0;
   }
 
   /**
@@ -644,34 +613,10 @@ export class SwitchEventStream {
     return true;
   }
 
-  /**
-   * A refusal a hosted worker cannot reopen its way past: its capability is
-   * obsolete or missing, or it speaks too old a protocol. Ends both loops and
-   * reports the refusal's own code.
-   */
-  private refuseWorker(status: number, body: string): boolean {
-    const code = refusalCode(body);
-    if (code === null || !TERMINAL_WORKER_REFUSALS.has(code)) return false;
-    if (this.halt.signal.aborted) return true;
-    this.deps.log.error('SwitchEventStream: Switch refused this worker — stopping', {
-      event: 'switch_stream_worker_refused',
-      status,
-      code,
-    });
-    this.halt.abort();
-    this.deps.onEvicted({
-      code,
-      reason: `Switch refused this worker (HTTP ${status}, ${code})`,
-      roomId: null,
-    });
-    return true;
-  }
-
   /** A rejected credential is not an outage: every reopen would carry the same
    * token, so end the connection and tell the owner once. */
   private rejectCredentials(status: number, body: string): void {
     if (this.halt.signal.aborted) return;
-    if (this.refuseWorker(status, body)) return;
     const detail = body.slice(0, 500);
     this.deps.log.error('SwitchEventStream: the server rejected our credentials — stopping', {
       event: 'switch_stream_credentials_rejected',
@@ -806,32 +751,6 @@ export class SwitchEventStream {
     return attached && !this.halt.signal.aborted;
   }
 
-  /**
-   * A hosted worker's up-call: `path` under the API endpoint, sent as this
-   * connection and the incarnation it holds. Waits for the stream to be
-   * attached like a placements update. Answers the parsed body; any other
-   * status raises a `WorkerCallError` carrying the refusal's code.
-   */
-  async workerCall(path: string, body: Record<string, unknown>): Promise<unknown> {
-    if (!(await this.attached()))
-      throw new Error(`the connection to Switch is not open, so ${path} cannot be sent`);
-    const { creds } = this.deps;
-    const resp = await fetch(`${creds.apiEndpoint}${path}`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${creds.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...body,
-        connection_id: this.deps.connectionId,
-        generation: this.generation,
-      }),
-      redirect: 'error',
-      signal: AbortSignal.any([AbortSignal.timeout(30_000), this.deps.signal, this.halt.signal]),
-    });
-    const text = await resp.text();
-    if (!resp.ok) throw new WorkerCallError(resp.status, refusalCode(text), path);
-    return text ? JSON.parse(text) : null;
-  }
-
   private post(path: string, body: unknown, timeoutMs = REQUEST_TIMEOUT_MS) {
     const { creds } = this.deps;
     return fetch(`${creds.apiEndpoint}/agents/${creds.agentId}/${path}`, {
@@ -899,6 +818,11 @@ export class SwitchEventStream {
           filter,
           start_from:
             this.cursor > 0 || this.deps.startCursor !== undefined ? String(this.cursor) : 'head',
+          // Our state vector: where we are in every source. A server that
+          // speaks agent-protocol 9 uses it instead of `start_from`. When we
+          // have read nothing yet we send `head`, which asks the server to
+          // start at the current end of the agent's own events and of each room.
+          start_at: Object.keys(this._position).length ? JSON.stringify(this._position) : 'head',
           // What we are and what we speak, declared on the connect we already
           // make (CHOO-1865). A client that says nothing records as unknown
           // server-side, and a declaration cannot be backfilled after the fact
@@ -932,12 +856,10 @@ export class SwitchEventStream {
           });
         })) {
           await this.handleFrame(frame);
-          if (frame.id) this.cursor = Math.max(this.cursor, Number(frame.id) || 0);
         }
       } catch (error) {
         if (error instanceof OpenRefused) {
           const { status, body } = error;
-          if (this.refuseWorker(status, body)) return;
           // Reopening without the refused room is a different request from the
           // one that just failed, and the declared set strictly shrinks, so
           // this cannot spin: retry now rather than serving the backoff a
@@ -1031,18 +953,6 @@ export class SwitchEventStream {
     yield* this.readEventStream(params, abort, onOpen, null);
   }
 
-  /** Who a hosted worker is, as the headers every open of its connection carries. */
-  private workerHeaders(): Record<string, string> {
-    const worker = this.deps.worker;
-    if (!worker) return {};
-    return {
-      'X-Switch-Worker-Capability': worker.capability,
-      'X-Switch-Host-Boot-Id': worker.bootId,
-      'X-Switch-Host-Instance-Id': worker.instanceId,
-      'X-Switch-Worker-State-Version': String(worker.stateVersion),
-    };
-  }
-
   /**
    * Open the connection as a Server-Sent Events stream, the way a server from
    * before the socket serves it, and yield its frames until it ends.
@@ -1066,7 +976,6 @@ export class SwitchEventStream {
           Authorization: `Bearer ${creds.token}`,
           Accept: 'text/event-stream',
           ...(this.cursor > 0 ? { 'Last-Event-ID': String(this.cursor) } : {}),
-          ...this.workerHeaders(),
         },
         signal: AbortSignal.any([abort, signal, this.halt.signal]),
       });
@@ -1106,9 +1015,8 @@ export class SwitchEventStream {
         `this runtime needs Node 22 or newer to connect to Switch (it has ${process.version}, with no WebSocket)`
       );
     }
-    // A hosted worker proves who it is on the socket exactly as on the stream.
     const socket = new Socket(url, {
-      headers: { Authorization: `Bearer ${this.deps.creds.token}`, ...this.workerHeaders() },
+      headers: { Authorization: `Bearer ${this.deps.creds.token}` },
     });
     const pending: SocketFrame[] = [];
     let refused: unknown = null;
@@ -1132,7 +1040,9 @@ export class SwitchEventStream {
         return;
       }
       if (parsed.event === 'ping') {
-        socket.send(JSON.stringify({ type: 'pong', cursor: this.cursor }));
+        socket.send(
+          JSON.stringify({ type: 'pong', cursor: this.cursor, position: this._position })
+        );
         return;
       }
       if (parsed.event === 'refused') {
@@ -1182,8 +1092,18 @@ export class SwitchEventStream {
   private async handleFrame(frame: SocketFrame): Promise<void> {
     const { log, onGap, onEvicted, onEvent } = this.deps;
     switch (frame.event) {
-      case 'connection_state':
+      case 'connection_state': {
         if (typeof frame.data.generation === 'number') this.generation = frame.data.generation;
+        // `connection_state` is the first frame after the socket connects. Its
+        // `position` is the point the server will start sending events from:
+        // the `start_at` we asked for, or, when we asked for `head` because we
+        // had read nothing yet, the current end of the agent's own events and of
+        // each room. We fold it into our own position. Otherwise, if the
+        // socket drops and reconnects before any event arrives, we would ask
+        // for `head` again, start from wherever the end is by then, and
+        // never receive the events that arrived in between.
+        const startedAt = readPosition(frame.data.position);
+        if (startedAt) this._position = furthest(this._position, startedAt);
         this.announces = frame.data.announce_session_starts === true;
         this.attachedOver = this.openingOver;
         // Reached over the stream: whether the server has a socket for next
@@ -1218,6 +1138,7 @@ export class SwitchEventStream {
         this.redeclare();
         this.deps.onConnected?.();
         return;
+      }
       case 'room_released': {
         const roomId = frame.data.room_id;
         const sessionId = frame.data.session_id ?? null;
@@ -1259,6 +1180,15 @@ export class SwitchEventStream {
         const resumedAt = frame.data.resumed_at;
         if (resumedAt !== undefined && (!Number.isSafeInteger(resumedAt) || Number(resumedAt) < 0))
           throw new Error('Switch returned an invalid gap resume cursor.');
+        // A server that speaks agent-protocol 9 sends `resumed_position`, the
+        // position it will resume sending from after the gap. We replace our
+        // position with it rather than merging it with `furthest`, because a
+        // gap is the only case where the server moves a position back. Merging
+        // would keep our higher numbers, and the next reconnect would ask to
+        // start past events we never received.
+        const resumed = readPosition(frame.data.resumed_position);
+        if (frame.data.resumed_position !== undefined && resumed === null)
+          throw new Error('Switch returned an invalid gap resume position.');
         await onGap({
           fromSequence: Number(frame.data.from_sequence ?? 0),
           reason: String(frame.data.reason ?? 'events were missed'),
@@ -1267,7 +1197,9 @@ export class SwitchEventStream {
             ? {}
             : { resumedAt: Number(resumedAt), cursorReset: Number(resumedAt) < this.cursor }),
         });
-        if (resumedAt !== undefined) this.cursor = Number(resumedAt);
+        if (resumed) this._position = resumed;
+        else if (resumedAt !== undefined)
+          this._position = { ...this._position, [OWN_EVENTS]: Number(resumedAt) };
         return;
       }
       case 'evicted': {
@@ -1281,7 +1213,7 @@ export class SwitchEventStream {
         // Halt before reporting: a takeover is the one ending that reopening
         // cannot recover, because reopening is itself a takeover. The
         // connection ends here, and nothing the callback does can restart them.
-        if (code === EVICTION_TAKEN_OVER || code === EVICTION_LAUNCH_SUPERSEDED) this.halt.abort();
+        if (code === EVICTION_TAKEN_OVER) this.halt.abort();
         onEvicted({
           code,
           reason: String(frame.data.reason ?? 'connection closed'),
@@ -1309,26 +1241,32 @@ export class SwitchEventStream {
         return;
       }
       default:
-        if ((WORKER_FRAMES as readonly string[]).includes(frame.event)) {
-          if (this.deps.onWorkerFrame)
-            await this.deps.onWorkerFrame(frame.event as WorkerFrameName, frame.data);
-          else
-            log.warn('SwitchEventStream: worker frame on a connection that is not a worker', {
-              event: 'switch_stream_unexpected_worker_frame',
-              frame: frame.event,
-            });
-          return;
-        }
-        if (typeof frame.data.type !== 'string') {
+        if (typeof frame.data.type === 'string')
+          await onEvent(frame.data as unknown as AgentBridgeEvent);
+        else
           // A frame this runtime does not know and cannot read as a room event.
           log.warn('SwitchEventStream: unknown frame dropped', {
             event: 'switch_stream_unknown_frame',
             frame: frame.event,
           });
-          return;
-        }
-        await onEvent(frame.data as unknown as AgentBridgeEvent);
+        this.passed(frame);
     }
+  }
+
+  /**
+   * Advances our position past an event after it has been handled. A server
+   * that speaks agent-protocol 9 sends the event's `position`; an older server
+   * sends only its own-events number, as the frame id.
+   *
+   * This runs after the handler, not before, so that if the handler throws the
+   * event is not counted as read and the server sends it again when the stream
+   * reopens.
+   */
+  private passed(frame: SocketFrame): void {
+    const eventPosition =
+      readPosition(frame.data.position) ??
+      (frame.id ? { [OWN_EVENTS]: Number(frame.id) || 0 } : null);
+    if (eventPosition) this._position = furthest(this._position, eventPosition);
   }
 
   /**
@@ -1429,6 +1367,7 @@ export class SwitchEventStream {
         const resp = await this.post('connection/beat', {
           connection_id: connectionId,
           cursor: this.cursor,
+          position: this._position,
           generation: this.generation,
         });
         return { answered: true, status: resp.status, ok: resp.ok, body: await resp.text() };

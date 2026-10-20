@@ -7,33 +7,45 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
-from switch_core.agent_display_name import agent_label, agent_label_with_identifier
+from switch_core.agent_display_name import (
+    agent_label,
+    agent_label_with_identifier,
+    label_after_rename,
+)
 from switch_core.aliases import (
     AliasError,
     check_alias_collisions,
     validate_alias_format,
 )
-from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
+from switch_core.authz import Principal, require_manage
+from switch_core.bridges.agent.protocol.agent_core import (
+    AgentExistsError,
+    AgentRenameRefused,
+)
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     AgentStatus,
     CommandPayload,
 )
+from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.clients.mentions import mention_tokens as _mention_tokens
-from switch_core.db.models import CollaborationBridge, HostedLaunch, HostedMachine, Room
+from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.models import CollaborationBridge, Room, User, require_tenant_id
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
-from switch_core.db.stores.hosted_machine_store import idle_sleeping
+from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
 from switch_core.gateway.known_agents import known_agent_for
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
-    from switch_core.clients.agent_consumer import AgentConsumer
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from switch_core.clients.command_consumer import CommandConsumer
     from switch_core.clients.room_meta import RoomMeta
     from switch_core.db.models import Agent
+    from switch_core.delivery.recipient import AgentRecipient
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +62,13 @@ AGENT_GREETINGS = [
 ]
 
 CommandHandler = Callable[
-    ["AgentConsumer", RoomRef, CommandEvent, bool], Awaitable[None]
+    ["AgentRecipient", RoomRef, CommandEvent, bool], Awaitable[None]
 ]
 # (client, args, room_id) -> whether THIS agent is addressed by the command.
 # Targeting is a per-command policy (see Command.addressed) rather than a fixed
 # rule in on_command, so a command like `run-cmd` can interpret its args its
 # own way.
-CommandTargeting = Callable[["AgentConsumer", str, str], Awaitable[bool]]
+CommandTargeting = Callable[["AgentRecipient", str, str], Awaitable[bool]]
 # (host, room, event, meta) -> None. An admin-side usage check run by the
 # always-present admin client BEFORE agents act on a command. It posts a
 # system message when the command is misused (bad/missing target) and does
@@ -64,10 +76,15 @@ CommandTargeting = Callable[["AgentConsumer", str, str], Awaitable[bool]]
 CommandAdminCheck = Callable[
     ["CommandConsumer", RoomRef, CommandEvent, "RoomMeta"], Awaitable[None]
 ]
+# (client, room, event) -> what a command that queues itself for the agent
+# does for this agent, decided as the command's row is written.
+CommandDecider = Callable[
+    ["AgentRecipient", RoomRef, CommandEvent], Awaitable["ControlDecision"]
+]
 
 
 async def _addressed_by_name_or_role(
-    client: AgentConsumer, args: str, room_id: str
+    client: AgentRecipient, args: str, room_id: str
 ) -> bool:
     """Default command targeting.
 
@@ -86,7 +103,7 @@ async def _addressed_by_name_or_role(
 
 
 async def _addressed_by_first_mention(
-    client: AgentConsumer, args: str, room_id: str
+    client: AgentRecipient, args: str, room_id: str
 ) -> bool:
     """Targeting for `run-cmd`: only the FIRST `@token` addresses an agent (by
     name or by a role it holds). Any further `@token` is data for the handler
@@ -102,7 +119,7 @@ async def _addressed_by_first_mention(
 
 
 async def _addressed_by_required_first_mention(
-    client: AgentConsumer, args: str, room_id: str
+    client: AgentRecipient, args: str, room_id: str
 ) -> bool:
     """Like `_addressed_by_first_mention`, but a missing target addresses NO
     ONE. Used by `!reset`, where a bare `!reset` must not silently reset every
@@ -115,14 +132,14 @@ async def _addressed_by_required_first_mention(
     return await _first_token_is_me(client, tokens[0], room_id)
 
 
-async def _addressed_everyone(client: AgentConsumer, args: str, room_id: str) -> bool:
+async def _addressed_everyone(client: AgentRecipient, args: str, room_id: str) -> bool:
     """Targeting for room-wide control commands (`!reset-all-agents`): every
     agent is addressed regardless of args, so the command always fans out to
     the whole room."""
     return True
 
 
-async def _first_token_is_me(client: AgentConsumer, first: str, room_id: str) -> bool:
+async def _first_token_is_me(client: AgentRecipient, first: str, room_id: str) -> bool:
     """Whether `@first` names this agent — by name, room alias, or a held role."""
     if client._args_tag_my_name(f"@{first}"):
         return True
@@ -198,8 +215,9 @@ class CommandArg:
     Every argument declared today is a mention-style token (`@agent`, `@role`,
     `@alias`) matching `mentions.NAME_CHAR`, so a bridge can round-trip a
     declared value back into the positional `args` string the handlers parse.
-    A command taking genuine free text is not representable here and would need
-    a kind/type field adding before it could be declared.
+    The one exception is `free_text`: the last argument may take the rest of
+    the line as written, spaces and all (a display name), and a bridge passes
+    it through untouched.
 
     `name` is what the user sees as the field label on platforms that render
     one, so it must be lowercase and match Discord's `^[-_a-z0-9]{1,32}$`.
@@ -208,6 +226,7 @@ class CommandArg:
     name: str
     description: str
     required: bool
+    free_text: bool = False
 
 
 @dataclass(frozen=True)
@@ -235,6 +254,11 @@ class Command:
     # it. If False, the command is handled by the agents themselves (e.g.
     # `!run-cmd`, `!reset`, `!agents-greet`), which answer in their own voice.
     admin_owned: bool = False
+    # Set for a command that is queued for the agent (the session controls).
+    # The router decides it in the transaction that writes the command and
+    # stores what is queued with it, so the agent gets the command before
+    # anything written after it; `handler` runs it outside the router.
+    decide: CommandDecider | None = None
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -354,7 +378,7 @@ def _control_frame(
     }
 
 
-async def _room_surface(client: AgentConsumer, room_id: str) -> str:
+async def _room_surface(client: AgentRecipient, room_id: str) -> str:
     """The platform a room is bridged to, as a contract surface."""
     async with client.session_factory() as db:
         room = await db.get(Room, room_id)
@@ -367,7 +391,7 @@ async def _room_surface(client: AgentConsumer, room_id: str) -> str:
 
 
 async def _reply(
-    client: AgentConsumer | CommandConsumer,
+    client: AgentRecipient | CommandConsumer,
     room: RoomRef,
     event: CommandEvent,
     body: str,
@@ -391,7 +415,7 @@ async def _reply(
 
 
 async def _cmd_help(
-    client: AgentConsumer, room: RoomRef, event: CommandEvent, _is_direct: bool
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
     lines = ["**Available commands:**"]
     for cmd in COMMANDS:
@@ -401,73 +425,41 @@ async def _cmd_help(
     await _reply(client, room, event, "\n".join(lines))
 
 
-async def _reply_hosted_asleep(
-    client: AgentConsumer,
-    room: RoomRef,
-    event: CommandEvent,
-    agent: Agent,
-    launch_id: str,
-    command: str,
-) -> bool:
-    """Answer an undelivered room control for a hosted agent that is asleep.
+@dataclass(frozen=True)
+class ControlTexts:
+    """What a session-control command says in the room for each outcome."""
 
-    A sleeping worker holds no placement, so this is decided from the launch,
-    not from whether a session was placed. `!reset` wakes the worker but is
-    not queued: a destructive command is never run later than it was asked.
-    A machine in error is never woken; the room is told of the error instead.
-    Returns False when the worker is awake, so the ordinary reply applies.
+    ack: str
+    unsupported: str
+    # No live session in the room at all.
+    no_live_session: str
+    # A live session that cannot be controlled from here, e.g. one not
+    # started from Switch Console.
+    no_session: str
+
+
+@dataclass(frozen=True)
+class ControlDecision:
+    """What a session-control command does for one agent.
+
+    `queued` is the command to queue for the agent's controller, None when
+    nothing is queued. The router stores it as an own event in the
+    transaction that writes the command, so a message written after the
+    command reaches the agent after it. `answer` is what is said in the room,
+    or relayed to a session, once the command has committed.
     """
-    async with tenant_session(client.session_factory, client.tenant_id) as session:
-        launch = await session.get(HostedLaunch, (agent.tenant_id, launch_id))
-        machine = (
-            None
-            if launch is None or launch.machine_id is None
-            else await session.get(HostedMachine, (agent.tenant_id, launch.machine_id))
-        )
-    if launch is None or machine is None or launch.desired_state != "running":
-        return False
-    if machine.state == "error":
-        await _reply(
-            client,
-            room,
-            event,
-            f"@{agent.name}'s cloud machine has a problem, so the {command} was not sent. Its owner can check it in Switch Console.",
-        )
-        return True
-    if not idle_sleeping(machine):
-        return False
-    if command == "reset":
-        hosted = await client._note_hosted_addressed(agent, None)
-        if hosted is not None and hosted.refusal is not None:
-            await _reply(client, room, event, hosted.refusal)
-            return True
-        await _reply(
-            client,
-            room,
-            event,
-            f"The cloud worker is waking up. The reset was not queued. Wait until the agent is back (usually about a minute), then send !reset @{agent.name} again to start a fresh conversation.",
-        )
-        return True
-    await _reply(
-        client,
-        room,
-        event,
-        f"@{agent.name} is asleep, so nothing is running. The {command} was not sent.",
-    )
-    return True
+
+    queued: CommandPayload | None
+    answer: Callable[[], Awaitable[None]] | None
 
 
-async def _dispatch_control_command(
-    client: AgentConsumer,
+async def _decide_control_command(
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     command: str,
-    *,
-    ack: str,
-    unsupported_msg: str,
-    no_live_session_msg: str,
-    no_session_msg: str,
-) -> None:
+    texts: ControlTexts,
+) -> ControlDecision:
     """Shared logic for the session-control commands (reset/compact/interrupt).
 
     Resolves the agent's declared capability level for `command` from its
@@ -476,15 +468,21 @@ async def _dispatch_control_command(
     control capabilities). When actionable, acknowledges in the room and queues
     a `command` event for the agent's controller (e.g. Switch Console) to execute.
 
-    Two distinct "can't act" cases are reported separately: no live session in
-    the room at all (`no_live_session_msg`) vs. a live session that can't be
-    controlled from here — e.g. not started from Switch Console (`no_session_msg`).
+    Everything here is a read; what it decides to say or relay is left to
+    `ControlDecision.answer`.
     """
+
+    def say(body: str) -> ControlDecision:
+        async def answer() -> None:
+            await _reply(client, room, event, body)
+
+        return ControlDecision(queued=None, answer=answer)
+
     async with client.session_factory() as session:
         agent = await client._fresh_agent(session)
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
-        return
+        return ControlDecision(queued=None, answer=None)
     # A session that connected to this room takes the command itself, over
     # its agent's controller. Nothing is queued: with no controller to relay
     # it to, the room is told so.
@@ -493,16 +491,11 @@ async def _dispatch_control_command(
     # know which session that is, so the frame names none.
     controller_backed = client._connections.controllers.is_bound(agent.id)
     placed = client._connections.session_in_room(agent.id, meta.room_id)
-    launch_id = hosted_launch_of(agent.metadata_)
     if placed is not None or controller_backed:
         if not event.message_id:
-            await _reply(
-                client,
-                room,
-                event,
-                f"Could not send {command}: the room command has no stable message ID.",
+            return say(
+                f"Could not send {command}: the room command has no stable message ID."
             )
-            return
         frame = room_control_frame(
             agent_id=agent.id,
             session_id=placed,
@@ -514,34 +507,24 @@ async def _dispatch_control_command(
             surface=await _room_surface(client, meta.room_id),
             requester_name=event.user_name,
         )
-        delivered = client._connections.relay_session_command(
-            agent.id, frame, worker_only=launch_id is not None
-        )
-        if delivered:
-            await _reply(client, room, event, ack)
-            return
-    if launch_id is not None and await _reply_hosted_asleep(
-        client, room, event, agent, launch_id, command
-    ):
-        return
-    if placed is not None or controller_backed:
-        await _reply(
-            client,
-            room,
-            event,
-            f"Could not send {command}: the agent's controller is not connected to Switch.",
-        )
-        return
+
+        async def relay() -> None:
+            if client._connections.relay_session_command(agent.id, frame):
+                await _reply(client, room, event, texts.ack)
+                return
+            await _reply(
+                client,
+                room,
+                event,
+                f"Could not send {command}: the agent's controller is not connected to Switch.",
+            )
+
+        return ControlDecision(queued=None, answer=relay)
     profile = agent.integration_profile or {}
     level = (profile.get("command_capabilities") or {}).get(command, "unsupported")
 
     if level == "unsupported":
-        await _reply(client, room, event, unsupported_msg)
-        return
-
-    meta = await client._resolve_room_meta(room.room_id)
-    if meta is None:
-        return
+        return say(texts.unsupported)
 
     deeplink: str | None = None
     role: str | None = None
@@ -571,11 +554,9 @@ async def _dispatch_control_command(
         live = statuses.get(agent.id) == AgentStatus.LIVE
         caps = (runtime.control_capabilities or {}) if runtime else {}
         if not live:
-            await _reply(client, room, event, no_live_session_msg)
-            return
+            return say(texts.no_live_session)
         if not caps.get(command):
-            await _reply(client, room, event, no_session_msg)
-            return
+            return say(texts.no_session)
         deeplink = runtime.deeplink_url if runtime else None
 
     args = event.args
@@ -584,9 +565,43 @@ async def _dispatch_control_command(
 
     # Mirror the runtime "working" surface: link back to the session in
     # Switch Console when we know its deeplink.
-    body = f"{ack} ([Open in Switch Console]({deeplink}))" if deeplink else ack
-    await _reply(client, room, event, body)
-    client._event_buffer.enqueue(
+    body = (
+        f"{texts.ack} ([Open in Switch Console]({deeplink}))" if deeplink else texts.ack
+    )
+    decision = say(body)
+    return ControlDecision(
+        queued=CommandPayload(
+            command=command,
+            args=args,
+            user_id=event.user_id,
+            user_name=event.user_name,
+            thread_id=event.thread_id,
+        ),
+        answer=decision.answer,
+    )
+
+
+async def _dispatch_control_command(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    command: str,
+    texts: ControlTexts,
+) -> None:
+    """Decide a session-control command and carry it out at once: answer in
+    the room, then queue the command for the agent in a transaction of its
+    own. For a command run outside the router; the router stores what is
+    queued with the command's row instead (`AgentRecipient.decide_command`)."""
+    decision = await _decide_control_command(client, room, event, command, texts)
+    if decision.answer is not None:
+        await decision.answer()
+    if decision.queued is None:
+        return
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        return
+    await client._event_buffer.enqueue(
+        client.tenant_id,
         client.agent.id,
         meta.room_id,
         AgentEvent(
@@ -594,80 +609,87 @@ async def _dispatch_control_command(
             room_id=meta.room_id,
             bridge_id=meta.bridge_id,
             channel_type=meta.channel_type,
-            payload=CommandPayload(
-                command=command,
-                args=args,
-                user_id=event.user_id,
-                user_name=event.user_name,
-                thread_id=event.thread_id,
-            ),
+            payload=decision.queued,
         ),
+        room_seq=event.room_seq,
+        message_key=event.message_id,
     )
+
+
+_RESET = ControlTexts(
+    ack="Resetting my session — clearing context, then reconnecting to this room.",
+    unsupported="My session can't be reset — this isn't supported for me.",
+    no_live_session=(
+        "I have no active session in this room, so there's nothing to reset."
+    ),
+    no_session=(
+        "My session can't be reset from here — it wasn't started from "
+        "Switch Console, so my operator needs to reset it manually (e.g. by "
+        "restarting my session)."
+    ),
+)
+_COMPACT = ControlTexts(
+    ack="Compacting my session's context.",
+    unsupported="I can't compact my session — this isn't supported for me.",
+    no_live_session=(
+        "I have no active session in this room, so there's nothing to compact."
+    ),
+    no_session=(
+        "I can't compact from here — my session wasn't started from "
+        "Switch Console, so my operator needs to compact it manually."
+    ),
+)
+_INTERRUPT = ControlTexts(
+    ack="Interrupted my current turn.",
+    unsupported="I can't be interrupted — this isn't supported for me.",
+    no_live_session=(
+        "I have no active session in this room, so there's nothing to interrupt."
+    ),
+    no_session=(
+        "I can't be interrupted from here — my session wasn't started from "
+        "Switch Console, so my operator needs to interrupt it manually."
+    ),
+)
 
 
 async def _cmd_reset(
-    client: AgentConsumer, room: RoomRef, event: CommandEvent, _is_direct: bool
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
-    await _dispatch_control_command(
-        client,
-        room,
-        event,
-        "reset",
-        ack="Resetting my session — clearing context, then reconnecting to this room.",
-        unsupported_msg="My session can't be reset — this isn't supported for me.",
-        no_live_session_msg=(
-            "I have no active session in this room, so there's nothing to reset."
-        ),
-        no_session_msg=(
-            "My session can't be reset from here — it wasn't started from "
-            "Switch Console, so my operator needs to reset it manually (e.g. by "
-            "restarting my session)."
-        ),
-    )
+    await _dispatch_control_command(client, room, event, "reset", _RESET)
+
+
+async def _decide_reset(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent
+) -> ControlDecision:
+    return await _decide_control_command(client, room, event, "reset", _RESET)
 
 
 async def _cmd_compact(
-    client: AgentConsumer, room: RoomRef, event: CommandEvent, _is_direct: bool
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
-    await _dispatch_control_command(
-        client,
-        room,
-        event,
-        "compact",
-        ack="Compacting my session's context.",
-        unsupported_msg="I can't compact my session — this isn't supported for me.",
-        no_live_session_msg=(
-            "I have no active session in this room, so there's nothing to compact."
-        ),
-        no_session_msg=(
-            "I can't compact from here — my session wasn't started from "
-            "Switch Console, so my operator needs to compact it manually."
-        ),
-    )
+    await _dispatch_control_command(client, room, event, "compact", _COMPACT)
+
+
+async def _decide_compact(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent
+) -> ControlDecision:
+    return await _decide_control_command(client, room, event, "compact", _COMPACT)
 
 
 async def _cmd_interrupt(
-    client: AgentConsumer, room: RoomRef, event: CommandEvent, _is_direct: bool
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
-    await _dispatch_control_command(
-        client,
-        room,
-        event,
-        "interrupt",
-        ack="Interrupted my current turn.",
-        unsupported_msg="I can't be interrupted — this isn't supported for me.",
-        no_live_session_msg=(
-            "I have no active session in this room, so there's nothing to interrupt."
-        ),
-        no_session_msg=(
-            "I can't be interrupted from here — my session wasn't started from "
-            "Switch Console, so my operator needs to interrupt it manually."
-        ),
-    )
+    await _dispatch_control_command(client, room, event, "interrupt", _INTERRUPT)
+
+
+async def _decide_interrupt(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent
+) -> ControlDecision:
+    return await _decide_control_command(client, room, event, "interrupt", _INTERRUPT)
 
 
 async def _cmd_list_room_agents(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -694,8 +716,210 @@ async def _cmd_list_room_agents(
     await _reply(client, room, event, "\n".join(lines))
 
 
+_FOLLOW_THE_CONVERSATION_OFF = (
+    "Following the conversation isn't switched on for this Switch server, so "
+    "`!follow-ups` and `!assign-agent` have no effect here. Agents only get "
+    "messages that mention them."
+)
+
+
+async def _reject_if_following_is_off(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent
+) -> bool:
+    """True, after saying so, when the server has the feature off: a command
+    must not claim a change that nothing will act on."""
+    host = cast("CommandConsumer", client)
+    if host._follow_the_conversation_enabled:
+        return False
+    await _reply(client, room, event, _FOLLOW_THE_CONVERSATION_OFF)
+    return True
+
+
+_FOLLOW_UPS_ON = (
+    "Follow-ups are **on** in this room. A reply in an agent's thread, or your "
+    "next message after an agent has just answered you, reaches that agent "
+    "without an @. Turn them off with `!follow-ups off`."
+)
+_FOLLOW_UPS_OFF = (
+    "Follow-ups are **off** in this room. Agents only get messages that mention "
+    "them. Turn them back on with `!follow-ups on`."
+)
+
+
+async def _cmd_follow_ups(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    if await _reject_if_following_is_off(client, room, event):
+        return
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+
+    choice = event.args.strip().lower()
+    if choice not in ("", "on", "off"):
+        await _reply(
+            client,
+            room,
+            event,
+            "Usage: `!follow-ups on`, `!follow-ups off`, or `!follow-ups` to see "
+            "which it is.",
+        )
+        return
+
+    async with client.session_factory() as session:
+        if choice:
+            await client._room_store.set_follow_ups_enabled(
+                session, meta.room_id, choice == "on"
+            )
+            await session.commit()
+        enabled = await client._room_store.follow_ups_enabled(session, meta.room_id)
+
+    await _reply(client, room, event, _FOLLOW_UPS_ON if enabled else _FOLLOW_UPS_OFF)
+
+
+async def _cmd_assign_agent(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    if await _reject_if_following_is_off(client, room, event):
+        return
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+
+    tokens = _mention_tokens(event.args)
+    async with client.session_factory() as session:
+        current_id = await client._room_store.main_agent_id(session, meta.room_id)
+        current = (
+            await client._agent_store.get(session, current_id) if current_id else None
+        )
+        if not tokens:
+            body = (
+                f"Every message here goes to **{_label(current)}** unless it "
+                "mentions someone else. Clear it with `!unassign-agent`."
+                if current is not None
+                else "No agent is assigned in this room. Assign one with "
+                "`!assign-agent @agent-name`."
+            )
+            await _reply(client, room, event, body)
+            return
+
+        token = tokens[0]
+        target = await _room_agent_by_name_or_alias(
+            client, session, meta.room_id, token
+        )
+        if target is None:
+            await _reply(
+                client,
+                room,
+                event,
+                f"No agent named `{token}` in this room. Run `!list-agents`.",
+            )
+            return
+        # Admin-owned: the Switch app's client runs it.
+        host = cast("CommandConsumer", client)
+        resolver = AddressingResolver(
+            room_store=host._room_store,
+            room_role_store=host._room_role_store,
+            client_store=host.client_store,
+            agent_store=host._agent_store,
+            external_user_store=host._external_user_store,
+            live_connection_ids=host._connections.live_connection_ids,
+        )
+        decision = await resolver.permitted(
+            session, agent=target, room_id=meta.room_id, sender=event.user_id
+        )
+        if not decision.allowed:
+            await _reply(
+                client,
+                room,
+                event,
+                f"You can't assign **{_label(target)}**: it doesn't take "
+                "instructions from you, so it couldn't act on this room's "
+                "messages for you.",
+            )
+            return
+        await client._room_store.set_main_agent(session, meta.room_id, target.id)
+        await session.commit()
+
+    replaced = (
+        f" (replacing **{_label(current)}**)"
+        if current is not None and current.id != target.id
+        else ""
+    )
+    await _reply(
+        client,
+        room,
+        event,
+        f"From now on, every message here goes to **{_label(target)}**{replaced} "
+        "unless it mentions someone else. Clear it with `!unassign-agent`.",
+    )
+
+
+async def _cmd_unassign_agent(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    if await _reject_if_following_is_off(client, room, event):
+        return
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+
+    async with client.session_factory() as session:
+        current_id = await client._room_store.main_agent_id(session, meta.room_id)
+        if current_id is None:
+            await _reply(client, room, event, "No agent is assigned in this room.")
+            return
+        current = await client._agent_store.get(session, current_id)
+        await client._room_store.set_main_agent(session, meta.room_id, None)
+        await session.commit()
+
+    await _reply(
+        client,
+        room,
+        event,
+        f"**{_label(current)}** is no longer assigned. Agents here only get "
+        "messages that mention them, or follow-ups.",
+    )
+
+
+def _label(agent: Agent | None) -> str:
+    # No leading `@`: these notices are posted to the room, and a live mention
+    # would address the agent.
+    if agent is None:
+        return "an agent that no longer exists"
+    return agent_label_with_identifier(agent.display_name, agent.name)
+
+
+async def _room_agent_by_name_or_alias(
+    client: AgentRecipient, session: AsyncSession, room_id: str, token: str
+) -> Agent | None:
+    """The room member `token` names, by its name or its alias in this room."""
+    for agent_id in await client._room_store.get_agent_ids(session, room_id):
+        agent = await client._agent_store.get(session, agent_id)
+        if agent is not None and agent.name.lower() == token.lower():
+            return agent
+    alias_target = await client._room_store.get_agent_id_by_alias(
+        session, room_id, token
+    )
+    if alias_target is None:
+        return None
+    return await client._agent_store.get(session, alias_target)
+
+
 async def _cmd_list_aliases(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -727,7 +951,7 @@ async def _cmd_list_aliases(
 
 
 async def _cmd_set_alias(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -797,7 +1021,7 @@ async def _cmd_set_alias(
 
 
 async def _cmd_remove_alias(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -849,7 +1073,7 @@ async def _cmd_remove_alias(
 
 
 async def _cmd_invite(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -910,6 +1134,368 @@ async def _cmd_invite(
     )
 
 
+async def _cmd_remove_agent(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+
+    tokens = _mention_tokens(event.args)
+    if not tokens:
+        await _reply(
+            client,
+            room,
+            event,
+            "Usage: `!remove-agent @agent-name` — the agent to remove from this room.",
+        )
+        return
+    token = tokens[0]
+
+    # `remove-agent` is admin-owned, so only the always-present admin client
+    # runs this handler.
+    host = cast("CommandConsumer", client)
+    async with tenant_session(host.session_factory, host.tenant_id) as session:
+        target = await _room_agent_by_name_or_alias(
+            client, session, meta.room_id, token
+        )
+        if target is None:
+            await _reply(
+                client,
+                room,
+                event,
+                f"No agent named `{token}` in this room. Run `!list-agents`.",
+            )
+            return
+        if not await _may_remove_agent(host, session, target, meta.room_id, event):
+            await _reply(
+                client,
+                room,
+                event,
+                f"You can't remove **{_label(target)}**: it doesn't take "
+                "instructions from you. Ask a workspace admin, or whoever it "
+                "answers to.",
+            )
+            return
+
+    await host._room_service.remove_agents_from_room(meta.room_id, [target.id])
+    await _reply(client, room, event, f"Removed **{_label(target)}** from this room.")
+
+
+async def _may_remove_agent(
+    host: CommandConsumer,
+    session: AsyncSession,
+    target: Agent,
+    room_id: str,
+    event: CommandEvent,
+) -> bool:
+    """Whether the command's sender may take `target` out of the room.
+
+    Anyone the agent would take instructions from may; so may a workspace
+    admin, and an agent that manages agents for the target's owner.
+    """
+    resolver = AddressingResolver(
+        room_store=host._room_store,
+        room_role_store=host._room_role_store,
+        client_store=host.client_store,
+        agent_store=host._agent_store,
+        external_user_store=host._external_user_store,
+        live_connection_ids=host._connections.live_connection_ids,
+    )
+    decision = await resolver.permitted(
+        session, agent=target, room_id=room_id, sender=event.user_id
+    )
+    if decision.allowed:
+        return True
+    principal = await resolver.resolve_sender(session, event.user_id)
+    if principal is None:
+        return False
+    if principal.kind == "user":
+        for user_id in principal.user_ids:
+            user = await session.get(User, user_id)
+            if user is not None and await host._user_store.administers(session, user):
+                return True
+        return False
+    if principal.kind == "agent":
+        sender = await host._agent_store.get(session, principal.id)
+        return (
+            sender is not None
+            and sender.can_manage_agents
+            and sender.owner_id is not None
+            and sender.owner_id == target.owner_id
+        )
+    return False
+
+
+# ── Rename and delete ─────────────────────────────────────────────────────────
+
+
+def _bare_name(token: str) -> str:
+    return token.strip().lstrip("@")
+
+
+def _strip_quotes(text: str) -> str:
+    text = text.strip()
+    for opening, closing in (('"', '"'), ("'", "'"), ("\u201c", "\u201d")):
+        if len(text) >= 2 and text.startswith(opening) and text.endswith(closing):
+            return text[1:-1].strip()
+    return text
+
+
+@dataclass(frozen=True)
+class _Authority:
+    """Whether this command's sender may rename or delete an agent: the Switch
+    user they act as when they may, or why not when they may not."""
+
+    user_id: str | None
+    refusal: str | None
+
+
+async def _manage_authority(
+    host: CommandConsumer, session: AsyncSession, event: CommandEvent, agent: Agent
+) -> _Authority:
+    """Whether this command's sender may rename or delete `agent`.
+
+    The same rule as the gateway: the agent's owner, or an admin of the
+    workspace. The sender is a person on a chat platform, known to Switch
+    through the Switch users who have linked that platform account; an
+    account nobody has linked cannot be told apart from anyone else, so it is
+    refused with what to do about it.
+    """
+    client = await host.client_store.get_by_transport_user_id(session, event.user_id)
+    external = (
+        await host._external_user_store.get_by_client_id(session, client.id)
+        if client is not None
+        else None
+    )
+    if external is None:
+        return _Authority(
+            None,
+            "Only a person can rename or delete an agent, from their own chat account.",
+        )
+    claimants = await host._external_user_store.claimant_ids(session, external.id)
+    if not claimants:
+        return _Authority(
+            None,
+            "This chat account isn't linked to a Switch user, so I can't tell "
+            "whether you own this agent. Link it to your Switch user in Switch "
+            "Console (Messaging apps), then try again.",
+        )
+    for user_id in claimants:
+        user = await host._user_store.get(session, user_id)
+        if user is None:
+            continue
+        try:
+            require_manage(
+                Principal(user.id, await host._user_store.administers(session, user)),
+                agent.owner_id,
+            )
+            return _Authority(user.id, None)
+        except PermissionError:
+            continue
+    return _Authority(
+        None, "Only the agent's owner or a workspace admin can rename or delete it."
+    )
+
+
+async def _cmd_rename_agent(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    host = cast("CommandConsumer", client)
+    usage = (
+        "Usage: `!rename-agent @agent new-name [Display Name]`. Leave out the "
+        "display name to keep it, or to have it follow the new name when it is "
+        "just the old name written out."
+    )
+    parts = (event.args or "").split(maxsplit=2)
+    if len(parts) < 2:
+        await _reply(host, room, event, usage)
+        return
+    old, new_name = _bare_name(parts[0]), _bare_name(parts[1])
+    given_label = _strip_quotes(parts[2]) if len(parts) == 3 else None
+
+    async with host.session_factory() as session:
+        agent = await host._agent_store.get_by_name_insensitive(session, old)
+        if agent is None:
+            await _reply(
+                host,
+                room,
+                event,
+                f"No agent named `{old}`. Run `!list-switch-agents` to see registered agents.",
+            )
+            return
+        refusal = (await _manage_authority(host, session, event, agent)).refusal
+        agent_id, old_name, old_label = agent.id, agent.name, agent.display_name
+        # Not held across the rename, which opens its own sessions and calls
+        # every bridge.
+        await session.commit()
+    if refusal is not None:
+        await _reply(host, room, event, f"⚠️ {refusal}")
+        return
+
+    display_name = (
+        given_label
+        if given_label is not None
+        else label_after_rename(old_label, old_name, new_name)
+    )
+    try:
+        result = await host._agent_admin.core.rename_agent(
+            agent_id=agent_id, new_name=new_name, display_name=display_name
+        )
+    except (AgentExistsError, AgentRenameRefused, ValueError) as exc:
+        await _reply(host, room, event, f"⚠️ Not renamed: {exc}")
+        return
+
+    label = agent_label_with_identifier(result.display_name, result.new_name)
+    if result.old_name == result.new_name:
+        lines = [f"Updated **{label}**."]
+    else:
+        lines = [
+            f"Renamed `{result.old_name}` to **{label}**. Mention it by its new "
+            "name from now on."
+        ]
+    if result.bridge_failures:
+        lines.append(
+            "Not yet updated on "
+            + "; ".join(result.bridge_failures)
+            + ". It catches up when that bridge next starts."
+        )
+    if result.templates_mentioning_old_name:
+        lines.append(
+            "Saved templates still naming the old name: "
+            + ", ".join(f"`{name}`" for name in result.templates_mentioning_old_name)
+            + "."
+        )
+    logger.info(
+        "Renamed agent %s from %s to %s by in-room command from %s",
+        agent_id,
+        result.old_name,
+        result.new_name,
+        event.user_id,
+    )
+    await _reply(host, room, event, "\n".join(lines))
+
+
+async def _cmd_delete_agent(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    host = cast("CommandConsumer", client)
+    parts = (event.args or "").split()
+    if not parts:
+        await _reply(
+            host,
+            room,
+            event,
+            "Usage: `!delete-agent @agent`, then `!delete-agent @agent confirm` to go ahead.",
+        )
+        return
+    name = _bare_name(parts[0])
+    confirming = len(parts) > 1 and _bare_name(parts[1]).lower() == "confirm"
+
+    async with host.session_factory() as session:
+        agent = await host._agent_store.get_by_name_insensitive(session, name)
+        if agent is None:
+            await _reply(
+                host,
+                room,
+                event,
+                f"No agent named `{name}`. Run `!list-switch-agents` to see registered agents.",
+            )
+            return
+        authority = await _manage_authority(host, session, event, agent)
+        agent_id, agent_name = agent.id, agent.name
+        label = agent_label_with_identifier(agent.display_name, agent.name)
+        other_rooms = [
+            r.transport_room_id
+            for r in await host._room_store.get_rooms_for_agent(session, agent.id)
+            if r.transport_room_id != room.room_id
+        ]
+        await session.commit()
+    if authority.refusal is not None:
+        await _reply(host, room, event, f"⚠️ {authority.refusal}")
+        return
+
+    meta = await host._resolve_room_meta(room.room_id)
+    agent_request = (
+        host._deletion_requests.take(meta.room_id, agent_id)
+        if confirming and meta is not None
+        else None
+    )
+    person_request = confirming and host.take_delete_request(
+        room.room_id, event.user_id, agent_id
+    )
+    if not (agent_request or person_request):
+        host.request_delete(room.room_id, event.user_id, agent_id)
+        await _reply(
+            host,
+            room,
+            event,
+            f"This permanently deletes **{label}**: its credentials, its place in "
+            "every room, and its handle on connected chat platforms. To go ahead, "
+            f"send `!delete-agent {agent_name} confirm` within 2 minutes.",
+        )
+        return
+
+    try:
+        deletion = await host._agent_admin.core.delete_agent(agent_id=agent_id)
+    except ValueError as exc:
+        await _reply(host, room, event, f"⚠️ Not deleted: {exc}")
+        return
+    async with host.session_factory() as session:
+        await record_audit_event(
+            session,
+            tenant_id=require_tenant_id(),
+            actor_user_id=authority.user_id,
+            action=AuditAction.AGENT_DELETED,
+            target_type="agent",
+            target_id=agent_id,
+            details={
+                "agent_name": agent_name,
+                "via": "chat command",
+                "requested_by_agent_name": (
+                    agent_request.requested_by if agent_request else None
+                ),
+            },
+        )
+        await session.commit()
+    asked = (
+        f", as {agent_request.requested_by} asked" if agent_request is not None else ""
+    )
+    for other in other_rooms:
+        try:
+            await host.actor.send_admin(
+                other,
+                f"🗑️ **{label}** was deleted{asked}. It no longer answers here.",
+                message_type=AdminMessageType.AGENT_LIFECYCLE,
+                thread_root_id=None,
+            )
+        except Exception:
+            logger.warning(
+                "Could not announce the deletion of agent %s in %s",
+                agent_id,
+                other,
+                exc_info=True,
+            )
+    lines = [f"Deleted **{label}**{asked}."]
+    if deletion.bridge_failures:
+        lines.append(
+            "Clean-up still to finish on "
+            + "; ".join(deletion.bridge_failures)
+            + ". It finishes when that bridge next starts."
+        )
+    logger.info(
+        "Deleted agent %s (%s) by in-room command from %s",
+        agent_id,
+        agent_name,
+        event.user_id,
+    )
+    await _reply(host, room, event, "\n".join(lines))
+
+
 # Emoji + label shown per status by the !status command.
 _STATUS_DISPLAY: dict[AgentStatus, tuple[str, str]] = {
     AgentStatus.LIVE: ("🟢", "live"),
@@ -935,7 +1521,7 @@ def _format_status_lines(
 ) -> str:
     """Render the !status summary: one line per agent (sorted by the name it is
     shown under) with its presence emoji + label, runtime state (if any),
-    agent_type, task capabilities, and a Switch Console deeplink to its session
+    agent_type, and a Switch Console deeplink to its session
     when one is known.
 
     The deeplink is shown only for an agent whose session is LIVE in this room:
@@ -952,14 +1538,6 @@ def _format_status_lines(
         if runtime is not None:
             head += f" · {runtime}"
         parts = [head, agent.agent_type]
-        task_protocol = (agent.integration_profile or {}).get("task_protocol", {})
-        caps = []
-        if task_protocol.get("can_delegate"):
-            caps.append("delegate")
-        if task_protocol.get("can_accept"):
-            caps.append("accept")
-        if caps:
-            parts.append("+".join(caps))
         deeplink = deeplinks.get(agent.id)
         if deeplink and status == AgentStatus.LIVE:
             parts.append(f"[Open in Switch Console]({deeplink})")
@@ -968,7 +1546,7 @@ def _format_status_lines(
 
 
 async def _cmd_status(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -1010,7 +1588,7 @@ async def _cmd_status(
 
 
 async def _cmd_roles(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -1048,7 +1626,7 @@ async def _cmd_roles(
 
 
 async def _cmd_list_documents(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -1094,7 +1672,7 @@ async def _cmd_list_documents(
 
 
 async def _cmd_list_references(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -1130,7 +1708,7 @@ async def _cmd_list_references(
 
 
 async def _cmd_room_url(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -1157,7 +1735,7 @@ async def _cmd_room_url(
 
 
 async def _cmd_list_all_agents(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -1189,7 +1767,7 @@ def _role_arg(args: str) -> str | None:
 
 
 async def _cmd_run_cmd(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
@@ -1250,7 +1828,7 @@ async def _cmd_run_cmd(
 
 
 async def _cmd_agents_greet(
-    client: AgentConsumer,
+    client: AgentRecipient,
     room: RoomRef,
     event: CommandEvent,
     is_direct: bool,
@@ -1283,6 +1861,7 @@ COMMANDS: list[Command] = [
         "Usage: `!reset @agent-name` or `!reset @role` (the role's holder). "
         "A target is required — use `!reset-all-agents` to reset everyone.",
         _cmd_reset,
+        decide=_decide_reset,
         args_spec=(
             CommandArg("target", "Agent name, alias, or role to reset", required=True),
         ),
@@ -1298,6 +1877,7 @@ COMMANDS: list[Command] = [
         "Reset EVERY agent's session in this room (clears context, then "
         "reconnects each). Usage: `!reset-all-agents`.",
         _cmd_reset,
+        decide=_decide_reset,
         addressed=_addressed_everyone,
     ),
     Command(
@@ -1306,6 +1886,7 @@ COMMANDS: list[Command] = [
         "Usage: `!compact @agent-name` or `!compact @role` (the role's holder). "
         "A target is required — use `!compact-all-agents` for everyone.",
         _cmd_compact,
+        decide=_decide_compact,
         args_spec=(
             CommandArg(
                 "target", "Agent name, alias, or role to compact", required=True
@@ -1321,6 +1902,7 @@ COMMANDS: list[Command] = [
         "Compact EVERY agent's session context in this room. "
         "Usage: `!compact-all-agents`.",
         _cmd_compact,
+        decide=_decide_compact,
         addressed=_addressed_everyone,
     ),
     Command(
@@ -1329,6 +1911,7 @@ COMMANDS: list[Command] = [
         "Usage: `!interrupt @agent-name` or `!interrupt @role` (the role's holder). "
         "A target is required — use `!interrupt-all-agents` for everyone.",
         _cmd_interrupt,
+        decide=_decide_interrupt,
         args_spec=(
             CommandArg(
                 "target", "Agent name, alias, or role to interrupt", required=True
@@ -1342,6 +1925,7 @@ COMMANDS: list[Command] = [
         "Interrupt EVERY agent's current turn in this room. "
         "Usage: `!interrupt-all-agents`.",
         _cmd_interrupt,
+        decide=_decide_interrupt,
         addressed=_addressed_everyone,
     ),
     Command(
@@ -1383,6 +1967,31 @@ COMMANDS: list[Command] = [
         admin_owned=True,
     ),
     Command(
+        "follow-ups",
+        "Turn follow-ups on or off for this room: whether a reply in an agent's "
+        "thread, or the next message after an agent's answer, reaches it without "
+        "an @. Usage: `!follow-ups on`, `!follow-ups off`, or `!follow-ups`.",
+        _cmd_follow_ups,
+        args_spec=(CommandArg("state", "on or off", required=False),),
+        admin_owned=True,
+    ),
+    Command(
+        "assign-agent",
+        "Send every message in this room to one agent, unless it mentions "
+        "someone else. Usage: `!assign-agent @agent-name`, or `!assign-agent` "
+        "to see who is assigned.",
+        _cmd_assign_agent,
+        args_spec=(CommandArg("agent", "The agent to assign", required=False),),
+        admin_owned=True,
+    ),
+    Command(
+        "unassign-agent",
+        "Stop sending every message in this room to the assigned agent. "
+        "Usage: `!unassign-agent`.",
+        _cmd_unassign_agent,
+        admin_owned=True,
+    ),
+    Command(
         "set-alias",
         "Give an agent a room alias. Usage: `!set-alias @agent-name @alias`.",
         _cmd_set_alias,
@@ -1411,6 +2020,45 @@ COMMANDS: list[Command] = [
             CommandArg(
                 "agent", "The registered agent to add to this room", required=True
             ),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "remove-agent",
+        "Remove an agent from this room. Usage: `!remove-agent @agent-name`.",
+        _cmd_remove_agent,
+        args_spec=(
+            CommandArg("agent", "The agent to remove from this room", required=True),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "rename-agent",
+        "Rename an agent, and its display name with it. Owner or admin only. "
+        "Usage: `!rename-agent @agent new-name [Display Name]`.",
+        _cmd_rename_agent,
+        args_spec=(
+            CommandArg("agent", "The agent to rename", required=True),
+            CommandArg(
+                "new_name", "Its new name (lowercase, no spaces)", required=True
+            ),
+            CommandArg(
+                "display_name",
+                "Its new display name (leave empty to keep it)",
+                required=False,
+                free_text=True,
+            ),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "delete-agent",
+        "Delete an agent everywhere, after a confirmation. Owner or admin only. "
+        "Usage: `!delete-agent @agent`, then `!delete-agent @agent confirm`.",
+        _cmd_delete_agent,
+        args_spec=(
+            CommandArg("agent", "The agent to delete", required=True),
+            CommandArg("confirm", "Type confirm to go ahead", required=False),
         ),
         admin_owned=True,
     ),
@@ -1451,14 +2099,13 @@ COMMANDS: list[Command] = [
         # not an address — so it doesn't pull in whoever else holds that role.
         addressed=_addressed_by_first_mention,
     ),
-    Command("admin", "", handler=None, hidden=True),
 ]
 
 COMMANDS_BY_NAME: dict[str, Command] = {cmd.name: cmd for cmd in COMMANDS}
 
 
 async def dispatch_command(
-    client: AgentConsumer, room: RoomRef, event: CommandEvent, is_direct: bool
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, is_direct: bool
 ) -> bool:
     """Runs a command.
 
@@ -1508,4 +2155,4 @@ async def dispatch_admin_command(
     is_direct = await host._is_direct_room(room.room_id)
     # Admin-owned handlers use only the store/reply surface both clients share
     # (never `.agent`), so the admin host satisfies the handler's contract.
-    await cmd.handler(cast("AgentConsumer", host), room, event, is_direct)
+    await cmd.handler(cast("AgentRecipient", host), room, event, is_direct)

@@ -26,6 +26,9 @@ export type ManagedAgentView = {
     /** The provider's advanced configuration, keyed by its field keys; unset fields are absent. */
     advancedConfig: Record<string, AdvancedConfigValue>;
     instructions: string;
+    /** The provider's own automatic review: safe actions run, risky ones ask. */
+    autoMode: boolean;
+    /** Bypass: every permission check skipped. Wins over `autoMode`. */
     autoApprove: boolean;
     /**
      * The working directory on its machine. The server fills in the machine's
@@ -53,6 +56,11 @@ export type ManagedMachine = {
   state: 'online' | 'offline' | 'unknown' | 'revoked';
 };
 
+/** Whether the machine is the owner's Switch cloud machine: Switch enrolls its controller as kind `ec2`. */
+export function isCloudMachine(machine: Pick<ManagedMachine, 'kind'>): boolean {
+  return machine.kind === 'ec2';
+}
+
 /** A provider on a machine, as the machine last reported it. */
 export type MachineProvider = {
   /** The Switch definition provider id (`claude`, `codex`, …). */
@@ -61,7 +69,38 @@ export type MachineProvider = {
   ready: boolean;
   /** Why it is not ready, in a few words; null when it is. */
   problem: string | null;
+  /** What the machine said about it, when it said more than `problem` does. */
+  detail: string | null;
 };
+
+/**
+ * This computer's providers as its agents controller last reported them to a
+ * server: what Switch goes by when it creates an agent here, so what every
+ * screen about this computer's providers shows when there is one.
+ */
+export type ThisComputerReport = { serverId: string; providers: MachineProvider[] };
+
+/**
+ * A provider login to give a machine: a key or token typed in, this
+ * computer's own sign-in for the provider, read from its file, or (Claude
+ * only) Google Vertex AI, with a service account key pasted or picked, or this
+ * computer's Google application-default sign-in.
+ */
+export type MachineLoginInput =
+  | { source: 'typed'; kind: 'api-key' | 'setup-token'; credential: string }
+  | { source: 'this-computer' }
+  | {
+      source: 'vertex';
+      project: string;
+      region: string;
+      credentials: { from: 'key'; json: string } | { from: 'this-computer' };
+    };
+
+/** How giving a machine a login went: still being taken up, taken up, or why not. */
+export type MachineLoginOutcome =
+  | { state: 'pending' }
+  | { state: 'succeeded' }
+  | { state: 'failed'; code: string; message: string };
 
 /** What a machine is to this Console: this computer, one of its SSH hosts, or neither. */
 export type MachineLocal = { kind: 'this-computer' } | { kind: 'ssh-host'; sshHost: string } | null;
@@ -70,11 +109,17 @@ export type MachineLocal = { kind: 'this-computer' } | { kind: 'ssh-host'; sshHo
 export type OwnedMachine = ManagedMachine & {
   /** Empty before the machine has reported. */
   providers: MachineProvider[];
+  /** It can be given a provider login sealed to its key: its controller registered one. */
+  acceptsLogins: boolean;
+  /** The owner's Switch cloud machine, offered as "Switch cloud" rather than by name. */
+  cloud: boolean;
   /**
    * Where the machine makes agents' workspaces (an agent's is `<workspacesDir>/<name>`);
    * null before it has said.
    */
   workspacesDir: string | null;
+  /** Its operating system as it enrolled (`macos`, `linux`, `windows`); null when not known. */
+  os: string | null;
   local: MachineLocal;
 };
 

@@ -2,7 +2,7 @@
 
 _The components of Switch, what each one is responsible for, and how they connect_
 
-Published at <https://docs.flintai.dev/flintai/switch/internals> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/internals> — link readers there, not to this file.
 
 Switch is a service that puts people and AI agents in rooms together, over a message bus of its own. This section covers its components, the contracts between them, and the parts of the design that aren't obvious from the outside.
 

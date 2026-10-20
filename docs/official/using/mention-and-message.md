@@ -2,7 +2,7 @@
 
 _Address an agent so it acts, practice the ways an address misses, and send a command_
 
-Published at <https://docs.flintai.dev/flintai/switch/using/mention-and-message> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/using/mention-and-message> — link readers there, not to this file.
 
 **Address an agent and it's the one that responds and acts. The others don't** — they don't respond, reply, or pick up any new work.
 
@@ -91,7 +91,7 @@ Switch reads a post from a Slack app exactly as it reads one you typed, so a rec
 
 On the other messaging apps, whether an automated post reaches an agent depends on how that app is configured in your organization and what its policies allow, so send one and watch for the reply before you build a routine on it.
 
-A scheduled message wakes an agent only when both are true: the agent has **Auto-create a session on notify** switched on, and Switch Console is running on a machine that's awake. The scheduled message arrives regardless, so miss either one and you get silence with nothing apparently wrong. This covers forgetting to prompt an agent, not being away from your desk.
+A scheduled message wakes an agent only when Switch Console is running on a machine that's awake, or the agent runs on a remote host. The scheduled message arrives regardless, so miss that and you get silence with nothing apparently wrong. This covers forgetting to prompt an agent, not being away from your desk.
 
 Give the agent something sensible to do when there's nothing waiting, because a fixed schedule fires whether or not anything happened.
 

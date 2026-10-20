@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -17,8 +18,12 @@ from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.chats.service import ChatError, ChatService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
+from switch_core.connections.app_credentials import ConnectorApps, install_github_app
+from switch_core.connections.flows import ServiceFlows
+from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import BudgetStore
@@ -36,17 +41,19 @@ from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
 from switch_core.gateway.auth_routes import router as auth_router
+from switch_core.gateway.chats import chat_error_response
+from switch_core.gateway.chats import router as chats_router
 from switch_core.gateway.collaborations import router as collaborations_router
 from switch_core.gateway.connection_catalog import router as connection_catalog_router
+from switch_core.gateway.connector_apps import router as connector_apps_router
 from switch_core.gateway.connectors import router as connectors_router
 from switch_core.gateway.dependencies import init_dependencies
 from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
+from switch_core.gateway.feature_flags import router as feature_flags_router
 from switch_core.gateway.github_connections import router as github_connections_router
 from switch_core.gateway.hosted_controller import router as hosted_controller_router
-from switch_core.gateway.hosted_launches import router as hosted_launches_router
 from switch_core.gateway.hosted_machines import router as hosted_machines_router
-from switch_core.gateway.hosted_relay import router as hosted_relay_router
 from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.gateway.messaging_installs import (
     router as messaging_installs_router,
@@ -54,22 +61,24 @@ from switch_core.gateway.messaging_installs import (
 from switch_core.gateway.oidc_routes import register_oidc_client
 from switch_core.gateway.oidc_routes import router as oidc_router
 from switch_core.gateway.packages import router as packages_router
-from switch_core.gateway.provider_connections import (
-    router as provider_connections_router,
-)
-from switch_core.gateway.provider_verifications import (
-    router as provider_verifications_router,
-)
+from switch_core.gateway.providers import router as providers_router
 from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
 from switch_core.gateway.rooms import router as rooms_router
+from switch_core.gateway.service_connections import (
+    router as service_connections_router,
+)
+from switch_core.gateway.service_flows import router as service_flows_router
+from switch_core.gateway.teams_placements import router as teams_placements_router
 from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
+from switch_core.gateway.trust_settings import router as trust_settings_router
+from switch_core.gateway.workspace_services import (
+    router as workspace_services_router,
+)
 from switch_core.keys import Purpose
-from switch_core.providers.claude_verifier import ClaudeVerifier
-from switch_core.providers.github import GitHubConnections
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
 from switch_core.sessions.errors import SessionError
@@ -88,7 +97,7 @@ def create_gateway_app(
     connector_lifecycle: ServerSideConnectorLifecycleService,
     connector_store: ServerConnectorStore,
     event_buffer: EventBuffer,
-    session_factory: object,
+    session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
     external_user_store: ExternalUserStore,
     api_key_store: ApiKeyStore,
@@ -101,6 +110,8 @@ def create_gateway_app(
     protocol: AgentCore,
     install_service: MessagingInstallService | None,
     invite_mailer: InviteMailer | None,
+    chat_service: ChatService,
+    connector_apps: ConnectorApps,
     config: SwitchConfig,
 ) -> FastAPI:
     init_dependencies(
@@ -131,6 +142,7 @@ def create_gateway_app(
     )
 
     app = FastAPI(title="Switch Gateway API")
+    app.state.chat_service = chat_service
     app.state.hosted_controller_settings = (
         HostedControllerSettings.model_validate_json(
             Path(config.hosted_controller_config_path).read_text()
@@ -138,44 +150,31 @@ def create_gateway_app(
         if config.hosted_controller_config_path
         else None
     )
-    if config.hosted_launch_capacity and (
-        app.state.hosted_controller_settings is None
-        or len(app.state.hosted_controller_settings.machine_slots)
-        < config.hosted_launch_capacity
-    ):
+    if config.hosted_launch_capacity and app.state.hosted_controller_settings is None:
         raise ValueError(
-            "Cloud launch capacity requires enough configured machine slots."
+            "HOSTED_LAUNCH_CAPACITY above 0 requires HOSTED_CONTROLLER_CONFIG_PATH."
         )
-    app.include_router(hosted_launches_router, tags=["hosted-launches"])
-    app.include_router(hosted_relay_router, tags=["hosted-launches"])
     app.include_router(hosted_machines_router, tags=["hosted-machines"])
-    if (
-        config.hosted_provider_verification_enabled
-        and app.state.hosted_controller_settings is None
-    ):
-        raise ValueError("Provider verification requires a hosted controller.")
     app.include_router(hosted_controller_router, tags=["hosted-controller"])
-    app.include_router(provider_verifications_router, tags=["provider-verifications"])
-    app.state.github_connections = (
-        GitHubConnections(config.hosted_github_config_path)
-        if config.hosted_github_config_path
-        else None
-    )
+    app.state.connector_apps = connector_apps
+    install_github_app(app.state, connector_apps.github_app())
     app.include_router(
         github_connections_router,
         tags=["provider-connections"],
     )
     app.include_router(connection_catalog_router, tags=["provider-connections"])
-    app.state.claude_verifier = (
-        ClaudeVerifier(config.hosted_claude_verifier_path)
-        if config.hosted_claude_verifier_path
-        else None
+    app.include_router(providers_router, tags=["agent providers"])
+    # Sign-ins under way, GitHub's and the catalog's, in Postgres so that any
+    # switch-core process can take any step of one.
+    app.state.sign_in_flows = SignInFlows(session_factory, config.keyring)
+    app.state.service_flows = ServiceFlows(
+        config.gateway_public_url, app.state.sign_in_flows
     )
-    app.include_router(
-        provider_connections_router,
-        prefix="/provider-connections",
-        tags=["provider-connections"],
-    )
+    if config.service_connections_enabled:
+        app.include_router(service_connections_router, tags=["service-connections"])
+        app.include_router(service_flows_router, tags=["service-connections"])
+        app.include_router(workspace_services_router, tags=["service-connections"])
+        app.include_router(connector_apps_router, tags=["connector-apps"])
 
     # authlib's OIDC client stores transient state/nonce/PKCE in the request
     # session across the IdP redirect round-trip; SameSite=Lax lets the cookie
@@ -194,6 +193,7 @@ def create_gateway_app(
         register_oidc_client(config)
 
     app.add_exception_handler(SessionError, session_error_response)
+    app.add_exception_handler(ChatError, chat_error_response)
     app.include_router(
         agent_sessions_router, prefix="/agent-sessions", tags=["session activity"]
     )
@@ -201,10 +201,14 @@ def create_gateway_app(
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
+    app.include_router(chats_router, prefix="/chats", tags=["chats"])
     app.include_router(room_groups_router, prefix="/room-groups", tags=["room-groups"])
     app.include_router(agents_router, prefix="/agents", tags=["agents"])
     app.include_router(
         collaborations_router, prefix="/collaborations", tags=["collaborations"]
+    )
+    app.include_router(
+        teams_placements_router, prefix="/collaborations", tags=["collaborations"]
     )
     app.include_router(connectors_router, prefix="/connectors", tags=["connectors"])
     app.include_router(api_keys_router, prefix="/api-keys", tags=["api-keys"])
@@ -215,6 +219,8 @@ def create_gateway_app(
     app.include_router(templates_router, tags=["templates"])
     app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
+    app.include_router(trust_settings_router, tags=["trust-settings"])
+    app.include_router(feature_flags_router, tags=["feature-flags"])
     app.include_router(
         messaging_installs_router,
         prefix="/messaging-apps",

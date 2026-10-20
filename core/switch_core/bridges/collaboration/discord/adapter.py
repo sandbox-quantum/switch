@@ -12,7 +12,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Literal
 
 import discord
-from pydantic import Field, model_validator
+from discord.http import Route
+from pydantic import ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
@@ -21,6 +22,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     ActivitySnapshot,
+    AgentIdentity,
     ChannelNotBindable,
     PlatformAdapter,
     RemovalFailed,
@@ -50,12 +52,14 @@ from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     ChannelType,
     DirectoryUser,
+    FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_ACTION,
@@ -100,6 +104,13 @@ _PUBLICATION_WEBHOOK_NAME = "Switch Sessions"
 ALLOWED_MESSAGE_TYPES = frozenset(
     {discord.MessageType.default, discord.MessageType.reply}
 )
+
+# The one shared Gateway connection, as owned work (`ownership.py`): it runs
+# in one switch-core process, and every shared-delivery bridge is held beside
+# it (`DiscordAdapter.held_with`), since the events it receives reach a bridge
+# in-process. One key, for the deployment's one Discord app.
+DISCORD_GATEWAY = "discord-gateway"
+DISCORD_GATEWAY_KEY = "app"
 
 # Put on the message an agent is working on for as long as its turn lasts.
 _REACTION: dict[ActivityMark, str] = {"working": "👀", "queued": "⏳"}
@@ -182,7 +193,6 @@ _ACTIVITY_REFRESH_ID = f"{_ACTIVITY_PREFIX}:r"
 _INTERRUPT_PREFIX = "swstop"
 _ACTIVITY_LABEL = "View activity"
 _REFRESH_LABEL = "Refresh"
-_CONSOLE_LABEL = "Open in Switch Console"
 
 
 def _custom_id(token: str, position: int) -> str:
@@ -431,6 +441,11 @@ class _WebhookIdentity:
 
 
 class DiscordConnectionConfig(BridgeConnectionConfig):
+    # The token is required on the registration form, which only ever creates
+    # a self-registered bridge. The model allows it absent because the install
+    # flow writes shared bridges without one; the validator below decides.
+    model_config = ConfigDict(json_schema_extra={"required": ["bot_token", "guild_id"]})
+
     #: Optional because it depends on `event_delivery`, which the validator
     #: below enforces: the self-registered bridge opens its own connection and
     #: needs a token; the distributed bridge routes through the one shared
@@ -502,6 +517,28 @@ class DiscordAdapter(PlatformAdapter):
     Switch room is created by the bridge core on the first bridged message
     rather than eagerly for the whole guild.
     """
+
+    display_name: ClassVar[str] = "Discord"
+    channel_on_delete = "deleted"
+    docs_slug: ClassVar[str | None] = "discord"
+    # Quiet, a bridge with its own token logs in for the API alone and opens
+    # no Gateway socket. A shared-delivery bridge opens none either way: it
+    # listens where the shared connection runs (`held_with`).
+    keeps_quiet_unless_listening: ClassVar[bool] = True
+
+    @classmethod
+    def held_with(cls, connection_config: dict[str, object]) -> tuple[str, str] | None:
+        if connection_config.get("event_delivery") == "shared":
+            return (DISCORD_GATEWAY, DISCORD_GATEWAY_KEY)
+        return None
+
+    @classmethod
+    def classify_failure(cls, exc: BaseException) -> FailureReason | None:
+        if isinstance(exc, discord.LoginFailure):
+            return "auth_failed"
+        if isinstance(exc, discord.DiscordException):
+            return "platform_error"
+        return None
 
     # Discord linkifies only http(s), so the `switchdash://` deeplink needs the
     # https redirect (`GATEWAY_PUBLIC_URL`) to be clickable here.
@@ -645,10 +682,22 @@ class DiscordAdapter(PlatformAdapter):
             )
             return
 
+        conn = self._require_connection()
+        if not self._listening:
+            # Another process holds the bridge and listens for it. This copy
+            # serves the requests that reach it, over the API alone.
+            await conn.login()
+            logger.info(
+                "Discord adapter logged in as %s (guild %s), quiet: another "
+                "process listens",
+                conn.client.user,
+                self._config.guild_id,
+            )
+            return
+
         # One guild, one handler; the DM handler is the same adapter so direct
         # messages still reach it. The connection routes each message by guild
         # id, which for a single-guild bridge is exactly the old filter.
-        conn = self._require_connection()
         conn.register_message_handler(self._guild_id, self._handle_message)
         conn.set_dm_handler(self._handle_message)
         conn.set_interaction_handler(self._make_on_interaction())
@@ -1186,7 +1235,6 @@ class DiscordAdapter(PlatformAdapter):
                     limit=max(1, limit - len(tail)),
                     markup=markup,
                     elapsed_seconds=content.elapsed_seconds,
-                    session_url=content.session_url,
                     mention=mention,
                     error_summary=content.error_summary,
                     tool_detail=True,
@@ -2259,6 +2307,25 @@ class DiscordAdapter(PlatformAdapter):
         )
         return str(channel.id)
 
+    async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
+        try:
+            channel = await self._get_channel(int(external_channel_id))
+        except discord.NotFound:
+            return RetireOutcome(outcome="deleted")
+        except discord.HTTPException as e:
+            return RetireOutcome.failed(f"Discord would not find the channel: {e}")
+        if getattr(channel, "guild", None) is None:
+            return RetireOutcome.failed(
+                "This Discord chat is a direct message, which a bot cannot delete"
+            )
+        try:
+            await channel.delete(reason="Its Switch room was deleted")
+        except discord.NotFound:
+            return RetireOutcome(outcome="deleted")
+        except discord.HTTPException as e:
+            return RetireOutcome.failed(f"Discord refused to delete the channel: {e}")
+        return RetireOutcome(outcome="deleted")
+
     async def search_directory_users(self, query: str) -> list[DirectoryUser]:
         """Find guild members whose username or nickname starts with `query`.
 
@@ -2275,6 +2342,10 @@ class DiscordAdapter(PlatformAdapter):
         term = query.strip()
         if not term:
             return []
+        if not self._listening:
+            results = await self._search_members_by_api(term)
+            results.sort(key=lambda u: u.display_name.lower())
+            return results
 
         self._require_connection().take_member_search()
         guild = await self._get_guild()
@@ -2300,6 +2371,41 @@ class DiscordAdapter(PlatformAdapter):
             if not getattr(member, "bot", False)
         ]
         results.sort(key=lambda u: u.display_name.lower())
+        return results
+
+    async def _search_members_by_api(self, term: str) -> list[DirectoryUser]:
+        """The member search of a quiet copy, which has no Gateway socket to
+        query members over: Discord's search endpoint, matching the same
+        prefix of a username or nickname. discord.py has no call for it."""
+        client = self._require_client()
+        try:
+            found = await client.http.request(
+                Route(
+                    "GET",
+                    "/guilds/{guild_id}/members/search",
+                    guild_id=self._guild_id,
+                ),
+                params={"query": term, "limit": 100},
+            )
+        except discord.HTTPException as e:
+            raise RuntimeError(f"Discord member search failed: {e}") from e
+        results: list[DirectoryUser] = []
+        for member in found:
+            user = member.get("user") or {}
+            if user.get("bot"):
+                continue
+            username = str(user.get("username", ""))
+            results.append(
+                DirectoryUser(
+                    external_user_id=str(user.get("id", "")),
+                    username=username,
+                    # Discord's own order for a member's display name.
+                    display_name=str(
+                        member.get("nick") or user.get("global_name") or username
+                    ),
+                    email=None,
+                )
+            )
         return results
 
     async def create_dm_channel(
@@ -2434,9 +2540,7 @@ class DiscordAdapter(PlatformAdapter):
 
     # ── Agent identity ───────────────────────────────────────────────────────
 
-    async def create_agent_identity(
-        self, agent_name: str, agent_description: str
-    ) -> None:
+    async def create_agent_identity(self, agent: AgentIdentity) -> None:
         """Give the agent a mentionable guild role so its name completes on `@`.
 
         Discord only autocompletes things it knows about, and an agent is not a
@@ -2449,10 +2553,19 @@ class DiscordAdapter(PlatformAdapter):
         """
         if not self._agent_roles_available():
             return
+        agent_name = agent.name
         if agent_name.casefold() in self._agent_role_ids:
             return
 
         guild = await self._get_guild()
+        if not self._listening:
+            # The process listening for the bridge makes the role. Two making
+            # it at once would make two, so this copy only learns it, for
+            # rendering the agent's mentions.
+            existing = discord.utils.get(guild.roles, name=agent_name)
+            if existing is not None:
+                self._agent_role_ids[agent_name.casefold()] = existing.id
+            return
         # A role whose name is exactly the agent's is taken to be that agent's,
         # so a role made by hand — the only way to use this where the bot may
         # not manage roles — is adopted rather than duplicated. The match has to
@@ -2492,7 +2605,37 @@ class DiscordAdapter(PlatformAdapter):
         self._agent_role_ids[agent_name.casefold()] = role.id
         logger.info("Created Discord role %s for agent %s", role.id, agent_name)
 
-    async def remove_agent_identity(self, agent_name: str) -> None:
+    async def rename_agent_identity(self, old_name: str, agent: AgentIdentity) -> None:
+        """Rename the agent's role in place, so mentions of it keep working.
+
+        Falls back to provisioning a fresh role when the old one cannot be
+        found, as on a server where the agent never had one."""
+        if not self._agent_roles_available():
+            return
+        if not self._listening:
+            # The process listening for the bridge renames the role; this copy
+            # only learns it under the new name.
+            self._agent_role_ids.pop(old_name.casefold(), None)
+            await self.create_agent_identity(agent)
+            return
+        guild = await self._get_guild()
+        role_id = self._agent_role_ids.get(old_name.casefold())
+        role = (
+            guild.get_role(role_id)
+            if role_id is not None
+            else discord.utils.get(guild.roles, name=old_name)
+        )
+        if role is None:
+            await self.create_agent_identity(agent)
+            return
+        await role.edit(name=agent.name, reason="Switch agent renamed")
+        self._agent_role_ids.pop(old_name.casefold(), None)
+        self._agent_role_ids[agent.name.casefold()] = role.id
+        logger.info(
+            "Renamed Discord role %s from %s to %s", role.id, old_name, agent.name
+        )
+
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None:
         """Delete the agent's role, unless people are wearing it.
 
         A Discord role carries no metadata, so an agent's role is recognised by
@@ -2502,6 +2645,12 @@ class DiscordAdapter(PlatformAdapter):
         alone and said so, since an agent's own role never has any.
         """
         if not self._agent_roles_available():
+            return
+        agent_name = agent.name
+        if not self._listening:
+            # Deleted by the process listening for the bridge, which alone can
+            # see who holds the role: this copy has no member list to check.
+            self._agent_role_ids.pop(agent_name.casefold(), None)
             return
 
         guild = await self._get_guild()
@@ -2991,12 +3140,7 @@ class DiscordAdapter(PlatformAdapter):
         if snapshot is None:
             await self._privately(interaction, ACTIVITY_GONE, ref)
             return
-        await self._privately(
-            interaction,
-            self._activity_text(snapshot),
-            ref,
-            session_url=snapshot.session_url,
-        )
+        await self._privately(interaction, self._activity_text(snapshot), ref)
 
     def _activity_text(self, snapshot: ActivitySnapshot) -> str:
         """The tool log, and when it was read.
@@ -3014,7 +3158,6 @@ class DiscordAdapter(PlatformAdapter):
             limit=max(1, MAX_MESSAGE - len(stamp) - 1),
             markup=self.rich_markup(),
             elapsed_seconds=snapshot.elapsed_seconds,
-            session_url=None,
             heading=True,
         )
         return f"{body}\n{stamp}"
@@ -3024,8 +3167,6 @@ class DiscordAdapter(PlatformAdapter):
         interaction: discord.Interaction,
         text: str,
         ref: str,
-        *,
-        session_url: str | None = None,
     ) -> None:
         """Answer the press in the private message it has already deferred.
 
@@ -3043,10 +3184,6 @@ class DiscordAdapter(PlatformAdapter):
                 style=discord.ButtonStyle.secondary,
             )
         )
-        if session_url and session_url.startswith(("https://", "http://")):
-            view.add_item(
-                discord.ui.Button(label=_CONSOLE_LABEL, url=session_url),
-            )
         view.stop()
         try:
             await interaction.edit_original_response(content=text, view=view)

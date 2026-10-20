@@ -3,10 +3,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import AgentController, AgentControllerEnrollmentCode
+from switch_core.db.models import (
+    AgentController,
+    AgentControllerEnrollmentCode,
+    SealedProviderLogin,
+)
 
 
 class AgentControllerStore:
@@ -100,6 +105,105 @@ class AgentControllerStore:
         await session.refresh(controller)
         return controller
 
+    async def set_public_key(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        public_key: dict[str, Any],
+    ) -> AgentController:
+        """Record the key provider logins are sealed to, and return the row."""
+        controller = await self.get(session, tenant_id, controller_id)
+        if controller is None:
+            raise LookupError(f"No such controller: {controller_id}")
+        controller.public_key = public_key
+        await session.flush()
+        await session.refresh(controller)
+        return controller
+
+    async def sealed_login(
+        self, session: AsyncSession, tenant_id: str, controller_id: str, provider: str
+    ) -> SealedProviderLogin | None:
+        result = await session.execute(
+            select(SealedProviderLogin).where(
+                SealedProviderLogin.tenant_id == tenant_id,
+                SealedProviderLogin.controller_id == controller_id,
+                SealedProviderLogin.provider == provider,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def sealed_logins(
+        self, session: AsyncSession, tenant_id: str, controller_id: str
+    ) -> list[SealedProviderLogin]:
+        rows = await session.scalars(
+            select(SealedProviderLogin)
+            .where(
+                SealedProviderLogin.tenant_id == tenant_id,
+                SealedProviderLogin.controller_id == controller_id,
+            )
+            .order_by(SealedProviderLogin.provider)
+        )
+        return list(rows)
+
+    async def put_sealed_login(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        provider: str,
+        sealed: dict[str, Any],
+        sealed_by: str,
+    ) -> SealedProviderLogin:
+        """Store the controller's login for `provider`, replacing any before it
+        under the next revision, and return the row."""
+        statement = (
+            insert(SealedProviderLogin)
+            .values(
+                tenant_id=tenant_id,
+                controller_id=controller_id,
+                provider=provider,
+                revision=1,
+                sealed=sealed,
+                sealed_by=sealed_by,
+            )
+            .on_conflict_do_update(
+                index_elements=["controller_id", "provider"],
+                set_={
+                    "revision": SealedProviderLogin.revision + 1,
+                    "sealed": sealed,
+                    "sealed_by": sealed_by,
+                    "updated_at": func.now(),
+                },
+            )
+        )
+        await session.execute(statement)
+        row = await self.sealed_login(session, tenant_id, controller_id, provider)
+        if row is None:
+            raise LookupError(
+                f"The {provider} login for {controller_id} was not stored"
+            )
+        await session.refresh(row)
+        return row
+
+    async def delete_sealed_logins(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        provider: str | None,
+    ) -> int:
+        """Delete the controller's login for `provider`, or every one of its
+        logins when `provider` is None. Returns how many went."""
+        statement = delete(SealedProviderLogin).where(
+            SealedProviderLogin.tenant_id == tenant_id,
+            SealedProviderLogin.controller_id == controller_id,
+        )
+        if provider is not None:
+            statement = statement.where(SealedProviderLogin.provider == provider)
+        result = await session.execute(statement)
+        return int(result.rowcount or 0)  # type: ignore[attr-defined]
+
     async def bump_assignment_revision(
         self, session: AsyncSession, tenant_id: str, controller_id: str
     ) -> int:
@@ -175,15 +279,25 @@ class AgentControllerStore:
         connected_at: datetime,
     ) -> bool:
         """Record that the controller's socket attached to this connection,
-        held by this process. It replaces whatever the row held: the process
-        holding the live socket is the authority. Returns whether the
-        controller's row exists. `updated_at` is left alone: connecting is
-        not an edit."""
+        held by this process. Written only while the row names this
+        connection as the one the controller opened last (`record_opened`),
+        held by this process, so an attach to an earlier connection whose
+        write lands late leaves the newer one standing. A row naming no
+        opened connection was never opened through a process that records
+        opens, and is written as it always was. Returns whether the row was
+        written. `updated_at` is left alone: connecting is not an edit."""
         result = await session.execute(
             update(AgentController)
             .where(
                 AgentController.tenant_id == tenant_id,
                 AgentController.id == controller_id,
+                or_(
+                    AgentController.open_connection_id.is_(None),
+                    and_(
+                        AgentController.open_connection_id == connection_id,
+                        AgentController.open_process_id == process_id,
+                    ),
+                ),
             )
             .values(
                 connection_id=connection_id,
@@ -205,13 +319,17 @@ class AgentControllerStore:
         controller_id: str,
         *,
         connection_id: str,
+        process_id: str,
         disconnected_at: datetime,
         reason: str,
+        resume_cursors: dict[str, int | None],
     ) -> bool:
         """Record that the controller's socket on this connection went, and
-        why. Written only while the row still names this connection, so a
-        process closing a connection the controller has since replaced
-        through another process leaves the replacement standing. Returns
+        why. Written only while the row still names this connection held by
+        this process, so a process closing a connection the controller has
+        since replaced, or reattached through another process, leaves the
+        newer one standing. Where the connection's stream resumes each agent is
+        kept with it, for whichever process the socket reattaches to. Returns
         whether the row was written."""
         result = await session.execute(
             update(AgentController)
@@ -219,6 +337,7 @@ class AgentControllerStore:
                 AgentController.tenant_id == tenant_id,
                 AgentController.id == controller_id,
                 AgentController.connection_id == connection_id,
+                AgentController.connection_process_id == process_id,
             )
             .values(
                 disconnected_at=disconnected_at,
@@ -228,7 +347,93 @@ class AgentControllerStore:
             .returning(AgentController.id)
             .execution_options(synchronize_session=False)
         )
+        written = result.scalar_one_or_none() is not None
+        if written:
+            await session.execute(
+                update(AgentController)
+                .where(
+                    AgentController.tenant_id == tenant_id,
+                    AgentController.id == controller_id,
+                    AgentController.open_connection_id == connection_id,
+                )
+                .values(
+                    open_cursors=resume_cursors,
+                    updated_at=AgentController.updated_at,
+                )
+                .execution_options(synchronize_session=False)
+            )
+        return written
+
+    async def record_opened(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        *,
+        connection_id: str,
+        generation: int,
+        process_id: str,
+        resume_cursors: dict[str, int | None],
+    ) -> None:
+        """Record the connection the controller just opened through this
+        process, so whichever process its socket reaches can hold it. Its
+        socket attaching is recorded separately (`record_connected`): opened
+        is not connected."""
+        await session.execute(
+            update(AgentController)
+            .where(
+                AgentController.tenant_id == tenant_id,
+                AgentController.id == controller_id,
+            )
+            .values(
+                open_connection_id=connection_id,
+                open_generation=generation,
+                open_process_id=process_id,
+                open_cursors=resume_cursors,
+                updated_at=AgentController.updated_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+
+    async def record_taken_up(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        *,
+        connection_id: str,
+        process_id: str,
+    ) -> bool:
+        """Record that this process now holds the connection the controller
+        last opened. Written only while it is still that connection. Returns
+        whether it was."""
+        result = await session.execute(
+            update(AgentController)
+            .where(
+                AgentController.tenant_id == tenant_id,
+                AgentController.id == controller_id,
+                AgentController.open_connection_id == connection_id,
+            )
+            .values(open_process_id=process_id, updated_at=AgentController.updated_at)
+            .returning(AgentController.id)
+            .execution_options(synchronize_session=False)
+        )
         return result.scalar_one_or_none() is not None
+
+    async def list_with_connections(
+        self, session: AsyncSession, tenant_id: str
+    ) -> list[AgentController]:
+        """Every controller of the tenant that has opened a connection."""
+        result = await session.execute(
+            select(AgentController).where(
+                AgentController.tenant_id == tenant_id,
+                or_(
+                    AgentController.connection_id.is_not(None),
+                    AgentController.open_connection_id.is_not(None),
+                ),
+            )
+        )
+        return list(result.scalars().all())
 
     async def set_credential(
         self,
@@ -273,9 +478,13 @@ class AgentControllerStore:
         owner_id: str,
         api_key_id: str,
         expires_at: datetime,
+        machine_workspace_id: str | None,
     ) -> AgentControllerEnrollmentCode:
         code = AgentControllerEnrollmentCode(
-            owner_id=owner_id, api_key_id=api_key_id, expires_at=expires_at
+            owner_id=owner_id,
+            api_key_id=api_key_id,
+            expires_at=expires_at,
+            machine_workspace_id=machine_workspace_id,
         )
         session.add(code)
         await session.flush()

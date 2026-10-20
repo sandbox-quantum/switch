@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import logging
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from ipaddress import ip_address
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
+
+logger = logging.getLogger(__name__)
 
 # Scheme + host of the Switch Console session deeplink Switch Console reports with its
 # runtime state, e.g. `switchdash://session?server=…&agent=…&room=…&session=…`.
@@ -120,3 +126,190 @@ def gateway_query_to_switchdash(query: str) -> str:
     """
     suffix = f"?{query}" if query else ""
     return f"{_DEEPLINK_SCHEME}://{_DEEPLINK_HOST}{suffix}"
+
+
+# Gateway path that hands the browser off to a `switchdash://open/<page>` link,
+# the https form a chat platform can make clickable.
+CONSOLE_LINK_REDIRECT_PATH = "/deeplink/open"
+
+# Where someone without Switch Console is sent to get it.
+GET_SWITCH_CONSOLE_URL = (
+    "https://docs.switchagents.ai/flintai/switch/getting-started/install-switch-console"
+)
+
+_CONSOLE_LINK_HOST = "open"
+
+# The same rule Switch Console applies to the id a page names.
+_CONSOLE_LINK_ID = re.compile(r"[A-Za-z0-9_.:-]{1,200}")
+
+
+@dataclass(frozen=True)
+class ConsolePage:
+    """A page a `switchdash://open/…` link can name, as a person reads it.
+
+    `name` is how the page is named in words, for a reader who cannot click
+    through; `tabs` maps each tab the page has to its own name.
+    """
+
+    name: str
+    has_id: bool = False
+    tabs: Mapping[str, str] = field(default_factory=dict)
+
+
+# Switch Console's link catalogue (`CONSOLE_PAGES` in
+# console/apps/switch-console-desktop/src/shared/core/deeplinks/console-links.ts),
+# with the names a person reads. A test holds the two together.
+CONSOLE_PAGES: Mapping[str, ConsolePage] = {
+    "home": ConsolePage("the server's home"),
+    "agents": ConsolePage("the list of agents"),
+    "agents/new": ConsolePage("the page to add a new agent"),
+    "agent": ConsolePage(
+        "your agent's page",
+        has_id=True,
+        tabs={
+            "chats": "your agent's chats",
+            "connections": "your agent's connections",
+            "settings": "your agent's settings",
+        },
+    ),
+    "rooms": ConsolePage("the list of rooms"),
+    "room": ConsolePage("the room's page", has_id=True),
+    "chat": ConsolePage("the direct chat", has_id=True),
+    "buddy": ConsolePage(
+        "switch-buddy's page",
+        tabs={
+            "chats": "switch-buddy's chats",
+            "connections": "switch-buddy's connections",
+            "settings": "switch-buddy's settings",
+        },
+    ),
+    "templates": ConsolePage(
+        "the templates",
+        tabs={
+            "agent": "the agent templates",
+            "room": "the room templates",
+            "group": "the group templates",
+        },
+    ),
+    "template": ConsolePage("the template's page", has_id=True),
+    "messaging-apps/connect": ConsolePage("the page to connect a messaging app"),
+    "connections": ConsolePage("your connectors"),
+    "invite": ConsolePage("the page to invite people to the workspace"),
+    "settings": ConsolePage(
+        "Switch Console's settings",
+        tabs={
+            "general": "Switch Console's general settings",
+            "clis-models": "Switch Console's CLIs and models settings",
+            "remote-hosts": "Switch Console's remote hosts settings",
+            "managed-agents": "Switch Console's managed agents settings",
+            "interface": "Switch Console's interface settings",
+        },
+    ),
+}
+
+
+@dataclass(frozen=True)
+class ConsoleLink:
+    """A `switchdash://open/…` link that names a page Switch Console opens."""
+
+    page: str
+    id: str | None
+    tab: str | None
+    # The query as written, carried across verbatim (`tab`, `server`, …).
+    query: str
+
+    @property
+    def path(self) -> str:
+        return f"{self.page}/{self.id}" if self.id else self.page
+
+    @property
+    def page_name(self) -> str:
+        spec = CONSOLE_PAGES[self.page]
+        if self.tab is not None:
+            return spec.tabs[self.tab]
+        return spec.name
+
+    @property
+    def switchdash_url(self) -> str:
+        suffix = f"?{self.query}" if self.query else ""
+        return f"{_DEEPLINK_SCHEME}://{_CONSOLE_LINK_HOST}/{self.path}{suffix}"
+
+    def gateway_url(self, gateway_public_url: str) -> str:
+        suffix = f"?{self.query}" if self.query else ""
+        base = gateway_public_url.rstrip("/")
+        return f"{base}{CONSOLE_LINK_REDIRECT_PATH}/{self.path}{suffix}"
+
+
+def parse_console_link_path(path: str, query: str) -> ConsoleLink | None:
+    """The Console page `path` and `query` name, or None when Switch Console
+    has no such page, the page's id is missing or malformed, or it has no
+    such tab — the same rules Switch Console reads a link by."""
+    segments = [segment for segment in path.split("/") if segment]
+    joined = "/".join(segments)
+    page: str | None = None
+    page_id: str | None = None
+    if joined in CONSOLE_PAGES and not CONSOLE_PAGES[joined].has_id:
+        page = joined
+    elif len(segments) >= 2:
+        parent = "/".join(segments[:-1])
+        if parent in CONSOLE_PAGES and CONSOLE_PAGES[parent].has_id:
+            page, page_id = parent, segments[-1]
+    if page is None:
+        return None
+    if page_id is not None and not _CONSOLE_LINK_ID.fullmatch(page_id):
+        return None
+    tabs = parse_qs(query, keep_blank_values=True).get("tab")
+    tab = tabs[0] if tabs else None
+    if tab is not None and tab not in CONSOLE_PAGES[page].tabs:
+        return None
+    return ConsoleLink(page=page, id=page_id, tab=tab, query=query)
+
+
+def parse_console_link(url: str) -> ConsoleLink | None:
+    """Read a `switchdash://open/…` URL; None when it is not one that names a
+    page Switch Console opens."""
+    parts = urlsplit(url)
+    if parts.scheme != _DEEPLINK_SCHEME or parts.netloc != _CONSOLE_LINK_HOST:
+        return None
+    return parse_console_link_path(parts.path, parts.query)
+
+
+# A Markdown link to a Console page, and the code spans no link is read inside.
+_CONSOLE_MARKDOWN_LINK = re.compile(
+    r"```.*?```|~~~.*?~~~|`[^`\n]*`"
+    r"|\[(?P<label>[^\[\]\n]*)\]\((?P<url>switchdash://open/[^)\s]*)\)",
+    re.DOTALL,
+)
+
+
+_CONSOLE_LINK_MARKER = f"{_DEEPLINK_SCHEME}://{_CONSOLE_LINK_HOST}/"
+
+
+def rewrite_console_links(text: str, gateway_public_url: str | None) -> str:
+    """Rewrite Markdown links to Console pages for a platform that cannot open
+    the `switchdash://` scheme.
+
+    With a public address each becomes the https handoff route for the same
+    page, keeping its label. Without one there is nothing to link to, so the
+    link becomes its label followed by the page's name in words: a reader can
+    still find it, and no link that goes nowhere is posted. A link to a page
+    Switch Console does not have is left as written, and logged.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        url = match.group("url")
+        if url is None:
+            return match.group(0)
+        label = match.group("label")
+        link = parse_console_link(url)
+        if link is None:
+            logger.warning("Not rewriting a link to an unknown Console page: %s", url)
+            return match.group(0)
+        if gateway_public_url:
+            return f"[{label}]({link.gateway_url(gateway_public_url)})"
+        where = f"in Switch Console: {link.page_name}"
+        return f"{label} ({where})" if label else f"({where})"
+
+    if _CONSOLE_LINK_MARKER not in text:
+        return text
+    return _CONSOLE_MARKDOWN_LINK.sub(_replace, text)

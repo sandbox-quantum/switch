@@ -45,6 +45,7 @@ async function renderHeader(name: string, width: number): Promise<HTMLButtonElem
             <span className="rounded px-2 text-xs">on a-machine-with-a-long-name</span>
           </>
         }
+        titleActions={null}
         machineName={null}
         description="A Claude Code agent."
         actions={null}

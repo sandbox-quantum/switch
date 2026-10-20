@@ -61,7 +61,7 @@ async def test_operation_names_are_the_tool_names_verbatim() -> None:
     # One vocabulary: a translating runtime is POST /ops/${toolName}, nothing
     # more. Renaming or namespacing here would reintroduce a mapping table.
     ops = list_operations()
-    for expected in ("connect_to_room", "post_message", "assume_role", "list_tasks"):
+    for expected in ("connect_to_room", "post_message", "assume_role", "list_rooms"):
         assert expected in ops
 
 

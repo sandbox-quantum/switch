@@ -30,6 +30,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
+from switch_core.telemetry.catalogue import event_spec
 from switch_core.telemetry.snapshot import (
     SPOKEN_EVENT_TYPES,
     UsageCounts,
@@ -718,6 +719,145 @@ class TestMembership:
         assert counts.room_users_max == 3
 
 
+class TestActivityTiers:
+    """Three nested populations of chat identities: seen in a room at all,
+    said anything, and said something in a room with an agent."""
+
+    async def test_a_poster_whose_room_was_archived_is_still_seen(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The tiers must nest, so nobody counts as having posted this week
+        without also counting as seen in a room."""
+        async with session_factory() as session:
+            room = await _room(session, archived=True)
+            agent = await _client(session, "agent")
+            human = await _client(session, "user")
+            await _join(session, agent, room)
+            await _join(session, human, room)
+            await _say(session, room, human, seq=1)
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_active_7d == 1
+        assert counts.chat_identity_posted_7d == 1
+        assert counts.chat_identity_in_room_count == 1
+
+    async def test_a_poster_who_left_the_room_is_still_seen(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            await _say(session, room, await _client(session, "user"), seq=1)
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_posted_7d == 1
+        assert counts.chat_identity_in_room_count == 1
+
+    async def test_a_member_who_posted_is_one_person_not_two(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            human = await _client(session, "user")
+            await _join(session, human, room)
+            await _say(session, room, human, seq=1)
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_in_room_count == 1
+
+    async def test_someone_who_left_and_went_quiet_is_no_longer_seen(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            await _say(
+                session,
+                room,
+                await _client(session, "user"),
+                seq=1,
+                when=NOW - timedelta(days=8),
+            )
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_in_room_count == 0
+
+    async def test_talking_only_to_people_is_posting_but_not_active(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            speaker = await _client(session, "user")
+            listener = await _client(session, "user")
+            await _join(session, speaker, room)
+            await _join(session, listener, room)
+            await _say(session, room, speaker, seq=1)
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_in_room_count == 2
+        assert counts.chat_identity_posted_1d == 1
+        assert counts.chat_identity_active_1d == 0
+
+    async def test_a_person_in_two_rooms_is_one_person(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            human = await _client(session, "user")
+            for _ in range(2):
+                room = await _room(session)
+                await _join(session, human, room)
+                await _say(session, room, human, seq=1)
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_in_room_count == 1
+        assert counts.chat_identity_posted_1d == 1
+
+    async def test_only_people_in_live_rooms_count(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            live = await _room(session)
+            archived = await _room(session, archived=True)
+            await _join(session, await _client(session, "user"), live)
+            await _join(session, await _client(session, "user"), archived)
+            await _join(session, await _client(session, "agent"), live)
+            await _join(session, await _client(session, "bridge"), live)
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_in_room_count == 1
+
+    async def test_posting_is_windowed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            human = await _client(session, "user")
+            await _join(session, human, room)
+            await _say(session, room, human, seq=1, when=NOW - timedelta(days=3))
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_posted_1d == 0
+        assert counts.chat_identity_posted_7d == 1
+
+    async def test_arriving_in_a_room_is_not_posting(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session)
+            await _arrive(session, room, await _client(session, "user"), seq=1)
+
+            counts = await _counts(session)
+
+        assert counts.chat_identity_in_room_count == 1
+        assert counts.chat_identity_posted_7d == 0
+
+
 class TestNewlyActiveRooms:
     async def test_a_room_reports_when_a_person_first_speaks_in_it(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -1027,10 +1167,8 @@ class TestTheDerivedProperties:
             assert properties[f"connector_{platform}_count"] == 0
 
     def test_the_properties_match_the_catalogue_exactly(self) -> None:
-        from switch_core.telemetry.catalogue import CATALOGUE
-
         properties = UsageCounts().as_event_properties(session_live_count=3)
-        assert set(properties) == set(CATALOGUE["usage_snapshot"])
+        assert set(properties) == set(event_spec("usage_snapshot") or {})
 
 
 class TestNormalising:
@@ -1043,10 +1181,12 @@ class TestNormalising:
         assert normalise_channel_type(None) == "none"
         assert normalise_channel_type("something-new") == "none"
 
-    def test_an_unknown_platform_becomes_none(self) -> None:
+    def test_an_unregistered_platform_is_unknown_and_no_bridge_is_none(self) -> None:
+        """`none` is reserved for a room with no bridge; a bridge on a platform
+        this build has not registered is still a bridge."""
         assert normalise_platform("slack") == "slack"
         assert normalise_platform(None) == "none"
-        assert normalise_platform("irc") == "none"
+        assert normalise_platform("irc") == "unknown"
 
     def test_a_runtime_switch_does_not_know_becomes_other(self) -> None:
         assert normalise_known_agent_type({"known_agent_type": "codex"}) == "codex"
@@ -1177,11 +1317,6 @@ NOT_SPOKEN = frozenset(
         MEMBERSHIP_EVENT_TYPE,  # an arrival
         "com.switch.report.tool_call",  # measurements of a run
         "com.switch.report.llm_call",
-        "com.switch.task.delegate",  # task transitions
-        "com.switch.task.accept",
-        "com.switch.task.update",
-        "com.switch.task.finalise",
-        "com.switch.task.cancel",
         "com.switch.agent.runtime_state",  # presence; never stored
     }
 )

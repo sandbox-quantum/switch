@@ -1,3 +1,4 @@
+import type { CommandContext } from '@switch-console/core/agents/plugins';
 import { describe, expect, it } from 'vitest';
 import { pluginRegistry } from '../registry';
 
@@ -148,5 +149,45 @@ describe('pluginRegistry', () => {
     for (const p of pluginRegistry.getAll()) {
       expect(typeof p.behavior.prompt?.buildCommand).toBe('function');
     }
+  });
+});
+
+describe('permission flags', () => {
+  const base: CommandContext = {
+    cli: 'agent-cli',
+    autoApprove: false,
+    autoMode: false,
+    isResuming: false,
+    sessionId: 'switch-console-session',
+    model: '',
+  };
+  const build = (id: string, ctx: Partial<CommandContext>) =>
+    pluginRegistry.get(id)!.behavior.prompt!.buildCommand({ ...base, ...ctx });
+
+  it.each([
+    ['claude', ['--permission-mode', 'auto'], ['--dangerously-skip-permissions']],
+    [
+      'codex',
+      ['-c', 'approval_policy="on-request"', '-c', 'approvals_reviewer="auto_review"'],
+      ['-c', 'approval_policy="never"'],
+    ],
+    ['opencode', ['--auto'], []],
+    ['cursor', [], ['-f', '--approve-mcps']],
+  ])('%s: auto mode, bypass, and bypass winning over auto mode', (id, autoFlags, bypassFlags) => {
+    const none = build(id, {}).args;
+    const auto = build(id, { autoMode: true }).args;
+    const bypass = build(id, { autoApprove: true }).args;
+    const both = build(id, { autoApprove: true, autoMode: true }).args;
+
+    expect(auto).toEqual([...none, ...autoFlags]);
+    expect(bypass).toEqual([...none, ...bypassFlags]);
+    expect(both).toEqual(bypass);
+  });
+
+  it('opencode bypasses through its permission environment and never in auto mode', () => {
+    expect(build('opencode', { autoApprove: true }).env).toEqual({
+      OPENCODE_PERMISSION: '{"*":"allow"}',
+    });
+    expect(build('opencode', { autoMode: true }).env).toEqual({});
   });
 });

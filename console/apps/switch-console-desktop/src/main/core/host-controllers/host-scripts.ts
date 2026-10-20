@@ -128,7 +128,7 @@ process.on('SIGTERM', () => { stopping = true; if (child) child.kill('SIGTERM');
 const start = () => {
   const started = Date.now();
   record({ state: 'running', since: new Date(started).toISOString() });
-  child = cp.spawn(o.node, [expand(o.bundle), 'run', '--data-dir', dataDir, '--shared-host-bundle', expand(o.sharedHost)], {
+  child = cp.spawn(o.node, [expand(o.bundle), 'run', '--data-dir', dataDir, '--shared-host-bundle', expand(o.sharedHost), '--updated-by-console'], {
     stdio: 'inherit',
     env: Object.assign({}, process.env, { PATH: o.path || process.env.PATH, SWITCH_CONTROLLER_LOG_LEVEL: 'info' }),
   });
@@ -272,7 +272,11 @@ if (o.wipe) {
 console.log(JSON.stringify({ turnedOff: turnedOff }));
 `;
 
-/** The systemd user unit that runs the controller, restarted only on exit code 1. */
+/**
+ * The systemd user unit that runs the controller, restarted only on exit code
+ * 1. `--updated-by-console`: Console replaces its bundle, so it follows no
+ * release Switch names and tells Switch so.
+ */
 export function systemdUnit(input: {
   description: string;
   node: string;
@@ -289,7 +293,7 @@ export function systemdUnit(input: {
     'Wants=network-online.target',
     '',
     '[Service]',
-    `ExecStart=${[input.node, input.bundle, 'run', '--data-dir', input.dataDir, '--shared-host-bundle', input.sharedHost].map(quote).join(' ')}`,
+    `ExecStart=${[input.node, input.bundle, 'run', '--data-dir', input.dataDir, '--shared-host-bundle', input.sharedHost, '--updated-by-console'].map(quote).join(' ')}`,
     `Environment=${quote(`PATH=${input.path}`)}`,
     'Environment=SWITCH_CONTROLLER_LOG_LEVEL=info',
     'Restart=on-failure',

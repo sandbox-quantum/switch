@@ -13,6 +13,7 @@ export type ConfirmActionDialogArgs = {
   title: string;
   description: ReactNode;
   confirmLabel?: string;
+  cancelLabel?: string;
   variant?: 'destructive' | 'default';
 };
 
@@ -22,6 +23,7 @@ export function ConfirmActionDialog({
   title,
   description,
   confirmLabel = 'Confirm',
+  cancelLabel = 'Cancel',
   variant = 'destructive',
   onSuccess,
   onClose,
@@ -36,7 +38,7 @@ export function ConfirmActionDialog({
       </DialogContentArea>
       <DialogFooter>
         <Button variant="outline" onClick={onClose}>
-          Cancel
+          {cancelLabel}
         </Button>
         <ConfirmButton variant={variant} onClick={() => onSuccess()}>
           {confirmLabel}

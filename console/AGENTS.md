@@ -420,8 +420,14 @@ pnpm run lint
   reads it and writes `TELEMETRY_ENABLED` into the stack's `.env` on every start —
   `false` as explicitly as `true`, because the compose file forwards the key only when
   the `.env` names it, and a stack started under a yes would otherwise keep reporting.
-  Adding a variable to that contract needs both edits: `deploy/local/standalone-docker-compose.yml`
-  plus `pnpm run sync:compose`, and `env-file.ts`. The server reads the gate once at
+  On a shared SSH host a "yes" is written only when the stack already shares or no
+  other Console has been seen on it lately (`shareUsageData` in `pipeline.ts`), so one
+  user's yes never turns sharing on over the others; a "no" is always written. The
+  scope note in `telemetry-copy.ts` and `docs/TELEMETRY.md` §4.1 state this to the
+  user, and change with it. Adding a variable to that contract needs three edits: `deploy/local/standalone-docker-compose.yml`
+  plus `pnpm run sync:compose`, `env-file.ts`, and `native/core-settings.ts` — a native
+  local server (no Docker) gets the same settings as its process environment, and the
+  copy it was started with is what is read back. The server reads the gate once at
   boot, so a running stack can be out of step; that is surfaced on the server's page with
   a restart offered, never applied by restarting the user's server for them. Whether it
   is out of step is read off the running container, not inferred from what we last wrote —
@@ -592,8 +598,9 @@ and durable command receipts across redeployment.
 - Access mounted locations through `asMounted(getLocationStore(id))`, not inline guards.
 - Session selectors live in `src/renderer/features/sessions/stores/session-selectors.ts`.
 - Location selectors live in `src/renderer/features/locations/stores/location-selectors.ts`.
-- For provider changes, update shared provider metadata, SDK host env passthrough if needed,
-  hook/plugin integrations, renderer assumptions, and tests for non-standard behavior.
+- For provider changes, follow [Add an agent provider](docs/add-an-agent-provider.md): the
+  plugin, the runtime registration (with its env passthrough), and tests for non-standard
+  behavior. Nothing else should need to name the provider.
 - For MCP changes, keep canonical data in shared types and adapt provider formats at edges.
 - Run the local merge gate before merging:
 
@@ -606,11 +613,13 @@ pnpm run test
 
 ## Extensibility Hooks
 
-- Agent providers are defined in `packages/plugins/src/agents/impl/<id>/index.ts`.
-  `src/shared/core/providers/agent-provider-registry.ts` holds the id list, per-provider
-  display metadata, and a mirror of each provider's argv shape. The mirror is
-  descriptive: nothing reads it at spawn time, so change the plugin first and update the
-  mirror to match. `provider-argv-parity.test.ts` pins Codex's.
+- An agent provider registers in two places, each with one line: its plugin in
+  `packages/plugins/src/agents/plugin-registry.ts` (display metadata, detection, install,
+  icon) and its runtime in `packages/agent-providers/src/providers/registry.ts` (adapter,
+  sign-in check, login command). An ACP CLI's runtime is made from its hooks on the generic
+  ACP adapter. `src/shared/core/providers/agent-provider-registry.ts` is the catalogue the
+  app builds from both at startup; nothing in the app lists provider ids. See
+  [Add an agent provider](docs/add-an-agent-provider.md).
 - **The Switch skill every session receives** lives in
   `packages/plugins/src/switch-skill/SKILL.md`, the one copy Console pushes to
   every host (system context for Claude Code, Cursor and Antigravity; a
@@ -679,6 +688,26 @@ pnpm run test
   on. Because the tag is not a semver, the downgrade guard cannot run against a
   checkout build; it is skipped with a warning rather than silently.
   See `src/main/core/managed-switch-server/checkout-build.ts`.
+- Choosing the managed servers' switch-core in dev: a dev build runs the canary
+  pin (`COMPATIBLE_SWITCH_VERSION`). `SWITCH_CONSOLE_SERVER_VERSION` overrides it
+  for the run, read once by the main process at launch:
+  - a release version (`0.30.0`, `0.31.0-rc.7`) — every managed server, local
+    (native or Docker) and SSH-hosted, runs that release: native install, image
+    tags and `.env` `SWITCH_VERSION`, the downgrade guard, drift and upgrade
+    prompts all use it, and the setup page shows it. The checkout toggle is held
+    off. The bundled compose file stays the pinned one, and a version older than
+    what a stack already ran is refused by the downgrade guard as usual.
+  - `checkout` — the local server builds (Docker) or installs (native)
+    switch-core from the checkout the app was started in on every start,
+    whatever the persisted toggle says; the server page shows the toggle held on
+    by the variable. Remote managed servers keep the pin, since a remote host
+    builds nothing from this machine. The downgrade guard is skipped with a
+    warning, as for the toggle.
+  A value that is neither, or `checkout` with no checkout above the app's
+  working directory, stops the launch with an error naming the variable. Set it
+  in the launching environment (`.env.local` works too):
+  `SWITCH_CONSOLE_SERVER_VERSION=checkout pnpm run dev`. Stable and canary builds
+  ignore it. See `src/main/core/managed-switch-server/server-version.ts`.
 - Deeplinks in dev: `pnpm run dev` does **not** claim the `switchdash://` OS URL
   scheme by default — doing so hijacks the handler from the installed app and the
   registration outlives the dev process (on macOS it sticks in Launch Services),

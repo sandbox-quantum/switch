@@ -1,0 +1,28 @@
+/*
+ * The intro's two typefaces, bundled so its first screen needs no network.
+ * Both under the SIL Open Font License 1.1 (OFL-*.txt beside them); Latin
+ * subsets, as Google Fonts serves them.
+ */
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: block;
+  src: url('./space-grotesk.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Lato';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('./lato-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Lato';
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url('./lato-700.woff2') format('woff2');
+}

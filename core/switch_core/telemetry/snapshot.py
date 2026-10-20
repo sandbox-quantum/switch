@@ -31,11 +31,13 @@ from sqlalchemy import (
     exists,
     func,
     select,
+    union,
     union_all,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
+from switch_core import messaging_platforms
 from switch_core.clients.admin_messages import AUTO_REPLY_FLAG
 from switch_core.db.models import (
     Agent,
@@ -58,6 +60,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.telemetry.catalogue import connector_count_property
 from switch_core.telemetry.internal import internal_email_condition
 
 logger = logging.getLogger(__name__)
@@ -67,10 +70,6 @@ logger = logging.getLogger(__name__)
 HUMAN_CLIENT_TYPE = "user"
 AGENT_CLIENT_TYPE = "agent"
 
-# The platforms reported individually. Fixed rather than derived from what is
-# configured, so a deployment with no Discord bridge reports zero rather than
-# omitting the property — the catalogue requires every key every time.
-PLATFORMS = ("slack", "mattermost", "discord", "teams", "telegram")
 
 # What a participant said, as opposed to everything else the transport stores in
 # the same table: arrivals, tool and LLM call reports, task transitions. A
@@ -117,6 +116,10 @@ class UsageCounts:
     # per-tenant count would add it once for each.
     user_active_1d: int = 0
     user_active_7d: int = 0
+    # Of those, accounts on the company's own email domains, so active staff
+    # can be taken out of the headline without a per-event flag.
+    user_internal_active_1d: int = 0
+    user_internal_active_7d: int = 0
     active_user_ids_1d: set[str] = field(default_factory=set)
     active_user_ids_7d: set[str] = field(default_factory=set)
     # Chat identities — a Slack, Mattermost or other platform account — that
@@ -127,6 +130,12 @@ class UsageCounts:
     chat_identity_count: int = 0
     chat_identity_active_1d: int = 0
     chat_identity_active_7d: int = 0
+    # The other tiers, as chat identities like `chat_identity_active_*`:
+    # anyone who said anything in any room, and anyone Switch has seen in a
+    # room — see `_activity_tiers` for what that can and cannot see.
+    chat_identity_posted_1d: int = 0
+    chat_identity_posted_7d: int = 0
+    chat_identity_in_room_count: int = 0
     room_count: int = 0
     room_agent_created_count: int = 0
     room_system_created_count: int = 0
@@ -143,8 +152,11 @@ class UsageCounts:
     agent_opencode_count: int = 0
     agent_other_count: int = 0
     connector_configured_count: int = 0
+    # Every platform this build registered, not every one configured, so a
+    # deployment with no Discord bridge reports zero rather than omitting the
+    # property — the catalogue requires every key every time.
     connector_counts: dict[str, int] = field(
-        default_factory=lambda: dict.fromkeys(PLATFORMS, 0)
+        default_factory=lambda: dict.fromkeys(messaging_platforms.keys(), 0)
     )
     message_count_1d: int = 0
     message_from_human_1d: int = 0
@@ -171,9 +183,14 @@ class UsageCounts:
             "user_internal_count": self.user_internal_count,
             "user_active_1d": self.user_active_1d,
             "user_active_7d": self.user_active_7d,
+            "user_internal_active_1d": self.user_internal_active_1d,
+            "user_internal_active_7d": self.user_internal_active_7d,
             "chat_identity_count": self.chat_identity_count,
             "chat_identity_active_1d": self.chat_identity_active_1d,
             "chat_identity_active_7d": self.chat_identity_active_7d,
+            "chat_identity_posted_1d": self.chat_identity_posted_1d,
+            "chat_identity_posted_7d": self.chat_identity_posted_7d,
+            "chat_identity_in_room_count": self.chat_identity_in_room_count,
             "room_count": self.room_count,
             "room_agent_created_count": self.room_agent_created_count,
             "room_system_created_count": self.room_system_created_count,
@@ -211,8 +228,8 @@ class UsageCounts:
             "room_group_count": self.room_group_count,
             "api_key_count": self.api_key_count,
         }
-        for platform in PLATFORMS:
-            properties[f"connector_{platform}_count"] = self.connector_counts[platform]
+        for platform, count in self.connector_counts.items():
+            properties[connector_count_property(platform)] = count
         return properties
 
 
@@ -381,6 +398,66 @@ def _active_humans(tenant_id: str, since: datetime) -> Select[tuple[str | None]]
     )
 
 
+def _activity_tiers(
+    tenant_id: str, day_ago: datetime, week_ago: datetime
+) -> Select[tuple[int, int, int]]:
+    """Distinct human clients who said anything in any room in the last day
+    and week, and those Switch has seen in a room: a member of a live room
+    now, or anyone who posted in the last week.
+
+    The posters are `_active_humans` without the agent condition: someone
+    talking only to other people is not using an agent, but is not passive
+    either. They are folded into the room count so the tiers nest: someone who
+    posted this week and then left, or whose room was archived, is no longer a
+    member of a live room but has still been seen. Rooms of every origin, like
+    the activity counts: a person in an adopted channel is in Switch whether
+    or not anybody created that room here.
+
+    Not a channel's whole audience. A person gets a membership row only when
+    they post, are added by name, or join after the channel was adopted;
+    nothing records the members a channel already had, so someone who has
+    only ever read is not here.
+
+    One statement over one read of the week's messages, so the three come from
+    the same snapshot and nest exactly, and the scan is not repeated per tier.
+    """
+    posters = (
+        select(
+            Message.sender_client_id.label("client_id"),
+            func.max(Message.sent_at).label("last_posted_at"),
+        )
+        .join(Client, Client.id == Message.sender_client_id)
+        .where(
+            Message.tenant_id == tenant_id,
+            Message.sent_at >= week_ago,
+            *_human_message_conditions(tenant_id),
+        )
+        .group_by(Message.sender_client_id)
+        .cte("posters")
+    )
+    members = (
+        select(ClientRoom.client_id)
+        .join(Client, Client.id == ClientRoom.client_id)
+        .join(Room, Room.id == ClientRoom.room_id)
+        .where(
+            ClientRoom.tenant_id == tenant_id,
+            Client.tenant_id == tenant_id,
+            Client.type == HUMAN_CLIENT_TYPE,
+            Room.tenant_id == tenant_id,
+            Room.archived_at.is_(None),
+        )
+    )
+    seen = union(members, select(posters.c.client_id)).subquery("seen")
+    return select(
+        select(func.count())
+        .select_from(posters)
+        .where(posters.c.last_posted_at >= day_ago)
+        .scalar_subquery(),
+        select(func.count()).select_from(posters).scalar_subquery(),
+        select(func.count()).select_from(seen).scalar_subquery(),
+    )
+
+
 async def _count(session: AsyncSession, query: Select[Any]) -> int:
     result = await session.execute(select(func.count()).select_from(query.subquery()))
     return int(result.scalar_one())
@@ -425,6 +502,12 @@ async def collect_tenant_counts(
     counts.chat_identity_active_7d += await _count(
         session, _active_humans(tenant_id, week_ago)
     )
+    posted_1d, posted_7d, in_room = (
+        await session.execute(_activity_tiers(tenant_id, day_ago, week_ago))
+    ).one()
+    counts.chat_identity_posted_1d += posted_1d
+    counts.chat_identity_posted_7d += posted_7d
+    counts.chat_identity_in_room_count += in_room
     counts.room_active_1d += await _count(
         session, _human_interaction(tenant_id, day_ago)
     )
@@ -756,6 +839,8 @@ def _merge_tenant_counts(total: UsageCounts, tenant: UsageCounts) -> None:
         "user_internal_count",
         "user_active_1d",
         "user_active_7d",
+        "user_internal_active_1d",
+        "user_internal_active_7d",
         "active_user_ids_1d",
         "active_user_ids_7d",
         "room_users_max",
@@ -770,6 +855,18 @@ def _merge_tenant_counts(total: UsageCounts, tenant: UsageCounts) -> None:
     total.active_user_ids_7d |= tenant.active_user_ids_7d
     for platform, count in tenant.connector_counts.items():
         total.connector_counts[platform] += count
+
+
+async def _internal_among(session: AsyncSession, user_ids: set[str]) -> int:
+    """How many of `user_ids` are accounts on the company's own domains."""
+    if not user_ids:
+        return 0
+    return await _scalar(
+        session,
+        select(func.count())
+        .select_from(User)
+        .where(User.id.in_(user_ids), internal_email_condition(User.email)),
+    )
 
 
 async def collect_usage(
@@ -829,6 +926,12 @@ async def collect_usage(
             select(func.count())
             .select_from(User)
             .where(internal_email_condition(User.email)),
+        )
+        counts.user_internal_active_1d = await _internal_among(
+            session, counts.active_user_ids_1d
+        )
+        counts.user_internal_active_7d = await _internal_among(
+            session, counts.active_user_ids_7d
         )
     counts.user_active_1d = len(counts.active_user_ids_1d)
     counts.user_active_7d = len(counts.active_user_ids_7d)
@@ -1051,8 +1154,18 @@ def normalise_channel_type(channel_type: str | None) -> str:
 
 
 def normalise_platform(platform: str | None) -> str:
-    """A bridge type as the catalogue spells it."""
-    return platform if platform in PLATFORMS else "none"
+    """A bridge type as the catalogue spells it.
+
+    `none` only where there is no bridge at all. A type this build has not
+    registered — a connection whose adapter was since removed — is still a
+    bridge on some platform, so it is `unknown` rather than a claim that the
+    room has no bridge.
+    """
+    if not platform:
+        return "none"
+    if messaging_platforms.lookup(platform) is None:
+        return "unknown"
+    return platform
 
 
 def normalise_known_agent_type(metadata: dict | None) -> str:

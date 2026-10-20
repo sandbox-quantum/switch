@@ -8,8 +8,6 @@ exercises the harness itself.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from switch_core.room_service import RoomCreateConfig
@@ -24,13 +22,11 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")
 async def _wait_joined(
     client: object, transport_room_id: str, timeout: float = 30
 ) -> None:
-    """Block until the agent's own client has joined the room."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        if transport_room_id in client.room_join_times:  # type: ignore[attr-defined]
-            return
-        await asyncio.sleep(0.25)
-    raise AssertionError(f"client never joined {transport_room_id} within {timeout}s")
+    """Block until the agent is a member of the room: its membership is a
+    row, written when it was invited (`Actor.wait_joined` reads it)."""
+    assert await client.wait_joined(transport_room_id, timeout), (  # type: ignore[attr-defined]
+        f"client never joined {transport_room_id} within {timeout}s"
+    )
 
 
 async def test_harness_boots_and_agents_join_room(harness: Harness) -> None:

@@ -53,14 +53,13 @@ Counter = Annotated[int, Field(ge=0, le=MAX_SAFE_INTEGER)]
 Sequence = Annotated[int, Field(ge=1, le=MAX_SAFE_INTEGER)]
 Timestamp = Annotated[str, AfterValidator(_iso_datetime)]
 
-Surface = Literal[
-    "console",
-    "switch-web",
-    "slack",
-    "mattermost",
-    "discord",
-    "teams",
-    "telegram",
+# Where something was done: Switch's own two surfaces, or a messaging platform
+# by its key. Any platform key is accepted rather than a fixed list, so a newly
+# registered platform's frames validate without a contract change; the pattern
+# is `messaging_platforms.PLATFORM_KEY_PATTERN`, written out because the
+# contract is mirrored in TypeScript and must not depend on the bridge layer.
+Surface = Annotated[
+    str, StringConstraints(pattern=r"^(console|switch-web|[a-z][a-z0-9_]{1,31})$")
 ]
 Provider = Annotated[str, StringConstraints(min_length=1)]
 
@@ -199,6 +198,12 @@ class SessionModel(_Model):
     options: dict[str, str]
 
 
+class SessionContext(_Model):
+    used_tokens: int = Field(ge=0)
+    window_tokens: int | None = Field(gt=0)
+    updated_at: Timestamp
+
+
 class ModelChoice(_Model):
     id: Id
     label: str
@@ -220,6 +225,7 @@ class Session(_Model):
     pending_request_ids: list[Id]
     models: list[ModelChoice] = Field(default_factory=list)
     model: SessionModel | None = None
+    context: SessionContext | None = None
 
 
 # ── Event bodies ─────────────────────────────────────────────────────────────

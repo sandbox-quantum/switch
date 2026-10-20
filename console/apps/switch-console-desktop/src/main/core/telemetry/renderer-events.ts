@@ -55,6 +55,37 @@ const RENDERER_TELEMETRY_SCHEMAS = {
     choice: z.enum(ADD_SERVER_CHOICES),
     first_run: z.boolean(),
   }),
+  onboarding_page: z.object({
+    page: z.enum([
+      'welcome',
+      'how_to_run',
+      'local_setup',
+      'server_address',
+      'sign_in',
+      'choose_workspace',
+      'create_workspace',
+      'meet_buddy',
+      'provider_setup',
+    ]),
+    path: z.enum(['none', 'cloud', 'local', 'external']),
+  }),
+  buddy_step: z.object({
+    action: z.enum([
+      'start',
+      'skip',
+      'setup_opened',
+      'install',
+      'sign_in',
+      'check_again',
+      'created',
+      'create_failed',
+      'opened_existing',
+      'intro_opened',
+      'intro_dismissed',
+    ]),
+    provider: z.enum(['claude', 'codex', 'opencode', 'cursor', 'antigravity', 'none']),
+  }),
+  buddy_message_sent: z.object({ nth: z.enum(['1', '2', '3', '4', '5', '6+']) }),
   renderer_crashed: z.object({}),
 } as const satisfies {
   [K in RendererTelemetryEvent]: z.ZodType<TelemetryEventMap[K]>;
@@ -117,6 +148,9 @@ export type RendererTelemetryEvent =
   | 'onboarding_completed'
   | 'onboarding_checklist_dismissed'
   | 'add_server_step'
+  | 'onboarding_page'
+  | 'buddy_step'
+  | 'buddy_message_sent'
   | 'renderer_crashed';
 
 export type RendererTelemetryRequest = {

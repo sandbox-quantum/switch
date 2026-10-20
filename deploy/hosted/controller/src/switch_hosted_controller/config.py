@@ -8,19 +8,12 @@ from pathlib import Path
 from typing import Any
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_SLOT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,39}$")
 _INSTANCE_TYPE = re.compile(r"^[a-z0-9][a-z0-9.]{1,30}$")
 _ARN = re.compile(r"^arn:(aws|aws-us-gov|aws-cn):[a-z0-9-]+:[a-z0-9-]*:[0-9]{12}:.+$")
 
 
 class ConfigError(ValueError):
     pass
-
-
-@dataclass(frozen=True)
-class MachineSlot:
-    instance_profile_arn: str
-    assignment_secret_arn: str
 
 
 @dataclass(frozen=True)
@@ -36,7 +29,7 @@ class ControllerConfig:
     max_machines: int
     root_volume_gib: int
     data_volume_gib: int
-    machine_slots: dict[str, MachineSlot]
+    instance_profile_arn: str
     state_db_path: Path
     lock_path: Path
     poll_interval_seconds: float
@@ -65,7 +58,7 @@ class ControllerConfig:
             "max_machines",
             "root_volume_gib",
             "data_volume_gib",
-            "machine_slots",
+            "instance_profile_arn",
             "state_db_path",
             "lock_path",
             "poll_interval_seconds",
@@ -117,38 +110,9 @@ class ControllerConfig:
         if not 0.2 <= float(poll_interval) <= 300:
             raise ConfigError("poll_interval_seconds must be between 0.2 and 300")
 
-        slots_raw = raw["machine_slots"]
-        if not isinstance(slots_raw, dict) or not slots_raw:
-            raise ConfigError("machine_slots must be a non-empty object")
-        slots: dict[str, MachineSlot] = {}
-        for slot_id, slot_raw in slots_raw.items():
-            _validated_value(slot_id, "machine_slots key", _SLOT_ID)
-            if not isinstance(slot_raw, dict) or set(slot_raw) != {
-                "instance_profile_arn",
-                "assignment_secret_arn",
-            }:
-                raise ConfigError(
-                    f"machine slot {slot_id!r} must contain only instance_profile_arn and assignment_secret_arn"
-                )
-            profile = _validated_value(
-                slot_raw["instance_profile_arn"], "instance_profile_arn", _ARN
-            )
-            secret = _validated_value(
-                slot_raw["assignment_secret_arn"], "assignment_secret_arn", _ARN
-            )
-            if ":iam::" not in profile or ":instance-profile/" not in profile:
-                raise ConfigError(f"machine slot {slot_id!r} has an invalid instance profile ARN")
-            if ":secretsmanager:" not in secret or ":secret:" not in secret:
-                raise ConfigError(f"machine slot {slot_id!r} has an invalid secret ARN")
-            slots[slot_id] = MachineSlot(profile, secret)
-        if len(slots) < max_machines:
-            raise ConfigError("max_machines exceeds configured machine slots")
-        profiles = [slot.instance_profile_arn for slot in slots.values()]
-        secrets = [slot.assignment_secret_arn for slot in slots.values()]
-        if len(set(profiles)) != len(profiles):
-            raise ConfigError("machine slot instance profiles must be unique")
-        if len(set(secrets)) != len(secrets):
-            raise ConfigError("machine slot secrets must be unique")
+        instance_profile_arn = _validated_string(raw, "instance_profile_arn", _ARN)
+        if ":iam::" not in instance_profile_arn or ":instance-profile/" not in instance_profile_arn:
+            raise ConfigError("instance_profile_arn is not an IAM instance profile ARN")
 
         state_db_path = _absolute_path(raw, "state_db_path")
         lock_path = _absolute_path(raw, "lock_path")
@@ -167,7 +131,7 @@ class ControllerConfig:
             max_machines=max_machines,
             root_volume_gib=root_volume_gib,
             data_volume_gib=data_volume_gib,
-            machine_slots=slots,
+            instance_profile_arn=instance_profile_arn,
             state_db_path=state_db_path,
             lock_path=lock_path,
             poll_interval_seconds=float(poll_interval),
@@ -187,16 +151,6 @@ class ControllerConfig:
         }
         payload = json.dumps(immutable, separators=(",", ":"), sort_keys=True)
         return hashlib.sha256(payload.encode()).hexdigest()
-
-    def slot(self, slot_id: str) -> MachineSlot:
-        try:
-            return self.machine_slots[slot_id]
-        except KeyError as exc:
-            raise ConfigError(f"slot {slot_id!r} is not in machine_slots") from exc
-
-
-def validate_slot_id(slot_id: str) -> str:
-    return _validated_value(slot_id, "slot_id", _SLOT_ID)
 
 
 def _validated_string(raw: dict[str, Any], key: str, pattern: re.Pattern[str]) -> str:

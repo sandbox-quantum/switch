@@ -20,6 +20,7 @@ import { depthIndent } from './sidebar-store';
 export const SidebarAgentRow = observer(function SidebarAgentRow({
   label,
   iconUrl,
+  serverId,
   providerId,
   isActive,
   depth,
@@ -29,9 +30,13 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
   marks,
   status,
   actions,
+  showProviderMark = true,
+  title,
 }: {
   label: string;
   iconUrl: string | null;
+  /** The Switch server this agent belongs to, or null when it has none. */
+  serverId: string | null;
   providerId: AgentProviderId | null;
   isActive: boolean;
   depth: number;
@@ -46,12 +51,17 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
   status: ReactNode;
   /** The row's buttons, shown on hover. */
   actions: ReactNode;
+  /** Whether the provider's mark follows the name. Managed rows leave it to the hover text. */
+  showProviderMark?: boolean;
+  /** Hover text for the row. */
+  title?: string;
 }) {
   return (
     <SidebarMenuRow
-      className="group/row flex justify-between"
+      className="group/row flex h-[32px] justify-between py-0 text-[13.5px]"
       data-active={isActive || undefined}
       isActive={isActive}
+      title={title}
       onMouseDown={(e) => e.preventDefault()}
       onClick={onOpen}
     >
@@ -59,15 +69,16 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
           selection highlight still spans the sidebar's full width at every
           depth. */}
       <div className="flex min-w-0 flex-1 items-center gap-[9px]" style={depthIndent(depth)}>
-        {/* 21px inside an 18px slot, so the larger circle reads at the same
+        {/* 24px inside a 20px slot, so the larger circle reads at the same
             weight as the provider glyphs it replaced without growing the row or
             shifting the label. */}
-        <span className="relative flex size-[18px] shrink-0 items-center justify-center">
-          <span className="-mx-[1.5px] flex shrink-0" style={presence ? PRESENCE_NOTCH : undefined}>
+        <span className="relative flex size-[20px] shrink-0 items-center justify-center">
+          <span className="-mx-[2px] flex shrink-0" style={presence ? PRESENCE_NOTCH : undefined}>
             <AgentAvatar
               name={label}
               iconUrl={iconUrl}
-              size={21}
+              serverId={serverId}
+              size={24}
               className={cn('bg-transparent', dimmed && 'opacity-60')}
             />
           </span>
@@ -78,11 +89,12 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
           className="flex-initial truncate select-none"
         >
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className={cn('truncate', dimmed && 'text-foreground-muted')}>{label}</span>
+            <span className={cn('truncate font-medium', dimmed && 'opacity-60')}>{label}</span>
             {/* What the agent runs on. The avatar took the leading slot, so
                 without this the row no longer says. Hideable from the Sessions
                 menu for a reader who only cares about identity. */}
-            {!sidebarStore.hideProviderMark &&
+            {showProviderMark &&
+              !sidebarStore.hideProviderMark &&
               (providerId ? (
                 <AgentIcon id={providerId} size={12} className="h-3 w-3 shrink-0" />
               ) : (
@@ -105,19 +117,22 @@ export type AgentPresence = {
   label: string;
 };
 
+// Running reads green, on its way (starting, connecting) amber, stopped grey
+// and in trouble red: amber is for something still happening, not for an
+// agent at rest.
 const DOT_COLOR: Record<AgentPresence['tone'], string> = {
   running: 'bg-foreground-success',
-  stopped: 'bg-foreground-warning',
+  stopped: 'bg-[var(--fg-passive)]',
   problem: 'bg-foreground-destructive',
-  pending: 'bg-foreground-muted',
+  pending: 'bg-foreground-warning',
 };
 
 /**
  * A see-through circle cut from the avatar's corner, a little larger than the
  * dot centred in it, so the dot stands clear on whatever is behind the row.
- * The dot's centre is at 18px of the 21px avatar.
+ * The dot's centre is at 20.5px of the 24px avatar.
  */
-const NOTCH_MASK = 'radial-gradient(circle at 18px 18px, transparent 5px, #000 5.5px)';
+const NOTCH_MASK = 'radial-gradient(circle at 20.5px 20.5px, transparent 5px, #000 5.5px)';
 const PRESENCE_NOTCH: CSSProperties = { maskImage: NOTCH_MASK, WebkitMaskImage: NOTCH_MASK };
 
 function PresenceDot({ presence }: { presence: AgentPresence }) {

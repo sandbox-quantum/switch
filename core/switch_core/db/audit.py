@@ -1,4 +1,7 @@
-"""The tenant audit log: append an event in the caller's transaction, read it back.
+"""The audit logs: append an event in the caller's transaction, read it back.
+
+A tenant's changes go to `audit_events`; a change to the server as a whole,
+which no tenant owns, goes to `server_audit_events`.
 
 Functions rather than an injected store because there is nothing to hold: each
 call takes the session of the change it records, so the event commits or rolls
@@ -14,7 +17,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import AuditEvent
+from switch_core.db.models import AuditEvent, ServerAuditEvent
 
 
 class AuditAction(StrEnum):
@@ -25,6 +28,7 @@ class AuditAction(StrEnum):
     MEMBER_JOINED_BY_DOMAIN = "member.joined_by_domain"
     MEMBER_ROLE_CHANGED = "member.role_changed"
     MEMBER_REMOVED = "member.removed"
+    ACCOUNT_DELETED = "account.deleted"
     JOIN_DOMAIN_ADDED = "join_domain.added"
     JOIN_DOMAIN_REMOVED = "join_domain.removed"
     API_KEY_CREATED = "api_key.created"
@@ -39,6 +43,20 @@ class AuditAction(StrEnum):
     MESSAGING_INSTALL_STARTED = "messaging_install.started"
     MESSAGING_INSTALL_CONNECTED = "messaging_install.connected"
     MESSAGING_INSTALL_DISCONNECTED = "messaging_install.disconnected"
+    SERVICE_CONNECTED = "service.connected"
+    SERVICE_DISCONNECTED = "service.disconnected"
+    SERVICE_GRANT_SET = "service_grant.set"
+    SERVICE_GRANT_REMOVED = "service_grant.removed"
+    AGENT_DELETION_REQUESTED = "agent.deletion_requested"
+    AGENT_DELETED = "agent.deleted"
+    WORKSPACE_SERVICE_ENABLED = "workspace_service.enabled"
+    WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
+
+
+class ServerAuditAction(StrEnum):
+    CONNECTOR_APP_SAVED = "connector_app.saved"
+    CONNECTOR_APP_IMPORTED = "connector_app.imported"
+    CONNECTOR_APP_REMOVED = "connector_app.removed"
 
 
 async def record_audit_event(
@@ -54,6 +72,28 @@ async def record_audit_event(
     """Add an event to `session`; it lands when the caller commits."""
     event = AuditEvent(
         tenant_id=tenant_id,
+        actor_user_id=actor_user_id,
+        action=action.value,
+        target_type=target_type,
+        target_id=target_id,
+        details=details,
+    )
+    session.add(event)
+    await session.flush()
+    return event
+
+
+async def record_server_audit_event(
+    session: AsyncSession,
+    *,
+    actor_user_id: str | None,
+    action: ServerAuditAction,
+    target_type: str,
+    target_id: str | None,
+    details: dict[str, Any] | None,
+) -> ServerAuditEvent:
+    """Add a server-wide event to `session`; it lands when the caller commits."""
+    event = ServerAuditEvent(
         actor_user_id=actor_user_id,
         action=action.value,
         target_type=target_type,

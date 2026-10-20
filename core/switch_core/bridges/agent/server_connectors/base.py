@@ -11,10 +11,6 @@ from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     MessagePayload,
     ModelSpec,
-    TaskCancelPayload,
-    TaskDelegatePayload,
-    TaskFinalisePayload,
-    TaskUpdatePayload,
     ToolSpec,
 )
 
@@ -108,24 +104,3 @@ class ServerSideConnector(ABC):
         self, agent_name: str, room_id: str, command: CommandPayload
     ) -> None:
         """Handle a command event."""
-
-    async def handle_task_delegate(
-        self, agent_name: str, room_id: str, task: TaskDelegatePayload
-    ) -> str:
-        """Handle a delegated task. Returns the result text."""
-        return ""
-
-    async def handle_task_update(
-        self, agent_name: str, room_id: str, task: TaskUpdatePayload
-    ) -> None:
-        """Handle a task progress update notification."""
-
-    async def handle_task_finalise(
-        self, agent_name: str, room_id: str, task: TaskFinalisePayload
-    ) -> None:
-        """Handle a task finalise notification."""
-
-    async def handle_task_cancel(
-        self, agent_name: str, room_id: str, task: TaskCancelPayload
-    ) -> None:
-        """Handle a task cancellation."""

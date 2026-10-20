@@ -26,10 +26,19 @@ export function agentProviderLabelFor(switchAgentId: string, workspaceId: string
 }
 
 /** One agent in a picker list: avatar, name, and what runs it. */
-export function AgentPickerRow({ agent, subtitle }: { agent: AgentPick; subtitle: string }) {
+export function AgentPickerRow({
+  agent,
+  serverId,
+  subtitle,
+}: {
+  agent: AgentPick;
+  /** The Switch server `agent` belongs to, or null when it is not known. */
+  serverId: string | null;
+  subtitle: string;
+}) {
   return (
     <>
-      <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} size={22} />
+      <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} serverId={serverId} size={22} />
       <span className="min-w-0 flex-1 truncate">{agent.name}</span>
       <span className="shrink-0 text-xs text-foreground-muted">{subtitle}</span>
     </>
@@ -39,18 +48,21 @@ export function AgentPickerRow({ agent, subtitle }: { agent: AgentPick; subtitle
 /** An agent already chosen, with the way to take it back out. */
 export function ChosenAgentTile({
   agent,
+  serverId,
   subtitle,
   subtitleTone,
   onRemove,
 }: {
   agent: AgentPick;
+  /** The Switch server `agent` belongs to, or null when it is not known. */
+  serverId: string | null;
   subtitle: string;
   subtitleTone?: 'muted' | 'warning';
   onRemove: () => void;
 }) {
   return (
     <ChosenTile
-      mark={<AgentAvatar name={agent.name} iconUrl={agent.iconUrl} size={26} />}
+      mark={<AgentAvatar name={agent.name} iconUrl={agent.iconUrl} serverId={serverId} size={26} />}
       title={agent.name}
       subtitle={subtitle}
       subtitleTone={subtitleTone}

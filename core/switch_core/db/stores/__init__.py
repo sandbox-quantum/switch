@@ -15,7 +15,6 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.skill_store import SkillStore
-from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
@@ -38,7 +37,6 @@ __all__ = [
     "RoomLinkStore",
     "RoomStore",
     "SkillStore",
-    "TaskStore",
     "TemplateStore",
     "TenantStore",
     "UserStore",

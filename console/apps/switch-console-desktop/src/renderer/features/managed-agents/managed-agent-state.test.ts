@@ -24,6 +24,7 @@ const AGENT: ManagedAgentView = {
     advancedConfig: {},
     instructions: '',
     autoApprove: false,
+    autoMode: false,
     directory: null,
     isolation: 'shared',
   },
@@ -81,8 +82,11 @@ describe('managedAgentState', () => {
 const LAPTOP: OwnedMachine = {
   ...AGENT.machine!,
   local: { kind: 'this-computer' },
-  providers: [{ provider: 'claude', ready: true, problem: null }],
+  providers: [{ provider: 'claude', ready: true, problem: null, detail: null }],
+  acceptsLogins: false,
+  cloud: false,
   workspacesDir: null,
+  os: null,
 };
 
 describe('machineWorkspaceFor', () => {
@@ -133,7 +137,7 @@ describe('machineProblem', () => {
     expect(
       machineProblem(AGENT, {
         ...LAPTOP,
-        providers: [{ provider: 'claude', ready: false, problem: 'not logged in' }],
+        providers: [{ provider: 'claude', ready: false, problem: 'not logged in', detail: null }],
       })
     ).toBe('Claude Code is not ready on laptop: not logged in.');
   });

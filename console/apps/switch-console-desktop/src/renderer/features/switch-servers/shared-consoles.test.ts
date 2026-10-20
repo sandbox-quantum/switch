@@ -4,12 +4,7 @@ import {
   type StackConsole,
   type StackRegister,
 } from '@shared/core/managed-switch-server/managed-switch-server';
-import {
-  activitySentence,
-  affectedSentence,
-  describeConsole,
-  sharedWithSentence,
-} from './shared-consoles';
+import { affectedSentence, describeConsole, sharedWithSentence } from './shared-consoles';
 
 const NOW = new Date('2026-09-23T12:00:00.000Z');
 
@@ -57,27 +52,25 @@ describe('the sentences', () => {
   });
 
   it('says nothing about sharing when nobody else uses the server', () => {
-    expect(sharedWithSentence([])).toBeNull();
+    expect(sharedWithSentence([], null)).toBeNull();
     expect(affectedSentence([], NOW)).toBeNull();
   });
 
   it('names one, two, or two and a count of the rest', () => {
-    expect(sharedWithSentence([seen('bob@desk', 1)])).toBe(
+    expect(sharedWithSentence([seen('bob@desk', 1)], null)).toBe(
       'Shared with bob@desk. Stopping or restarting it affects them too.'
     );
-    expect(sharedWithSentence([seen('bob@desk', 1), seen('carol@lab', 2)])).toMatch(
+    expect(sharedWithSentence([seen('bob@desk', 1), seen('carol@lab', 2)], null)).toMatch(
       /^Shared with bob@desk and carol@lab\./
     );
     expect(
-      sharedWithSentence([seen('bob@desk', 1), seen('carol@lab', 2), seen('dan@home', 3)])
+      sharedWithSentence([seen('bob@desk', 1), seen('carol@lab', 2), seen('dan@home', 3)], null)
     ).toMatch(/^Shared with bob@desk, carol@lab and 1 other\./);
     expect(
-      sharedWithSentence([
-        seen('bob@desk', 1),
-        seen('carol@lab', 2),
-        seen('dan@home', 3),
-        seen('erin@studio', 4),
-      ])
+      sharedWithSentence(
+        [seen('bob@desk', 1), seen('carol@lab', 2), seen('dan@home', 3), seen('erin@studio', 4)],
+        null
+      )
     ).toMatch(/^Shared with bob@desk, carol@lab and 2 others\./);
   });
 
@@ -93,16 +86,9 @@ describe('the sentences', () => {
     expect(affectedSentence(many, NOW)).toMatch(/; and 2 more\.$/);
   });
 
-  it('says what happened, and says it was this Console when it was', () => {
-    const entry = {
-      at: NOW.toISOString(),
-      action: 'stopped' as const,
-      consoleId: 'bob',
-      name: 'bob@desk',
-      hostAccount: 'bob',
-    };
-
-    expect(activitySentence(entry, 'me')).toBe('bob@desk stopped it');
-    expect(activitySentence({ ...entry, consoleId: 'me' }, 'me')).toBe('This Console stopped it');
+  it('calls another profile on this same computer that, rather than by its own name', () => {
+    expect(sharedWithSentence([seen('me@mac', 1), seen('bob@desk', 2)], 'me@mac')).toBe(
+      'Shared with another Console on this computer and bob@desk. Stopping or restarting it affects them too.'
+    );
   });
 });

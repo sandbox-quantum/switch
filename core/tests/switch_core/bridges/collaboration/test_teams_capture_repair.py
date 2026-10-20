@@ -36,10 +36,10 @@ _CHANNEL = "19:abc@thread.tacv2"
 
 
 @functools.lru_cache(maxsize=1)
-def _cert_pem() -> str:
-    """A real self-signed certificate — the subscription path loads it before
-    it calls Graph, so a placeholder would fail these tests for the wrong
-    reason. Generated once for the module."""
+def _keypair() -> tuple[str, str]:
+    """A real self-signed certificate and its key — the bridge reads both when
+    it is built, so a placeholder would fail these tests for the wrong reason.
+    Generated once for the module."""
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "switch-teams-test")])
     now = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
@@ -53,7 +53,12 @@ def _cert_pem() -> str:
         .not_valid_after(now + datetime.timedelta(days=365))
         .sign(key, hashes.SHA256())
     )
-    return cert.public_bytes(serialization.Encoding.PEM).decode()
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    return cert.public_bytes(serialization.Encoding.PEM).decode(), key_pem
 
 
 def _config() -> TeamsConnectionConfig:
@@ -64,8 +69,8 @@ def _config() -> TeamsConnectionConfig:
         team_id="team-1",
         public_base_url="https://switch.example",
         encryption_certificate_id="cert-1",
-        encryption_public_certificate=_cert_pem(),
-        encryption_private_key="unused — nothing here decrypts a notification",
+        encryption_public_certificate=_keypair()[0],
+        encryption_private_key=_keypair()[1],
         client_state="s3cr3t",
     )
 
@@ -86,6 +91,10 @@ class _Graph:
             self._remaining -= 1
             raise self._error
         return {"id": "sub-1"}
+
+    async def list_subscriptions(self) -> list[dict[str, Any]]:
+        # None yet: what the bridge reads before making its first.
+        return []
 
 
 def _adapter(graph: _Graph) -> TeamsAdapter:
@@ -237,3 +246,31 @@ async def test_a_channel_that_never_recovers_is_still_being_tried(
 
     assert graph.attempts >= 4
     assert _CHANNEL in adapter._capture_wanted
+
+
+async def test_a_round_that_raises_outright_is_logged_and_the_loop_keeps_going(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`_ensure_channel_subscription` catches its own failures, so this is the
+    loop's own belt-and-braces: whatever still escapes one round must not end
+    the task, with the next round running all the same."""
+    monkeypatch.setattr(adapter_module, "_REPAIR_MIN_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(adapter_module, "_REPAIR_MAX_INTERVAL_SECONDS", 0.02)
+    adapter = _adapter(_Graph(failures=0))
+    adapter._capture_wanted.add(_CHANNEL)
+    rounds = 0
+
+    async def _raise(channel_id: str) -> None:
+        nonlocal rounds
+        rounds += 1
+        raise RuntimeError("unexpected")
+
+    adapter._ensure_channel_subscription = _raise  # type: ignore[method-assign]
+
+    with caplog.at_level("ERROR"):
+        await _drive(adapter, until=lambda: rounds >= 2)
+
+    assert rounds >= 2
+    assert any(
+        "Teams capture repair failed this round" in r.message for r in caplog.records
+    )

@@ -448,6 +448,19 @@ it('validates the bridge question and activity recordings with the SDK reader', 
   }
 });
 
+it('accepts any messaging platform as a surface, and nothing that is not a platform key', () => {
+  const answerFrom = (surface: string) => ({
+    ...questions.platformFormAnswer,
+    origin: { ...questions.platformFormAnswer.origin, surface },
+  });
+  for (const surface of ['console', 'switch-web', 'slack', 'google_chat']) {
+    expect(commandSchema.parse(answerFrom(surface)).origin.surface).toBe(surface);
+  }
+  for (const surface of ['', 'Slack', 'google-chat', 'x', 'a'.repeat(33), 'slack@evil']) {
+    expect(() => commandSchema.parse(answerFrom(surface))).toThrow();
+  }
+});
+
 it('releases the composer after a durable stale-epoch rejection', async () => {
   const wire = transport();
   const client = new SessionChatClient('session-demo', wire.api);

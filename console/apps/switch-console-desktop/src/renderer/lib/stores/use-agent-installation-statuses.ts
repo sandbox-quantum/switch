@@ -14,6 +14,7 @@ import type {
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { agentInstallationStatusUpdatedChannel } from '@shared/events/appEvents';
 import { AGENTS_METADATA_QUERY_KEY, useAgents } from './use-agents';
+import { recheckThisComputer } from './use-this-computer-report';
 
 function statusQueryKey(connectionId?: string) {
   return ['agents', 'status', connectionId ?? 'local'] as const;
@@ -89,6 +90,8 @@ export function useAgentInstallationStatuses(connectionId?: string) {
       invalidate();
       const name = nameOf(vars.id);
       if ((result as { success: boolean }).success) {
+        // So the controller's report, which Settings shows, sees it too.
+        if (!connectionId) void recheckThisComputer(queryClient);
         toast({ title: `${name} successfully installed` });
       } else {
         toast({ title: `Failed to install ${name}`, variant: 'destructive' });
@@ -111,6 +114,8 @@ export function useAgentInstallationStatuses(connectionId?: string) {
       invalidate();
       const name = nameOf(vars.id);
       if ((result as { success: boolean }).success) {
+        // So the controller's report, which Settings shows, sees it too.
+        if (!connectionId) void recheckThisComputer(queryClient);
         toast({ title: `${name} successfully updated` });
       } else {
         toast({ title: `Failed to update ${name}`, variant: 'destructive' });

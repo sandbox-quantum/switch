@@ -1,16 +1,21 @@
 from __future__ import annotations
 
-import hashlib
-import secrets
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal, cast
 from uuid import uuid4
 
-from sqlalchemy import exists, func, select, text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import HostedLaunch, HostedMachine, require_tenant_id
-from switch_core.keys import Keyring
+from switch_core.db.models import (
+    AgentDefinition,
+    CloudMachine,
+    MachineWorkspace,
+    require_tenant_id,
+)
+from switch_core.db.tenant_lookup import tenants_of_cloud_machine
+from switch_core.tenant_context import tenant_scope
 
 MACHINE_CONNECT_TIMEOUT = timedelta(minutes=10)
 MACHINE_NEEDS_ATTENTION = (
@@ -19,17 +24,20 @@ MACHINE_NEEDS_ATTENTION = (
 MACHINE_NEEDS_ADMIN = (
     "Your cloud machine needs attention. Contact your server administrator."
 )
+MACHINES_FULL = "Every Switch cloud machine on this server is in use. Try again later."
 MACHINE_BEING_REMOVED = (
     "Your previous cloud machine is being removed. Try again in a minute."
 )
+#: How many workspaces one machine serves: each runs its own agents controller.
+MAX_MACHINE_WORKSPACES = 8
+MACHINE_WORKSPACES_FULL = (
+    f"Your cloud machine already serves {MAX_MACHINE_WORKSPACES} workspaces, the most "
+    "it can. Contact your server administrator."
+)
 
 
-class HostedMachineConflict(Exception):
+class CloudMachineConflict(Exception):
     """A machine cannot take the requested change; the message is the 409 detail."""
-
-
-def capability_hash(capability: str) -> str:
-    return hashlib.sha256(capability.encode()).hexdigest()
 
 
 async def _advisory_lock(session: AsyncSession, key: str) -> None:
@@ -39,30 +47,94 @@ async def _advisory_lock(session: AsyncSession, key: str) -> None:
     )
 
 
-async def lock_launches(session: AsyncSession) -> None:
-    """The tenant-wide lock taken before creating a launch or claiming a machine."""
-    await _advisory_lock(session, f"hosted-launches:{require_tenant_id()}")
+async def lock_claims(session: AsyncSession) -> None:
+    """The server-wide lock taken before claiming a machine or joining one."""
+    await _advisory_lock(session, "cloud-machine-claims")
 
 
 async def lock_machine(session: AsyncSession, machine_id: str) -> None:
-    """The per-machine lock, taken after the tenant lock and before any launch lock."""
-    await _advisory_lock(session, f"hosted-machine:{require_tenant_id()}:{machine_id}")
+    """The per-machine lock, taken after the claims lock."""
+    await _advisory_lock(session, f"cloud-machine:{machine_id}")
 
 
-async def lock_launch(session: AsyncSession, launch_id: str) -> None:
-    """The per-launch advisory lock every lifecycle, relay and attach step takes."""
-    await _advisory_lock(session, f"hosted-launch:{require_tenant_id()}:{launch_id}")
+@dataclass(frozen=True)
+class WorkspaceOnMachine:
+    """What one workspace runs on a machine, as read with that workspace bound."""
+
+    tenant_id: str
+    id: str
+    controller_id: str | None
+    agent_count: int
 
 
-def idle_sleeping(machine: HostedMachine) -> bool:
+async def workspaces_on(
+    factory: async_sessionmaker[AsyncSession], machine_id: str
+) -> list[WorkspaceOnMachine]:
+    """Every workspace the machine serves, oldest first: each read on a
+    session of its own with that workspace bound, since the machine belongs
+    to none of them."""
+    found = []
+    for tenant_id in await tenants_of_cloud_machine(factory, machine_id):
+        with tenant_scope(tenant_id):
+            async with factory() as session:
+                workspace = await workspace_on(session, machine_id)
+                if workspace is None:
+                    continue
+                found.append(
+                    WorkspaceOnMachine(
+                        tenant_id=tenant_id,
+                        id=workspace.id,
+                        controller_id=workspace.controller_id,
+                        agent_count=len(
+                            await managed_agent_ids(session, workspace.controller_id)
+                        ),
+                    )
+                )
+    return found
+
+
+async def workspace_on(
+    session: AsyncSession, machine_id: str
+) -> MachineWorkspace | None:
+    """The bound workspace's row on the machine, None when the machine does not serve it."""
+    return cast(
+        MachineWorkspace | None,
+        await session.scalar(
+            select(MachineWorkspace).where(
+                MachineWorkspace.tenant_id == require_tenant_id(),
+                MachineWorkspace.machine_id == machine_id,
+            )
+        ),
+    )
+
+
+async def managed_agent_ids(
+    session: AsyncSession, controller_id: str | None
+) -> list[str]:
+    """The bound workspace's managed agents placed on `controller_id`."""
+    if controller_id is None:
+        return []
+    return list(
+        await session.scalars(
+            select(AgentDefinition.agent_id)
+            .where(
+                AgentDefinition.tenant_id == require_tenant_id(),
+                AgentDefinition.controller_id == controller_id,
+            )
+            .order_by(AgentDefinition.agent_id)
+        )
+    )
+
+
+def idle_sleeping(machine: CloudMachine) -> bool:
     return machine.desired_state == "stopped" and machine.stop_reason == "idle"
 
 
-def owner_stopped(machine: HostedMachine) -> bool:
+def owner_stopped(machine: CloudMachine) -> bool:
     return machine.desired_state == "stopped" and machine.stop_reason == "owner"
 
 
-def machine_starting(machine: HostedMachine) -> bool:
+def machine_starting(machine: CloudMachine) -> bool:
     return machine.desired_state == "running" and machine.state in {
         "queued",
         "provisioning",
@@ -72,7 +144,7 @@ def machine_starting(machine: HostedMachine) -> bool:
     }
 
 
-def retention_expired(machine: HostedMachine, now: datetime) -> bool:
+def retention_expired(machine: CloudMachine, now: datetime) -> bool:
     return (
         machine.desired_state == "retained"
         and machine.retain_until is not None
@@ -80,7 +152,7 @@ def retention_expired(machine: HostedMachine, now: datetime) -> bool:
     )
 
 
-def claim_conflict(machine: HostedMachine, now: datetime) -> str | None:
+def claim_conflict(machine: CloudMachine, now: datetime) -> str | None:
     """The reason a live machine cannot be claimed, or None when it can."""
     if machine.state == "error" and machine.error_code == "machine_needs_attention":
         return MACHINE_NEEDS_ADMIN
@@ -95,13 +167,13 @@ def claim_conflict(machine: HostedMachine, now: datetime) -> str | None:
     return None
 
 
-def bump_revision(machine: HostedMachine, now: datetime) -> None:
+def bump_revision(machine: CloudMachine, now: datetime) -> None:
     machine.revision += 1
     machine.running_observed_at = None
     machine.updated_at = now
 
 
-def await_reconnect(machine: HostedMachine) -> None:
+def await_reconnect(machine: CloudMachine) -> None:
     """Make a still-ready machine prove itself again at its new revision.
 
     A running observation leaves a ready machine ready, so without this a
@@ -111,85 +183,71 @@ def await_reconnect(machine: HostedMachine) -> None:
         machine.state = "provisioning"
 
 
-class HostedMachineStore:
-    async def get(self, session: AsyncSession, machine_id: str) -> HostedMachine | None:
-        return await session.get(
-            HostedMachine, (require_tenant_id(), machine_id), populate_existing=True
-        )
+class CloudMachineStore:
+    async def get(self, session: AsyncSession, machine_id: str) -> CloudMachine | None:
+        return await session.get(CloudMachine, machine_id, populate_existing=True)
 
     async def locked(
         self, session: AsyncSession, machine_id: str
-    ) -> HostedMachine | None:
+    ) -> CloudMachine | None:
         await lock_machine(session, machine_id)
         return await self.get(session, machine_id)
 
     async def owned(
         self, session: AsyncSession, machine_id: str, owner_id: str
-    ) -> HostedMachine | None:
+    ) -> CloudMachine | None:
         return cast(
-            HostedMachine | None,
+            CloudMachine | None,
             await session.scalar(
-                select(HostedMachine).where(
-                    HostedMachine.tenant_id == require_tenant_id(),
-                    HostedMachine.id == machine_id,
-                    HostedMachine.owner_id == owner_id,
+                select(CloudMachine).where(
+                    CloudMachine.id == machine_id,
+                    CloudMachine.owner_id == owner_id,
                 )
             ),
         )
 
     async def live_for_owner(
         self, session: AsyncSession, owner_id: str
-    ) -> HostedMachine | None:
+    ) -> CloudMachine | None:
         return cast(
-            HostedMachine | None,
+            CloudMachine | None,
             await session.scalar(
-                select(HostedMachine).where(
-                    HostedMachine.tenant_id == require_tenant_id(),
-                    HostedMachine.owner_id == owner_id,
-                    HostedMachine.state != "deleted",
+                select(CloudMachine).where(
+                    CloudMachine.owner_id == owner_id,
+                    CloudMachine.state != "deleted",
                 )
             ),
         )
 
-    async def locked_launch(
-        self, session: AsyncSession, launch_id: str
-    ) -> tuple[HostedLaunch | None, HostedMachine | None]:
-        """A launch and its machine, locked machine first, then launch."""
-        tenant_id = require_tenant_id()
-        launch = await session.get(HostedLaunch, (tenant_id, launch_id))
-        if launch is None:
-            return None, None
-        machine_id = launch.machine_id
-        if machine_id is not None:
-            await lock_machine(session, machine_id)
-        await lock_launch(session, launch_id)
-        launch = await session.get(
-            HostedLaunch, (tenant_id, launch_id), populate_existing=True
-        )
-        machine = None if machine_id is None else await self.get(session, machine_id)
-        return launch, machine
-
     async def claim(
         self,
         session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
         *,
         owner_id: str,
-        slots: list[str],
         capacity: int,
         now: datetime,
-    ) -> HostedMachine:
-        """The owner's machine, reused or newly placed on a free slot.
+    ) -> tuple[CloudMachine, MachineWorkspace]:
+        """The owner's machine, reused or newly claimed within `capacity`,
+        serving the bound workspace.
 
-        The caller holds `lock_launches`, so no other claim in the tenant can
-        take the same slot or count towards capacity meanwhile.
+        A machine joining a workspace takes a new revision, so it is prepared
+        again with a controller for it. The caller holds `lock_claims`, so no
+        other claim can count towards capacity or join the machine meanwhile.
         """
-        tenant_id = require_tenant_id()
         machine = await self.live_for_owner(session, owner_id)
         if machine is not None:
             machine = await self.locked(session, machine.id)
         if machine is not None and machine.state != "deleted":
             if (conflict := claim_conflict(machine, now)) is not None:
-                raise HostedMachineConflict(conflict)
+                raise CloudMachineConflict(conflict)
+            workspace = await workspace_on(session, machine.id)
+            joined = workspace is None
+            if joined:
+                serving = await tenants_of_cloud_machine(factory, machine.id)
+                if len(serving) >= MAX_MACHINE_WORKSPACES:
+                    raise CloudMachineConflict(MACHINE_WORKSPACES_FULL)
+                workspace = self._add_workspace(session, machine, now)
             if machine.desired_state == "retained":
                 machine.desired_state = "running"
                 machine.retain_until = None
@@ -201,33 +259,25 @@ class HostedMachineStore:
                 self.start(machine, now)
             else:
                 machine.active_at = now
+                if joined:
+                    bump_revision(machine, now)
+                    await_reconnect(machine)
+            assert workspace is not None
             await session.flush()
-            return machine
+            return machine, workspace
 
-        used = set(
-            await session.scalars(
-                select(HostedMachine.slot_id).where(
-                    HostedMachine.tenant_id == tenant_id,
-                    HostedMachine.state != "deleted",
-                )
-            )
+        live = await session.scalar(
+            select(func.count())
+            .select_from(CloudMachine)
+            .where(CloudMachine.state != "deleted")
         )
-        slot_id = next((slot for slot in slots if slot not in used), None)
-        if len(used) >= capacity or slot_id is None:
-            raise HostedMachineConflict("no machine slot available")
-        generation = await session.scalar(
-            select(func.max(HostedMachine.generation)).where(
-                HostedMachine.tenant_id == tenant_id,
-                HostedMachine.slot_id == slot_id,
-            )
-        )
+        if (live or 0) >= capacity:
+            raise CloudMachineConflict(MACHINES_FULL)
         machine_id = str(uuid4())
         await lock_machine(session, machine_id)
-        machine = HostedMachine(
+        machine = CloudMachine(
             id=machine_id,
             owner_id=owner_id,
-            slot_id=slot_id,
-            generation=(generation or 0) + 1,
             state="queued",
             desired_state="running",
             active_at=now,
@@ -236,9 +286,23 @@ class HostedMachineStore:
         )
         session.add(machine)
         await session.flush()
-        return machine
+        workspace = self._add_workspace(session, machine, now)
+        await session.flush()
+        return machine, workspace
 
-    def start(self, machine: HostedMachine, now: datetime) -> None:
+    def _add_workspace(
+        self, session: AsyncSession, machine: CloudMachine, now: datetime
+    ) -> MachineWorkspace:
+        workspace = MachineWorkspace(
+            id=str(uuid4()),
+            machine_id=machine.id,
+            owner_id=machine.owner_id,
+            created_at=now,
+        )
+        session.add(workspace)
+        return workspace
+
+    def start(self, machine: CloudMachine, now: datetime) -> None:
         if machine.desired_state != "running":
             machine.desired_state = "running"
             machine.stop_reason = None
@@ -248,7 +312,7 @@ class HostedMachineStore:
 
     def stop(
         self,
-        machine: HostedMachine,
+        machine: CloudMachine,
         reason: Literal["idle", "owner"],
         now: datetime,
     ) -> None:
@@ -256,53 +320,26 @@ class HostedMachineStore:
         machine.stop_reason = reason
         bump_revision(machine, now)
 
-    def retry(self, machine: HostedMachine, now: datetime) -> None:
+    def retry(self, machine: CloudMachine, now: datetime) -> None:
         machine.state = "queued"
         machine.error = None
         machine.error_code = None
         bump_revision(machine, now)
 
-    def bump_agents(self, machine: HostedMachine) -> None:
-        machine.agents_version += 1
-
-    async def launches(
-        self, session: AsyncSession, machine_id: str
-    ) -> list[HostedLaunch]:
-        return list(
-            await session.scalars(
-                select(HostedLaunch)
-                .where(
-                    HostedLaunch.tenant_id == require_tenant_id(),
-                    HostedLaunch.machine_id == machine_id,
-                    HostedLaunch.state != "deleted",
-                )
-                .order_by(HostedLaunch.created_at)
-            )
-        )
-
     async def retain_if_empty(
         self,
-        session: AsyncSession,
-        machine: HostedMachine,
+        machine: CloudMachine,
+        workspaces: list[WorkspaceOnMachine],
         *,
         retention_days: int,
         now: datetime,
     ) -> bool:
-        """Retain the machine's disk once no agent is left on it.
+        """Retain the machine's disk once no workspace has a managed agent on it.
 
-        Returns whether it did. The caller holds the machine lock and commits.
+        Returns whether it did. The caller holds the machine lock, read
+        `workspaces` under it (`workspaces_on`), and commits.
         """
-        await session.flush()
-        if await session.scalar(
-            select(
-                exists().where(
-                    HostedLaunch.tenant_id == require_tenant_id(),
-                    HostedLaunch.machine_id == machine.id,
-                    HostedLaunch.state != "deleted",
-                    HostedLaunch.desired_state != "deleted",
-                )
-            )
-        ):
+        if any(workspace.agent_count for workspace in workspaces):
             return False
         machine.desired_state = "retained"
         machine.stop_reason = None
@@ -312,63 +349,26 @@ class HostedMachineStore:
 
     async def release_if_empty(
         self,
-        session: AsyncSession,
-        machine: HostedMachine,
+        machine: CloudMachine,
+        workspaces: list[WorkspaceOnMachine],
         *,
         retention_days: int,
         now: datetime,
     ) -> bool:
-        """Retain an agentless machine, expiring at once if it never had an agent.
-
-        Launch rows are never hard-deleted, so a machine no row references has
-        no disk worth keeping. The caller holds the machine lock and commits.
+        """Retain an agentless machine, expiring at once if no controller of
+        it ever enrolled: then its disk holds nothing worth keeping. The caller
+        holds the machine lock and commits.
         """
         if not await self.retain_if_empty(
-            session, machine, retention_days=retention_days, now=now
+            machine, workspaces, retention_days=retention_days, now=now
         ):
             return False
-        if not await self.ever_hosted(session, machine.id):
+        if not ever_hosted(workspaces):
             machine.retain_until = now
         return True
 
-    async def ever_hosted(self, session: AsyncSession, machine_id: str) -> bool:
-        """Whether any launch row ever referenced the machine, deleted or not."""
-        return bool(
-            await session.scalar(
-                select(
-                    exists().where(
-                        HostedLaunch.tenant_id == require_tenant_id(),
-                        HostedLaunch.machine_id == machine_id,
-                    )
-                )
-            )
-        )
 
-    def issue_capability(self, machine: HostedMachine, keyring: Keyring) -> str:
-        """The machine capability for the machine's current revision.
-
-        The same bytes for every call at one revision; a new revision mints new
-        ones and overwrites the old, so at most one is ever valid. The caller
-        commits.
-        """
-        if (
-            machine.machine_capability_revision == machine.revision
-            and machine.machine_capability_encrypted is not None
-        ):
-            return keyring.decrypt(machine.machine_capability_encrypted)
-        capability = secrets.token_urlsafe(32)
-        machine.machine_capability_encrypted = keyring.encrypt(capability)
-        machine.machine_capability_hash = capability_hash(capability)
-        machine.machine_capability_revision = machine.revision
-        return capability
-
-    @staticmethod
-    def capability_matches(machine: HostedMachine, capability: str) -> bool:
-        """Whether `capability` is the one last issued for the machine.
-
-        Not tied to the current revision: issuing rotates it, so the stored hash
-        is the only valid one. Machine state is the caller's to check alongside.
-        """
-        return machine.machine_capability_hash is not None and secrets.compare_digest(
-            machine.machine_capability_hash, capability_hash(capability)
-        )
+def ever_hosted(workspaces: list[WorkspaceOnMachine]) -> bool:
+    """Whether the machine's disk may hold anything worth keeping: a
+    controller of it ever enrolled."""
+    return any(workspace.controller_id is not None for workspace in workspaces)

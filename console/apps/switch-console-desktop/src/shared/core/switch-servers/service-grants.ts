@@ -1,0 +1,22 @@
+import { z } from 'zod';
+
+/** A grant giving an agent access to its owner's connection to a service. */
+export const serviceGrantSchema = z.object({
+  service: z.string(),
+  name: z.string(),
+  access: z.enum(['read', 'write']),
+  resources: z.record(z.string(), z.unknown()),
+  /** What the grant lets the agent do, in a sentence. */
+  summary: z.string(),
+});
+export type ServiceGrant = z.infer<typeof serviceGrantSchema>;
+
+export const serviceGrantsSchema = z.object({
+  grants: z.array(serviceGrantSchema),
+  /** Whether anyone can address the agent, and so use its grants. */
+  addressing_open: z.boolean(),
+});
+export type ServiceGrants = z.infer<typeof serviceGrantsSchema>;
+
+/** What a grant change can leave behind: access already handed out, usable for a while. */
+export const serviceGrantWarningSchema = z.object({ warning: z.string().nullable() });

@@ -3,7 +3,6 @@ import { join, posix } from 'node:path';
 import { z } from 'zod';
 import { log } from '@main/lib/logger';
 import { compareVersions } from '@main/lib/semver';
-import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
 import {
   CHECKOUT_IMAGE_TAG,
   type ManagedServerUpgrade,
@@ -11,8 +10,13 @@ import {
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { composeUpService, runDocker, serviceContainerId } from './compose';
 import { COMPOSE_FILE_NAME, ENV_FILE_NAME } from './constants';
-import { classifyVersionDrift, readDeployedVersion } from './deployed-version';
+import {
+  classifyVersionDrift,
+  type DeployedVersion,
+  readDeployedVersion,
+} from './deployed-version';
 import type { ServerHost } from './host/types';
+import { managedSwitchVersion } from './server-version';
 
 /**
  * Moving a managed stack forward onto this build's switch-core pin.
@@ -79,7 +83,7 @@ export function owedUpgrade(
   drift: SwitchVersionDrift | null,
   journal: UpgradeJournal | null
 ): OwedUpgrade | null {
-  if (journal) return { from: journal.from, to: COMPATIBLE_SWITCH_VERSION };
+  if (journal) return { from: journal.from, to: managedSwitchVersion() };
   if (drift?.direction === 'upgrade') return { from: drift.deployed, to: drift.expected };
   return null;
 }
@@ -100,42 +104,65 @@ export function upgradeState(owed: OwedUpgrade, running: boolean): ManagedServer
  * sessions for the whole of it. Any failure throws, leaving the stack's
  * configuration untouched.
  */
-export async function prepareUpgrade(
+export function prepareUpgrade(
   host: ServerHost,
   checkoutRoot: string | null,
   onMessage: (message: string) => void,
   onUpgrade: (upgrade: OwedUpgrade) => void
 ): Promise<UpgradeJournal | null> {
+  return prepareUpgradeFrom(host, checkoutRoot, onMessage, onUpgrade, {
+    readDeployedVersion: () => readDeployedVersion(host),
+    backupDatabase: (from, message) => backupDatabase(host, from, message),
+  });
+}
+
+/** Where an upgrade reads the deployed version from and how it backs the
+ * database up: the Docker stack's containers, or a native server's files. */
+export type UpgradeSource = {
+  readDeployedVersion: () => Promise<DeployedVersion>;
+  /** Back the database up before it is migrated past `from`; returns where. */
+  backupDatabase: (from: string, onMessage: (message: string) => void) => Promise<string>;
+};
+
+/** {@link prepareUpgrade} against an explicit {@link UpgradeSource}. The
+ * journal is kept in `host`'s working directory either way. */
+export async function prepareUpgradeFrom(
+  host: ServerHost,
+  checkoutRoot: string | null,
+  onMessage: (message: string) => void,
+  onUpgrade: (upgrade: OwedUpgrade) => void,
+  source: UpgradeSource
+): Promise<UpgradeJournal | null> {
   const pending = await readUpgradeJournal(host);
   if (pending) {
-    const order = compareVersions(pending.to, COMPATIBLE_SWITCH_VERSION);
+    const order = compareVersions(pending.to, managedSwitchVersion());
     if (order === null || order > 0) {
       throw new Error(
         `An interrupted update on ${host.label} was moving switch-core to ${pending.to}, which ` +
-          `this app (switch-core ${COMPATIBLE_SWITCH_VERSION}) cannot finish. Install a Switch ` +
+          `this app (switch-core ${managedSwitchVersion()}) cannot finish. Install a Switch ` +
           `Console with switch-core ${pending.to} or newer. The database backup taken before ` +
           `that update is in ${pending.backup}.`
       );
     }
-    onUpgrade({ from: pending.from, to: COMPATIBLE_SWITCH_VERSION });
+    onUpgrade({ from: pending.from, to: managedSwitchVersion() });
     log.warn(
       `managed-switch-server: resuming the interrupted switch-core update on ${host.label} ` +
-        `(${pending.from} → ${COMPATIBLE_SWITCH_VERSION}); backup in ${pending.backup}`
+        `(${pending.from} → ${managedSwitchVersion()}); backup in ${pending.backup}`
     );
-    if (pending.to === COMPATIBLE_SWITCH_VERSION) return pending;
-    const resumed = { ...pending, to: COMPATIBLE_SWITCH_VERSION };
+    if (pending.to === managedSwitchVersion()) return pending;
+    const resumed = { ...pending, to: managedSwitchVersion() };
     await writeJournal(host, resumed);
     return resumed;
   }
   if (checkoutRoot !== null) return null;
-  const deployed = await readDeployedVersion(host);
+  const deployed = await source.readDeployedVersion();
   if (deployed.kind !== 'deployed' || deployed.version === CHECKOUT_IMAGE_TAG) return null;
-  if (classifyVersionDrift(deployed.version, COMPATIBLE_SWITCH_VERSION)?.direction !== 'upgrade') {
+  if (classifyVersionDrift(deployed.version, managedSwitchVersion())?.direction !== 'upgrade') {
     return null;
   }
-  onUpgrade({ from: deployed.version, to: COMPATIBLE_SWITCH_VERSION });
-  const backup = await backupDatabase(host, deployed.version, onMessage);
-  const journal = { from: deployed.version, to: COMPATIBLE_SWITCH_VERSION, backup };
+  onUpgrade({ from: deployed.version, to: managedSwitchVersion() });
+  const backup = await source.backupDatabase(deployed.version, onMessage);
+  const journal = { from: deployed.version, to: managedSwitchVersion(), backup };
   await writeJournal(host, journal);
   return journal;
 }
@@ -165,7 +192,7 @@ async function backupDatabase(
   onMessage: (message: string) => void
 ): Promise<string> {
   onMessage(
-    `Backing up the database before updating switch-core ${from} → ${COMPATIBLE_SWITCH_VERSION}…`
+    `Backing up the database before updating switch-core ${from} → ${managedSwitchVersion()}…`
   );
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const directory = `${BACKUPS_DIR}/${stamp}-switch-core-${from}`;
@@ -218,7 +245,7 @@ async function backupDatabase(
 
 function backupReadme(from: string): string {
   return [
-    `Switch Console took this backup before updating the Switch server from switch-core ${from} to ${COMPATIBLE_SWITCH_VERSION}.`,
+    `Switch Console took this backup before updating the Switch server from switch-core ${from} to ${managedSwitchVersion()}.`,
     '',
     'database.sql                   pg_dumpall of every database in the stack',
     `${COMPOSE_FILE_NAME}  the compose file the stack ran with`,

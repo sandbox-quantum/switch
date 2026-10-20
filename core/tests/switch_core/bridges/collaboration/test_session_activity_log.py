@@ -22,8 +22,6 @@ rather than about how much room there was.
 
 from __future__ import annotations
 
-import pytest
-
 from switch_core.bridges.collaboration.session.renderers import MARKDOWN
 from switch_core.bridges.collaboration.session.renderers.neutral import activity_log
 from switch_core.sessions.contract import Item
@@ -60,7 +58,6 @@ def _log(
         limit=limit,
         markup=MARKDOWN,
         elapsed_seconds=None,
-        session_url=None,
         heading=heading,
     ).splitlines()
 
@@ -175,7 +172,6 @@ def test_a_remark_is_escaped_the_way_a_call_name_is() -> None:
         limit=10_000,
         markup=MARKDOWN,
         elapsed_seconds=None,
-        session_url=None,
         heading=False,
     ).splitlines()
 
@@ -284,23 +280,6 @@ def test_a_headless_log_with_no_calls_is_still_the_sentence_saying_so() -> None:
     assert _log([], "completed", heading=False) == ["No activity."]
 
 
-def test_a_link_handed_to_a_headless_log_is_refused_rather_than_dropped() -> None:
-    """There is nowhere to put it once the state line is gone, and a caller who
-    thinks they published a Console link and did not is worse off than one told
-    they asked for something impossible."""
-    with pytest.raises(ValueError, match="nowhere to put the Console link"):
-        activity_log(
-            [_call()],
-            _turn("completed"),
-            escape=_identity,
-            limit=10_000,
-            markup=MARKDOWN,
-            elapsed_seconds=None,
-            session_url="https://console.example.test/s/1",
-            heading=False,
-        )
-
-
 def test_a_headless_log_stays_inside_the_budget_it_was_given() -> None:
     items = [_call(title=f"Call {index} " + "x" * 400) for index in range(40)]
 
@@ -326,40 +305,8 @@ def test_host_text_is_put_through_the_platforms_own_escape() -> None:
         limit=10_000,
         markup=MARKDOWN,
         elapsed_seconds=None,
-        session_url=None,
         heading=True,
     )
 
     assert "*not bold*" in seen
     assert "\\*not bold\\*" in drawn
-
-
-def test_the_console_link_rides_on_the_state_line_when_there_is_room() -> None:
-    drawn = activity_log(
-        [_call()],
-        _turn("completed"),
-        escape=_identity,
-        limit=10_000,
-        markup=MARKDOWN,
-        elapsed_seconds=None,
-        session_url="https://console.example.test/s/1",
-        heading=True,
-    )
-
-    assert "https://console.example.test/s/1" in drawn.splitlines()[0]
-
-
-def test_a_link_that_would_not_fit_is_left_off_rather_than_cut_in_half() -> None:
-    """Half a URL is not a link, and the state line is what the reader needs."""
-    drawn = activity_log(
-        [_call()],
-        _turn("completed"),
-        escape=_identity,
-        limit=40,
-        markup=MARKDOWN,
-        elapsed_seconds=None,
-        session_url="https://console.example.test/" + "s" * 200,
-        heading=True,
-    )
-
-    assert "console.example.test" not in drawn

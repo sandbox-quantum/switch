@@ -9,19 +9,29 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.deletion import AccountDeletion, Workspace
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.resource.service import ResourceService
+from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
+from switch_core.connections.broker import ServiceBroker, get_service_broker
 from switch_core.db.models import TENANT_ZERO_ID, User
+from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.hosted_machine_store import (
-    HostedMachineConflict,
+    CloudMachineConflict,
     claim_conflict,
     owner_stopped,
 )
+from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
+    AuthenticatedCaller,
     AuthenticatedSession,
     describe_session_state,
+    get_authenticated_caller,
     get_authenticated_session,
     get_current_user,
     hash_password_off_loop,
@@ -32,22 +42,34 @@ from switch_core.gateway.auth import (
     verify_password_off_loop,
 )
 from switch_core.gateway.dependencies import (
+    get_agent_store,
+    get_api_key_store,
     get_bridge_store,
+    get_client_lifecycle,
     get_config,
     get_external_user_store,
+    get_protocol,
+    get_resource_service,
+    get_room_service,
     get_session,
     get_session_factory,
     get_system_session,
+    get_template_store,
     get_user_store,
 )
-from switch_core.gateway.hosted_launches import hosted_settings
-from switch_core.gateway.hosted_machines import MachineUnavailable, ensure_machine
+from switch_core.gateway.hosted_machines import (
+    MachineUnavailable,
+    ensure_machine,
+    hosted_settings,
+)
 from switch_core.gateway.schemas import (
     AuthConfigResponse,
     ChangePasswordRequest,
     CreateUserRequest,
+    DeleteAccountRequest,
     LinkedIdentity,
     LoginRequest,
+    OidcLoginOptionView,
     ServerDeclaration,
     SessionStateResponse,
     SessionUserResponse,
@@ -57,6 +79,7 @@ from switch_core.gateway.schemas import (
     UserResponse,
 )
 from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.room_service import RoomService
 from switch_core.tenant_context import tenant_scope
 from switch_core.version import server_declaration
 
@@ -144,13 +167,16 @@ async def login(
 
 async def _prewarm(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
     user_id: str,
     config: SwitchConfig,
     settings: HostedControllerSettings | None,
 ) -> SignupMachine:
     try:
-        machine = await ensure_machine(session, user_id, config, settings)
-    except (MachineUnavailable, HostedMachineConflict) as error:
+        machine, _workspace = await ensure_machine(
+            session, factory, user_id, config, settings
+        )
+    except (MachineUnavailable, CloudMachineConflict) as error:
         await session.rollback()
         logger.warning(
             "Signed-up user %s has no cloud machine warming: %s", user_id, error
@@ -193,6 +219,9 @@ async def signup(
     req: SignupRequest,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_system_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     settings: Annotated[HostedControllerSettings | None, Depends(hosted_settings)],
@@ -246,7 +275,7 @@ async def signup(
             TENANT_ZERO_ID,
         )
         signed_in = _session_response(user)
-        machine = await _prewarm(session, user.id, config, settings)
+        machine = await _prewarm(session, session_factory, user.id, config, settings)
     return SignupResponse(**signed_in.model_dump(), machine=machine)
 
 
@@ -294,6 +323,11 @@ async def auth_config(
         signup_enabled=config.gateway_signup_open,
         oidc_enabled=config.gateway_oidc_enabled,
         oidc_provider_label=config.gateway_oidc_provider_label,
+        oidc_login_options=[
+            OidcLoginOptionView(id=option.id, label=option.label)
+            for option in config.gateway_oidc_login_options
+        ],
+        oidc_browser_handoff=config.gateway_oidc_enabled,
         signup_mode=config.gateway_signup_mode,
     )
 
@@ -307,6 +341,7 @@ async def session_state(
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
 ) -> SessionStateResponse:
     """Who is signed in, which workspace this session is in, and — when it
     is in none — what would get it into one.
@@ -323,7 +358,9 @@ async def session_state(
     # One connection at a time: release this one before the lookup opens its own.
     await session.commit()
     tenants = await list_tenant_memberships(session_factory, user_store, user.id)
-    return describe_session_state(config, user, auth.tenant_claim, tenants)
+    return describe_session_state(
+        config, user, auth.tenant_claim, tenants, client_lifecycle.tenants_isolated
+    )
 
 
 @router.get("/auth/me")
@@ -363,6 +400,69 @@ async def my_identities(
             )
         )
     return linked
+
+
+@router.delete("/auth/me")
+async def delete_my_account(
+    req: DeleteAccountRequest,
+    request: Request,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_system_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
+    template_store: Annotated[TemplateStore, Depends(get_template_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> dict[str, bool]:
+    """Delete the caller's own account, everywhere on this server.
+
+    Binds no tenant because it acts on every workspace the caller is in, each
+    in a `tenant_session` of its own (`accounts/deletion.py`); `session`, with
+    nothing bound, carries only the rows that belong to no workspace — the
+    `users` row and its sign-in identities. The caller confirms by typing
+    their email, since an SSO account has no password to ask for. A refusal
+    is a 409 saying what to do first, and leaves the account untouched.
+    """
+    user = await user_store.get(session, caller.id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    if req.email.strip().lower() != user.email.lower():
+        raise HTTPException(
+            status_code=400, detail="That email doesn't match this account."
+        )
+    workspaces = [
+        Workspace(id=m.id, name=m.name, role=m.role)
+        for m in await list_tenant_memberships(session_factory, user_store, user.id)
+    ]
+    deletion = AccountDeletion(
+        session_factory=session_factory,
+        protocol=protocol,
+        # Set by the wiring when agent management runs (`switch_core.main`).
+        management=getattr(request.app.state, "controller_revoker", None),
+        broker=broker,
+        resources=resource_service,
+        rooms=room_service,
+        sign_in_flows=request.app.state.sign_in_flows,
+        users=user_store,
+        agents=agent_store,
+        api_keys=api_key_store,
+        templates=template_store,
+        admin_email=config.gateway_admin_email,
+    )
+    reason = await deletion.refusal(session, user, workspaces)
+    if reason is not None:
+        raise HTTPException(status_code=409, detail=reason)
+    await deletion.delete(session, user, workspaces)
+    response.delete_cookie("switch_auth", path="/")
+    return {"ok": True}
 
 
 @router.put("/auth/me/password")

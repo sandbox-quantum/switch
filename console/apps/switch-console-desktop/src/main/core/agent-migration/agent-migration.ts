@@ -7,6 +7,7 @@ import { agentLaunchConfig } from '@main/core/agents/agent-launch-config';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { resolveWorkdirFsFor } from '@main/core/agents/agent-workdir-fs';
 import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
+import { deleteAgent } from '@main/core/agents/deleteAgent';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { getAgents } from '@main/core/agents/getAgents';
 import { agentSettingsRelativePath } from '@main/core/agents/switch-settings-paths';
@@ -16,6 +17,7 @@ import {
   embeddedControllerDataDir,
   embeddedControllerService,
 } from '@main/core/embedded-controller/embedded-controllers';
+import { featureFlagsService } from '@main/core/feature-flags/feature-flags';
 import { hostControllerDataDir } from '@main/core/host-controllers/host-controller-service';
 import { hostControllerService } from '@main/core/host-controllers/host-controllers';
 import { locationManager } from '@main/core/locations/location-manager';
@@ -32,10 +34,12 @@ import { postRoomMessage } from '@main/core/switch-rooms/switch-room-client';
 import {
   AgentManagementUnavailableError,
   deleteManagedAgent,
+  fetchAdvancedConfigSchema,
   fetchAgentDetail,
   fetchManagedAgent,
   fetchManagementControllers,
   fetchMe,
+  GatewayError,
   managementErrorMessage,
   putManagedAgent,
   revealAgentApiKey,
@@ -47,6 +51,7 @@ import { withReachableWorkspaceSession } from '@main/core/workspaces/workspace-s
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
+import type { AdvancedConfigField } from '@shared/core/managed-agents/managed-agents';
 import { agentMigrationChannel } from '@shared/events/agentMigrationEvents';
 import {
   AgentMigrationService,
@@ -289,10 +294,15 @@ const management: MigrationManagementPort = {
           return { management: false, owner: null, ownedByMe: false };
         throw error;
       }
-      const [me, detail] = await Promise.all([
-        fetchMe(server),
-        fetchAgentDetail(server, switchAgentId),
-      ]);
+      let detail;
+      try {
+        detail = await fetchAgentDetail(server, switchAgentId);
+      } catch (error) {
+        if (error instanceof GatewayError && error.kind === 'http' && error.status === 404)
+          return { management: true, owner: null, ownedByMe: false, gone: true };
+        throw error;
+      }
+      const me = await fetchMe(server);
       return {
         management: true,
         owner: detail.ownerName,
@@ -559,7 +569,25 @@ const credentials: MigrationCredentialsPort = {
   },
 };
 
+/** The advanced configuration fields the agent's server takes for its provider. */
+async function serverAdvancedFields(agent: MigrationAgent): Promise<AdvancedConfigField[]> {
+  if (!agent.workspaceId)
+    throw new Error(
+      `${agent.name} belongs to no Switch workspace, so its server's advanced configuration fields cannot be read.`
+    );
+  const schema = await withReachableWorkspaceSession(agent.workspaceId, (server) =>
+    fetchAdvancedConfigSchema(server)
+  );
+  const fields = schema[agent.providerId];
+  if (!fields)
+    throw new Error(
+      `The Switch server does not list the provider ${agent.providerId}, so it cannot run ${agent.name}.`
+    );
+  return fields;
+}
+
 async function buildDefinition(agent: MigrationAgent) {
+  const advancedFields = await serverAdvancedFields(agent);
   const row = await requireRow(agent.id);
   const location = await getAgentLocation(row);
   const transport = locationTransport(location);
@@ -578,9 +606,11 @@ async function buildDefinition(agent: MigrationAgent) {
   );
   return buildManagedDefinition({
     providerId: agent.providerId,
+    advancedFields,
     name: agent.name,
     specialization: launch.specialization,
     providerDefinition: launch.definition,
+    autoMode: row.autoMode,
     autoApprove: row.autoApprove,
     directory: location.dir,
     stoppedByHand: (await listStoppedControllerAgentIds()).includes(agent.id),
@@ -622,7 +652,7 @@ async function controllerRefusal(serverId: string): Promise<string | null> {
   const server = await getServer(serverId);
   if (!server) throw new Error('Console no longer knows this Switch server.');
   const protocol = await controllerProtocol();
-  const response = await fetch(`${server.apiUrl}/v1/management/controllers/enroll`, {
+  const response = await fetch(`${server.url}/v1/management/controllers/enroll`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'Switch-Controller-Protocol': protocol },
     body: '{}',
@@ -723,6 +753,12 @@ export const agentMigrationService = new AgentMigrationService({
       return agents;
     },
     stoppedByHand: async (agentId) => (await listStoppedControllerAgentIds()).includes(agentId),
+    forget: (agentId) =>
+      deleteAgent(agentId, {
+        deleteInSwitch: false,
+        removeProvisionedFiles: false,
+        trigger: 'server_teardown',
+      }),
   },
   definitions: { build: buildDefinition },
   targets: {
@@ -770,6 +806,9 @@ export const agentMigrationService = new AgentMigrationService({
 
 const AUTO_MIGRATION_INTERVAL_MS = 60_000;
 let autoMigrationTimer: NodeJS.Timeout | null = null;
+// Agents asked about while their server had agent management off are not asked
+// again for a while; a server turning it on is the moment to ask at once.
+let stopFollowingFlags: (() => void) | null = null;
 
 function migrateEverythingLogged(): void {
   agentMigrationService.migrateEverything().catch((error: unknown) => {
@@ -788,9 +827,16 @@ export function startAutoMigration(): void {
   if (autoMigrationTimer) return;
   migrateEverythingLogged();
   autoMigrationTimer = setInterval(migrateEverythingLogged, AUTO_MIGRATION_INTERVAL_MS);
+  stopFollowingFlags = featureFlagsService.subscribe((state) => {
+    if (!state.flags.agent_management) return;
+    agentMigrationService.recheckAll();
+    migrateEverythingLogged();
+  });
 }
 
 export function stopAutoMigration(): void {
   if (autoMigrationTimer) clearInterval(autoMigrationTimer);
   autoMigrationTimer = null;
+  stopFollowingFlags?.();
+  stopFollowingFlags = null;
 }

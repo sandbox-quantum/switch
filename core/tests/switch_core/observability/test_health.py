@@ -7,10 +7,12 @@ from switch_core.observability.health import (
     CheckOutcome,
     HealthCheck,
     HealthMonitor,
+    agent_event_listener_check,
     bridges_check,
     connectors_check,
     message_listener_check,
     session_activity_listener_check,
+    signal_bus_check,
 )
 from switch_core.observability.metrics import MetricsRegistry
 
@@ -125,7 +127,7 @@ async def test_the_stale_report_still_shows_what_was_last_known(monkeypatch):
 @pytest.mark.asyncio
 async def test_message_listener_check_follows_the_connection():
     connected = [True]
-    check = message_listener_check(lambda: connected[0])
+    check = message_listener_check(lambda: connected[0], gates_readiness=False)
 
     assert (await check.probe()).healthy is True
     connected[0] = False
@@ -215,7 +217,7 @@ async def test_connectors_check_is_healthy_when_none_are_configured():
 @pytest.mark.asyncio
 async def test_session_activity_listener_check_follows_the_connection():
     connected = [True]
-    check = session_activity_listener_check(lambda: connected[0])
+    check = session_activity_listener_check(lambda: connected[0], gates_readiness=False)
 
     assert (await check.probe()).healthy is True
     connected[0] = False
@@ -223,3 +225,24 @@ async def test_session_activity_listener_check_follows_the_connection():
     assert outcome.healthy is False
     assert "LISTEN" in outcome.detail
     assert check.gates_readiness is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "build, name",
+    [
+        (agent_event_listener_check, "agent_event_listener"),
+        (signal_bus_check, "signal_bus"),
+    ],
+)
+async def test_the_cross_process_listeners_follow_their_connections(build, name):
+    connected = [True]
+    check = build(lambda: connected[0], gates_readiness=True)
+
+    assert (await check.probe()).healthy is True
+    connected[0] = False
+    outcome = await check.probe()
+    assert outcome.name == name
+    assert outcome.healthy is False
+    assert "LISTEN" in outcome.detail
+    assert check.gates_readiness is True

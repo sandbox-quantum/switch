@@ -17,6 +17,7 @@ const sleepingMachine: CloudMachine = {
   disk: { total_bytes: 214748364800, available_bytes: 204010946560 },
   memory: { total_bytes: 17179869184, available_bytes: 12884901888 },
   agents: ['req-0000000000000001'],
+  controller_id: null,
 };
 
 function machine(patch: Partial<CloudMachine>): CloudMachine {

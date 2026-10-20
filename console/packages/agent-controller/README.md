@@ -20,6 +20,10 @@ same one in-process agent hosts use, over a WebSocket on the relay's port, and i
 not stopped when the controller exits: it reconnects when the controller is back.
 Changing an agent's isolation restarts it the other way.
 
+On Linux, a controller set up for it runs every agent, whatever its isolation, as
+a Linux user of its own under systemd, seeing only its own directory: see
+[Each agent as a Linux user of its own](#each-agent-as-a-linux-user-of-its-own).
+
 The controller holds **one** connection to Switch, a WebSocket, for all of its agents and hands
 each shared agent's events to its agent host directly. Each agent host makes its calls to Switch
 through a **local relay** on a loopback port, which adds the controller's
@@ -28,12 +32,14 @@ relay accepts.
 
 ## Requirements
 
-- macOS or Linux. The shared host needs POSIX process control.
+- macOS, Linux or Windows 10/11. On Windows the controller is meant to run with
+  Switch Console, which starts it; see [On Windows](#on-windows).
 - Node 22.13 or later. The store uses the built-in `node:sqlite`.
 - Each provider CLI the agents use, installed on `PATH` and signed in as the user
   the controller runs as (`claude`, `codex`, `opencode`, `agent`/`cursor-agent`,
   `antigravity-acp`), or its API key in the `--env-file` the controller runs with.
-- A Switch server with `AGENT_MANAGEMENT_ENABLED=true`. Behind a proxy or ingress,
+- A Switch server with the `agent_management` feature flag on
+  (`FEATURE_FLAGS_ENABLED=agent_management`). Behind a proxy or ingress,
   `/v1` must reach switch-core (the Helm chart routes it).
 
 ## Install
@@ -80,7 +86,7 @@ switch-agent-controller install-service [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller run [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller status [--data-dir <dir>]
 switch-agent-controller set-info [--name <name>] [--description <text>] [--data-dir <dir>]
-switch-agent-controller doctor [--data-dir <dir>]
+switch-agent-controller doctor [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller update [--check]
 ```
 
@@ -113,12 +119,13 @@ switch-agent-controller update [--check]
   | `4` | Another instance of this controller, with the same identity, opened the controller stream after this one, which took it over. | No |
   | `5` | The server does not speak this controller's protocol (`protocol_unsupported`). | No: update the controller |
   | `6` | The server knows no controller by this credential (`invalid_credential`): it was replaced, or its key was deleted. | No: enroll again |
+  | `7` | It installed the release Switch names and is restarting into it (see [Updates](#updates)). | Yes, at once |
 
   Code `2` covers: an unknown command, option or missing argument; a server
   URL that is not one, or is plain `http` to a host that is not loopback; a
   data directory that belongs to another controller identity, or whose store
   a newer controller wrote; a shared-host bundle that is missing, not a file
-  or unreadable; an unsupported platform (Windows); a data directory that
+  or unreadable; an unsupported platform; a data directory that
   holds no identity, or no credential (revoked earlier and wiped, or never
   enrolled); `set-info` with nothing to change, or a name or description past
   the limits; and with `--credential-stdin`, a credential that does not arrive
@@ -152,11 +159,31 @@ Linux it also starts at boot and survives logout only with lingering on
 keeps the `PATH` of the shell that installed it, so the provider CLIs found then are
 found by the service. A data directory other than the default gets a service name
 with a hash of its path, so two controllers on one account each get their own.
-`uninstall-service` stops and removes it and keeps the enrollment.
+The service runs the controller through `<data dir>/releases/current`, which
+`install-service` points at the npm install it was run from (see
+[Updates](#updates)). `uninstall-service` stops and removes it, and the releases it
+installed, and keeps the enrollment.
 
 On Linux without a systemd user manager (some containers and minimal VMs),
 `install-service` refuses. Run `run` under your own supervisor instead, with the
-restart rules below.
+restart rules below. It refuses on Windows too.
+
+### On Windows
+
+The controller runs natively on Windows, without WSL. Switch Console starts it
+and stops it, so it is not installed as a service there: `install-service`
+refuses, and a controller started by hand is run with `run`. Its data lives in
+`%LOCALAPPDATA%\Switch\agent-controller` (Console keeps its own under its app
+data), whose access list it sets to the current user and the system alone.
+
+- Provider CLIs are found on `PATH` with `PATHEXT`, so `claude.exe` and an npm
+  install's `codex.cmd` both count.
+- Antigravity has no Windows build, so it is reported as not installed.
+- `--agent-runtime separate-user` is Linux only.
+- An agent's shell setup is refused: it is a POSIX shell snippet.
+- Stopping an agent host asks it over its IPC channel or a stop file in its
+  state root, since Windows has no catchable SIGTERM. Process identity and
+  cleanup after a crash go through PowerShell's CIM cmdlets.
 
 ### Environment for the agents
 
@@ -176,6 +203,130 @@ model overrides, and the Vertex AI, Bedrock and Google Cloud settings), plus the
 basics a CLI needs. The file is read once at start; restart the service after
 changing it.
 
+### Each agent as a Linux user of its own
+
+By default every agent runs as the user the controller runs as, so an agent can
+read the controller's files, its credential and the other agents' files. On Linux
+with systemd and polkit, each agent can instead run as a Linux user of its own,
+which sees only its own directory. Set it up once, as root, after enrolling:
+
+```bash
+sudo npm install --global <the release's .tgz URL>   # Node and the controller system-wide
+switch-agent-controller enroll --server https://switch.example.com --code <code>
+sudo switch-agent-controller install-service --separate-users [--env-file /etc/switch/agents.env]
+```
+
+`install-service --separate-users` runs as root and sets up, for the user who ran
+`sudo` (or `--user <name>`) and the data directory (`--data-dir`, by default that
+user's default one):
+
+- a pool of system users, `sa<uid>-01` … (16 by default, `--agent-users <n>` up to
+  99), all in a group of their own, `switch-agents-<uid>`;
+- a systemd template unit, `switch-agent-<uid>@.service`, that runs an agent as
+  one of them;
+- a polkit rule that lets the controller's user start, stop, restart and reset
+  those units and nothing else, so the controller itself never needs root;
+- the agents' directories, in `/var/lib/switch-agents/<uid>` (`--agents-dir`);
+- the controller as a system service of that user,
+  `switch-agent-controller-<uid>.service`, run with
+  `--agent-runtime separate-user` and the agents' group as a supplementary group,
+  so it can read what its agents write. It replaces the user service, which must
+  be uninstalled first;
+- a releases directory, `/var/lib/switch-agent-controller-<uid>/releases`
+  (`--releases-dir`), owned by the controller's user and readable by everyone,
+  where the controller installs the releases Switch names (see
+  [Updates](#updates)). The controller's unit runs
+  `<releases>/current/lib/node_modules/switch-agent-controller/cli.mjs` and the
+  agents' units run the shared-host bundle beside it, so both follow `current`.
+  The setup points `current` at the release it runs from (for example
+  `/usr/lib` after `sudo npm install --global`) only when `current` is missing,
+  names no readable release, or names an older one: running it again with the
+  same or an older release keeps an update applied since. The directory must not
+  be under a home, the data directory or the agents' directories, which agents
+  cannot reach. A controller run from a checkout gets none.
+
+The setup is written to `/etc/switch-agent-controller/separate-users-<uid>.json`.
+Running the setup again rewrites everything and adds agent users. `sudo
+switch-agent-controller uninstall-service --separate-users` stops the controller
+and its agents, then removes what the setup made except the agents' directories
+and the releases directory.
+
+Each agent claims a free user from the pool when it is first started, and runs as
+`switch-agent-<uid>@<NN>.service`. systemd restarts an agent host that crashes. The
+agent:
+
+- sees only its own directory, always at `/var/lib/switch-agents/<uid>/agent`,
+  whichever user it runs as, with its `home` and its `workspace` in it. The
+  controller reports that path as its workspaces folder, so an agent created
+  with no directory works in a folder named after it there. A definition naming
+  a directory outside it is refused (`definition_invalid`);
+- cannot see the home directories, the controller's data directory, the other
+  agents' processes, or the cloud instance metadata address, and the rest of the
+  system is read-only to it;
+- gets its relay credentials and the provider settings from the controller's
+  environment (the `--env-file`) through systemd, never the controller user's own
+  provider logins in its home. Give each provider an API key or a token, for
+  example `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, or give the
+  machine a login from Console (see
+  [Provider logins given to the machine](#provider-logins-given-to-the-machine)).
+  `doctor` checks the providers the way an agent would see them.
+
+Node, the controller and the provider CLIs must be installed outside the home
+directories (`/usr`, `/usr/local` or `/opt`), where the agents can reach them; the
+setup and the controller refuse what is not. An agent removed from the machine
+frees its user, and its directory is moved to `released/<agent id>` under the
+agents' directory, where it is picked up again if the agent comes back. Before an
+agent starts, root hands it back the files in its directory that another agent
+user owns, so an agent can move from one user to another. Only files in the
+agents' group are handed back.
+
+When every user in the pool runs an agent, the next agent fails with
+`capacity_exceeded` until the setup is run again with a larger `--agent-users`.
+Agents' units keep running when the controller stops, as isolated agents do.
+`status` run in a shell without the agents' group shows each agent's unit state
+only.
+
+### Provider logins given to the machine
+
+A machine with no login of its own for a provider (a cloud machine, a fresh SSH
+host) can be given one by its owner, on demand, at any time after it is up.
+`enroll` makes an X25519 keypair, keeps the private half in the secret store
+(`sealing-key`) and sends the public half to Switch. A controller enrolled
+before this registers its key once, when it next runs. Console seals the login
+to that key before sending it, so Switch stores and relays only ciphertext it
+cannot open.
+
+Switch then queues a `provider.login` operation. The controller fetches the
+login, opens it, checks the provider signs in with it, and reports the result.
+Console shows that result: the operation fails with `provider_login_expired`
+when the provider does not sign in with the login, and `provider_login_missing`
+when there is none. From then on the provider is reported ready with
+`auth_source: "sealed"`.
+
+- The machine's own login comes first. A given login is used only for a
+  provider the machine has none for, on `PATH` or in the `--env-file`.
+- An agent using a given login gets it with its relay credentials. Its token
+  (Claude, Cursor) goes in its environment, and its file (Codex, OpenCode,
+  Antigravity) is written by the agent host in its own state. The agent runs in
+  a process of its own, as a separate user under `--separate-users`, and is
+  restarted when the login changes or is withdrawn.
+- Claude can also be given a Vertex AI login: a Google Cloud project, a region,
+  and a Google credential, either a service account key (recommended: one for a
+  service account that can use only Vertex AI, `roles/aiplatform.user`) or the
+  owner's own `gcloud auth application-default login` sign-in, which carries
+  all of their Google Cloud access. The agent host writes the credential to
+  `provider-home/google-credentials.json` in its own state (mode 0600), and the
+  agent's environment gets `CLAUDE_CODE_USE_VERTEX=1`,
+  `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` and
+  `GOOGLE_APPLICATION_CREDENTIALS` pointing at that file, with
+  `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` blanked.
+- Logins are kept in memory only, and fetched again every ten minutes and on
+  each `provider.login` and `provider.recheck`. When Switch cannot be reached,
+  the login already held is kept.
+- A controller whose credential is handed over (`--credential-stdin`) keeps no
+  key across starts, so it registers none and uses only the machine's own
+  logins.
+
 ### The controller credential
 
 `enroll --secret-store` says where the controller credential is kept, and the data
@@ -190,9 +341,68 @@ directory remembers it:
 
 ### Updates
 
-`update` installs the newest release with npm and restarts the service if it runs;
-`update --check` only says whether there is one. `run` logs a warning when a newer
-release exists, and `doctor` shows it.
+When Switch names a release for this controller, `run` follows it; otherwise
+`update` does it by hand.
+
+**The release Switch names.** A status response can carry
+`controller_release: {"version", "url", "sha256"}`. When it names a version other
+than the one running (newer or older: Switch can roll back), the controller:
+
+1. waits until no session on the machine is in the middle of a turn, checking at
+   each status report and every few seconds while it waits, and reports
+   `update: {"target", "state": "waiting_idle"}` in its status meanwhile. Each
+   agent host reports which of its sessions are busy; one that has not said yet
+   counts as busy. Idle sessions do not hold the update back: those in the
+   controller's own process are restarted with it and resume their
+   conversations, and agents running in a process of their own keep running
+   through it (once the controller is back on the new release, it restarts each
+   of those onto it as soon as none of its sessions is mid-turn: each records
+   the shared-host bundle it runs in its `health.json`). An agent host too old to report busy sessions holds it back
+   while it has any session, as `sessions_running` counts them;
+2. downloads the package into `<data dir>/updates/` (at most 200 MB) and checks
+   its SHA-256 against the one Switch gave, the only one trusted; a package that
+   differs is deleted;
+3. installs it from that file, never from the URL, checks that the installed CLI
+   says `--version` is that version, checks again that no turn started
+   meanwhile, and switches to it;
+4. exits with code `7`, and its service starts it again on the new release.
+
+A failed attempt is reported (`update: {"target", "state": "failed", "problem"}`)
+and logged, and the same release is not tried again for an hour; the last
+attempt is kept in the data directory, so a restart does not retry it either.
+Absent or null, `controller_release` leaves the controller alone; one that cannot
+be read is logged and treated as absent. A controller Switch Console runs never
+updates itself: its own (run with `--credential-stdin`) and one it starts on an
+SSH host (run with `--updated-by-console`) update when Console replaces their
+bundle. Each reports `controller.updated_by: "console"` in its status (`"self"`
+otherwise), and Switch names it no release.
+
+Where it installs depends on how the controller was installed:
+
+- **As a service, of your user or with `--separate-users`:** into its releases
+  directory, `<data dir>/releases` for a service of your user (`--releases-dir`,
+  which `install-service` passes to `run`) or the one the separate-users setup
+  names (see [Each agent as a Linux user of its own](#each-agent-as-a-linux-user-of-its-own)).
+  Each release is `<releases>/<version>/`, an npm prefix: it installs into
+  `<version>.partial`, checks it, renames it, then points `<releases>/current`, which
+  the service runs through, at it in one step. It keeps the release it replaced and
+  at most one older one, and never touches a prefix outside the directory, such as
+  the npm install `current` first named. A failed install leaves `current` as it
+  was. A service of your user installed before releases directories updates in
+  place, as below, until `install-service` is run again.
+- **A plain npm install, not run as a service:** with `npm install --global
+  --prefix <prefix>`, over the prefix the running controller came from, as `update`
+  does. A controller run from a checkout does not update itself, and reports why,
+  as does one on Windows. Under systemd (which sets `INVOCATION_ID`) or launchd
+  (`--launchd`) it exits `7` to be restarted; run any other way, it installs,
+  reports `restart_needed` and logs that it must be restarted, and keeps running.
+
+**By hand.** `update` installs the newest published release with npm and restarts
+the service if it runs; `update --check` only says whether there is one. `run` logs
+a warning when a newer release exists, and `doctor` shows it. `update` refuses to
+install into a releases directory, which only its controller installs into. Run from
+the npm install, it installs there and points the service's `current` back at it when
+that is newer than what `current` names.
 
 ### Checking a machine
 
@@ -209,8 +419,10 @@ To run it under another supervisor, have it run `run` and restart it on exit cod
 configuration is fixed, nor on `3`, because a revoked controller must be enrolled
 again, nor on `4`, because two instances would take the stream from each other in
 turn, nor on `5` or `6`, because the server has said it will refuse this controller
-the same way again. With systemd, `Restart=on-failure` and
-`RestartPreventExitStatus=2 3 4 5 6`.
+the same way again. Do restart it on `7`: it installed the release Switch names and
+ends to run it. With systemd, `Restart=on-failure` and
+`RestartPreventExitStatus=2 3 4 5 6`. A controller run outside systemd and launchd
+installs the release Switch names without exiting; restart it to run it.
 
 ## Run by a parent process
 
@@ -387,7 +599,6 @@ session hosts it launches with `process.execPath` run as Node too.
 - OOM kills are not detected. `oom_kills` is always `0`.
 - `restarts_10m` counts the relaunches reconciling made, not the restarts after a
   agent host failure.
-- Windows is not supported.
 
 ## Where data lives
 
@@ -409,6 +620,8 @@ It holds:
 | `secrets/controller-credential` | The controller credential, with the `file` secret store (see below). Absent with a keychain store, or when the credential is handed over with `--credential-stdin`. |
 | `agents/<id>/credentials.json` | Each agent's relay endpoint, relay token and hub, in the layout the shared host reads. No Switch credential. |
 | `agent hosts/<id>/` | Each agent's agent host state root: `watch.json`, `config.json`, `health.json` (what `status` reads), its journal, and `supervisor/failure.json` once it has failed for good. |
+| `updates/` | A release being downloaded to update to (deleted once installed or refused), and npm's cache. The last update attempt is kept in `controller.db`. |
+| `releases/` | With `install-service`: the releases the controller installed for itself, each an npm prefix, and `current`, the link the service runs through. |
 
 An agent whose definition names no directory works in
 `~/.switch/agents/<server>/<name>/`, where `<server>` is the server's address

@@ -124,6 +124,17 @@ it('takes auto-approve from the host when another Console chose differently', as
   expect(launched()[0]!.config.start.input.runtimeMode).toBe('full-access');
 });
 
+it('takes auto mode from the host when another Console chose it', async () => {
+  stage('full-access');
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, 'auto-approve.json'), JSON.stringify({ runtimeMode: 'auto' }));
+
+  const result = await bringUp();
+
+  expect(result.runtimeMode).toBe('auto');
+  expect(launched()[0]!.config.start.input.runtimeMode).toBe('auto');
+});
+
 it('keeps this Console’s value when nobody chose on the host, or when told to', async () => {
   stage('full-access');
   expect((await bringUp()).runtimeMode).toBeNull();

@@ -3,8 +3,10 @@ import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { NewAgentForm } from '@renderer/features/locations/components/add-agent-modal/new-agent-form';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
+import { UsageDataToggle } from '@renderer/features/telemetry/usage-data-line';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
@@ -20,21 +22,19 @@ import {
   lockHolderSentence,
   othersRecentlySeen,
 } from '@shared/core/managed-switch-server/managed-switch-server';
-import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type {
   AddServerChoiceName,
   AddServerStepName,
 } from '@shared/core/switch-servers/add-server-steps';
-import type {
-  ServerApiUrlPropagation,
-  SwitchServer,
+import {
+  type ServerApiUrlPropagation,
+  type SwitchServer,
+  urlOrigin,
 } from '@shared/core/switch-servers/switch-servers';
 import { ConnectionsStep } from './connections-step';
 import { LinkAccountsStep } from './link-accounts-step';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
-import { ManagedProviderConnectionSequence } from './managed-provider-connection-step';
-import { ManagedProvidersStep } from './managed-providers-step';
 import { remoteServerStore } from './remote-server-store';
 import { type RemoteSetupAction, remoteSetupAction } from './remote-setup-action';
 import {
@@ -48,12 +48,12 @@ import { switchServersStore } from './switch-servers-store';
 import { useSwitchCloud } from './use-switch-cloud';
 
 /**
- * Turn a server-API-URL cascade into a user-facing toast: confirm how many
+ * Turn a server-address cascade into a user-facing toast: confirm how many
  * agents were re-pointed (and that running sessions need a restart), and flag
  * any that failed so the edit never looks cleanly done when it wasn't.
  */
 function notifyPropagation(propagation: ServerApiUrlPropagation): void {
-  if (!propagation.apiUrlChanged) return;
+  if (!propagation.urlChanged) return;
   const updated = propagation.agents.filter((a) => a.outcome === 'updated');
   const failed = propagation.agents.filter((a) => a.outcome === 'failed');
 
@@ -70,16 +70,14 @@ function notifyPropagation(propagation: ServerApiUrlPropagation): void {
     toast({
       title: `Updated ${updated.length} agent config${updated.length === 1 ? '' : 's'}`,
       description:
-        'Each agent now points at the new API URL. Restart any running sessions to pick it up.',
+        'Each agent now points at the new address. Restart any running sessions to pick it up.',
     });
   }
 }
 
 type Props = BaseModalProps<void> & {
-  /** Prefill the gateway URL. */
-  initialGatewayUrl?: string;
-  /** Prefill the API (agent bridge) URL. */
-  initialApiUrl?: string;
+  /** Prefill the server's address. */
+  initialUrl?: string;
   /** Prefill the name. */
   initialName?: string;
   /** When set, the modal edits this existing server instead of adding one. */
@@ -89,11 +87,21 @@ type Props = BaseModalProps<void> & {
   mode?: 'local' | 'remoteHost' | 'external';
 };
 
+/**
+ * Where signing in to Switch Cloud leads: on to setting up cloud agents when
+ * the Cloud offers them (its `hosted_agents` flag), by way of its connections
+ * where it offers those too (`service_connections`); otherwise to the step any
+ * other server ends on.
+ */
+async function stepAfterCloudSignIn(serverId: string): Promise<Step> {
+  const flags = await rpc.featureFlags.current(serverId);
+  if (!flags.success || !flags.data.flags.hosted_agents) return 'linkAccounts';
+  return flags.data.flags.service_connections ? 'managedGitHub' : 'managedAgent';
+}
+
 type Step =
   | 'managedAgent'
   | 'managedGitHub'
-  | 'managedClaude'
-  | 'managedReady'
   | 'choose'
   | 'local'
   | 'remoteHost'
@@ -135,8 +143,6 @@ void _stepsAreComplete;
  */
 const CHOICE_FOR_STEP: Record<Step, AddServerChoiceName | null> = {
   choose: 'none',
-  managedReady: 'cloud',
-  managedClaude: 'cloud',
   managedGitHub: 'cloud',
   managedAgent: 'cloud',
   local: 'local',
@@ -151,8 +157,6 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   const openedAt: Step = isEdit ? 'external' : (props.mode ?? 'choose');
   const openedWith = CHOICE_FOR_STEP[openedAt] ?? 'none';
   const [step, setStep] = useState<Step>(openedAt);
-  const [providerIndex, setProviderIndex] = useState(0);
-  const [selectedProviders, setSelectedProviders] = useState<AgentProviderId[]>([]);
   // Which path was taken at the chooser, carried so every later step can be
   // attributed to it. `none` while still on the chooser, which is what makes a
   // drop-off before choosing distinguishable from one after.
@@ -200,6 +204,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   // Why the account just created has no cloud machine warming, carried into
   // the managed steps so it is not lost with the sign-in form.
   const [machineUnavailable, setMachineUnavailable] = useState<string | null>(null);
+  const connectionsOffered = useFeatureFlags(connected?.id).service_connections;
   const machineNotice = machineUnavailable && (
     <MachineUnavailableNotice reason={machineUnavailable} />
   );
@@ -218,8 +223,10 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
    * chooser rather than to a connect-by-URL form it never passed through. An
    * account already signed in goes on to setting up its cloud agents.
    */
-  const enterCloud = (server: SwitchServer) => {
-    const next: Step = switchServersStore.isConnected(server.id) ? 'managedReady' : 'signIn';
+  const enterCloud = async (server: SwitchServer) => {
+    const next: Step = switchServersStore.isConnected(server.id)
+      ? await stepAfterCloudSignIn(server.id)
+      : 'signIn';
     setConnected(server);
     setChoice('cloud');
     setStep(next);
@@ -267,22 +274,6 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
       />
     );
   }
-  if (step === 'managedClaude' && connected) {
-    return (
-      <>
-        {machineNotice}
-        <ManagedProviderConnectionSequence
-          serverId={connected.id}
-          providers={selectedProviders}
-          index={providerIndex}
-          onIndexChange={setProviderIndex}
-          onBack={() => goToStep('managedReady')}
-          onDone={() => goToStep('managedGitHub')}
-          doneStepName="GitHub"
-        />
-      </>
-    );
-  }
   if (step === 'managedAgent' && connected) {
     return (
       <>
@@ -291,7 +282,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
           entryPoint="onboarding"
           initialRunLocation="cloud"
           serverId={connected.id}
-          onBack={() => goToStep('managedGitHub')}
+          onBack={() => goToStep(connectionsOffered ? 'managedGitHub' : 'choose')}
           onClose={() => finish(connected.id)}
         />
       </>
@@ -304,23 +295,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
         <ConnectionsStep
           onContinue={() => goToStep('managedAgent')}
           serverId={connected.id}
-          onBack={() => goToStep('managedClaude')}
-          onSkip={() => finish(connected.id)}
-        />
-      </>
-    );
-  }
-  if (step === 'managedReady' && connected) {
-    return (
-      <>
-        {machineNotice}
-        <ManagedProvidersStep
-          selected={selectedProviders}
-          onSelectionChange={setSelectedProviders}
-          onContinue={() => {
-            setProviderIndex(0);
-            goToStep('managedClaude');
-          }}
+          onBack={() => goToStep('choose')}
           onSkip={() => finish(connected.id)}
         />
       </>
@@ -334,7 +309,8 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
         onClose={props.onClose}
         onSignedIn={(signedIn) => {
           setMachineUnavailable(machineUnavailableReason(signedIn));
-          goToStep(choice === 'cloud' ? 'managedReady' : 'linkAccounts');
+          if (choice === 'cloud') void stepAfterCloudSignIn(connected.id).then(goToStep);
+          else goToStep('linkAccounts');
         }}
       />
     );
@@ -352,8 +328,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
     <ExternalServerStep
       onSuccess={props.onSuccess}
       onClose={props.onClose}
-      initialGatewayUrl={props.initialGatewayUrl ?? null}
-      initialApiUrl={props.initialApiUrl ?? null}
+      initialUrl={props.initialUrl ?? null}
       initialName={props.initialName ?? null}
       serverId={props.serverId ?? null}
       isEdit={isEdit}
@@ -372,7 +347,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
 // Step 1 — choose where the server lives
 // ---------------------------------------------------------------------------
 
-function ChooseStep({
+export const ChooseStep = observer(function ChooseStep({
   onLocal,
   onRemoteHost,
   onExternal,
@@ -386,6 +361,11 @@ function ChooseStep({
   onClose: () => void;
 }) {
   const cloud = useSwitchCloud();
+  // Switch Cloud is one server: once it is added, its workspaces are in the
+  // switcher, and offering to add it again would only lead back to it.
+  const cloudAdded =
+    cloud.kind === 'open' &&
+    switchServersStore.servers.some((server) => urlOrigin(server.url) === urlOrigin(cloud.url));
   const [cloudAttempt, setCloudAttempt] = useState<{ connecting: boolean; error: string | null }>({
     connecting: false,
     error: null,
@@ -415,7 +395,7 @@ function ChooseStep({
       <div className="grid gap-3">
         {/* Offered only when this build knows where the Cloud is. A failed read
             is shown rather than dropped, since it means the build is broken. */}
-        {cloud.kind === 'open' && (
+        {cloud.kind === 'open' && !cloudAdded && (
           <ChoiceCard
             icon={
               cloudAttempt.connecting ? (
@@ -447,7 +427,7 @@ function ChooseStep({
         <ChoiceCard
           icon={<Laptop className="size-5" />}
           title="Run a server on this computer"
-          description="Switch Console sets up and runs the full Switch stack here with Docker. Best for trying Switch out."
+          description="Switch Console sets up and runs the Switch server here. No Docker needed. Best for trying Switch out."
           onClick={onLocal}
         />
         <ChoiceCard
@@ -459,13 +439,13 @@ function ChooseStep({
         <ChoiceCard
           icon={<Globe className="size-5" />}
           title="Connect to an existing server"
-          description="Point Switch Console at a Switch gateway someone else runs, by URL."
+          description="Point Switch Console at a Switch server someone else runs, by its address."
           onClick={onExternal}
         />
       </div>
     </WizardFrame>
   );
-}
+});
 
 export function ChoiceCard({
   icon,
@@ -547,6 +527,11 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   const dockerReady = docker?.available ?? false;
   const dockerUnavailable = docker && !docker.available ? docker : null;
   const idle = !running && !starting;
+  // A server set up on Docker before native mode existed still needs Docker to
+  // start; a native one (every new install) needs it only for Mattermost.
+  const native = store.runtime === 'native';
+  const needsDocker = store.runtime === 'docker';
+  const canStart = running || (store.runtime !== null && (!needsDocker || dockerReady));
 
   // The pager's back arrow only ever repeats the footer's Back, so the two read
   // one const. Open during the install too: the store is a singleton the main
@@ -556,7 +541,9 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   // dismissed with Escape.
   const goBack = onBack ?? null;
 
-  const primaryLabel = running ? 'Done' : store.phase === 'error' ? 'Retry' : 'Start';
+  // The first run goes on to the workspace; the dialog is finished.
+  const finished = onClose === null ? 'Continue' : 'Done';
+  const primaryLabel = running ? finished : store.phase === 'error' ? 'Retry' : 'Start';
   const onPrimary = () => {
     if (running) onDone(store.status?.serverId ?? null);
     else void store.start();
@@ -565,7 +552,11 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   return (
     <WizardFrame
       title="Set up a server on this computer"
-      subtitle="Switch Console installs the full stack with Docker and keeps it updated."
+      subtitle={
+        needsDocker
+          ? 'Switch Console runs the full stack with Docker and keeps it updated.'
+          : 'Switch Console installs the Switch server on this computer and keeps it updated.'
+      }
       pager={{ pageName: 'Set up a server', onBack: goBack, onNext: null }}
       footer={
         <>
@@ -575,7 +566,7 @@ export const LocalSetupStep = observer(function LocalSetupStep({
             closeDisabled={starting}
             closeLabel={running ? 'Close' : 'Cancel'}
           />
-          <ConfirmButton onClick={onPrimary} disabled={starting || (!running && !dockerReady)}>
+          <ConfirmButton onClick={onPrimary} disabled={starting || !canStart}>
             {starting ? 'Starting…' : primaryLabel}
           </ConfirmButton>
         </>
@@ -587,21 +578,24 @@ export const LocalSetupStep = observer(function LocalSetupStep({
             <Laptop className="size-5" />
           </div>
           <div className="min-w-0">
-            <p className="text-sm font-medium text-foreground">Switch server · this computer</p>
-            <p className="truncate text-xs text-foreground-muted">
-              switch-core {store.status?.version ?? ''} · runs on this computer via Docker
-            </p>
+            <p className="text-sm font-medium text-foreground">Switch server</p>
+            {store.status?.version && (
+              <p className="truncate text-xs text-foreground-muted">
+                {store.status.checkoutBuild?.enabled
+                  ? 'Built from this checkout'
+                  : `Version ${store.status.version}`}
+              </p>
+            )}
           </div>
         </div>
 
-        {idle && (
+        {idle && native && (
           <div className="bg-card space-y-2 rounded-lg border border-border p-3">
             <p className="text-xs font-medium text-foreground-muted">Starting will:</p>
             <ul className="space-y-1.5 text-xs text-foreground-muted">
-              <SetupStepItem>
-                Pull the Switch images from GHCR (first run downloads a few GB)
-              </SetupStepItem>
-              <SetupStepItem>Run Postgres, Matrix, Mattermost and Switch in Docker</SetupStepItem>
+              <SetupStepItem>Set up PostgreSQL and the Switch server</SetupStepItem>
+              <SetupStepItem>Run them in the background on this computer</SetupStepItem>
+              <SetupStepItem>{mattermostStep(docker, store.mattermost)}</SetupStepItem>
               <SetupStepItem>
                 Register it as your active server, ready to onboard an agent
               </SetupStepItem>
@@ -609,25 +603,39 @@ export const LocalSetupStep = observer(function LocalSetupStep({
           </div>
         )}
 
-        {!running && (
-          <DockerStatus ready={dockerReady} unavailable={dockerUnavailable} checking={!docker} />
+        {idle && needsDocker && (
+          <div className="bg-card space-y-2 rounded-lg border border-border p-3">
+            <p className="text-xs font-medium text-foreground-muted">Starting will:</p>
+            <ul className="space-y-1.5 text-xs text-foreground-muted">
+              <SetupStepItem>Pull the Switch images from GHCR if needed</SetupStepItem>
+              <SetupStepItem>Run Postgres, Mattermost and Switch in Docker</SetupStepItem>
+              <SetupStepItem>
+                Register it as your active server, ready to onboard an agent
+              </SetupStepItem>
+            </ul>
+          </div>
         )}
+
+        {!running && needsDocker && <DockerProblem unavailable={dockerUnavailable} />}
+
+        {idle && <UsageDataToggle />}
 
         {running && (
-          <Alert>
-            <CircleCheck className="size-4" />
-            <AlertTitle>Local server is running</AlertTitle>
-            <AlertDescription>
-              It's now in your servers list — open it to onboard an agent.
-            </AlertDescription>
-          </Alert>
+          <p className="flex items-center gap-2 text-sm text-foreground">
+            <CircleCheck className="size-4 text-green-500" />
+            Local server is running
+          </p>
         )}
 
-        {store.error && !dockerUnavailable && !running && (
+        {store.error && !(needsDocker && dockerUnavailable) && !running && (
           <Alert variant="destructive">
             <AlertTitle>{store.error}</AlertTitle>
             {store.errorDetail && <AlertDescription>{store.errorDetail}</AlertDescription>}
           </Alert>
+        )}
+
+        {store.phase === 'error' && !starting && (
+          <StartOver disabled={starting} onConfirm={() => void store.reset()} />
         )}
 
         {(starting || store.logs.length > 0) && !running && (
@@ -645,16 +653,81 @@ export const LocalSetupStep = observer(function LocalSetupStep({
                 </p>
               </div>
             )}
-            <LogTail
-              lines={store.logs}
-              placeholder={starting ? 'Waiting for Docker to report progress…' : null}
-            />
+            {/* Docker reports its pulls line by line; the native setup has no
+                log to tail, and its step shows beside the spinner above. */}
+            {(needsDocker || store.logs.length > 0) && (
+              <LogTail
+                lines={store.logs}
+                placeholder={
+                  starting && needsDocker ? 'Waiting for Docker to report progress…' : null
+                }
+              />
+            )}
           </div>
         )}
       </div>
     </WizardFrame>
   );
 });
+
+/**
+ * The way out of a setup that failed partway: delete what it made and begin
+ * again. Without it a setup whose data cannot be started from has no exit in
+ * the UI — the setup page is all a failed local server opens to. Asks once
+ * more before deleting, since a server that ran before keeps its data until
+ * then.
+ */
+function StartOver({ disabled, onConfirm }: { disabled: boolean; onConfirm: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+      <p className="min-w-0 text-xs text-foreground-muted">
+        {confirming
+          ? 'This stops the server and deletes its data and agents. Set it up from scratch?'
+          : "If trying again doesn't help, start over: delete what this setup made and begin again."}
+      </p>
+      <div className="flex shrink-0 gap-2">
+        {confirming && (
+          <Button variant="outline" size="sm" onClick={() => setConfirming(false)}>
+            Keep it
+          </Button>
+        )}
+        <Button
+          variant={confirming ? 'destructive' : 'outline'}
+          size="sm"
+          disabled={disabled}
+          onClick={() => {
+            if (!confirming) {
+              setConfirming(true);
+              return;
+            }
+            setConfirming(false);
+            onConfirm();
+          }}
+        >
+          {confirming ? 'Delete and start over' : 'Start over'}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * What starting does about Mattermost beside a server that otherwise needs no
+ * Docker. Mattermost only ships as a container image, so it runs wherever
+ * Docker answers, unless it was turned off for this server, and the list says
+ * which, so chat being there or not is never a surprise.
+ */
+function mattermostStep(
+  docker: { available: true } | { available: false; detail: string } | null,
+  enabled: boolean
+): string {
+  if (docker === null) return 'Run Mattermost for team chat if Docker is available';
+  if (!docker.available)
+    return 'Skip Mattermost for team chat, which needs Docker. You can connect a messaging app later';
+  if (!enabled) return 'Skip Mattermost, which is turned off for this server';
+  return 'Run Mattermost in Docker for team chat, downloading its image the first time';
+}
 
 /**
  * The button on the left of a wizard's footer.
@@ -696,45 +769,23 @@ function BackOrClose({
   );
 }
 
-function DockerStatus({
-  ready,
+function DockerProblem({
   unavailable,
-  checking,
 }: {
-  ready: boolean;
   unavailable: { reason: 'not-installed' | 'daemon-down'; detail: string } | null;
-  checking: boolean;
 }) {
-  if (checking) {
-    return (
-      <div className="flex items-center gap-2 text-sm text-foreground-muted">
-        <Spinner className="size-3.5" />
-        <span>Checking Docker…</span>
-      </div>
-    );
-  }
-  if (unavailable) {
-    return (
-      <Alert variant="destructive">
-        <TriangleAlert className="size-4" />
-        <AlertTitle>
-          {unavailable.reason === 'not-installed'
-            ? 'Docker is not installed'
-            : 'Docker is not running'}
-        </AlertTitle>
-        <AlertDescription>{unavailable.detail}</AlertDescription>
-      </Alert>
-    );
-  }
-  if (ready) {
-    return (
-      <div className="flex items-center gap-2 text-sm text-foreground">
-        <CircleCheck className="size-4 text-green-500" />
-        <span>Docker is ready.</span>
-      </div>
-    );
-  }
-  return null;
+  if (!unavailable) return null;
+  return (
+    <Alert variant="destructive">
+      <TriangleAlert className="size-4" />
+      <AlertTitle>
+        {unavailable.reason === 'not-installed'
+          ? 'Docker is not installed'
+          : 'Docker is not running'}
+      </AlertTitle>
+      <AlertDescription>{unavailable.detail}</AlertDescription>
+    </Alert>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -960,13 +1011,7 @@ export const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
               </div>
             )}
 
-            {sshHost && !running && (
-              <DockerStatus
-                ready={dockerReady}
-                unavailable={dockerUnavailable}
-                checking={!docker}
-              />
-            )}
+            {sshHost && !running && <DockerProblem unavailable={dockerUnavailable} />}
 
             {running && (
               <Alert>
@@ -1105,20 +1150,19 @@ function looksLikeUrl(value: string): boolean {
  * theirs. The hostname is what they would have typed anyway, and renaming is a
  * click away once there is a sidebar to see it in.
  */
-function nameFromGatewayUrl(gatewayUrl: string): string {
+function nameFromUrl(url: string): string {
   // The host rather than the hostname: two servers on one machine differ only
   // by port, and a sidebar with two rows both called `localhost` names neither
   // of them. An IPv6 address keeps its brackets, which is how an address with
   // a port beside it is written.
-  return new URL(gatewayUrl).host;
+  return new URL(url).host;
 }
 
 export const ExternalServerStep = observer(function ExternalServerStep({
   onSuccess,
   onClose,
   onBack,
-  initialGatewayUrl,
-  initialApiUrl,
+  initialUrl,
   initialName,
   serverId,
   isEdit,
@@ -1126,8 +1170,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
   existing,
   onConnected,
 }: {
-  initialGatewayUrl: string | null;
-  initialApiUrl: string | null;
+  initialUrl: string | null;
   initialName: string | null;
   serverId: string | null;
   isEdit: boolean;
@@ -1143,29 +1186,22 @@ export const ExternalServerStep = observer(function ExternalServerStep({
   onConnected: (server: SwitchServer) => void;
 }) {
   const [name, setName] = useState(initialName ?? existing?.name ?? '');
-  const [gatewayUrl, setGatewayUrl] = useState(initialGatewayUrl ?? existing?.gatewayUrl ?? '');
-  const [apiUrl, setApiUrl] = useState(initialApiUrl ?? existing?.apiUrl ?? '');
+  const [url, setUrl] = useState(initialUrl ?? existing?.url ?? '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const trimmedName = name.trim();
-  const trimmedGateway = gatewayUrl.trim();
-  const trimmedApi = apiUrl.trim();
-  const gatewayValid = looksLikeUrl(trimmedGateway);
-  const apiValid = looksLikeUrl(trimmedApi);
+  const trimmedUrl = url.trim();
+  const urlValid = looksLikeUrl(trimmedUrl);
   // In edit mode the name is owned by the separate Rename action, and on first
-  // run it comes from the gateway, so neither shows the field or requires it.
+  // run it comes from the address, so neither shows the field or requires it.
   const asksForName = !isEdit && !firstRun;
-  const isValid = (!asksForName || trimmedName.length > 0) && gatewayValid && apiValid;
-  const submittedName = firstRun && gatewayValid ? nameFromGatewayUrl(trimmedGateway) : trimmedName;
+  const isValid = (!asksForName || trimmedName.length > 0) && urlValid;
+  const submittedName = firstRun && urlValid ? nameFromUrl(trimmedUrl) : trimmedName;
 
-  const gatewayMessage =
-    trimmedGateway.length > 0 && !gatewayValid
-      ? 'Enter a full URL, e.g. https://switch-gateway.example.com'
-      : undefined;
-  const apiMessage =
-    trimmedApi.length > 0 && !apiValid
-      ? 'Enter a full URL, e.g. https://switch-api.example.com'
+  const urlMessage =
+    trimmedUrl.length > 0 && !urlValid
+      ? 'Enter a full address, e.g. https://switch.example.com'
       : undefined;
 
   // The row this form writes to, when one already exists: the server being
@@ -1177,12 +1213,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
     setSubmitting(true);
     setError(null);
     if (savedId) {
-      const result = await switchServersStore.updateServer(
-        savedId,
-        submittedName,
-        trimmedGateway,
-        trimmedApi
-      );
+      const result = await switchServersStore.updateServer(savedId, submittedName, trimmedUrl);
       if (!result) {
         setError(switchServersStore.errorText ?? 'Could not save the server.');
         setSubmitting(false);
@@ -1194,7 +1225,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
         return;
       }
     } else {
-      const saved = await switchServersStore.addServer(submittedName, trimmedGateway, trimmedApi);
+      const saved = await switchServersStore.addServer(submittedName, trimmedUrl);
       if (!saved) {
         setError(switchServersStore.errorText ?? 'Could not add the server.');
         setSubmitting(false);
@@ -1204,7 +1235,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
       return;
     }
     onSuccess();
-  }, [isValid, isEdit, savedId, submittedName, trimmedGateway, trimmedApi, onSuccess, onConnected]);
+  }, [isValid, isEdit, savedId, submittedName, trimmedUrl, onSuccess, onConnected]);
 
   // First run is asked before the saved row, because a page that goes on to the
   // sign-in must not offer "Save changes" — the user stepped back to fix an
@@ -1233,7 +1264,7 @@ export const ExternalServerStep = observer(function ExternalServerStep({
             ? 'Connect to your server'
             : 'Connect to an existing server'
       }
-      subtitle={firstRun ? 'Whoever set it up can give you these addresses.' : null}
+      subtitle={firstRun ? 'Whoever set it up can give you its address.' : null}
       /* Editing a connection is one dialog rather than a flow, and a pager on
          it would invent pages either side that do not exist. */
       pager={
@@ -1273,35 +1304,20 @@ export const ExternalServerStep = observer(function ExternalServerStep({
           </Field>
         )}
         <Field>
-          <FieldLabel>Gateway URL</FieldLabel>
+          <FieldLabel>Server address</FieldLabel>
           <Input
-            value={gatewayUrl}
-            onChange={(e) => setGatewayUrl(e.target.value)}
-            placeholder="https://switch-gateway.example.com"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://switch.example.com"
             autoFocus={isEdit || firstRun}
-          />
-          {firstRun && (
-            <p className="mt-1 text-xs text-foreground-muted">Where the app and its chat live.</p>
-          )}
-          {gatewayMessage && <p className="mt-1 text-xs text-destructive">{gatewayMessage}</p>}
-        </Field>
-        <Field>
-          <FieldLabel>API URL</FieldLabel>
-          <Input
-            value={apiUrl}
-            onChange={(e) => setApiUrl(e.target.value)}
-            placeholder="https://switch-api.example.com"
             onKeyDown={(e) => {
               if (e.key === 'Enter') void handleSubmit();
             }}
           />
           {firstRun && (
-            <p className="mt-1 text-xs text-foreground-muted">
-              Where agents connect. Often the same host on a different port — whoever set the server
-              up knows which.
-            </p>
+            <p className="mt-1 text-xs text-foreground-muted">The address its agents connect to.</p>
           )}
-          {apiMessage && <p className="mt-1 text-xs text-destructive">{apiMessage}</p>}
+          {urlMessage && <p className="mt-1 text-xs text-destructive">{urlMessage}</p>}
           {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
         </Field>
         {firstRun && (
@@ -1393,7 +1409,7 @@ export const SignInStep = observer(function SignInStep({
       <ServerSignInFields
         signIn={signIn}
         idPrefix="connect-server-sign-in"
-        gatewayUrl={server.gatewayUrl}
+        serverUrl={server.url}
         onSignedIn={onSignedIn}
       />
     </WizardFrame>

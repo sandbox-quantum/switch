@@ -24,6 +24,11 @@ export type StandardCommandSpec = {
   /** Flag for auto-approve mode, e.g. '--dangerously-skip-permissions'. */
   autoApproveFlag?: string;
   /**
+   * Flag for the provider's own automatic review, e.g. '--permission-mode auto'.
+   * Not passed when auto-approve is on: bypassing every check wins.
+   */
+  autoModeFlag?: string;
+  /**
    * Flag for initial prompt, e.g. '-i' or '--prompt'. Empty string = positional
    * (prompt appended as last arg without a flag). Leave undefined to skip prompt injection.
    */
@@ -53,7 +58,7 @@ export type StandardCommandSpec = {
    * Use for providers like Antigravity that identify sessions by ID on every invocation.
    */
   sessionIdAlways?: boolean;
-  /** When true, skip auto-approve flag on resume (kimi special case). */
+  /** When true, skip the auto-approve and auto-mode flags on resume (kimi special case). */
   omitAutoApproveOnResume?: boolean;
   /** List of singleton flags to deduplicate (keep first occurrence only). */
   deduplicateFlags?: string[];
@@ -65,7 +70,7 @@ export type StandardCommandSpec = {
 
 /**
  * Build a standard AgentCommand from a CommandContext, applying the spec's flag patterns.
- * Handles: defaultArgs, resume/session flags, auto-approve, and prompt delivery.
+ * Handles: defaultArgs, resume/session flags, auto-approve or auto mode, and prompt delivery.
  */
 export function buildStandardCommand(ctx: CommandContext, spec: StandardCommandSpec): AgentCommand {
   const args: string[] = [];
@@ -115,10 +120,13 @@ export function buildStandardCommand(ctx: CommandContext, spec: StandardCommandS
     }
   }
 
-  // Auto-approve
-  const skipAutoApprove = spec.omitAutoApproveOnResume && ctx.isResuming;
-  if (ctx.autoApprove && spec.autoApproveFlag && !skipAutoApprove) {
-    args.push(...splitFlag(spec.autoApproveFlag));
+  const skipPermissionFlags = spec.omitAutoApproveOnResume && ctx.isResuming;
+  if (!skipPermissionFlags) {
+    if (ctx.autoApprove) {
+      if (spec.autoApproveFlag) args.push(...splitFlag(spec.autoApproveFlag));
+    } else if (ctx.autoMode && spec.autoModeFlag) {
+      args.push(...splitFlag(spec.autoModeFlag));
+    }
   }
 
   // User extra args

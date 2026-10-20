@@ -58,7 +58,7 @@ class _FailingClient:
 
     client_id = "bridge-client"
 
-    async def start(self) -> None:
+    async def start(self, progress: object) -> None:
         raise RuntimeError("the room client is down")
 
 
@@ -144,9 +144,14 @@ async def test_a_bridge_that_crashes_takes_its_place_with_it(
     try:
         assert await _post(port, bridge_id) == 200
 
+        # What `start` leaves for the task of a bridge this process holds: its
+        # workspace consumer, and the cursors it reads its rooms under.
+        failing = _FailingClient()
+        service._workspace_consumers[bridge_id] = failing  # type: ignore[assignment]
+        service._workspace_cursors[bridge_id] = object()  # type: ignore[assignment]
         await type(service)._run_bridge(
-            service, bridge_id, tenant, _StubCore(), _FailingClient()
-        )
+            service, bridge_id, tenant, _StubCore(), failing
+        )  # type: ignore[arg-type]
 
         assert await _post(port, bridge_id) == 404
     finally:

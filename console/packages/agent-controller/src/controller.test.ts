@@ -5,14 +5,22 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { AgentBridgeEvent } from '@sandboxaq/switch-agent-runtime';
 import { callOperation, SESSION_SELECTOR_HEADERS } from '@sandboxaq/switch-agent-runtime/hosted';
-import { openHubStream } from '@switch-console/agent-providers';
+import { openHubStream, sealProviderLogin } from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type ControllerDeps, type ControllerExit, runController } from './controller';
+import {
+  type ControllerDeps,
+  type ControllerExit,
+  ensureRelayCredentials,
+  runController,
+} from './controller';
 import { ConfigurationError } from './errors';
 import { adoptIdentity } from './handover';
 import { silentLogger } from './log';
+import { ProviderRechecks } from './provider-rechecks';
+import type { LocalRelay } from './relay';
 import type { AgentAssignment, StatusReport } from './schemas';
 import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
+import { type ReleaseInstaller, SelfUpdater, type UpdateAttempt } from './self-update';
 import { ControllerStore } from './store';
 import { buildWatcherTemplate } from './template';
 import { FakeCore } from './testing/fake-core';
@@ -32,6 +40,7 @@ function agent(revision: number, overrides: Partial<AgentAssignment> = {}): Agen
       advanced_config: {},
       instructions: '',
       auto_approve: false,
+      auto_mode: false,
       directory: null,
       isolation: 'shared',
     },
@@ -69,12 +78,18 @@ function deps(server = core.url): ControllerDeps {
     secrets,
     runtime: runtime.build,
     locator: new FakeLocator(),
+    rechecks: new ProviderRechecks(),
+    refreshPath: async () => {},
+    providerSeed: [],
+    tools: async () => [],
     fetch,
     openWebSocket: core.openWebSocket,
     log: silentLogger,
     dataDir: dir,
     workspacesFor: () => join(dir, 'workspaces'),
     version: '0.1.0',
+    updatedBy: 'self',
+    selfUpdate: null,
     now: Date.now,
     random: () => 0,
     timing: {
@@ -101,7 +116,6 @@ function watcher(agentId = 'agent-1') {
   const stream = runtime.openStream!(agentId)({
     creds: { agentId, apiEndpoint: credentials.endpoint, token: credentials.token },
     connectionId: `controller-${agentId}`,
-    worker: null,
     scope: 'all',
     filter: 'addressed',
     spawnCapable: true,
@@ -258,7 +272,6 @@ describe('runController', () => {
     openHubStream(credentials.hub)({
       creds: { agentId: 'agent-1', apiEndpoint: credentials.endpoint, token: credentials.token },
       connectionId: 'isolated-host',
-      worker: null,
       scope: 'all',
       filter: 'addressed',
       rooms: [],
@@ -345,6 +358,7 @@ describe('runController', () => {
       endpoint: `http://127.0.0.1:${port}`,
       token: 'swlr_old',
       hub: '',
+      providerLogin: null,
     });
     runtime.calls.length = 0;
     running = runController(deps(), stop.signal);
@@ -377,6 +391,7 @@ describe('runController', () => {
       endpoint: `http://127.0.0.1:${port}`,
       token: 'swlr_old',
       hub: `ws://127.0.0.1:${port}/hub`,
+      providerLogin: null,
     });
     runtime.calls.length = 0;
     running = runController(deps(), stop.signal);
@@ -409,6 +424,39 @@ describe('runController', () => {
     });
     expect(await running).toBe('taken_over');
     expect(runtime.calls.filter((call) => call.kind === 'stop')).toEqual([]);
+  });
+
+  it('checks every provider again on request, with a fresh PATH, and reports it before answering', async () => {
+    const locator = new FakeLocator();
+    locator.missing.add('codex');
+    const rechecks = new ProviderRechecks();
+    let pathRefreshes = 0;
+    core.setAssignment({ revision: 1, agents: [] });
+    running = runController(
+      {
+        ...deps(),
+        locator,
+        rechecks,
+        refreshPath: async () => {
+          pathRefreshes += 1;
+        },
+      },
+      stop.signal
+    );
+    const codexIn = (report: StatusReport | undefined) =>
+      report?.providers.find((entry) => entry.provider === 'codex')?.installed;
+    await waitFor(() => codexIn(core.statusReports.at(-1)) === false, 'codex reported missing');
+
+    // Installed since: only a recheck finds it before the check goes stale.
+    locator.missing.delete('codex');
+    await rechecks.run();
+
+    expect(pathRefreshes).toBe(1);
+    expect(codexIn(core.statusReports.at(-1))).toBe(true);
+  });
+
+  it('refuses a recheck while the controller is not running', async () => {
+    await expect(new ProviderRechecks().run()).rejects.toThrow(/not connected/);
   });
 
   it('runs pending operations when nudged', async () => {
@@ -459,6 +507,85 @@ describe('runController', () => {
     expect(await running).toBe('stopped');
   });
 
+  it('warms the agent host for a room when Switch asks, and only warns when it cannot', async () => {
+    const warnings: string[] = [];
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(
+      { ...deps(), log: { ...silentLogger, warn: (message) => void warnings.push(message) } },
+      stop.signal
+    );
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    await waitFor(() => core.streamCount === 1, 'the stream attached');
+
+    runtime.warmFailure = new Error('not running here');
+    core.push('agent.warm', { agent_id: 'agent-1', room_id: 'room-a' });
+    await waitFor(() => warnings.some((w) => w.includes('warm')), 'the warning');
+
+    runtime.warmFailure = null;
+    core.push('agent.warm', { agent_id: 'agent-1', room_id: 'room-a' });
+    await waitFor(() => runtime.warms.length === 1, 'the warm');
+    expect(runtime.warms).toEqual([{ agentId: 'agent-1', roomId: 'room-a' }]);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('takes up a login given to the machine on demand, and moves its agent onto it', async () => {
+    runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the first start');
+    await waitFor(() => core.publicKey !== null, 'the machine registering its key');
+    expect(runtime.launches('agent-1')[0]!.options.isolation).toBe('shared');
+    expect(runtime.credentials.get('agent-1')?.providerLogin).toBeNull();
+
+    core.sealedLogins.set('claude', {
+      revision: 1,
+      sealed: sealProviderLogin({
+        publicKey: core.publicKey!,
+        controllerId: core.controllerId,
+        provider: 'claude',
+        login: { kind: 'setup-token', credential: 'sk-ant-oat-given' },
+      }),
+    });
+    core.addOperation({
+      id: 'op-give',
+      kind: 'provider.login',
+      agent_id: null,
+      params: { provider: 'claude', method: 'sealed', revision: 1 },
+      created_at: '2026-01-01T00:00:00Z',
+    });
+    core.push('operation.pending', {
+      operation_id: 'op-give',
+      kind: 'provider.login',
+      agent_id: null,
+    });
+    await waitFor(() => core.results.has('op-give'), 'the login taken up');
+    expect(core.results.get('op-give')).toMatchObject({
+      outcome: 'succeeded',
+      output: { provider: { auth: 'ok', auth_source: 'sealed' } },
+    });
+    await waitFor(() => runtime.launches('agent-1').length === 2, 'the agent moved onto it');
+    const moved = runtime.launches('agent-1')[1]!;
+    expect(moved.options).toMatchObject({ isolation: 'isolated', restart: true });
+    expect(moved.template.start.input.env).toMatchObject({
+      CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-given',
+    });
+    expect(runtime.credentials.get('agent-1')?.providerLogin).toMatchObject({
+      provider: 'claude',
+      revision: '1',
+    });
+    await waitFor(
+      () =>
+        core.statusReports.some(
+          (report) =>
+            report.providers.find((entry) => entry.provider === 'claude')?.auth_source === 'sealed'
+        ),
+      'a status report saying Claude is ready through the given login'
+    );
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
   it('resyncs after the stream drops and reconnects', async () => {
     core.setAssignment({ revision: 1, agents: [agent(1)] });
     running = runController(deps(), stop.signal);
@@ -477,6 +604,7 @@ describe('runController', () => {
       endpoint: 'http://127.0.0.1:1',
       token: 'swlr_k',
       hub: 'ws://127.0.0.1:1/hub',
+      providerLogin: null,
     });
     runtime.calls.length = 0;
     await core.stop();
@@ -565,5 +693,194 @@ describe('runController', () => {
     const wiped = runController(enrolled, stop.signal);
     await expect(wiped).rejects.toThrow(/revoked at/);
     await expect(wiped).rejects.toBeInstanceOf(ConfigurationError);
+  });
+});
+
+describe('the release Switch names', () => {
+  function selfUpdate() {
+    const installed: string[] = [];
+    const installer: ReleaseInstaller = {
+      unavailable: null,
+      prepare: async () => {},
+      activate: async (version) => void installed.push(version),
+    };
+    let attempt: UpdateAttempt | null = null;
+    const updater = new SelfUpdater({
+      version: '0.1.0',
+      installer,
+      download: async () => join(dir, 'never-written.tgz'),
+      attempts: { last: () => attempt, save: (saved) => void (attempt = saved) },
+      supervised: true,
+      log: silentLogger,
+      now: Date.now,
+    });
+    return { updater, installed };
+  }
+
+  const release = {
+    version: '0.2.0',
+    url: 'https://example.invalid/switch-agent-controller-0.2.0.tgz',
+    sha256: 'c'.repeat(64),
+  };
+
+  it('is installed while no session is mid-turn, and the controller ends to restart on it', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    core.controllerRelease = release;
+    const { updater, installed } = selfUpdate();
+    running = runController({ ...deps(), selfUpdate: updater }, stop.signal);
+    expect(await running).toBe('restarting');
+    expect(installed).toEqual(['0.2.0']);
+  });
+
+  it('waits while an agent host that does not report busy sessions has any, and says so in the status', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    const { updater, installed } = selfUpdate();
+    running = runController({ ...deps(), selfUpdate: updater }, stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    runtime.observation('agent-1').health!.placements = { 'session-1': 'room-a' };
+    core.controllerRelease = release;
+    await waitFor(
+      () => core.statusReports.some((report) => report.update?.state === 'waiting_idle'),
+      'a status saying the update waits'
+    );
+    expect(core.statusReports.at(-1)?.update).toEqual({ target: '0.2.0', state: 'waiting_idle' });
+    expect(installed).toEqual([]);
+    runtime.observation('agent-1').health!.placements = {};
+    expect(await running).toBe('restarting');
+    expect(installed).toEqual(['0.2.0']);
+  });
+
+  it('waits only while a session is mid-turn when the agent host says which are', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    const { updater, installed } = selfUpdate();
+    running = runController({ ...deps(), selfUpdate: updater }, stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    const health = runtime.observation('agent-1').health!;
+    health.placements = { 'session-1': 'room-a', 'session-2': 'room-b' };
+    health.busy = ['session-1'];
+    core.controllerRelease = release;
+    await waitFor(
+      () => core.statusReports.some((report) => report.update?.state === 'waiting_idle'),
+      'a status saying the update waits'
+    );
+    expect(installed).toEqual([]);
+    health.busy = [];
+    expect(await running).toBe('restarting');
+    expect(installed).toEqual(['0.2.0']);
+  });
+
+  it('is left alone by a controller that does not update itself', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    core.controllerRelease = release;
+    running = runController(deps(), stop.signal);
+    await waitFor(() => core.statusReports.length >= 2, 'two status reports');
+    expect(core.statusReports.every((report) => report.update === undefined)).toBe(true);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+});
+
+describe('an agent host that outlived the controller on another bundle', () => {
+  const restarts = () =>
+    runtime.launches('agent-1').filter((call) => call.options.restart === true);
+
+  it('is restarted onto this controller’s bundle once none of its sessions is mid-turn, and only once', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    const observation = runtime.observation('agent-1');
+    observation.outdated = true;
+    observation.health!.placements = { 'session-1': 'room-a' };
+    observation.health!.busy = ['session-1'];
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(restarts()).toEqual([]);
+
+    observation.health!.busy = [];
+    await waitFor(() => restarts().length === 1, 'the outdated agent host restarted');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(restarts()).toHaveLength(1);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('is not restarted again while it stays on another bundle, within the retry wait', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    runtime.observation('agent-1').outdated = true;
+    await waitFor(() => restarts().length === 1, 'the outdated agent host restarted');
+    runtime.observation('agent-1').outdated = true;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(restarts()).toHaveLength(1);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('is left alone when it runs this controller’s bundle', async () => {
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    running = runController(deps(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(restarts()).toEqual([]);
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+});
+
+describe('ensureRelayCredentials', () => {
+  const login = {
+    status: 'connected' as const,
+    provider: 'claude' as const,
+    revision: '1',
+    kind: 'setup-token' as const,
+    credential: 'sk-ant-oat-given',
+  };
+
+  function fakeRelay() {
+    const registered = new Map<string, string>();
+    let minted = 0;
+    return {
+      registered,
+      relay: {
+        endpoint: 'http://127.0.0.1:43210',
+        hubUrl: 'ws://127.0.0.1:43210/hub',
+        isRegistered: (agentId: string, token: string) => registered.get(agentId) === token,
+        register: (agentId: string, token: string) => void registered.set(agentId, token),
+        mint: (agentId: string) => {
+          const token = `swlr_${++minted}`;
+          registered.set(agentId, token);
+          return token;
+        },
+      } as unknown as LocalRelay,
+    };
+  }
+
+  it('rewrites the file, keeping its token, when the given login changes', async () => {
+    const runtime = new FakeRuntime();
+    const { relay } = fakeRelay();
+    const deps = { runtime, relay, log: silentLogger };
+    expect(await ensureRelayCredentials('agent-1', null, deps)).toBe(true);
+    expect(await ensureRelayCredentials('agent-1', null, deps)).toBe(false);
+    expect(await ensureRelayCredentials('agent-1', login, deps)).toBe(true);
+    expect(runtime.credentials.get('agent-1')).toMatchObject({
+      token: 'swlr_1',
+      providerLogin: login,
+    });
+    expect(await ensureRelayCredentials('agent-1', login, deps)).toBe(false);
+    // The same login with its fields in another order is the same login.
+    const reordered = {
+      credential: login.credential,
+      kind: login.kind,
+      revision: login.revision,
+      provider: login.provider,
+      status: login.status,
+    };
+    expect(await ensureRelayCredentials('agent-1', reordered, deps)).toBe(false);
+    expect(await ensureRelayCredentials('agent-1', { ...login, revision: '2' }, deps)).toBe(true);
+    expect(await ensureRelayCredentials('agent-1', null, deps)).toBe(true);
+    expect(runtime.credentials.get('agent-1')).toMatchObject({
+      token: 'swlr_1',
+      providerLogin: null,
+    });
   });
 });

@@ -5,10 +5,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 /**
  * What "Who can talk to your agent" starts on for a brand-new agent (CHOO-2137).
  *
- * This is the ticket's whole point — an agent created in Switch Console answers
- * only its owner unless someone says otherwise — and it lives in one line of
- * form state that nothing else would notice going wrong. An agent created open
- * to everyone still works perfectly, which is exactly why this needs pinning
+ * An agent created in Switch Console answers its owner and the owner's own
+ * agents unless someone says otherwise, and that lives in one line of form
+ * state that nothing else would notice going wrong. An agent created open to
+ * everyone still works perfectly, which is exactly why this needs pinning
  * rather than watching.
  */
 import { useConfigureAgentForm } from '@renderer/features/locations/components/add-agent-modal/modes';
@@ -28,7 +28,7 @@ afterEach(async () => {
 async function initialMode(): Promise<string> {
   let seen = '';
   function Probe() {
-    const form = useConfigureAgentForm();
+    const form = useConfigureAgentForm(null);
     seen = addressingModeOf(form.addressingPolicy);
     return null;
   }
@@ -47,8 +47,8 @@ async function initialMode(): Promise<string> {
 }
 
 describe('a new agent', () => {
-  it('starts answering only its owner', async () => {
-    expect(await initialMode()).toBe('owner');
+  it('starts answering its owner and the owner’s agents', async () => {
+    expect(await initialMode()).toBe('ownerAndAgents');
   });
 
   it('does not start open to everyone', async () => {

@@ -2,7 +2,7 @@
 
 _Switch terms and what they mean_
 
-Published at <https://docs.flintai.dev/flintai/switch/resources/glossary> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/resources/glossary> — link readers there, not to this file.
 
 Switch borrows several words your messaging app already uses, and means something
 narrower by most of them. This page is the one definition of each.

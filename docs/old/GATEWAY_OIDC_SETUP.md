@@ -82,6 +82,14 @@ value registered with the IdP **character for character** — scheme, host,
 port and path — or the provider refuses the callback before Switch ever sees
 it.
 
+The login route keeps the flow's state in a cookie on the host sign-in runs
+on, so it has to run on the host the provider returns to. When this variable is
+set and a sign-in starts on another host, the login route first redirects to
+this URL's host and starts there. A server serving its own dashboard has one
+address, and that is normally the host to put here. A server still split
+across two hosts can keep the redirect URL on the dashboard's host until that
+host is retired; then move it (here and at the IdP) to the server's own address.
+
 ### What turning off email-verified enforcement means
 
 By default, a login is refused unless the IdP's token asserts
@@ -180,7 +188,7 @@ interface, Postmark, SendGrid, or your own.
 | `GATEWAY_SMTP_HOST` | `switchCore.smtp.host` (and `smtp.enabled: true`) | the relay; setting it turns e-mail on |
 | `GATEWAY_SMTP_PORT` | `switchCore.smtp.port` | default 587 |
 | `GATEWAY_SMTP_TLS` | `switchCore.smtp.tls` | `starttls` (default, port 587), `tls` (port 465), or `none` for a relay on a trusted network |
-| `GATEWAY_SMTP_USERNAME` / `GATEWAY_SMTP_PASSWORD` | `switchCore.smtp.username` / `secrets.gatewaySmtpPassword` | set both or neither |
+| `GATEWAY_SMTP_USERNAME` / `GATEWAY_SMTP_PASSWORD` | `switchCore.smtp.username` (or `secrets.gatewaySmtpUsername` with `switchCore.smtp.usernameFromSecret: true`) / `secrets.gatewaySmtpPassword` | set both or neither |
 | `GATEWAY_SMTP_FROM` | `switchCore.smtp.from` | the From address, e.g. `Switch <invites@your-domain>` |
 | `GATEWAY_INVITE_EMAILS_PER_DAY` | `switchCore.smtp.emailsPerDayPerWorkspace` | default 50 |
 

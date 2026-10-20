@@ -1,4 +1,10 @@
-import type { ProviderReadiness, SharedHostConfig } from '@switch-console/agent-providers';
+import { join } from 'node:path';
+import {
+  CONTROL_FILE,
+  type ProviderReadiness,
+  type SharedHostConfig,
+} from '@switch-console/agent-providers';
+import { warmOverControlPort } from './control-port';
 import type {
   AgentObservation,
   AgentRunner,
@@ -8,6 +14,7 @@ import type {
   RelayCredentials,
 } from './runtime';
 import type { Provider } from './schemas';
+import type { GivenLogin } from './sealed-logins';
 
 /**
  * Runs each agent the way its definition asks: its host in this controller's
@@ -65,11 +72,27 @@ export class AgentRuntimes implements AgentRuntime {
     return this.shared.deleteCredentials(agentId);
   }
 
-  workingDirectory(name: string, directory: string | null): Promise<string> {
-    return this.shared.workingDirectory(name, directory);
+  workingDirectory(agentId: string, name: string, directory: string | null): Promise<string> {
+    return this.shared.workingDirectory(agentId, name, directory);
   }
 
-  probe(provider: Provider, binaryPath: string, cwd: string): Promise<ProviderReadiness> {
-    return this.shared.probe(provider, binaryPath, cwd);
+  probe(
+    provider: Provider,
+    binaryPath: string,
+    cwd: string,
+    login: GivenLogin | null
+  ): Promise<ProviderReadiness> {
+    return this.shared.probe(provider, binaryPath, cwd, login);
+  }
+
+  /** In this process when it runs here; otherwise on the control port its own process opens. */
+  async warm(agentId: string, roomId: string): Promise<void> {
+    if (await this.shared.warmHere(agentId, roomId)) return;
+    await warmOverControlPort(join(this.agentStateRoot(agentId), CONTROL_FILE), roomId);
+  }
+
+  /** The same for both: moving an agent between them keeps its root. */
+  agentStateRoot(agentId: string): string {
+    return this.shared.agentStateRoot(agentId);
   }
 }

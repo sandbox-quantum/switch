@@ -262,22 +262,28 @@ it('treats a lookup that fails for another reason as uncertain', async () => {
   });
 });
 
-it.each([false, true])(
-  'launches with current bypass settings despite a saved override (%s)',
-  async (enabled) => {
-    const savedSession = { ...session, autoApprove: !enabled };
+it.each([
+  { autoApprove: false, autoMode: false, runtimeMode: 'approval-required' },
+  { autoApprove: false, autoMode: true, runtimeMode: 'auto' },
+  { autoApprove: true, autoMode: false, runtimeMode: 'full-access' },
+  { autoApprove: true, autoMode: true, runtimeMode: 'full-access' },
+])(
+  'launches with the agent’s current permission settings despite a saved override ($runtimeMode)',
+  async ({ autoApprove, autoMode, runtimeMode }) => {
+    const savedSession = { ...session, autoApprove: !autoApprove, autoMode: !autoMode };
     mocks.agent.mockResolvedValue({
       id: 'agent-1',
       name: 'scout',
       switchAgentId: 'remote-agent',
-      autoApprove: enabled,
+      autoApprove,
+      autoMode,
     });
     const config = await buildSharedHostConfig(
       savedSession,
       { sessionPath: '/work', sessionEnvVars: {} },
       { kind: 'local' } as LocationTransport
     );
-    expect(config.start.input.runtimeMode).toBe(enabled ? 'full-access' : 'approval-required');
+    expect(config.start.input.runtimeMode).toBe(runtimeMode);
   }
 );
 

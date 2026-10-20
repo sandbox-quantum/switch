@@ -1,4 +1,6 @@
 import './app/configure-app-identity';
+// Installs the agent provider catalogue before any module that reads it loads.
+import './core/providers/plugin-registry';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { config as dotenvConfig } from 'dotenv';
@@ -19,10 +21,12 @@ import { appService } from './core/app/service';
 import { controlService } from './core/control-api/control-service';
 import { localDependencyManager } from './core/dependencies/dependency-managers';
 import { embeddedControllerService } from './core/embedded-controller/embedded-controllers';
+import { featureFlagsService } from './core/feature-flags/feature-flags';
 import { locationManager } from './core/locations/location-manager';
 import { locationSettingsService } from './core/locations/settings/location-settings-service';
 import { localServerService } from './core/managed-switch-server/local-server-service';
 import { remoteServerService } from './core/managed-switch-server/remote-server-service';
+import { serverVersionChoice } from './core/managed-switch-server/server-version';
 import { initializeHostReachability } from './core/remote-hosts/host-reachability-startup';
 import { hostReachabilityService } from './core/remote-hosts/production-host-reachability';
 import {
@@ -34,6 +38,7 @@ import { searchService } from './core/search/search-service';
 import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
+import { retireDashboardFallbacks } from './core/switch-servers/server-address';
 import { currentInternalFlag } from './core/telemetry/internal-account';
 import { readThisLaunch, reportLaunch } from './core/telemetry/launch-history';
 import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
@@ -53,11 +58,15 @@ import { registerLogEnrichment } from './lib/log-enrichment';
 import { log } from './lib/logger';
 import { withRPCLogContext } from './lib/rpc-logging';
 import { rpcRouter } from './rpc';
-import { resolveUserEnv } from './utils/userEnv';
+import { ensureUserBinDirsInPath, resolveUserEnv } from './utils/userEnv';
 
 if (import.meta.env.DEV) {
   dotenvConfig({ path: '.env.local', override: false });
 }
+
+// A SWITCH_CONSOLE_SERVER_VERSION this run cannot honour stops the launch here,
+// naming the variable, rather than leaving managed servers on another version.
+serverVersionChoice();
 
 const LOCAL_HOST_SHUTDOWN_MS = 5000;
 
@@ -108,6 +117,7 @@ app.on('activate', () => {
 
 void app.whenReady().then(async () => {
   await resolveUserEnv();
+  ensureUserBinDirsInPath();
 
   try {
     await initializeDatabase();
@@ -200,6 +210,20 @@ void app.whenReady().then(async () => {
       log.error('Workspace reconcile could not run; every server was left as it was:', error);
     });
 
+  // A server registered with a separate dashboard address keeps it until the
+  // server serves its own dashboard and the old address has gone. Unawaited
+  // for the same reason as the reconcile: it asks every external server.
+  void retireDashboardFallbacks().catch((error: unknown) => {
+    log.error('Could not check which servers still need a separate dashboard address:', error);
+  });
+
+  // Each server's feature flags, read on a schedule so a redeploy that changes
+  // them reaches the window without a restart. Started once the managed stacks
+  // report themselves, for the same reason as the reconcile above.
+  void Promise.allSettled([localServerReady, remoteServerReady]).then(() =>
+    featureFlagsService.start()
+  );
+
   const dependenciesReady = localDependencyManager.probeAll().catch((e: unknown) => {
     log.error('Failed to probe dependencies:', e);
   });
@@ -290,6 +314,7 @@ app.on('before-quit', (event) => {
   controlService.dispose();
   stopAutoMigration();
   stopResourceSampler();
+  featureFlagsService.stop();
   localServerService.dispose();
   remoteServerService.dispose();
   updateService.dispose();

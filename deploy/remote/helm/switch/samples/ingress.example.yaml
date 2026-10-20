@@ -12,7 +12,9 @@
 #
 # Routing mirrors the managed Ingress: the agent/MCP surface goes to
 # switch-core; everything else (the gateway SPA, which proxies /gateway to
-# switch-core) goes to the gateway.
+# switch-core) goes to the gateway. With `gateway.enabled=false` there is no
+# gateway Service: send `/` to switch-core too, which serves the dashboard and
+# /gateway itself (see the last path below).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -35,9 +37,6 @@ spec:
       http:
         paths:
           - path: /agents
-            pathType: Prefix
-            backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
-          - path: /hosted
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
           # Session hosts report session starts, turn activity and approval
@@ -95,6 +94,8 @@ spec:
           - path: /api/teams/notifications
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 3978 } } }
+          # With gateway.enabled=false:
+          #   backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
           - path: /
             pathType: Prefix
             backend: { service: { name: RELEASE-gateway, port: { number: 3000 } } }

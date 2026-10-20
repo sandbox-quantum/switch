@@ -18,7 +18,12 @@ from sqlalchemy import select, update
 
 from switch_core.agent_refusals import AgentRefused
 from switch_core.agent_template_ops import ActingFor, AgentTemplates
-from switch_core.agent_templates import agent_slots, room_document, template_kind
+from switch_core.agent_templates import (
+    agent_slots,
+    plan_template,
+    room_document,
+    template_kind,
+)
 from switch_core.bridges.agent.operations.callctx import (
     CallContext,
     reset_call_context,
@@ -58,9 +63,11 @@ agents:
     description: Routes reports
     provider: "{provider}"
     instructions: Route reports.
+    allow_existing: true
   - name: "{team}-repro"
     description: Reproduces bugs
     instructions: Reproduce bugs.
+    allow_existing: true
 room:
   name: "{team}-triage"
   description: The triage room
@@ -74,6 +81,7 @@ agent:
   name: jq-expert
   description: Answers jq questions
   instructions: Answer jq questions.
+  allow_existing: true
 room:
   name: "Ask {agent}"
   description: "Ask {agent} about jq"
@@ -84,7 +92,10 @@ kickoff: "@{agent} introduce yourself."
 
 @pytest_asyncio.fixture
 async def tools(env):
-    env["protocol"].config = SimpleNamespace(template_max_bytes=64 * 1024)
+    env["protocol"].config = SimpleNamespace(
+        template_max_bytes=64 * 1024,
+        feature_flags={"agent_management": False, "switch_buddy": False},
+    )
     env["protocol"].telemetry = None
     async with env["session_factory"]() as session:
         stranger = User(name="mallory", email="m@example.com", role="member")
@@ -126,6 +137,11 @@ async def _bob_id(env: dict[str, Any]) -> str:
         bob = await AgentStore().get_by_name(session, "claude-code.bob")
         assert bob is not None
         return bob.id
+
+
+def _saved(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A listing without the templates that come with Switch."""
+    return [r for r in rows if r["saved_by"] != "Switch"]
 
 
 @pytest.fixture(autouse=True)
@@ -171,15 +187,18 @@ def test_a_team_template_becomes_a_room_with_the_chosen_agents():
     assert inputs == {}
 
 
-def test_an_unfilled_slot_is_refused_with_the_console_message():
-    with pytest.raises(
-        AgentRefused, match="creating agents happens in Switch Console"
-    ) as e:
-        room_document(
-            TEAM_TEMPLATE, {"red-triager": "claude-code.alice"}, {"team": "red"}
+def test_an_existing_agent_only_stands_in_where_the_template_allows_it():
+    template = TEAM_TEMPLATE.replace("    allow_existing: true\n", "", 1)
+    with pytest.raises(AgentRefused) as e:
+        plan_template(
+            template,
+            {"red-triager": "claude-code.alice", "red-repro": "claude-code.bob"},
+            {"team": "red"},
+            builtins={},
+            machines=None,
         )
-    assert e.value.reason == "agent_creation_console_only"
-    assert "red-repro" in str(e.value)
+    assert e.value.reason == "agents_not_created"
+    assert "red-triager: the template does not let an existing agent" in str(e.value)
 
 
 # ── The tools ─────────────────────────────────────────────────────────────
@@ -205,9 +224,15 @@ async def test_list_shows_shared_and_the_owners_private_templates(tools):
 
     rows = await _as(tools["agent_id"], list_templates)
 
-    assert {r["name"] for r in rows} == {"mine-private", "theirs-shared"}
+    # The ones that come with Switch first, then what the owner can read.
+    assert rows[0]["id"] == "official:switch-expert"
+    assert {r["name"] for r in rows} == {
+        "Switch expert",
+        "mine-private",
+        "theirs-shared",
+    }
     assert all(r["can_edit"] is False for r in rows)
-    assert {r["saved_by"] for r in rows} == {"alice", "mallory"}
+    assert {r["saved_by"] for r in rows} == {"Switch", "alice", "mallory"}
 
 
 @pytest.mark.asyncio
@@ -295,15 +320,20 @@ async def test_run_an_agent_template_with_an_existing_agent(tools):
 
 
 @pytest.mark.asyncio
-async def test_run_that_would_create_an_agent_is_refused_and_reported(tools, caplog):
+async def test_run_that_would_create_an_agent_without_management_is_refused(
+    tools, caplog
+):
     template_id = await _stored(
         tools, tools["user_id"], "jq", AGENT_TEMPLATE, kind="agent"
     )
 
-    with pytest.raises(AgentRefused, match="Switch Console"):
+    with pytest.raises(AgentRefused, match="Nothing was created") as e:
         await _as(tools["agent_id"], run_template, template_id=template_id)
 
-    assert _refusals(caplog) == [("run_template", "agent_creation_console_only")]
+    # The entry never says where it runs, and this server has no agent
+    # management to run it on: both are named, and nothing is created.
+    assert "machine_unsaid" in str(e.value)
+    assert _refusals(caplog) == [("run_template", "agents_not_created")]
     assert "Refused agent claude-code.alice" in caplog.text
 
 
@@ -347,9 +377,51 @@ async def test_save_is_owned_by_the_owner_and_marked_with_the_agent(tools):
     )
     assert saved["kind"] == "room"
     rows = await _as(tools["agent_id"], list_templates)
-    assert [(r["name"], r["can_edit"], r["saved_by"]) for r in rows] == [
+    assert [(r["name"], r["can_edit"], r["saved_by"]) for r in _saved(rows)] == [
         ("standup", True, "agent claude-code.alice")
     ]
+
+
+@pytest.mark.asyncio
+async def test_save_refuses_a_template_with_warnings_unless_bypassed(tools, caplog):
+    """An agent saving a template that never says what runs its agent is told
+    so before anything is stored, and may save it anyway once it has seen it."""
+    with pytest.raises(AgentRefused, match="which coding agent runs jq-expert") as e:
+        await _as(
+            tools["agent_id"],
+            save_template,
+            name="jq",
+            description="jq expert",
+            yaml=AGENT_TEMPLATE,
+        )
+    assert "bypass_warnings=true" in str(e.value)
+    assert _refusals(caplog) == [("save_template", "has_warnings")]
+    rows = await _as(tools["agent_id"], list_templates)
+    assert _saved(rows) == [], "nothing is stored when refused"
+
+    saved = await _as(
+        tools["agent_id"],
+        save_template,
+        name="jq",
+        description="jq expert",
+        yaml=AGENT_TEMPLATE,
+        bypass_warnings=True,
+    )
+    async with tools["session_factory"]() as session:
+        assert await session.get(Template, saved["id"]) is not None
+    assert any("which coding agent runs jq-expert" in w for w in saved["warnings"])
+
+    with pytest.raises(AgentRefused, match="which coding agent runs jq-expert"):
+        await _as(
+            tools["agent_id"],
+            update_template,
+            template_id=saved["id"],
+            yaml=AGENT_TEMPLATE,
+        )
+    updated = await _as(
+        tools["agent_id"], update_template, template_id=saved["id"], description="x"
+    )
+    assert updated["warnings"] == [], "no document was passed, so none was checked"
 
 
 @pytest.mark.asyncio
@@ -441,8 +513,10 @@ params:
 agents:
   - name: "{team}-lead"
     instructions: Lead.
+    allow_existing: true
   - name: "{team}-helper"
     instructions: Help.
+    allow_existing: true
 group:
   name: "{team}"
 rooms:
@@ -549,7 +623,9 @@ async def test_the_saver_check_holds_when_the_mark_is_cleared_after_reading(tool
         description="",
         yaml=ROOM_TEMPLATE,
     )
-    templates = AgentTemplates(TemplateStore(), max_bytes=64 * 1024)
+    templates = AgentTemplates(
+        TemplateStore(), max_bytes=64 * 1024, agent_management=False, switch_buddy=False
+    )
     async with tools["session_factory"]() as session:
         agent = await session.get(Agent, tools["agent_id"])
         owner = await session.get(User, tools["user_id"])
@@ -578,6 +654,7 @@ async def test_the_saver_check_holds_when_the_mark_is_cleared_after_reading(tool
                 description="changed",
                 content=None,
                 visibility=None,
+                bypass_warnings=False,
             )
 
 
@@ -658,9 +735,10 @@ async def test_the_guide_describes_the_language_and_the_example_in_it_is_valid(t
     example = (
         result["guide"]
         .split("## Example\n\n", 1)[1]
+        .split("\n## ", 1)[0]
         .replace("[reviewer]", '["claude-code.alice"]')
         .replace("@reviewer", "@claude-code.alice")
-        .replace('  users: ["{$creator}"]\n', "")
+        .replace('    users: ["{$creator}"]\n', "")
     )
     created = await _as(
         tools["agent_id"],
@@ -764,3 +842,37 @@ rooms:
   - { name: lobby, description: Lobby, agents: [lead] }
 """
     assert template_kind(template) == "group"
+
+
+@pytest.mark.asyncio
+async def test_an_official_template_is_read_and_never_changed(tools, caplog):
+    detail = await _as(
+        tools["agent_id"], get_template, template_id="official:switch-expert"
+    )
+    # Without agent management, the document Switch Console runs the agent of.
+    assert detail["saved_by"] == "Switch"
+    assert detail["content"].startswith("version: 1")
+    assert "Switch expert" in detail["name"]
+
+    with pytest.raises(AgentRefused, match="comes with Switch"):
+        await _as(
+            tools["agent_id"],
+            update_template,
+            template_id="official:switch-expert",
+            description="mine now",
+        )
+    with pytest.raises(AgentRefused, match="comes with Switch"):
+        await _as(
+            tools["agent_id"], delete_template, template_id="official:switch-expert"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_server_with_switch_buddy_offers_it_instead_of_the_expert(tools):
+    tools["protocol"].config.feature_flags = {
+        "agent_management": True,
+        "switch_buddy": True,
+    }
+    ids = {r["id"] for r in await _as(tools["agent_id"], list_templates)}
+    assert "official:switch-buddy" in ids
+    assert "official:switch-expert" not in ids

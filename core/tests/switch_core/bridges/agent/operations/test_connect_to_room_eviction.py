@@ -13,21 +13,12 @@ session connects while the first still holds the slot.
 
 from __future__ import annotations
 
-import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
-import httpx
 import pytest
-from fastapi import FastAPI
-from fastmcp import Client
-from fastmcp.exceptions import ToolError
 
-from switch_core.bridges.agent.api.operations import router as operations_router
-from switch_core.bridges.agent.auth import get_agent_from_scope
-from switch_core.bridges.agent.dependencies import get_protocol, get_session_factory
-from switch_core.bridges.agent.mcp import server as mcp_server
 from switch_core.bridges.agent.operations import definitions
 from switch_core.bridges.agent.operations.callctx import (
     CallContext,
@@ -40,10 +31,10 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
 )
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.hosted_workers import (
-    HOSTED_WORKER_ONLY_MESSAGE,
-)
+from switch_core.bridges.agent.protocol.event_buffer import Reader
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
+from switch_core.db.models import TENANT_ZERO_ID
+from switch_core.tenant_context import tenant_scope
 
 AGENT = "agent-1"
 ROOM = "room-1"
@@ -54,7 +45,6 @@ _PROFILE = {
     "pre_invocation_mediation": [],
     "post_invocation_mediation": [],
     "event_reporting": [],
-    "task_protocol": {"can_delegate": False, "can_accept": False},
 }
 
 
@@ -73,6 +63,20 @@ class _RecordingSessionStore:
         lifecycle: str,
     ) -> None:
         self.bindings.append((agent_id, room_id, transport_session_id))
+
+
+class _UncountedBuffer:
+    """The buffer, as far as connecting reaches it.
+
+    Connecting hands the room's unread count to whoever took the room. What
+    that does to the count is the buffer's own business, pinned where the
+    buffer is tested, and none of it bears on the payload.
+    """
+
+    async def hand_counting_to(
+        self, tenant_id: str, agent_id: str, reader: Reader, room_id: str
+    ) -> None:
+        return None
 
 
 def _protocol(
@@ -116,7 +120,7 @@ def _protocol(
 
     return SimpleNamespace(
         connections=registry,
-        event_buffer=EventBuffer(sequence_base=0),
+        event_buffer=_UncountedBuffer(),
         agent_session_store=store,
         session_factory=session_factory,
         agent_store=SimpleNamespace(get=_returning(agent)),
@@ -142,7 +146,7 @@ def _open(registry: AgentConnectionRegistry, connection_id: str):
         scope="single",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
@@ -166,9 +170,11 @@ async def _connect_as(connection_id: str) -> dict[str, Any]:
         CallContext(agent_id=AGENT, session_key=connection_id, session=None)
     )
     try:
-        return await definitions.connect_to_room(
-            ROOM, include_general_instructions=False
-        )
+        # Bound for the call as authenticating the agent binds it for a request.
+        with tenant_scope(TENANT_ZERO_ID):
+            return await definitions.connect_to_room(
+                ROOM, include_general_instructions=False
+            )
     finally:
         reset_call_context(token)
 
@@ -266,56 +272,3 @@ async def test_a_caller_with_no_live_connection_still_connects(harness: Any) -> 
 
     assert result["warning"] is None
     assert harness.store.bindings == [(AGENT, ROOM, "mcp-transport-session")]
-
-
-HOSTED_WORKER_ONLY = {
-    "code": "hosted_worker_only",
-    "message": HOSTED_WORKER_ONLY_MESSAGE,
-}
-
-
-@pytest.fixture
-def hosted(monkeypatch: pytest.MonkeyPatch):
-    registry = AgentConnectionRegistry()
-    protocol = _protocol(
-        registry, _RecordingSessionStore(), {"hosted_launch_id": "launch-1"}
-    )
-    init_operations_protocol(protocol)
-    monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
-    yield SimpleNamespace(registry=registry, protocol=protocol)
-    init_operations_protocol(None)  # type: ignore[arg-type]
-
-
-async def test_a_hosted_agents_non_worker_is_refused_with_a_coded_detail_over_http(
-    hosted: Any,
-) -> None:
-    _open(hosted.registry, "local-console")
-    app = FastAPI()
-    app.include_router(operations_router)
-    app.dependency_overrides[get_agent_from_scope] = lambda: SimpleNamespace(id=AGENT)
-    app.dependency_overrides[get_protocol] = lambda: hosted.protocol
-    app.dependency_overrides[get_session_factory] = lambda: None
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
-    ) as client:
-        response = await client.post(
-            f"/agents/{AGENT}/ops/connect_to_room",
-            json={"room_id": ROOM},
-            headers={"x-switch-connection-id": "local-console"},
-        )
-    assert response.status_code == 403
-    assert response.json()["detail"] == HOSTED_WORKER_ONLY
-
-
-async def test_a_hosted_agents_non_worker_is_refused_with_a_coded_detail_over_mcp(
-    hosted: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        mcp_server,
-        "get_http_request",
-        lambda: SimpleNamespace(scope={"agent_id": AGENT}),
-    )
-    async with Client(mcp_server.mcp) as client:
-        with pytest.raises(ToolError) as refused:
-            await client.call_tool("connect_to_room", {"room_id": ROOM})
-    assert json.loads(str(refused.value)) == HOSTED_WORKER_ONLY

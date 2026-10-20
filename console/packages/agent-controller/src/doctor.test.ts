@@ -20,10 +20,13 @@ function inputs(overrides: Partial<DoctorInputs> = {}): DoctorInputs {
     bundle: () => '/opt/shared-host.mjs',
     exchange: async () => ({}),
     locate: async (provider) =>
-      provider === 'claude' ? { path: '/usr/bin/claude', version: '2.1.0' } : null,
+      provider === 'claude'
+        ? { path: '/usr/bin/claude', version: '2.1.0', versionProblem: null }
+        : null,
     probe: async () => ({ status: 'authenticated', message: 'Signed in.', models: [] }),
     service: async () => 'running',
     latest: async () => ({ version: '0.2.0', packageUrl: 'https://example.invalid/p.tgz' }),
+    separateUsers: null,
     ...overrides,
   };
 }
@@ -36,6 +39,23 @@ describe('doctor', () => {
     const checks = await runDoctor(inputs());
     expect(checks.filter((check) => check.status !== 'ok')).toEqual([]);
     expect(formatChecks(checks)).toContain('ok    claude');
+  });
+
+  it('passes a ready Windows machine, which Console runs rather than a service', async () => {
+    const checks = await runDoctor(
+      inputs({
+        platform: 'win32',
+        service: async () => {
+          throw new Error('not asked on Windows');
+        },
+      })
+    );
+    expect(checks.filter((check) => check.status !== 'ok')).toEqual([]);
+    expect(checks.find((check) => check.name === 'Service')?.detail).toMatch(/Switch Console/);
+  });
+
+  it('fails a platform the controller does not run on', async () => {
+    expect(status(await runDoctor(inputs({ platform: 'freebsd' })), 'Platform')).toBe('fail');
   });
 
   it('fails an old Node, and a machine with no signed-in provider', async () => {

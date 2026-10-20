@@ -216,6 +216,57 @@ async def test_staff_accounts_are_counted_apart(
     assert counts.user_internal_count == 3
 
 
+async def test_active_staff_are_counted_apart_from_active_customers(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    staff = await _account(session_factory, f"{uuid.uuid4().hex[:6]}@sandboxaq.com")
+    staff_last_week = await _account(
+        session_factory, f"{uuid.uuid4().hex[:6]}@eng.sandboxquantum.com"
+    )
+    customer = await _account(session_factory, f"{uuid.uuid4().hex[:6]}@example.com")
+    await _account(session_factory, f"{uuid.uuid4().hex[:6]}@sandboxaq.com")
+    await _chat_account_speaks(session_factory, claimed_by=[staff])
+    await _chat_account_speaks(session_factory, claimed_by=[customer])
+    await _chat_account_speaks(
+        session_factory,
+        claimed_by=[staff_last_week],
+        spoke_at=datetime.now(UTC) - timedelta(days=3),
+    )
+
+    counts = await collect_usage(session_factory)
+
+    assert counts.user_internal_count == 3
+    assert (counts.user_active_1d, counts.user_internal_active_1d) == (2, 1)
+    assert (counts.user_active_7d, counts.user_internal_active_7d) == (3, 2)
+
+
+async def test_staff_active_in_two_tenants_is_one_active_staff_member(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _other_tenant(session_factory)
+    staff = await _account(session_factory, f"{uuid.uuid4().hex[:6]}@sandboxaq.com")
+    await _chat_account_speaks(session_factory, claimed_by=[staff])
+    await _chat_account_speaks(
+        session_factory, claimed_by=[staff], tenant_id=OTHER_TENANT
+    )
+
+    counts = await collect_usage(session_factory)
+
+    assert counts.user_internal_active_1d == 1
+    assert counts.user_internal_active_7d == 1
+
+
+async def test_no_activity_means_no_active_staff(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _account(session_factory, f"{uuid.uuid4().hex[:6]}@sandboxaq.com")
+
+    counts = await collect_usage(session_factory)
+
+    assert counts.user_internal_active_1d == 0
+    assert counts.user_internal_active_7d == 0
+
+
 async def test_a_tenant_that_fails_after_collecting_its_accounts_adds_none_of_them(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,

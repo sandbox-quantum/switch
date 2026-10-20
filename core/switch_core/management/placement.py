@@ -2,7 +2,7 @@
 
 A controller's state is read from its connection's recorded transitions
 (`connection_ledger.py`) and the lease of the switch-core process holding it
-(`process_lease.py`), so every process answers alike and a restart changes
+(`switch_core/process_lease.py`), so every process answers alike and a restart changes
 nothing:
 
 - `revoked`: its credential is gone.
@@ -35,7 +35,7 @@ from typing import Any, Literal
 from switch_core.db.models import AgentController
 from switch_core.management import reason_codes
 from switch_core.management.errors import ManagementError
-from switch_core.management.process_lease import ProcessLeases
+from switch_core.process_lease import ProcessLeases
 
 ControllerState = Literal["online", "offline", "unknown", "revoked"]
 
@@ -85,26 +85,31 @@ def placement_refusal(
     leases: ProcessLeases,
     now: datetime,
     interval_seconds: int,
+    waking: bool,
 ) -> tuple[str, str] | None:
-    """The reason code and message refusing this placement, or None to allow it."""
+    """The reason code and message refusing this placement, or None to allow
+    it. A `waking` controller is a Switch cloud machine that is starting: it is
+    judged by its last status report, since it is offline until it is up."""
     state = controller_state(controller, leases)
     if state == "revoked":
         return reason_codes.CONTROLLER_REVOKED, "the controller has been revoked"
-    if state == "unknown":
-        return (
-            reason_codes.CONTROLLER_OFFLINE,
-            "the controller has never connected to Switch",
-        )
-    if state == "offline":
-        return (
-            reason_codes.CONTROLLER_OFFLINE,
-            "the controller is not connected to Switch",
-        )
-    if not status_is_fresh(controller, now=now, interval_seconds=interval_seconds):
-        return (
-            reason_codes.CONTROLLER_OFFLINE,
-            "the controller has not reported status recently",
-        )
+    # A machine that is starting has no live connection to judge it by yet.
+    if not (waking and controller.status is not None):
+        if state == "unknown":
+            return (
+                reason_codes.CONTROLLER_OFFLINE,
+                "the controller has never connected to Switch",
+            )
+        if state == "offline":
+            return (
+                reason_codes.CONTROLLER_OFFLINE,
+                "the controller is not connected to Switch",
+            )
+        if not status_is_fresh(controller, now=now, interval_seconds=interval_seconds):
+            return (
+                reason_codes.CONTROLLER_OFFLINE,
+                "the controller has not reported status recently",
+            )
     assert controller.status is not None
     providers = controller.status.get("providers")
     entry = next(
@@ -141,6 +146,7 @@ def require_placement(
     leases: ProcessLeases,
     now: datetime,
     interval_seconds: int,
+    waking: bool,
 ) -> None:
     refusal = placement_refusal(
         controller,
@@ -148,6 +154,7 @@ def require_placement(
         leases=leases,
         now=now,
         interval_seconds=interval_seconds,
+        waking=waking,
     )
     if refusal is not None:
         code, message = refusal

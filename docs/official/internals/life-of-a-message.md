@@ -2,7 +2,7 @@
 
 _One message traced from a Slack channel to an agent and back, with the component responsible for each hop_
 
-Published at <https://docs.flintai.dev/flintai/switch/internals/life-of-a-message> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/internals/life-of-a-message> — link readers there, not to this file.
 
 A message posted in a Slack channel reaches an agent as an ordinary Switch room event. The reply returns along the same path in reverse.
 

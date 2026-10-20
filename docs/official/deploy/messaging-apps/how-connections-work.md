@@ -2,7 +2,7 @@
 
 _What a Switch connection does on every platform, and the things that differ once you pick one_
 
-Published at <https://docs.flintai.dev/flintai/switch/deploy/messaging-apps/how-connections-work> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/deploy/messaging-apps/how-connections-work> — link readers there, not to this file.
 
 A connection joins one Switch server to one messaging platform. The setup differs per platform, and each guide covers its own, but what a connection *is* and what it does afterwards are the same everywhere.
 

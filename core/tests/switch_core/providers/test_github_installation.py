@@ -28,7 +28,7 @@ def signing(tmp_path, monkeypatch):
         )
     )
     path.chmod(0o600)
-    return GitHubInstallationCredentials("example-client", str(path)), key
+    return GitHubInstallationCredentials.from_file("example-client", str(path)), key
 
 
 def response_body():
@@ -44,23 +44,20 @@ def response_body():
     }
 
 
-def user_access():
-    return AsyncMock(
-        repositories=AsyncMock(
-            return_value=[
-                {
-                    "id": 456,
-                    "repositories": [
-                        {
-                            "id": 789,
-                            "name": "example/project",
-                            "permissions": {"push": True},
-                        }
-                    ],
-                }
-            ]
-        )
-    )
+def user_access(permissions: object = None):
+    """The person's GitHub, reaching repository 789 through installation 456."""
+    repository = {
+        "id": 789,
+        "name": "example/project",
+        "permissions": {"push": True} if permissions is None else permissions,
+    }
+
+    async def reach(token, installation_id, wanted):
+        if installation_id != 456:
+            return None
+        return [repository] if repository["id"] in wanted else []
+
+    return AsyncMock(installation_repositories=AsyncMock(side_effect=reach))
 
 
 async def test_signs_request_and_limits_worker_to_users_selected_repository(
@@ -84,7 +81,9 @@ async def test_signs_request_and_limits_worker_to_users_selected_repository(
     monkeypatch.setattr(httpx.AsyncClient, "post", post)
     github = user_access()
     credential = await issuer.issue(github, "SYNTHETIC-USER-TOKEN", 456, 789)
-    github.repositories.assert_awaited_once_with("SYNTHETIC-USER-TOKEN")
+    github.installation_repositories.assert_awaited_once_with(
+        "SYNTHETIC-USER-TOKEN", 456, {789}
+    )
     assert credential.repository_name == "example/project"
     assert credential.token not in repr(credential)
 
@@ -153,7 +152,7 @@ def test_invalid_key_fails_without_key_material(tmp_path):
     path = tmp_path / "invalid.pem"
     path.write_text("SYNTHETIC-INVALID-KEY")
     with pytest.raises(ValueError, match="could not be loaded"):
-        GitHubInstallationCredentials("example-client", str(path))
+        GitHubInstallationCredentials.from_file("example-client", str(path))
 
 
 @pytest.mark.parametrize(
@@ -162,8 +161,7 @@ def test_invalid_key_fails_without_key_material(tmp_path):
 async def test_read_only_repository_cannot_mint_write_token(
     signing, monkeypatch, permissions
 ):
-    github = user_access()
-    github.repositories.return_value[0]["repositories"][0]["permissions"] = permissions
+    github = user_access(permissions)
     post = AsyncMock()
     monkeypatch.setattr(httpx.AsyncClient, "post", post)
     with pytest.raises(GitHubError, match="needs write access"):
@@ -224,3 +222,67 @@ async def test_only_rate_limited_403_is_retryable(
     with pytest.raises(GitHubError) as raised:
         await signing[0].issue(user_access(), "SYNTHETIC-USER", 456, 789)
     assert isinstance(raised.value, GitHubUnavailableError) == retryable
+
+
+async def test_mint_asks_for_several_repositories_and_the_given_permissions(
+    signing, monkeypatch
+):
+    issuer, _ = signing
+    sent = {}
+
+    async def post(_client, url, **kwargs):
+        sent.update(kwargs["json"])
+        return httpx.Response(
+            201,
+            json=response_body()
+            | {
+                "permissions": {
+                    "contents": "read",
+                    "pull_requests": "read",
+                    "metadata": "read",
+                },
+                "repositories": [{"id": 790}, {"id": 789}],
+            },
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    token = await issuer.mint(
+        456, [789, 790], {"contents": "read", "pull_requests": "read"}
+    )
+    assert sent == {
+        "repository_ids": [789, 790],
+        "permissions": {"contents": "read", "pull_requests": "read"},
+    }
+    assert token.repository_ids == [789, 790]
+    assert token.token not in repr(token)
+
+
+@pytest.mark.parametrize(
+    ("repositories", "permissions"),
+    [
+        ([], {"contents": "read"}),
+        (list(range(1, 502)), {"contents": "read"}),
+        ([789, 789], {"contents": "read"}),
+        ([789], {}),
+        ([789], {"workflows": "write"}),
+        ([789], {"contents": "admin"}),
+    ],
+)
+async def test_mint_refuses_a_request_it_must_not_make(
+    signing, monkeypatch, repositories, permissions
+):
+    post = AsyncMock()
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    with pytest.raises(GitHubError):
+        await signing[0].mint(456, repositories, permissions)
+    post.assert_not_called()
+
+
+async def test_mint_refuses_a_token_that_reaches_another_level(signing, monkeypatch):
+    monkeypatch.setattr(
+        httpx.AsyncClient,
+        "post",
+        AsyncMock(return_value=httpx.Response(201, json=response_body())),
+    )
+    with pytest.raises(GitHubError, match="invalid repository credential"):
+        await signing[0].mint(456, [789], {"contents": "read", "pull_requests": "read"})

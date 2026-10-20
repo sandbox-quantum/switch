@@ -1,7 +1,7 @@
 import z from 'zod';
 import { definePluginCapability } from '../../../lib/plugins/capability';
 import type { PluginFs } from '../../runtime/fs';
-import type { RepoAgentField } from './repo-agents';
+import type { AdvancedSettings } from './repo-agents';
 
 export type McpTransport = 'stdio' | 'http';
 
@@ -77,9 +77,10 @@ export function resolveLaunchProfileEnv(
 }
 
 /**
- * Optional per-agent specialization folded into the launch profile: the values
- * collected for the fields the provider declares in
- * {@link IMcpBehavior.launchProfileFields}, keyed by those fields' keys.
+ * Optional per-agent specialization folded into the launch profile: the
+ * agent's model and instructions, and the values of the advanced settings the
+ * provider declares in {@link IMcpBehavior.launchProfileSettings}, keyed by
+ * those settings' keys.
  *
  * Deliberately open rather than a fixed set of names. Providers do not agree on
  * what a per-agent setting is — Codex's reasoning-effort enum, verbosity and
@@ -162,22 +163,24 @@ export type IMcpBehavior = {
    */
   launchProfilePaths?(params: { slug: string; workingDir: string }): string[];
   /**
-   * The per-agent fields that feed {@link launchProfile}, declared so the UI can
-   * collect them without knowing the provider.
+   * The advanced settings this provider applies at session start, beside the
+   * model and instructions — the keys of the server's advanced configuration
+   * fields that feed {@link launchProfile}, by the shape of value each takes.
    *
-   * This is the launch-profile counterpart of `repoAgents.attributeFields()`:
+   * This is the launch-profile counterpart of `repoAgents.advancedSettings()`:
    * a provider keeps its per-agent settings either in a repo-agent definition or
-   * in a launch profile, and whichever it is, the same "advanced configuration"
-   * form renders these and the same editor saves them. Declaring them beside the
-   * profile builder that consumes them is what stops the field list and the TOML
-   * it produces drifting apart.
+   * in one it reads at session start, and whichever it is, the same "advanced
+   * configuration" form renders the server's fields and the same editor saves
+   * them. Declared beside the profile builder that consumes them so the keys it
+   * writes and the keys it claims cannot drift apart.
    *
-   * Undefined for a provider that writes no profile.
+   * Undefined for a provider that keeps no per-agent settings this way; empty
+   * for one that takes only the model and instructions.
    */
-  launchProfileFields?(): RepoAgentField[];
+  launchProfileSettings?(): AdvancedSettings;
   /**
-   * The models this host offers for {@link launchProfileFields}'s model field,
-   * with the reasoning variants each accepts.
+   * The models this host offers for the agent's model field, with the
+   * reasoning variants each accepts.
    *
    * Optional, and the form works without it: a provider that does not implement
    * this gets a plain text model field, which is where both providers started.

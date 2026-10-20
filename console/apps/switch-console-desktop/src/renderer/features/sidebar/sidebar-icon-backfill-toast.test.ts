@@ -42,6 +42,10 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
     loadRoomNames: vi.fn().mockResolvedValue(undefined),
   },
 }));
+const availability = vi.hoisted(() => ({ value: 'available' }));
+vi.mock('@renderer/features/switch-servers/server-availability', () => ({
+  serverAvailability: () => availability.value,
+}));
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: { activeId: 'workspace-1' },
 }));
@@ -67,6 +71,16 @@ describe('agent icon backfill reporting', () => {
   beforeEach(() => {
     toast.mockClear();
     backfillAgentIcons.mockReset();
+    availability.value = 'available';
+  });
+
+  it('does not try, or complain, while the server this Console runs is not running', async () => {
+    availability.value = 'dormant';
+    const { refreshSidebarRoomState } = await loadSubject();
+
+    await refreshSidebarRoomState(false);
+    await vi.waitFor(() => expect(backfillAgentIcons).not.toHaveBeenCalled());
+    expect(toast).not.toHaveBeenCalled();
   });
 
   it('reports a workspace without the icon endpoint once, not on every refresh', async () => {

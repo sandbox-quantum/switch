@@ -295,6 +295,61 @@ def test_registry_rejects_a_pin_of_something_it_does_not_know(
         gen.load_registry()
 
 
+def test_registry_rejects_a_canary_pin_older_than_stable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A canary must never run an older release than stable."""
+    _write_registry(
+        tmp_path,
+        monkeypatch,
+        artifacts={
+            "dep": {"description": "d", "version": "1.0.0"},
+            "demo": {
+                "description": "d",
+                "version": "1.0.0",
+                "pins": {"dep": "1.1.0"},
+                "canary_pins": {"dep": "1.1.0-rc.3"},
+            },
+        },
+    )
+    with pytest.raises(ValueError, match="older than its stable pin"):
+        gen.load_registry()
+
+
+def test_registry_rejects_a_canary_pin_without_a_stable_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_registry(
+        tmp_path,
+        monkeypatch,
+        artifacts={
+            "dep": {"description": "d", "version": "1.0.0"},
+            "demo": {
+                "description": "d",
+                "version": "1.0.0",
+                "canary_pins": {"dep": "1.1.0"},
+            },
+        },
+    )
+    with pytest.raises(ValueError, match="no stable one"):
+        gen.load_registry()
+
+
+@pytest.mark.parametrize(
+    ("older", "newer"),
+    [
+        ("0.29.0", "0.30.0-rc.11"),
+        ("0.30.0-rc.2", "0.30.0-rc.11"),
+        ("0.30.0-rc.11", "0.30.0"),
+        ("0.30.0-alpha", "0.30.0-beta"),
+    ],
+)
+def test_semver_ordering_puts_pre_releases_before_their_release(
+    older: str, newer: str
+) -> None:
+    assert gen._semver_key(older) < gen._semver_key(newer)
+
+
 def test_registry_rejects_an_empty_range(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

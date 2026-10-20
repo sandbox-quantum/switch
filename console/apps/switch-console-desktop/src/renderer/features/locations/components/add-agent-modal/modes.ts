@@ -1,8 +1,10 @@
-import { useCallback, useState } from 'react';
-import { randomAgentAvatarUrl } from '@shared/core/agents/agent-avatar';
+import { useCallback, useEffect, useState } from 'react';
+import { useThirdPartyAvatarsEnabled } from '@renderer/lib/stores/use-avatar-settings';
+import { isThirdPartyAvatarUrl, randomAgentAvatarUrl } from '@shared/core/agents/agent-avatar';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
+import { NEW_AGENT_PERMISSIONS } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
+import { defaultAgentPolicy } from '@shared/core/switch-servers/owner-policy';
 import type { AddressingPolicy } from '@shared/core/switch-servers/switch-servers';
 
 export function usePickMode() {
@@ -39,7 +41,7 @@ export type PickModeState = ReturnType<typeof usePickMode>;
  * local agent, one for a remote one — and switching between them swapped which
  * was on screen, so the name and description the user had typed vanished.
  */
-export function useConfigureAgentForm() {
+export function useConfigureAgentForm(serverId: string | null) {
   const [agentName, setAgentNameFolded] = useState('');
   // What was typed, before the identifier folded it to lowercase. The slug
   // offer hands this back as the display name, so the capitals in a typed
@@ -54,12 +56,13 @@ export function useConfigureAgentForm() {
   // with none runs on its provider's defaults, and the description stands in
   // where a provider needs a prompt.
   const [instructions, setInstructions] = useState('');
-  const [autoApprove, setAutoApproveRaw] = useState(false);
-  const [autoApproveTouched, setAutoApproveTouched] = useState(false);
-  // Scoped addressing policy (CHOO-1585). null = open; a new agent starts
-  // owner-scoped (CHOO-2137). Applied via a follow-up PUT after creation.
+  const [autoApprove, setAutoApprove] = useState<boolean>(NEW_AGENT_PERMISSIONS.autoApprove);
+  const [autoMode, setAutoMode] = useState<boolean>(NEW_AGENT_PERMISSIONS.autoMode);
+  // Scoped addressing policy (CHOO-1585). null = open; a new agent starts on
+  // the default, its owner and the owner's agents. Applied via a follow-up PUT
+  // after creation.
   const [addressingPolicy, setAddressingPolicy] = useState<AddressingPolicy | null>(() =>
-    ownerOnlyPolicy()
+    defaultAgentPolicy()
   );
   // The agent's icon (CHOO-2171). A new agent opens on a random bot rather than
   // one drawn from its name: the name is empty at that point, so a name-derived
@@ -68,11 +71,19 @@ export function useConfigureAgentForm() {
   // generates" — that is what the ✕ in the picker returns to.
   const [initialIconUrl] = useState(randomAgentAvatarUrl);
   const [iconUrl, setIconUrl] = useState<string | null>(initialIconUrl);
+  const thirdPartyAvatarsEnabled = useThirdPartyAvatarsEnabled(serverId);
 
-  const setAutoApprove = useCallback((value: boolean) => {
-    setAutoApproveRaw(value);
-    setAutoApproveTouched(true);
-  }, []);
+  // The random bot above is drawn before anything is known about where the
+  // agent will land, so a server that turns out to disable third-party
+  // avatars has to lose it retroactively — sent as-is, it would be the one
+  // DiceBear URL this form ever created without the server's permission.
+  // Nothing else changes here while the server is still unknown or allows
+  // them: this only fires once the answer is a confirmed no.
+  useEffect(() => {
+    if (thirdPartyAvatarsEnabled === false && iconUrl !== null && isThirdPartyAvatarUrl(iconUrl)) {
+      setIconUrl(null);
+    }
+  }, [thirdPartyAvatarsEnabled, iconUrl]);
 
   const setDisplayName = useCallback((value: string) => {
     setDisplayNameRaw(value);
@@ -91,20 +102,6 @@ export function useConfigureAgentForm() {
     setTypedName(value);
     setAgentNameFolded(value.replace(/[A-Z]/g, (c) => c.toLowerCase()));
   }, []);
-
-  /**
-   * What the run location implies, for as long as the user has not answered
-   * themselves: an agent on a host is put there to run unattended, and a
-   * permission prompt nobody is watching stalls the session. Kept as a
-   * suggestion rather than a reset so a deliberate answer survives a change of
-   * mind about where the agent runs.
-   */
-  const suggestAutoApprove = useCallback(
-    (value: boolean) => {
-      setAutoApproveRaw((current) => (autoApproveTouched ? current : value));
-    },
-    [autoApproveTouched]
-  );
 
   const nameIsValid = AGENT_NAME_PATTERN.test(agentName);
   const nameIsRejected = agentName.length > 0 && !nameIsValid;
@@ -142,7 +139,8 @@ export function useConfigureAgentForm() {
     setInstructions,
     autoApprove,
     setAutoApprove,
-    suggestAutoApprove,
+    autoMode,
+    setAutoMode,
     addressingPolicy,
     setAddressingPolicy,
     iconUrl,
@@ -151,6 +149,7 @@ export function useConfigureAgentForm() {
      * the user went and chose. Only the caption cares; the value sent to the
      * server is `iconUrl` either way. */
     iconIsGenerated: iconUrl === null || iconUrl === initialIconUrl,
+    thirdPartyAvatarsEnabled,
     isValid,
   };
 }

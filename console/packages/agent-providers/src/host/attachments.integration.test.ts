@@ -91,6 +91,7 @@ it
             env,
             runtimeMode: 'full-access',
             mcpServers: { echo: echoMcpServerSpec() },
+            connectorMcpServers: [],
             ...(provider === 'claude' ? { model: { id: 'claude-sonnet-5' } } : {}),
             ...(provider === 'opencode' ? { model: { id: 'opencode/big-pickle' } } : {}),
           },
@@ -104,7 +105,7 @@ it
               )
             ),
         },
-        adapterFor(provider, undefined, '')
+        adapterFor(provider, undefined, '', [])
       );
       const command = {
         contractVersion: 1 as const,

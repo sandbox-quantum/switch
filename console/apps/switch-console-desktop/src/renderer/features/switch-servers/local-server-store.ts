@@ -8,6 +8,7 @@ import type {
   DockerAvailability,
   LocalServerStatus,
   ManagedServerUpgrade,
+  StartLocalServerResult,
   SwitchVersionDrift,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
@@ -102,6 +103,27 @@ export class LocalServerStore {
     return this.status?.checkoutBuild ?? null;
   }
 
+  /** How the server runs, once the main process has read it. */
+  get runtime(): LocalServerStatus['runtime'] {
+    return this.status?.runtime ?? null;
+  }
+
+  /** Whether this machine's server runs without Docker. */
+  get isNative(): boolean {
+    return this.runtime === 'native';
+  }
+
+  /** Whether Mattermost is turned on for a native server. */
+  get mattermost(): boolean {
+    // Never chosen means on wherever Docker can run it.
+    return this.status?.mattermost ?? this.docker?.available ?? false;
+  }
+
+  /** How the Mattermost beside a native server is doing, when known. */
+  get mattermostState(): LocalServerStatus['mattermostState'] {
+    return this.status?.mattermostState ?? null;
+  }
+
   get isTransitioning(): boolean {
     return this.busy || this.phase === 'starting' || this.phase === 'stopping';
   }
@@ -171,7 +193,31 @@ export class LocalServerStore {
     }
   }
 
+  /** Turn Mattermost on or off for a native server; applies at the next start. */
+  async setMattermost(enabled: boolean): Promise<void> {
+    try {
+      await rpc.localSwitchServer.setMattermost(enabled);
+    } catch (cause) {
+      this.setError(cause, 'Could not change the Mattermost setting.');
+    }
+  }
+
   async start(): Promise<void> {
+    await this.runStart(() => rpc.localSwitchServer.start(), 'Could not start the server.');
+  }
+
+  /** Move whatever publishes on `port` to a free port, then start. */
+  async useAnotherPort(port: number): Promise<void> {
+    await this.runStart(
+      () => rpc.localSwitchServer.useAnotherPort(port),
+      'Could not move the server to another port.'
+    );
+  }
+
+  private async runStart(
+    call: () => Promise<StartLocalServerResult>,
+    fallback: string
+  ): Promise<void> {
     this.pendingLines = [];
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);
@@ -184,7 +230,7 @@ export class LocalServerStore {
       this.logs = [];
     });
     try {
-      const result = await rpc.localSwitchServer.start();
+      const result = await call();
       if (result.kind === 'docker-unavailable') {
         runInAction(() => {
           this.docker = { available: false, reason: result.reason, detail: result.detail };
@@ -202,7 +248,7 @@ export class LocalServerStore {
         await switchServersStore.init();
       }
     } catch (cause) {
-      this.setError(cause, 'Could not start the server.');
+      this.setError(cause, fallback);
     } finally {
       // The command has finished, so nothing more will arrive to trigger a
       // flush — the tail's last lines are the ones that say how it went.

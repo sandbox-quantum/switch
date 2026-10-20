@@ -33,7 +33,7 @@ const MARK_COLOR: Record<string, string> = {
   'google-workspace': 'text-[#4285F4]',
   asana: 'text-[#F06A6A]',
   gitlab: 'text-[#FC6D26]',
-  jira: 'text-[#0052CC] emdark:text-foreground',
+  atlassian: 'text-[#0052CC] emdark:text-foreground',
   bitbucket: 'text-[#0052CC] emdark:text-foreground',
   box: 'text-[#0061D5] emdark:text-foreground',
   datadog: 'text-[#632CA6] emdark:text-foreground',
@@ -44,17 +44,33 @@ export function hasConnectionIcon(slug: string): boolean {
   return svgBySlug.has(slug);
 }
 
+const TILE_SIZE = {
+  md: { tile: 'size-9 rounded-md text-sm', mark: 'size-6' },
+  lg: { tile: 'size-11 rounded-lg text-base', mark: 'size-7' },
+  xl: { tile: 'size-16 rounded-xl text-2xl', mark: 'size-10' },
+} as const;
+
 /** A connection's brand logo on a neutral tile, or its monogram for a slug this build has no logo for. */
-export function ConnectionIcon({ slug, name }: { slug: string; name: string }) {
+export function ConnectionIcon({
+  slug,
+  name,
+  size = 'md',
+}: {
+  slug: string;
+  name: string;
+  /** The tile's size: the catalog's lists use `md`. */
+  size?: keyof typeof TILE_SIZE;
+}) {
   const svg = svgBySlug.get(slug);
+  const { tile, mark } = TILE_SIZE[size];
   return (
     <span
       aria-hidden
-      className="flex size-9 shrink-0 items-center justify-center rounded-md bg-background-2 text-sm font-semibold text-foreground-muted"
+      className={`flex shrink-0 items-center justify-center bg-background-2 font-semibold text-foreground-muted ${tile}`}
     >
       {svg ? (
         <span
-          className={`size-6 ${MARK_COLOR[slug] ?? ''}`}
+          className={`${mark} ${MARK_COLOR[slug] ?? ''}`}
           // Bundled brand assets, not user input.
           dangerouslySetInnerHTML={{ __html: svg.replace('<svg ', '<svg class="size-full" ') }}
         />

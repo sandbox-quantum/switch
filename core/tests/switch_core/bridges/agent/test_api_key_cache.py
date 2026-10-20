@@ -17,11 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import BearerAuthMiddleware
-from switch_core.bridges.agent.protocol.agent_connections import HEARTBEAT_TTL_SECONDS
+from switch_core.bridges.agent.protocol.agent_connections import (
+    HEARTBEAT_TTL_SECONDS,
+    AgentConnectionRegistry,
+)
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
-    TaskProtocolConfig,
 )
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Agent, ApiKey, Client, User
@@ -35,7 +37,6 @@ _PROFILE = IntegrationProfile(
     pre_invocation_mediation=[],
     post_invocation_mediation=[],
     event_reporting=[],
-    task_protocol=TaskProtocolConfig(can_delegate=False, can_accept=False),
 )
 
 
@@ -72,6 +73,9 @@ class _FakeClientLifecycle:
 
     def start_client(self, client: Client) -> None:
         self.started.append(client.id)
+
+    def announce(self, tenant_id: str) -> None:
+        return None
 
     async def stop(self, client_id: str) -> None:
         return None
@@ -426,8 +430,10 @@ def _agent_core(
     svc.client_lifecycle = _FakeClientLifecycle(session_factory)  # type: ignore[attr-defined]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[attr-defined]
     svc.event_buffer = SimpleNamespace(remove=lambda _agent_id: None)  # type: ignore[attr-defined]
+    svc.connections = AgentConnectionRegistry()  # type: ignore[attr-defined]
     svc.config = SimpleNamespace(
-        keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None)
+        keyring=Keyring.parse("test:" + "x" * 40, legacy_secret=None),
+        third_party_avatars_enabled=True,
     )  # type: ignore[attr-defined]
     return svc
 

@@ -445,10 +445,10 @@ export class SwitchServersStore {
     }
   }
 
-  async addServer(name: string, gatewayUrl: string, apiUrl: string): Promise<SwitchServer | null> {
+  async addServer(name: string, url: string): Promise<SwitchServer | null> {
     this.clearError();
     try {
-      const created = await rpc.switchServers.addServer({ name, gatewayUrl, apiUrl });
+      const created = await rpc.switchServers.addServer({ name, url });
       const [servers, installIsEmpty] = await Promise.all([
         rpc.switchServers.listServers(),
         rpc.onboarding.installIsEmpty(),
@@ -513,15 +513,10 @@ export class SwitchServersStore {
     return found;
   }
 
-  async updateServer(
-    id: string,
-    name: string,
-    gatewayUrl: string,
-    apiUrl: string
-  ): Promise<UpdateServerResult | null> {
+  async updateServer(id: string, name: string, url: string): Promise<UpdateServerResult | null> {
     this.clearError();
     try {
-      const result = await rpc.switchServers.updateServer({ id, name, gatewayUrl, apiUrl });
+      const result = await rpc.switchServers.updateServer({ id, name, url });
       const servers = await rpc.switchServers.listServers();
       runInAction(() => {
         this.servers = servers;
@@ -669,9 +664,10 @@ export class SwitchServersStore {
     return result.data.machine;
   }
 
-  async oidcLogin(serverId: string): Promise<boolean> {
+  /** `provider`: one of the server's sign-in options, or null for its one SSO button. */
+  async oidcLogin(serverId: string, provider: string | null): Promise<boolean> {
     this.clearError();
-    const result = await rpc.switchServers.oidcLogin(serverId);
+    const result = await rpc.switchServers.oidcLogin(serverId, provider);
     if (!result.success) {
       // A user-cancelled window is not an error worth shouting about.
       if (result.error.kind !== 'cancelled') {
@@ -682,8 +678,22 @@ export class SwitchServersStore {
       }
       return false;
     }
-    await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
+    // Signing in may also have taught Console where an older server keeps its
+    // dashboard, which the links built here read from the list.
+    const [servers] = await Promise.all([
+      rpc.switchServers.listServers(),
+      this.refreshStatus(serverId),
+      workspacesStore.refresh(),
+    ]);
+    runInAction(() => {
+      this.servers = servers;
+    });
     return true;
+  }
+
+  /** Gives up a sign-in waiting on the system browser; its `oidcLogin` resolves as cancelled. */
+  cancelOidcLogin(serverId: string): void {
+    void rpc.switchServers.cancelOidcLogin(serverId);
   }
 
   async logout(serverId: string): Promise<void> {
@@ -694,6 +704,15 @@ export class SwitchServersStore {
     } catch (cause) {
       this.setError(cause, 'Could not sign out of the server.');
     }
+  }
+
+  /**
+   * Delete the signed-in account on `serverId`, confirmed by its email. Throws
+   * with the server's reason when it refuses, for the dialog that asked to say.
+   */
+  async deleteAccount(serverId: string, email: string): Promise<void> {
+    await rpc.switchServers.deleteAccount({ serverId, email });
+    await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
   }
 
   private clearError(): void {

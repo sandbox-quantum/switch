@@ -8,6 +8,7 @@ linked after they had spoken, even though Discord can answer the question.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import discord
@@ -137,3 +138,41 @@ def test_failures_surface_as_runtime_error(index: int) -> None:
     guild = _FakeGuild(_errors()[index])
     with pytest.raises(RuntimeError):
         _run(_adapter(guild).search_directory_users("lou"))
+
+
+class _SearchHTTP:
+    """Discord's member search endpoint, as a quiet copy reaches it."""
+
+    def __init__(self, found: list[dict[str, Any]]) -> None:
+        self.found = found
+        self.requests: list[tuple[str, dict[str, Any]]] = []
+
+    async def request(self, route: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        self.requests.append((route.path, kwargs.get("params") or {}))
+        return self.found
+
+
+def test_a_quiet_copy_searches_over_the_api() -> None:
+    """It has no Gateway socket to query members over."""
+    http = _SearchHTTP(
+        [
+            {"user": {"id": "1", "username": "ann", "global_name": "Ann"}},
+            {"user": {"id": "2", "username": "bob"}, "nick": "Bobby"},
+            {"user": {"id": "3", "username": "helper", "bot": True}},
+        ]
+    )
+    adapter = DiscordAdapter(
+        config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
+    )
+    adapter.set_listening(False)
+    adapter._require_client = lambda: SimpleNamespace(http=http)  # type: ignore[method-assign]
+
+    found = _run(adapter.search_directory_users("a"))
+
+    assert [(u.external_user_id, u.username, u.display_name) for u in found] == [
+        ("1", "ann", "Ann"),
+        ("2", "bob", "Bobby"),
+    ]
+    assert http.requests == [
+        ("/guilds/{guild_id}/members/search", {"query": "a", "limit": 100})
+    ]

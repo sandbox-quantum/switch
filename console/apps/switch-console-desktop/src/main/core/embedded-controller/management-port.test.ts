@@ -23,7 +23,7 @@ vi.mock('@main/core/workspaces/workspace-session', () => ({
   withReachableWorkspaceSession: async (
     _workspaceId: string,
     fn: (server: unknown) => Promise<unknown>
-  ) => fn({ id: 'server-1', name: 'S', apiUrl: 'https://switch.example.com' }),
+  ) => fn({ id: 'server-1', name: 'S', url: 'https://switch.example.com' }),
 }));
 
 const { gatewayManagementPort, placedOn } = await import('./management-port');
@@ -44,6 +44,7 @@ const agent = (agentId: string, controllerId: string | null, name: string): Mana
   isolation: 'shared',
   directory: null,
   autoApprove: false,
+  autoMode: false,
   status: null,
 });
 
@@ -67,6 +68,8 @@ describe('placedOn', () => {
             revokedAt: null,
             providers: [],
             workspacesDir: null,
+            os: null,
+            sealingKey: null,
           },
         ],
         [

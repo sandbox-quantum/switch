@@ -18,10 +18,11 @@ reason. A position is right when the value is durable and the reader can go and
 fetch it. Presence has nowhere to fetch from, so the announcement has to be the
 value, and a missed one costs a briefly stale indicator rather than data.
 
-**It is in-process, the same limitation `InviteBus` documents**, and it should
-be lifted at the same time and in the same way. A second replica needs a
-cross-process signal for both, which is why switch-core runs as a single
-replica until then.
+**It is in-process.** Membership changes, which used to share this
+limitation, now reach every process through a trigger on `client_rooms` and
+the signal bus (`transport/membership_signals.py`). Presence has not followed
+yet: a second replica needs it carried the same way (`signals.py`), which is
+one reason switch-core runs as a single replica until then.
 """
 
 from __future__ import annotations

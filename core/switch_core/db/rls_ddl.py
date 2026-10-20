@@ -114,9 +114,7 @@ POLICY_NAME = "tenant_isolation"
 # so widening it fails the suite until someone changes the test too.
 #
 # A person is not a tenant member (`users`), nor is the record of how they
-# prove who they are (`oidc_identities`); `feature_flags` is a deployment
-# switch, and a flag that needs to vary per customer is a new scoped table
-# rather than a nullable column here. Alembic's `alembic_version` needs no
+# prove who they are (`oidc_identities`). Alembic's `alembic_version` needs no
 # entry: Alembic owns that table and never registers it on this metadata.
 #
 # The three telemetry tables are global because each records a fact about the
@@ -132,15 +130,58 @@ POLICY_NAME = "tenant_isolation"
 # when it started, its last renewal and when it stopped. A process holds
 # controller sockets for every tenant at once, so its lease belongs to none of
 # them, and it holds no customer data, only that the process is alive.
+#
+# `ownership_leases` says which of those processes runs each piece of work that
+# must run once, a client's consumer or a bridge's platform connection: a kind,
+# the work's id, the holding process and a counter. One process holds work for
+# every tenant at once and claims it in one statement across them, and a row
+# carries no customer data, only which process runs which id.
+#
+# `cloud_machines` is a user's Switch cloud VM: one per person, whichever
+# workspaces it serves, as the person is global. It holds the VM's lifecycle,
+# disk and instance, and no workspace's data: what the machine runs for a
+# workspace is that workspace's `machine_workspaces` row, which is scoped, and
+# `tenants_of_cloud_machine` (`db/tenant_lookup.py`) is how the cloud
+# controller, which acts for no tenant, finds which workspaces those are.
+#
+# `trust_settings` is Switch Trust's one guardrails policy for the whole
+# deployment (`docs/design/switch-trust-guardrails-v1.md`'s Settings UI
+# section) — a policy that varied per tenant would be a new scoped table, not
+# a row here.
+#
+# `service_oauth_clients` holds the OAuth client Core registered for itself at
+# a vendor that offers no other way to have one. The vendor sees one Switch,
+# so there is one client per deployment and service, shared by every tenant's
+# sign-ins; it holds no person's account, only the deployment's own client.
+#
+# `schema_expand_only_revisions` records which applied schema revisions only
+# added to the schema (`db/schema_version.py`), as Alembic's own
+# `alembic_version` records which is applied. It describes the schema and
+# holds no data of anyone's.
+#
+# `service_app_credentials` is the same for an app the operator registered at
+# the vendor (a GitHub App, a static OAuth client) and entered from the
+# dashboard: one per deployment and service, shared by every tenant's
+# sign-ins. A workspace's own app would be a new scoped table, not a row here.
+#
+# `server_audit_events` is the history of changes no tenant owns, such as the
+# operator setting up one of those apps. `audit_events` is scoped, so a
+# server-wide change has no tenant to be filed under there.
 GLOBAL_TABLES = frozenset(
     {
+        "cloud_machines",
         "users",
         "oidc_identities",
-        "feature_flags",
         "deployment_identity",
         "telemetry_milestones",
         "telemetry_snapshot_watermark",
         "switch_core_processes",
+        "ownership_leases",
+        "trust_settings",
+        "service_oauth_clients",
+        "schema_expand_only_revisions",
+        "service_app_credentials",
+        "server_audit_events",
     }
 )
 

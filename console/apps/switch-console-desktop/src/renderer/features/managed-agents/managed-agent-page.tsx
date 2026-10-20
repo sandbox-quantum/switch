@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { AgentIdentityActions } from '@renderer/features/agent-identity/agent-identity-actions';
 import { LocalDirectorySelector } from '@renderer/features/locations/components/add-agent-modal/local-directory-selector';
 import type {
   FormState,
@@ -10,6 +11,7 @@ import type { ModelCatalogueResult } from '@renderer/features/locations/componen
 import {
   AgentEditsProvider,
   useAgentEdit,
+  useAgentEdits,
 } from '@renderer/features/locations/components/main-panel/agent-edits';
 import { AgentInstructionsField } from '@renderer/features/locations/components/main-panel/agent-instructions-section';
 import { AgentHeaderLayout } from '@renderer/features/locations/components/main-panel/agent-page-header';
@@ -20,23 +22,33 @@ import {
   AdvancedConfigDisclosure,
   summariseValues,
 } from '@renderer/features/locations/components/settings-view/sections/advanced-config-disclosure';
-import { AutoApproveRow } from '@renderer/features/locations/components/settings-view/sections/auto-approve-settings-section';
 import { CanManageAgentsRow } from '@renderer/features/locations/components/settings-view/sections/can-manage-agents-settings-section';
+import {
+  AutoApproveRow,
+  AutoModeRow,
+  PERMISSION_COPY,
+} from '@renderer/features/locations/components/settings-view/sections/permission-settings-section';
+import { ServiceGrantsRow } from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
 import { SettingRow } from '@renderer/features/locations/components/settings-view/sections/setting-row';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { toast } from '@renderer/lib/hooks/use-toast';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
+import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { appState } from '@renderer/lib/stores/app-state';
 import { workspaceAgentsQueryKey } from '@renderer/lib/stores/use-workspace-agents';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
 import { Switch } from '@renderer/lib/ui/switch';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/lib/ui/tooltip';
-import type {
-  AdvancedConfigField,
-  ManagedAgentView,
-  OwnedMachine,
+import {
+  type AdvancedConfigField,
+  isCloudMachine,
+  type ManagedAgentView,
+  type OwnedMachine,
 } from '@shared/core/managed-agents/managed-agents';
 import {
   isValidProviderId,
@@ -53,6 +65,7 @@ import {
 } from './managed-agent-changes';
 import { managedAgentLabel } from './managed-agent-state';
 import { ManagedMachinePill } from './managed-machine-card';
+import { useManagedAgentActions } from './use-managed-agent-actions';
 import {
   MANAGED_AGENTS_KEY,
   useAdvancedConfigSchema,
@@ -73,19 +86,33 @@ const NO_EDITS: Edits = { values: {}, form: {} };
  * A managed agent, on the same page a Console agent has: who it is, the machine
  * it runs on, how it behaves, and its sessions. Every edit on it is one set of
  * pending changes for the page's save bar; the server checks the definition
- * against the agent's machine and refuses it whole.
+ * against the agent's machine and refuses it whole. `serviceGrants` shows its
+ * Service access, which a page offering Connections shows there instead.
  */
-export function ManagedAgentPage({ agent }: { agent: ManagedAgentView }) {
+export function ManagedAgentPage({
+  agent,
+  serviceGrants,
+}: {
+  agent: ManagedAgentView;
+  serviceGrants: boolean;
+}) {
   return (
     <AgentEditsProvider>
-      <ManagedAgentPageContent agent={agent} />
+      <ManagedAgentPageContent agent={agent} serviceGrants={serviceGrants} />
     </AgentEditsProvider>
   );
 }
 
-function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
+function ManagedAgentPageContent({
+  agent,
+  serviceGrants,
+}: {
+  agent: ManagedAgentView;
+  serviceGrants: boolean;
+}) {
   const queryClient = useQueryClient();
   const showAddToRoom = useShowModal('addAgentToRoomModal');
+  const showRename = useShowModal('renameAgentModal');
   const schemaQuery = useAdvancedConfigSchema(agent.serverId);
   const machines = useManagedMachines(agent.serverId);
   const schema = schemaQuery.data?.[agent.definition.provider] ?? NO_FIELDS;
@@ -98,6 +125,8 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
   const edit = editOf(agent, schema, saved, draft);
   const [error, setError] = useState<string | null>(null);
   const [instructionsExpanded, setInstructionsExpanded] = useState(false);
+  const chatsOn = useFeatureFlags(agent.serverId).agent_chats;
+  const { busy, remove } = useManagedAgentActions(agent);
 
   const setValue = <K extends keyof Edits['values']>(key: K, value: Draft[K]) =>
     setEdits((current) => ({ ...current, values: { ...current.values, [key]: value } }));
@@ -156,6 +185,7 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
   };
 
   useAgentEdit({ id: 'managed-agent', order: 0, dirty: !editIsEmpty(edit), save, revert });
+  useConfirmLeave(agent);
 
   const catalogue = useHostCatalogue(agent, machines);
   const title = draft.displayName.trim() || agent.name;
@@ -163,6 +193,15 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
 
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col">
+      <AgentSaveBar />
+      {error && (
+        <p
+          role="alert"
+          className="shrink-0 border-b border-border px-8 py-3 text-sm text-foreground-destructive"
+        >
+          {error}
+        </p>
+      )}
       <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[900px] flex-col gap-10 px-8 pb-20">
           <AgentHeaderLayout
@@ -195,6 +234,44 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
                 <ManagedMachinePill agent={agent} machines={machines} />
               </>
             }
+            titleActions={
+              <AgentIdentityActions
+                onRename={() =>
+                  showRename({
+                    workspaceId: agent.workspaceId,
+                    switchAgentId: agent.agentId,
+                    currentName: agent.name,
+                    currentDisplayName: saved.displayName.trim() || null,
+                    // Its machine keeps its files, under its own name for it.
+                    localAgentId: null,
+                    onSuccess: ({ outcome }) => {
+                      void queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY] });
+                      void queryClient.invalidateQueries({
+                        queryKey: workspaceAgentsQueryKey(agent.workspaceId),
+                      });
+                      // The display name now comes from the server, so a
+                      // pending edit of it is dropped rather than re-sent.
+                      setEdits((current) => {
+                        const { displayName: _dropped, ...values } = current.values;
+                        return { ...current, values };
+                      });
+                      toast({
+                        title: `Renamed to ${outcome.agent.displayName ?? outcome.agent.name}`,
+                        description:
+                          outcome.bridgeFailures.length > 0
+                            ? outcome.bridgeFailures
+                                .map((f) => `Not yet updated on ${f}.`)
+                                .join(' ')
+                            : undefined,
+                        variant: outcome.bridgeFailures.length > 0 ? 'destructive' : undefined,
+                      });
+                    },
+                  })
+                }
+                onDelete={remove}
+                disabled={!editIsEmpty(edit)}
+              />
+            }
             machineName={title !== agent.name ? agent.name : null}
             description={
               <InlineEditableText
@@ -208,9 +285,11 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
             }
             actions={
               <>
-                <WithReason reason={SESSIONS_START_WHEN_ADDRESSED}>
-                  <Button disabled>New Session</Button>
-                </WithReason>
+                {!chatsOn && (
+                  <WithReason reason={SESSIONS_START_WHEN_ADDRESSED}>
+                    <Button disabled>New Session</Button>
+                  </WithReason>
+                )}
                 <Button
                   variant="outline"
                   onClick={() =>
@@ -238,24 +317,20 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
             />
             <section className="flex flex-col gap-6">
               <SectionLabel>General</SectionLabel>
-              <SettingRow
-                title="Auto-create a session on notify"
-                info={{
-                  label: 'More info about auto-created sessions',
-                  content:
-                    'A session starts by itself when the agent is addressed, so a message never waits for someone to open one.',
-                }}
-                description="Start a session when this agent is addressed."
+              <AutoModeRow
+                overridden={draft.autoApprove}
                 control={
-                  <WithReason reason="Agents on a machine always start a session when addressed.">
-                    <Switch aria-label="Auto-create a session on notify" checked disabled />
-                  </WithReason>
+                  <Switch
+                    aria-label={PERMISSION_COPY.autoMode.title}
+                    checked={draft.autoMode}
+                    onCheckedChange={(checked) => setValue('autoMode', checked)}
+                  />
                 }
               />
               <AutoApproveRow
                 control={
                   <Switch
-                    aria-label="Bypass permissions"
+                    aria-label={PERMISSION_COPY.autoApprove.title}
                     checked={draft.autoApprove}
                     onCheckedChange={(checked) => setValue('autoApprove', checked)}
                   />
@@ -273,6 +348,15 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
                 agentName={agent.name}
                 showName={false}
               />
+              {serviceGrants && (
+                <ServiceGrantsRow
+                  serverId={agent.serverId}
+                  workspaceId={agent.workspaceId}
+                  agentId={agent.agentId}
+                  agentName={managedAgentLabel(agent)}
+                  cloud={agent.machine !== null && isCloudMachine(agent.machine)}
+                />
+              )}
               <SettingRow
                 title="Directory"
                 info={{
@@ -300,22 +384,31 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
                   />
                 )}
               </SettingRow>
-              <SettingRow
-                title="Run in its own process"
-                info={{
-                  label: 'More info about running in its own process',
-                  content:
-                    'Isolated from the other agents on its machine, instead of inside the machine’s controller.',
-                }}
-                description="Keep it apart from the other agents on its machine."
-                control={
-                  <Switch
-                    aria-label="Run in its own process"
-                    checked={draft.ownProcess}
-                    onCheckedChange={(checked) => setValue('ownProcess', checked)}
-                  />
-                }
-              />
+              {machine?.cloud ? (
+                <SettingRow
+                  title="Runs in its own process"
+                  info={null}
+                  description="Switch cloud runs every agent as a user of its own, apart from the other agents and the machine's controller."
+                  control={null}
+                />
+              ) : (
+                <SettingRow
+                  title="Run in its own process"
+                  info={{
+                    label: 'More info about running in its own process',
+                    content:
+                      'Isolated from the other agents on its machine, instead of inside the machine’s controller.',
+                  }}
+                  description="Keep it apart from the other agents on its machine."
+                  control={
+                    <Switch
+                      aria-label="Run in its own process"
+                      checked={draft.ownProcess}
+                      onCheckedChange={(checked) => setValue('ownProcess', checked)}
+                    />
+                  }
+                />
+              )}
             </section>
             <div className="flex flex-col gap-2">
               <AdvancedConfigDisclosure
@@ -337,32 +430,68 @@ function ManagedAgentPageContent({ agent }: { agent: ManagedAgentView }) {
             </div>
           </div>
 
-          <section className="relative flex w-full flex-col gap-2">
-            <div className="flex items-center justify-between gap-2">
-              <SectionLabel>Sessions</SectionLabel>
-              <WithReason reason={SESSIONS_START_WHEN_ADDRESSED}>
-                <Button variant="ghost" size="icon-xs" aria-label="New session" disabled>
-                  <Plus className="size-4" />
-                </Button>
-              </WithReason>
-            </div>
-            <p className="py-2 text-sm text-foreground-muted">
-              Sessions of agents on a machine are not listed here yet.
-            </p>
-          </section>
+          {chatsOn && (
+            <section className="flex flex-col gap-6">
+              <SectionLabel>Danger zone</SectionLabel>
+              <SettingRow
+                title="Delete agent"
+                info={null}
+                description="Its machine stops it and it is deleted from Switch, for every room it is in."
+                control={
+                  <Button variant="destructive" disabled={busy} onClick={remove}>
+                    Delete agent…
+                  </Button>
+                }
+              />
+            </section>
+          )}
         </div>
       </div>
-      {error && (
-        <p
-          role="alert"
-          className="shrink-0 border-t border-border px-8 pt-3 text-sm text-foreground-destructive"
-        >
-          {error}
-        </p>
-      )}
-      <AgentSaveBar />
     </div>
   );
+}
+
+/**
+ * While the page has unsaved changes, leaving it — another screen, another
+ * agent, a chat beside it, or closing the window — asks first.
+ */
+function useConfirmLeave(agent: ManagedAgentView) {
+  const { dirty, revertAll } = useAgentEdits();
+  const confirm = useShowModal('confirmActionModal');
+  const { section } = useParams('managedAgent').params;
+  const { serverId, agentId } = agent;
+  useEffect(() => {
+    if (!dirty) return;
+    appState.navigation.setLeaveGuard((viewId, params) => {
+      const target = (params ?? {}) as { serverId?: string; agentId?: string; section?: string };
+      if (
+        viewId === 'managedAgent' &&
+        target.serverId === serverId &&
+        target.agentId === agentId &&
+        target.section === section
+      )
+        return Promise.resolve(true);
+      return new Promise((resolve) =>
+        confirm({
+          title: 'You have unsaved changes',
+          description: "If you leave now, your changes to this agent's settings will be lost.",
+          cancelLabel: 'Stay',
+          confirmLabel: 'Discard and leave',
+          onSuccess: () => {
+            revertAll();
+            resolve(true);
+          },
+          onClose: () => resolve(false),
+        })
+      );
+    });
+    const refuseUnload = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener('beforeunload', refuseUnload);
+    return () => {
+      appState.navigation.setLeaveGuard(null);
+      window.removeEventListener('beforeunload', refuseUnload);
+    };
+  }, [dirty, revertAll, confirm, serverId, agentId, section]);
 }
 
 /**

@@ -3,6 +3,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { serverEventSchema, type ServerEvent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
+import { killProcessTree } from './process-fence';
+import { hostReasoningListSchema, type HostReasoningList } from './reasoning-buffer';
+import { Redactions, tokenForms } from './redaction';
+import { ServiceCredential } from './service-credential';
+import { isStopMessage } from './stop-request';
 
 /**
  * How long a session host that has finished may take to exit once it has
@@ -32,7 +37,8 @@ export const HOST_HUNG_UP_MS = 15000;
  * requests (`ready`). The other way round, the host says which session it is
  * (`identity`, again whenever its generation moves) and asks its parent
  * (`ask`) for what only the holder of the agent's connection can do: list the
- * Switch tools and run one. The parent answers (`answer`).
+ * Switch tools, run one, and post a turn's reply the agent left unposted. The
+ * parent answers (`answer`).
  */
 
 export const sessionRequestSchema = z.discriminatedUnion('type', [
@@ -57,6 +63,12 @@ export const sessionRequestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('snapshot') }),
   /** Switch has an answer to one of this session's approval requests. */
   z.object({ type: z.literal('approvals') }),
+  /**
+   * The reasoning the host still holds for these turns (all of them when
+   * null). Read-only, never journaled, and only ever asked over a local or SSH
+   * link: a host that predates it cannot parse it and does not answer.
+   */
+  z.object({ type: z.literal('reasoning'), turnIds: z.array(z.string().min(1)).nullable() }),
 ]);
 export type SessionRequest = z.infer<typeof sessionRequestSchema>;
 
@@ -69,6 +81,27 @@ export const hostAskSchema = z.discriminatedUnion('type', [
     type: z.literal('tool'),
     name: z.string().min(1),
     arguments: z.record(z.string(), z.unknown()),
+  }),
+  /**
+   * The host's own post, as the agent, to the room a turn was started from:
+   * the turn ended without the agent posting there. Refused unless the session
+   * still attends `roomId`.
+   */
+  z.object({
+    type: z.literal('room-reply'),
+    roomId: z.string().min(1),
+    threadId: z.string().min(1).nullable(),
+    body: z.string().min(1),
+  }),
+  /**
+   * A token for one of the agent's granted services, answered with a
+   * `ServiceTokenAnswer`. `rejected` is a token the service refused (Git
+   * erasing it, or `gh` told 401): the parent stops handing it out.
+   */
+  z.object({
+    type: z.literal('service-token'),
+    service: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/),
+    rejected: z.string().nullable(),
   }),
 ]);
 export type HostAsk = z.infer<typeof hostAskSchema>;
@@ -113,6 +146,8 @@ const toChildSchema = z.discriminatedUnion('kind', [
   answerSchema,
   /** Answer `busy` once every command queued before this has been taken or refused. */
   z.object({ kind: z.literal('busyBarrier'), id: z.number().int().nonnegative() }),
+  /** Service token values, in every form, that this agent's sessions were handed: scrub them too. */
+  z.object({ kind: z.literal('redactions'), values: z.array(z.string()) }),
 ]);
 
 const fromChildSchema = z.discriminatedUnion('kind', [
@@ -174,6 +209,8 @@ function recordedFailure(root: string, code: number): string {
   return `The session host exited with code ${code}.`;
 }
 
+const NO_ANSWER = 'The session host did not answer in time.';
+
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -195,13 +232,35 @@ type Link = {
   barriers: Map<number, Pending>;
   /** How many hosts here have exited, so a waiting request can tell one did. */
   exits: number;
+  /** The running host did not answer a `reasoning` request: it predates them. */
+  noReasoning: boolean;
 };
+
+/**
+ * How long a `reasoning` request waits for its answer. A host that predates
+ * the request cannot parse it and never answers, so this is how such a host
+ * is told apart; the link does not ask it again.
+ */
+const REASONING_TIMEOUT_MS = 5000;
 
 /**
  * The parent's end: one link per session state root, re-attached each time
  * the supervisor starts the host again.
  */
 export class SessionLinks {
+  /**
+   * Every service token answered to these hosts. Their supervisor scrubs it
+   * from what they log, and their parent from what it sends to Switch.
+   */
+  readonly redactions = new Redactions();
+  /**
+   * The same tokens by the agent they were issued for, every form of each. A
+   * session host learns its agent's when it says which session it runs and
+   * each new one as it is answered, so a token fetched by a sibling session,
+   * or before this one resumed, is scrubbed from what it publishes too. Only
+   * the agent's own: no host is handed another agent's tokens.
+   */
+  private readonly agentTokens = new Map<string, Set<string>>();
   private readonly links = new Map<string, Link>();
   private readonly answerers = new Map<string, AskHandler>();
   private readonly exitListeners = new Set<(root: string, identity: HostIdentity | null) => void>();
@@ -224,6 +283,7 @@ export class SessionLinks {
         busy: null,
         barriers: new Map(),
         exits: 0,
+        noReasoning: false,
       };
       this.links.set(root, link);
     }
@@ -238,6 +298,8 @@ export class SessionLinks {
     link.identity = null;
     link.failure = null;
     link.busy = null;
+    link.noReasoning = false;
+    for (const listener of this.busyListeners) listener(root);
     child.on('message', (raw) => {
       const parsed = fromChildSchema.safeParse(raw);
       if (!parsed.success) {
@@ -253,6 +315,8 @@ export class SessionLinks {
         for (const subscriber of link.subscribers) subscriber(message.event);
       } else if (message.kind === 'identity') {
         link.identity = message.identity;
+        const held = this.agentTokens.get(message.identity.agentId);
+        if (held?.size) shareRedactions(child, root, [...held]);
       } else if (message.kind === 'busy') {
         link.busy = { busy: message.busy, reasons: message.reasons };
         for (const listener of this.busyListeners) listener(root);
@@ -271,8 +335,13 @@ export class SessionLinks {
               if (error) console.warn(`Could not answer the session host at ${root}: ${error}`);
             });
         };
-        this.answerAsk(root, link.identity, message.ask).then(
-          (value) => answer({ ok: true, value: value ?? null }),
+        const asker = link.identity;
+        this.answerAsk(root, asker, message.ask).then(
+          (value) => {
+            if (asker && message.ask.type === 'service-token' && isTokenAnswer(value))
+              this.shareToken(asker.agentId, value.token);
+            answer({ ok: true, value: value ?? null });
+          },
           (error: unknown) =>
             answer({ ok: false, error: error instanceof Error ? error.message : String(error) })
         );
@@ -349,6 +418,20 @@ export class SessionLinks {
       for (const listener of this.exitListeners) listener(root, identity);
       if (failure !== null) for (const listener of this.failureListeners) listener(root, failure);
     });
+  }
+
+  /** Hand a token just answered to every host of the agent it was issued for. */
+  private shareToken(agentId: string, token: string): void {
+    const held = this.agentTokens.get(agentId) ?? new Set<string>();
+    this.agentTokens.set(agentId, held);
+    const forms = [...new Set(ServiceCredential.of(token).secrets.flatMap(tokenForms))].filter(
+      (form) => !held.has(form)
+    );
+    if (!forms.length) return;
+    for (const form of forms) held.add(form);
+    for (const [root, link] of this.links)
+      if (link.child && link.identity?.agentId === agentId)
+        shareRedactions(link.child, root, forms);
   }
 
   private async answerAsk(
@@ -472,7 +555,7 @@ export class SessionLinks {
       const timer = setTimeout(
         () => {
           link.pending.delete(id);
-          reject(new SessionUnavailableError('The session host did not answer in time.'));
+          reject(new SessionUnavailableError(NO_ANSWER));
         },
         Math.max(deadline - Date.now(), 5000)
       );
@@ -486,12 +569,43 @@ export class SessionLinks {
     });
   }
 
+  /**
+   * The reasoning the running host at this root still holds, or null when no
+   * host is ready there or it predates the request. Never waits for a host to
+   * start and never raises: reasoning is a nicety, not something to fail on.
+   */
+  async reasoning(root: string, turnIds: string[] | null): Promise<HostReasoningList | null> {
+    const link = this.links.get(root);
+    if (!link?.ready || !link.child || link.noReasoning) return null;
+    const child = link.child;
+    try {
+      const answer = hostReasoningListSchema.safeParse(
+        await this.request(root, { type: 'reasoning', turnIds }, REASONING_TIMEOUT_MS)
+      );
+      if (answer.success) return answer.data;
+      console.warn(`The session host at ${root} answered a reasoning request unreadably.`);
+      return null;
+    } catch (error) {
+      if (
+        error instanceof SessionUnavailableError &&
+        error.message === NO_ANSWER &&
+        link.child === child
+      ) {
+        link.noReasoning = true;
+        console.warn(
+          `The session host at ${root} did not answer a reasoning request; it predates them, so it is not asked again.`
+        );
+      }
+      return null;
+    }
+  }
+
   /** The roots with a host process running, ready or not. */
   live(): string[] {
     return [...this.links].flatMap(([root, link]) => (link.child ? [root] : []));
   }
 
-  /** Hear each change in what a host says about being busy, and each host exit. */
+  /** Hear each host start and exit, and each change in what a host says about being busy. */
   onBusy(listener: (root: string) => void): () => void {
     this.busyListeners.add(listener);
     return () => this.busyListeners.delete(listener);
@@ -540,13 +654,19 @@ export class SessionLinks {
 /**
  * Kill a session host and every process in its group. A host is started
  * detached, so it leads its own group, and the provider processes it starts
- * are in it too.
+ * are in it too. Windows has no groups: the host's process tree goes instead.
  */
 function killHostGroup(child: ChildProcess): void {
   if (!child.pid) return;
+  if (process.platform === 'win32') {
+    const root = child.pid;
+    killProcessTree(root).catch((error: unknown) =>
+      console.error(`Could not stop the session host (pid ${root}): ${String(error)}`)
+    );
+    return;
+  }
   try {
-    if (process.platform === 'win32') child.kill('SIGKILL');
-    else process.kill(-child.pid, 'SIGKILL');
+    process.kill(-child.pid, 'SIGKILL');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
   }
@@ -577,13 +697,37 @@ export type ParentChannel = {
   identify: (identity: HostIdentity) => void;
   /** Ask the parent, rejecting if it does not answer or goes away. */
   ask: (ask: HostAsk) => Promise<unknown>;
+  /**
+   * Hear each Switch tool call the parent answered, with its result, before
+   * the caller does. Returns the unsubscribe.
+   */
+  onToolAnswered: (listener: (name: string, result: unknown) => void) => () => void;
   /** Say whether the session is busy, and why; `barrier` answers a `busyBarrier`. */
   busy: (state: BusyState, barrier: number | null) => void;
   /** Answer each `busyBarrier` with this, once it resolves. */
   onBarrier: (handler: () => Promise<BusyState>) => void;
+  /** Take the token values the parent shares, including any sent before this was called. */
+  onRedactions: (handler: (values: string[]) => void) => void;
   /** Stop answering requests, so the parent reads the host as going. */
   close: () => void;
 };
+
+function shareRedactions(child: ChildProcess, root: string, values: string[]): void {
+  if (!child.connected) return;
+  child.send({ kind: 'redactions', values }, (error) => {
+    if (error)
+      console.warn(`Could not share token redactions with the session host at ${root}: ${error}`);
+  });
+}
+
+function isTokenAnswer(value: unknown): value is { kind: 'token'; token: string } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { kind?: unknown }).kind === 'token' &&
+    typeof (value as { token?: unknown }).token === 'string'
+  );
+}
 
 /** How long a host waits for its parent to answer; a tool call may upload files. */
 const ASK_TIMEOUT_MS = 5 * 60 * 1000;
@@ -602,8 +746,11 @@ export function connectParent(port: ParentPort): ParentChannel {
   };
   let handlers: SessionRequestHandlers | null = null;
   let barrier: (() => Promise<BusyState>) | null = null;
+  let redactionHandler: ((values: string[]) => void) | null = null;
+  const sharedEarly: string[] = [];
   let serving = true;
   let nextAsk = 0;
+  const toolListeners = new Set<(name: string, result: unknown) => void>();
   const asks = new Map<
     number,
     {
@@ -613,6 +760,8 @@ export function connectParent(port: ParentPort): ParentChannel {
     }
   >();
   const onMessage = (raw: unknown) => {
+    // Heard by the process's stop listener, not by the session channel.
+    if (isStopMessage(raw)) return;
     const parsed = toChildSchema.safeParse(raw);
     if (!parsed.success) {
       console.warn('Ignoring an unreadable message from the parent process.');
@@ -626,6 +775,11 @@ export function connectParent(port: ParentPort): ParentChannel {
       clearTimeout(pending.timer);
       if (message.ok) pending.resolve(message.value);
       else pending.reject(new Error(message.error ?? 'The parent refused.'));
+      return;
+    }
+    if (message.kind === 'redactions') {
+      if (redactionHandler) redactionHandler(message.values);
+      else sharedEarly.push(...message.values);
       return;
     }
     if (message.kind === 'busyBarrier') {
@@ -674,6 +828,10 @@ export function connectParent(port: ParentPort): ParentChannel {
     onBarrier: (handler) => {
       barrier = handler;
     },
+    onRedactions: (handler) => {
+      redactionHandler = handler;
+      if (sharedEarly.length) handler(sharedEarly.splice(0));
+    },
     ask: (ask) => {
       if (!port.connected)
         return Promise.reject(new Error('The parent process is gone, so nothing can answer.'));
@@ -683,9 +841,24 @@ export function connectParent(port: ParentPort): ParentChannel {
           asks.delete(id);
           reject(new Error('The parent process did not answer in time.'));
         }, ASK_TIMEOUT_MS);
-        asks.set(id, { resolve, reject, timer });
+        const answered = (value: unknown) => {
+          if (ask.type === 'tool')
+            for (const listener of toolListeners) {
+              try {
+                listener(ask.name, value);
+              } catch (error) {
+                console.error(`A tool-call listener failed: ${String(error)}`);
+              }
+            }
+          resolve(value);
+        };
+        asks.set(id, { resolve: answered, reject, timer });
         send({ kind: 'ask', id, ask });
       });
+    },
+    onToolAnswered: (listener) => {
+      toolListeners.add(listener);
+      return () => toolListeners.delete(listener);
     },
     close: () => {
       serving = false;

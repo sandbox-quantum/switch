@@ -13,6 +13,7 @@ apps/*/out/
 apps/*/release/
 apps/*/dist/
 apps/*/dist-sidecar/
+apps/*/dist-local-server/
 
 # Re-include Electron packaging/signing assets. The monorepo root .gitignore
 # globally ignores build/, which would otherwise drop these tracked files.

@@ -35,7 +35,7 @@ vi.mock('node:child_process', () => ({
     return server;
   },
 }));
-const { createAntigravityAdapter } = await import('./antigravity-adapter');
+const { antigravityAcp, createAntigravityAdapter } = await import('./antigravity-adapter');
 beforeEach(() => {
   servers.length = 0;
   acp.http = true;
@@ -59,6 +59,7 @@ async function setup(resume = false, switchRegistered = true) {
           },
         }
       : {},
+    connectorMcpServers: [],
     ...(resume ? { resume: { nativeSessionId: 'acp:native' } } : {}),
   });
   const server = servers.at(-1)!;
@@ -242,6 +243,12 @@ it('authenticates once on the session process before creating the session', asyn
     'session/new',
   ]);
 });
+it('puts auto mode in auto-edit, Antigravity having no reviewer of its own', () => {
+  expect(antigravityAcp.sessionMode?.('approval-required')).toBe('default');
+  expect(antigravityAcp.sessionMode?.('auto-accept-edits')).toBe('auto_edit');
+  expect(antigravityAcp.sessionMode?.('auto')).toBe('auto_edit');
+  expect(antigravityAcp.sessionMode?.('full-access')).toBe('yolo');
+});
 it('refuses legacy CLI conversation IDs before starting a process', async () => {
   await expect(
     createAntigravityAdapter().startSession({
@@ -250,6 +257,7 @@ it('refuses legacy CLI conversation IDs before starting a process', async () => 
       runtimeMode: 'approval-required',
       env: {},
       mcpServers: {},
+      connectorMcpServers: [],
       resume: { nativeSessionId: 'old-cli' },
     })
   ).rejects.toThrow('previous Antigravity CLI');
@@ -368,6 +376,7 @@ it('registers an HTTP MCP server with its headers when the agent declares HTTP',
     runtimeMode: 'approval-required',
     env: {},
     mcpServers: httpSwitch,
+    connectorMcpServers: [],
   });
   expect(servers.at(-1)!.received.find((m) => m.method === 'session/new')?.params).toMatchObject({
     mcpServers: [
@@ -391,7 +400,41 @@ it('refuses to start a session whose HTTP MCP servers the agent cannot reach', a
       runtimeMode: 'approval-required',
       env: {},
       mcpServers: httpSwitch,
+      connectorMcpServers: [],
     })
   ).rejects.toThrow('Antigravity does not declare MCP over HTTP');
   expect(servers.at(-1)!.received.some((m) => m.method === 'session/new')).toBe(false);
+});
+
+it('auto-approves calls to any MCP server the session registered, not only Switch', async () => {
+  const adapter = createAntigravityAdapter();
+  const events: ProviderRuntimeEvent[] = [];
+  adapter.subscribe((e) => events.push(e));
+  await adapter.startSession({
+    sessionId: 'echo',
+    cwd: '/work',
+    runtimeMode: 'approval-required',
+    env: {},
+    mcpServers: { echo: { transport: 'stdio', command: 'node', args: ['echo.js'] } },
+    connectorMcpServers: [],
+  });
+  const server = servers.at(-1)!;
+  await adapter.sendTurn({ sessionId: 'echo', turnId: 't', text: 'echo' });
+  server.send({
+    id: 94,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: {
+        toolCallId: 'call',
+        _meta: { is_mcp_tool_call: true, mcp: { server: 'echo', tool: 'echo' } },
+      },
+      options: [{ optionId: 'once', name: 'Allow once', kind: 'allow_once' }],
+    },
+  });
+  await flush();
+  expect(server.received.find((m) => m.id === 94)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'once' },
+  });
+  expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(0);
 });

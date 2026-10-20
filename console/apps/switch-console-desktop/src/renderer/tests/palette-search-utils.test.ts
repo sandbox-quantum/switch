@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyContextAffinity,
+  indexedSearchLabel,
   matchHosts,
   matchRooms,
   matchServers,
+  paletteSearchPlaceholder,
   sectionResults,
 } from '@renderer/features/command-palette/search-utils';
 import type { SearchItem } from '@shared/core/search';
@@ -101,8 +103,8 @@ describe('matchRooms', () => {
 
 function server(over: Pick<SwitchServer, 'id' | 'name'> & Partial<SwitchServer>): SwitchServer {
   return {
-    gatewayUrl: 'https://gateway.example',
-    apiUrl: 'https://api.example',
+    url: 'https://api.example',
+    dashboardUrl: 'https://gateway.example',
     managed: false,
     managementKind: null,
     sshHost: null,
@@ -115,7 +117,7 @@ function server(over: Pick<SwitchServer, 'id' | 'name'> & Partial<SwitchServer>)
 describe('matchServers', () => {
   const SERVERS = [
     server({ id: 's1', name: 'production' }),
-    server({ id: 's2', name: 'staging', gatewayUrl: 'https://switch.internal' }),
+    server({ id: 's2', name: 'staging', url: 'https://switch.internal' }),
   ];
 
   it('matches on name', () => {
@@ -248,5 +250,22 @@ describe('sectionResults', () => {
     const sections = sectionResults([item('agent', 'first'), item('agent', 'second')]);
 
     expect(sections.agent.map((i) => i.id)).toEqual(['first', 'second']);
+  });
+});
+
+// Under agent management the palette leaves sessions out, so its copy must
+// not promise them.
+describe('palette copy', () => {
+  it('names sessions only when they are searched', () => {
+    expect(paletteSearchPlaceholder(true)).toContain('sessions');
+    expect(indexedSearchLabel(true)).toContain('sessions');
+
+    expect(paletteSearchPlaceholder(false)).not.toContain('session');
+    expect(indexedSearchLabel(false)).not.toContain('session');
+  });
+
+  it('still names the kinds that stay searchable', () => {
+    expect(paletteSearchPlaceholder(false)).toBe('Search agents, rooms, servers, actions…');
+    expect(indexedSearchLabel(false)).toBe('agents and commands');
   });
 });

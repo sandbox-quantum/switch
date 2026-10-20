@@ -20,9 +20,36 @@ function alive(pid: number): boolean {
   }
 }
 
+/**
+ * `fileMode(0o600)` from `host-permissions`, written out: this module takes
+ * no relative import, since its tests load it on its own in a child process.
+ */
+function recordMode(): number {
+  return process.env.SWITCH_HOST_SHARED_GROUP === '1' ? 0o640 : 0o600;
+}
+
+/**
+ * `replaceFile` from `replace-file`, for any operation: on Windows a rename
+ * or link onto a record another contender has open is refused while it stays
+ * open, so it is tried again for a few seconds.
+ */
+async function waitingOutSharing(operation: () => Promise<void>): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  for (let wait = 10; ; wait = Math.min(wait * 2, 200)) {
+    try {
+      return await operation();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? '';
+      if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(code)) throw error;
+      if (Date.now() > deadline) throw error;
+    }
+    await delay(wait);
+  }
+}
+
 async function save(path: string, value: unknown, replace: boolean): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
-  const file = await open(temporary, 'wx', 0o600);
+  const file = await open(temporary, 'wx', recordMode());
   try {
     await file.writeFile(JSON.stringify(value));
     await file.sync();
@@ -30,8 +57,7 @@ async function save(path: string, value: unknown, replace: boolean): Promise<voi
     await file.close();
   }
   try {
-    if (replace) await rename(temporary, path);
-    else await link(temporary, path);
+    await waitingOutSharing(() => (replace ? rename(temporary, path) : link(temporary, path)));
   } finally {
     await unlink(temporary).catch((error) => {
       if (error.code !== 'ENOENT') throw error;

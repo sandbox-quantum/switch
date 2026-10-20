@@ -19,24 +19,23 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from switch_core.db.models import Agent, AgentController, AgentControllerOperation
+from switch_core.config import ControllerRelease
+from switch_core.db.models import (
+    Agent,
+    AgentController,
+    AgentControllerOperation,
+    SealedProviderLogin,
+)
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.management.advanced_config import validate_advanced_config
-from switch_core.management.process_lease import ProcessLeases
+from switch_core.management.sealed_logins import PublicKey, key_id
+from switch_core.process_lease import ProcessLeases
+from switch_core.providers.registry import AgentProviderId
 
-Provider = Literal["claude", "codex", "opencode", "antigravity", "cursor"]
+Provider = AgentProviderId
 ControllerKind = Literal["console", "daemon", "ec2"]
 DesiredState = Literal["running", "stopped"]
 Isolation = Literal["shared", "isolated"]
-
-# The known-agent spec each provider registers through.
-PROVIDER_KNOWN_AGENT_TYPES: dict[str, str] = {
-    "claude": "claude-code",
-    "codex": "codex",
-    "opencode": "opencode",
-    "antigravity": "antigravity",
-    "cursor": "cursor",
-}
 
 MAX_INSTRUCTIONS_BYTES = 32 * 1024
 MAX_CONTROLLER_NAME_CHARS = 200
@@ -77,11 +76,6 @@ class Platform(_StatusBody):
     os_version: str
 
 
-class PublicKey(_StatusBody):
-    alg: str
-    key: str
-
-
 class DefinitionV1(_GatewayBody):
     """The v1 agent definition, as a person's client submits it."""
 
@@ -91,6 +85,11 @@ class DefinitionV1(_GatewayBody):
     # `advanced_config`.
     advanced_config: dict[str, Any] = Field(default_factory=dict)
     instructions: str = ""
+    # The provider's own automatic review: safe actions run, risky ones still
+    # ask. A stored definition without the key predates it and reads as off
+    # (`stored_definition`).
+    auto_mode: bool = True
+    # Bypass: every permission check skipped. Wins over `auto_mode`.
     auto_approve: bool = False
     directory: str | None = None
     # `shared`: the agent host runs inside its machine's controller.
@@ -176,6 +175,10 @@ class StatusControllerInfo(_StatusBody):
     version: str
     protocol: int
     assignment_revision: int
+    # Who moves it onto another release: itself, following the release Core
+    # names, or Switch Console, which runs it (on an SSH host, say) and
+    # replaces its bundle. Absent from a controller older than this field.
+    updated_by: Literal["self", "console"] | None = None
 
 
 class MachineStatus(_StatusBody):
@@ -383,16 +386,28 @@ class UpdateControllerRequest(_ControllerDetailsChange):
 
 
 class ControllerInfoRequest(_ControllerDetailsChange):
-    """The controller's own change (`switch-agent-controller set-info`)."""
+    """The controller's own change (`switch-agent-controller set-info`), and
+    the key its provider logins are sealed to, which a controller enrolled
+    before it made one registers once."""
 
     model_config = ConfigDict(extra="ignore")
+
+    public_key: PublicKey | None = None
+
+    @field_validator("public_key")
+    @classmethod
+    def _key_is_not_cleared(cls, value: PublicKey | None) -> PublicKey:
+        if value is None:
+            raise ValueError("a controller's public key cannot be cleared")
+        return value
 
 
 class CreateManagedAgentRequest(_GatewayBody):
     name: str
     description: str
     display_name: str | None = None
-    # Null for the robot its name generates (`agent_icon.generated_icon_url`).
+    # Null for the icon its name generates (`agent_icon.generated_icon_url`),
+    # or for no icon when the server has third-party avatars off.
     icon_url: str | None = None
     controller_id: str | None
     desired_state: DesiredState
@@ -425,6 +440,12 @@ class CreateOperationRequest(_GatewayBody):
 # ── Wire shapes ───────────────────────────────────────────────────────────────
 
 
+def stored_definition(definition: dict[str, Any]) -> dict[str, Any]:
+    """A stored v1 definition with the fields it may predate filled in as they
+    read: a definition saved before `auto_mode` existed has it off."""
+    return {**definition, "auto_mode": definition.get("auto_mode", False)}
+
+
 def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
     """An `AgentAssignment`: the stored v1 definition, plus the agent's `name`,
     `display_name` and `icon_url` read from its own row.
@@ -445,6 +466,7 @@ def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
             "model": definition.get("model"),
             "advanced_config": definition.get("advanced_config", {}),
             "instructions": definition.get("instructions", ""),
+            "auto_mode": definition.get("auto_mode", False),
             "auto_approve": definition.get("auto_approve", False),
             "directory": definition.get("directory"),
             "isolation": definition.get("isolation", "shared"),
@@ -517,8 +539,55 @@ def connection_view(
     }
 
 
+def updated_by_console(controller: AgentController) -> bool:
+    """Whether Switch Console updates this controller: Console's own, or one
+    Console runs elsewhere and says so in its status. Either ships with
+    Console and cannot follow the release Core names."""
+    if controller.kind == "console":
+        return True
+    info = (controller.status or {}).get("controller") or {}
+    return info.get("updated_by") == "console"
+
+
+def release_for(
+    controller: AgentController, release: ControllerRelease | None
+) -> ControllerRelease | None:
+    """The release this controller is told to run. None for one Switch Console
+    updates, whatever is set."""
+    return None if updated_by_console(controller) else release
+
+
+def controller_release_view(
+    controller: AgentController, release: ControllerRelease | None
+) -> dict[str, str] | None:
+    """The release the controller is told to run, or null when it is told none."""
+    wanted = release_for(controller, release)
+    if wanted is None:
+        return None
+    return {"version": wanted.version, "url": wanted.url, "sha256": wanted.sha256}
+
+
+def release_view(
+    controller: AgentController, release: ControllerRelease | None
+) -> dict[str, Any] | None:
+    """Whether the controller runs the release it is told to run: the version
+    wanted, the one it last reported, and whether they are the same. Null when
+    it is told none."""
+    release = release_for(controller, release)
+    if release is None:
+        return None
+    return {
+        "wanted": release.version,
+        "running": controller.version,
+        "current": controller.version == release.version,
+    }
+
+
 def controller_view(
-    controller: AgentController, state: str, leases: ProcessLeases
+    controller: AgentController,
+    state: str,
+    leases: ProcessLeases,
+    release: ControllerRelease | None,
 ) -> dict[str, Any]:
     return {
         "id": controller.id,
@@ -527,14 +596,34 @@ def controller_view(
         "kind": controller.kind,
         "platform": controller.platform,
         "version": controller.version,
+        "release": release_view(controller, release),
         "state": state,
         "last_seen_at": wire_time_or_none(controller.last_seen_at),
         "connection": connection_view(controller, leases),
         "status": controller.status,
         "assignment_revision": controller.assignment_revision,
         "workspaces_dir": workspaces_dir_of(controller),
+        "public_key": public_key_view(controller),
         "created_at": wire_time(controller.created_at),
         "revoked_at": wire_time_or_none(controller.revoked_at),
+    }
+
+
+def public_key_view(controller: AgentController) -> dict[str, str] | None:
+    """The key the owner's client seals this machine's provider logins to,
+    with the id a sealed login names it by; null for one that has none."""
+    if controller.public_key is None:
+        return None
+    return {**controller.public_key, "key_id": key_id(controller.public_key["key"])}
+
+
+def sealed_login_view(row: SealedProviderLogin) -> dict[str, Any]:
+    """What the owner sees of a sealed login: never the ciphertext."""
+    return {
+        "provider": row.provider,
+        "revision": row.revision,
+        "key_id": row.sealed["key_id"],
+        "updated_at": wire_time(row.updated_at),
     }
 
 
@@ -571,7 +660,7 @@ def managed_agent_view(
         "controller_state": controller_state,
         "desired_state": row.desired_state,
         "revision": row.revision,
-        "definition": row.definition,
+        "definition": stored_definition(row.definition),
         "status": agent_status_from(controller, agent.id),
         "created_at": wire_time(row.created_at),
         "updated_at": wire_time(row.updated_at),

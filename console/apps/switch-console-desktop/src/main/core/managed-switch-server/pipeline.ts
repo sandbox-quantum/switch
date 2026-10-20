@@ -6,7 +6,7 @@ import {
 } from '@main/core/switch-servers/servers-store';
 import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
 import { log } from '@main/lib/logger';
-import { COMPATIBLE_SWITCH_VERSION, RELEASE_REPO_OWNER } from '@shared/app-identity';
+import { RELEASE_REPO_OWNER } from '@shared/app-identity';
 import {
   CHECKOUT_IMAGE_TAG,
   type ConnectRemoteServerResult,
@@ -30,7 +30,7 @@ import {
 } from './constants';
 import { classifyVersionDrift, readDeployedVersion } from './deployed-version';
 import { buildEnvFile, keysDisagreeing, telemetryRequested } from './env-file';
-import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
+import { apiUrlFor, managedServerAddresses, type LocalServerPorts } from './free-port';
 import { waitForHealth } from './health';
 import type { ServerHost } from './host/types';
 import { finishUpgrade, type OwedUpgrade, prepareUpgrade } from './managed-upgrade';
@@ -38,6 +38,7 @@ import { crossesMatrixBoundary, runBackfill } from './matrix-migration';
 import { clearPorts, readPersistedPorts, rememberPorts, resolvePorts } from './ports';
 import { type LocalServerSecrets, withNewerSecrets } from './secret-values';
 import { clearSecrets, loadOrCreateSecrets, readSecrets, storeSecrets } from './secrets';
+import { managedSwitchVersion } from './server-version';
 import type { ServerLease } from './stack-lock';
 import {
   driftOf,
@@ -152,7 +153,7 @@ async function refuseDowngrade(
   if (deployed.kind === 'deployed' && deployed.version === CHECKOUT_IMAGE_TAG) {
     log.warn(
       `managed-switch-server: ${host.label} currently runs a local checkout build, so the ` +
-        `downgrade check cannot run; pointing it back at pinned switch-core ${COMPATIBLE_SWITCH_VERSION}.`
+        `downgrade check cannot run; pointing it back at pinned switch-core ${managedSwitchVersion()}.`
     );
     return null;
   }
@@ -162,11 +163,11 @@ async function refuseDowngrade(
     });
     return null;
   }
-  const drift = classifyVersionDrift(deployed.version, COMPATIBLE_SWITCH_VERSION);
+  const drift = classifyVersionDrift(deployed.version, managedSwitchVersion());
   if (drift?.direction === 'unknown') {
     log.error(
       `managed-switch-server: starting ${host.label} without proving it is not a downgrade — ` +
-        `deployed switch-core ${deployed.version} and pinned ${COMPATIBLE_SWITCH_VERSION} are not comparable. ` +
+        `deployed switch-core ${deployed.version} and pinned ${managedSwitchVersion()} are not comparable. ` +
         `If the deployed one is in fact newer, its database has already migrated and this start may strand it.`
     );
     return null;
@@ -203,11 +204,11 @@ async function migrateOffMatrix(
   if (checkoutRoot !== null) return null;
   const deployed = await readDeployedVersion(host);
   if (deployed.kind !== 'deployed' || deployed.version === CHECKOUT_IMAGE_TAG) return null;
-  if (!crossesMatrixBoundary(deployed.version, COMPATIBLE_SWITCH_VERSION)) return null;
+  if (!crossesMatrixBoundary(deployed.version, managedSwitchVersion())) return null;
 
   log.info(
     `managed-switch-server: ${host.label} is crossing the Matrix boundary ` +
-      `(${deployed.version} → ${COMPATIBLE_SWITCH_VERSION}); backfilling first`
+      `(${deployed.version} → ${managedSwitchVersion()}); backfilling first`
   );
   // Bring the stack up as it stands. The backfill reads the homeserver and the
   // database, and this is the last moment both are still here.
@@ -220,7 +221,7 @@ async function migrateOffMatrix(
   return {
     kind: 'matrix-migration-failed',
     deployed: deployed.version,
-    expected: COMPATIBLE_SWITCH_VERSION,
+    expected: managedSwitchVersion(),
     detail: backfill.detail,
   };
 }
@@ -306,11 +307,15 @@ async function adoptSettings(
   // A `.env` from before the database role split has no runtime password; one
   // is made here, and the next start gives the role it. One from before
   // SECRET_KEYS takes this desktop's, if it has one — a server may already
-  // have stored credentials under it — and a fresh one otherwise.
+  // have stored credentials under it — and a fresh one otherwise. One from
+  // before agent management gets a controller token secret the same way.
+  const desktop = await readSecrets(host);
   const { secrets } = withNewerSecrets({
     ...stack.env.secrets,
     dbRuntimePassword: stack.env.secrets.dbRuntimePassword ?? '',
-    secretKeys: stack.env.secrets.secretKeys ?? (await readSecrets(host))?.secretKeys ?? '',
+    secretKeys: stack.env.secrets.secretKeys ?? desktop?.secretKeys ?? '',
+    controllerTokenSecret:
+      stack.env.secrets.controllerTokenSecret ?? desktop?.controllerTokenSecret ?? '',
   });
   await storeSecrets(host, secrets);
   await rememberPorts(host, stack.env.ports);
@@ -420,6 +425,26 @@ async function portsReachableHere(
 }
 
 /**
+ * The first of a managed stack's addresses that never answers, or null once all
+ * have. switch-core is asked on its own port, the one everything but dashboard
+ * pages uses, and the dashboard container on its: the stack still runs one, and
+ * the server is registered to open its pages there.
+ */
+async function unansweredAddress(
+  ports: LocalServerPorts,
+  signal: AbortSignal
+): Promise<string | null> {
+  const { url, dashboardUrl } = managedServerAddresses(ports);
+  const addresses = [url, dashboardUrl];
+  // Waited for together, so a stack that never comes up is reported after one
+  // wait rather than two.
+  const answered = await Promise.all(
+    addresses.map((address) => waitForHealth(address, { signal }))
+  );
+  return addresses.find((_address, index) => !answered[index]) ?? null;
+}
+
+/**
  * Register the stack, activate it if asked, and sign in as its admin with the
  * password Switch Console generated. A failed sign-in is only logged: the
  * server view falls back to its sign-in panel.
@@ -431,22 +456,32 @@ async function registerAndSignIn(
   activate: boolean,
   onMessage: (message: string) => void
 ): Promise<string> {
-  const server = await ensureManagedServer(
-    {
-      name: serverName,
-      gatewayUrl: gatewayUrlFor(settings.ports),
-      apiUrl: apiUrlFor(settings.ports),
-    },
-    ref
+  return registerManagedServer(
+    ref,
+    serverName,
+    managedServerAddresses(settings.ports),
+    settings.secrets,
+    activate,
+    onMessage
   );
+}
+
+/** {@link registerAndSignIn} with the server's addresses given explicitly, for
+ * a server that is not a compose stack (a native local server runs no
+ * dashboard of its own, so it has no separate dashboard address). */
+export async function registerManagedServer(
+  ref: ManagedServerRef,
+  serverName: string,
+  addresses: { url: string; dashboardUrl: string | null },
+  secrets: LocalServerSecrets,
+  activate: boolean,
+  onMessage: (message: string) => void
+): Promise<string> {
+  const server = await ensureManagedServer({ name: serverName, ...addresses }, ref);
   if (activate) await setActiveServerId(server.id);
 
   onMessage('Signing in…');
-  const login = await passwordLogin(
-    server,
-    LOCAL_SERVER_ADMIN_EMAIL,
-    settings.secrets.gatewayAdminPassword
-  );
+  const login = await passwordLogin(server, LOCAL_SERVER_ADMIN_EMAIL, secrets.gatewayAdminPassword);
   if (!login.success) {
     log.warn('managed-switch-server: auto sign-in failed; server will show a sign-in prompt', {
       error: login.error,
@@ -532,7 +567,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // this Console without it.
   const settings = await portsReachableHere(host, plan, await settingsFor(host, plan));
   await host.checkNetworking(settings.ports);
-  await assertManagedServerUrlFree(gatewayUrlFor(settings.ports), ref);
+  await assertManagedServerUrlFree(apiUrlFor(settings.ports), ref);
 
   onMessage('Checking the deployed version…');
   const downgrade = await refuseDowngrade(host, checkoutRoot);
@@ -561,7 +596,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // user's answer reaches the server, and no supervisor can forget to carry it.
   const telemetryEnabled = await shareUsageData(host, plan, await telemetryConsent());
   const env = buildEnvFile({
-    version: checkoutRoot !== null ? CHECKOUT_IMAGE_TAG : COMPATIBLE_SWITCH_VERSION,
+    version: checkoutRoot !== null ? CHECKOUT_IMAGE_TAG : managedSwitchVersion(),
     registry: GHCR_REGISTRY,
     namespace: RELEASE_REPO_OWNER,
     ports: settings.ports,
@@ -614,8 +649,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   await host.establishNetworking(settings.ports);
 
   onMessage('Waiting for the server to become healthy…');
-  const healthy = await waitForHealth(gatewayUrlFor(settings.ports), { signal });
-  if (!healthy) {
+  if ((await unansweredAddress(settings.ports, signal)) !== null) {
     return { kind: 'error', message: 'The server did not become healthy in time.' };
   }
 
@@ -704,11 +738,11 @@ export async function connectStack(opts: ConnectStackOptions): Promise<ConnectSt
   await host.establishNetworking(settings.ports);
 
   onMessage('Waiting for the server to answer…');
-  const gatewayUrl = gatewayUrlFor(settings.ports);
-  if (!(await waitForHealth(gatewayUrl, { signal }))) {
+  const unanswered = await unansweredAddress(settings.ports, signal);
+  if (unanswered !== null) {
     return {
       kind: 'error',
-      message: `The Switch server on ${host.label} is running, but did not answer at ${gatewayUrl}.`,
+      message: `The Switch server on ${host.label} is running, but did not answer at ${unanswered}.`,
     };
   }
 

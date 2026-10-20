@@ -1,17 +1,20 @@
 import { ExternalLink, Loader2, MessagesSquare, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useTheme } from '@renderer/lib/hooks/useTheme';
 import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
-import type { RoomEmbed } from '@shared/core/switch-rooms/room-embed';
+import { embedIsStale, type RoomEmbed } from '@shared/core/switch-rooms/room-embed';
+import { roomEmbedSlotStore } from './room-embed-slot';
 import { openRoomChannel } from './room-links';
 import { roomTabStore } from './room-tab-store';
 import { currentMattermostTheme } from './theme-tokens';
+import { embeddedRoomFallbackTab } from './view';
 import { WEBVIEW_ALLOW_POPUPS } from './webview-attrs';
 
 /**
@@ -23,7 +26,8 @@ const MAX_LIVE_EMBEDS = 4;
 
 type EmbedState =
   | { phase: 'resolving' }
-  | { phase: 'ready'; embed: RoomEmbed }
+  /** `channelUrl`: the room's channel link the embed was decided with. */
+  | { phase: 'ready'; embed: RoomEmbed; channelUrl: string | null }
   | { phase: 'error'; message: string };
 
 function RoomNotice({
@@ -47,6 +51,43 @@ function RoomNotice({
   );
 }
 
+type Box = { top: number; left: number; width: number; height: number };
+
+/**
+ * Where `target` sits inside the layer's parent, which the layer is positioned
+ * against, followed as either is resized; null while there is no target.
+ * The parent rather than `offsetParent`, which is null while the layer is hidden.
+ */
+function useBoxWithin(
+  target: HTMLElement | null,
+  layer: React.RefObject<HTMLDivElement | null>
+): Box | null {
+  const [box, setBox] = useState<Box | null>(null);
+  useLayoutEffect(() => {
+    const container = layer.current?.parentElement ?? null;
+    if (!target || !container) {
+      setBox(null);
+      return;
+    }
+    const measure = () => {
+      const inner = target.getBoundingClientRect();
+      const outer = container.getBoundingClientRect();
+      setBox({
+        top: inner.top - outer.top,
+        left: inner.left - outer.left,
+        width: inner.width,
+        height: inner.height,
+      });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(target);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [target, layer]);
+  return box;
+}
+
 /**
  * Persistent host for room conversations.
  *
@@ -58,12 +99,20 @@ function RoomNotice({
  *
  * Rooms visited earlier stay mounted (bounded by MAX_LIVE_EMBEDS) so switching
  * between two rooms is instant in both directions.
+ *
+ * It fills the main panel under the room view's title bar, or — when a page
+ * shows a room inside itself, as an agent's page does — the box that page
+ * claimed in `roomEmbedSlotStore`.
  */
 export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
   const { effectiveTheme } = useTheme();
   const isRoomView = appState.navigation.currentViewId === 'room';
-  const activeRoomId =
+  const navigatedRoomId =
     (appState.navigation.viewParamsStore.room as { roomId?: string } | undefined)?.roomId ?? null;
+  const slot = roomEmbedSlotStore.slot;
+  const activeRoomId = slot?.roomId ?? navigatedRoomId;
+  const layerRef = useRef<HTMLDivElement>(null);
+  const slotBox = useBoxWithin(slot?.element ?? null, layerRef);
 
   const [states, setStates] = useState<Map<string, EmbedState>>(new Map());
   // Visit order, oldest first — drives eviction.
@@ -89,14 +138,15 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
         return;
       }
 
+      const channelUrl = switchRoomsStore.roomChannelUrl(roomId);
       try {
         const embed = await rpc.switchRooms.resolveRoomEmbed({
           serverId,
           bridgeType: switchRoomsStore.roomBridgeTypeById(roomId),
-          externalChannelUrl: switchRoomsStore.roomChannelUrl(roomId),
+          externalChannelUrl: channelUrl,
           theme: currentMattermostTheme(effectiveTheme),
         });
-        setStates((prev) => new Map(prev).set(roomId, { phase: 'ready', embed }));
+        setStates((prev) => new Map(prev).set(roomId, { phase: 'ready', embed, channelUrl }));
       } catch (cause) {
         setStates((prev) =>
           new Map(prev).set(roomId, {
@@ -133,6 +183,16 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
     if (!startedRef.current.has(activeRoomId)) void resolve(activeRoomId);
   }, [activeRoomId, resolve]);
 
+  // The room list is read again every little while; a room whose channel link
+  // has come back since it was opened is opened again.
+  const activeState = activeRoomId ? states.get(activeRoomId) : undefined;
+  const activeChannelUrl = activeRoomId ? switchRoomsStore.roomChannelUrl(activeRoomId) : null;
+  useEffect(() => {
+    if (!activeRoomId || activeState?.phase !== 'ready') return;
+    if (embedIsStale(activeState.embed, activeState.channelUrl, activeChannelUrl))
+      void resolve(activeRoomId);
+  }, [activeRoomId, activeState, activeChannelUrl, resolve]);
+
   /*
    * A theme switch needs the guest reloaded, not just re-pushed.
    *
@@ -168,13 +228,19 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
   // applies to a room showing its settings: the conversation is still there,
   // just not on screen.
   const visible =
-    isRoomView && activeRoomId !== null && roomTabStore.tabFor(activeRoomId) === 'chat';
-  const active = activeRoomId ? states.get(activeRoomId) : undefined;
+    (slot ? slotBox !== null : isRoomView) &&
+    activeRoomId !== null &&
+    roomTabStore.tabFor(activeRoomId, slot ? embeddedRoomFallbackTab(activeRoomId) : 'chat') ===
+      'chat';
+  const active = activeState;
 
   return (
     <div
+      ref={layerRef}
+      style={slot && slotBox ? slotBox : undefined}
       className={cn(
-        'absolute inset-x-0 top-10 bottom-0 overflow-hidden rounded-b-[10px] bg-background',
+        'absolute overflow-hidden bg-background',
+        slot ? 'rounded-br-[10px]' : 'inset-x-0 top-10 bottom-0 rounded-b-[10px]',
         visible ? 'block' : 'hidden'
       )}
     >
@@ -204,13 +270,37 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
       ) : null}
 
       {visible && active?.phase === 'ready' && active.embed.kind === 'unavailable' ? (
-        <RoomNotice icon={<MessagesSquare className="size-6" />} title={active.embed.reason} />
+        <RoomNotice
+          icon={<MessagesSquare className="size-6" />}
+          title={active.embed.reason}
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              // The link comes from the room list, so it is read again first.
+              onClick={() => {
+                if (!activeRoomId) return;
+                void switchRoomsStore.loadRoomNames().then(() => resolve(activeRoomId));
+              }}
+            >
+              <RefreshCw className="size-3" />
+              Retry
+            </Button>
+          }
+        />
+      ) : null}
+
+      {visible && active?.phase === 'ready' && active.embed.kind === 'unlinked' ? (
+        <RoomNotice
+          icon={<MessagesSquare className="size-6" />}
+          title={`This room is bridged to ${bridgePlatformLabel(active.embed.platform)}, which cannot be shown inside Switch Console.`}
+        />
       ) : null}
 
       {visible && active?.phase === 'ready' && active.embed.kind === 'external' ? (
         <RoomNotice
           icon={<MessagesSquare className="size-6" />}
-          title={`This room lives in ${capitalise(active.embed.platform)}`}
+          title={`This room lives in ${bridgePlatformLabel(active.embed.platform)}`}
           detail="Conversations on external platforms open in their own app, or in your browser when it is not installed."
           action={
             <Button
@@ -219,7 +309,7 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
               onClick={() => activeRoomId && openRoomChannel(activeRoomId)}
             >
               <ExternalLink className="size-3" />
-              Open in {capitalise(active.embed.platform)}
+              Open in {bridgePlatformLabel(active.embed.platform)}
             </Button>
           }
         />
@@ -249,7 +339,3 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
     </div>
   );
 });
-
-function capitalise(value: string): string {
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}

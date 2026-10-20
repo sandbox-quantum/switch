@@ -1,9 +1,9 @@
-import type { McpServerSpec } from '../adapter';
+import type { McpServerSpec, RuntimeMode } from '../adapter';
 
 /** TOML bare keys; anything else would have to be quoted inside a `-c` dotted path. */
 const BARE_KEY = /^[A-Za-z0-9_-]+$/;
 
-function tomlString(value: string): string {
+export function tomlString(value: string): string {
   return JSON.stringify(value);
 }
 
@@ -22,8 +22,20 @@ function tomlStringTable(values: Record<string, string>): string {
  * `codex app-server` reads MCP servers from config, so a per-session
  * registration is a set of `-c mcp_servers.<name>.<key>=<toml>` overrides on
  * the process it is spawned with.
+ *
+ * Every server's tools are approved without asking (`default_tools_approval_mode
+ * = "approve"`) except a connector's, which follow `runtimeMode`: Codex asks
+ * through `mcpServer/elicitation/request` under the untrusted project mark and
+ * `on-request`, and in auto mode its automatic reviewer answers instead. In full access a connector keeps the key too, because under
+ * `never` a tool call that needs approval is not allowed but failed ("MCP tool
+ * call requires approval, but approval policy is never"), checked against
+ * codex-cli 0.162.1.
  */
-export function mcpServerConfigArgs(servers: Record<string, McpServerSpec>): {
+export function mcpServerConfigArgs(
+  servers: Record<string, McpServerSpec>,
+  connectors: readonly string[],
+  runtimeMode: RuntimeMode
+): {
   args: string[];
   env: Record<string, string>;
 } {
@@ -63,7 +75,8 @@ export function mcpServerConfigArgs(servers: Record<string, McpServerSpec>): {
       }
       if (Object.keys(headers).length > 0) push('http_headers', tomlStringTable(headers));
     }
-    push('default_tools_approval_mode', tomlString('approve'));
+    if (!connectors.includes(name) || runtimeMode === 'full-access')
+      push('default_tools_approval_mode', tomlString('approve'));
   }
   return { args, env };
 }

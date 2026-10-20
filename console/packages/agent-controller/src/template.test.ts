@@ -15,6 +15,7 @@ const definition = {
   advanced_config: {},
   instructions: 'Review pull requests.',
   auto_approve: false,
+  auto_mode: false,
 };
 
 describe('buildWatcherTemplate', () => {
@@ -47,7 +48,10 @@ describe('buildWatcherTemplate', () => {
     expect(template.execution).toMatchObject({
       credentialsPath: '/data/agents/agent-1/credentials.json',
       binaryPath: `/usr/bin/${provider}`,
-      codexConfig: provider === 'codex' ? 'developer_instructions = "Review pull requests."\n' : '',
+      codexConfig:
+        provider === 'codex'
+          ? 'sandbox_mode = "workspace-write"\ndeveloper_instructions = "Review pull requests."\n'
+          : '',
     });
     expect(template.execution!.inheritEnv).toEqual(
       expect.arrayContaining(['PATH', 'HOME', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY'])
@@ -71,6 +75,7 @@ describe('buildWatcherTemplate', () => {
         advanced_config: {},
         instructions: '',
         auto_approve: true,
+        auto_mode: false,
       },
       cwd: '/work/scout',
       credentialsPath: '/data/c.json',
@@ -81,6 +86,31 @@ describe('buildWatcherTemplate', () => {
     expect(template.execution).not.toHaveProperty('binaryPath');
     expect(template.execution!.context).toBe(SWITCH_SKILL_CONTEXT);
   });
+
+  it.each(PROVIDERS)(
+    'runs %s in auto mode, which bypass wins over, keeping Codex in its workspace sandbox',
+    (provider) => {
+      const build = (auto_approve: boolean) =>
+        buildWatcherTemplate({
+          agentId: 'agent-1',
+          provider,
+          definition: { ...definition, auto_approve, auto_mode: true },
+          cwd: '/work/scout',
+          credentialsPath: '/data/c.json',
+          binaryPath: null,
+        });
+      const auto = build(false);
+      expect(sharedConfigSchema.safeParse(auto).success).toBe(true);
+      expect(auto.start.input.runtimeMode).toBe('auto');
+      expect(build(true).start.input.runtimeMode).toBe('full-access');
+      if (provider === 'codex') {
+        expect(auto.execution!.codexConfig).toMatch(/^sandbox_mode = "workspace-write"\n/);
+        expect(build(true).execution!.codexConfig).toMatch(
+          /^sandbox_mode = "danger-full-access"\n/
+        );
+      }
+    }
+  );
 
   it('applies a Codex agent’s advanced configuration as Console does: model options and profile', () => {
     const advanced = {
@@ -96,6 +126,7 @@ describe('buildWatcherTemplate', () => {
         advanced_config: advanced.advancedConfig,
         instructions: 'Review pull requests.',
         auto_approve: false,
+        auto_mode: false,
       },
       cwd: '/work/scout',
       credentialsPath: '/data/c.json',
@@ -110,7 +141,9 @@ describe('buildWatcherTemplate', () => {
       ...advanced,
     });
     expect(template.start.input.model).toEqual({ id: 'gpt-5.5', options: { effort: 'high' } });
-    expect(template.execution!.codexConfig).toBe(console.codexConfig);
+    expect(template.execution!.codexConfig).toBe(
+      `sandbox_mode = "workspace-write"\n${console.codexConfig}`
+    );
     expect(template.execution!.codexConfig).toContain('model_verbosity = "low"');
     expect(template.execution!.codexConfig).toContain('web_search = true');
     expect(template.start.input).not.toHaveProperty('agentDefinition');
@@ -132,6 +165,7 @@ describe('buildWatcherTemplate', () => {
         },
         instructions: 'Review pull requests.',
         auto_approve: false,
+        auto_mode: false,
       },
       cwd: '/work/scout',
       credentialsPath: '/data/c.json',
@@ -161,6 +195,7 @@ describe('buildWatcherTemplate', () => {
         advanced_config: { variant: 'high', temperature: 0.2 },
         instructions: '',
         auto_approve: false,
+        auto_mode: false,
       },
       cwd: '/work/scout',
       credentialsPath: '/data/c.json',
@@ -195,7 +230,7 @@ describe('buildWatcherTemplate', () => {
 });
 
 describe('advancedConfigDefinitionProblem', () => {
-  it('accepts the advanced configuration a provider offers', () => {
+  it('accepts the advanced configuration a provider applies', () => {
     expect(
       advancedConfigDefinitionProblem('opencode', {
         ...definition,
@@ -217,6 +252,24 @@ describe('advancedConfigDefinitionProblem', () => {
         advanced_config: { effort: 'high' },
       })
     ).toMatch(/'effort'/);
+  });
+
+  it('accepts an empty configuration for a provider that applies no settings', () => {
+    expect(
+      advancedConfigDefinitionProblem('antigravity', { ...definition, advanced_config: {} })
+    ).toBeNull();
+    expect(
+      advancedConfigDefinitionProblem('cursor', { ...definition, advanced_config: {} })
+    ).toBeNull();
+  });
+
+  it('names a value of a shape this controller cannot apply', () => {
+    expect(
+      advancedConfigDefinitionProblem('opencode', {
+        ...definition,
+        advanced_config: { temperature: 'warm' },
+      })
+    ).toMatch(/'temperature'.*number/);
   });
 
   it('names a Claude Code setting its session cannot start with', () => {

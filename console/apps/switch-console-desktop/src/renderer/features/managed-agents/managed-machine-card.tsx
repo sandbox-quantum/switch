@@ -1,8 +1,12 @@
-import { ChevronDown, CircleAlert, Laptop, Server } from 'lucide-react';
+import { ChevronDown, CircleAlert, Cloud, Laptop, Server } from 'lucide-react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { cn } from '@renderer/utils/utils';
-import type { ManagedAgentView, OwnedMachine } from '@shared/core/managed-agents/managed-agents';
+import {
+  isCloudMachine,
+  type ManagedAgentView,
+  type OwnedMachine,
+} from '@shared/core/managed-agents/managed-agents';
 import { machineProblem, machineTone, managedAgentState } from './managed-agent-state';
 
 const DOT: Record<ReturnType<typeof machineTone>, string> = {
@@ -34,7 +38,11 @@ export function ManagedMachinePill({
             className="flex h-5 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-background-tertiary px-2 text-[11px] text-foreground-muted hover:text-foreground"
           >
             <span aria-hidden className={cn('size-1.5 shrink-0 rounded-full', DOT[tone])} />
-            {agent.machine ? `on ${agent.machine.name}` : 'on no machine'}
+            {machine?.local?.kind === 'this-computer'
+              ? 'on this computer'
+              : agent.machine
+                ? `on ${agent.machine.name}`
+                : 'on no machine'}
             <ChevronDown className="size-3" />
           </button>
         }
@@ -64,7 +72,12 @@ function MachineCard({
 }) {
   const problem = machineProblem(agent, machine);
   const state = managedAgentState(agent);
-  const Icon = machine?.local?.kind === 'this-computer' ? Laptop : Server;
+  const Icon =
+    machine?.local?.kind === 'this-computer'
+      ? Laptop
+      : agent.machine && isCloudMachine(agent.machine)
+        ? Cloud
+        : Server;
   const subtitle =
     machine?.local?.kind === 'this-computer'
       ? 'This computer'

@@ -29,6 +29,7 @@ function defaultStatus(sshHost: string): RemoteServerStatus {
   return {
     sshHost,
     phase: 'stopped',
+    checked: false,
     upgrade: null,
     serverId: null,
     version: '',
@@ -40,6 +41,7 @@ function defaultStatus(sshHost: string): RemoteServerStatus {
     deployedTelemetry: null,
     message: null,
     error: null,
+    failedTo: null,
     notice: null,
     recordWarning: null,
     waitingFor: null,
@@ -127,6 +129,11 @@ export class RemoteServerStore {
    */
   isHostBlocked(sshHost: string): boolean {
     return hostReachabilityStore.isBlocked(sshHost);
+  }
+
+  /** Whether an action this window asked for on the host is in flight. */
+  isBusy(sshHost: string): boolean {
+    return this.busyHosts.has(sshHost);
   }
 
   isRunning(sshHost: string): boolean {

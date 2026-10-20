@@ -15,12 +15,15 @@ import { wireMouseNavigation } from '@renderer/lib/layout/mouse-navigation';
 import { viewStateCache } from '@renderer/lib/stores/view-state-cache';
 import { log } from '@renderer/utils/logger';
 import { initSoundPlayer } from '@renderer/utils/soundPlayer';
+import { setAgentProviderCatalogue } from '@shared/core/providers/agent-provider-registry';
 import type { NavigationSnapshot, SidebarSnapshot } from '@shared/view-state';
 import { App } from './App';
 import { ErrorBoundary } from './lib/components/error-boundary';
 import { appState } from './lib/stores/app-state';
 
 async function bootstrap() {
+  // Before anything else: stores and views read provider metadata synchronously.
+  setAgentProviderCatalogue(await rpc.providers.catalogue());
   wireExternalLinkRequests();
 
   appState.update.start();

@@ -91,6 +91,17 @@ export function titleCase(value: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/** A messaging platform's own name for itself, where title-casing its key
+ *  gets it wrong — `teams` is Microsoft's own app, not a generic "Teams".
+ *  Falls back to title case for any platform with no name of its own to get
+ *  wrong. */
+const PLATFORM_LABELS: Record<string, string> = {
+  teams: "Microsoft Teams",
+};
+
+export const platformLabel = (value: string): string =>
+  PLATFORM_LABELS[value] ?? titleCase(value);
+
 /** Identifiers, hashes, IPs and code render in monospace — character-level
  *  precision is the point. Spread onto an `sx`. */
 export const MONO_SX = {

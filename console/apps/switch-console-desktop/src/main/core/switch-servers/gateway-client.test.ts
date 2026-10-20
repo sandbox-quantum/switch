@@ -47,31 +47,52 @@ vi.mock('./console-identity', () => ({
 }));
 
 const {
-  cloudLifecycle,
-  getCloudLaunchConfiguration,
+  cloudMachineLifecycle,
+  listCloudMachines,
   getConnectionCatalog,
+  fetchConnectionAgents,
+  fetchServiceGrants,
+  fetchWorkspaceServices,
+  setWorkspaceService,
+  fetchConnectorApps,
+  saveConnectorApp,
+  fetchConnectorAppImpact,
+  removeConnectorApp,
+  removeServiceGrant,
+  setServiceGrant,
   getGitHubConnection,
   startGitHubConnection,
   completeGitHubConnection,
-  confirmGitHubConnection,
-  getClaudeConnection,
-  connectClaude,
-  disconnectClaude,
+  startServiceConnection,
+  completeServiceConnection,
+  connectServiceWithKey,
+  disconnectService,
   acceptInvitation,
   acceptPendingInvitation,
+  addBridgeTeam,
+  beginChatClaim,
   beginMessagingAppInstall,
-  fetchInstallablePlatforms,
+  deleteMessagingAppInstall,
+  disconnectChat,
+  fetchConnectedChats,
+  fetchMessagingApps,
   fetchPendingInvitations,
   fetchJoinableWorkspaces,
+  fetchBridgeTeams,
+  fetchMessagingAppInstalls,
+  fetchTeamsPackage,
   joinWorkspaceByDomain,
   fetchJoinDomains,
   addJoinDomain,
   removeJoinDomain,
+  removeBridgeTeam,
   createInvitation,
   fetchInvitations,
+  fetchCanCreateWorkspace,
   fetchInviteEmailEnabled,
   createRoom,
   deleteBridge,
+  deleteRoom,
   ensureCloudMachine,
   fetchAuthConfig,
   fetchBridges,
@@ -79,8 +100,8 @@ const {
   ownsOwnerAddressedAgent,
   registerKnownAgent,
   updateAgentDisplayName,
+  renameAgent,
   updateBridge,
-  updateCloudLaunchConfiguration,
   AgentManagementUnavailableError,
   enrollConsoleController,
   fetchAdvancedConfigSchema,
@@ -91,23 +112,36 @@ const {
   revokeManagementController,
   updateManagementController,
   fetchManagementControllers,
+  giveMachineLogin,
+  fetchMachineOperation,
   fetchAgentManagementAccess,
   updateCanManageAgents,
   updateManagedAgent,
+  fetchAvatarSettings,
+  fetchAgentIconChoices,
 } = await import('./gateway-client');
 
 const SERVER = {
   id: 'srv-1',
   name: 'S',
-  gatewayUrl: 'https://switch.example.com',
+  url: 'https://switch.example.com',
+  dashboardUrl: null,
   managed: false,
 } as never;
 const MANAGED = {
   id: 'srv-local',
   name: 'Local',
-  gatewayUrl: 'https://switch.example.com',
+  url: 'https://switch.example.com',
   managed: true,
 } as never;
+
+/** `SERVER` under a different id — `SERVER` is typed `as never` so TypeScript
+ * can hand it to every call expecting a full `SwitchServer`, but that also
+ * means it cannot be spread. Used where a test needs several distinct servers
+ * (e.g. the per-server avatar-settings cache) without redeclaring every field. */
+function serverWithId(id: string): typeof SERVER {
+  return { id, name: 'S', url: 'https://switch.example.com', managed: false } as never;
+}
 
 /** A structurally-valid JWT whose payload `exp` is `secondsFromNow` in the
  * future (or past when negative). Signature is a placeholder — the client only
@@ -124,7 +158,7 @@ function okMeResponse(): Response {
     status: 200,
     ok: true,
     json: async () => ({ id: 'u1', name: 'Ada', email: 'ada@example.com', role: 'user' }),
-    headers: { getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => [] },
     text: async () => '',
   } as unknown as Response;
 }
@@ -134,7 +168,7 @@ function unauthorizedResponse(): Response {
     status: 401,
     ok: false,
     json: async () => ({}),
-    headers: { getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => [] },
     text: async () => 'Token expired',
   } as unknown as Response;
 }
@@ -145,6 +179,33 @@ function cookieHeaderOf(call: unknown[]): string {
 }
 
 const fetchMock = vi.fn(async () => okMeResponse());
+
+const CONNECTOR_APP = {
+  slug: 'github',
+  name: 'GitHub',
+  kind: 'github_app',
+  source: 'saved',
+  configuration_variables: ['GITHUB_CONNECTIONS_CONFIG_PATH'],
+  deprecated: false,
+  client_id: 'Iv1',
+  saved_client_id: 'Iv1',
+  fields: { slug: 'switch-example' },
+  secrets: {
+    client_secret: { set: true, last4: 'ab12' },
+    private_key: { set: true, fingerprint: 'SHA256:abc' },
+  },
+  saved_ignored: false,
+  unreadable: false,
+  load_error: null,
+  redirect_uri: 'https://switch.example.com/gateway/provider-connections/github/callback',
+  setup_blocked: null,
+  install_url: 'https://github.com/apps/switch-example/installations/new',
+  updated_by_name: 'Ada',
+  updated_at: '2026-10-16T09:00:00+00:00',
+  connected_members: 3,
+  workspaces: 1,
+  stale_connections: 0,
+};
 
 describe('gatewayFetch proactive session renewal', () => {
   beforeEach(() => {
@@ -401,7 +462,7 @@ function jsonResponse(body: unknown): Response {
     status: 200,
     ok: true,
     json: async () => body,
-    headers: { getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => [] },
     text: async () => JSON.stringify(body),
   } as unknown as Response;
 }
@@ -411,7 +472,7 @@ function errorResponse(status: number, body: string): Response {
     status,
     ok: false,
     json: async () => ({}),
-    headers: { getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => [] },
     text: async () => body,
   } as unknown as Response;
 }
@@ -462,6 +523,11 @@ describe('room creation', () => {
         channelCreationSupported: true,
         canCreateChannels: true,
         directorySearchSupported: true,
+        attention: null,
+        teamPlacementSupported: false,
+        channelIdsRefused: null,
+        receivesWebhooks: false,
+        webhookUrl: null,
       },
       {
         id: 'b2',
@@ -476,8 +542,52 @@ describe('room creation', () => {
         channelCreationSupported: true,
         canCreateChannels: true,
         directorySearchSupported: true,
+        attention: null,
+        teamPlacementSupported: false,
+        channelIdsRefused: null,
+        receivesWebhooks: false,
+        webhookUrl: null,
       },
     ]);
+  });
+
+  it('carries an attention note and the distributed-Teams flag when the server reports them', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          bridge_id: 'b1',
+          bridge_type: 'teams',
+          display_name: 'Contoso Teams',
+          status: 'active',
+          attention: 'The organisation’s admin withdrew approval for this app.',
+          team_placement_supported: true,
+        },
+      ]) as never
+    );
+
+    const [bridge] = await fetchBridges(SERVER);
+
+    expect(bridge).toMatchObject({
+      attention: 'The organisation’s admin withdrew approval for this app.',
+      teamPlacementSupported: true,
+    });
+  });
+
+  it('carries why a connection binds no chat by id', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          bridge_id: 'b1',
+          bridge_type: 'telegram',
+          display_name: 'Telegram',
+          status: 'active',
+          channel_ids_refused: 'Rooms come from connecting a chat.',
+        },
+      ]) as never
+    );
+
+    const [bridge] = await fetchBridges(SERVER);
+    expect(bridge.channelIdsRefused).toBe('Rooms come from connecting a chat.');
   });
 
   it('reads the effective answer as the platform ceiling ANDed with the operator switch', async () => {
@@ -511,7 +621,26 @@ describe('room creation', () => {
     expect(slack).toMatchObject({ channelCreationSupported: true, canCreateChannels: false });
   });
 
-  it('always names a bridge and a channel type, never the internal-only escape hatch', async () => {
+  it('makes a room with no bridge internal, not one on the default app', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 'room-1',
+        name: 'design',
+        description: 'd',
+        channel_type: 'channel_public',
+        agent_count: 0,
+        bridge_display_name: null,
+        archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+      }) as never
+    );
+
+    await createRoom(SERVER, { name: 'design', description: 'd', bridgeId: null, agentIds: [] });
+
+    expect(bodyOf(fetchMock.mock.calls[0])).toMatchObject({ bridge_id: null, internal_only: true });
+  });
+
+  it('names a chosen bridge and a channel type, never the internal-only escape hatch', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({
         id: 'room-1',
@@ -586,7 +715,7 @@ describe('room creation', () => {
       ) as never
     );
 
-    await expect(cloudLifecycle(SERVER, 'launch', 'retry', 3)).rejects.toMatchObject({
+    await expect(cloudMachineLifecycle(SERVER, 'machine', 'start', 3)).rejects.toMatchObject({
       status: 409,
       detail: 'The owner stopped the cloud machine. Start it in Switch Console.',
       code: 'machine_stopped',
@@ -613,7 +742,7 @@ describe('registerKnownAgent', () => {
           status: 200,
           ok: true,
           json: async () => ({ id: 'sw-1', api_key: 'tok-123' }),
-          headers: { getSetCookie: () => [] },
+          headers: { get: () => null, getSetCookie: () => [] },
           text: async () => '',
         }) as unknown as Response
     );
@@ -778,7 +907,7 @@ describe('ownsOwnerAddressedAgent', () => {
   });
 });
 
-describe('cloud agent edits', () => {
+describe('agent display name', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal('fetch', fetchMock);
@@ -787,56 +916,6 @@ describe('cloud agent edits', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-  });
-
-  const configuration = {
-    description: 'Reviews pull requests',
-    instructions: 'Be brief.',
-    definition_attributes: { model: 'opus' },
-  };
-
-  it('reads the configuration a launch carries', async () => {
-    fetchMock.mockResolvedValue(jsonResponse(configuration) as never);
-
-    await expect(getCloudLaunchConfiguration(SERVER, 'launch-1')).resolves.toEqual(configuration);
-    const [url] = fetchMock.mock.calls[0] as unknown as [string];
-    expect(url).toBe('https://switch.example.com/gateway/hosted-launches/launch-1/configuration');
-  });
-
-  it('PUTs the new instructions with the rendered definition', async () => {
-    fetchMock.mockResolvedValue(jsonResponse(configuration) as never);
-
-    await updateCloudLaunchConfiguration(SERVER, 'launch-1', {
-      instructions: 'Be brief.',
-      definition_attributes: { model: 'opus' },
-      definition: '---\nname: helper\n---\nBe brief.',
-    });
-
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [
-      string,
-      { method: string; body: string },
-    ];
-    expect(url).toBe('https://switch.example.com/gateway/hosted-launches/launch-1/configuration');
-    expect(init.method).toBe('PUT');
-    expect(JSON.parse(init.body)).toEqual({
-      instructions: 'Be brief.',
-      definition_attributes: { model: 'opus' },
-      definition: '---\nname: helper\n---\nBe brief.',
-    });
-  });
-
-  it('surfaces a refused configuration rather than reporting it saved', async () => {
-    fetchMock.mockResolvedValue(
-      errorResponse(409, '{"detail":"This worker has been removed."}') as never
-    );
-
-    await expect(
-      updateCloudLaunchConfiguration(SERVER, 'launch-1', {
-        instructions: '',
-        definition_attributes: {},
-        definition: 'x',
-      })
-    ).rejects.toMatchObject({ status: 409, detail: 'This worker has been removed.' });
   });
 
   it('PUTs a display name, or null to clear it', async () => {
@@ -866,6 +945,56 @@ describe('cloud agent edits', () => {
     const [, cleared] = fetchMock.mock.calls[1] as unknown as [string, { body: string }];
     expect(JSON.parse(cleared.body)).toEqual({ display_name: null });
     expect(agent.displayName).toBe('Helper');
+  });
+});
+
+describe('renameAgent', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('PUTs the name with the display name, and reads back what the rename did', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        agent: {
+          id: 'a1',
+          name: 'meeting-scribe',
+          display_name: 'Meeting Scribe',
+          description: '',
+          connector_type: 'mcp',
+          owner_name: 'Ada',
+          known_agent_type: null,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+        old_name: 'notes-taker',
+        bridge_failures: ['slack: Slack is down'],
+        templates_mentioning_old_name: ['weekly'],
+      }) as never
+    );
+
+    const outcome = await renameAgent(SERVER, 'a1', 'meeting-scribe', 'Meeting Scribe');
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(url).toBe('https://switch.example.com/gateway/agents/a1/name');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({
+      name: 'meeting-scribe',
+      display_name: 'Meeting Scribe',
+    });
+    expect(outcome.agent.name).toBe('meeting-scribe');
+    expect(outcome.agent.displayName).toBe('Meeting Scribe');
+    expect(outcome.oldName).toBe('notes-taker');
+    expect(outcome.bridgeFailures).toEqual(['slack: Slack is down']);
+    expect(outcome.templatesMentioningOldName).toEqual(['weekly']);
   });
 });
 
@@ -918,6 +1047,28 @@ describe('updateBridge', () => {
 
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
     expect(JSON.parse(init.body)).toEqual({});
+  });
+
+  it('sends connection_config only when given, for choosing a distributed Teams default team', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        bridge_id: 'b1',
+        bridge_type: 'teams',
+        display_name: 'Contoso Teams',
+        status: 'active',
+      }) as never
+    );
+
+    await updateBridge(SERVER, 'b1', {
+      channelCreationEnabled: true,
+      connectionConfig: { team_id: 'team-1' },
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
+    expect(JSON.parse(init.body)).toEqual({
+      channel_creation_enabled: true,
+      connection_config: { team_id: 'team-1' },
+    });
   });
 });
 
@@ -978,70 +1129,39 @@ describe('deleteBridge', () => {
   });
 });
 
-describe('Claude cloud connection transport', () => {
+describe('deleteRoom', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal('fetch', fetchMock);
-    getSessionCookie.mockResolvedValue(makeJwt(7200));
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
   });
-  afterEach(() => vi.unstubAllGlobals());
-  it('refuses to send provider credentials over HTTP', async () => {
-    await expect(
-      connectClaude(
-        {
-          id: 'insecure',
-          name: 'Insecure',
-          gatewayUrl: 'http://switch.example.com',
-          managed: false,
-        } as never,
-        'api-key',
-        'SYNTHETIC'
-      )
-    ).rejects.toThrow('HTTPS');
-    expect(fetchMock).not.toHaveBeenCalled();
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
-  it('sends the credential only in an authenticated PUT body', async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          status: 'connected',
-          kind: 'api-key',
-          verified_at: '2026-01-01T00:00:00Z',
-        })
-      )
+
+  it('keeps the channel unless asked, leaving the request as it was', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ok: true, channel: null }) as never);
+
+    await expect(deleteRoom(SERVER, 'r/1')).resolves.toBeNull();
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe('https://switch.example.com/gateway/rooms/r%2F1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('asks for the channel to be retired, and reports what became of it', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ ok: true, channel: { outcome: 'failed', reason: 'not in channel' } }) as never
     );
-    await connectClaude(SERVER, 'api-key', 'SYNTHETIC-CREDENTIAL');
-    const [url, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe('https://switch.example.com/gateway/provider-connections/claude');
-    expect(options.method).toBe('PUT');
-    expect(JSON.parse(options.body as string)).toEqual({
-      kind: 'api-key',
-      credential: 'SYNTHETIC-CREDENTIAL',
+
+    await expect(deleteRoom(SERVER, 'r1', { retireChannel: true })).resolves.toEqual({
+      outcome: 'failed',
+      reason: 'not in channel',
     });
-    expect(cookieHeaderOf(fetchMock.mock.calls[0])).toContain('switch_auth=');
-  });
-  it('reads metadata and deletes without a credential body', async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: 'not_connected' })));
-    expect(await getClaudeConnection(SERVER)).toEqual({ status: 'not_connected' });
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await disconnectClaude(SERVER);
-    const [, options] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
-    expect(options.method).toBe('DELETE');
-    expect(options.body).toBeUndefined();
-  });
-  it('rejects malformed connection status', async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ status: 'connected', kind: 'unknown' }))
-    );
-    await expect(getClaudeConnection(SERVER)).rejects.toThrow('invalid Claude connection status');
-  });
-  it('surfaces a failed verification instead of reporting a connection', async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ detail: 'Claude could not complete the check.' }), {
-        status: 422,
-      })
-    );
-    await expect(connectClaude(SERVER, 'api-key', 'SYNTHETIC-CREDENTIAL')).rejects.toThrow();
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/rooms/r1?retire_channel=true');
   });
 });
 
@@ -1052,7 +1172,7 @@ describe('GitHub connection transport', () => {
     getSessionCookie.mockResolvedValue(makeJwt(7200));
   });
   afterEach(() => vi.unstubAllGlobals());
-  it('sends objects, encoded once, for start, complete and confirm', async () => {
+  it('sends objects, encoded once, for start and complete, and reads the account back', async () => {
     const state = 'a'.repeat(43);
     const input = { port: 12345, state, completion_secret: 'b'.repeat(43) };
     fetchMock.mockResolvedValueOnce(
@@ -1064,17 +1184,18 @@ describe('GitHub connection transport', () => {
       )
     );
     await startGitHubConnection(SERVER, input);
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await completeGitHubConnection(SERVER, state, 'SYNTHETIC-CODE', input.completion_secret);
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await confirmGitHubConnection(SERVER, state, input.completion_secret);
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ warning: null, login: 'example-user' }))
+    );
+    expect(
+      await completeGitHubConnection(SERVER, state, 'SYNTHETIC-CODE', input.completion_secret)
+    ).toEqual({ warning: null, login: 'example-user' });
     const bodies = (fetchMock.mock.calls as unknown[][]).map((call) =>
       JSON.parse((call[1] as RequestInit).body as string)
     );
     expect(bodies).toEqual([
       input,
       { code: 'SYNTHETIC-CODE', completion_secret: input.completion_secret },
-      { completion_secret: input.completion_secret },
     ]);
   });
   it('only accepts authorization URLs on the authenticated server', async () => {
@@ -1095,6 +1216,25 @@ describe('GitHub connection transport', () => {
         completion_secret: 'b'.repeat(43),
       })
     ).rejects.toThrow('invalid GitHub authorization URL');
+  });
+  it('accepts the server’s own address on an older server that keeps its dashboard apart', async () => {
+    const state = 'a'.repeat(43);
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: state,
+          url: `https://switch-api.example.com/gateway/provider-connections/github/authorize?state=${state}`,
+        })
+      )
+    );
+    const split = {
+      ...(SERVER as object),
+      url: 'https://switch-api.example.com',
+      dashboardUrl: 'https://switch.example.com',
+    } as never;
+    await expect(
+      startGitHubConnection(split, { port: 12345, state, completion_secret: 'b'.repeat(43) })
+    ).resolves.toMatchObject({ id: state });
   });
   it('checks state matches the returned authorization id', async () => {
     fetchMock.mockResolvedValueOnce(
@@ -1127,7 +1267,108 @@ describe('GitHub connection transport', () => {
     );
     expect(await getGitHubConnection(SERVER)).not.toHaveProperty('access_token');
   });
-  it('reads the connection catalog and rejects an unknown status', async () => {
+  it('reads the service connections, mapped onto the catalog', async () => {
+    const entry = {
+      slug: 'github',
+      name: 'GitHub',
+      category: 'Source control',
+      description: 'Repositories.',
+      enabled: true,
+      auth_type: 'oauth',
+      connectable: true,
+      configured: false,
+      unavailable_reason: 'GitHub can be connected on this server but not granted to agents.',
+      status: 'needs_reauthorization',
+      consent: 'write',
+      external_identity: 'ada-gh',
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          connections: [
+            entry,
+            { ...entry, slug: 'jira', name: 'Jira', enabled: false, status: 'not_connected' },
+            {
+              ...entry,
+              slug: 'example',
+              name: 'Example',
+              status: 'active',
+              pass_through: true,
+              token_lifetime: 7200,
+            },
+          ],
+        })
+      )
+    );
+    expect(await getConnectionCatalog(SERVER)).toEqual([
+      {
+        slug: 'github',
+        name: 'GitHub',
+        category: 'Source control',
+        description: 'Repositories.',
+        enabled: true,
+        auth_type: 'oauth',
+        connectable: true,
+        status: 'needs_reauthorization',
+        unavailable_reason: entry.unavailable_reason,
+        // A server that predates them says none of these.
+        unavailable_code: null,
+        pass_through: false,
+        token_lifetime: null,
+        loopback_ports: null,
+        key: null,
+        external_identity: 'ada-gh',
+        consent: 'write',
+        // A server without the workspace switch: no workspace layer.
+        workspace_enabled: null,
+      },
+      expect.objectContaining({ slug: 'jira', status: 'coming_soon', unavailable_reason: null }),
+      expect.objectContaining({
+        slug: 'example',
+        status: 'connected',
+        pass_through: true,
+        token_lifetime: 7200,
+      }),
+    ]);
+    const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/service-connections');
+  });
+  it('reads why a service cannot be used as a code, dropping one it does not know', async () => {
+    const entry = {
+      slug: 'github',
+      name: 'GitHub',
+      category: 'Source control',
+      description: 'Repositories.',
+      enabled: true,
+      auth_type: 'oauth',
+      connectable: false,
+      configured: false,
+      unavailable_reason: "GitHub can't be used on this server.",
+      unavailable_code: 'needs_https',
+      status: 'not_connected',
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          connections: [
+            entry,
+            { ...entry, slug: 'example', unavailable_code: 'some_later_reason' },
+            { ...entry, slug: 'jira', enabled: false, unavailable_code: 'coming_soon' },
+          ],
+        })
+      )
+    );
+    const catalog = await getConnectionCatalog(SERVER);
+    expect(
+      catalog.map((item) => [item.slug, item.unavailable_code, item.unavailable_reason])
+    ).toEqual([
+      ['github', 'needs_https', entry.unavailable_reason],
+      // A newer server's code this Console doesn't know: its reason is shown as it is.
+      ['example', null, entry.unavailable_reason],
+      ['jira', null, null],
+    ]);
+  });
+  it('reads the older catalog from a server without service connections', async () => {
     const github = {
       slug: 'github',
       name: 'GitHub',
@@ -1137,14 +1378,477 @@ describe('GitHub connection transport', () => {
       auth_type: 'oauth',
       status: 'connected',
     };
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ connections: [github] })));
-    expect(await getConnectionCatalog(SERVER)).toEqual([github]);
+    fetchMock
+      .mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ connections: [github] })));
+    expect(await getConnectionCatalog(SERVER)).toEqual([
+      {
+        ...github,
+        connectable: true,
+        unavailable_reason: null,
+        unavailable_code: null,
+        pass_through: false,
+        token_lifetime: null,
+        loopback_ports: null,
+        key: null,
+        external_identity: null,
+        consent: null,
+        workspace_enabled: null,
+      },
+    ]);
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
     expect(url).toBe('https://switch.example.com/gateway/provider-connections/catalog');
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ connections: [{ ...github, status: 'pending' }] }))
-    );
+    fetchMock
+      .mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ connections: [{ ...github, status: 'pending' }] }))
+      );
     await expect(getConnectionCatalog(SERVER)).rejects.toThrow();
+  });
+  it('reads whether the workspace has each service switched on', async () => {
+    const entry = {
+      slug: 'example',
+      name: 'Example',
+      category: 'Observability',
+      description: 'Metrics.',
+      enabled: true,
+      auth_type: 'oauth',
+      connectable: true,
+      configured: true,
+      unavailable_reason: null,
+      status: 'not_connected',
+      consent: null,
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          connections: [
+            { ...entry, workspace_enabled: false },
+            { ...entry, slug: 'other', workspace_enabled: true, status: 'active', consent: 'read' },
+          ],
+        })
+      )
+    );
+    expect(
+      (await getConnectionCatalog(SERVER)).map(({ slug, workspace_enabled, consent }) => ({
+        slug,
+        workspace_enabled,
+        consent,
+      }))
+    ).toEqual([
+      { slug: 'example', workspace_enabled: false, consent: null },
+      { slug: 'other', workspace_enabled: true, consent: 'read' },
+    ]);
+  });
+  it("reads the person's own agents for a service", async () => {
+    const agents = [
+      { agent_id: 'a1', name: 'Helper', granted: true, addressing_open: false },
+      { agent_id: 'a2', name: 'Open one', granted: false, addressing_open: true },
+    ];
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(agents)));
+    expect(await fetchConnectionAgents(SERVER, 'google workspace')).toEqual(agents);
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/service-connections/google%20workspace/agents'
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify([{ agent_id: 'a1', name: 'Helper', granted: 'yes' }]))
+    );
+    await expect(fetchConnectionAgents(SERVER, 'example')).rejects.toThrow();
+
+    // A server from before the list: the page says it cannot list them.
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }));
+    expect(await fetchConnectionAgents(SERVER, 'example')).toBeNull();
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"boom"}', { status: 500 }));
+    await expect(fetchConnectionAgents(SERVER, 'example')).rejects.toMatchObject({ status: 500 });
+  });
+  it("reads the workspace's switches, and none from a server without them", async () => {
+    const services = [
+      {
+        slug: 'example',
+        name: 'Example',
+        enabled: false,
+        updated_by_name: 'Ada',
+        updated_at: '2026-01-02T03:04:05+00:00',
+        connected_members: 3,
+        granted_agents: 5,
+      },
+      {
+        slug: 'other',
+        name: 'Other',
+        enabled: true,
+        updated_by_name: null,
+        updated_at: null,
+        connected_members: 0,
+        granted_agents: 0,
+      },
+    ];
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ services })));
+    expect(await fetchWorkspaceServices(SERVER)).toEqual(services);
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/workspace/services'
+    );
+
+    // No workspace switch on this server: the page shows no workspace layer.
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }));
+    expect(await fetchWorkspaceServices(SERVER)).toBeNull();
+  });
+  it('raises a refusal or a failure of the switches, never an empty list', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ detail: 'Workspace admins only.', code: 'forbidden', retryable: false }),
+        { status: 403 }
+      )
+    );
+    await expect(fetchWorkspaceServices(SERVER)).rejects.toMatchObject({
+      status: 403,
+      detail: 'Workspace admins only.',
+    });
+
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"boom"}', { status: 500 }));
+    await expect(fetchWorkspaceServices(SERVER)).rejects.toMatchObject({ status: 500 });
+  });
+  it('switches a service for the workspace and keeps the warning', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ slug: 'github', enabled: false, warning: 'Access stays a while.' })
+      )
+    );
+    expect(await setWorkspaceService(SERVER, 'github', false)).toEqual({
+      slug: 'github',
+      enabled: false,
+      warning: 'Access stays a while.',
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/workspace/services/github');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ enabled: false });
+  });
+  it("reads the server's connector apps, and none from a server without them", async () => {
+    const apps = { public_url: 'https://switch.example.com', apps: [CONNECTOR_APP] };
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...apps, registered: [{ slug: 'linear' }] }))
+    );
+    expect(await fetchConnectorApps(SERVER)).toEqual(apps);
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/connector-apps'
+    );
+
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }));
+    expect(await fetchConnectorApps(SERVER)).toBeNull();
+
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Admins only."}', { status: 403 }));
+    await expect(fetchConnectorApps(SERVER)).rejects.toMatchObject({ status: 403 });
+  });
+  it("answers a vendor's refusal of a save with the value to look at, and throws the rest", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(CONNECTOR_APP)));
+    expect(await saveConnectorApp(SERVER, 'github', { client_id: 'Iv1', replace: false })).toEqual({
+      kind: 'saved',
+      app: CONNECTOR_APP,
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/connector-apps/github');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ client_id: 'Iv1', replace: false });
+
+    const check = {
+      name: 'secret',
+      ok: false,
+      message: 'GitHub refused the secret.',
+      field: 'client_secret',
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          detail: 'GitHub refused the secret.',
+          field: 'client_secret',
+          checks: [check],
+        }),
+        { status: 422 }
+      )
+    );
+    expect(
+      await saveConnectorApp(SERVER, 'github', {
+        client_id: 'Iv1',
+        client_secret: 'x',
+        replace: false,
+      })
+    ).toEqual({
+      kind: 'refused',
+      message: 'GitHub refused the secret.',
+      field: 'client_secret',
+      checks: [check],
+    });
+
+    // A 422 that is not the vendor's (a missing secret) is a failure like any other.
+    fetchMock.mockResolvedValueOnce(
+      new Response('{"detail":"Enter the client secret."}', { status: 422 })
+    );
+    await expect(
+      saveConnectorApp(SERVER, 'github', { client_id: 'Iv1', replace: false })
+    ).rejects.toMatchObject({ status: 422, detail: 'Enter the client secret.' });
+  });
+  it('asks who would reconnect, and who was connected through a removed app', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ connected_members: 4, workspaces: 2 }))
+    );
+    expect(await fetchConnectorAppImpact(SERVER, 'google-workspace', 'a b')).toEqual({
+      connected_members: 4,
+      workspaces: 2,
+    });
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/connector-apps/google-workspace/impact?client_id=a+b'
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ connected_members: 0, workspaces: 0 }))
+    );
+    expect(await removeConnectorApp(SERVER, 'github')).toEqual({
+      connected_members: 0,
+      workspaces: 0,
+    });
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit])[1].method).toBe(
+      'DELETE'
+    );
+  });
+  it("reads someone else's agent's grants as none, and any other failure as one", async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"Agent not found."}', { status: 404 }));
+    expect(await fetchServiceGrants(SERVER, 'theirs')).toBeNull();
+
+    fetchMock.mockResolvedValueOnce(new Response('{"detail":"boom"}', { status: 500 }));
+    await expect(fetchServiceGrants(SERVER, 'mine')).rejects.toMatchObject({ status: 500 });
+  });
+  it('keeps the reason code and whether a retry can help from a coded refusal', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          detail: 'The connection is busy. Please retry.',
+          code: 'internal',
+          retryable: true,
+        }),
+        { status: 503 }
+      )
+    );
+    await expect(
+      setServiceGrant(SERVER, 'agent', 'github', { access: 'read', resources: {} })
+    ).rejects.toMatchObject({
+      status: 503,
+      detail: 'The connection is busy. Please retry.',
+      code: 'internal',
+      retryable: true,
+    });
+  });
+  it("reads, sets and removes an agent's service grants", async () => {
+    const listed = {
+      grants: [
+        {
+          service: 'github',
+          name: 'GitHub',
+          access: 'read',
+          tool_mode: 'allow',
+          tools: [],
+          effective_tools: [],
+          resources: { installation_id: 7, repository_ids: [70] },
+          summary: 'helper can read 1 repository, acting as the GitHub App.',
+        },
+      ],
+      addressing_open: true,
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(listed)));
+    expect((await fetchServiceGrants(SERVER, 'agent 1'))?.grants[0]?.summary).toBe(
+      listed.grants[0]!.summary
+    );
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/agents/agent%201/service-grants'
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ grant: listed.grants[0], warning: 'Access stays a while.' }))
+    );
+    expect(
+      await setServiceGrant(SERVER, 'agent 1', 'github', {
+        access: 'write',
+        resources: { installation_id: 7, repository_ids: [70] },
+      })
+    ).toBe('Access stays a while.');
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/agents/agent%201/service-grants/github');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({
+      access: 'write',
+      resources: { installation_id: 7, repository_ids: [70] },
+    });
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ warning: null })));
+    expect(await removeServiceGrant(SERVER, 'agent 1', 'github')).toBeNull();
+    expect((fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit])[1].method).toBe(
+      'DELETE'
+    );
+  });
+});
+
+describe('a service sign-in', () => {
+  const state = 'a'.repeat(43);
+  const input = { port: 12345, state, completion_secret: 'b'.repeat(43) };
+  const flows = 'https://switch.example.com/gateway/service-connections/example/flows';
+  // An older server that still keeps its dashboard on a host of its own.
+  const SPLIT = {
+    ...(SERVER as object),
+    dashboardUrl: 'https://switch-dashboard.example.com',
+  } as never;
+  const vendor = (query: Record<string, string>) =>
+    `https://auth.example.test/authorize?${new URLSearchParams(query)}`;
+  const answer = (body: object) =>
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(body)));
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(7200));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('starts and completes on the service’s own routes, and reads the account back', async () => {
+    answer({
+      id: state,
+      mode: 'loopback',
+      url: vendor({ state, redirect_uri: 'http://127.0.0.1:12345/switch-services/callback' }),
+    });
+    expect((await startServiceConnection(SERVER, 'example', input)).mode).toBe('loopback');
+    answer({ warning: null, consent: 'write', account: 'ada@example.test' });
+    expect(
+      await completeServiceConnection(SERVER, 'example', state, 'SYNTHETIC-CODE', 'b'.repeat(43))
+    ).toEqual({ warning: null, consent: 'write', account: 'ada@example.test' });
+    const calls = fetchMock.mock.calls as unknown as [string, RequestInit][];
+    expect(calls.map(([url]) => url)).toEqual([flows, `${flows}/${state}/complete`]);
+    expect(calls.map(([, init]) => JSON.parse(init.body as string))).toEqual([
+      input,
+      { code: 'SYNTHETIC-CODE', completion_secret: 'b'.repeat(43) },
+    ]);
+  });
+
+  it('accepts Core’s own authorize step on this server in core mode', async () => {
+    answer({ id: state, mode: 'core', url: `${flows}/authorize?state=${state}` });
+    expect((await startServiceConnection(SERVER, 'example', input)).url).toBe(
+      `${flows}/authorize?state=${state}`
+    );
+  });
+
+  it('accepts Core’s authorize step on the separate dashboard host an older server keeps', async () => {
+    const url = `https://switch-dashboard.example.com/gateway/service-connections/example/flows/authorize?state=${state}`;
+    answer({ id: state, mode: 'core', url });
+    expect((await startServiceConnection(SPLIT, 'example', input)).url).toBe(url);
+  });
+
+  it.each([
+    [
+      'the separate dashboard host over plain HTTP',
+      'core',
+      `http://switch-dashboard.example.com/gateway/service-connections/example/flows/authorize?state=${state}`,
+    ],
+    [
+      'another server in core mode',
+      'core',
+      `https://other.example.com/gateway/service-connections/example/flows/authorize?state=${state}`,
+    ],
+    [
+      'a vendor page returning elsewhere',
+      'loopback',
+      vendor({ state, redirect_uri: 'https://attacker.example/cb' }),
+    ],
+    [
+      'a vendor page returning to another port',
+      'loopback',
+      vendor({ state, redirect_uri: 'http://127.0.0.1:1/switch-services/callback' }),
+    ],
+    [
+      'a vendor page with another state',
+      'loopback',
+      vendor({ state: 'wrong', redirect_uri: 'http://127.0.0.1:12345/switch-services/callback' }),
+    ],
+    [
+      'a vendor page over plain HTTP',
+      'loopback',
+      `http://auth.example.test/authorize?state=${state}&redirect_uri=${encodeURIComponent('http://127.0.0.1:12345/switch-services/callback')}`,
+    ],
+  ])('refuses %s', async (_name, mode, url) => {
+    answer({ id: state, mode, url });
+    await expect(startServiceConnection(SPLIT, 'example', input)).rejects.toThrow(
+      'invalid sign-in URL'
+    );
+  });
+
+  it('connects with a key on the service’s key route, and reads its form from the catalog', async () => {
+    const key = {
+      fields: [
+        { name: 'api_key', label: 'API key', secret: true, help: 'Org settings.', choices: null },
+        { name: 'site', label: 'Site', secret: false, help: null, choices: ['example.test'] },
+      ],
+      help_url: 'https://docs.example.test/keys',
+    };
+    answer({
+      connections: [
+        {
+          slug: 'example',
+          name: 'Example',
+          category: 'Observability',
+          description: 'Metrics.',
+          enabled: true,
+          auth_type: 'api_key',
+          connectable: true,
+          configured: true,
+          unavailable_reason: null,
+          status: 'not_connected',
+          pass_through: true,
+          token_lifetime: 3600,
+          key,
+          external_identity: null,
+        },
+      ],
+    });
+    expect(await getConnectionCatalog(SERVER)).toEqual([
+      expect.objectContaining({ slug: 'example', auth_type: 'api_key', key }),
+    ]);
+
+    answer({ warning: null, external_identity: 'Example key · example.test' });
+    const fields = { api_key: 'synthetic-example-key', site: 'example.test' };
+    expect(await connectServiceWithKey(SERVER, 'example', fields)).toEqual({
+      warning: null,
+      external_identity: 'Example key · example.test',
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/service-connections/example/key');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body as string)).toEqual({ fields });
+  });
+
+  it('throws the vendor’s refusal of a key with Switch’s detail', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          detail: 'Example refused the key (HTTP 403).',
+          code: 'validation_error',
+          retryable: false,
+        }),
+        { status: 422 }
+      )
+    );
+    await expect(
+      connectServiceWithKey(SERVER, 'example', { api_key: 'synthetic-wrong-key' })
+    ).rejects.toMatchObject({
+      status: 422,
+      detail: 'Example refused the key (HTTP 403).',
+      code: 'validation_error',
+    });
+  });
+
+  it('disconnects through the service’s connection', async () => {
+    answer({ warning: 'Revoke it in your Example settings.' });
+    expect(await disconnectService(SERVER, 'example')).toEqual({
+      warning: 'Revoke it in your Example settings.',
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/service-connections/example');
+    expect(init.method).toBe('DELETE');
   });
 });
 
@@ -1169,12 +1873,57 @@ describe('sign-up support', () => {
       oidcEnabled: false,
       oidcProviderLabel: null,
       signupEnabled: true,
+      oidcLoginOptions: [],
+      oidcBrowserHandoff: false,
     });
+  });
+
+  it('reads the sign-in buttons and whether the browser can be used', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...config,
+        oidc_enabled: true,
+        oidc_login_options: [{ id: 'google', label: 'Google' }],
+        oidc_browser_handoff: true,
+      })
+    );
+    const read = await fetchAuthConfig(SERVER);
+    expect(read.oidcLoginOptions).toEqual([{ id: 'google', label: 'Google' }]);
+    expect(read.oidcBrowserHandoff).toBe(true);
   });
 
   it('treats a server predating sign-up as not offering it', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(config));
     expect((await fetchAuthConfig(SERVER)).signupEnabled).toBe(false);
+  });
+
+  it.each([200, 404])(
+    'says the address does not route /gateway when a web page answers it (HTTP %i)',
+    async (status) => {
+      fetchMock.mockResolvedValueOnce(
+        new Response('<!doctype html><title>dashboard</title>', {
+          status,
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        })
+      );
+      await expect(fetchAuthConfig(SERVER)).rejects.toMatchObject({
+        name: 'NoManagementApiError',
+        message: expect.stringContaining('route /gateway on https://switch.example.com'),
+      });
+    }
+  );
+
+  it('reports a proxy’s 502 page as the failure it is, not as a missing route', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('<html>Bad Gateway</html>', {
+        status: 502,
+        headers: { 'content-type': 'text/html' },
+      })
+    );
+    await expect(fetchAuthConfig(SERVER)).rejects.toMatchObject({
+      name: 'GatewayError',
+      status: 502,
+    });
   });
 
   it('warms the cloud machine with an authenticated POST', async () => {
@@ -1193,6 +1942,7 @@ describe('sign-up support', () => {
       disk: null,
       memory: null,
       agents: [],
+      controller_id: null,
     };
     fetchMock.mockResolvedValueOnce(jsonResponse(machine));
     await expect(ensureCloudMachine(SERVER)).resolves.toEqual(machine);
@@ -1202,6 +1952,64 @@ describe('sign-up support', () => {
     expect(cookieHeaderOf(fetchMock.mock.calls[0])).toContain('switch_auth=');
   });
 
+  it('reads the controller a machine enrolled as', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        machine_id: 'm-1',
+        state: 'ready',
+        desired_state: 'running',
+        stop_reason: null,
+        sleeping: false,
+        revision: 2,
+        instance_type: 'c7i.large',
+        error: null,
+        error_code: null,
+        retain_until: null,
+        heartbeat_at: null,
+        disk: null,
+        memory: null,
+        agents: ['agent-1'],
+        controller_id: 'controller-7',
+      })
+    );
+    await expect(ensureCloudMachine(SERVER)).resolves.toMatchObject({
+      controller_id: 'controller-7',
+    });
+  });
+
+  it('lists the caller’s cloud machines, and none on a server without them', async () => {
+    const machine = {
+      machine_id: 'm-1',
+      state: 'ready',
+      desired_state: 'running',
+      stop_reason: null,
+      sleeping: false,
+      revision: 2,
+      instance_type: null,
+      error: null,
+      error_code: null,
+      retain_until: null,
+      heartbeat_at: null,
+      disk: null,
+      memory: null,
+      agents: [],
+      controller_id: null,
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse({ machines: [machine] }));
+    await expect(listCloudMachines(SERVER)).resolves.toEqual([machine]);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/hosted-machines');
+    fetchMock.mockResolvedValueOnce(errorResponse(404, '{"detail":"Not Found"}'));
+    await expect(listCloudMachines(SERVER)).resolves.toBeNull();
+  });
+
+  it('reads no cloud machines where the server says this workspace cannot claim one', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ available: false, machines: [] }));
+    await expect(listCloudMachines(SERVER)).resolves.toBeNull();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ available: true, machines: [] }));
+    await expect(listCloudMachines(SERVER)).resolves.toEqual([]);
+  });
+
   it('raises the server’s explanation when no machine can be had', async () => {
     fetchMock.mockResolvedValueOnce(
       errorResponse(503, JSON.stringify({ detail: 'Cloud machines are not offered here.' }))
@@ -1209,6 +2017,302 @@ describe('sign-up support', () => {
     await expect(ensureCloudMachine(SERVER)).rejects.toThrow(
       new Error('Cloud machines are not offered here.')
     );
+  });
+});
+
+describe('distributed Teams team placement', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists the teams, the chosen default, and the catalogue state', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        teams: [
+          { team_id: 't1', name: 'Engineering', has_switch: true, is_default: true },
+          { team_id: 't2', name: 'Sales', has_switch: false, is_default: false },
+        ],
+        default_team_id: 't1',
+        in_catalog: true,
+        catalog_problem: null,
+      }) as never
+    );
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toEqual({
+      kind: 'listed',
+      teams: [
+        { teamId: 't1', name: 'Engineering', hasSwitch: true, isDefault: true },
+        { teamId: 't2', name: 'Sales', hasSwitch: false, isDefault: false },
+      ],
+      defaultTeamId: 't1',
+      inCatalog: true,
+      catalogProblem: null,
+    });
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/collaborations/b1/teams'
+    );
+  });
+
+  it('reports a bridge this never applies to, rather than throwing', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toEqual({
+      kind: 'not-distributed-teams',
+    });
+  });
+
+  it('reports a stopped bridge with the detail naming it', async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(503, '{"detail":"The bridge is not running"}') as never
+    );
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toEqual({
+      kind: 'not-running',
+      message: 'The bridge is not running',
+    });
+  });
+
+  it("reports Microsoft Graph's own refusal in its words", async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(502, '{"detail":"Microsoft Graph refused the request"}') as never
+    );
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toEqual({
+      kind: 'microsoft-refused',
+      message: 'Microsoft Graph refused the request',
+    });
+  });
+
+  it('reports a non-admin as forbidden', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Admin only"}') as never);
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toEqual({ kind: 'forbidden' });
+  });
+
+  it('reports an expired session as unauthenticated', async () => {
+    fetchMock.mockResolvedValue(unauthorizedResponse() as never);
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toEqual({ kind: 'unauthenticated' });
+  });
+
+  it('reports an unreachable gateway as an error rather than throwing', async () => {
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).resolves.toMatchObject({ kind: 'error' });
+  });
+
+  it('rethrows a server fault rather than flattening it into a result', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, 'Internal Server Error') as never);
+
+    await expect(fetchBridgeTeams(SERVER, 'b1')).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('adds Switch to a team', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}) as never);
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toEqual({ kind: 'added' });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe('https://switch.example.com/gateway/collaborations/b1/teams/t2');
+    expect(init.method).toBe('POST');
+  });
+
+  it('reports a team outside the catalogued app as its own case, with the next step', async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(
+        409,
+        '{"detail":"The app is not yet in this organisation\'s catalogue"}'
+      ) as never
+    );
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toEqual({
+      kind: 'not-in-catalog',
+      message: "The app is not yet in this organisation's catalogue",
+    });
+  });
+
+  it.each([
+    [503, 'The Teams connection is not running; try again in a moment.'],
+    [502, 'Microsoft refused: AADSTS7000112'],
+    [404, 'No connection on the distributed Teams app has that id.'],
+  ])(
+    'reports a %s adding a team as an error in the gateway’s words, not a catalogue problem',
+    async (status, detail) => {
+      fetchMock.mockResolvedValue(errorResponse(status, JSON.stringify({ detail })) as never);
+
+      await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toEqual({
+        kind: 'error',
+        message: detail,
+      });
+    }
+  );
+
+  it.each([
+    [503, 'The Teams connection is not running; try again in a moment.'],
+    [502, 'Microsoft refused: AADSTS7000112'],
+    [404, 'No connection on the distributed Teams app has that id.'],
+  ])('reports a %s removing a team as an error in the gateway’s words', async (status, detail) => {
+    fetchMock.mockResolvedValue(errorResponse(status, JSON.stringify({ detail })) as never);
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).resolves.toEqual({
+      kind: 'error',
+      message: detail,
+    });
+  });
+
+  it('reports a non-admin adding a team as forbidden', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Admin only"}') as never);
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toEqual({ kind: 'forbidden' });
+  });
+
+  it('reports an expired session adding a team as unauthenticated', async () => {
+    fetchMock.mockResolvedValue(unauthorizedResponse() as never);
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toEqual({ kind: 'unauthenticated' });
+  });
+
+  it('reports an unreachable gateway adding a team as an error rather than throwing', async () => {
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).resolves.toMatchObject({ kind: 'error' });
+  });
+
+  it('rethrows a server fault adding a team rather than flattening it into a result', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, 'Internal Server Error') as never);
+
+    await expect(addBridgeTeam(SERVER, 'b1', 't2')).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('removes Switch from a team', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}) as never);
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).resolves.toEqual({ kind: 'removed' });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe('https://switch.example.com/gateway/collaborations/b1/teams/t1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('reports a non-admin removing a team as forbidden', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Admin only"}') as never);
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).resolves.toEqual({ kind: 'forbidden' });
+  });
+
+  it('reports an expired session removing a team as unauthenticated', async () => {
+    fetchMock.mockResolvedValue(unauthorizedResponse() as never);
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).resolves.toEqual({
+      kind: 'unauthenticated',
+    });
+  });
+
+  it('reports an unreachable gateway removing a team as an error rather than throwing', async () => {
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).resolves.toMatchObject({ kind: 'error' });
+  });
+
+  it('rethrows a server fault removing a team rather than flattening it into a result', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, 'Internal Server Error') as never);
+
+    await expect(removeBridgeTeam(SERVER, 'b1', 't1')).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('reads the install package as raw bytes', async () => {
+    const bytes = new TextEncoder().encode('zip-bytes').buffer;
+    fetchMock.mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: async () => ({}),
+      headers: { get: () => null, getSetCookie: () => [] },
+      text: async () => '',
+      arrayBuffer: async () => bytes,
+    } as unknown as Response);
+
+    await expect(fetchTeamsPackage(SERVER, 'b1')).resolves.toBe(bytes);
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/collaborations/b1/teams-package');
+  });
+
+  it('leaves a bridge this does not apply to as a throw — there is no result form for it', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchTeamsPackage(SERVER, 'b1')).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe('messaging-app installs', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists installs, active and ended alike', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        installs: [
+          {
+            id: 'install-1',
+            platform: 'teams',
+            external_workspace_id: 'tenant-1',
+            status: 'active',
+            scopes: 'Team.Create',
+            bridge_id: 'b1',
+            installed_at: '2026-01-01T00:00:00Z',
+            ended_at: null,
+          },
+        ],
+      }) as never
+    );
+
+    await expect(fetchMessagingAppInstalls(SERVER)).resolves.toEqual([
+      {
+        id: 'install-1',
+        platform: 'teams',
+        externalWorkspaceId: 'tenant-1',
+        status: 'active',
+        scopes: 'Team.Create',
+        bridgeId: 'b1',
+        installedAt: '2026-01-01T00:00:00Z',
+        endedAt: null,
+      },
+    ]);
+  });
+
+  it('reads a server without the route as having no installs to report', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchMessagingAppInstalls(SERVER)).resolves.toEqual([]);
+  });
+
+  it('raises on any other failure', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Forbidden"}') as never);
+
+    await expect(fetchMessagingAppInstalls(SERVER)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('ends an install by id', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}) as never);
+
+    await deleteMessagingAppInstall(SERVER, 'install-1');
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe('https://switch.example.com/gateway/messaging-apps/installs/install-1');
+    expect(init.method).toBe('DELETE');
   });
 });
 
@@ -1228,7 +2332,7 @@ describe('acceptInvitation', () => {
       status: 200,
       ok: true,
       json: async () => ({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' }),
-      headers: { getSetCookie: () => setCookies },
+      headers: { get: () => null, getSetCookie: () => setCookies },
       text: async () => '',
     } as unknown as Response;
   }
@@ -1281,25 +2385,42 @@ describe("installing the deployment's own messaging app", () => {
     vi.unstubAllGlobals();
   });
 
-  it('lists the platforms the deployment has an app for', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ platforms: ['slack'] }) as never);
+  it('lists the platforms the deployment has an app for, of both kinds', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        platforms: ['slack'],
+        claimable: [{ platform: 'telegram', connected: true, can_add_chat: true }],
+      }) as never
+    );
 
-    await expect(fetchInstallablePlatforms(SERVER)).resolves.toEqual(['slack']);
+    await expect(fetchMessagingApps(SERVER)).resolves.toEqual({
+      installable: ['slack'],
+      claimable: [{ platform: 'telegram', connected: true, canAddChat: true }],
+    });
     expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
       'https://switch.example.com/gateway/messaging-apps'
     );
   });
 
+  it('reads a server from before claim-based apps as offering none', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ platforms: ['slack'] }) as never);
+
+    await expect(fetchMessagingApps(SERVER)).resolves.toEqual({
+      installable: ['slack'],
+      claimable: [],
+    });
+  });
+
   it('reads a server without the route as having no app to install', async () => {
     fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
 
-    await expect(fetchInstallablePlatforms(SERVER)).resolves.toEqual([]);
+    await expect(fetchMessagingApps(SERVER)).resolves.toEqual({ installable: [], claimable: [] });
   });
 
   it('raises on any other failure', async () => {
     fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Forbidden"}') as never);
 
-    await expect(fetchInstallablePlatforms(SERVER)).rejects.toMatchObject({ status: 403 });
+    await expect(fetchMessagingApps(SERVER)).rejects.toMatchObject({ status: 403 });
   });
 
   it('starts an install and returns the consent URL', async () => {
@@ -1319,6 +2440,81 @@ describe("installing the deployment's own messaging app", () => {
     fetchMock.mockResolvedValue(errorResponse(501, '{"detail":"no app"}') as never);
 
     await expect(beginMessagingAppInstall(SERVER, 'slack')).rejects.toMatchObject({ status: 501 });
+  });
+
+  it('starts connecting a chat and returns its link, code and bot handle', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        url: 'https://t.me/example_bot?startgroup=abc',
+        code: 'abc',
+        bot_handle: '@example_bot',
+      }) as never
+    );
+
+    await expect(beginChatClaim(SERVER, 'telegram')).resolves.toEqual({
+      url: 'https://t.me/example_bot?startgroup=abc',
+      code: 'abc',
+      botHandle: '@example_bot',
+    });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/messaging-apps/telegram/claim');
+    expect(init.method).toBe('POST');
+  });
+
+  it('raises when the server refuses the claim', async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(403, '{"detail":"Only an admin can connect the first chat"}') as never
+    );
+
+    await expect(beginChatClaim(SERVER, 'telegram')).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('lists the chats still connected to one connection', async () => {
+    const install = {
+      bridge_id: 'b-tg',
+      external_workspace_id: '-1001',
+      name: 'Ops',
+      status: 'active',
+      scopes: '',
+      installed_at: '2026-09-01T10:00:00Z',
+      ended_at: null,
+    };
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        installs: [
+          { ...install, id: 'i-1' },
+          { ...install, id: 'i-2', name: null, external_workspace_id: '-1002' },
+          { ...install, id: 'i-3', status: 'disconnected' },
+          { ...install, id: 'i-4', bridge_id: 'b-other' },
+        ],
+      }) as never
+    );
+
+    await expect(fetchConnectedChats(SERVER, 'b-tg')).resolves.toEqual([
+      { id: 'i-1', name: 'Ops', externalId: '-1001', connectedAt: '2026-09-01T10:00:00Z' },
+      { id: 'i-2', name: null, externalId: '-1002', connectedAt: '2026-09-01T10:00:00Z' },
+    ]);
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(
+      'https://switch.example.com/gateway/messaging-apps/installs'
+    );
+  });
+
+  it('disconnects a chat by its install', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ id: 'i-1', status: 'disconnected' }) as never);
+
+    await disconnectChat(SERVER, 'i-1');
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/messaging-apps/installs/i-1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('raises with the reason when the bot could not leave the chat', async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(502, '{"detail":"Telegram would not let the bot leave; try again"}') as never
+    );
+
+    await expect(disconnectChat(SERVER, 'i-1')).rejects.toMatchObject({ status: 502 });
   });
 });
 
@@ -1386,7 +2582,7 @@ describe('invitations addressed to the signed-in account', () => {
       status: 200,
       ok: true,
       json: async () => ({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' }),
-      headers: { getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
+      headers: { get: () => null, getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
       text: async () => '',
     } as never);
 
@@ -1450,7 +2646,7 @@ describe('joining a workspace by e-mail domain', () => {
       status: 200,
       ok: true,
       json: async () => ({ id: 't9', slug: 'skunk', name: 'Skunkworks', role: 'member' }),
-      headers: { getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
+      headers: { get: () => null, getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
       text: async () => '',
     } as never);
 
@@ -1533,7 +2729,7 @@ describe('workspace invitations', () => {
       status: 200,
       ok: true,
       json: async () => body,
-      headers: { getSetCookie: () => [] },
+      headers: { get: () => null, getSetCookie: () => [] },
       text: async () => '',
     } as unknown as Response;
   }
@@ -1609,6 +2805,20 @@ describe('workspace invitations', () => {
     await expect(fetchInviteEmailEnabled(SERVER)).resolves.toBeNull();
   });
 
+  it('reads whether the server lets the account create a workspace', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ can_create_workspace: false }) as never);
+    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(false);
+
+    fetchMock.mockResolvedValue(jsonResponse({ can_create_workspace: true }) as never);
+    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(true);
+
+    // Older servers refused nothing up front, so nothing is hidden on them.
+    fetchMock.mockResolvedValue(jsonResponse({ state: 'ready' }) as never);
+    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(true);
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(true);
+  });
+
   it('keeps the link when an older server says nothing about the e-mail', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ ...ROW, token: 'tok-1' }) as never);
 
@@ -1631,7 +2841,7 @@ describe('agent management calls', () => {
       status,
       ok: status >= 200 && status < 300,
       json: async () => JSON.parse(text),
-      headers: { getSetCookie: () => [] },
+      headers: { get: () => null, getSetCookie: () => [] },
       text: async () => text,
     } as unknown as Response;
   }
@@ -1716,6 +2926,91 @@ describe('agent management calls', () => {
     expect(JSON.parse(String(init.body))).toEqual({ name: 'laptop', description: null });
   });
 
+  it('reads the key a machine takes logins sealed to, and gives it one', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(200, [
+        {
+          id: 'controller-1',
+          name: 'box',
+          description: null,
+          kind: 'daemon',
+          state: 'online',
+          last_seen_at: null,
+          revoked_at: null,
+          public_key: { alg: 'X25519', key: 'a2V5', key_id: '0123456789abcdef' },
+        },
+        {
+          id: 'controller-2',
+          name: 'old',
+          description: null,
+          kind: 'daemon',
+          state: 'online',
+          last_seen_at: null,
+          revoked_at: null,
+        },
+      ])
+    );
+    const [keyed, keyless] = await fetchManagementControllers(SERVER);
+    expect(keyed?.sealingKey).toEqual({ key: 'a2V5', keyId: '0123456789abcdef' });
+    expect(keyless?.sealingKey).toBeNull();
+
+    const sealed = {
+      alg: 'X25519-HKDF-SHA256-A256GCM' as const,
+      key_id: '0123456789abcdef',
+      ephemeral_key: 'ZQ==',
+      nonce: 'bg==',
+      ciphertext: 'Yw==',
+    };
+    fetchMock.mockImplementation(async () =>
+      respond(200, { login: { provider: 'claude', revision: 2 }, operation: { id: 'op-1' } })
+    );
+    expect(await giveMachineLogin(SERVER, 'controller-1', 'claude', sealed)).toEqual({
+      operationId: 'op-1',
+      revision: 2,
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe(
+      'https://switch.example.com/gateway/management/controllers/controller-1/provider-logins/claude'
+    );
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ sealed });
+    await expect(
+      giveMachineLogin(
+        { ...(SERVER as object), url: 'http://switch.example.com' } as never,
+        'c',
+        'claude',
+        sealed
+      )
+    ).rejects.toThrow(/HTTPS/);
+
+    fetchMock.mockImplementation(async () =>
+      respond(200, [
+        {
+          id: 'op-1',
+          state: 'failed',
+          result: {
+            outcome: 'failed',
+            error: { code: 'provider_login_expired', message: 'No.' },
+          },
+        },
+        { id: 'op-2', state: 'succeeded', result: { outcome: 'succeeded' } },
+      ])
+    );
+    expect(await fetchMachineOperation(SERVER, 'controller-1', 'op-1')).toEqual({
+      state: 'failed',
+      error: { code: 'provider_login_expired', message: 'No.' },
+    });
+    expect(await fetchMachineOperation(SERVER, 'controller-1', 'op-2')).toEqual({
+      state: 'succeeded',
+      error: null,
+    });
+    expect(await fetchMachineOperation(SERVER, 'controller-1', 'op-9')).toBeNull();
+    fetchMock.mockImplementation(async () => respond(200, { operations: [] }));
+    await expect(fetchMachineOperation(SERVER, 'controller-1', 'op-1')).rejects.toThrow(
+      /not a list/
+    );
+  });
+
   it("reads each machine's providers from its last status report, and invents none", async () => {
     const controller = {
       name: 'box',
@@ -1758,9 +3053,9 @@ describe('agent management calls', () => {
       [
         'reported',
         [
-          { provider: 'claude', installed: true, auth: 'ok' },
-          { provider: 'codex', installed: true, auth: 'unknown' },
-          { provider: 'opencode', installed: false, auth: 'unknown' },
+          { provider: 'claude', installed: true, auth: 'ok', problem: null },
+          { provider: 'codex', installed: true, auth: 'unknown', problem: null },
+          { provider: 'opencode', installed: false, auth: 'unknown', problem: null },
         ],
       ],
       ['silent', []],
@@ -1841,6 +3136,7 @@ describe('agent management calls', () => {
             model: 'opus',
             advanced_config: { effort: 'high', maxTurns: 4, background: true, tools: ['Read'] },
             instructions: 'Be brief.',
+            auto_mode: true,
             auto_approve: true,
             directory: '/work/scout',
             isolation: 'isolated',
@@ -1890,6 +3186,7 @@ describe('agent management calls', () => {
         instructions: 'Be brief.',
         isolation: 'isolated',
         directory: '/work/scout',
+        autoMode: true,
         autoApprove: true,
         status: {
           process: 'failed',
@@ -1914,6 +3211,7 @@ describe('agent management calls', () => {
         instructions: '',
         isolation: 'shared',
         directory: null,
+        autoMode: false,
         autoApprove: false,
         status: { process: 'running', attached: true, reason: null, detail: null, directory: null },
       },
@@ -1933,6 +3231,7 @@ describe('agent management calls', () => {
         instructions: '',
         isolation: 'shared',
         directory: null,
+        autoMode: false,
         autoApprove: false,
         status: null,
       },
@@ -2037,5 +3336,122 @@ describe('agent management calls', () => {
       respond(200, { providers: { claude: { fields: [{ key: 'tools', type: 'grid' }] } } })
     );
     await expect(fetchAdvancedConfigSchema(SERVER)).rejects.toThrow();
+  });
+
+  it('says a server that does not serve the fields is older than them', async () => {
+    fetchMock.mockImplementation(async () => respond(404, { detail: 'Not Found' }));
+    const refusal = await fetchAdvancedConfigSchema(SERVER).catch((error: unknown) => error);
+    expect(refusal).not.toBeInstanceOf(AgentManagementUnavailableError);
+    expect((refusal as Error).message).toMatch(
+      /does not serve the advanced configuration fields.*Update the server/
+    );
+  });
+});
+
+describe('fetchAvatarSettings', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(2 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reports the server’s own answer', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse({ third_party_avatars_enabled: false }));
+    const server = serverWithId('avatar-enabled-false');
+    await expect(fetchAvatarSettings(server)).resolves.toEqual({
+      thirdPartyAvatarsEnabled: false,
+    });
+  });
+
+  it('reads a 404 as a server predating the setting, which always sent these URLs', async () => {
+    fetchMock.mockImplementation(async () => errorResponse(404, '{"detail":"Not Found"}'));
+    const server = serverWithId('avatar-404');
+    await expect(fetchAvatarSettings(server)).resolves.toEqual({
+      thirdPartyAvatarsEnabled: true,
+    });
+  });
+
+  it('propagates any other failure rather than guessing an answer', async () => {
+    fetchMock.mockImplementation(async () => errorResponse(500, '{"detail":"boom"}'));
+    const server = serverWithId('avatar-500');
+    await expect(fetchAvatarSettings(server)).rejects.toThrow();
+  });
+
+  it('answers a burst of callers with one request', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse({ third_party_avatars_enabled: true }));
+    const server = serverWithId('avatar-cached');
+    await fetchAvatarSettings(server);
+    await fetchAvatarSettings(server);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('asks again after a minute, so a server restarted with it off is heard', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const server = serverWithId('avatar-expiry');
+      fetchMock.mockImplementation(async () => jsonResponse({ third_party_avatars_enabled: true }));
+      await expect(fetchAvatarSettings(server)).resolves.toEqual({
+        thirdPartyAvatarsEnabled: true,
+      });
+
+      fetchMock.mockImplementation(async () =>
+        jsonResponse({ third_party_avatars_enabled: false })
+      );
+      vi.setSystemTime(Date.now() + 61_000);
+      await expect(fetchAvatarSettings(server)).resolves.toEqual({
+        thirdPartyAvatarsEnabled: false,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('asks again after a failure, rather than caching it', async () => {
+    const server = serverWithId('avatar-retry');
+    fetchMock.mockImplementationOnce(async () => errorResponse(500, '{"detail":"boom"}'));
+    await expect(fetchAvatarSettings(server)).rejects.toThrow();
+
+    fetchMock.mockImplementation(async () => jsonResponse({ third_party_avatars_enabled: true }));
+    await expect(fetchAvatarSettings(server)).resolves.toEqual({
+      thirdPartyAvatarsEnabled: true,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('fetchAgentIconChoices', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(2 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('carries the server’s flag with the choices', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ choices: [], third_party_avatars_enabled: false })
+    );
+    await expect(fetchAgentIconChoices(serverWithId('choices-off'), 'worker', 0)).resolves.toEqual({
+      choices: [],
+      thirdPartyAvatarsEnabled: false,
+    });
+  });
+
+  it('reads a missing flag as a server predating the setting, which always generated them', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ choices: ['https://example.com/a.png'] })
+    );
+    await expect(fetchAgentIconChoices(serverWithId('choices-old'), 'worker', 0)).resolves.toEqual({
+      choices: ['https://example.com/a.png'],
+      thirdPartyAvatarsEnabled: true,
+    });
   });
 });

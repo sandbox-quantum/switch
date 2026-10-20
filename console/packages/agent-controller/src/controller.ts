@@ -1,4 +1,4 @@
-import type { OpenAgentStream } from '@switch-console/agent-providers';
+import type { OpenAgentStream, ProviderReadiness } from '@switch-console/agent-providers';
 import { AgentHub } from './agent-hub';
 import {
   AccessTokens,
@@ -14,6 +14,7 @@ import { HubSocket } from './hub-socket';
 import { errorMessage, type Logger } from './log';
 import { processPendingOperations } from './operations';
 import { isSafeSegment } from './paths';
+import type { ProviderRechecks } from './provider-rechecks';
 import { definitionProblem, reconcile, type ReconcileDeps, startAgent } from './reconcile';
 import { LocalRelay, RELAY_TOKEN_PREFIX } from './relay';
 import { UpstreamForwarder } from './relay-forward';
@@ -21,12 +22,20 @@ import type { AgentRuntime } from './runtime';
 import {
   type AgentCursor,
   type Assignment,
+  isProvider,
+  type Provider,
   type StatusReport,
   statusReportSchema,
+  type ToolStatus,
+  type UpdatedBy,
 } from './schemas';
+import { type GivenLogin, registerSealingKey, SealedLogins, sealingKeys } from './sealed-logins';
 import { CONTROLLER_CREDENTIAL, type SecretStore } from './secrets';
+import type { SelfUpdater } from './self-update';
 import {
+  noSessionMidTurn,
   type ProviderLocator,
+  type ProviderSeed,
   ProviderStatuses,
   StatusCollector,
   statusFingerprint,
@@ -66,6 +75,13 @@ export const DEFAULT_TIMING: ControllerTiming = {
   eventBufferLimit: 5_000,
 };
 
+/**
+ * How long an agent host restarted onto this controller's shared-host bundle
+ * is left before it is restarted again, when the restart failed or it still
+ * runs another bundle.
+ */
+export const OUTDATED_RESTART_RETRY_MS = 10 * 60 * 1000;
+
 export type ControllerDeps = {
   store: ControllerStore;
   secrets: SecretStore;
@@ -74,7 +90,19 @@ export type ControllerDeps = {
    * its events on and the folder agents with no directory of their own work in.
    */
   runtime: (openStream: (agentId: string) => OpenAgentStream, workspaces: string) => AgentRuntime;
+  /** Tries a provider's own login with a test prompt; absent where agents run as other users. */
+  verifyLogin?: (provider: Provider, binaryPath: string) => Promise<ProviderReadiness> | null;
   locator: ProviderLocator;
+  /**
+   * Requests to check every provider again now, served while the controller
+   * runs. `refreshPath` runs first, so a CLI installed since is found.
+   */
+  rechecks: ProviderRechecks;
+  refreshPath: () => Promise<void>;
+  /** Provider checks made before this controller started, taken as its own (`ProviderStatuses.seed`). */
+  providerSeed: ProviderSeed;
+  /** `git`, `gh` and vendor tools, as sessions here would be set up with them (`toolStatuses`). */
+  tools: () => Promise<ToolStatus[]>;
   fetch: Fetch;
   /** Opens the controller's connection to Switch. */
   openWebSocket: OpenWebSocket;
@@ -84,6 +112,13 @@ export type ControllerDeps = {
   /** Where agents' working directories go when their definition names none, for a server. */
   workspacesFor: (server: string) => string;
   version: string;
+  /** Who moves it onto another release, as its status reports to Switch. */
+  updatedBy: UpdatedBy;
+  /**
+   * Follows the release Switch names for this controller; null where Switch
+   * Console updates it instead.
+   */
+  selfUpdate: SelfUpdater | null;
   now: () => number;
   random: () => number;
   timing: ControllerTiming;
@@ -98,13 +133,17 @@ export type ControllerDeps = {
  * controller's protocol, or knows no controller by its credential. Both are
  * refusals the server marks not retryable, and asking again cannot change
  * them, so this one ends rather than retrying forever.
+ *
+ * `restarting`: the release Switch names is installed, and the controller
+ * ends for its service to start it again on that release.
  */
 export type ControllerExit =
   | 'stopped'
   | 'revoked'
   | 'taken_over'
   | 'upgrade_required'
-  | 'credential_invalid';
+  | 'credential_invalid'
+  | 'restarting';
 
 /**
  * Makes an agent's credentials file name the relay, its hub, and a token the
@@ -113,28 +152,48 @@ export type ControllerExit =
  * which a running agent host only reads when it starts, so it is restarted:
  * that is also what moves an agent host from before the hub onto it.
  */
+function sameLogin(a: GivenLogin | null, b: GivenLogin | null): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.provider === b.provider &&
+    a.revision === b.revision &&
+    a.kind === b.kind &&
+    a.credential === b.credential
+  );
+}
+
 export async function ensureRelayCredentials(
   agentId: string,
+  providerLogin: GivenLogin | null,
   deps: { runtime: AgentRuntime; relay: LocalRelay; log: Logger }
 ): Promise<boolean> {
   const current = await deps.runtime.readCredentials(agentId);
   const endpoint = deps.relay.endpoint;
   const hub = deps.relay.hubUrl;
-  if (
-    current &&
+  const relayCurrent =
+    current !== null &&
     current.endpoint === endpoint &&
     current.hub === hub &&
-    current.token.startsWith(RELAY_TOKEN_PREFIX)
-  ) {
+    current.token.startsWith(RELAY_TOKEN_PREFIX);
+  const loginCurrent = sameLogin(current?.providerLogin ?? null, providerLogin);
+  if (current && relayCurrent && loginCurrent) {
     if (!deps.relay.isRegistered(agentId, current.token))
       deps.relay.register(agentId, current.token);
     return false;
   }
-  const token = deps.relay.mint(agentId);
-  await deps.runtime.writeCredentials(agentId, { endpoint, token, hub });
+  const token = current && relayCurrent ? current.token : deps.relay.mint(agentId);
+  if (current && relayCurrent && !deps.relay.isRegistered(agentId, token))
+    deps.relay.register(agentId, token);
+  await deps.runtime.writeCredentials(agentId, { endpoint, token, hub, providerLogin });
   deps.log.info('Wrote the agent’s relay credentials', {
     agentId,
-    why: current ? 'they named another endpoint, hub or a Switch key' : 'it had none',
+    why: !current
+      ? 'it had none'
+      : !relayCurrent
+        ? 'they named another endpoint, hub or a Switch key'
+        : providerLogin
+          ? `the ${providerLogin.provider} login given to this machine changed`
+          : 'the login given to this machine is no longer used',
   });
   return true;
 }
@@ -320,6 +379,12 @@ export async function runController(
     stop.abort();
   };
 
+  let restarting = false;
+  const restart = () => {
+    restarting = true;
+    stop.abort();
+  };
+
   const failed = (what: string, error: unknown) => {
     if (isRevoked(error)) {
       void revoke();
@@ -332,28 +397,51 @@ export async function runController(
     });
   };
 
+  const keys = await sealingKeys(deps.secrets);
+  const sealed = keys
+    ? new SealedLogins({ client, keys, controllerId: identity.controllerId })
+    : null;
+  if (!keys)
+    log.info(
+      'This controller keeps no key across starts (its credential is handed over), so provider logins given to the machine are not used; its own are.'
+    );
+  else
+    void registerSealingKey(client, keys, log).then((registered) => {
+      if (!registered) providers.disableGiven();
+    });
   const providers = new ProviderStatuses({
     locator: deps.locator,
     runtime,
+    sealed,
     probeCwd: deps.dataDir,
+    verify: deps.verifyLogin,
     now: deps.now,
     log,
     onChange: () => reporter?.request(),
   });
+  providers.seed(deps.providerSeed);
   const collector = new StatusCollector({
     store,
     runtime,
     providers,
+    tools: deps.tools,
     attached: (agentId) => hub.attached(agentId),
     dataDir: deps.dataDir,
     workspacesDir: workspaces,
     version: deps.version,
+    updatedBy: deps.updatedBy,
     now: deps.now,
   });
   const reconcileDeps: ReconcileDeps = {
     store,
     runtime,
-    ensureCredentials: (agentId) => ensureRelayCredentials(agentId, { runtime, relay, log }),
+    ensureCredentials: async (agentId, provider) =>
+      ensureRelayCredentials(
+        agentId,
+        isProvider(provider) ? await providers.givenLogin(provider) : null,
+        { runtime, relay, log }
+      ),
+    givenLogin: (provider) => providers.givenLogin(provider),
     forgetAgent: (agentId) => {
       relay.unregister(agentId);
       hub.forget(agentId);
@@ -416,9 +504,19 @@ export async function runController(
             );
           },
           recheckProvider: async (provider) => {
-            const status = await providers.check(provider);
+            // Asked for by someone fixing a login, like the Console recheck,
+            // so the login is tried for real.
+            const status = await providers.check(provider, { verify: true });
             await reporter?.sendNow();
+            // Agents move onto a login given since, or off one withdrawn.
+            void reconcileLocally();
             return status;
+          },
+          takeUpLogin: async (provider) => {
+            const status = await providers.check(provider, { verify: true });
+            await reporter?.sendNow();
+            void reconcileLocally();
+            return { status, problem: providers.loginProblem(provider) };
           },
           log,
         });
@@ -429,18 +527,44 @@ export async function runController(
     });
   };
 
+  const idle = async () =>
+    noSessionMidTurn(
+      await Promise.all((assignment?.agents ?? []).map((entry) => runtime.observe(entry.agent_id)))
+    );
+  /** What the last status response named; looked at again while an update waits for idle. */
+  let offeredRelease: unknown = null;
+  const offerRelease = () => {
+    if (deps.selfUpdate && !stop.signal.aborted)
+      void deps.selfUpdate.offer(offeredRelease, { idle, restart, signal: stop.signal });
+  };
   reporter = new StatusReporter({
-    collect: () => collector.collect(assignment),
+    collect: async () => {
+      const collected = await collector.collect(assignment);
+      const update = deps.selfUpdate?.status();
+      return update ? { ...collected, update } : collected;
+    },
     send: async (report) => {
       const answer = await client.putStatus(report);
       reportWithinS = answer.report_within_s;
       if (assignment === null || answer.assignment_revision > assignment.revision)
         void sync('status says the assignment moved on');
+      offeredRelease = answer.controller_release;
+      offerRelease();
     },
     seq: () => store.nextStatusSeq(deps.now()),
     minGapMs: timing.statusMinGapMs,
     failed: (error) => failed('Status report', error),
     onLocalChange: () => void reconcileLocally(),
+  });
+
+  const stopServingRechecks = deps.rechecks.serve(async () => {
+    await deps.refreshPath();
+    // A recheck is asked for by someone setting up or fixing a login, so
+    // each login is tried for real, not only reported as there.
+    await providers.checkAll({ verify: true });
+    await reporter?.sendFresh();
+    // Agents waiting on a provider can start now.
+    void reconcileLocally();
   });
 
   let localQueued = false;
@@ -461,6 +585,74 @@ export async function runController(
         failed('Reconciling the held assignment', error);
       }
     });
+  };
+
+  /** When each outdated agent host was last restarted onto this controller's bundle. */
+  const outdatedRestarts = new Map<string, number>();
+  let outdatedQueued = false;
+  /**
+   * Restarts each agent host that outlived this controller on another
+   * shared-host bundle (`AgentObservation.outdated`) onto this controller's,
+   * once none of its sessions is mid-turn: idle sessions restart with it and
+   * resume their conversations. An agent host already restarted for it is
+   * left for `OUTDATED_RESTART_RETRY_MS` before another try.
+   */
+  const restartOutdated = (): Promise<void> => {
+    if (outdatedQueued) return Promise.resolve();
+    outdatedQueued = true;
+    return queue.run(async () => {
+      outdatedQueued = false;
+      if (!assignment || stop.signal.aborted) return;
+      try {
+        for (const entry of assignment.agents) {
+          if (entry.desired_state !== 'running' || definitionProblem(entry)) continue;
+          const agentId = entry.agent_id;
+          const observation = await runtime.observe(agentId);
+          if (!observation.alive || !observation.outdated) continue;
+          const last = outdatedRestarts.get(agentId);
+          if (last !== undefined && deps.now() - last < OUTDATED_RESTART_RETRY_MS) continue;
+          if (!noSessionMidTurn([observation])) continue;
+          if (last !== undefined)
+            log.error(
+              'An agent host restarted onto this controller’s shared-host bundle is still on another (the restart failed, or it came back on another bundle); restarting it again',
+              { agentId, restartedAt: new Date(last).toISOString() }
+            );
+          outdatedRestarts.set(agentId, deps.now());
+          log.warn(
+            'Restarting an agent host that outlived this controller on another shared-host bundle, now that none of its sessions is mid-turn',
+            { agentId, version: deps.version }
+          );
+          await startAgent(
+            {
+              kind: 'start',
+              agentId,
+              entry,
+              restart: true,
+              replaceIdentity: false,
+              clearTakenOver: false,
+              relaunch: true,
+              why: 'agent host on another shared-host bundle',
+            },
+            reconcileDeps
+          );
+        }
+      } catch (error) {
+        failed('Restarting outdated agent hosts', error);
+      }
+    });
+  };
+
+  /** A hint that a chat with the agent was created or reopened: a failure costs only the head start. */
+  const warmAgent = async (agentId: string, roomId: string): Promise<void> => {
+    try {
+      await runtime.warm(agentId, roomId);
+    } catch (error) {
+      log.warn('Could not warm an agent’s session for a room; its first message starts it', {
+        agentId,
+        roomId,
+        error: errorMessage(error),
+      });
+    }
   };
 
   const onFrame = async (frame: ControllerFrame): Promise<void> => {
@@ -484,6 +676,9 @@ export async function runController(
         return;
       case 'agent.session_command':
         hub.sessionCommand(frame.data);
+        return;
+      case 'agent.warm':
+        void warmAgent(frame.data.agent_id, frame.data.room_id);
         return;
       case 'agent.approval_outcome':
         hub.approvalOutcome(frame.data);
@@ -527,6 +722,10 @@ export async function runController(
       return;
     }
     void reporter?.requestIfChanged();
+    // A turn ending changes nothing reported, so it would otherwise wait for
+    // the next periodic report to let the update through.
+    if (deps.selfUpdate?.status()?.state === 'waiting_idle') offerRelease();
+    void restartOutdated();
   }, timing.statusPollMs);
 
   let ending: ControllerExit = 'stopped';
@@ -574,7 +773,10 @@ export async function runController(
       log.error(
         'Switch knows no controller by this credential; it stops its agents and exits. Enroll this machine again.'
       );
+    if (restarting && !refused && !revocation)
+      log.info('Exiting for the service to start this controller on its new release.');
   } finally {
+    stopServingRechecks();
     clearInterval(resync);
     clearInterval(poll);
     signal.removeEventListener('abort', forward);
@@ -583,12 +785,14 @@ export async function runController(
       if (revocation) await revocation;
       await queue.drain();
       await reporter.idle();
+      await deps.selfUpdate?.settled();
     } finally {
       await runtime.close();
       await relay.close();
     }
   }
-  return revocation ? 'revoked' : (refused ?? ending);
+  if (revocation) return 'revoked';
+  return refused ?? (restarting ? 'restarting' : ending);
 }
 
 /**
@@ -667,6 +871,36 @@ class StatusReporter {
       }
     });
     return this.inFlight;
+  }
+
+  /**
+   * Sends a report collected after this call, once any already on its way has
+   * gone, and fails when it could not be sent: for a caller that must know
+   * Switch holds what is true now.
+   */
+  async sendFresh(): Promise<void> {
+    while (this.inFlight) await this.inFlight;
+    if (this.closed) throw new Error('The controller is stopping.');
+    let failure: unknown = null;
+    this.inFlight = (async () => {
+      try {
+        const collected = await this.deps.collect();
+        const report = statusReportSchema.parse({ ...collected, seq: this.deps.seq() });
+        this.lastSentAt = Date.now();
+        await this.deps.send(report);
+        this.lastSentFingerprint = statusFingerprint(collected);
+      } catch (error) {
+        failure = error;
+      }
+    })().finally(() => {
+      this.inFlight = null;
+      if (this.again) {
+        this.again = false;
+        this.request();
+      }
+    });
+    await this.inFlight;
+    if (failure !== null) throw failure;
   }
 
   /** Stops sending, and waits for a report already on its way. */

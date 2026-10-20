@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Controller, ManagedAgent } from "../../data/management";
+import type { Controller, ManagedAgent, ProviderInfo } from "../../data/management";
 import MachinesPage from "./MachinesPage";
 
 const laptop: Controller = {
@@ -20,6 +20,7 @@ const laptop: Controller = {
   assignment_revision: 3,
   created_at: "2026-10-01T00:00:00Z",
   revoked_at: null,
+  release: null,
   status: {
     seq: 1,
     observed_at: new Date().toISOString(),
@@ -84,6 +85,7 @@ const pmAgent: ManagedAgent = {
     provider: "claude",
     model: null,
     instructions: "",
+    auto_mode: false,
     auto_approve: false,
     directory: null,
     isolation: "shared",
@@ -94,9 +96,16 @@ const pmAgent: ManagedAgent = {
   updated_at: "2026-10-01T00:00:00Z",
 };
 
+const servedProviders: ProviderInfo[] = [
+  { id: "claude", label: "Claude Code", advanced_fields: [] },
+  { id: "codex", label: "Codex", advanced_fields: [] },
+];
+
 type Call = { path: string; method: string; body: unknown };
 
+/** The management routes, answering GET /providers with `servedProviders` unless `routes` says otherwise. */
 function mockManagement(routes: Record<string, [number, unknown]>) {
+  routes = { "GET /providers": [200, { providers: servedProviders }], ...routes };
   const calls: Call[] = [];
   vi.stubGlobal(
     "fetch",
@@ -128,6 +137,33 @@ describe("MachinesPage", () => {
     expect(screen.getByText("Codex: login expired")).toBeTruthy();
     expect(screen.getByText("pm-agent")).toBeTruthy();
     expect(screen.getByText("failed: invalid_credential")).toBeTruthy();
+  });
+
+  it("shows the controller's version against the release Switch names", async () => {
+    const wanted = { wanted: "0.31.0", running: "0.1.0", current: false };
+    const machines: Controller[] = [
+      { ...laptop, id: "c1", name: "on-it", version: "0.31.0", release: { ...wanted, running: "0.31.0", current: true } },
+      { ...laptop, id: "c2", name: "waiting", release: wanted, status: { ...laptop.status!, update: { target: "0.31.0", state: "waiting_idle" } } },
+      {
+        ...laptop,
+        id: "c3",
+        name: "stuck",
+        release: wanted,
+        status: { ...laptop.status!, update: { target: "0.31.0", state: "failed", problem: "SHA-256 mismatch" } },
+      },
+      { ...laptop, id: "c4", name: "silent", release: wanted },
+    ];
+    mockManagement({
+      "GET /controllers": [200, machines],
+      "GET /agents": [200, []],
+      "GET /operations": [200, []],
+    });
+    render(<MachinesPage />);
+    expect(await screen.findByText("0.31.0")).toBeTruthy();
+    expect(screen.getByText("updating when idle")).toBeTruthy();
+    expect(screen.getByText("update failed")).toBeTruthy();
+    expect(screen.getByText("behind")).toBeTruthy();
+    expect(screen.getAllByText("0.1.0")).toHaveLength(3);
   });
 
   it("shows a revoked machine's agents as not running, whatever it last reported", async () => {
@@ -294,5 +330,95 @@ describe("MachinesPage", () => {
     expect(
       await screen.findByText("The machine laptop has not reported recently."),
     ).toBeTruthy();
+  });
+
+  it("labels and offers the providers the server lists", async () => {
+    mockManagement({
+      "GET /providers": [
+        200,
+        {
+          providers: [
+            ...servedProviders,
+            { id: "newcli", label: "New CLI", advanced_fields: [] },
+          ],
+        },
+      ],
+      "GET /controllers": [
+        200,
+        [
+          {
+            ...laptop,
+            status: {
+              ...laptop.status!,
+              providers: [{ ...laptop.status!.providers[0]!, provider: "newcli" }],
+            },
+          },
+        ],
+      ],
+      "GET /agents": [200, []],
+      "GET /operations": [200, []],
+    });
+    render(<MachinesPage />);
+    expect(await screen.findByText("New CLI")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "New managed agent" }));
+    fireEvent.mouseDown(await screen.findByRole("combobox", { name: "Provider" }));
+    const options = (await screen.findAllByRole("option")).map((o) => o.textContent);
+    expect(options).toEqual(["Claude Code", "Codex", "New CLI"]);
+  });
+
+  it("creates a new agent in auto mode, with bypass off, unless told otherwise", async () => {
+    const calls = mockManagement({
+      "GET /controllers": [200, [laptop]],
+      "GET /agents": [200, []],
+      "GET /operations": [200, []],
+      "POST /agents": [201, pmAgent],
+    });
+    render(<MachinesPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "New managed agent" }));
+    const autoMode = (await screen.findByLabelText(/^Auto mode/)) as HTMLInputElement;
+    const bypass = screen.getByLabelText(/^Bypass permissions/) as HTMLInputElement;
+    expect(autoMode.checked).toBe(true);
+    expect(bypass.checked).toBe(false);
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: "pm-agent" } });
+    fireEvent.change(screen.getByLabelText(/^Description/), { target: { value: "Writes PRDs" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === "POST")?.body).toMatchObject({
+        definition: { auto_mode: true, auto_approve: false },
+      }),
+    );
+  });
+
+  it("keeps an agent's auto mode as it is and greys it out under bypass", async () => {
+    const calls = mockManagement({
+      "GET /controllers": [200, [laptop]],
+      "GET /agents": [200, [pmAgent]],
+      "GET /operations": [200, []],
+      "PATCH /agents/a1": [200, pmAgent],
+    });
+    render(<MachinesPage />);
+    fireEvent.click(await screen.findByLabelText("Edit pm-agent"));
+    const autoMode = (await screen.findByLabelText(/^Auto mode/)) as HTMLInputElement;
+    expect(autoMode.checked).toBe(false);
+    fireEvent.click(screen.getByLabelText(/^Bypass permissions/));
+    expect(autoMode.disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === "PATCH")?.body).toMatchObject({
+        definition: { auto_mode: false, auto_approve: true },
+      }),
+    );
+  });
+
+  it("says when the provider list cannot load, and shows providers by id", async () => {
+    mockManagement({
+      "GET /providers": [500, { detail: "boom" }],
+      "GET /controllers": [200, [laptop]],
+      "GET /agents": [200, [pmAgent]],
+      "GET /operations": [200, []],
+    });
+    render(<MachinesPage />);
+    expect(await screen.findByText(/Could not load the providers this server runs/)).toBeTruthy();
+    expect(await screen.findByText("codex: login expired")).toBeTruthy();
   });
 });

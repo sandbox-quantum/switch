@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -10,7 +12,11 @@ from pathlib import Path
 import httpx
 import jwt
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
-from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    PublicFormat,
+    load_pem_private_key,
+)
 
 from switch_core.providers.github import (
     GitHubConnections,
@@ -23,6 +29,17 @@ from switch_core.providers.github import (
 logger = logging.getLogger(__name__)
 
 
+# GitHub's limit on the repositories one installation token may name.
+MAX_REPOSITORIES = 500
+
+
+@dataclass(frozen=True)
+class InstallationToken:
+    token: str = field(repr=False)
+    expires_at: datetime
+    repository_ids: list[int]
+
+
 @dataclass(frozen=True)
 class RepositoryCredential:
     token: str = field(repr=False)
@@ -32,14 +49,12 @@ class RepositoryCredential:
 
 
 class GitHubInstallationCredentials:
-    def __init__(self, client_id: str, private_key_path: str):
+    def __init__(self, client_id: str, private_key: bytes):
         if not client_id:
             raise ValueError("A GitHub App client ID is required.")
         try:
-            key = load_pem_private_key(
-                Path(private_key_path).read_bytes(), password=None
-            )
-        except (ValueError, TypeError, OSError):
+            key = load_pem_private_key(private_key, password=None)
+        except (ValueError, TypeError):
             raise ValueError(
                 "The GitHub App signing key could not be loaded."
             ) from None
@@ -49,6 +64,35 @@ class GitHubInstallationCredentials:
             )
         self._key = key
         self._client_id = client_id
+
+    def assertion(self) -> str:
+        """A JWT that authenticates as the App, for nine minutes."""
+        now = int(time.time())
+        return jwt.encode(
+            {"iat": now - 60, "exp": now + 540, "iss": self._client_id},
+            self._key,
+            algorithm="RS256",
+        )
+
+    @property
+    def fingerprint(self) -> str:
+        """The key as GitHub's App settings list it: SHA-256 of the public key."""
+        public = self._key.public_key().public_bytes(
+            Encoding.DER, PublicFormat.SubjectPublicKeyInfo
+        )
+        return "SHA256:" + base64.b64encode(hashlib.sha256(public).digest()).decode()
+
+    @classmethod
+    def from_file(
+        cls, client_id: str, private_key_path: str
+    ) -> GitHubInstallationCredentials:
+        try:
+            private_key = Path(private_key_path).read_bytes()
+        except OSError:
+            raise ValueError(
+                "The GitHub App signing key could not be loaded."
+            ) from None
+        return cls(client_id, private_key)
 
     @staticmethod
     async def revoke(token: str) -> None:
@@ -82,17 +126,10 @@ class GitHubInstallationCredentials:
             or repository_id <= 0
         ):
             raise GitHubError("Choose a valid GitHub installation and repository.")
-        installations = await github.repositories(user_token)
-        repository = next(
-            (
-                repo
-                for installation in installations
-                if installation["id"] == installation_id
-                for repo in installation["repositories"]
-                if repo["id"] == repository_id
-            ),
-            None,
+        reached = await github.installation_repositories(
+            user_token, installation_id, {repository_id}
         )
+        repository = next(iter(reached or []), None)
         if repository is None:
             raise GitHubError(
                 "Your GitHub account no longer has access to the selected repository."
@@ -101,12 +138,45 @@ class GitHubInstallationCredentials:
             raise GitHubError(
                 "Your GitHub account needs write access to this repository to run a cloud agent."
             )
-        now = int(time.time())
-        assertion = jwt.encode(
-            {"iat": now - 60, "exp": now + 540, "iss": self._client_id},
-            self._key,
-            algorithm="RS256",
+        token = await self.mint(
+            installation_id,
+            [repository_id],
+            {"contents": "write", "pull_requests": "write"},
         )
+        return RepositoryCredential(
+            token.token, token.expires_at, repository_id, repository["name"]
+        )
+
+    async def mint(
+        self,
+        installation_id: int,
+        repository_ids: list[int],
+        permissions: dict[str, str],
+    ) -> InstallationToken:
+        """An installation token for exactly these repositories and permissions.
+
+        GitHub's answer is checked against the request: the same permissions
+        (and `metadata: read`, which every token carries), the same
+        repositories, and an expiry within the hour. Any difference revokes
+        the token and refuses it.
+        """
+        if (
+            type(installation_id) is not int
+            or installation_id <= 0
+            or not 1 <= len(repository_ids) <= MAX_REPOSITORIES
+            or len(set(repository_ids)) != len(repository_ids)
+            or any(type(i) is not int or i <= 0 for i in repository_ids)
+        ):
+            raise GitHubError(
+                f"Choose a GitHub installation and 1 to {MAX_REPOSITORIES} repositories."
+            )
+        if (
+            not permissions
+            or "workflows" in permissions
+            or any(level not in ("read", "write") for level in permissions.values())
+        ):
+            raise GitHubError("These GitHub permissions cannot be granted.")
+        assertion = self.assertion()
         token = None
         try:
             async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
@@ -118,8 +188,8 @@ class GitHubInstallationCredentials:
                         "X-GitHub-Api-Version": "2022-11-28",
                     },
                     json={
-                        "repository_ids": [repository_id],
-                        "permissions": {"contents": "write", "pull_requests": "write"},
+                        "repository_ids": list(repository_ids),
+                        "permissions": dict(permissions),
                     },
                 )
             if rate_limited(response) or response.status_code >= 500:
@@ -135,7 +205,7 @@ class GitHubInstallationCredentials:
             expires_at = datetime.fromisoformat(
                 result["expires_at"].replace("Z", "+00:00")
             )
-            permissions = result["permissions"]
+            returned = result["permissions"]
             if (
                 not isinstance(token, str)
                 or not token
@@ -143,19 +213,17 @@ class GitHubInstallationCredentials:
                 or any(not 33 <= ord(char) <= 126 for char in token)
                 or expires_at.tzinfo is None
                 or not time.time() + 60 < expires_at.timestamp() <= time.time() + 3660
-                or not isinstance(permissions, dict)
-                or permissions.get("contents") != "write"
-                or permissions.get("pull_requests") != "write"
-                or set(permissions) - {"contents", "pull_requests", "metadata"}
-                or permissions.get("metadata", "read") != "read"
-                or [repo["id"] for repo in result["repositories"]] != [repository_id]
+                or not isinstance(returned, dict)
+                or {k: v for k, v in returned.items() if k != "metadata"}
+                != dict(permissions)
+                or returned.get("metadata", "read") != "read"
+                or sorted(repo["id"] for repo in result["repositories"])
+                != sorted(repository_ids)
             ):
                 raise GitHubError(
                     "GitHub returned an invalid repository credential or scope."
                 )
-            return RepositoryCredential(
-                token, expires_at, repository_id, repository["name"]
-            )
+            return InstallationToken(token, expires_at, sorted(repository_ids))
         except (
             GitHubError,
             httpx.HTTPError,

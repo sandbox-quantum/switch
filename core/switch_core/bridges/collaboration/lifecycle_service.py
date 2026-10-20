@@ -1,6 +1,25 @@
+"""Every collaboration bridge: quiet in every process, listening in the one that holds it.
+
+A bridge is a connection to a messaging platform. Two halves of it must run
+once: listening to the platform (a socket, a poll) and relaying the bridge's
+rooms out to it (the `WorkspaceConsumer`) with the session-activity drawings
+beside it, or every event comes in, and every message goes out, once per
+process. Those run in the one switch-core process that holds the bridge
+(`ownership.py`, kind `BRIDGE_CONNECTIONS`). Every other process runs the
+bridge quietly, without them, because requests that touch a platform (create a
+channel, add an agent to one, answer a webhook or a button press) reach any
+process.
+
+Registering, editing and removing a bridge reach every process as a
+`bridge.changed` signal (`bridge_signals.py`), so the holder applies an edit
+made through another process, and a bridge removed anywhere stops everywhere.
+"""
+
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import re
 import time
@@ -12,14 +31,23 @@ import aiohttp
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core import messaging_platforms
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint, CallbackIngress
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeNotRunning,
     BridgeOperationError,
     BridgeStartRefused,
+    FailureReason,
+)
+from switch_core.bridges.collaboration.webhooks import (
+    BridgeWebhookTarget,
+    WebhookBridgeStopped,
+    WebhookBridgeUnknown,
+    webhook_url,
 )
 from switch_core.clients.actor import Actor
 from switch_core.clients.client_factory import ClientFactory
@@ -34,6 +62,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
+from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_collaboration_bridge
@@ -47,110 +76,62 @@ from switch_core.telemetry.deployment import (
     milestone_claimed,
     seconds_since_install,
 )
-from switch_core.telemetry.snapshot import PLATFORMS, normalise_platform
+from switch_core.telemetry.snapshot import normalise_platform
 from switch_core.tenant_context import current_tenant_id, no_tenant
+from switch_core.transport.cursors import ConsumerCursors, CursorWriter
 from switch_core.trust.client import NullTrustClient, TrustClient
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_connections import (
         AgentConnectionRegistry,
     )
+    from switch_core.bridges.collaboration.bridge_signals import BridgeSignals
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+    from switch_core.ownership import Fence, Ownership
     from switch_core.room_service import RoomService
     from switch_core.session_activity.listener import AgentSessionActivityListener
     from switch_core.session_activity.service import AgentSessionActivityService
 
-# Every platform SDK below is registered dynamically (`register_adapter`), so a
-# deployment that only wires up some of the five is plausible even though
-# every one is a hard dependency of switch-core today — hence guarded rather
-# than assumed. A dependency that is genuinely missing degrades classification
-# to `unknown` instead of taking the whole classifier down with an ImportError,
-# which would turn a bridge failure into a second, worse one.
-try:
-    from slack_sdk.errors import SlackApiError
-except ImportError:  # pragma: no cover - exercised only without slack-sdk installed
-    SlackApiError = None  # type: ignore[assignment, misc]
-
-try:
-    from discord.errors import DiscordException
-    from discord.errors import LoginFailure as DiscordLoginFailure
-except ImportError:  # pragma: no cover
-    DiscordException = None  # type: ignore[assignment, misc]
-    DiscordLoginFailure = None  # type: ignore[assignment, misc]
-
-try:
-    from telegram.error import BadRequest as TelegramBadRequest
-    from telegram.error import ChatMigrated as TelegramChatMigrated
-    from telegram.error import Forbidden as TelegramForbidden
-    from telegram.error import InvalidToken as TelegramInvalidToken
-    from telegram.error import NetworkError as TelegramNetworkError
-    from telegram.error import TelegramError
-except ImportError:  # pragma: no cover
-    TelegramBadRequest = None  # type: ignore[assignment, misc]
-    TelegramChatMigrated = None  # type: ignore[assignment, misc]
-    TelegramForbidden = None  # type: ignore[assignment, misc]
-    TelegramInvalidToken = None  # type: ignore[assignment, misc]
-    TelegramNetworkError = None  # type: ignore[assignment, misc]
-    TelegramError = None  # type: ignore[assignment, misc]
-
-try:
-    from mattermostdriver.exceptions import (
-        NoAccessTokenProvided as MattermostNoAccessTokenProvided,
-    )
-    from mattermostdriver.exceptions import (
-        NotEnoughPermissions as MattermostNotEnoughPermissions,
-    )
-
-    # `mattermostdriver` raises its named exceptions only for the status codes
-    # it maps; anything else (including a bare connection failure) surfaces as
-    # the underlying `requests` exception, since that is the client it wraps.
-    from requests.exceptions import ConnectionError as RequestsConnectionError
-    from requests.exceptions import HTTPError as RequestsHTTPError
-    from requests.exceptions import InvalidJSONError as RequestsInvalidJSON
-    from requests.exceptions import Timeout as RequestsTimeout
-except ImportError:  # pragma: no cover
-    MattermostNoAccessTokenProvided = None  # type: ignore[assignment, misc]
-    MattermostNotEnoughPermissions = None  # type: ignore[assignment, misc]
-    RequestsConnectionError = None  # type: ignore[assignment, misc]
-    RequestsHTTPError = None  # type: ignore[assignment, misc]
-    RequestsInvalidJSON = None  # type: ignore[assignment, misc]
-    RequestsTimeout = None  # type: ignore[assignment, misc]
-
 logger = logging.getLogger(__name__)
 
+# How long a bridge being stopped waits for its workspace consumer to finish
+# the message in hand. The transport gives it as long, then cancels the rest.
+STOP_GRACE_SECONDS = 5.0
 
-# Slack error codes that mean the credentials themselves are rejected, as
-# opposed to Slack refusing a call for some other reason (rate limited, a
-# scope not granted, an internal error). `SlackApiError` carries no separate
-# type for this — the distinction lives entirely in `response["error"]`.
-_SLACK_AUTH_ERROR_CODES = frozenset(
-    {
-        "invalid_auth",
-        "not_authed",
-        "account_inactive",
-        "token_revoked",
-        "token_expired",
+# The kind of owned work a bridge's platform connection is (`ownership.py`),
+# keyed by bridge id.
+BRIDGE_CONNECTIONS = "bridge"
+
+
+# What a running bridge writes into its own config as it learns it from
+# traffic (`_persist_service_url`, `_persist_channel_team`). Not an edit: the
+# copy that learned it already uses it, and any other reads it on its next
+# start or learns it from traffic itself.
+_LEARNED_CONFIG_KEYS = frozenset({"service_url", "channel_teams"})
+
+
+def _started_from(bridge: CollaborationBridge) -> str:
+    """What a running bridge was built from, as one value: an edit made by
+    another process changes it, and a re-check that finds it changed restarts
+    the bridge here."""
+    config = {
+        key: value
+        for key, value in (bridge.connection_config or {}).items()
+        if key not in _LEARNED_CONFIG_KEYS
     }
-)
+    return hashlib.sha256(
+        json.dumps(
+            [bridge.type, bridge.display_name, config],
+            sort_keys=True,
+            default=str,
+        ).encode()
+    ).hexdigest()
 
-# Telegram's own hierarchy already encodes "the server understood the request
-# and refused it" for these three. `BadRequest` is a subclass of
-# `NetworkError`, so they are checked ahead of `_NETWORK_EXCEPTIONS` below —
-# the same ordering `telegram/adapter.py`'s `_as_rich_failure` uses, and for
-# the same reason: checking `NetworkError` first would report a definite
-# refusal as an unreachable network.
-_TELEGRAM_DEFINITE_REFUSALS = tuple(
-    exc_type
-    for exc_type in (TelegramBadRequest, TelegramForbidden, TelegramChatMigrated)
-    if exc_type is not None
-)
 
-# Reaching the platform failed outright, across every transport an adapter
-# uses: aiohttp (Slack's Socket Mode, Teams' inbound listener), httpx (Teams'
-# token exchange and Graph calls) and requests (Mattermost, via
-# `mattermostdriver`, which raises its own named exceptions only for the
-# status codes it maps and lets a connection failure surface as the
-# underlying `requests` exception unchanged).
+# Reaching the platform failed outright, in the transports Switch itself
+# depends on: aiohttp (Slack's Socket Mode, Teams' inbound listener) and httpx
+# (Teams' token exchange and Graph calls). A platform whose SDK has a transport
+# of its own names those exceptions in its adapter's `classify_failure`.
 #
 # Each library's own base class for "the transport failed", not the individual
 # leaves. A timeout is the case that makes this worth stating: `ConnectTimeout`
@@ -158,61 +139,20 @@ _TELEGRAM_DEFINITE_REFUSALS = tuple(
 # `ServerTimeoutError` is not a `ClientOSError` in aiohttp — so a list of
 # leaves classifies a refusal as `network` and the timeout beside it as
 # `unknown`, which are the two outcomes an operator most needs to tell apart.
-_NETWORK_EXCEPTIONS = tuple(
-    exc_type
-    for exc_type in (
-        TelegramNetworkError,
-        aiohttp.ClientConnectionError,
-        httpx.TransportError,
-        RequestsConnectionError,
-        RequestsTimeout,
-        # The two builtins, for a failure that reaches here without a library's
-        # name on it: `asyncio.wait_for` raises the first, and a raw socket
-        # connect the second.
-        TimeoutError,
-        ConnectionError,
-    )
-    if exc_type is not None
-)
-
-_MATTERMOST_AUTH_ERRORS = tuple(
-    exc_type
-    for exc_type in (MattermostNoAccessTokenProvided, MattermostNotEnoughPermissions)
-    if exc_type is not None
+_NETWORK_EXCEPTIONS = (
+    aiohttp.ClientConnectionError,
+    httpx.TransportError,
+    # The two builtins, for a failure that reaches here without a library's
+    # name on it: `asyncio.wait_for` raises the first, and a raw socket
+    # connect the second.
+    TimeoutError,
+    ConnectionError,
 )
 
 
-def _slack_failure_reason(exc: SlackApiError) -> str:
-    """`auth_failed` for a rejected token, `platform_error` for everything else
-    Slack refuses a call for (rate limits, a missing scope, an outage). Both
-    arrive as the same `SlackApiError`, so the code inside the response — not
-    the exception's type — is what tells them apart.
-
-    A revoked or rotated bot token is the most common bridge failure in the
-    field, and reporting it as `platform_error` would send an operator to
-    Slack's status page instead of their own token.
-    """
-    # `.response` is not always a mapping. On the async client slack_sdk
-    # raises `SlackApiError(message, res)` with the raw `aiohttp.ClientResponse`
-    # whenever the body it was handed is not the JSON the content type claimed
-    # — an empty 502, a proxy's error page. That object has no `.get`, and this
-    # is evaluated inside the argument list of the `emit_safely` that reports
-    # the failure, so an `AttributeError` here would replace the bridge's real
-    # exception with a meaningless one *and* suppress the event. Nor does a
-    # `.get` promise a mapping: `AsyncSlackResponse.get` itself raises when
-    # the body it holds is text, as a proxy's plain-text 5xx is.
-    response = getattr(exc, "response", None)
-    reader = getattr(response, "get", None)
-    try:
-        code = reader("error") if callable(reader) else None
-    except Exception:
-        code = None
-    if code in _SLACK_AUTH_ERROR_CODES:
-        return "auth_failed"
-    return "platform_error"
-
-
-def _failure_reason(exc: BaseException) -> str:
+def _failure_reason(
+    exc: BaseException, adapter_cls: type[PlatformAdapter] | None
+) -> FailureReason:
     """An enumerated reason for a bridge failure.
 
     Not the exception's message, which routinely carries a workspace name or a
@@ -220,6 +160,10 @@ def _failure_reason(exc: BaseException) -> str:
     outcomes into one exception class — by what the exception itself carries.
     Never by matching words in the class name: "SlackApiError" contains "api",
     which reads a revoked token as a platform fault.
+
+    The bridge's adapter is asked first, because what a platform SDK's
+    exceptions mean is that platform's knowledge. `adapter_cls` is None for a
+    bridge whose type is no longer registered; only the shared rules apply.
 
     `KeyError` and `sqlalchemy.exc.DBAPIError` are deliberately left
     unclassified and fall through to `unknown`. A `KeyError` here is adapter
@@ -230,42 +174,25 @@ def _failure_reason(exc: BaseException) -> str:
     if isinstance(exc, BridgeCredentialError):
         return "auth_failed"
 
-    if SlackApiError is not None and isinstance(exc, SlackApiError):
-        return _slack_failure_reason(exc)
-
-    if DiscordLoginFailure is not None and isinstance(exc, DiscordLoginFailure):
-        return "auth_failed"
-
-    if isinstance(exc, _MATTERMOST_AUTH_ERRORS):
-        return "auth_failed"
-
-    if TelegramInvalidToken is not None and isinstance(exc, TelegramInvalidToken):
-        return "auth_failed"
-
-    if isinstance(exc, _TELEGRAM_DEFINITE_REFUSALS):
-        return "platform_error"
+    if adapter_cls is not None:
+        # Guarded because this runs while a bridge failure is being reported:
+        # a classifier that raised would replace the bridge's own exception
+        # with its own and take the failure event with it.
+        try:
+            claimed = adapter_cls.classify_failure(exc)
+        except Exception:
+            logger.exception(
+                "%s.classify_failure raised; classifying with the shared rules",
+                adapter_cls.__name__,
+            )
+            claimed = None
+        if claimed is not None:
+            return claimed
 
     if isinstance(exc, _NETWORK_EXCEPTIONS):
         return "network"
 
-    # These four are each a platform's own SDK saying it was reached and it
-    # refused, never Switch's own database, which speaks neither
-    # vendor's exception language, so the label stays accurate even though the
-    # check is broad.
     if isinstance(exc, BridgeOperationError):
-        return "platform_error"
-    if DiscordException is not None and isinstance(exc, DiscordException):
-        return "platform_error"
-    if RequestsHTTPError is not None and isinstance(exc, RequestsHTTPError):
-        return "platform_error"
-    if TelegramError is not None and isinstance(exc, TelegramError):
-        return "platform_error"
-
-    # Ahead of the `ValueError` below, which it is one of: `requests` folds a
-    # body it could not parse into `InvalidJSONError`, and a Mattermost server
-    # answering with a proxy error page is the platform misbehaving, not a
-    # connection config somebody typed wrong.
-    if RequestsInvalidJSON is not None and isinstance(exc, RequestsInvalidJSON):
         return "platform_error"
 
     if isinstance(exc, ValueError):
@@ -331,10 +258,36 @@ class CollaborationBridgeLifecycleService:
         session_activity_listener: AgentSessionActivityListener,
         session_activity_service: AgentSessionActivityService,
         connections: AgentConnectionRegistry,
+        ownership: Ownership,
+        cursor_writer: CursorWriter,
         telemetry: TelemetryService | None = None,
         trust_client: TrustClient = NullTrustClient(),
     ) -> None:
         self._bridge_store = bridge_store
+        self._cursor_writer = cursor_writer
+        self._cursor_store = DeliveryCursorStore()
+        self._owned = ownership.kind(
+            BRIDGE_CONNECTIONS, start=self._take_over, stop=self._hand_over
+        )
+        self._signals: BridgeSignals | None = None
+        # The running bridges' workspace consumers, here only where this
+        # process holds the bridge, with the cursors each runs under.
+        self._workspace_consumers: dict[str, WorkspaceConsumer] = {}
+        self._workspace_cursors: dict[str, ConsumerCursors] = {}
+        # What each running bridge was started from (`_started_from`).
+        self._started_rows: dict[str, str] = {}
+        # Quiet copies being started in the background after a hand-over.
+        self._quiet_starts: dict[str, asyncio.Task[None]] = {}
+        # One start or stop of a bridge at a time. A bridge is started and
+        # stopped from several places that interleave: the ownership taking
+        # it over or handing it on, an edit made here or announced from
+        # another process, a quiet copy starting in the background. Two
+        # starts at once would build two adapters, and the one overwritten
+        # would go on listening with nothing left to stop it.
+        self._bridge_locks: dict[str, asyncio.Lock] = {}
+        # Why the last take-over of each bridge failed to start it, for
+        # `register` to raise: the ownership logs the failure and goes on.
+        self._failed_take_overs: dict[str, Exception] = {}
         self._external_user_store = external_user_store
         self._bridge_message_map_store = bridge_message_map_store
         self._room_store = room_store
@@ -387,6 +340,9 @@ class CollaborationBridgeLifecycleService:
         # registration refuses a second claim, but rows predating that check
         # still start.
         self._running_workspaces: dict[str, str] = {}
+        # Resources the deployment itself holds and no bridge may, with who
+        # holds them — the distributed Telegram app's bot, for one.
+        self._reserved_resources: dict[str, str] = {}
         # Started and not deliberately stopped. A crash removes a bridge from
         # `_bridges` and leaves it here, which is what makes "configured but no
         # longer running" answerable.
@@ -396,6 +352,9 @@ class CollaborationBridgeLifecycleService:
         # series survives its last bridge being stopped rather than ending —
         # see the note there on why an absent series is the worst answer.
         self._platforms_seen: set[str] = set()
+        # The adapter class of each running bridge, so a bridge that crashes
+        # after it started has its failure read by its own platform's rules.
+        self._running_adapter_classes: dict[str, type[PlatformAdapter]] = {}
         # The one listener every bridge that gets called back shares, and each
         # running bridge's place on it. Owned here rather than by an adapter
         # because the port is the process's, not a bridge's: two Mattermost
@@ -413,14 +372,20 @@ class CollaborationBridgeLifecycleService:
         # so two concurrent registrations would both see a free resource and
         # both take it — the very collision the check exists to refuse.
         #
-        # A process-wide lock is sufficient *because* switch-core is a
-        # singleton: the chart fails the render for replicaCount != 1, since
-        # it keeps delivery state (event buffers, the invite and presence
-        # buses, the message listener) in memory. If that ever changes, this
-        # has to become a database constraint — the way the single-default
-        # bridge invariant already is — because a lock in one process would
-        # then be guarding nothing.
+        # A process-wide lock guards only this process's registrations. Two
+        # processes registering a conflicting bridge at the same moment are
+        # not kept apart by it; that needs a database constraint, as the
+        # single-default bridge invariant has.
         self._register_lock = asyncio.Lock()
+
+    def use_signals(self, signals: BridgeSignals) -> None:
+        """Where a bridge registered, edited or removed here is announced, so
+        every other process applies it to its own copy (`bridge_signals.py`)."""
+        self._signals = signals
+
+    def _announce(self, bridge_id: str) -> None:
+        if self._signals is not None:
+            self._signals.changed(bridge_id)
 
     def register_adapter(
         self,
@@ -428,11 +393,82 @@ class CollaborationBridgeLifecycleService:
         adapter_cls: type[PlatformAdapter],
         config_cls: type[BridgeConnectionConfig],
     ) -> None:
+        """Make a messaging platform available, under `bridge_type` as its key.
+
+        The one line a new platform adds. What the adapter declares about
+        itself — its name, docs page, icon — is published to
+        `messaging_platforms` here, which is where telemetry, the gateway and
+        the session renderers read it from.
+        """
+        messaging_platforms.register(adapter_cls.describe(bridge_type))
         self._adapter_registry[bridge_type] = adapter_cls
         self._config_registry[bridge_type] = config_cls
 
+    async def webhook_target(self, bridge_id: str) -> BridgeWebhookTarget:
+        """The running bridge that receives webhooks at `bridge_id`'s address.
+
+        Here rather than in the webhook route because the bridge's tenant is
+        not known until it is looked up by id, which is the exempt read this
+        service already makes to start a bridge. The row is then re-read scoped
+        to that tenant, so a wrong answer is a miss rather than a cross-tenant
+        read.
+        """
+        tenant_id = await tenant_of_collaboration_bridge(
+            self._session_factory, bridge_id
+        )
+        if tenant_id is None:
+            raise WebhookBridgeUnknown(f"no bridge {bridge_id}")
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            bridge = await self._bridge_store.get(session, bridge_id)
+        if bridge is None:
+            raise WebhookBridgeUnknown(f"no bridge {bridge_id} in its tenant")
+        adapter_cls = self._adapter_registry.get(bridge.type)
+        if adapter_cls is None or not adapter_cls.receives_webhooks:
+            raise WebhookBridgeUnknown(
+                f"bridge {bridge_id} is on {bridge.type}, which takes no webhooks"
+            )
+        adapter = self.get_adapter(bridge_id)
+        if adapter is None:
+            raise WebhookBridgeStopped(
+                f"{bridge.type} bridge {bridge_id} is not running"
+            )
+        return BridgeWebhookTarget(
+            tenant_id=tenant_id,
+            bridge_id=bridge_id,
+            bridge_type=bridge.type,
+            adapter=adapter,
+        )
+
+    def receives_webhooks(self, bridge_type: str) -> bool:
+        """Whether this platform's connections receive events on an address of
+        their own. False for a type nobody registered."""
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        return adapter_cls is not None and adapter_cls.receives_webhooks
+
+    def webhook_url(self, bridge_id: str, bridge_type: str) -> str | None:
+        """The address to give the platform for this connection's events, or
+        None where it takes none or the public origin is not configured."""
+        if not self.receives_webhooks(bridge_type):
+            return None
+        return webhook_url(self._config.messaging_public_url, bridge_id)
+
+    def adapter_class(self, bridge_type: str) -> type[PlatformAdapter] | None:
+        """The adapter registered for `bridge_type`, or None."""
+        return self._adapter_registry.get(bridge_type)
+
     def get_registered_types(self) -> list[str]:
         return list(self._adapter_registry.keys())
+
+    def is_connected(self, bridge_id: str) -> bool:
+        """Whether a bridge's adapter has finished starting and is serving.
+
+        A bridge is registered as running the moment it is started, well
+        before its adapter has loaded what it needs to handle traffic; an event
+        handed to it in that window is acknowledged and lost. Whoever delivers
+        platform traffic asks this, and tells the platform to try again until
+        it is true.
+        """
+        return bridge_id in self._connected
 
     def get_adapter(self, bridge_id: str) -> PlatformAdapter | None:
         """The live adapter for a running bridge, or None if it isn't running.
@@ -508,6 +544,32 @@ class CollaborationBridgeLifecycleService:
                 connection_config=connection_config,
             )
 
+    async def check_config_edit(
+        self,
+        *,
+        bridge_id: str,
+        bridge_type: str,
+        current: Mapping[str, object],
+        connection_config: Mapping[str, object],
+    ) -> None:
+        """Ask the running bridge whether an edit of its settings is sound.
+
+        See `PlatformAdapter.check_config_edit`. A bridge on an app the
+        deployment owns (one whose adapter limits what is editable) checks
+        with the platform, and cannot until it has finished starting, so the
+        edit is refused with `BridgeNotRunning` rather than stored unchecked. Any other
+        bridge's edit goes through on its validation alone.
+        """
+        adapter = self.get_adapter(bridge_id)
+        if adapter is None or not self.is_connected(bridge_id):
+            if self.editable_config_keys(bridge_type, current) is not None:
+                raise BridgeNotRunning(
+                    "The connection is not running, so Switch cannot check this "
+                    "change with the platform; try again in a moment."
+                )
+            return
+        await adapter.check_config_edit(connection_config)
+
     def iter_adapters(self) -> Iterator[PlatformAdapter]:
         """The live adapter of every running bridge, as a snapshot.
 
@@ -534,6 +596,20 @@ class CollaborationBridgeLifecycleService:
         if adapter_cls is None:
             return True
         return adapter_cls.supports_channel_creation
+
+    def editable_config_keys(
+        self, bridge_type: str, connection_config: Mapping[str, object]
+    ) -> frozenset[str] | None:
+        """Which of a bridge's connection settings may be edited, or None for all.
+
+        The adapter class decides — see `PlatformAdapter.editable_config_keys`.
+        An unknown type has no adapter to ask and leaves everything to the
+        validation that rejects it by name.
+        """
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return None
+        return adapter_cls.editable_config_keys(connection_config)
 
     def supports_directory_search(self, bridge_type: str) -> bool:
         """Whether this platform has a user directory Switch can search.
@@ -642,12 +718,33 @@ class CollaborationBridgeLifecycleService:
                     if bridge.tenant_id == tenant_id
                 )
 
-        logger.info("Starting %d collaboration bridges", len(bridges))
+        logger.info("Wanting %d collaboration bridges", len(bridges))
         for bridge in bridges:
+            self._want(bridge)
+
+    async def start_quiet_copies(self) -> None:
+        """Start, quietly, every wanted bridge this process does not hold.
+
+        After the ownership's first balance (`main`), which has started the
+        bridges this process holds: starting the others before it would build
+        every bridge twice at boot, quiet and then listening.
+        """
+        for bridge_id in sorted(self._owned.wanted()):
+            if self.holds(bridge_id) or bridge_id in self._bridges:
+                continue
             try:
-                await self.start(bridge.id)
+                await self.start(bridge_id)
             except Exception:
-                logger.exception("Failed to start bridge %s", bridge.id)
+                logger.exception("Failed to start bridge %s", bridge_id)
+
+    def reserve_resource(self, resource: str, holder: str) -> None:
+        """Keep a resource the deployment itself uses away from every bridge.
+
+        The distributed Telegram app's bot is the case: its updates go to the
+        webhook, and a self-registered bridge polling the same bot would fail
+        against it — or, if it got there first, take every tenant's updates.
+        """
+        self._reserved_resources[resource] = holder
 
     async def reject_claim_conflict(
         self,
@@ -674,6 +771,16 @@ class CollaborationBridgeLifecycleService:
         wanted_workspace = adapter_cls.claimed_workspace(connection_config)
         if wanted_resource is None and wanted_workspace is None:
             return
+        holder = (
+            None
+            if wanted_resource is None
+            else self._reserved_resources.get(wanted_resource)
+        )
+        if holder is not None:
+            raise BridgeClaimConflict(
+                f"{wanted_resource} is this deployment's own {holder} and cannot "
+                "also be connected as a bridge. Use a bot of your own."
+            )
 
         # Captured before the loop below rebinds per tenant. This method is
         # only ever reached from an authenticated request or an install the
@@ -873,7 +980,39 @@ class CollaborationBridgeLifecycleService:
             },
         )
 
-        await self.start(bridge.id)
+        try:
+            # Which process holds it is settled first, so it starts once, in
+            # the form it will run here.
+            self._want(bridge)
+            await self._owned.settle()
+            failed = self._failed_take_overs.pop(bridge.id, None)
+            if failed is not None:
+                raise failed
+            if not self.holds(bridge.id):
+                await self.start(bridge.id)
+        except Exception:
+            # Stored and not startable is a half state: a row that fails every
+            # boot, and for an install a second bridge on the next attempt. So
+            # a bridge whose start is refused outright is not kept. Once its
+            # adapter is connecting, in the background, a failure is the
+            # bridge's own — logged and reported like any other start's — and
+            # credentials were already checked before anything was stored.
+            logger.exception(
+                "Collaboration bridge %s (%s) could not start; removing it",
+                bridge.id,
+                bridge_type,
+            )
+            try:
+                await self.remove(bridge.id)
+            except Exception:
+                # The start failure is what the caller needs to see; this one
+                # is logged rather than raised in its place.
+                logger.exception(
+                    "Collaboration bridge %s could not be removed after failing "
+                    "to start; its record remains",
+                    bridge.id,
+                )
+            raise
 
         logger.info(
             "Registered collaboration bridge %s (%s): %s",
@@ -881,10 +1020,40 @@ class CollaborationBridgeLifecycleService:
             bridge_type,
             display_name,
         )
+        self._announce(bridge.id)
+        return bridge
+
+    def _bridge_lock(self, bridge_id: str) -> asyncio.Lock:
+        lock = self._bridge_locks.get(bridge_id)
+        if lock is None:
+            lock = self._bridge_locks[bridge_id] = asyncio.Lock()
+        return lock
+
+    def _running(self, bridge_id: str) -> CollaborationCore | None:
+        bridge = self._bridges.get(bridge_id)
+        task = self._tasks.get(bridge_id)
+        if bridge is None or task is None or task.done():
+            return None
         return bridge
 
     async def start(self, bridge_id: str) -> None:
-        """Start a bridge, reporting a failure even before one is ever run.
+        """Start a bridge here, listening if this process holds it and quietly
+        otherwise. One already running in that form is left as it is, and one
+        running in the other form is restarted in this one."""
+        async with self._bridge_lock(bridge_id):
+            await self._start_locked(bridge_id)
+
+    async def _start_locked(self, bridge_id: str) -> None:
+        running = self._running(bridge_id)
+        if running is not None and running.active == self.holds(bridge_id):
+            return
+        if running is not None or bridge_id in self._bridges:
+            await self._stop_locked(bridge_id, reason="restart")
+        await self._start_bridge(bridge_id)
+
+    async def _start_bridge(self, bridge_id: str) -> None:
+        """Build and run a bridge here, listening if this process holds it and
+        quietly otherwise, reporting a failure even before one is ever run.
 
         Everything here runs before `_run_bridge` is scheduled, so nothing
         downstream reports a raise from this method. Unreported it would be an
@@ -903,6 +1072,9 @@ class CollaborationBridgeLifecycleService:
         # `none` would be a claim — and the one this catalogue reserves for a
         # room with no bridge at all.
         platform = "unknown"
+        adapter_cls: type[PlatformAdapter] | None = None
+        fence = self._owned.fence(bridge_id)
+        active = fence is not None
         # Before the first statement that can fail, so a bridge that never gets
         # past reading its own row still reports how long that took.
         self._connect_started[bridge_id] = time.monotonic()
@@ -923,14 +1095,11 @@ class CollaborationBridgeLifecycleService:
                 bridge = await self._bridge_store.get(session, bridge_id)
             if bridge is None:
                 raise ValueError(f"Bridge not found: {bridge_id}")
-            # A type the catalogue has no name for is still a bridge on some
-            # platform, so it is `unknown` here, not the `none` the normaliser
-            # gives it.
-            platform = (
-                normalise_platform(bridge.type)
-                if bridge.type in PLATFORMS
-                else "unknown"
-            )
+            # Recorded before anything can fail: a re-check started from the
+            # same row does not try again what failed here, as one process
+            # tried a failing bridge once until it was edited or restarted.
+            self._started_rows[bridge_id] = _started_from(bridge)
+            platform = normalise_platform(bridge.type)
 
             adapter_cls = self._adapter_registry.get(bridge.type)
             config_cls = self._config_registry.get(bridge.type)
@@ -942,6 +1111,13 @@ class CollaborationBridgeLifecycleService:
             # the bind error one of them causes. Say which bridge holds it
             # instead.
             wanted = adapter_cls.exclusive_resource(bridge.connection_config or {})
+            if wanted is not None and wanted in self._reserved_resources:
+                raise ValueError(
+                    f"Cannot start bridge {bridge_id} ({bridge.type}): {wanted} "
+                    f"is this deployment's own "
+                    f"{self._reserved_resources[wanted]}. Give the bridge a bot "
+                    "of its own."
+                )
             if wanted is not None:
                 for other_id, held in self._held_resources.items():
                     if held == wanted and other_id != bridge_id:
@@ -973,7 +1149,9 @@ class CollaborationBridgeLifecycleService:
                 connection_config=bridge.connection_config or {},
             )
             adapter = adapter_cls(config=typed_config)  # type: ignore[call-arg]
+            adapter.set_listening(active)
             adapter.set_tenant_id(tenant_id)
+            adapter.set_bridge_id(bridge_id)
             adapter.set_outbound_policy(self._config.outbound_policy)
             adapter.set_service_url_persister(
                 lambda service_url: self._persist_service_url(
@@ -985,13 +1163,20 @@ class CollaborationBridgeLifecycleService:
                     bridge_id, tenant_id, channel_id, team_id
                 )
             )
+            adapter.set_holder_relay(
+                lambda request: self._relay_to_holder(bridge_id, request)
+            )
             adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
+            adapter.set_third_party_avatars(self._config.third_party_avatars_enabled)
+            adapter.set_gateway_public_url(self._config.gateway_public_url)
 
             callback_endpoint = self._callback_ingress.endpoint_for(
                 bridge.type, bridge_id
             )
             adapter.set_callback_endpoint(callback_endpoint)
             self._callback_endpoints[bridge_id] = callback_endpoint
+            if adapter_cls.receives_webhooks:
+                adapter.set_webhook_url(self.webhook_url(bridge_id, bridge.type))
 
             gateway_warning = gateway_url_warning(
                 self._config.gateway_public_url, adapter_cls.renders_custom_url_schemes
@@ -1026,26 +1211,40 @@ class CollaborationBridgeLifecycleService:
                 id_server_name=self._config.id_server_name,
                 workspace_consumer_transport_user_id=workspace_consumer_record.transport_user_id,
                 max_attachment_bytes=self._config.agent_media_max_bytes,
-                gateway_public_url=self._config.gateway_public_url,
                 session_activity_listener=self._session_activity_listener,
                 session_activity_service=self._session_activity_service,
                 connections=self._connections,
+                active=active,
                 trust_client=self._trust_client,
             )
 
-            workspace_consumer = WorkspaceConsumer(
-                collaboration_core=collaboration_core,
-                actor=Actor(
-                    client_id=workspace_consumer_record.id,
+            # Only where this process holds the bridge: everywhere else the
+            # bridge relays nothing out, and its rooms are read by the holder.
+            workspace_consumer: WorkspaceConsumer | None = None
+            if fence is not None:
+                workspace_consumer = WorkspaceConsumer(
+                    collaboration_core=collaboration_core,
+                    actor=Actor(
+                        client_id=workspace_consumer_record.id,
+                        tenant_id=workspace_consumer_record.tenant_id,
+                        transport_user_id=workspace_consumer_record.transport_user_id,
+                        display_name=workspace_consumer_record.display_name,
+                        session_factory=self._session_factory,
+                        client_store=self._client_store,
+                        config=WorkspaceConsumerConfig(bridge_id=bridge_id),
+                        transport_factory=self._client_factory.transport_for,
+                    ),
+                )
+                self._workspace_consumers[bridge_id] = workspace_consumer
+                self._workspace_cursors[bridge_id] = ConsumerCursors(
+                    writer=self._cursor_writer,
+                    store=self._cursor_store,
                     tenant_id=workspace_consumer_record.tenant_id,
-                    transport_user_id=workspace_consumer_record.transport_user_id,
-                    display_name=workspace_consumer_record.display_name,
-                    session_factory=self._session_factory,
-                    client_store=self._client_store,
-                    config=WorkspaceConsumerConfig(bridge_id=bridge_id),
-                    transport_factory=self._client_factory.transport_for,
-                ),
-            )
+                    client_id=workspace_consumer_record.id,
+                    fence=fence,
+                    actor_role=workspace_consumer.actor.role,
+                    on_lost=self._owned.lost,
+                )
 
             for listener in self._bridge_starting_listeners:
                 listener(adapter)
@@ -1066,20 +1265,32 @@ class CollaborationBridgeLifecycleService:
             self._tasks[bridge_id] = task
             self._started.add(bridge_id)
             self._platforms_seen.add(normalise_platform(bridge.type))
+            self._running_adapter_classes[bridge_id] = adapter_cls
             if wanted is not None:
                 self._held_resources[bridge_id] = wanted
             if workspace is not None:
                 self._running_workspaces[bridge_id] = workspace
 
-            logger.info("Started collaboration bridge %s (%s)", bridge_id, bridge.type)
+            logger.info(
+                "Started collaboration bridge %s (%s), %s",
+                bridge_id,
+                bridge.type,
+                "listening" if active else "quiet: another process holds it",
+            )
         except Exception as exc:
+            self._workspace_consumers.pop(bridge_id, None)
+            self._workspace_cursors.pop(bridge_id, None)
+            if not active:
+                # Reported by the process that holds the bridge, once.
+                self._connect_started.pop(bridge_id, None)
+                raise
             self._note_connect_failure(bridge_id)
             # Resolved before the call, never inside its argument list: an
             # expression there is evaluated before `emit_safely` is entered, so
             # anything it raised would escape the guard — replacing the
             # bridge's own exception with a meaningless one, and taking the
             # event this method exists to emit with it.
-            reason = _failure_reason(exc)
+            reason = _failure_reason(exc, adapter_cls)
             duration_ms = self._connect_duration_ms(bridge_id)
             emit_safely(
                 self._telemetry,
@@ -1154,9 +1365,11 @@ class CollaborationBridgeLifecycleService:
         bridge_id: str,
         tenant_id: str,
         collaboration_core: CollaborationCore,
-        workspace_consumer: WorkspaceConsumer,
+        workspace_consumer: WorkspaceConsumer | None,
     ) -> None:
-        """The bridge's own long-lived task.
+        """The bridge's own long-lived task: until stopped, the workspace
+        consumer where this process holds the bridge, and nothing but the
+        quiet adapter elsewhere.
 
         `no_tenant` first, because an `asyncio.Task` snapshots the contextvars
         of whoever created it — and `start` is reached from an HTTP request as
@@ -1172,16 +1385,31 @@ class CollaborationBridgeLifecycleService:
         with no_tenant():
             connected = False
             try:
-                await self._record_bridge_memberships(
-                    bridge_id, tenant_id, workspace_consumer.client_id
-                )
+                if workspace_consumer is not None:
+                    await self._record_bridge_memberships(
+                        bridge_id, tenant_id, workspace_consumer.client_id
+                    )
                 await collaboration_core.start()
                 # The one point that means "connected": `start()` only
-                # launched this task and `workspace_consumer.start()` never returns.
+                # launched this task, and what follows runs until the bridge
+                # is stopped.
                 connected = True
                 self._connected.add(bridge_id)
+                if workspace_consumer is None:
+                    # Quiet: serving requests and webhooks until stopped.
+                    await asyncio.Event().wait()
+                    return
                 await self._report_connector_up(bridge_id, platform, configured_at)
-                await workspace_consumer.start()
+                cursors = self._workspace_cursors.get(bridge_id)
+                if (
+                    cursors is None
+                    or self._workspace_consumers.get(bridge_id)
+                    is not workspace_consumer
+                ):
+                    # Stopped, or stopped and started again, while it was
+                    # coming up: this consumer is not to read at all.
+                    return
+                await workspace_consumer.start(cursors)
             except Exception as exc:
                 logger.exception("Bridge %s crashed", bridge_id)
                 self._bridges.pop(bridge_id, None)
@@ -1201,8 +1429,13 @@ class CollaborationBridgeLifecycleService:
                 # outside `emit_safely`'s guard, and this one is on the path of
                 # a task nobody awaits, where anything it raised would surface
                 # only as "Task exception was never retrieved" at collection.
-                reason = _failure_reason(exc)
-                if connected:
+                reason = _failure_reason(
+                    exc, self._running_adapter_classes.pop(bridge_id, None)
+                )
+                if workspace_consumer is None:
+                    # Reported by the process that holds the bridge, once.
+                    self._connect_started.pop(bridge_id, None)
+                elif connected:
                     emit_safely(
                         self._telemetry,
                         "bridge_disconnected",
@@ -1348,6 +1581,31 @@ class CollaborationBridgeLifecycleService:
         )
 
     async def stop(self, bridge_id: str, *, reason: str = "shutdown") -> None:
+        async with self._bridge_lock(bridge_id):
+            await self._stop_locked(bridge_id, reason=reason)
+
+    async def _stop_locked(self, bridge_id: str, *, reason: str) -> None:
+        # The workspace consumer first, and gracefully: it finishes the
+        # message in hand and stores how far it got, so whoever holds the
+        # bridge next neither posts it again nor skips it.
+        workspace_consumer = self._workspace_consumers.pop(bridge_id, None)
+        cursors = self._workspace_cursors.pop(bridge_id, None)
+        if workspace_consumer is not None:
+            await workspace_consumer.stop()
+            running = self._tasks.get(bridge_id)
+            if running is not None:
+                await asyncio.wait({running}, timeout=STOP_GRACE_SECONDS)
+        if cursors is not None:
+            try:
+                await cursors.flush()
+            except Exception:
+                logger.warning(
+                    "Could not store bridge %s's progress as it stopped; whoever "
+                    "holds it next handles its last messages again, and posts "
+                    "none of them twice",
+                    bridge_id,
+                    exc_info=True,
+                )
         # Before the adapter goes, so a press in flight is answered as gone
         # rather than handled by a bridge that is halfway shut down.
         endpoint = self._callback_endpoints.pop(bridge_id, None)
@@ -1356,28 +1614,39 @@ class CollaborationBridgeLifecycleService:
         collaboration_core = self._bridges.get(bridge_id)
         was_connected = bridge_id in self._connected
         self._connected.discard(bridge_id)
-        if collaboration_core:
-            await collaboration_core.stop()
+        try:
+            if collaboration_core:
+                await collaboration_core.stop()
+        finally:
+            # Unregistered whatever the stop raised, as the lease is let go
+            # of all the same: left here, the copy would read as running and
+            # be stopped again at shutdown.
+            task = self._tasks.pop(bridge_id, None)
+            if task and not task.done():
+                task.cancel()
 
-        task = self._tasks.pop(bridge_id, None)
-        if task and not task.done():
-            task.cancel()
-
-        self._bridges.pop(bridge_id, None)
-        self._held_resources.pop(bridge_id, None)
-        self._running_workspaces.pop(bridge_id, None)
-        self._started.discard(bridge_id)
-        # A bridge cancelled before it connected never reaches an outcome, and
-        # `_run_bridge`'s handler does not catch `CancelledError`, so its
-        # reading would otherwise sit here for the life of the process — and be
-        # spent by the *next* attempt on the same id, which would then report a
-        # duration measured from the one before it.
-        self._connect_started.pop(bridge_id, None)
+            self._bridges.pop(bridge_id, None)
+            self._held_resources.pop(bridge_id, None)
+            self._running_workspaces.pop(bridge_id, None)
+            self._running_adapter_classes.pop(bridge_id, None)
+            self._started.discard(bridge_id)
+            # A bridge cancelled before it connected never reaches an outcome, and
+            # `_run_bridge`'s handler does not catch `CancelledError`, so its
+            # reading would otherwise sit here for the life of the process — and be
+            # spent by the *next* attempt on the same id, which would then report a
+            # duration measured from the one before it.
+            self._connect_started.pop(bridge_id, None)
+            self._started_rows.pop(bridge_id, None)
         logger.info("Stopped collaboration bridge %s", bridge_id)
 
         # `_bridges` membership is set before the connection is attempted, so
-        # on its own it would report a bridge that never connected.
-        if collaboration_core is not None and was_connected:
+        # on its own it would report a bridge that never connected. Reported
+        # where the bridge was held, once.
+        if (
+            collaboration_core is not None
+            and was_connected
+            and collaboration_core.active
+        ):
             platform, _ = self._bridge_facts.get(bridge_id, ("none", None))
             emit_safely(
                 self._telemetry,
@@ -1390,19 +1659,237 @@ class CollaborationBridgeLifecycleService:
             )
 
     async def restart(self, bridge_id: str) -> None:
-        """Stop and start a bridge so it picks up its stored config.
+        """Stop and start a bridge so it picks up its stored config, here and
+        in every other process.
 
         An adapter is built from the config it was given at start, so an edit
         is inert until the bridge is rebuilt."""
         await self.stop(bridge_id, reason="restart")
         await self.start(bridge_id)
         logger.info("Restarted collaboration bridge %s", bridge_id)
+        self._announce(bridge_id)
 
     async def stop_all(self) -> None:
+        """Stop every bridge still running here, as the process shuts down.
+        The ones it held were stopped and handed over first
+        (`Ownership.stop`); these are its quiet copies. A quiet copy still
+        starting is given the grace period to finish, so it is stopped whole
+        rather than cancelled halfway through being built."""
+        starting = list(self._quiet_starts.values())
+        if starting:
+            _, unfinished = await asyncio.wait(starting, timeout=STOP_GRACE_SECONDS)
+            for task in unfinished:
+                task.cancel()
+            await asyncio.gather(*unfinished, return_exceptions=True)
         logger.info("Stopping all %d collaboration bridges", len(self._bridges))
         for bridge_id in list(self._bridges):
             await self.stop(bridge_id)
         await self._callback_ingress.stop()
+
+    # ── Ownership ────────────────────────────────────────────────────────────
+
+    async def _take_over(self, bridge_id: str, fence: Fence) -> None:
+        """This process now holds the bridge: rebuild its quiet copy here as
+        the listening one. Called by the ownership with the hold in place."""
+        logger.info("Taking over collaboration bridge %s", bridge_id)
+        self._failed_take_overs.pop(bridge_id, None)
+        try:
+            await self.start(bridge_id)
+        except Exception as exc:
+            self._failed_take_overs[bridge_id] = exc
+            raise
+
+    async def _hand_over(self, bridge_id: str) -> None:
+        """This process no longer holds the bridge: stop listening, finish the
+        message in hand, and run on as a quiet copy if the bridge is still
+        wanted here. The quiet copy starts in the background, so the next
+        holder is not kept waiting on this process's platform calls."""
+        logger.info("Handing collaboration bridge %s over", bridge_id)
+        await self.stop(bridge_id, reason="restart")
+        if self._owned.wants(bridge_id) and not self._owned.stopping:
+            self._start_quietly(bridge_id)
+
+    def _start_quietly(self, bridge_id: str) -> None:
+        async def run() -> None:
+            try:
+                with no_tenant():
+                    async with self._bridge_lock(bridge_id):
+                        # Removed, or the process began shutting down, since
+                        # the hand-over: nothing is to run here any more.
+                        if not self._owned.wants(bridge_id) or self._owned.stopping:
+                            return
+                        await self._start_locked(bridge_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Collaboration bridge %s could not start quietly here after "
+                    "being handed over",
+                    bridge_id,
+                )
+            finally:
+                if self._quiet_starts.get(bridge_id) is asyncio.current_task():
+                    del self._quiet_starts[bridge_id]
+
+        self._quiet_starts[bridge_id] = asyncio.create_task(run())
+
+    def _want(self, bridge: CollaborationBridge) -> None:
+        """This process could hold `bridge`, beside whatever its platform
+        says it must be held with (`PlatformAdapter.held_with`)."""
+        adapter_cls = self._adapter_registry.get(bridge.type)
+        held_with = (
+            adapter_cls.held_with(bridge.connection_config or {})
+            if adapter_cls is not None
+            else None
+        )
+        self._owned.want(bridge.id, placed_with=held_with)
+
+    def holds(self, bridge_id: str) -> bool:
+        """Whether this process holds the bridge and listens for it."""
+        return self._owned.fence(bridge_id) is not None
+
+    def _relay_to_holder(self, bridge_id: str, request: dict[str, str]) -> None:
+        if self._signals is None:
+            logger.warning(
+                "Collaboration bridge %s has work for its holder and no signal "
+                "bus to send it on; dropping %r",
+                bridge_id,
+                request,
+            )
+            return
+        self._signals.for_holder(bridge_id, request)
+
+    async def receive_relayed(self, bridge_id: str, request: dict[str, str]) -> None:
+        """Work a quiet copy of the bridge in another process relayed to its
+        holder. Done here only if this process holds the bridge and its copy
+        is running; otherwise it is another process's, or nobody's until the
+        next holder catches up as it takes the bridge over."""
+        if not self.holds(bridge_id):
+            return
+        running = self._running(bridge_id)
+        if running is None or not running.active:
+            return
+        with no_tenant():
+            await running.adapter.receive_relayed(request)
+
+    # ── Changes made in other processes ──────────────────────────────────────
+
+    async def reconcile_bridge(self, bridge_id: str) -> None:
+        """Bring this process's copy of one bridge in line with its row, after
+        another process registered, edited or removed it."""
+        tenant_id = await tenant_of_collaboration_bridge(
+            self._session_factory, bridge_id
+        )
+        bridge: CollaborationBridge | None = None
+        if tenant_id is not None:
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                bridge = await self._bridge_store.get(session, bridge_id)
+        await self._reconcile_row(bridge_id, bridge)
+
+    async def reconcile_all(self) -> None:
+        """`reconcile_bridge` for every bridge stored or running here, reading
+        the rows one tenant at a time."""
+        rows: dict[str, CollaborationBridge] = {}
+        for tenant_id in await all_tenant_ids(self._session_factory):
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                rows.update(
+                    (bridge.id, bridge)
+                    for bridge in await self._bridge_store.get_active(session)
+                    if bridge.tenant_id == tenant_id
+                )
+        bridge_ids = set(rows) | set(self._bridges) | self._owned.wanted()
+        for bridge_id in sorted(bridge_ids):
+            try:
+                await self._reconcile_row(bridge_id, rows.get(bridge_id))
+            except Exception:
+                logger.warning(
+                    "Could not bring collaboration bridge %s in line with its "
+                    "row; retrying at the next re-check",
+                    bridge_id,
+                    exc_info=True,
+                )
+
+    async def _reconcile_row(
+        self, bridge_id: str, bridge: CollaborationBridge | None
+    ) -> None:
+        """Bring this process's copy of a bridge in line with its row.
+
+        Stopped, and let go of, where the row is gone or no longer active.
+        Wanted where it is new here, so the process that should hold it
+        claims it. Started, or restarted, where this process has not started
+        it from this version of the row. A bridge already started from this
+        row is left alone, running or not: one that crashed or failed to
+        start stays down until it is edited or restarted, as it does in a
+        deployment of one process.
+        """
+        if self._owned.stopping:
+            return
+        if bridge is None or bridge.status != "active":
+            if self._owned.wants(bridge_id) or bridge_id in self._bridges:
+                logger.info(
+                    "Collaboration bridge %s was removed elsewhere; stopping it",
+                    bridge_id,
+                )
+                await self._owned.drop(bridge_id)
+                await self.stop(bridge_id)
+            return
+        if not self._owned.wants(bridge_id):
+            # New here: which process holds it is settled first, so it starts
+            # once, in the form it runs in.
+            self._want(bridge)
+            await self._owned.settle()
+        if bridge_id in self._quiet_starts:
+            # Starting in the background, from the row as it reads then.
+            return
+        started_from = self._started_rows.get(bridge_id)
+        if started_from == _started_from(bridge):
+            return
+        if started_from is None:
+            logger.info(
+                "Collaboration bridge %s was added elsewhere; starting it", bridge_id
+            )
+        else:
+            logger.info(
+                "Collaboration bridge %s was edited elsewhere; restarting it",
+                bridge_id,
+            )
+            await self.stop(bridge_id, reason="restart")
+        await self.start(bridge_id)
+
+    def rooms_changed(self, bridge_id: str) -> None:
+        """A room was bridged to `bridge_id` or unbridged from it, and the
+        change has committed: every other process maps the bridge's rooms
+        again, so none goes on carrying a channel into a room it no longer
+        serves. Called by whoever made the change, after it has mapped its own
+        copy."""
+        if self._signals is not None:
+            self._signals.rooms_changed(bridge_id)
+
+    async def reload_rooms(self, bridge_id: str) -> None:
+        """Map the rooms of one bridge running here as their rows say."""
+        bridge = self._bridges.get(bridge_id)
+        if bridge is not None:
+            await bridge.reload_channel_map()
+
+    async def reload_all_rooms(self) -> None:
+        """`reload_rooms` for every bridge running here."""
+        for bridge_id in sorted(self._bridges):
+            try:
+                await self.reload_rooms(bridge_id)
+            except Exception:
+                logger.warning(
+                    "Could not map collaboration bridge %s's rooms again; "
+                    "retrying at the next re-check",
+                    bridge_id,
+                    exc_info=True,
+                )
+
+    def agents_changed(self, tenant_id: str) -> None:
+        """Agents were registered or deleted in `tenant_id`, maybe by another
+        process: every bridge of the tenant running here provisions their
+        platform identities again."""
+        for bridge in self.bridges_for_tenant(tenant_id):
+            bridge.agents_changed()
 
     async def remove(self, bridge_id: str) -> None:
         """Disconnect a messaging app and take its identities with it.
@@ -1425,6 +1912,26 @@ class CollaborationBridgeLifecycleService:
         was_connected = await milestone_claimed(
             self._session_factory, f"connector_added:{bridge_id}"
         )
+        running = self._bridges.get(bridge_id)
+        if running is not None:
+            try:
+                await running.adapter.withdraw()
+            except Exception:
+                logger.error(
+                    "Collaboration bridge %s could not let go of everything it "
+                    "held on its platform; removing it anyway",
+                    bridge_id,
+                    exc_info=True,
+                )
+        else:
+            logger.warning(
+                "Collaboration bridge %s is not running, so it cannot let go of "
+                "what it holds on its platform itself; removing it anyway",
+                bridge_id,
+            )
+        # Held here or not, let go of it: no process is to take it over. A
+        # quiet copy waiting to start finds it no longer wanted.
+        await self._owned.drop(bridge_id)
         await self.stop(bridge_id)
         async with self._session_factory() as session:
             bridge = await self._bridge_store.get(session, bridge_id)
@@ -1462,6 +1969,7 @@ class CollaborationBridgeLifecycleService:
             bridge_id,
             len(removed),
         )
+        self._announce(bridge_id)
 
         if bridge is not None:
             emit_safely(
@@ -1485,6 +1993,10 @@ class CollaborationBridgeLifecycleService:
         self._preconfigured.discard(bridge_id)
         self._connect_failures.pop(bridge_id, None)
         self._connect_started.pop(bridge_id, None)
+        self._failed_take_overs.pop(bridge_id, None)
+        lock = self._bridge_locks.get(bridge_id)
+        if lock is not None and not lock.locked():
+            del self._bridge_locks[bridge_id]
 
     def get(self, bridge_id: str) -> CollaborationCore | None:
         """The running bridge for ``bridge_id``, if it is the bound tenant's.

@@ -25,7 +25,20 @@ describe('isNewer', () => {
     expect(isNewer('0.10.0', '0.9.9')).toBe(true);
     expect(isNewer('1.0.0', '1.0.0')).toBe(false);
     expect(isNewer('0.9.0', '0.10.0')).toBe(false);
-    expect(isNewer('1.0.0-rc.1', '0.1.0')).toBe(false);
+    expect(isNewer('1.0', '0.1.0')).toBe(false);
+    expect(isNewer('1.0.0+build.1', '0.1.0')).toBe(false);
+    expect(isNewer('0.1.0', 'main')).toBe(false);
+  });
+
+  it('ranks a dev build after the release before it and before its own base', () => {
+    expect(isNewer('0.31.1-dev.412.gabc1234', '0.31.0')).toBe(true);
+    expect(isNewer('0.31.1', '0.31.1-dev.412.gabc1234')).toBe(true);
+    expect(isNewer('0.31.1-dev.412.gabc1234', '0.31.1')).toBe(false);
+    expect(isNewer('0.31.1-dev.12.g0000000', '0.31.1-dev.3.gfffffff')).toBe(true);
+    expect(isNewer('0.31.1-dev.3.gfffffff', '0.31.1-dev.12.g0000000')).toBe(false);
+    expect(isNewer('0.31.1-rc.1', '0.31.1-dev.99.g1')).toBe(true);
+    expect(isNewer('1.0.0-alpha.1', '1.0.0-alpha')).toBe(true);
+    expect(isNewer('1.0.0-alpha', '1.0.0-alpha')).toBe(false);
   });
 });
 
@@ -36,6 +49,7 @@ describe('latestRelease', () => {
         release('switch-agent-controller-v0.2.0'),
         release('switch-agent-controller-v0.10.0'),
         release('switch-agent-controller-v0.11.0', { prerelease: true }),
+        release('switch-agent-controller-v0.14.0-dev.3.gabc1234'),
         release('switch-agent-controller-v0.12.0', { draft: true }),
         { ...release('switch-v9.9.9'), tag_name: 'switch-v9.9.9' },
         { ...release('switch-agent-controller-v0.13.0'), assets: [] },

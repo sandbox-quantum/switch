@@ -134,6 +134,11 @@ export type ProviderRuntimeEvent = EventBase &
          */
         detail?: string;
         options: ApprovalOption[];
+        /**
+         * The connector server whose tool this asks to run, one of the
+         * session's `connectorMcpServers`; absent for anything else.
+         */
+        connector?: string;
       }
     | { type: 'request.resolved'; requestId: string; decision: ApprovalDecision }
     | {

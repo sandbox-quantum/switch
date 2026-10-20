@@ -135,10 +135,10 @@ class CollaborationBridgeStore:
 
         Merging rather than replacing means an operator can flip one setting
         without re-sending the platform's tokens. Reassigns the dict so
-        SQLAlchemy tracks the change."""
-        bridge = await session.get(CollaborationBridge, bridge_id)
-        if bridge is None:
-            raise ValueError(f"Bridge not found: {bridge_id}")
+        SQLAlchemy tracks the change. Merged into the row as it is now, under
+        its lock, not as this session first read it: a bridge may have learned
+        and persisted something since."""
+        bridge = await self._locked_for_config_update(session, bridge_id)
         bridge.connection_config = {**(bridge.connection_config or {}), **changes}
         await session.flush()
         return bridge
@@ -160,10 +160,13 @@ class CollaborationBridgeStore:
         state that makes Graph refuse that channel's subscription after the
         next restart, which is the failure the entry exists to prevent.
         """
+        # `populate_existing`, because a row this session already holds would
+        # otherwise come back as it was first read, lock or no lock.
         row = await session.execute(
             select(CollaborationBridge)
             .where(CollaborationBridge.id == bridge_id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         bridge = row.scalar_one_or_none()
         if bridge is None:

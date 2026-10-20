@@ -29,6 +29,15 @@ import {
  */
 export type TemplateKind = 'agent' | 'room' | 'group';
 
+/** A connection a template grants an agent: the deployer's own connection to `service`. */
+export type TemplateConnection = {
+  service: string;
+  /** Null for the level a new grant takes by default. */
+  access: 'read' | 'write' | null;
+  /** GitHub only: the repositories it reaches, `owner/name`. */
+  repos: string[];
+};
+
 export type ParsedAgentEntry = {
   /** The name as written in the template, with any `{param}` still unfilled. */
   name: string | null;
@@ -42,15 +51,68 @@ export type ParsedAgentEntry = {
   /**
    * Which coding agent runs it. Either a provider id (`claude`, `codex`,
    * `opencode`) or a `{param}` whose value is one. Null when the template
-   * has no `provider` field; the Use page asks for one.
+   * has no `provider` field.
    */
   provider: string | null;
   /** Where it runs: `local`, an ssh host, or a `{param}`. Null when the template has no `location` field. */
   location: string | null;
+  /**
+   * Where it runs as one of the owner's machines on the server: a machine's
+   * name or id, or a `{param}`. Null when the template has no `machine` field.
+   */
+  machine: string | null;
+  /** The model to run, or a `{param}`; null for the provider's default. */
+  model: string | null;
+  /** The provider's advanced settings, as written; `{param}`s still unfilled. */
+  advancedConfig: Record<string, unknown>;
+  /** `shared` or `isolated`, or a `{param}`; null for shared. */
+  isolation: string | null;
+  /** The provider's own automatic review: `true`, `false`, or a `{param}`; null for true. */
+  autoMode: boolean | string | null;
+  /** Run tools without asking: `true`, `false`, or a `{param}`; null for false. */
+  autoApprove: boolean | string | null;
+  /** The deployer's connections it is granted, as written. */
+  connections: TemplateConnection[];
   /** Its working directory, or a `{param}`. Null when the template has no `directory` field. */
   directory: string | null;
   /** Rooms the agent is added to once it exists, by name or `{param}`. */
   join: string[];
+  /** Every `{name}` written anywhere in the entry, its instructions included. */
+  placeholders: string[];
+  /**
+   * Whether the deployer may fill this entry with an agent the server already
+   * has instead of creating it. From `allow_existing:`, false unless the
+   * template says so.
+   */
+  allowExisting: boolean;
+  /** A version 2 resource's key; null in a version 1 document. */
+  key: string | null;
+  /** A version 2 resource's `if:`: created only while it holds. */
+  condition: string | null;
+};
+
+/**
+ * What runs an agent, where, and in which folder: what a template must say
+ * for every agent it creates. Where it runs is said with `location` or
+ * `machine`; `location` stands for both.
+ */
+export type RuntimeField = 'provider' | 'location' | 'directory';
+export const RUNTIME_FIELDS: readonly RuntimeField[] = ['provider', 'location', 'directory'];
+
+/** The fields, and param types, that say each runtime setting. */
+const RUNTIME_KINDS: Record<RuntimeField, readonly string[]> = {
+  provider: ['provider'],
+  location: ['location', 'machine'],
+  directory: ['directory'],
+};
+
+/** A runtime setting the document never gives one of its agents. */
+export type UnsaidRuntime = {
+  /** The index of the agent entry. */
+  index: number;
+  /** How the entry is named in the document, for a message. */
+  label: string;
+  field: RuntimeField;
 };
 
 export type TemplateAgents = {
@@ -62,6 +124,12 @@ export type TemplateAgents = {
    */
   singular: boolean;
   warnings: string[];
+  /**
+   * The runtime settings the document leaves unsaid. The Console supplies
+   * none of its own, so the editor warns about each and the Use page refuses
+   * to create until the document says it.
+   */
+  unsaid: UnsaidRuntime[];
 };
 
 const ADDRESSING_VALUES: ReadonlySet<string> = new Set(['owner', 'owner-agents', 'anyone']);
@@ -85,8 +153,24 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+/** Whether a document is written in version 2 of the language: resources with a key and a type. */
+export function isVersion2(doc: Record<string, unknown>): boolean {
+  return doc.version === 2 || asRecord(doc.resources) !== null;
+}
+
+/** A version 2 document's resources of one type, with their keys. */
+function resourcesOf(
+  doc: Record<string, unknown>,
+  type: 'agent' | 'room' | 'group'
+): [string, Record<string, unknown>][] {
+  return Object.entries(asRecord(doc.resources) ?? {})
+    .map(([key, spec]) => [key, asRecord(spec)] as const)
+    .filter((e): e is [string, Record<string, unknown>] => e[1] !== null && e[1].type === type);
+}
+
 /** The agent entries as parsed YAML objects, from `agents:` (a list) or `agent:` (a single entry). */
 function rawAgents(doc: Record<string, unknown>): Record<string, unknown>[] {
+  if (isVersion2(doc)) return resourcesOf(doc, 'agent').map(([key, spec]) => ({ ...spec, key }));
   if (Array.isArray(doc.agents)) {
     return doc.agents.map((a) => asRecord(a)).filter((a): a is Record<string, unknown> => !!a);
   }
@@ -104,6 +188,12 @@ export function templateKind(yamlText: string): TemplateKind {
 }
 
 export function kindOf(doc: Record<string, unknown>): TemplateKind {
+  if (isVersion2(doc)) {
+    const rooms = resourcesOf(doc, 'room').length;
+    const agentCount = resourcesOf(doc, 'agent').length;
+    if (resourcesOf(doc, 'group').length > 0 || rooms > 1 || agentCount > 1) return 'group';
+    return agentCount === 1 ? 'agent' : 'room';
+  }
   const agents = rawAgents(doc);
   if (doc.group !== undefined || Array.isArray(doc.rooms)) return 'group';
   if (agents.length > 1) return 'group';
@@ -166,13 +256,106 @@ export function parseTemplateAgents(
         : null,
       provider: optionalString(agent.provider),
       location: optionalString(agent.location),
+      machine: optionalString(agent.machine),
+      model: optionalString(agent.model),
+      advancedConfig: asRecord(agent.advanced_config) ?? {},
+      isolation: optionalString(agent.isolation),
+      autoMode:
+        typeof agent.auto_mode === 'boolean' ? agent.auto_mode : optionalString(agent.auto_mode),
+      autoApprove:
+        typeof agent.auto_approve === 'boolean'
+          ? agent.auto_approve
+          : optionalString(agent.auto_approve),
+      connections: parseConnections(agent.connections, warnings, label),
       directory: optionalString(agent.directory),
       join: Array.isArray(agent.join)
         ? agent.join.filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
         : [],
+      placeholders: [...placeholdersIn({ ...agent, key: undefined })],
+      allowExisting: agent.allow_existing === true,
+      key: typeof agent.key === 'string' ? agent.key : null,
+      condition: typeof agent.if === 'string' ? agent.if : null,
     };
   });
-  return { agents, singular: !Array.isArray(doc.agents) && agents.length === 1, warnings };
+  return {
+    agents,
+    singular: !isVersion2(doc) && !Array.isArray(doc.agents) && agents.length === 1,
+    warnings,
+    unsaid: unsaidRuntime(doc, agents),
+  };
+}
+
+/**
+ * The provider, location and directory each agent entry leaves unsaid.
+ *
+ * An entry says one by its own field (a literal or a `{param}`), or the
+ * document says it for every agent with a param of that type that no entry's
+ * field reads.
+ */
+function unsaidRuntime(doc: Record<string, unknown>, agents: ParsedAgentEntry[]): UnsaidRuntime[] {
+  const params = asRecord(doc.params) ?? {};
+  const fieldTexts = agents.flatMap((a) => runtimeFieldTexts(a));
+  const appliesToAll = (field: RuntimeField) =>
+    Object.entries(params).some(
+      ([name, spec]) =>
+        RUNTIME_KINDS[field].includes(String(asRecord(spec)?.type)) &&
+        !fieldTexts.some((t) => t.includes(`{${name}}`))
+    );
+  const says = (agent: ParsedAgentEntry, field: RuntimeField) =>
+    RUNTIME_KINDS[field].some((kind) => agent[kind as keyof ParsedAgentEntry] !== null);
+  const out: UnsaidRuntime[] = [];
+  agents.forEach((agent, index) => {
+    const label = agent.name ?? agent.displayName ?? `agent ${index + 1}`;
+    for (const field of RUNTIME_FIELDS) {
+      if (!says(agent, field) && !appliesToAll(field)) out.push({ index, label, field });
+    }
+  });
+  return out;
+}
+
+/** The texts of an entry's runtime fields, for telling whether a param is read by one. */
+export function runtimeFieldTexts(
+  agent: Pick<ParsedAgentEntry, 'provider' | 'location' | 'machine' | 'directory'>
+): string[] {
+  return [agent.provider ?? '', agent.location ?? '', agent.machine ?? '', agent.directory ?? ''];
+}
+
+const ACCESS_VALUES: ReadonlySet<string> = new Set(['read', 'write']);
+
+function parseConnections(raw: unknown, warnings: string[], label: string): TemplateConnection[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    warnings.push(`${label}: \`connections:\` is a list of services.`);
+    return [];
+  }
+  const out: TemplateConnection[] = [];
+  for (const item of raw) {
+    if (typeof item === 'string' && item.trim() !== '') {
+      out.push({ service: item.trim(), access: null, repos: [] });
+      continue;
+    }
+    const record = asRecord(item);
+    const service = optionalString(record?.service);
+    if (!record || !service) {
+      warnings.push(`${label}: each connection is a service name or {service, access, repos}.`);
+      continue;
+    }
+    const access = optionalString(record.access);
+    if (access !== null && !ACCESS_VALUES.has(access)) {
+      warnings.push(`${label}: ${service} access '${access}' is not read or write.`);
+    }
+    const repos = Array.isArray(record.repos)
+      ? record.repos.filter((r): r is string => typeof r === 'string' && r.trim() !== '')
+      : typeof record.repos === 'string'
+        ? [record.repos]
+        : [];
+    out.push({
+      service,
+      access: access === 'read' || access === 'write' ? access : null,
+      repos,
+    });
+  }
+  return out;
 }
 
 /** How the Use page lays out what the template folds away. From the document's `form:` block. */
@@ -206,6 +389,28 @@ export function parseAgentTemplate(
   fallbackInstructions: string | null = null
 ): ParsedAgentTemplate {
   const doc = parseYaml(yamlText);
+  if (isVersion2(doc)) {
+    const { agents, warnings } = parseTemplateAgents(yamlText, fallbackInstructions);
+    if (agents.length !== 1)
+      throw new Error(
+        'This template creates several agents, so it has no single set of instructions to offer.'
+      );
+    const [agent] = agents;
+    const [first] = resourcesOf(doc, 'room');
+    return {
+      name: agent!.name,
+      addressing: agent!.addressing,
+      description: agent!.description,
+      instructions: agent!.instructions,
+      repoUrl: agent!.repoUrl,
+      sources: agent!.sources,
+      room: first
+        ? { name: optionalString(first[1].name), kickoff: optionalString(first[1].kickoff) }
+        : null,
+      provider: agent!.provider,
+      warnings,
+    };
+  }
   if (asRecord(doc.agent) === null) {
     throw new Error(
       Array.isArray(doc.agents)
@@ -375,7 +580,10 @@ export function substituteAgentSlots(
  */
 export function composeTemplateDocument(yamlText: string, instructions: string): string {
   const doc = parseYaml(yamlText);
-  const entries = rawAgents(doc);
+  // The resources themselves, so the brief is written into the document.
+  const entries = isVersion2(doc)
+    ? resourcesOf(doc, 'agent').map(([, spec]) => spec)
+    : rawAgents(doc);
   if (entries.length === 0) throw new Error('Template must have an "agent:" block.');
   for (const agent of entries) {
     if (typeof agent.instructions !== 'string' || agent.instructions.trim().length === 0) {
@@ -383,4 +591,44 @@ export function composeTemplateDocument(yamlText: string, instructions: string):
     }
   }
   return dump(doc, { lineWidth: -1 });
+}
+
+/** A version 2 document's rooms and group, as the Use page shows them. */
+export type Version2Rooms = {
+  rooms: {
+    key: string;
+    condition: string | null;
+    name: string | null;
+    description: string | null;
+    agents: string[];
+    users: string[];
+    bridge: string | null;
+    kickoff: string | null;
+    placeholders: string[];
+  }[];
+  groupName: string | null;
+  usesCreator: boolean;
+};
+
+export function version2Rooms(yamlText: string): Version2Rooms {
+  const doc = parseYaml(yamlText);
+  const strings = (value: unknown) =>
+    Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+  const rooms = resourcesOf(doc, 'room').map(([key, spec]) => ({
+    key,
+    condition: typeof spec.if === 'string' ? spec.if : null,
+    name: optionalString(spec.name),
+    description: optionalString(spec.description),
+    agents: strings(spec.agents),
+    users: strings(spec.users),
+    bridge: optionalString(spec.bridge),
+    kickoff: optionalString(spec.kickoff),
+    placeholders: [...placeholdersIn(spec)],
+  }));
+  const [group] = resourcesOf(doc, 'group');
+  return {
+    rooms,
+    groupName: group ? optionalString(group[1].name) : null,
+    usesCreator: yamlText.includes('{$creator}'),
+  };
 }

@@ -62,11 +62,20 @@ export const CORE_DEPENDENCIES: DependencyDescriptor[] = [
     category: 'core',
     commands: ['node'],
     versionArgs: ['--version'],
-    // Persistent SDK hosts require AbortSignal.any.
-    minVersion: '20.3.0',
+    // The agent runtime connects over Node's built-in WebSocket (Node 22), and
+    // the agents controller Console installs for managed agents needs 22.13.
+    // A host below this shows as needing setup, and the install below upgrades it.
+    minVersion: '22.13.0',
     docUrl: 'https://nodejs.org/en/download',
     installCommands: {
-      macos: [{ method: 'homebrew', command: 'brew install node', recommended: true }],
+      macos: [
+        {
+          method: 'homebrew',
+          // `brew install` leaves an old Node in place; upgrade one that is there.
+          command: 'brew upgrade node 2>/dev/null || brew install node',
+          recommended: true,
+        },
+      ],
       linux: [
         {
           // Distro `apt install nodejs` ships ancient Node on LTS Ubuntu (v12 on

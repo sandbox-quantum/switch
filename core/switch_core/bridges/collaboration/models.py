@@ -1,4 +1,4 @@
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import AfterValidator, BaseModel
 
@@ -14,6 +14,29 @@ once, rather than in each adapter.
 """
 
 ChannelType = Literal["lobby", "channel_public", "channel_private", "group", "direct"]
+
+ChannelRetirement = Literal["archived", "deleted", "left", "kept"]
+"""What deleting a room does to its platform channel when all goes to plan.
+
+`left` is the bot leaving a chat it cannot archive or delete; `kept` is a
+channel Switch has no permission to touch, which somebody removes on the
+platform itself.
+"""
+
+
+class RetireOutcome(BaseModel):
+    """What happened to a room's platform channel when the room was deleted.
+
+    `failed` means the channel is still there and needs cleaning up by hand;
+    `reason` says why, in the platform's or the bridge's words.
+    """
+
+    outcome: Literal["archived", "deleted", "left", "kept", "failed"]
+    reason: str | None = None
+
+    @classmethod
+    def failed(cls, reason: str) -> Self:
+        return cls(outcome="failed", reason=reason)
 
 
 class ChannelCreationUnsupported(ValueError):
@@ -202,6 +225,15 @@ class BridgeInstallLink(BaseModel):
     url: str
 
 
+#: Why a bridge failed, in the closed set telemetry reports it as. Never the
+#: exception's message, which routinely carries a workspace name or a token
+#: fragment. `PlatformAdapter.classify_failure` answers with one of these for
+#: its own SDK's exceptions; the lifecycle classifies everything else.
+FailureReason = Literal[
+    "auth_failed", "network", "platform_error", "config_invalid", "unknown"
+]
+
+
 class BridgeConnectionConfig(BaseModel):
     pass
 
@@ -221,6 +253,13 @@ class BridgeStartRefused(RuntimeError):
     Raised before the bridge's adapter is built, so nothing of it ran. Also
     answers an edit that would leave a bridge unable to start, before the edit
     is stored.
+    """
+
+
+class BridgeNotRunning(RuntimeError):
+    """What was asked needs the bridge running, and it is not.
+
+    Usually the moment of a restart, so worth trying again shortly.
     """
 
 

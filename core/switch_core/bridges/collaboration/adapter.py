@@ -2,20 +2,37 @@ from __future__ import annotations
 
 import logging
 import math
+import sys
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Any, ClassVar, Literal, Protocol, final, runtime_checkable
+from pathlib import Path
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Literal,
+    Protocol,
+    final,
+    runtime_checkable,
+)
 
 from switch_core.agent_display_name import defuse_label_markup
-from switch_core.agent_icon import default_icon_url
+from switch_core.agent_icon import (
+    generated_icon_url,
+    initials_icon_url,
+    is_third_party_avatar,
+)
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint
+from switch_core.bridges.collaboration.install import InboundWebhook, WebhookRequest
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelCreationUnsupported,
+    ChannelRetirement,
     ChannelType,
     DirectoryUser,
+    FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -23,6 +40,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    RetireOutcome,
     WebhookDeliveryUnsupported,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -34,6 +52,8 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     request_summary,
     turn_summary,
 )
+from switch_core.deeplinks import rewrite_console_links
+from switch_core.messaging_platforms import MessagingPlatform
 from switch_core.outbound import OutboundPolicy
 from switch_core.room_wide_mention import (
     ROOM_WIDE_TARGET,
@@ -46,7 +66,40 @@ from switch_core.sessions.contract import (
     TurnUpsert,
 )
 
+if TYPE_CHECKING:
+    from switch_core.db.models import Agent
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AgentIdentity:
+    """An agent as a bridge needs it to keep the agent's platform handle.
+
+    ``agent_id`` is the stable key: it never changes, so a platform object
+    tied to it survives a rename on either side. ``name`` is the identifier
+    people type and mention, and it can change.
+    """
+
+    agent_id: str
+    name: str
+    description: str
+    display_name: str | None
+
+
+def agent_identity(agent: Agent) -> AgentIdentity:
+    """The identity a bridge keeps for this stored agent."""
+    return AgentIdentity(
+        agent_id=agent.id,
+        name=agent.name,
+        description=agent.description,
+        display_name=agent.display_name,
+    )
+
+
+class AgentIdentityConflict(ValueError):
+    """The platform already has something that is not this agent under the
+    handle the agent would need, so the agent cannot take that name there."""
 
 
 @dataclass(frozen=True)
@@ -77,7 +130,8 @@ class AgentRendering:
 
     field_label: str
     body_label: str
-    icon_url: str
+    # None when the platform should draw its own default icon for the sender.
+    icon_url: str | None
 
 
 @dataclass(frozen=True)
@@ -101,7 +155,6 @@ class TurnActivity:
     status_only: bool = False
     # Stable recovery marker for a reserved platform post, not an answer token.
     publication_token: str | None = None
-    session_url: str | None = None
     notify_external_id: str | None = None
     # There was someone who should be told and nobody here to name: the agent
     # has no owner, or an owner who has claimed no account on this platform.
@@ -138,7 +191,6 @@ class ActivitySnapshot:
     items: list[Item]
     turn: TurnUpsert
     elapsed_seconds: float | None
-    session_url: str | None
     read_at: datetime
 
 
@@ -204,6 +256,14 @@ class ChannelNotBindable(ValueError):
 
     A `ValueError` because it is the caller's input that is wrong, and every
     path that binds a channel already answers those as a bad request.
+    """
+
+
+class ConfigEditRefused(ValueError):
+    """An edit of a connection's settings that the platform says is wrong.
+
+    A `ValueError` for the same reason as `ChannelNotBindable`: it is the
+    caller's input, answered as a bad request.
     """
 
 
@@ -324,7 +384,9 @@ class SupportsSharedConnection(Protocol):
     Structural on purpose: the lifecycle, the gateway and boot narrow to this
     with `isinstance` and stay ignorant of the concrete adapter, and an adapter
     with no shared connection (Slack, Mattermost, Teams, Telegram) never matches
-    and is left alone.
+    and is left alone. A bridge on the distributed Teams app shares the
+    deployment's app too, but has nothing to wait for: it is handed the app
+    before it starts, by its own bridge-starting listener, and never matches.
     """
 
     def attach_shared_connection(self, connection: Any) -> None: ...
@@ -333,6 +395,31 @@ class SupportsSharedConnection(Protocol):
 
 
 class PlatformAdapter(ABC):
+    #: The platform as a person names it — "Microsoft Teams", not "teams".
+    #:
+    #: Required: registration refuses an adapter without one. It is what
+    #: Console labels the platform with, what a card says an answer came
+    #: "from", and what the adapter's own messages call the platform.
+    display_name: ClassVar[str]
+
+    #: The page under the messaging-apps docs that explains how to connect
+    #: this platform (`docs/.../messaging-apps/<docs_slug>`), or None where
+    #: there is none yet. Console links "how do I set this up?" to it.
+    docs_slug: ClassVar[str | None] = None
+
+    #: The name of the logo file shipped in the adapter's own folder. Served to
+    #: Console as the platform's icon; a platform without one is drawn with a
+    #: generic icon. SVG only, because Console draws it at every size.
+    icon_file: ClassVar[str] = "icon.svg"
+
+    #: Whether this platform delivers its events by calling Switch over HTTP,
+    #: on an address of each connection's own (`/messaging/bridges/<id>/events`).
+    #:
+    #: Set by an adapter that implements `verify_webhook` and `parse_webhook`.
+    #: Most adapters dial out to their platform and are handed events on a
+    #: connection they opened; they leave this False.
+    receives_webhooks: ClassVar[bool] = False
+
     #: Whether this platform draws agents' session activity: each turn step by
     #: step, and the approval and question cards a session waits on.
     draws_session_activity: ClassVar[bool] = False
@@ -432,7 +519,9 @@ class PlatformAdapter(ABC):
     #: where this is False that link cannot work as written, and the deployment
     #: needs `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to the https
     #: redirect. Declared here so the lifecycle can say so once at startup
-    #: instead of each bridge discovering it in its own way.
+    #: instead of each bridge discovering it in its own way. Where it is
+    #: False, `translate_outbound` also rewrites links an agent writes to
+    #: Switch Console pages (`switchdash://open/…`).
     renders_custom_url_schemes: ClassVar[bool] = True
 
     #: Whether `find_request_card` can actually search this platform.
@@ -487,7 +576,27 @@ class PlatformAdapter(ABC):
     #: withheld is the notice, not the request.
     discloses_unconfirmed_posts: ClassVar[bool] = False
 
+    # Whether this adapter keeps quiet when told not to listen
+    # (`set_listening`): it opens nothing the platform delivers events over,
+    # no socket, no poll, no subscription it keeps alive, and only calls the
+    # platform's API. A bridge is listened to by the one switch-core process
+    # that holds it (`ownership.py`); every other runs it quietly to serve the
+    # requests and webhooks that reach it. An adapter that cannot keep quiet
+    # listens wherever it runs, so its platform delivers to every process.
+    keeps_quiet_unless_listening: ClassVar[bool] = False
+
+    #: What `retire_channel` does to a deleted room's channel when it works.
+    #:
+    #: Console reads it, through room detail, to tell the person deleting a
+    #: room what will become of its channel before they confirm, so it has to
+    #: say what this adapter's `retire_channel` actually does. `kept` here
+    #: because the base leaves the channel alone.
+    channel_on_delete: ClassVar[ChannelRetirement] = "kept"
+
     def __init__(self) -> None:
+        # Whether this process holds the bridge: see
+        # `keeps_quiet_unless_listening`. Set by the lifecycle before `start`.
+        self._listening = True
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None
         self._on_agent_joined: Callable[[InboundAgentJoin], Awaitable[None]] | None = (
@@ -525,14 +634,115 @@ class PlatformAdapter(ABC):
         self._resolve_agent_presentation: (
             Callable[[str], Awaitable[AgentPresentation | None]] | None
         ) = None
+        self._reported_missing_resolver = False
         # Inbound attachment size ceiling, set by the lifecycle service from
         # config.agent_media_max_bytes. Adapters check a platform-reported file
         # size against this before downloading so an oversize file is rejected
         # loudly instead of being pulled down and discarded.
         self._max_attachment_bytes = 20 * 1024 * 1024
+        # Set by `set_webhook_url` for an adapter that receives webhooks.
+        self.webhook_url: str | None = None
+        # Set by the lifecycle service from config.third_party_avatars_enabled.
+        # Off until then, so an adapter whose wiring was missed shows platform
+        # default icons, which someone notices, rather than quietly sending
+        # names to avatar services an operator has turned off.
+        self._third_party_avatars = False
+        # Set by the lifecycle (`set_holder_relay`): hands a request to the
+        # process that holds the bridge, for work only the holder does.
+        self._relay_to_holder: Callable[[dict[str, str]], None] | None = None
+        # Set by the lifecycle (`set_gateway_public_url`).
+        self._gateway_public_url: str | None = None
 
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
+
+    def set_listening(self, listening: bool) -> None:
+        """Whether this process holds the bridge and listens to the platform
+        for it, or runs it quietly. Before `start`; an adapter that cannot
+        keep quiet ignores it (`keeps_quiet_unless_listening`)."""
+        self._listening = listening
+
+    def set_holder_relay(self, relay: Callable[[dict[str, str]], None]) -> None:
+        """How a quiet copy hands the process holding the bridge a piece of
+        work only the holder does, which reached this process instead: a
+        webhook arrives at whichever process the load balancer picks. The
+        holder receives it in `receive_relayed`."""
+        self._relay_to_holder = relay
+
+    def _hand_to_holder(self, request: dict[str, str]) -> None:
+        """Hand `request` to the process holding the bridge. Nobody may hold
+        it right now; the next holder catches up as it takes the bridge over,
+        as it does for anything that happened while nobody held it."""
+        if self._relay_to_holder is None:
+            logger.warning(
+                "No way to reach the process holding this bridge; dropping %r",
+                request,
+            )
+            return
+        self._relay_to_holder(request)
+
+    async def receive_relayed(self, request: Mapping[str, str]) -> None:
+        """Do a piece of work a quiet copy in another process handed here
+        (`_hand_to_holder`), as this process holds the bridge. Nothing hands
+        work to an adapter that does not override this."""
+        logger.warning("Ignoring a relayed request this bridge has no use for")
+
+    def set_third_party_avatars(self, enabled: bool) -> None:
+        """Whether this adapter may hand platforms an icon drawn by an outside
+        avatar service (`agent_icon.is_third_party_avatar`)."""
+        self._third_party_avatars = enabled
+
+    def set_gateway_public_url(self, gateway_public_url: str | None) -> None:
+        """The server's public address (`GATEWAY_PUBLIC_URL`), which a link to
+        a Switch Console page is rewritten to on a platform that cannot open
+        `switchdash://`. None where the server has none, and those links are
+        then named in words (`rewrite_console_links`)."""
+        self._gateway_public_url = gateway_public_url
+
+    @classmethod
+    def describe(cls, key: str) -> MessagingPlatform:
+        """What this adapter declares about its platform, registered as `key`."""
+        display_name = getattr(cls, "display_name", None)
+        if not isinstance(display_name, str) or not display_name.strip():
+            raise ValueError(
+                f"{cls.__name__} declares no display_name. Every adapter names "
+                "its platform the way a person would "
+                '(e.g. display_name = "Microsoft Teams").'
+            )
+        return MessagingPlatform(
+            key=key,
+            display_name=display_name,
+            docs_slug=cls.docs_slug,
+            icon_svg=cls.icon_svg(),
+        )
+
+    @classmethod
+    def icon_svg(cls) -> str | None:
+        """The logo shipped beside this adapter's module, or None if it has none."""
+        module = sys.modules.get(cls.__module__)
+        module_file = getattr(module, "__file__", None)
+        if module_file is None:
+            return None
+        path = Path(module_file).parent / cls.icon_file
+        if not path.is_file():
+            return None
+        return path.read_text(encoding="utf-8")
+
+    @classmethod
+    def classify_failure(cls, exc: BaseException) -> FailureReason | None:
+        """Name why this platform's own SDK failed, or None to leave it to Switch.
+
+        The lifecycle asks this first when a bridge fails, so the knowledge of
+        what this platform's exceptions mean lives with the adapter that raises
+        them. Answer only for exceptions of this platform's SDK; return None
+        for anything else, and the shared classifier decides —
+        `BridgeCredentialError` is `auth_failed`, a transport failure is
+        `network`, `BridgeOperationError` is `platform_error`.
+
+        An adapter that raises only `BridgeCredentialError` and
+        `BridgeOperationError` for platform refusals needs no override.
+        """
+        return None
 
     @classmethod
     async def prepare_config(
@@ -562,6 +772,17 @@ class PlatformAdapter(ABC):
 
         Quoted verbatim in that refusal, so it must not embed credential
         material. Return None for a platform with no such notion.
+        """
+        return None
+
+    @classmethod
+    def held_with(cls, connection_config: dict[str, object]) -> tuple[str, str] | None:
+        """Other owned work this bridge must be held beside, as (kind, key) in
+        `ownership.py`, or None for a bridge placed on its own.
+
+        For a bridge whose platform events reach it in-process from something
+        else that runs once per deployment, such as Discord's one shared
+        Gateway connection: held anywhere else, it would never hear them.
         """
         return None
 
@@ -597,6 +818,20 @@ class PlatformAdapter(ABC):
         return None
 
     @classmethod
+    def editable_config_keys(
+        cls, connection_config: Mapping[str, object]
+    ) -> frozenset[str] | None:
+        """Which connection settings a workspace admin may change, or None for all.
+
+        None — the default — leaves every setting editable, which is right for a
+        bridge on the organisation's own app: its settings are theirs. A bridge
+        on an app the deployment owns may hold settings that decide where the
+        deployment's credential is pointed, and an adapter names here the few
+        that are safe to change; an edit to any other is refused.
+        """
+        return None
+
+    @classmethod
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
         """Prove the credentials work, before the bridge is persisted.
 
@@ -623,10 +858,32 @@ class PlatformAdapter(ABC):
     @abstractmethod
     async def stop(self) -> None: ...
 
+    async def withdraw(self) -> None:
+        """Let go of what this bridge holds on the platform, because it is being
+        removed for good.
+
+        Called once, while the bridge is still running, just before it is
+        stopped for the last time — never on a restart, which is what `stop`
+        alone is for. Most adapters hold nothing on the platform that outlives
+        them and have nothing to do; one that registered something there (a
+        subscription that keeps delivering, an app installed into a team) undoes
+        it here, so the platform stops sending traffic nobody will read.
+
+        Best effort: a removal is what someone asked for, and it goes ahead
+        whatever this manages. Raise to say what was left behind; the caller
+        logs it.
+        """
+        return None
+
     async def dispatch_event(
         self, *, envelope_type: str, payload: dict[str, Any]
-    ) -> None:
+    ) -> dict[str, Any] | None:
         """Handle one event that arrived over the public webhook.
+
+        Returns the body to answer with for an event the platform waits on in
+        the response itself (`InboundWebhook.answers_inline`), and None for
+        every other — which is every event on a platform that acknowledges
+        first and handles after.
 
         Concrete on the base and raising, rather than abstract, because
         receiving events over HTTP is a property of a platform and of which app
@@ -643,7 +900,47 @@ class PlatformAdapter(ABC):
         raise WebhookDeliveryUnsupported(
             f"{type(self).__name__} does not receive events over HTTP, so the "
             "event posted for this bridge cannot be delivered. A bridge reached "
-            "this way was installed as a distributed app; this one was not."
+            "this way was installed as a distributed app, or its adapter sets "
+            "`receives_webhooks`; this one is neither."
+        )
+
+    async def verify_webhook(self, request: WebhookRequest) -> None:
+        """Prove a request to this bridge's own webhook address is the platform's.
+
+        For an adapter that sets `receives_webhooks`. Check the request against
+        this connection's own secret — a signature header over `request.body`,
+        a token in the query — and raise `WebhookAuthenticityError` if it does
+        not prove itself. Nothing reads the request before this passes: it is a
+        stranger's bytes until then, so do not log it either.
+
+        Async because some platforms prove a request with a token whose keys
+        have to be fetched (a signed JWT). Called inside the request the
+        platform is waiting on, so keep it fast.
+        """
+        raise WebhookDeliveryUnsupported(
+            f"{type(self).__name__} does not receive events on a webhook address "
+            "of its own."
+        )
+
+    def parse_webhook(self, request: WebhookRequest) -> InboundWebhook:
+        """Read a verified request into the event `dispatch_event` will be handed.
+
+        Called only after `verify_webhook` passed. Raise `WebhookPayloadError`
+        for a body this adapter cannot read. Set `handshake` instead of an event
+        for a request that is the platform checking the address is ours (a
+        challenge to echo back): it is answered with that text and nothing is
+        dispatched. Set `external_event_id` to the platform's id for the
+        delivery wherever it has one — that is what makes a retried delivery
+        recognisable, so it is handled once. Set `answers_inline` False: a
+        connection's own webhook address acknowledges first and handles after,
+        and refuses an event that expects its answer in the response.
+
+        Pure: no I/O. The platform is waiting for this request to be answered,
+        and the work belongs in `dispatch_event`, which runs after it has been.
+        """
+        raise WebhookDeliveryUnsupported(
+            f"{type(self).__name__} does not receive events on a webhook address "
+            "of its own."
         )
 
     @abstractmethod
@@ -1160,9 +1457,10 @@ class PlatformAdapter(ABC):
     @property
     def platform_name(self) -> str:
         """The platform as a person would name it, for messages that reach a
-        user. The class name is the fallback rather than the source: "Telegram"
-        belongs in a dialog, "TelegramAdapter" does not."""
-        return type(self).__name__.removesuffix("Adapter")
+        user. The class name stands in only for an adapter that was never
+        registered, which declares no `display_name`."""
+        declared = getattr(type(self), "display_name", None)
+        return declared or type(self).__name__.removesuffix("Adapter")
 
     async def search_directory_users(self, query: str) -> list[DirectoryUser]:
         """Search the platform's own user directory (CHOO-2137).
@@ -1176,8 +1474,10 @@ class PlatformAdapter(ABC):
         than showing an empty picker that looks broken.
         """
         raise NotImplementedError(
-            f"{self.platform_name} has no searchable user directory — on this "
-            "platform someone must send a message before Switch knows them"
+            f"{self.platform_name} has no searchable user directory, so this "
+            "lists only people who have written in a chat connected to Switch. "
+            "If you are not listed, send a message in a connected group, then "
+            "search again"
         )
 
     async def channel_deeplink(self, external_channel_id: str) -> str | None:
@@ -1212,6 +1512,37 @@ class PlatformAdapter(ABC):
         of that platform."""
         return []
 
+    @property
+    def places_app_in_teams(self) -> bool:
+        """Whether Switch chooses which of the platform's teams its app is in.
+
+        True only for a bridge on an app the deployment owns and can add to,
+        and remove from, the organisation's teams itself (the distributed
+        Teams app). Everywhere else the app is added on the platform by
+        whoever owns it, and the dashboard offers nothing to choose.
+        """
+        return False
+
+    async def check_config_edit(self, connection_config: Mapping[str, object]) -> None:
+        """Raise `ConfigEditRefused` for an edit only the platform can tell is wrong.
+
+        Asked of the running bridge before an edit of its settings is stored,
+        with the settings as they would be after it. For what validating the
+        config cannot know by itself — whether a team it names is one the app
+        is in, say. Nothing, by default.
+        """
+        return None
+
+    async def attention(self) -> str | None:
+        """What a workspace admin has to do for this bridge to keep working.
+
+        Something only the platform's side can fix — an approval withdrawn, an
+        app blocked by the organisation's admin — found while the bridge runs,
+        in plain words fit to show on the connection. None while nothing is
+        known to be wrong, which is the default.
+        """
+        return None
+
     async def install_note(self) -> str | None:
         """What the links do not cover, in the platform's own terms.
 
@@ -1235,6 +1566,16 @@ class PlatformAdapter(ABC):
         shared between organisations can reach every organisation's channels,
         so being able to see one says nothing about whose it is, and it has to
         say here which are its own. Raises `ChannelNotBindable`.
+        """
+        return None
+
+    def channel_ids_refused(self) -> str | None:
+        """Why this bridge binds no existing channel by id at all, or None.
+
+        For a bridge whose chats reach it only one way, so the dashboard can
+        say so where a room is created rather than offer a choice that fails.
+        Plain text, and the one wording: a bridge that answers here refuses
+        with it too.
         """
         return None
 
@@ -1268,15 +1609,71 @@ class PlatformAdapter(ABC):
         ...
 
     @abstractmethod
-    async def create_agent_identity(
-        self, agent_name: str, agent_description: str
-    ) -> None: ...
+    async def create_agent_identity(self, agent: AgentIdentity) -> None:
+        """Give the agent its platform handle, or bring an existing one in
+        line with it. Idempotent."""
 
     @abstractmethod
-    async def remove_agent_identity(self, agent_name: str) -> None: ...
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None:
+        """Retire the agent's platform handle. Raises when the platform could
+        not be told, so the caller can say the clean-up is outstanding."""
+
+    async def check_agent_identity_name(self, agent_id: str, new_name: str) -> None:
+        """Raise `AgentIdentityConflict` if this platform has something other
+        than agent ``agent_id`` holding the handle ``new_name`` would need.
+
+        Asked before a rename is written, so a clash refuses the rename instead
+        of leaving the agent renamed in Switch and stranded on the platform.
+        Default: nothing to check."""
+        return None
+
+    async def rename_agent_identity(self, old_name: str, agent: AgentIdentity) -> None:
+        """Move the agent's platform handle from ``old_name`` to ``agent.name``.
+
+        Default: retire the old handle and provision a new one. Adapters that
+        can rename their platform object in place override this, so whatever
+        hangs off it (membership, history) carries over."""
+        await self.remove_agent_identity(replace(agent, name=old_name))
+        await self.create_agent_identity(agent)
+
+    async def update_agent_identity(self, agent: AgentIdentity) -> None:
+        """The agent's display name or description changed. Default: nothing,
+        for platforms whose handle carries neither."""
+        return None
+
+    async def sync_agent_identities(
+        self, agents: Sequence[AgentIdentity]
+    ) -> list[tuple[str, BaseException]]:
+        """Bring every agent's handle in line, at bridge start.
+
+        Returns the agents that failed, by name, with what went wrong, rather
+        than stopping at the first. Adapters that can tell their own handles
+        apart from everything else on the platform override this to also
+        retire handles left behind by agents that no longer exist."""
+        failures: list[tuple[str, BaseException]] = []
+        for agent in agents:
+            try:
+                await self.create_agent_identity(agent)
+            except Exception as exc:
+                failures.append((agent.name, exc))
+        return failures
 
     @abstractmethod
     async def get_channel_agent_names(self, channel_id: str) -> list[str]: ...
+
+    async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
+        """Retire a deleted room's channel as far as this platform allows.
+
+        Called when a person deletes the room, never when a connection is
+        removed — by then the bot may have lost its access. Returns what
+        happened, matching `channel_on_delete` when it works. A refusal from
+        the platform comes back as `RetireOutcome.failed` carrying what the
+        platform said rather than being raised: the room is deleted either
+        way, and the person is told the channel needs cleaning up by hand.
+
+        The base leaves the channel where it is.
+        """
+        return RetireOutcome(outcome="kept")
 
     @final
     def translate_outbound(self, content: str) -> str:
@@ -1286,7 +1683,13 @@ class PlatformAdapter(ABC):
         `_render_outbound`, and nothing a body says can then page a channel.
         Only `render_room_wide_mention` does that, for a message the server
         marked.
+
+        A Markdown link to a Switch Console page is rewritten first, on a
+        platform that cannot open `switchdash://` (`rewrite_console_links`),
+        so the platform renders an https link like any other.
         """
+        if not self.renders_custom_url_schemes:
+            content = rewrite_console_links(content, self._gateway_public_url)
         return self.defuse_mass_mentions(self._render_outbound(content))
 
     @abstractmethod
@@ -1384,6 +1787,15 @@ class PlatformAdapter(ABC):
         carried on inbound activities) override this to persist it."""
         return None
 
+    def set_bridge_id(self, bridge_id: str) -> None:
+        """Tell the adapter the id of the bridge it serves.
+
+        Default is a no-op. Slack overrides it to mark the user groups it
+        creates as this bridge's, so clean-up never touches a group another
+        Switch installation made in the same workspace.
+        """
+        return None
+
     def set_tenant_id(self, tenant_id: str) -> None:
         """Tell the adapter which tenant its bridge belongs to.
 
@@ -1419,6 +1831,20 @@ class PlatformAdapter(ABC):
         which is what stops it addressing another bridge's callbacks even by
         mistake."""
         return None
+
+    def set_webhook_url(self, url: str | None) -> None:
+        """Hand a `receives_webhooks` adapter the public address its platform
+        should deliver this connection's events to, before it starts.
+
+        For a platform whose address is registered through its API rather than
+        pasted into a settings page (Telegram's `setWebhook`): the adapter
+        registers it in `start`. None where the deployment has no
+        `MESSAGING_PUBLIC_URL`; an adapter that has to register its address
+        should then fail to start with a `BridgeOperationError` saying so,
+        since no event could ever reach it. Called only for adapters that set
+        `receives_webhooks`; the default stores it on `self.webhook_url`.
+        """
+        self.webhook_url = url
 
     def set_channel_migration_handler(
         self, handler: Callable[[str, str], Awaitable[None]]
@@ -1573,22 +1999,13 @@ class PlatformAdapter(ABC):
         message instead of at the next restart."""
         self._resolve_agent_presentation = resolver
 
-    def default_agent_icon(self, agent_name: str) -> str:
-        """The avatar for an agent that has set no icon.
+    def adapt_icon_url(self, icon_url: str) -> str:
+        """Turn the icon URL chosen for a sender into the one this platform
+        should be handed.
 
-        Overridable for a platform that needs the default in a particular shape
-        — Mattermost uploads the bytes rather than passing a link on, so it
-        pins the response format."""
-        return default_icon_url(agent_name)
-
-    def adapt_icon_url(self, raw: str | None, agent_name: str) -> str:
-        """Turn the stored icon URL into the one this platform should be handed.
-
-        `raw` is the agent's own icon, or None when it has none and the
-        platform default stands in. Pure and synchronous so it composes with a
-        single lookup: an override adjusts the URL, it does not go looking for
-        one."""
-        return raw or self.default_agent_icon(agent_name)
+        Pure and synchronous so it composes with a single lookup: an override
+        adjusts the URL, it does not go looking for one."""
+        return icon_url
 
     def escape_label_for_body(self, label: str) -> str:
         """Neutralise a label's markup before it goes into message text.
@@ -1638,23 +2055,66 @@ class PlatformAdapter(ABC):
         that need one of them alone — an unescaped label is not among them:
         :attr:`AgentRendering.field_label` is reachable only alongside the
         escaped one, so choosing it is a choice."""
-        raw = AgentPresentation(display_name=None, icon_url=None)
-        if self._resolve_agent_presentation is not None:
+        # An agent with no icon wears the face its name generates; a name the
+        # resolver says is no agent keeps a lettered badge, so a person relayed
+        # from elsewhere is never drawn as an agent. The name is the sending
+        # actor's own (an agent's is its identifier, never a room alias), so a
+        # miss is a sender that is not an agent rather than an agent the lookup
+        # failed to recognise.
+        #
+        # Without a resolver nothing can say who is who. The senders an adapter
+        # draws are overwhelmingly agents, so it draws them as agents rather
+        # than turning every agent into a person. The bridge core installs one
+        # before the adapter starts, so a running bridge without it is a wiring
+        # fault, and said so once.
+        #
+        # The face and the badge are both drawn by outside services that see
+        # the name. With third-party avatars off neither is built, and a stored
+        # icon on one of those services is withheld too, so the sender goes out
+        # with no icon and the platform draws its own default.
+        if self._resolve_agent_presentation is None:
+            if not self._reported_missing_resolver:
+                self._reported_missing_resolver = True
+                logger.warning(
+                    "%s has no agent presentation resolver: every sender is "
+                    "drawn as an agent under its identifier, people included",
+                    type(self).__name__,
+                )
+            label = agent_name
+            icon_url = self._generated_icon(agent_name)
+        else:
             found = await self._resolve_agent_presentation(agent_name)
-            if found is not None:
-                raw = found
-        label = raw.display_name or agent_name
+            label = (found.display_name if found else None) or agent_name
+            if found is None:
+                icon_url = (
+                    initials_icon_url(agent_name) if self._third_party_avatars else None
+                )
+            elif found.icon_url is None:
+                icon_url = self._generated_icon(agent_name)
+            elif not self._third_party_avatars and is_third_party_avatar(
+                found.icon_url
+            ):
+                icon_url = None
+            else:
+                icon_url = found.icon_url
         return AgentRendering(
             field_label=label,
             body_label=self.escape_label_for_body(label),
-            icon_url=self.adapt_icon_url(raw.icon_url, agent_name),
+            icon_url=None if icon_url is None else self.adapt_icon_url(icon_url),
         )
 
-    async def agent_icon_url(self, agent_name: str) -> str:
+    def _generated_icon(self, agent_name: str) -> str | None:
+        return generated_icon_url(agent_name) if self._third_party_avatars else None
+
+    async def agent_icon_url(self, agent_name: str) -> str | None:
         """The icon URL to render for an agent on this platform.
 
         Adapters call this wherever they need a per-message avatar: the agent's
-        own icon when it has one, otherwise this platform's existing default."""
+        own icon when it has one, otherwise this platform's existing default.
+        None when third-party avatars are off and the icon would have come from
+        an outside avatar service: the generated face or lettered badge, or a
+        stored icon on one of those services, whoever chose it. The platform
+        then draws its own default."""
         return (await self.agent_rendering(agent_name)).icon_url
 
     async def agent_label_for_body(self, agent_name: str) -> str:

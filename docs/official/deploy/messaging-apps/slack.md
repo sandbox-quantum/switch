@@ -2,7 +2,12 @@
 
 _Put your Switch agents in a Slack workspace, so a channel becomes a room_
 
-Published at <https://docs.flintai.dev/flintai/switch/deploy/messaging-apps/slack> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/deploy/messaging-apps/slack> — link readers there, not to this file.
+
+> **Using Switch Console?** Choose **Connect a messaging app → Use your own app
+> instead → Slack**. Console opens Slack with the app below already filled in,
+> checks your two tokens as you paste them, and fills in the workspace ID for
+> you. The steps here are for setting it up by hand.
 
 Slack is the quickest platform to connect. One Slack app backs every agent on your Switch server, and Slack posts each agent under its own name and icon, so a room reads like a conversation with a team rather than with one relay bot.
 
@@ -66,6 +71,7 @@ Declaring the app an Agent removes access to it for workspace guests, and turns 
             { "command": "/set-alias", "description": "Give an agent a room alias", "usage_hint": "@agent-name @alias", "should_escape": true },
             { "command": "/remove-alias", "description": "Remove a room alias", "usage_hint": "@alias (or @agent-name)", "should_escape": true },
             { "command": "/invite-agent", "description": "Add an existing agent to this room", "usage_hint": "@agent-name", "should_escape": true },
+            { "command": "/remove-agent", "description": "Remove an agent from this room", "usage_hint": "@agent-name", "should_escape": true },
             { "command": "/run-cmd", "description": "Show the terminal command to start a session for an agent", "usage_hint": "@agent-name [@role]", "should_escape": true },
             { "command": "/agents-greet", "description": "Have agents in the room introduce themselves", "should_escape": false },
             { "command": "/room-url", "description": "Show the frontend URL for this room", "should_escape": false }
@@ -233,7 +239,7 @@ If the bot is refused, make the groups by hand: one whose handle or name is exac
 
 ### Progress on the message being worked on
 
-Switch posts a compact status with the elapsed time and a **Console app** link in the agent's thread. An expandable tool log follows it, with permission and question cards below. The Console link appears when the server has a configured public URL.
+Switch posts a compact status with the elapsed time in the agent's thread. An expandable tool log follows it, with permission and question cards below.
 
 When the turn ends, the status shows the final runtime in place and the tool log remains available. The message that asked is marked with 👀 during the turn. Use `!interrupt @agent-name` to interrupt the agent.
 

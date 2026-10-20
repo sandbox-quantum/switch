@@ -3,19 +3,12 @@ import { z } from 'zod';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { remoteSessionReconciler } from '@main/core/agents/remote-session-reconciler';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import {
-  listCloudAgents,
-  listCloudSessions,
-  listServerCloudMachines,
-  runCloudSessionOperation,
-  uploadCloudAttachment,
-  wakeCloudAgent,
-} from './cloud-control';
 import { connectionHealth } from './connection-health';
 import { sharedAgentDiagnostics, sharedAgentLogs } from './diagnostics';
 import { sessionIssue, sessionStartupStatus } from './host-failures';
 import { transcriptSource } from './host-journal';
 import { placeSession } from './place-session';
+import { listReasoning } from './reasoning';
 import {
   reconcileSessionCommand,
   sessionCommandStatus,
@@ -51,25 +44,6 @@ export const sdkHostController = createRPCController({
     reconcileSessionCommand(agentId, command),
   sessionCommandStatus: (agentId: string, sessionId: string, commandId: string) =>
     sessionCommandStatus(agentId, sessionId, commandId),
-  cloudAgents: (serverId: string) => listCloudAgents(serverId),
-  cloudMachines: (serverId: string) => listServerCloudMachines(serverId),
-  cloudSessions: (agentId: string) => listCloudSessions(agentId),
-  cloudWake: (agentId: string) => wakeCloudAgent(agentId),
-  cloudSessionOperation: async (
-    agentId: string,
-    sessionId: string,
-    operationId: string,
-    action: 'start' | 'restart'
-  ) =>
-    runCloudSessionOperation(
-      agentId,
-      sessionId,
-      z.string().uuid().parse(operationId),
-      z.enum(['start', 'restart']).parse(action)
-    ),
-  cloudUploadAttachment: (
-    agentId: string,
-    sessionId: string,
-    file: { name: string; mimeType: string; data: string }
-  ) => uploadCloudAttachment(agentId, sessionId, file),
+  reasoningList: (agentId: string, sessionId: string, turnIds: string[] | null) =>
+    listReasoning(agentId, sessionId, turnIds),
 });

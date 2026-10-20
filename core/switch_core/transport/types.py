@@ -83,6 +83,10 @@ class InboundEvent:
     sender: str
     timestamp: int
     content: dict[str, object] = field(default_factory=dict)
+    #: The `messages.seq` of the row this event was read from, so an agent
+    #: event built from it can record which room row it came from. It is 0
+    #: when the event did not come from a `messages` row.
+    seq: int = 0
 
 
 @dataclass(frozen=True)

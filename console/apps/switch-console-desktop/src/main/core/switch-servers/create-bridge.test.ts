@@ -24,7 +24,7 @@ const { fetchBridgeTypes } = await import('./gateway-client');
 const SERVER = {
   id: 'srv-1',
   name: 'S',
-  gatewayUrl: 'https://switch.example.com',
+  url: 'https://switch.example.com',
   managed: false,
 } as never;
 
@@ -54,7 +54,7 @@ function response(status: number, body: unknown): Response {
     status,
     ok: status >= 200 && status < 300,
     json: async () => (typeof body === 'string' ? {} : body),
-    headers: { getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => [] },
     text: async () => text,
   } as unknown as Response;
 }
@@ -97,6 +97,11 @@ describe('createBridgeOnServer', () => {
         channelCreationSupported: true,
         canCreateChannels: true,
         directorySearchSupported: true,
+        attention: null,
+        teamPlacementSupported: false,
+        channelIdsRefused: null,
+        receivesWebhooks: false,
+        webhookUrl: null,
       },
     });
   });
@@ -353,8 +358,40 @@ describe('fetchBridgeTypes', () => {
     // capability, which is the same "every platform could" default as the
     // bridge list uses.
     await expect(fetchBridgeTypes(SERVER)).resolves.toEqual([
-      { key: 'stub', fields: [], channelCreationSupported: true, directorySearchSupported: true },
+      {
+        key: 'stub',
+        displayName: null,
+        docsSlug: null,
+        iconSvg: null,
+        receivesWebhooks: false,
+        fields: [],
+        channelCreationSupported: true,
+        directorySearchSupported: true,
+      },
     ]);
+  });
+
+  it('carries what the server says about the platform itself', async () => {
+    fetchMock.mockResolvedValue(
+      response(200, [
+        {
+          key: 'dummychat',
+          display_name: 'Dummy Chat',
+          docs_slug: 'dummy-chat',
+          icon_svg: '<svg/>',
+          receives_webhooks: true,
+          config_schema: {},
+        },
+      ])
+    );
+
+    const [dummy] = await fetchBridgeTypes(SERVER);
+    expect(dummy).toMatchObject({
+      displayName: 'Dummy Chat',
+      docsSlug: 'dummy-chat',
+      iconSvg: '<svg/>',
+      receivesWebhooks: true,
+    });
   });
 
   it('reports a platform that cannot create channels at all', async () => {

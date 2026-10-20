@@ -5,6 +5,7 @@ Only modules inside this package may import a transport library — everything
 else talks to the port and the neutral types in `types`.
 """
 
+from switch_core.transport.derived_ids import writes_derived_from
 from switch_core.transport.port import (
     Handler,
     MessageTransport,
@@ -45,4 +46,5 @@ __all__ = [
     "TransportError",
     "TransportHandlers",
     "UploadResult",
+    "writes_derived_from",
 ]

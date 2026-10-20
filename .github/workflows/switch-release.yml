@@ -1,7 +1,8 @@
 name: switch release
 
-# Builds and publishes the Switch core stack — the switch-core, gateway, and
-# setup container images, the Helm chart, and the standalone Docker Compose file
+# Builds and publishes the Switch core stack — the switch-core, gateway, setup
+# and switch-hosted-controller container images, the switch and
+# switch-hosted-controller Helm charts, and the standalone Docker Compose file
 # (as an OCI artifact) — so adopters can deploy without building from source.
 # See RELEASING.md for the full procedure.
 #
@@ -17,6 +18,36 @@ name: switch release
 # `--version`. pyproject's version is stamped on the runner (PEP 440 form,
 # `0.30.0rc1`) so the running server reports the RC it is; nothing is committed.
 #
+# Dev builds: every push to `main` publishes the stack as
+# `<next patch>-dev.<run number>.g<short sha>` under a separate `dev/` namespace
+# (ghcr.io/<owner>/dev/…) — never `latest`, never mixed into the release
+# packages' tag lists, and a semver pre-release Helm skips unless asked for by
+# exact version — so the dev environment runs what is on main from published
+# artifacts rather than building from source at deploy time. "Next patch" is one
+# above the newest release tag on main, so a dev build sorts after the release it
+# contains. A newer push cancels an in-flight dev build; switch-dev-cleanup.yml
+# prunes old ones. No compose artifact: Switch Console bundles that from
+# releases only.
+#
+# Build once, pin by digest: the charts are packaged only after the images are
+# pushed, with each image's registry digest written into its chart's values.yaml
+# (scripts/pin_chart_images.py, scripts/release_charts.sh). Pinning a chart
+# therefore pins its exact images, and what runs is reproducible from that one
+# pin. The run summary and the `release-pins` artifact carry every digest,
+# charts included. A version is published once: a run whose chart version
+# already exists in the registry fails before building, since a rebuilt chart
+# would point the same version at different digests. Re-running only a failed
+# chart job reuses the same image digests, so it may finish publishing a version
+# whose charts were partly pushed. Dev chart builds also move a `main` tag
+# that development follows.
+#
+# Every release, release candidate and dev build also publishes the agents
+# controller at its version as the `switch-agent-controller-v<version>` GitHub
+# release (a prerelease for an RC or a dev build; switch-dev-cleanup.yml prunes
+# only the dev ones), and pins
+# that package into the switch chart's switchCore.controllerRelease, so Core
+# tells controllers to run the controller of the Switch they talk to.
+#
 # Artifacts go to GHCR by default, and the packages are public alongside the
 # repo. REGISTRY / IMAGE_NAMESPACE are the only things to change to retarget
 # another registry (e.g. ECR) — a config flip, not a rewrite.
@@ -25,12 +56,27 @@ on:
   push:
     tags:
       - 'switch-v*'
+    # Every push, with no path filter: the images copy files from outside
+    # core/ and gateway/ (a console fixture, core/README.md), so a filter
+    # narrow enough to save builds is one that will someday skip a change
+    # that mattered.
+    branches:
+      - main
   workflow_dispatch:
+
+# Pushes to main share a group and the newest wins: an in-flight dev build of an
+# older commit is superseded, so a busy merge day does not queue parallel
+# emulated arm64 builds. Tags and dispatch runs each get their own group and are
+# never cancelled — a cancelled release would be a half-published one.
+concurrency:
+  group: switch-release-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'main' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 env:
   REGISTRY: ghcr.io
   # GHCR namespace = the repo owner (lowercase). Images land at
   # ghcr.io/<owner>/<image>; the Helm chart at ghcr.io/<owner>/charts/switch.
+  # Dev builds go one level down, under <owner>/dev (prep's `namespace`).
   IMAGE_NAMESPACE: ${{ github.repository_owner }}
 
 jobs:
@@ -39,11 +85,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # To ask the registry whether this version is already published.
+      packages: read
     outputs:
+      images: ${{ steps.images.outputs.images }}
+      namespace: ${{ steps.version.outputs.namespace }}
       version: ${{ steps.version.outputs.version }}
       python_version: ${{ steps.version.outputs.python_version }}
       push: ${{ steps.version.outputs.push }}
       latest: ${{ steps.version.outputs.latest }}
+      channel: ${{ steps.version.outputs.channel }}
       compose_speaks: ${{ steps.contract.outputs.speaks }}
       compose_accepts: ${{ steps.contract.outputs.accepts }}
     steps:
@@ -56,8 +107,9 @@ jobs:
       - name: Resolve version
         id: version
         # On a release tag: version is the tag minus `switch-v`, and we push and
-        # move `latest`. On an RC tag: push under the RC version only. On a
-        # dispatch run: use pyproject's version and DON'T push (build-only).
+        # move `latest`. On an RC tag: push under the RC version only. On a push
+        # to main: push under a dev version only. On a dispatch run: use
+        # pyproject's version and DON'T push (build-only).
         run: |
           pkg_version="$(python3 -c "import tomllib; print(tomllib.load(open('core/pyproject.toml','rb'))['project']['version'])")"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
@@ -91,18 +143,64 @@ jobs:
               exit 1
             fi
             push=true
+            channel=release
+            [ "$latest" = true ] || channel=rc
+          elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
+            # One patch above the newest release on main, so the build sorts
+            # after the release it contains (a `-dev`/`.dev` version sorts
+            # before its own base) and before any later release or RC.
+            released="$(git tag --merged HEAD --list 'switch-v*' | sed 's/^switch-v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
+            if [ -z "$released" ]; then
+              echo "::error::No switch-v<X.Y.Z> release tag is reachable from main; cannot place a dev version."
+              exit 1
+            fi
+            IFS=. read -r major minor patch <<<"$released"
+            base="$major.$minor.$((patch + 1))"
+            # The `g` keeps the identifier alphanumeric: an all-digit short sha
+            # with a leading zero is not valid semver.
+            tag_version="${base}-dev.${GITHUB_RUN_NUMBER}.g${GITHUB_SHA::7}"
+            python_version="${base}.dev${GITHUB_RUN_NUMBER}"
+            push=true
+            latest=false
+            channel=dev
           else
             tag_version="$pkg_version"
             python_version="$pkg_version"
             push=false
             latest=false
+            channel=dry-run
           fi
+          namespace="$IMAGE_NAMESPACE"
+          [ "$channel" != dev ] || namespace="$IMAGE_NAMESPACE/dev"
           {
+            echo "namespace=$namespace"
             echo "version=$tag_version"
             echo "python_version=$python_version"
             echo "push=$push"
             echo "latest=$latest"
+            echo "channel=$channel"
           } | tee -a "$GITHUB_OUTPUT"
+
+      - name: List the images
+        # scripts/pin_chart_images.py is the one list of first-party images; the
+        # build matrix, the pin and the recorded pins all come from it.
+        id: images
+        run: echo "images=$(python3 scripts/pin_chart_images.py images)" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Set up Helm
+        if: ${{ steps.version.outputs.push == 'true' }}
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      - name: Refuse to republish a version
+        # Checked before anything is built; see scripts/release_charts.sh.
+        if: ${{ steps.version.outputs.push == 'true' }}
+        env:
+          NAMESPACE: ${{ steps.version.outputs.namespace }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+          scripts/release_charts.sh refuse-published "oci://$REGISTRY/$NAMESPACE" "$VERSION"
 
       # The published compose artifact declares its stack-compose range twice:
       # in the file (for whoever has already downloaded it) and as an OCI
@@ -128,20 +226,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - image: switch-core
-            dockerfile: deploy/shared_resources/images/Dockerfile.switch
-          - image: gateway
-            dockerfile: deploy/shared_resources/images/Dockerfile.gateway
-          - image: setup
-            dockerfile: deploy/shared_resources/images/Dockerfile.setup
+        include: ${{ fromJSON(needs.prep.outputs.images) }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Stamp the release candidate version
+      - name: Stamp the pre-release version
         # The server reports its version from the installed package metadata,
-        # which comes from pyproject. Written here for an RC, never committed.
+        # which comes from pyproject. Written here for an RC or a dev build,
+        # never committed.
         if: ${{ needs.prep.outputs.python_version != needs.prep.outputs.version }}
         env:
           PYTHON_VERSION: ${{ needs.prep.outputs.python_version }}
@@ -173,10 +266,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
-          # All three Dockerfiles build with the repo root as context.
-          context: .
+          context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: ${{ needs.prep.outputs.push == 'true' }}
@@ -185,18 +278,197 @@ jobs:
             SWITCH_GIT_COMMIT=${{ github.sha }}
             SWITCH_GIT_REPOSITORY_URL=${{ github.server_url }}/${{ github.repository }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ needs.prep.outputs.version }}
-            ${{ needs.prep.outputs.latest == 'true' && format('{0}/{1}/{2}:latest', env.REGISTRY, env.IMAGE_NAMESPACE, matrix.image) || '' }}
+            ${{ env.REGISTRY }}/${{ needs.prep.outputs.namespace }}/${{ matrix.image }}:${{ needs.prep.outputs.version }}
+            ${{ needs.prep.outputs.latest == 'true' && format('{0}/{1}/{2}:latest', env.REGISTRY, needs.prep.outputs.namespace, matrix.image) || '' }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
 
-  chart:
-    name: Package & publish Helm chart
+      # The digest of the multi-arch index, which is what a pod pulls by. The
+      # chart job writes it into values.yaml, so it has to leave this job.
+      - name: Record digest
+        if: ${{ needs.prep.outputs.push == 'true' }}
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::build-push-action reported no usable digest for ${{ matrix.image }}: '$DIGEST'"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/digests"
+          printf '%s' "$DIGEST" > "$RUNNER_TEMP/digests/${{ matrix.image }}"
+
+      - name: Upload digest
+        if: ${{ needs.prep.outputs.push == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: digest-${{ matrix.image }}
+          path: ${{ runner.temp }}/digests/${{ matrix.image }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # The agents controller (console/packages/agent-controller) at this release's
+  # version, published as the `switch-agent-controller-v<version>` GitHub
+  # release that `install.sh` and `switch-agent-controller update` already read.
+  # The chart below is pinned to it (switchCore.controllerRelease), so Core
+  # tells every controller to run the controller of the Switch it talks to.
+  # A release candidate and a dev build of main publish theirs too, as a GitHub
+  # prerelease (which `install.sh` and `update` leave out), so the controllers
+  # of a deployment running an RC, or the dev environment, follow it. A dry run
+  # builds, tests and packs the controller but publishes nothing.
+  controller:
+    name: Package & publish agents controller
     needs: prep
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      url: ${{ steps.version.outputs.url }}
+      sha256: ${{ steps.sha256.outputs.sha256 }}
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - name: Resolve version
+        id: version
+        working-directory: .
+        env:
+          VERSION: ${{ needs.prep.outputs.version }}
+        run: |
+          tag="switch-agent-controller-v$VERSION"
+          {
+            echo "version=$VERSION"
+            echo "tag=$tag"
+            echo "url=https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/switch-agent-controller-$VERSION.tgz"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.5.3
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: console/.nvmrc
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+
+      - name: Stamp the version
+        # On the runner, not committed: the CLI reports the version it was built with.
+        working-directory: console/packages/agent-controller
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: npm pkg set version="$VERSION"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the workspace packages
+        run: pnpm -r --filter './packages/**' run build
+
+      - name: Test the controller
+        run: pnpm --filter @switch-console/agent-controller run test
+
+      - name: Package
+        run: pnpm --filter @switch-console/agent-controller run package
+
+      - name: Smoke-test the package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          prefix="$(mktemp -d)"
+          npm install --global --prefix "$prefix" "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz"
+          test "$("$prefix/bin/switch-agent-controller" --version)" = "$VERSION"
+          "$prefix/bin/switch-agent-controller" --help > /dev/null
+
+      - name: Hash the package
+        id: sha256
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sha256="$(sha256sum "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz" | cut -d' ' -f1)"
+          echo "sha256=$sha256" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Release
+        # The tag is created from this commit by the release itself. A tag
+        # pushed with the workflow token starts no workflow, so
+        # agent-controller-release.yml does not publish it a second time.
+        if: needs.prep.outputs.push == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          SHA256: ${{ steps.sha256.outputs.sha256 }}
+          CHANNEL: ${{ needs.prep.outputs.channel }}
+        run: |
+          package="packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # A re-run of this release: the package already published must be
+            # the one just built, or the chart would pin a hash nothing serves.
+            existing="$(mktemp -d)"
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "switch-agent-controller-$VERSION.tgz" --dir "$existing"
+            published="$(sha256sum "$existing/switch-agent-controller-$VERSION.tgz" | cut -d' ' -f1)"
+            if [ "$published" != "$SHA256" ]; then
+              echo "::error::$TAG is already released with a different package (sha256 $published, this build $SHA256). Delete that release and its tag, then re-run."
+              exit 1
+            fi
+            echo "$TAG is already released with this package."
+            exit 0
+          fi
+          if [ "$CHANNEL" = rc ]; then
+            gh release create "$TAG" "$package" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "switch-agent-controller $VERSION (release candidate)" \
+              --notes "The Switch agents controller built for the release candidate Switch $VERSION, at $GITHUB_SHA. Controllers connected to a Switch running that candidate update to it on their own once idle; bake it into a machine image for that candidate. \`install.sh\` and \`switch-agent-controller update\` leave it out.
+
+            SHA-256: \`$SHA256\`" \
+              --prerelease \
+              --latest=false
+            exit 0
+          fi
+          if [ "$CHANNEL" = dev ]; then
+            gh release create "$TAG" "$package" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "switch-agent-controller $VERSION (dev build of main)" \
+              --notes "The Switch agents controller built from main at $GITHUB_SHA, for the dev environment, whose controllers update to it on their own. Not for installing by hand; switch-dev-cleanup prunes it.
+
+            SHA-256: \`$SHA256\`" \
+              --prerelease \
+              --latest=false
+            exit 0
+          fi
+          gh release create "$TAG" "$package" packages/agent-controller/install.sh \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "switch-agent-controller $VERSION" \
+            --notes "The Switch agents controller $VERSION, released with Switch $VERSION, for running managed agents on your own Linux or macOS machines.
+
+          SHA-256: \`$SHA256\`
+
+          Install (Node 22.13 or later): \`npm install --global https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/switch-agent-controller-$VERSION.tgz\`, or run \`install.sh\`. Then enroll with a code from the Machines page and run \`switch-agent-controller install-service\`. A controller connected to Switch $VERSION updates to this release on its own once it is idle." \
+            --latest=false
+
+  chart:
+    name: Package & publish Helm charts
+    # After the images: each chart carries its images' digests, so it cannot be
+    # packaged before they exist, and a chart is never published pointing at an
+    # image that failed to push. The charts come from
+    # scripts/pin_chart_images.py (`charts`), like the image matrix.
+    needs: [prep, images, controller]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    env:
+      VERSION: ${{ needs.prep.outputs.version }}
+      NAMESPACE: ${{ needs.prep.outputs.namespace }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -204,17 +476,77 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
 
-      - name: Lint chart
-        run: helm lint deploy/remote/helm/switch
+      - name: Set up ORAS
+        if: ${{ needs.prep.outputs.channel == 'dev' }}
+        uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1.2.4
 
-      - name: Package chart
-        # Stamp both the chart version and appVersion with the release version so
-        # a single tag pins the whole stack.
+      - name: Download image digests
+        if: ${{ needs.prep.outputs.push == 'true' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        if: ${{ needs.prep.outputs.push == 'true' }}
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check the registry serves every pinned image
+        if: ${{ needs.prep.outputs.push == 'true' }}
         run: |
-          helm package deploy/remote/helm/switch \
-            --version "${{ needs.prep.outputs.version }}" \
-            --app-version "${{ needs.prep.outputs.version }}" \
-            --destination "$RUNNER_TEMP/chart"
+          for file in "$RUNNER_TEMP"/digests/*; do
+            docker buildx imagetools inspect "$REGISTRY/$NAMESPACE/$(basename "$file")@$(cat "$file")" >/dev/null
+          done
+
+      - name: Pin the controller release
+        # Written into the switch chart's default values on the runner, never
+        # committed, before the chart is pinned and packaged.
+        if: ${{ needs.controller.outputs.version != '' }}
+        env:
+          CONTROLLER_VERSION: ${{ needs.controller.outputs.version }}
+          CONTROLLER_URL: ${{ needs.controller.outputs.url }}
+          CONTROLLER_SHA256: ${{ needs.controller.outputs.sha256 }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          path = "deploy/remote/helm/switch/values.yaml"
+          text = open(path).read()
+          block = re.search(r"(?m)^  controllerRelease:\n(?:(?:    .*)?\n)+", text)
+          if block is None:
+              raise SystemExit(f"no switchCore.controllerRelease block in {path}")
+          pinned = block.group(0)
+          for key, env in (("version", "CONTROLLER_VERSION"), ("url", "CONTROLLER_URL"), ("sha256", "CONTROLLER_SHA256")):
+              value = os.environ[env]
+              if not value:
+                  raise SystemExit(f"{env} is empty")
+              pinned, n = re.subn(rf'(?m)^    {key}: ""$', lambda _: f'    {key}: "{value}"', pinned, count=1)
+              if n != 1:
+                  raise SystemExit(f'no empty `{key}: ""` under switchCore.controllerRelease in {path}')
+          open(path, "w").write(text[: block.start()] + pinned + text[block.end() :])
+          PY
+          sed -n '/^  controllerRelease:/,/^  [a-zA-Z]/p' deploy/remote/helm/switch/values.yaml
+          # The check is only that switch-core gets the release.
+          helm template switch deploy/remote/helm/switch \
+            -f deploy/remote/helm/render-check-values.yaml \
+            | grep -A1 -E 'name: CONTROLLER_RELEASE_(VERSION|URL|SHA256)$'
+
+      - name: Pin, lint, package and check each chart
+        # A dry run pushed no images, so it pins placeholder digests: the pin
+        # and the checks still run, and nothing is published. The checks lint
+        # and render the .tgz that is about to be pushed.
+        run: |
+          if [ "${{ needs.prep.outputs.push }}" = true ]; then
+            source=(--digests-dir "$RUNNER_TEMP/digests")
+          else
+            source=(--placeholder-digests)
+          fi
+          python3 scripts/pin_chart_images.py charts > "$RUNNER_TEMP/charts.json"
+          scripts/release_charts.sh build "$REGISTRY/$NAMESPACE" "$VERSION" "$RUNNER_TEMP/chart" "${source[@]}"
 
       - name: Log in to GHCR (Helm OCI)
         if: ${{ needs.prep.outputs.push == 'true' }}
@@ -222,15 +554,66 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             helm registry login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
 
-      - name: Push chart
+      - name: Push the charts
+        id: push
+        if: ${{ needs.prep.outputs.push == 'true' }}
+        # prep refused a published version, but a re-run of this job alone
+        # skips prep. The script checks every chart before pushing any, and
+        # keeps a chart a failed earlier attempt already pushed with these
+        # same images, so re-running the job finishes a half-published version.
+        run: |
+          flags="$(scripts/release_charts.sh publish "oci://$REGISTRY/$NAMESPACE" "$VERSION" "$RUNNER_TEMP/chart")"
+          echo "chart_digest_flags=$flags" >> "$GITHUB_OUTPUT"
+
+      - name: Record the pins
+        # The run summary is for a person; release-pins.json is for whatever
+        # promotes this build next (an environment's pins file), so it never has
+        # to be copied out of a log by hand.
         if: ${{ needs.prep.outputs.push == 'true' }}
         run: |
-          helm push "$RUNNER_TEMP/chart/switch-${{ needs.prep.outputs.version }}.tgz" \
-            "oci://$REGISTRY/$IMAGE_NAMESPACE/charts"
+          # shellcheck disable=SC2086 # the flags are deliberately split into words
+          python3 scripts/pin_chart_images.py record \
+            --digests-dir "$RUNNER_TEMP/digests" \
+            --registry "$REGISTRY/$NAMESPACE" \
+            --version "$VERSION" \
+            --channel "${{ needs.prep.outputs.channel }}" \
+            --commit "$GITHUB_SHA" \
+            ${{ steps.push.outputs.chart_digest_flags }} \
+            --json "$RUNNER_TEMP/release-pins.json" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the pins
+        if: ${{ needs.prep.outputs.push == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-pins
+          path: ${{ runner.temp }}/release-pins.json
+          if-no-files-found: error
+
+      - name: Move the dev `main` tag
+        # The dev environment follows main: its ArgoCD Application tracks the
+        # `main` tag of the dev charts, so moving it is the deploy. Only the
+        # build of main's current head moves it; an older build finishing late
+        # leaves it alone, and the newer build moves it when it finishes.
+        if: ${{ needs.prep.outputs.channel == 'dev' }}
+        run: |
+          head="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "main is at $head now, not $GITHUB_SHA; leaving the main tag to that build."
+            exit 0
+          fi
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            oras login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+          for chart in $(jq -r '.[].chart' "$RUNNER_TEMP/charts.json"); do
+            oras tag "$REGISTRY/$NAMESPACE/charts/$chart:$VERSION" main
+          done
 
   compose:
     name: Publish standalone compose (OCI artifact)
     needs: prep
+    # Switch Console bundles the compose file from releases; a dev build of it
+    # has no consumer.
+    if: ${{ needs.prep.outputs.channel != 'dev' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

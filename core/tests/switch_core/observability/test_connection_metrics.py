@@ -31,12 +31,14 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.controller_presence import Binding
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.db.models import Agent
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.observability.bootstrap import RuntimeProbes, _state_readings
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.transport.room_cache import RoomCacheStats
+from tests.db_buffer import QuietRooms
 
 AGENT_ID = "agent-1"
 
@@ -72,7 +74,7 @@ def _open(
         scope="all",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(
             speaks=PROTOCOL_VERSION, artifact=artifact, version=version
         ),
@@ -155,6 +157,8 @@ def _probes(agents_connected: Any) -> RuntimeProbes:
     return RuntimeProbes(
         listener_connected=lambda: True,
         session_activity_listener_connected=lambda: True,
+        agent_event_listener_connected=lambda: True,
+        signal_bus_connected=lambda: True,
         bridges_running=lambda: 0,
         bridges_running_by_platform=lambda: {},
         bridges_configured=lambda: 0,
@@ -226,7 +230,7 @@ def test_a_stream_attached_over_sse_is_counted_as_sse() -> None:
         scope="all",
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=6, accepts=1, artifact="agent-runtime"),
         expected_generation=None,
         transport="sse",
@@ -239,9 +243,25 @@ def test_a_stream_attached_over_sse_is_counted_as_sse() -> None:
     assert readings[(("client", "agent-runtime"), ("transport", "websocket"))] == 1.0
 
 
+class _EmptyBuffer(EventBuffer):
+    """A buffer with nothing queued, answered without a database.
+
+    A socket resolves where its events start, by reading the head, before its
+    declaration is checked, so even one that is refused asks. The app runs on
+    the test client's own event loop, where the test's database connections
+    cannot follow, and nothing here is about what is queued.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(object(), sequence_base=0, rooms=QuietRooms())  # type: ignore[arg-type]
+
+    async def head(self, tenant_id: str, agent_id: str) -> int:
+        return self.sequence_floor - 1
+
+
 class _Protocol:
     def __init__(self) -> None:
-        self.event_buffer = EventBuffer(sequence_base=0)
+        self.event_buffer = _EmptyBuffer()
         self.connections = AgentConnectionRegistry()
         self.approval_outcomes = None
         self.sessions = SessionReporter(None)

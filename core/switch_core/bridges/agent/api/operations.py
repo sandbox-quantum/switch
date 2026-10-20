@@ -33,9 +33,11 @@ from switch_core.bridges.agent.operations.callctx import (
     CallerSession,
     call_context,
 )
-from switch_core.bridges.agent.protocol.agent_connections import UnknownConnectionError
+from switch_core.bridges.agent.protocol.agent_connections import (
+    MAX_ID_LENGTH,
+    UnknownConnectionError,
+)
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.bridges.agent.protocol.hosted_workers import CodedPermissionError
 from switch_core.budgets import BudgetExceeded
 from switch_core.db.models import Agent
 from switch_core.observability.catalogue import (
@@ -176,28 +178,43 @@ async def resolve_caller(
     agent, or one that has died, is refused.
     """
     bound = connection_id
+    if session_id is not None and connection_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "a session selector names the connection it calls over; "
+                "send X-Switch-Connection-Id with X-Switch-Session-Id"
+            ),
+        )
+    if session_id is not None and len(session_id) > MAX_ID_LENGTH:
+        # The session is recorded with the room it connects to, and its id
+        # travels in the signals that tell other processes it lost the room.
+        raise HTTPException(
+            status_code=400,
+            detail=f"X-Switch-Session-Id must be at most {MAX_ID_LENGTH} characters",
+        )
+    if bound is None:
+        return None, None
+
+    # The connection may be held by another process, and its row written a
+    # moment before this request; and the rooms it claimed, or the calling
+    # session's room, may have moved through another process whose answer the
+    # caller already has. So the rows are read again before the caller is
+    # resolved, rather than this process's copy trusted: a copy only a moment
+    # old would refuse the caller, or post into the room it left.
+    await protocol.connections.refresh(agent_id)
+
     caller: CallerSession | None = None
     if session_id is not None:
         # Host and epoch are the host's own business now: Switch keeps no
         # record of a session to check them against, only which room it
         # connected to.
-        if connection_id is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "a session selector names the connection it calls over; "
-                    "send X-Switch-Connection-Id with X-Switch-Session-Id"
-                ),
-            )
         caller = CallerSession(
             id=session_id,
             host_id=host_id or "",
             epoch=epoch or "",
             room_id=protocol.connections.session_room(agent_id, session_id),
         )
-
-    if bound is None:
-        return None, caller
 
     # Derived, never taken on trust: a connection belonging to another agent,
     # or to one that has already died, is refused rather than silently treated
@@ -311,8 +328,6 @@ async def post_operation(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except BadArgumentsError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except CodedPermissionError as exc:
-        raise HTTPException(status_code=403, detail=exc.detail) from exc
     except BudgetExceeded as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except GuardrailBlockedError as exc:

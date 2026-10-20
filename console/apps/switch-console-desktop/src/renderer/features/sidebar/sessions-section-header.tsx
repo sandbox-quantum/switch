@@ -9,9 +9,11 @@ import {
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
-import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { bridgeFilterValues } from '@renderer/features/switch-servers/switch-rooms-store';
+import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
+import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
 import {
@@ -32,6 +34,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/toolti
 import { cn } from '@renderer/utils/utils';
 import type { AgentConnectionKind } from '@shared/core/agents/agent-connection';
 import { getProvider } from '@shared/core/providers/agent-provider-registry';
+import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 import { type SidebarGrouping, UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
 import { listedRoomKeys } from './room-tree';
 import { agentExpandKey, roomViewGroupKey } from './sidebar-store';
@@ -53,9 +56,9 @@ const GROUPING_OPTIONS: { value: SidebarGrouping; label: string }[] = [
  * looked at is named: collapsing the other one would be a change the user never
  * asked for and would not see until they switched.
  */
-function topLevelGroupKeys(): string[] {
+function topLevelGroupKeys(listedRooms: RemoteRoomSummary[]): string[] {
   if (sidebarStore.grouping === 'room') {
-    return listedRoomKeys().map(roomViewGroupKey);
+    return listedRoomKeys(listedRooms).map(roomViewGroupKey);
   }
   return scopedAgents().map((entry) => agentExpandKey(entry.agent.id));
 }
@@ -83,7 +86,7 @@ const ViewGroupingToggle = observer(function ViewGroupingToggle() {
 /** Human label for a messaging-app filter value. */
 function bridgeLabel(value: string): string {
   if (value === UNBRIDGED_FILTER_VALUE) return 'No messaging app';
-  return value.charAt(0).toUpperCase() + value.slice(1);
+  return bridgePlatformLabel(value);
 }
 
 /**
@@ -96,7 +99,7 @@ function bridgeLabel(value: string): string {
  * members, under a control that looks like it filters rooms.
  */
 const RoomFilterSections = observer(function RoomFilterSections() {
-  const bridgeValues = switchRoomsStore.bridgeFilterValuesInActiveScope;
+  const bridgeValues = bridgeFilterValues(useListedRoomsInActiveScope());
 
   return (
     <>
@@ -206,25 +209,40 @@ const AgentFilterSections = observer(function AgentFilterSections() {
  * setting, which is why it previously sat under a "Group by" caption; keeping
  * it beside "Sessions" says the same thing without spending a second row.
  */
-export const SessionsSectionHeader = observer(function SessionsSectionHeader() {
+export const SessionsSectionHeader = observer(function SessionsSectionHeader({
+  legacy = false,
+}: {
+  /**
+   * Under the Agents / Rooms section of a server that runs agent management:
+   * tagged Legacy, grouped by agent only, since rooms have their own tab.
+   */
+  legacy?: boolean;
+}) {
   const showAddLocationModal = useShowModal('addAgentModal');
   const showCreateRoomModal = useShowModal('createRoomModal');
   const showCreateSessionModal = useShowModal('sessionModal');
+  const listedRooms = useListedRoomsInActiveScope();
   const [optionsOpen, setOptionsOpen] = useState(false);
   // The add actions offer both rather than the one matching the current view.
   // Which grouping you are looking at says how you want the list arranged, not
   // which thing you next want to make, and reaching the other action used to
   // mean switching view first.
-  const roomMode = sidebarStore.grouping === 'room';
+  const roomMode = !legacy && sidebarStore.grouping === 'room';
 
   return (
     <>
       {/* Label, its overflow menu and the grouping toggle share one line. The
           three icon buttons that used to sit on a second line — sort, filter,
           add — are all in the menu now; the actions are unchanged. */}
-      <div className="group/sessions flex items-center justify-between px-5 pt-[18px] pb-2">
+      <div
+        className={cn(
+          'group/sessions flex items-center justify-between',
+          legacy ? 'px-[9px] pt-4 pb-1.5' : 'px-5 pt-[18px] pb-2'
+        )}
+      >
         <div className="flex items-center gap-[6px]">
           <SectionLabel>Sessions</SectionLabel>
+          {legacy && <LegacyTag />}
           <DropdownMenu onOpenChange={setOptionsOpen}>
             <Tooltip>
               <DropdownMenuTrigger
@@ -317,7 +335,9 @@ export const SessionsSectionHeader = observer(function SessionsSectionHeader() {
                 </DropdownMenuCheckboxItem>
               </DropdownMenuGroup>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => sidebarStore.collapseAll(topLevelGroupKeys())}>
+              <DropdownMenuItem
+                onClick={() => sidebarStore.collapseAll(topLevelGroupKeys(listedRooms))}
+              >
                 <ChevronsDownUp className="mr-1.5 h-4 w-4" />
                 Collapse all
               </DropdownMenuItem>
@@ -333,10 +353,10 @@ export const SessionsSectionHeader = observer(function SessionsSectionHeader() {
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-        <ViewGroupingToggle />
+        {!legacy && <ViewGroupingToggle />}
       </div>
       {/* Outside the tree's scroller, so it stays put as the list scrolls. */}
-      <div className="px-2 pb-1">
+      <div className={legacy ? 'pb-1' : 'px-2 pb-1'}>
         <button
           type="button"
           onClick={() => showCreateSessionModal({ entryPoint: 'sidebar' })}
@@ -349,3 +369,25 @@ export const SessionsSectionHeader = observer(function SessionsSectionHeader() {
     </>
   );
 });
+
+/**
+ * Says the section below is the old way agents run, without alarm: no colour,
+ * a hairline, and the why on hover.
+ */
+function LegacyTag() {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span className="ml-[1px] inline-flex h-4 items-center rounded-[5px] border-[0.5px] border-[var(--hair-strong)] px-1.5 text-[10px] font-medium tracking-[0.02em] text-[var(--fg-passive)]">
+            Legacy
+          </span>
+        }
+      />
+      <TooltipContent className="max-w-60">
+        Agents this Console still runs itself, with their sessions. Console moves each one to a
+        managed machine; once it has moved it shows under Agents above.
+      </TooltipContent>
+    </Tooltip>
+  );
+}

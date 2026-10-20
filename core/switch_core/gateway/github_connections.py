@@ -1,56 +1,55 @@
 import asyncio
-import json
 import logging
 import secrets
-import time
-from datetime import UTC, datetime
-from html import escape
 from typing import Annotated, cast
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import delete, select, text, update
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.config import SwitchConfig
-from switch_core.db.engine import create_session_factory
+from switch_core.connections.adapters import ConnectionSecret
+from switch_core.connections.broker import (
+    CONNECTOR_NOT_CONNECTED,
+    CONNECTOR_REVOKED,
+    ServiceBroker,
+    ServiceError,
+    get_service_broker,
+)
+from switch_core.connections.sign_in_flows import (
+    FlowGoneError,
+    FlowsBusyError,
+    FlowUsedError,
+    SignInFlows,
+    StoredFlow,
+    digest,
+)
 from switch_core.db.models import (
-    GitHubIssuedToken,
-    HostedLaunch,
-    ProviderConnection,
+    ServiceConnection,
     Tenant,
     User,
     require_tenant_id,
 )
-from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_config, get_session
+from switch_core.gateway.dependencies import get_session
+from switch_core.gateway.service_connections import service_refusal
 from switch_core.providers.github import (
     GitHubAuthorizationError,
     GitHubConnections,
     GitHubError,
-    GitHubFlow,
 )
-from switch_core.providers.github_installation import (
-    GitHubInstallationCredentials,
-    RepositoryCredential,
-)
-from switch_core.providers.github_revocations import (
-    ACCESS_WARNING,
-    queue_revocation,
-    remember_repository_token,
-    revoke_oauth,
-    revoke_pending,
-)
-from switch_core.providers.github_tasks import finish_shielded
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/provider-connections/github")
+STORE = ServiceConnectionStore()
+
+
+KIND = "github"
+INTERRUPTED = "Sign-in was interrupted. Start it again from Switch Console."
 
 
 def service(request: Request) -> GitHubConnections:
@@ -60,37 +59,32 @@ def service(request: Request) -> GitHubConnections:
     return cast(GitHubConnections, value)
 
 
-async def lock(session: AsyncSession, user_id: str) -> None:
-    await session.execute(text("SET LOCAL lock_timeout = '25s'"))
-    try:
-        await session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-            {"key": f"github-connection:{require_tenant_id()}:{user_id}"},
-        )
-    except DBAPIError as error:
-        if getattr(error.orig, "sqlstate", None) == "55P03":
-            raise HTTPException(
-                503, "GitHub connection is busy. Please retry."
-            ) from None
-        raise
+def get_sign_in_flows(request: Request) -> SignInFlows:
+    flows = getattr(request.app.state, "sign_in_flows", None)
+    if not isinstance(flows, SignInFlows):
+        raise RuntimeError("No sign-in flow store is installed on this app.")
+    return flows
 
 
-def owned_flow(github: GitHubConnections, flow_id: str, user_id: str) -> GitHubFlow:
+async def owned_flow(flows: SignInFlows, flow_id: str, user_id: str) -> StoredFlow:
     try:
-        flow = github.flow(flow_id)
-    except GitHubError as error:
-        raise HTTPException(410, str(error)) from None
-    if (flow.tenant_id, flow.user_id) != (require_tenant_id(), user_id):
+        flow = await flows.get(flow_id, require_tenant_id())
+    except FlowGoneError:
+        raise HTTPException(410, INTERRUPTED) from None
+    if flow.kind != KIND or flow.user_id != user_id:
         raise HTTPException(404, "Authorization not found.")
     return flow
 
 
-def conditions(user_id: str) -> tuple:
-    return (
-        ProviderConnection.tenant_id == require_tenant_id(),
-        ProviderConnection.user_id == user_id,
-        ProviderConnection.provider == "github",
-    )
+async def browser_flow(flows: SignInFlows, state: str) -> StoredFlow:
+    """The flow a browser step names by its state, whichever tenant holds it."""
+    try:
+        flow = await flows.find(state)
+    except FlowGoneError:
+        raise GitHubError(INTERRUPTED) from None
+    if flow.kind != KIND:
+        raise GitHubError(INTERRUPTED)
+    return flow
 
 
 def page(message: str, status: int) -> HTMLResponse:
@@ -103,7 +97,7 @@ def page(message: str, status: int) -> HTMLResponse:
         headers={
             "Cache-Control": "no-store",
             "Referrer-Policy": "no-referrer",
-            "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'",
+            "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
         },
     )
 
@@ -124,53 +118,78 @@ class CompleteFlow(FlowSecret):
     code: str = Field(min_length=1, max_length=512)
 
 
-@router.post("/flows")
+@router.post("/flows", response_model=None)
 async def start(
     body: StartFlow,
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(get_current_user)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     github: Annotated[GitHubConnections, Depends(service)],
-) -> dict:
+    flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
+) -> dict | JSONResponse:
     try:
-        tenant = await session.get(Tenant, require_tenant_id())
-        if tenant is None:
-            raise HTTPException(404, "Workspace not found.")
-        flow_id = github.start(
-            require_tenant_id(),
-            user.id,
-            body.port,
-            body.completion_secret,
-            body.state,
-            f"{user.name} ({user.email}) in {tenant.name}",
+        await broker.require_workspace_enabled(session, "github")
+    except ServiceError as error:
+        return service_refusal(error)
+    tenant = await session.get(Tenant, require_tenant_id())
+    if tenant is None:
+        raise HTTPException(404, "Workspace not found.")
+    try:
+        await flows.start(
+            kind=KIND,
+            service="github",
+            tenant_id=require_tenant_id(),
+            user_id=user.id,
+            state=body.state,
+            mode="core",
+            port=body.port,
+            redirect_uri=github.callback,
+            owner_label=f"{user.name} ({user.email}) in {tenant.name}",
+            details={"client_id": github.client_id},
+            completion_secret=body.completion_secret,
         )
-    except GitHubError as error:
-        raise HTTPException(503, str(error)) from None
+    except FlowUsedError:
+        raise HTTPException(
+            503, "This authorization has already been used. Connect again."
+        ) from None
+    except FlowsBusyError:
+        raise HTTPException(
+            503, "GitHub connection is busy. Please try again shortly."
+        ) from None
     return {
-        "id": flow_id,
+        "id": body.state,
         "url": github.origin
         + "/gateway/provider-connections/github/authorize?state="
-        + flow_id,
+        + body.state,
     }
 
 
 @router.get("/authorize")
 async def authorize(
-    state: str, github: Annotated[GitHubConnections, Depends(service)]
+    state: str,
+    github: Annotated[GitHubConnections, Depends(service)],
+    flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
+    nonce = secrets.token_urlsafe(32)
     try:
-        url = github.authorize_url(state)
-        flow = github.flow(state)
-    except GitHubError:
-        return page(
-            "Sign-in was interrupted. Start it again from Switch Console.",
-            400,
+        flow = await browser_flow(flows, state)
+        taken = await flows.advance(
+            flow,
+            expect=("pending",),
+            to="authorizing",
+            changes={"browser_nonce_hash": digest(nonce)},
         )
+        if taken is None:
+            raise GitHubError("This authorization has already been used.")
+    except GitHubError:
+        return page(INTERRUPTED, 400)
     response = RedirectResponse(
-        url, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+        github.authorize_url(state, flow.verifier),
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
     )
     response.set_cookie(
         "switch_github_" + state,
-        flow.browser_nonce,
+        nonce,
         max_age=600,
         secure=True,
         httponly=True,
@@ -182,69 +201,37 @@ async def authorize(
 
 @router.get("/callback")
 async def callback(
-    request: Request, github: Annotated[GitHubConnections, Depends(service)]
+    request: Request,
+    github: Annotated[GitHubConnections, Depends(service)],
+    flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
+    """Back from GitHub: the browser takes the code on to Switch Console, on
+    the computer it left from. Once per flow."""
     state = request.query_params.get("state", "")
     code = request.query_params.get("code", "")
     try:
-        flow = github.flow(state)
+        flow = await browser_flow(flows, state)
         if (
-            flow.status not in {"authorizing", "returning"}
+            flow.status != "authorizing"
             or len(code) > 512
-            or not secrets.compare_digest(
-                flow.browser_nonce, request.cookies.get("switch_github_" + state, "")
-            )
+            or not flow.holds_nonce(request.cookies.get("switch_github_" + state, ""))
         ):
             raise GitHubError("Authorization could not be verified.")
         if not code:
-            flow.status = "failed"
-            raise GitHubError("GitHub authorization was cancelled.")
-        flow.status = "returning"
-        response = page(
-            f"Linking GitHub to <strong>{escape(flow.owner_label)}</strong>. "
-            "Continue only if this is your Switch account. Use the same computer where you started the connection."
-            '<form method="post" action="/gateway/provider-connections/github/callback">'
-            f'<input type="hidden" name="state" value="{escape(state, quote=True)}">'
-            f'<input type="hidden" name="code" value="{escape(code, quote=True)}">'
-            '<button type="submit">Continue in Switch Console</button></form>',
-            200,
-        )
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'none'; frame-ancestors 'none'; "
-            f"form-action 'self' http://127.0.0.1:{flow.port}; base-uri 'none'"
-        )
-        return response
-    except GitHubError:
-        return page(
-            "Sign-in was interrupted. Start it again from Switch Console.",
-            400,
-        )
-
-
-@router.post("/callback")
-async def relay(
-    request: Request, github: Annotated[GitHubConnections, Depends(service)]
-) -> Response:
-    body = bytearray()
-    async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > 2048:
-            return page("Invalid authorization response.", 400)
-    value = parse_qs(body.decode("utf-8", errors="replace"))
-    state = value.get("state", [""])[0]
-    code = value.get("code", [""])[0]
-    try:
-        flow = github.flow(state)
-        if (
-            not code
-            or len(code) > 512
-            or flow.status != "returning"
-            or not secrets.compare_digest(
-                flow.browser_nonce, request.cookies.get("switch_github_" + state, "")
+            await flows.advance(
+                flow,
+                expect=("authorizing",),
+                to="failed",
+                changes={"error": "GitHub authorization was cancelled."},
             )
+            raise GitHubError("GitHub authorization was cancelled.")
+        if (
+            await flows.advance(
+                flow, expect=("authorizing",), to="delivered", changes={}
+            )
+            is None
         ):
             raise GitHubError("Authorization could not be verified.")
-        flow.status = "delivered"
         response = RedirectResponse(
             f"http://127.0.0.1:{flow.port}/switch-github/callback?"
             + urlencode({"code": code, "state": state}),
@@ -260,22 +247,111 @@ async def relay(
         )
         return response
     except GitHubError:
-        return page("Sign-in was interrupted. Start it again from Switch Console.", 400)
+        return page(INTERRUPTED, 400)
 
 
-@router.post("/flows/{flow_id}/complete", status_code=204)
+async def _settled(
+    flows: SignInFlows, flow: StoredFlow, status: str, **changes: str | None
+) -> None:
+    """The flow's outcome, kept without the token for Console to read."""
+    await flows.advance(flow, expect=("checking",), to=status, changes=changes)
+
+
+@router.post("/flows/{flow_id}/complete")
 async def complete(
     flow_id: str,
     body: CompleteFlow,
     user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     github: Annotated[GitHubConnections, Depends(service)],
+    flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
-    owned_flow(github, flow_id, user.id)
+    """Console hands back the code its listener received, with its secret:
+    Core exchanges it, reads the account and writes the connection."""
+    flow = await owned_flow(flows, flow_id, user.id)
+    refused = "GitHub authorization could not be verified. Connect again."
+    if not flow.holds_secret(body.completion_secret) or flow.status != "delivered":
+        raise HTTPException(400, refused)
+    recorded = flow.details.get("client_id")
+    if recorded is not None and recorded != github.client_id:
+        # The code was issued to the App the flow started with: with another
+        # in its place, GitHub would refuse it, and less clearly.
+        changed = (
+            "This server's GitHub App changed during your sign-in. Start it again."
+        )
+        await flows.advance(
+            flow, expect=("delivered",), to="failed", changes={"error": changed}
+        )
+        raise HTTPException(400, changed)
+    checking = await flows.advance(
+        flow, expect=("delivered",), to="checking", changes={}
+    )
+    if checking is None:
+        raise HTTPException(400, refused)
     try:
-        await github.complete(flow_id, body.completion_secret, body.code)
-    except GitHubError as error:
-        raise HTTPException(400, str(error)) from None
-    return Response(status_code=204)
+        credentials = await github.sign_in(body.code, flow.verifier)
+    except (GitHubError, asyncio.CancelledError) as error:
+        await _settled(flows, checking, "failed", error=str(error) or INTERRUPTED)
+        if isinstance(error, GitHubError):
+            raise HTTPException(400, str(error)) from None
+        raise
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"github-link:{require_tenant_id()}"},
+    )
+    account_id = str(credentials["user_id"])
+    taken = await session.scalar(
+        select(ServiceConnection.user_id).where(
+            ServiceConnection.tenant_id == require_tenant_id(),
+            ServiceConnection.service == "github",
+            ServiceConnection.user_id != user.id,
+            ServiceConnection.account_id == account_id,
+        )
+    )
+    if taken is not None:
+        linked = (
+            "This GitHub account is already linked to another Switch user in "
+            "this workspace. Remove that link first."
+        )
+        await _settled(flows, checking, "failed", error=linked)
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": linked,
+                "code": "account_linked_elsewhere",
+                "retryable": False,
+            },
+        )
+    try:
+        warning = await broker.connect(
+            session,
+            user_id=user.id,
+            service="github",
+            consent="write",
+            granted_scopes=[],
+            account_id=account_id,
+            external_identity=credentials["login"],
+            secret=ConnectionSecret(credentials),
+            oauth_client_id=github.client_id,
+        )
+    except ServiceError as error:
+        await _settled(flows, checking, "failed", error=error.message)
+        return service_refusal(error)
+    await _settled(
+        flows,
+        checking,
+        "connected",
+        account_label=credentials["login"],
+        warning=warning,
+    )
+    logger.info(
+        "GitHub account linked: tenant=%s user=%s github_user=%s",
+        require_tenant_id(),
+        user.id,
+        account_id,
+    )
+    return JSONResponse({"warning": warning, "login": credentials["login"]})
 
 
 @router.get("/flows/{flow_id}")
@@ -283,219 +359,72 @@ async def flow_status(
     flow_id: str,
     user: Annotated[User, Depends(get_current_user)],
     github: Annotated[GitHubConnections, Depends(service)],
+    flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> dict:
-    flow = owned_flow(github, flow_id, user.id)
+    flow = await owned_flow(flows, flow_id, user.id)
     return {
         "status": flow.status
-        if flow.status in {"checking", "ready", "failed"}
+        if flow.status in {"checking", "connected", "failed"}
         else "pending",
-        "login": flow.login,
+        "login": flow.account_label or "",
+        "error": flow.error,
+        "warning": flow.warning,
     }
 
 
 @router.delete("/flows/{flow_id}", status_code=204)
-async def cancel(
+async def drop(
     flow_id: str,
     user: Annotated[User, Depends(get_current_user)],
     github: Annotated[GitHubConnections, Depends(service)],
+    flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
-    owned_flow(github, flow_id, user.id)
-    del github.flows[flow_id]
+    """Console is done with the flow: cancelled, or its outcome read."""
+    await flows.discard(await owned_flow(flows, flow_id, user.id))
     return Response(status_code=204)
-
-
-@router.post("/flows/{flow_id}/confirm")
-async def confirm(
-    flow_id: str,
-    body: FlowSecret,
-    user: Annotated[User, Depends(get_current_user)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    config: Annotated[SwitchConfig, Depends(get_config)],
-    github: Annotated[GitHubConnections, Depends(service)],
-) -> Response:
-    await lock(session, user.id)
-    flow = owned_flow(github, flow_id, user.id)
-    if not secrets.compare_digest(flow.completion_secret, body.completion_secret):
-        raise HTTPException(404, "Authorization not found.")
-    if flow.status != "ready":
-        raise HTTPException(409, "Finish GitHub authorization before confirming.")
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-        {"key": f"github-link:{require_tenant_id()}"},
-    )
-    other_links = await session.scalars(
-        select(ProviderConnection).where(
-            ProviderConnection.tenant_id == require_tenant_id(),
-            ProviderConnection.provider == "github",
-            ProviderConnection.user_id != user.id,
-        )
-    )
-    for other in other_links:
-        identity = json.loads(config.keyring.decrypt(other.encrypted_credential))
-        if identity.get("user_id") == flow.credentials["user_id"]:
-            raise HTTPException(
-                409,
-                "This GitHub account is already linked to another Switch user in this workspace. Remove that link first.",
-            )
-    previous = await session.scalar(
-        select(ProviderConnection).where(*conditions(user.id))
-    )
-    previous_token = (
-        json.loads(config.keyring.decrypt(previous.encrypted_credential))[
-            "access_token"
-        ]
-        if previous
-        else None
-    )
-    await queue_revocation(session, (GitHubIssuedToken.owner_id == user.id,))
-    encrypted = config.keyring.encrypt(json.dumps(flow.credentials))
-    now = datetime.now(UTC)
-    await session.execute(
-        insert(ProviderConnection)  # nosemgrep
-        .values(
-            tenant_id=require_tenant_id(),
-            user_id=user.id,
-            provider="github",
-            kind="oauth",
-            encrypted_credential=encrypted,
-            verified_at=now,
-        )
-        .on_conflict_do_update(
-            index_elements=["tenant_id", "user_id", "provider"],
-            set_={
-                "kind": "oauth",
-                "encrypted_credential": encrypted,
-                "verified_at": now,
-            },
-        )
-    )
-    await session.commit()
-    github.flows.pop(flow_id, None)
-    logger.info(
-        "GitHub account linked: tenant=%s user=%s github_user=%s",
-        require_tenant_id(),
-        user.id,
-        flow.credentials["user_id"],
-    )
-    warning = (
-        await revoke_oauth(github, previous_token)
-        if previous_token and previous_token != flow.credentials["access_token"]
-        else None
-    )
-    remaining = await revoke_pending(
-        session, config, (GitHubIssuedToken.owner_id == user.id,)
-    )
-    messages = [
-        message
-        for message in (warning, ACCESS_WARNING if remaining else None)
-        if message
-    ]
-    return JSONResponse({"warning": " ".join(messages) or None})
 
 
 @router.get("")
 async def connection(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    config: Annotated[SwitchConfig, Depends(get_config)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     github: Annotated[GitHubConnections, Depends(service)],
 ) -> dict:
-    return await connection_status(user.id, session, config, github)
+    return await connection_status(user.id, session, broker, github)
 
 
-async def _credentials(
-    user_id: str,
-    engine: AsyncEngine,
-    config: SwitchConfig,
-    github: GitHubConnections,
-    tenant_id: str,
-) -> tuple[dict, datetime] | None:
-    async with tenant_session(create_session_factory(engine), tenant_id) as session:
-        await lock(session, user_id)
-        row = await session.scalar(
-            select(ProviderConnection).where(*conditions(user_id))
-        )
-        if row is None:
-            return None
-        credentials = json.loads(config.keyring.decrypt(row.encrypted_credential))
-        if credentials["expires_at"] < time.time() + 60:
-            if credentials["refresh_expires_at"] <= time.time():
-                raise GitHubAuthorizationError(
-                    "GitHub authorization expired. Reconnect GitHub."
-                )
-            refreshed = await github.exchange(
-                {
-                    "grant_type": "refresh_token",
-                    "refresh_token": credentials["refresh_token"],
-                }
-            )
-            credentials.update(refreshed)
-            revision = datetime.now(UTC)
-            result = await session.scalar(
-                update(ProviderConnection)  # nosemgrep
-                .where(
-                    *conditions(user_id),
-                    ProviderConnection.verified_at == row.verified_at,
-                )
-                .values(
-                    encrypted_credential=config.keyring.encrypt(
-                        json.dumps(credentials)
-                    ),
-                    verified_at=revision,
-                )
-                .returning(ProviderConnection.user_id)
-            )
-            if result is None:
-                raise HTTPException(409, "GitHub connection changed. Please retry.")
-        else:
-            revision = row.verified_at
-        await session.commit()
-        return credentials, revision
-
-
-async def github_credentials(
+async def connection_status(
     user_id: str,
     session: AsyncSession,
-    config: SwitchConfig,
+    broker: ServiceBroker,
     github: GitHubConnections,
-) -> tuple[dict, datetime] | None:
-    engine = session.bind
-    if not isinstance(engine, AsyncEngine):
-        raise RuntimeError("GitHub credentials require a database engine.")
-    if session.in_transaction():
-        raise RuntimeError(
-            "End the caller transaction before fetching GitHub credentials."
-        )
+) -> dict:
+    """The person's GitHub link and every repository the App lets them reach."""
     try:
-        return await finish_shielded(
-            _credentials(user_id, engine, config, github, require_tenant_id())
-        )
+        token = await broker.connection_access_token(session, user_id, "github")
+    except ServiceError as error:
+        status = 422 if error.code == CONNECTOR_REVOKED else error.status_code
+        raise HTTPException(status, error.message) from None
+    if token is None:
+        return {"status": "not_connected", "install_url": github.install_url}
+    try:
+        reach = await github.repositories(token)
     except GitHubAuthorizationError as error:
         raise HTTPException(422, str(error)) from None
     except GitHubError as error:
         raise HTTPException(502, str(error)) from None
-
-
-async def connection_status(
-    user_id: str, session: AsyncSession, config: SwitchConfig, github: GitHubConnections
-) -> dict:
-    await session.commit()
-    saved = await github_credentials(user_id, session, config, github)
-    if saved is None:
-        return {"status": "not_connected", "install_url": github.install_url}
-    credentials, revision = saved
-    try:
-        installations = await github.repositories(credentials["access_token"])
-    except GitHubError as error:
-        raise HTTPException(502, str(error)) from None
-    row = await session.scalar(select(ProviderConnection).where(*conditions(user_id)))
-    if row is None or row.verified_at != revision:
+    row = await STORE.get_connection(session, user_id, "github")
+    if row is None:
         raise HTTPException(409, "GitHub connection changed. Please retry.")
     await session.commit()
     return {
         "status": "connected",
-        "login": credentials["login"],
-        "installations": installations,
+        "login": row.external_identity,
+        "installations": reach.installations,
+        # Organizations whose single sign-on hides their installations from
+        # this sign-in: connecting again and authorizing them shows those.
+        "sso_hidden_organizations": reach.sso_hidden,
         "install_url": github.install_url,
     }
 
@@ -504,88 +433,21 @@ async def connection_status(
 async def disconnect(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    github: Annotated[GitHubConnections, Depends(service)],
-    config: Annotated[SwitchConfig, Depends(get_config)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
-    await lock(session, user.id)
-    row = await session.scalar(select(ProviderConnection).where(*conditions(user.id)))
-    token = (
-        json.loads(config.keyring.decrypt(row.encrypted_credential))["access_token"]
-        if row
-        else None
-    )
-    await queue_revocation(session, (GitHubIssuedToken.owner_id == user.id,))
-    await session.execute(
-        delete(ProviderConnection).where(*conditions(user.id))  # nosemgrep
-    )
-    await session.commit()
-    for key, flow in list(github.flows.items()):
-        if (flow.tenant_id, flow.user_id) == (require_tenant_id(), user.id):
-            del github.flows[key]
-    warning = await revoke_oauth(github, token) if token else None
-    remaining = await revoke_pending(
-        session, config, (GitHubIssuedToken.owner_id == user.id,)
-    )
-    messages = [
-        message
-        for message in (warning, ACCESS_WARNING if remaining else None)
-        if message
-    ]
-    return JSONResponse({"warning": " ".join(messages) or None})
+    """Disconnect GitHub: its grants go, and what was issued is revoked.
 
-
-async def discard_github_credential(
-    session: AsyncSession,
-    signer: GitHubInstallationCredentials,
-    credential: RepositoryCredential,
-    config: SwitchConfig,
-    launch_id: str,
-    original: BaseException,
-) -> None:
-    async def cleanup() -> None:
-        try:
-            await session.rollback()
-        except Exception:
-            logger.error(
-                "Rollback failed while discarding a GitHub token; original failure: %r",
-                original,
-                exc_info=True,
-            )
-        try:
-            await signer.revoke(credential.token)
-        except Exception:
-            logger.error(
-                "GitHub token revocation failed; original failure: %r",
-                original,
-                exc_info=True,
-            )
-            try:
-                engine = session.bind
-                assert isinstance(engine, AsyncEngine)
-                async with tenant_session(
-                    create_session_factory(engine), require_tenant_id()
-                ) as cleanup_session:
-                    launch = await cleanup_session.get(
-                        HostedLaunch, (require_tenant_id(), launch_id)
-                    )
-                    if launch is None:
-                        raise RuntimeError("The token's cloud launch is missing")
-                    record = remember_repository_token(
-                        cleanup_session, launch, credential, config
-                    )
-                    record.revoke_requested = True
-                    await cleanup_session.commit()
-            except Exception as queue_error:
-                logger.error(
-                    "Failed GitHub token revocation could not be queued: error_type=%s",
-                    type(queue_error).__name__,
-                )
-
+    Works with no App on the server too, so a connection made under an App
+    since removed can still be dropped; the warning then says the sign-in
+    could not be revoked.
+    """
     try:
-        await finish_shielded(cleanup())
-    except asyncio.CancelledError:
-        logger.warning(
-            "GitHub token cleanup finished after another caller cancellation; original failure: %r",
-            original,
-        )
-        raise
+        warning = await broker.disconnect(session, user.id, "github")
+    except ServiceError as error:
+        if error.code != CONNECTOR_NOT_CONNECTED:
+            return service_refusal(error)
+        warning = None
+    await flows.discard_for_user(session, user.id, KIND)
+    await session.commit()
+    return JSONResponse({"warning": warning})

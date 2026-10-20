@@ -18,6 +18,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
 )
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 
 AGENT = "agent-demo"
 CONNECTION = "connection-demo"
@@ -36,7 +37,7 @@ def _protocol() -> _Protocol:
         scope="all",
         delivery_filter="addressed",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(),
         expected_generation=None,
     )
@@ -97,6 +98,17 @@ async def test_a_session_selector_needs_its_connection() -> None:
     alias = typing.get_args(read["connection_id"])[1].alias
     assert alias.lower() == "x-switch-connection-id"
     assert alias.lower() in refused.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_an_over_long_session_id_is_refused() -> None:
+    """The session's id is recorded with its room, and travels in the
+    signals switch-core processes send each other when another session takes
+    that room, which Postgres caps at 8000 bytes."""
+    with pytest.raises(HTTPException) as refused:
+        await _resolve(_protocol(), connection_id=CONNECTION, session_id="s" * 7900)
+
+    assert refused.value.status_code == 400
 
 
 @pytest.mark.asyncio

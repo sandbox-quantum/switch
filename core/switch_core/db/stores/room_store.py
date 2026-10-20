@@ -1,4 +1,5 @@
 from collections.abc import Collection
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, insert, or_, select, update
@@ -15,6 +16,35 @@ from switch_core.db.models import (
     require_tenant_id,
     room_agents,
 )
+from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
+
+# Keys in a room's `metadata` for the follow-the-conversation settings. Both
+# are absent by default (follow-ups on, no main agent), so rooms made before
+# the settings existed need no backfill.
+# `!follow-ups off`:
+FOLLOW_UPS_OFF_KEY = "follow_ups_off"
+# `!assign-agent @name`: the agent id every message in the room goes to.
+MAIN_AGENT_KEY = "main_agent_id"
+
+
+def follow_ups_enabled_in(metadata: dict | None) -> bool:
+    """Whether a room's metadata leaves follow-ups on."""
+    return (metadata or {}).get(FOLLOW_UPS_OFF_KEY) is not True
+
+
+def main_agent_in(metadata: dict | None) -> str | None:
+    """The main agent a room's metadata names, if any."""
+    value = (metadata or {}).get(MAIN_AGENT_KEY)
+    return value if isinstance(value, str) else None
+
+
+@dataclass(frozen=True)
+class Membership:
+    """A client's membership of one room, as `client_rooms` records it."""
+
+    room_id: str
+    transport_room_id: str
+    joined_at: datetime
 
 
 class RoomStore:
@@ -25,6 +55,53 @@ class RoomStore:
 
     async def get(self, session: AsyncSession, room_id: str) -> Room | None:
         return await session.get(Room, room_id)
+
+    async def follow_ups_enabled(self, session: AsyncSession, room_id: str) -> bool:
+        """Whether follow-ups are on in this room: the room's `!follow-ups`
+        setting, on unless someone turned it off."""
+        room = await session.get(Room, room_id)
+        if room is None:
+            return False
+        return follow_ups_enabled_in(room.metadata_)
+
+    async def set_follow_ups_enabled(
+        self, session: AsyncSession, room_id: str, enabled: bool
+    ) -> None:
+        """Turn follow-ups on or off for a room. Raises ValueError for a room
+        that does not exist."""
+        await self._set_metadata_key(
+            session, room_id, FOLLOW_UPS_OFF_KEY, None if enabled else True
+        )
+
+    async def main_agent_id(self, session: AsyncSession, room_id: str) -> str | None:
+        """The room's main agent (`!assign-agent`), or None."""
+        room = await session.get(Room, room_id)
+        if room is None:
+            return None
+        return main_agent_in(room.metadata_)
+
+    async def set_main_agent(
+        self, session: AsyncSession, room_id: str, agent_id: str | None
+    ) -> None:
+        """Set (or clear, with None) the room's main agent. Raises ValueError
+        for a room that does not exist."""
+        await self._set_metadata_key(session, room_id, MAIN_AGENT_KEY, agent_id)
+
+    async def _set_metadata_key(
+        self, session: AsyncSession, room_id: str, key: str, value: object
+    ) -> None:
+        """Set one key in the room's metadata, or remove it when `value` is
+        None, leaving every other key as it was."""
+        room = await session.get(Room, room_id)
+        if room is None:
+            raise ValueError(f"Room {room_id} does not exist")
+        metadata = dict(room.metadata_ or {})
+        if value is None:
+            metadata.pop(key, None)
+        else:
+            metadata[key] = value
+        room.metadata_ = metadata
+        await session.flush()
 
     async def get_with_membership(
         self, session: AsyncSession, room_id: str, agent_id: str
@@ -313,6 +390,11 @@ class RoomStore:
                 room_agents.c.agent_id.in_(agent_ids),
             )
         )
+        # An agent that leaves stops being the room's main agent, as its alias
+        # goes with its membership row.
+        room = await session.get(Room, room_id)
+        if room is not None and main_agent_in(room.metadata_) in agent_ids:
+            await self.set_main_agent(session, room_id, None)
         await session.flush()
 
     async def get_rooms_for_agent(
@@ -420,8 +502,9 @@ class RoomStore:
 
     async def add_client(
         self, session: AsyncSession, client_id: str, room_id: str
-    ) -> None:
-        """Record a membership, tolerating one that is already there.
+    ) -> bool:
+        """Record a membership, tolerating one that is already there, and
+        say whether this call recorded it.
 
         Membership has more than one writer. Over Matrix it effectively had
         one: an invitation was accepted later, over sync, long after the
@@ -437,13 +520,24 @@ class RoomStore:
         rather than a failure — the membership exists, which is what the
         caller asked for — and this also closes the check-then-insert race
         between two concurrent invitations.
+
+        Whoever recorded it writes the arrival that announces it, and nobody
+        else does: two writers racing for one membership must not greet the
+        room twice.
         """
-        await session.execute(
+        recorded = await session.scalar(
             pg_insert(ClientRoom)
             .values(client_id=client_id, room_id=room_id)
             .on_conflict_do_nothing(index_elements=["client_id", "room_id"])
+            .returning(ClientRoom.client_id)
         )
+        # The client's consumer starts reading the room here, wherever and
+        # whenever it learns of the membership: the process that owns the
+        # client may not be this one. A membership that already existed keeps
+        # the cursor it has.
+        await DeliveryCursorStore().seed(session, client_id, room_id)
         await session.flush()
+        return recorded is not None
 
     async def remove_client(
         self, session: AsyncSession, client_id: str, room_id: str
@@ -469,6 +563,40 @@ class RoomStore:
             .where(ClientRoom.client_id == client_id)
         )
         return list(result.scalars().all())
+
+    async def memberships_of(
+        self, session: AsyncSession, client_id: str
+    ) -> list[Membership]:
+        """Every room the client is a member of, with both its ids and when
+        the client joined, in one query."""
+        result = await session.execute(
+            select(ClientRoom.room_id, Room.transport_room_id, ClientRoom.joined_at)
+            .join(Room, Room.id == ClientRoom.room_id)
+            .where(ClientRoom.client_id == client_id)
+        )
+        return [
+            Membership(
+                room_id=room_id,
+                transport_room_id=transport_room_id,
+                joined_at=joined_at,
+            )
+            for room_id, transport_room_id, joined_at in result.all()
+        ]
+
+    async def member_room_ids(
+        self, session: AsyncSession, client_id: str, room_ids: list[str]
+    ) -> dict[str, datetime]:
+        """Which of `room_ids` the client is still a member of, each with when
+        it joined, in one query."""
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(ClientRoom.room_id, ClientRoom.joined_at).where(
+                ClientRoom.client_id == client_id,
+                ClientRoom.room_id.in_(room_ids),
+            )
+        )
+        return {room_id: joined_at for room_id, joined_at in result.all()}
 
     async def get_client_ids(self, session: AsyncSession, room_id: str) -> list[str]:
         result = await session.execute(

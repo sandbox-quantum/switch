@@ -1,4 +1,4 @@
-import { ChevronRight, DoorOpen, MoreVertical, Plus, Trash2 } from 'lucide-react';
+import { ChevronRight, DoorOpen, ExternalLink, MoreVertical, Plus, Trash2 } from 'lucide-react';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { openRoomChannel } from '@renderer/features/switch-rooms/room-links';
 import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
@@ -179,7 +179,9 @@ export function RoomRow({
   /** Bridge platform type (`slack`, `mattermost`, …) when the room is bridged. */
   bridgeType?: string | null;
 }) {
-  const channelLinkable = onOpenChannel !== null && hasBridgeIcon(bridgeType);
+  // Offered wherever the room has a channel to open, whether or not its
+  // platform has a logo: the link is what makes the action work, not the icon.
+  const channelLinkable = onOpenChannel !== null && !!bridgeType;
   const hasRoomActions = onAddAgent !== null || channelLinkable || onDelete !== null;
   return (
     <SidebarMenuRow
@@ -244,7 +246,11 @@ export function RoomRow({
             )}
             {channelLinkable && (
               <DropdownMenuItem onClick={() => onOpenChannel?.()}>
-                <BridgeIcon bridgeType={bridgeType} size={16} className="size-4" />
+                {hasBridgeIcon(bridgeType) ? (
+                  <BridgeIcon bridgeType={bridgeType} size={16} className="size-4" />
+                ) : (
+                  <ExternalLink className="size-4" />
+                )}
                 Open in {bridgePlatformLabel(bridgeType)}
               </DropdownMenuItem>
             )}

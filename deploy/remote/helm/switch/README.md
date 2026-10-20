@@ -142,7 +142,9 @@ Full walkthrough, including the Azure side:
   with your own manifest; [`samples/ingress.example.yaml`](samples/ingress.example.yaml)
   is copy-pasteable.
 - **`managed`** — the chart renders one path-routed Ingress on `ingress.host`:
-  `agentApiPaths` to switch-core, everything else to the gateway SPA.
+  `agentApiPaths` to switch-core, everything else to the gateway SPA — or, with
+  `gateway.enabled: false`, everything to switch-core, which serves the
+  dashboard itself. That drops the separate gateway Deployment.
 
 `switchCore.teamsBridge.ingress.mode` is independent of this — `dedicated` works
 under either.
@@ -156,13 +158,22 @@ example), leave `tls.enabled` false and annotate.
 
 ## Constraints you cannot configure away
 
-**switch-core runs exactly one replica.** Four things live in the process
-rather than the database: the per-agent event buffer, the invite bus, the
-presence bus, and the message listener's subscriber registry. A second replica
-would hold its own copy of each, so a signal raised in one would never reach a
-client attached to the other. Bridge connections live in memory too. `switchCore.replicaCount` other than 1 fails the render,
-and the deployment strategy is `Recreate`, so upgrades have a brief outage
-rather than two pods fighting.
+**switch-core can run more than one replica.** `switchCore.replicaCount` sets
+how many. Shared state lives in the database: replicas signal each other through
+Postgres notifications, and each bridge's listener and outbound relay, each
+server connector and each command reader is owned by one replica at a time
+through a lease. That includes the shared Discord gateway connection of the
+distributed Discord app, whose Discord bridges run beside it on the same
+replica, and each Teams bridge's Graph subscriptions, which only the replica
+holding the bridge makes and renews. Any replica can hold any client's
+connection, and a platform webhook can reach any replica.
+
+One replica upgrades with `Recreate`, so an upgrade has a brief outage. More
+than one rolls (`switchCore.rollingUpdate`, one extra pod at a time by
+default) and gets a PodDisruptionBudget (`switchCore.podDisruptionBudget`) and
+a soft spread across nodes (`switchCore.topologySpread`). On SIGTERM a pod
+hands its owned work to the others before it stops, inside
+`switchCore.terminationGracePeriodSeconds`.
 
 **Bridges are created at runtime, not in values.** You register a collaboration
 bridge in the gateway dashboard, with its credentials, after the chart is
@@ -185,26 +196,74 @@ required keys are listed above the `secrets:` block in `values.yaml`.
 Bridge credentials are **not** among them. Those are entered in the gateway and
 stored in the database.
 
-## Agent management
+## Avatars from outside services
 
-Managed agents, and the agent controllers that run them on users' machines, are
-off by default. To turn them on:
+An agent with no icon of its own is drawn by api.dicebear.com with its name as
+the seed, and a person relayed from another platform by ui-avatars.com with their
+name in the URL. Slack, Discord and Teams clients load those images, so the
+services see the name and each reader's address; the Mattermost bridge loads them
+from switch-core. To send no such URL:
 
 ```yaml
 switchCore:
-  agentManagement:
-    enabled: true
+  thirdPartyAvatars:
+    enabled: false
+```
+
+Each platform then shows its own default icon (Slack the app's icon, Discord its
+default avatar, Teams no image), icons already stored on those services are
+withheld too, and new agents get no generated icon. Setting an icon on one of
+those services is refused with the reason. Switch Console asks the server and
+stops drawing them for its agents. An icon an owner set on any other host is
+unaffected.
+
+## Agent management
+
+Managed agents, and the agent controllers that run them on users' machines, are
+off by default. The `agent_management` feature flag turns them on:
+
+```yaml
+switchCore:
+  featureFlags:
+    enabled: ["agent_management"]
 secrets:
   controllerTokenSecret: "<openssl rand -hex 32>"
 ```
 
 With `secrets.existingSecret`, put the token secret in that Secret as
-`CONTROLLER_TOKEN_SECRET` instead. The chart sets `AGENT_MANAGEMENT_ENABLED`,
+`CONTROLLER_TOKEN_SECRET` instead. The chart sets `FEATURE_FLAGS_ENABLED`,
 `CONTROLLER_TOKEN_SECRET` and `CONTROLLER_STATUS_INTERVAL_SECONDS` on switch-core
 and its migration Job, so enabling it is one rollout. Controllers enroll and
 connect under `/v1`, which `ingress.agentApiPaths` routes to switch-core by default.
+
+`switchCore.agentManagement.enabled` is gone: the chart refuses to render with it
+set to true, and switch-core refuses to start with `AGENT_MANAGEMENT_ENABLED=true`.
+Move it to the flag list instead.
 
 A deployment that set these variables with `kubectl set env` should remove them
 before the first upgrade that renders them (`kubectl set env deployment/<release>-switch-core
 AGENT_MANAGEMENT_ENABLED- CONTROLLER_TOKEN_SECRET-`). Otherwise Helm merges its
 `valueFrom` into the live `value` and the API server rejects the Deployment.
+
+### Controller updates
+
+`switchCore.controllerRelease` names the agents controller release switch-core
+tells every controller to run (cloud machines, and `switch-agent-controller`
+on SSH hosts and laptops; Switch Console's own controller updates with Console):
+
+```yaml
+switchCore:
+  controllerRelease:
+    version: "0.31.0"
+    url: "https://github.com/sandbox-quantum/switch/releases/download/switch-agent-controller-v0.31.0/switch-agent-controller-0.31.0.tgz"
+    sha256: "<sha256 of that file>"
+```
+
+A controller running another version downloads the package, refuses it unless
+its SHA-256 matches, and installs it and restarts once none of its agents has a
+session running. The chart published with a Switch release has these filled in
+with that release's controller package, so upgrading Switch upgrades the
+controllers too. Set all three or none (the chart refuses to render otherwise);
+with none, controllers are told nothing and keep their version. To roll
+controllers back, point the three values at the previous release's package and
+upgrade.

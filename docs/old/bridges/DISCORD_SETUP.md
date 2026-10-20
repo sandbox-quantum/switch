@@ -112,7 +112,7 @@ on:
   roles), and when an agent is deleted its role is only deleted if **nobody
   holds it** — one with members is left in place, and the bridge says so.
 
-Renaming an agent leaves its old role behind; delete it by hand.
+Renaming an agent renames its role in place, so earlier mentions keep working.
 
 Turn it off (`agent_roles: false`) on a server that is near the role cap or
 where role management is restricted.

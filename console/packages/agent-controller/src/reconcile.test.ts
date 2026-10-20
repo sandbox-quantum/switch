@@ -6,6 +6,7 @@ import { silentLogger } from './log';
 import { planReconcile, reconcile, type ReconcileDeps } from './reconcile';
 import { emptyObservation } from './runtime';
 import type { AgentAssignment, Assignment } from './schemas';
+import type { GivenLogin } from './sealed-logins';
 import { LAUNCH_GRACE_MS } from './status';
 import { ControllerStore } from './store';
 import { FakeRuntime } from './testing/fake-runtime';
@@ -27,6 +28,7 @@ function agent(overrides: Partial<AgentAssignment> = {}, definition = {}): Agent
       advanced_config: {},
       instructions: '',
       auto_approve: false,
+      auto_mode: false,
       directory: null,
       isolation: 'shared',
       ...definition,
@@ -47,6 +49,7 @@ let forgotten: string[];
 let endpoint: string;
 let clock: number;
 let missingProvider: boolean;
+let givenLogin: GivenLogin | null;
 
 function deps(): ReconcileDeps {
   return {
@@ -59,9 +62,11 @@ function deps(): ReconcileDeps {
         endpoint,
         token: `swlr_${minted.length}`,
         hub: `${endpoint.replace('http', 'ws')}/hub`,
+        providerLogin: null,
       });
       return true;
     },
+    givenLogin: async () => givenLogin,
     forgetAgent: (agentId) => void forgotten.push(agentId),
     binaryPath: async (provider) => (missingProvider ? null : `/usr/bin/${provider}`),
     now: () => clock,
@@ -70,6 +75,7 @@ function deps(): ReconcileDeps {
 }
 
 beforeEach(() => {
+  givenLogin = null;
   dir = mkdtempSync(join(tmpdir(), 'controller-reconcile-'));
   store = ControllerStore.open(join(dir, 'controller.db'));
   runtime = new FakeRuntime();
@@ -93,6 +99,7 @@ describe('reconcile', () => {
       endpoint: RELAY,
       token: 'swlr_1',
       hub: `${RELAY.replace('http', 'ws')}/hub`,
+      providerLogin: null,
     });
     const [launch] = runtime.launches();
     expect(launch!.options).toEqual({
@@ -108,6 +115,22 @@ describe('reconcile', () => {
     expect(launch!.template.execution!.binaryPath).toBe('/usr/bin/claude');
     expect(store.agent('agent-1')).toMatchObject({ appliedRevision: 1, failure: null });
     expect(store.restartsSince('agent-1', 0)).toBe(0);
+  });
+
+  it('gives an agent the login given to the machine, in a process of its own', async () => {
+    givenLogin = {
+      status: 'connected',
+      provider: 'claude',
+      revision: '2',
+      kind: 'setup-token',
+      credential: 'sk-ant-oat-given',
+    };
+    await reconcile(assignment(agent()), deps());
+    const [launch] = runtime.launches();
+    expect(launch!.options.isolation).toBe('isolated');
+    expect(launch!.template.start.input.env).toMatchObject({
+      CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-given',
+    });
   });
 
   it('does nothing more once the revision is applied and running', async () => {

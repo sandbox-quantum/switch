@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  ApiError,
+  CONNECTORS_NOT_ENABLED,
+  type ConnectorApps,
+  fetchConnectorApps,
   type AgentDetail,
   type AgentSummary,
   type Budget,
@@ -13,6 +17,7 @@ import {
   type DocumentDetail,
   type DocumentSummary,
   type InboundLinkedRoomDetail,
+  type InstallablePlatforms,
   type InstalledApp,
   type KnownAgentType,
   type LinkedRoomDetail,
@@ -168,7 +173,7 @@ export function useAllExternalUsers(): UseQueryResult<ExternalUserSummary[]> {
 // Empty on every deployment that registered no app of its own, which is most
 // of them — the page reads that as "there is nothing to install here", not as
 // a failure.
-export function useInstallablePlatforms(): UseQueryResult<string[]> {
+export function useInstallablePlatforms(): UseQueryResult<InstallablePlatforms> {
   return useQuery(fetchInstallablePlatforms);
 }
 
@@ -178,6 +183,44 @@ export function useInstalledApps(): UseQueryResult<InstalledApp[]> {
 
 export function useKnownAgentTypes(): UseQueryResult<KnownAgentType[]> {
   return useQuery(fetchKnownAgentTypes);
+}
+
+/** The server's connector apps; the operator's only, so call it only for them. */
+export function useConnectorApps(): UseQueryResult<ConnectorApps> {
+  const [data, setData] = useState<ConnectorApps | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  const refetch = useCallback(() => setTick((t) => t + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchConnectorApps().then(
+      (result) => {
+        if (cancelled) return;
+        setData(result);
+        setError(null);
+        setLoading(false);
+      },
+      (err: unknown) => {
+        if (cancelled) return;
+        setError(
+          err instanceof ApiError && err.status === 404
+            ? CONNECTORS_NOT_ENABLED
+            : err instanceof Error
+              ? err.message
+              : String(err),
+        );
+        setLoading(false);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [tick]);
+
+  return { data, loading, error, refetch };
 }
 
 export function useUsers(): UseQueryResult<UserInfo[]> {

@@ -18,6 +18,7 @@ from switch_core.observability.otlp import (
     MetricPayload,
     NumberPoint,
     OtlpClient,
+    OtlpPartialRejection,
     OtlpResource,
     OtlpSendError,
     build_logs_payload,
@@ -32,6 +33,7 @@ RESOURCE = OtlpResource(
     deployment_id="0e5d1b3a-6c1f-4c22-9a4c-3a9f5a2b7d10",
     commit_sha=None,
     repository_url=None,
+    instance_id=None,
 )
 
 START_NANOS = 1_700_000_000_000_000_000
@@ -80,6 +82,7 @@ def test_unknown_version_is_omitted_rather_than_placeheld():
         deployment_id=RESOURCE.deployment_id,
         commit_sha=None,
         repository_url=None,
+        instance_id=None,
     )
     attributes = resource.attributes()
 
@@ -87,6 +90,21 @@ def test_unknown_version_is_omitted_rather_than_placeheld():
     assert "deployment.environment" not in attributes
     assert "git.commit.sha" not in attributes
     assert "git.repository_url" not in attributes
+    assert "service.instance.id" not in attributes
+
+
+def test_resource_names_the_process_so_pods_report_apart():
+    resource = OtlpResource(
+        service_name="switch-core",
+        service_version="1.2.3",
+        environment="pilot",
+        deployment_id=RESOURCE.deployment_id,
+        commit_sha=None,
+        repository_url=None,
+        instance_id="switch-core-7d9f-abcd1234",
+    )
+
+    assert resource.attributes()["service.instance.id"] == "switch-core-7d9f-abcd1234"
 
 
 def test_resource_names_the_commit_it_was_built_from():
@@ -97,6 +115,7 @@ def test_resource_names_the_commit_it_was_built_from():
         deployment_id=RESOURCE.deployment_id,
         commit_sha="0123456789abcdef0123456789abcdef01234567",
         repository_url="https://github.com/example/switch",
+        instance_id=None,
     )
     attributes = resource.attributes()
 
@@ -290,6 +309,19 @@ async def test_partial_rejection_inside_a_200_is_raised():
 
     with pytest.raises(OtlpSendError, match="rejected 4"):
         await client.post("metrics", {})
+
+
+@pytest.mark.asyncio
+async def test_a_partial_rejection_says_how_many_records_and_why():
+    """A batching caller reports what it lost from this, not the whole batch."""
+    body = {"partialSuccess": {"rejectedLogRecords": "2", "errorMessage": "too big"}}
+    client = _client(lambda request: httpx.Response(200, json=body))
+
+    with pytest.raises(OtlpPartialRejection) as raised:
+        await client.post("logs", {})
+
+    assert raised.value.rejected == 2
+    assert raised.value.reason == "too big"
 
 
 @pytest.mark.asyncio

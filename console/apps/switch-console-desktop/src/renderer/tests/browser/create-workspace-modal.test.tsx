@@ -184,13 +184,14 @@ describe('the create-workspace modal', () => {
     expect(el.textContent).toContain('Acme prod');
   });
 
-  it('asks which server once there are two you are signed in to', async () => {
+  it('never asks which server: it is the one whose New workspace was chosen', async () => {
     addServer('srv-1', 'Acme prod', 'signedIn');
     addServer('srv-2', 'Acme staging', 'signedIn');
 
-    const el = await render('srv-1');
+    const el = await render('srv-2');
 
-    expect(hasLabel(el, 'Server')).toBe(true);
+    expect(hasLabel(el, 'Server')).toBe(false);
+    expect(el.textContent).toContain('Create a workspace on Acme staging');
   });
 
   // The failure would otherwise arrive as an authentication error on Create,
@@ -228,21 +229,17 @@ describe('the create-workspace modal', () => {
     expect(button(el, 'Create workspace').disabled).toBe(false);
   });
 
-  /**
-   * The refusal the gateway actually sends, rather than a plain Error. Its
-   * words are `Slug already taken: weekend-robotics` — no terminal punctuation,
-   * so the shared description does not read it as a sentence and demotes it to
-   * diagnostics. What reached the user was a status code and a slug they never
-   * typed, for the likeliest failure of this form and the only one they can fix.
-   */
-  it('blames the name for a name conflict, not the status code and the slug', async () => {
+  // A conflict is the server refusing a second workspace (it is not isolating
+  // tenants) or a create racing another; its own sentence says which.
+  it('shows the server’s reason for a conflict instead of blaming the name', async () => {
     addServer('srv-1', 'Acme prod', 'signedIn');
+    const detail = 'This server is not isolating tenants, which allows a single workspace.';
     create.mockRejectedValue(
       new RpcError({
         __switchConsoleRpcError: true,
         code: 'GatewayError',
-        message: 'Gateway returned 409: Slug already taken: weekend-robotics',
-        data: { kind: 'http', status: 409, detail: 'Slug already taken: weekend-robotics' },
+        message: `Gateway returned 409: ${detail}`,
+        data: { kind: 'http', status: 409, detail },
       } as unknown as ConstructorParameters<typeof RpcError>[0])
     );
 
@@ -251,11 +248,9 @@ describe('the create-workspace modal', () => {
     await act(async () => button(el, 'Create workspace').click());
     await settle();
 
-    expect(el.textContent).toContain('already goes by that name');
-    expect(el.textContent).not.toContain('weekend-robotics');
-    expect(el.textContent).not.toContain('409');
-    // Still typeable: a different name is the whole of the remedy.
-    expect(el.querySelector('input')!.disabled).toBe(false);
+    expect(el.textContent).toContain('Acme prod could not create it');
+    expect(el.textContent).toContain('allows a single workspace');
+    expect(el.textContent).not.toContain('already goes by that name');
   });
 
   /**
@@ -283,25 +278,6 @@ describe('the create-workspace modal', () => {
     // Nothing else on screen is watching this server, so the modal has to ask
     // or the sentence above is what it says forever.
     expect(refreshStatus).toHaveBeenCalledWith('srv-1');
-  });
-
-  /**
-   * The hidden default was the window's own server, which may be the one that
-   * cannot be asked — leaving Create permanently off with the usable server
-   * offered nowhere.
-   */
-  it('opens on a server it can ask when the window’s own cannot be', async () => {
-    addServer('srv-1', 'Acme prod', 'signedOut');
-    addServer('srv-2', 'Acme staging', 'signedIn');
-    create.mockResolvedValue(workspace('ws-9', 'srv-2'));
-
-    const el = await render('srv-1');
-    await typeName(el, 'Weekend Robotics');
-    await act(async () => button(el, 'Create workspace').click());
-    await settle();
-
-    expect(el.textContent).toContain('Acme staging');
-    expect(create).toHaveBeenCalledWith('srv-2', 'Weekend Robotics');
   });
 
   /**

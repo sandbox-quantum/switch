@@ -6,6 +6,7 @@ import re
 import secrets
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -14,11 +15,20 @@ from sqlalchemy import func, select
 from switch_core.addressing import (
     AddressingPolicy,
     can_address,
-    owner_only_policy,
+    default_agent_policy,
     parse_policy,
 )
-from switch_core.agent_display_name import normalise_display_name
-from switch_core.agent_icon import normalise_icon_url, validate_icon_url
+from switch_core.agent_display_name import (
+    agent_label_with_identifier,
+    normalise_display_name,
+)
+from switch_core.agent_icon import (
+    drop_third_party_avatar,
+    generated_icon_url,
+    normalise_icon_url,
+    prepare_icon_url,
+    refuse_third_party_avatar,
+)
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.authz import Action, Principal, require, require_manage
@@ -35,13 +45,11 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     list_agent_summaries,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.hosted_workers import hosted_launch_of
 from switch_core.bridges.agent.protocol.presence import rooms_occupied
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     AgentStatus,
-    DelegateTaskResult,
     IntegrationProfile,
     LlmCallReport,
     ModelSpec,
@@ -58,20 +66,27 @@ from switch_core.bridges.agent.registration_bootstrap import (
     REGISTRATION_KEY_TYPES,
     resolve_registration_owner_id,
 )
+from switch_core.bridges.collaboration.adapter import (
+    AgentIdentity,
+    AgentIdentityConflict,
+    agent_identity,
+)
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.budgets import BudgetGuard
-from switch_core.clients.actor import SystemActor
+from switch_core.clients.actor import AgentActor, SystemActor
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
 from switch_core.clients.admin_messages import (
     AdminMessageType,
     platform_on_behalf_of,
     platform_replies_in_channel,
 )
+from switch_core.clients.agent_admin import AgentDeletionRequests
+from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
     AgentRuntimeState,
     ApiKey,
-    HostedLaunch,
+    Client,
     Message,
     MessageAttachment,
     Model,
@@ -80,10 +95,11 @@ from switch_core.db.models import (
     Room,
     RoomGroup,
     RoomRole,
-    Task,
+    Template,
     Tool,
     User,
     require_tenant_id,
+    room_agents,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import (
@@ -93,7 +109,6 @@ from switch_core.db.stores.agent_runtime_state_store import (
     AgentRuntimeStateStore,
 )
 from switch_core.db.stores.budget_store import BudgetStore
-from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -125,6 +140,7 @@ from switch_core.trust.client import (
     GuardrailBlockedError,
     NullTrustClient,
     TrustClient,
+    TrustOutcome,
     check_message,
     trust_annotation,
 )
@@ -133,12 +149,16 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from switch_core.agent_runs import RunService
+    from switch_core.bridges.collaboration.install_service import (
+        MessagingInstallService,
+    )
     from switch_core.bridges.collaboration.lifecycle_service import (
         CollaborationBridgeLifecycleService,
     )
     from switch_core.clients.actor import Actor
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.config import SwitchConfig
+    from switch_core.connections.broker import ServiceBroker
     from switch_core.db.stores.agent_session_store import AgentSessionStore
     from switch_core.db.stores.agent_store import AgentStore
     from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -147,7 +167,6 @@ if TYPE_CHECKING:
     )
     from switch_core.db.stores.external_user_store import ExternalUserStore
     from switch_core.db.stores.room_store import RoomStore
-    from switch_core.db.stores.task_store import TaskStore
     from switch_core.gateway.schemas import AgentDetail
     from switch_core.room_service import RoomCreateResult, RoomService
     from switch_core.rooms_yaml import RoomYamlService
@@ -159,6 +178,7 @@ logger = logging.getLogger(__name__)
 # \A and \Z rather than ^ and $: Python's $ also matches before a single
 # trailing newline, which would let an identifier carry a line break.
 _VALID_NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9._-]*\Z")
+VALID_AGENT_NAME_RE = _VALID_NAME_RE
 
 # A hard ceiling on one read_context call, whatever limit the caller asks for.
 # History comes from a single indexed query now, so the only thing this guards
@@ -243,6 +263,37 @@ class AgentExistsError(Exception):
     caller did not opt into re-registration via ``overwrite=True``."""
 
 
+class AgentRenameRefused(ValueError):
+    """A rename Switch will not do, with the reason in words a person can act
+    on."""
+
+
+@dataclass(frozen=True)
+class AgentRenameResult:
+    """What a rename did.
+
+    `bridge_failures` names each chat platform that could not be updated, with
+    why: the rename stands in Switch, and the platform catches up when its
+    bridge next starts. `templates_mentioning_old_name` lists saved templates
+    whose text still says the old name, which a rename does not rewrite."""
+
+    agent_id: str
+    old_name: str
+    new_name: str
+    display_name: str | None
+    bridge_failures: list[str]
+    templates_mentioning_old_name: list[str]
+
+
+@dataclass(frozen=True)
+class AgentDeletionResult:
+    """What a delete left outstanding: each chat platform whose clean-up
+    failed, with why. The agent is gone either way; the platform finishes the
+    clean-up when its bridge next starts."""
+
+    bridge_failures: list[str]
+
+
 class BootstrapOwnerMisconfiguredError(Exception):
     """Raised when the deployment-wide bootstrap key's owner account cannot
     be resolved or trusted (see ``registration_bootstrap.py``).
@@ -281,6 +332,25 @@ class AgentCore:
     # still exists. Set by the process wiring when something outside Core keeps
     # state about agents that a cascade alone would drop without telling anyone.
     _agent_removal_listener: Callable[[str, str], Awaitable[None]] | None = None
+    # Told (tenant_id, agent_id, old_name) just after an agent is renamed, for
+    # state outside Core that was derived from the old name.
+    _agent_rename_listener: Callable[[str, str, str], Awaitable[None]] | None = None
+    # The credential broker, set by the process wiring when service
+    # connections are on; None means they are off, and nothing can be granted.
+    service_broker: ServiceBroker | None = None
+    # Deletions agents have asked for, waiting for a person to confirm with
+    # `!delete-agent … confirm`. Set by the process wiring, shared with the
+    # admin client that runs that command.
+    deletion_requests: AgentDeletionRequests | None = None
+    # The messaging apps this server registered as its own, set by the process
+    # wiring; None when it registered none, the ordinary case.
+    install_service: MessagingInstallService | None = None
+    # Told (tenant_id, room_id) for each room a deleted agent was in, after it
+    # is gone, so whatever follows rooms' agents can catch up at once.
+    _room_agents_listener: Callable[[str, str], Awaitable[None]] | None = None
+    # Told (tenant_id, agent_id) after an agent's icon or display name changes,
+    # so whatever shows them can refresh.
+    _agent_profile_listener: Callable[[str, str], Awaitable[None]] | None = None
 
     def __init__(
         self,
@@ -293,7 +363,6 @@ class AgentCore:
         collab_lifecycle: CollaborationBridgeLifecycleService,
         event_buffer: EventBuffer,
         connections: AgentConnectionRegistry,
-        task_store: TaskStore,
         resource_service: ResourceService,
         api_key_store: ApiKeyStore,
         api_key_cache: ApiKeyCache,
@@ -330,7 +399,6 @@ class AgentCore:
         # visible to all of them. Owning a registry here would split the live
         # connection set in two.
         self.connections = connections
-        self.task_store = task_store
         self.resource_service = resource_service
         self.mediation = MediationService(
             session_factory=session_factory, agent_store=agent_store
@@ -363,10 +431,8 @@ class AgentCore:
         parent_agent_id: str | None = None,
         oauth_client_id: str | None = None,
         overwrite: bool = False,
-        addressable_by_agent_ids: list[str] | None = None,
-        owner_only: bool = True,
+        addressing_policy: AddressingPolicy | None = default_agent_policy(),
         registration_path: str = "other",
-        reserved_agent_id: str | None = None,
     ) -> RegistrationResult:
         """Register or re-register an agent.
 
@@ -377,12 +443,11 @@ class AgentCore:
         Code subagent registered under the user's main agent); None for an
         ordinary top-level agent.
 
-        New agents start **owner-only** (CHOO-2137): only the owner may address
-        them, from any room, and no other agent may unless named in
-        ``addressable_by_agent_ids`` — which is how a dispatcher (a manager or
-        orchestrator agent) is let in. Pass ``owner_only=False`` to create an
-        agent anyone may address, the pre-CHOO-2137 default. Re-registration
-        leaves an existing agent's policy alone either way.
+        ``addressing_policy`` is who may address a new agent. It defaults to
+        `default_agent_policy`: the owner and the owner's own agents, from any
+        room. Pass another policy to choose differently, or None for an agent
+        anyone may address. Re-registration leaves an existing agent's policy
+        alone either way.
 
         If an agent with this name already exists, the call fails with
         ``AgentExistsError`` unless ``overwrite=True`` is passed. Re-registering
@@ -392,7 +457,8 @@ class AgentCore:
         ``icon_url`` is the agent's icon as an absolute https URL, or None for
         no icon. On re-registration None leaves any existing icon alone rather
         than clearing it, so re-registering an agent does not silently discard
-        a picture the owner chose.
+        a picture the owner chose. With third-party avatars off, an icon on
+        one of those services counts as None (`drop_third_party_avatar`).
 
         ``display_name`` is the human-readable label shown beside the machine
         identifier ``name``, or None for none. It behaves like ``icon_url`` on
@@ -425,7 +491,10 @@ class AgentCore:
                 "its bridge identities both belong to one"
             )
 
-        validated_icon_url = normalise_icon_url(icon_url)
+        validated_icon_url = drop_third_party_avatar(
+            normalise_icon_url(icon_url),
+            third_party_avatars=self.config.third_party_avatars_enabled,
+        )
         validated_display_name = normalise_display_name(display_name)
 
         tool_specs = tools or []
@@ -444,21 +513,7 @@ class AgentCore:
 
         async with self.session_factory() as session:
             await self.agent_store.lock_name(session, name)
-            reservation = await session.scalar(
-                select(HostedLaunch).where(
-                    HostedLaunch.tenant_id == tenant_id,
-                    HostedLaunch.name == name,
-                )
-            )
-            if reservation is not None and reservation.agent_id != reserved_agent_id:
-                raise AgentExistsError(
-                    "A cloud launch already reserves this agent name."
-                )
             existing = await self.agent_store.get_by_name(session, name)
-            if reserved_agent_id is not None and existing is not None:
-                raise AgentExistsError(
-                    "The reserved cloud identity cannot overwrite an agent."
-                )
             if existing and not overwrite:
                 raise AgentExistsError(
                     f"Agent already exists: {name!r}. "
@@ -505,7 +560,6 @@ class AgentCore:
                 reject_reserved_mention_name(name, kind="Agent name")
                 agent_id = await self._create_agent(
                     session=session,
-                    reserved_agent_id=reserved_agent_id,
                     name=name,
                     description=description,
                     icon_url=validated_icon_url,
@@ -521,11 +575,7 @@ class AgentCore:
                     encrypted_key=encrypted_key,
                     tools=tool_specs,
                     models=model_specs,
-                    addressing_policy=(
-                        owner_only_policy(addressable_by_agent_ids or [])
-                        if owner_only
-                        else None
-                    ),
+                    addressing_policy=addressing_policy,
                 )
                 logger.info("Registered agent: %s (%s)", name, agent_id)
                 newly_registered = True
@@ -547,7 +597,10 @@ class AgentCore:
                     "first_agent_registered", known_agent_type=runtime
                 )
 
-        await self._create_bridge_identities(tenant_id, name, description)
+        async with self.session_factory() as session:
+            registered = await self.agent_store.get(session, agent_id)
+        if registered is not None:
+            await self._create_bridge_identities(tenant_id, agent_identity(registered))
 
         return RegistrationResult(
             agent_id=agent_id,
@@ -568,8 +621,7 @@ class AgentCore:
         models: list[ModelSpec] | None = None,
         metadata: dict[str, Any] | None = None,
         overwrite: bool = False,
-        addressable_by_agent_ids: list[str] | None = None,
-        owner_only: bool = True,
+        addressing_policy: AddressingPolicy | None = default_agent_policy(),
     ) -> RegistrationResult:
         """Resolve a registration token to its owner, then register the agent.
 
@@ -637,8 +689,7 @@ class AgentCore:
                 metadata=metadata,
                 owner_id=owner_id,
                 overwrite=overwrite,
-                addressable_by_agent_ids=addressable_by_agent_ids,
-                owner_only=owner_only,
+                addressing_policy=addressing_policy,
                 registration_path="bootstrap",
             )
 
@@ -646,7 +697,6 @@ class AgentCore:
         self,
         *,
         session: AsyncSession,
-        reserved_agent_id: str | None,
         name: str,
         description: str,
         icon_url: str | None,
@@ -684,7 +734,6 @@ class AgentCore:
         )
 
         agent = Agent(
-            **({"id": reserved_agent_id} if reserved_agent_id is not None else {}),
             name=name,
             description=description,
             icon_url=icon_url,
@@ -728,6 +777,7 @@ class AgentCore:
 
         await session.commit()
         self.client_lifecycle.start_client(client_record)
+        self.client_lifecycle.announce(client_record.tenant_id)
         return agent.id
 
     async def _reregister_agent(
@@ -760,6 +810,9 @@ class AgentCore:
         await self.api_key_store.create(session, new_api_key_record)
 
         old_api_key_id = existing.api_key_id
+        profile_changed = (icon_url is not None and icon_url != existing.icon_url) or (
+            display_name is not None and display_name != existing.display_name
+        )
         # An omitted icon keeps whatever the agent already has: re-registration
         # rotates credentials and rebuilds the profile, and callers that know
         # nothing about icons must not wipe one the owner chose.
@@ -812,6 +865,8 @@ class AgentCore:
 
         await session.commit()
         self.api_key_cache.invalidate_agent(existing.id)
+        if profile_changed:
+            await self._agent_profile_changed(existing.id)
         return existing.id
 
     def set_agent_removal_listener(
@@ -819,10 +874,24 @@ class AgentCore:
     ) -> None:
         self._agent_removal_listener = listener
 
-    async def _create_bridge_identities(
-        self, tenant_id: str, agent_name: str, description: str
+    def set_room_agents_listener(
+        self, listener: Callable[[str, str], Awaitable[None]]
     ) -> None:
-        """Create `agent_name`'s platform identity on the bridges of
+        self._room_agents_listener = listener
+
+    def set_agent_profile_listener(
+        self, listener: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        self._agent_profile_listener = listener
+
+    async def _agent_profile_changed(self, agent_id: str) -> None:
+        if self._agent_profile_listener is not None:
+            await self._agent_profile_listener(require_tenant_id(), agent_id)
+
+    async def _create_bridge_identities(
+        self, tenant_id: str, agent: AgentIdentity
+    ) -> None:
+        """Create the agent's platform identity on the bridges of
         `tenant_id` — and only that tenant's bridges.
 
         The tenant is passed in rather than read from the ambient context so
@@ -833,15 +902,44 @@ class AgentCore:
         """
         for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
             try:
-                await collaboration_core.adapter.create_agent_identity(
-                    agent_name, description
-                )
+                await collaboration_core.adapter.create_agent_identity(agent)
             except Exception:
                 logger.warning(
                     "Failed to create bridge identity for %s",
-                    agent_name,
+                    agent.name,
                     exc_info=True,
                 )
+
+    async def update_bridge_identities(self, agent_id: str) -> list[str]:
+        """Tell the tenant's bridges an agent's display name or description
+        changed, so platform handles that show them follow. Returns the
+        platforms that could not be updated, with why."""
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError("update_bridge_identities requires a bound tenant")
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, agent_id)
+        if agent is None:
+            raise ValueError(f"Agent not found: {agent_id}")
+        identity = agent_identity(agent)
+        failures: list[str] = []
+        for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
+            try:
+                await collaboration_core.adapter.update_agent_identity(identity)
+            except Exception as exc:
+                logger.error(
+                    "Failed to update %s identity for agent %s",
+                    collaboration_core.bridge_type,
+                    agent.name,
+                    exc_info=True,
+                )
+                failures.append(f"{collaboration_core.bridge_type}: {exc}")
+        return failures
+
+    def set_agent_rename_listener(
+        self, listener: Callable[[str, str, str], Awaitable[None]]
+    ) -> None:
+        self._agent_rename_listener = listener
 
     async def record_client_declaration(
         self, agent_id: str, connection_id: str, declaration: ClientDeclaration
@@ -923,10 +1021,14 @@ class AgentCore:
         an icon needs "remove it" to be sayable.
 
         Raises:
-            InvalidIconUrl: the URL is malformed or points somewhere unsafe.
+            InvalidIconUrl: the URL is malformed, points somewhere unsafe, or
+                is on an avatar service this server has turned off.
             ValueError: no agent with this id exists.
         """
-        validated = validate_icon_url(icon_url) if icon_url is not None else None
+        validated = refuse_third_party_avatar(
+            prepare_icon_url(icon_url) if icon_url is not None else None,
+            third_party_avatars=self.config.third_party_avatars_enabled,
+        )
 
         async with self.session_factory() as session:
             agent = await self.agent_store.get(session, agent_id)
@@ -935,9 +1037,12 @@ class AgentCore:
             await self.agent_store.update(session, agent_id, icon_url=validated)
             await session.commit()
 
-    async def _remove_bridge_identities(self, tenant_id: str, agent_name: str) -> None:
-        """Remove `agent_name`'s platform identity from the bridges of
-        `tenant_id` — and only that tenant's bridges.
+    async def _remove_bridge_identities(
+        self, tenant_id: str, agent: AgentIdentity
+    ) -> list[str]:
+        """Remove the agent's platform identity from the bridges of
+        `tenant_id` — and only that tenant's bridges. Returns each platform
+        that could not be cleaned up, with why.
 
         Unscoped, this is worse than its `_create_bridge_identities` twin:
         deleting an agent in one tenant would delete the platform bot, user
@@ -945,23 +1050,368 @@ class AgentCore:
         there, the tenant is the caller's to establish — `delete_agent`
         refuses without one before it stops anything.
         """
+        failures: list[str] = []
         for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
             try:
-                await collaboration_core.adapter.remove_agent_identity(agent_name)
-            except Exception:
-                logger.warning(
-                    "Failed to remove bridge identity for %s",
-                    agent_name,
+                await collaboration_core.adapter.remove_agent_identity(agent)
+            except Exception as exc:
+                logger.error(
+                    "Failed to remove %s identity for agent %s; the bridge "
+                    "finishes the clean-up when it next starts",
+                    collaboration_core.bridge_type,
+                    agent.name,
                     exc_info=True,
                 )
+                failures.append(f"{collaboration_core.bridge_type}: {exc}")
+        return failures
+
+    async def _rename_bridge_identities(
+        self, tenant_id: str, old_name: str, agent: AgentIdentity
+    ) -> list[str]:
+        failures: list[str] = []
+        for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
+            try:
+                await collaboration_core.adapter.rename_agent_identity(old_name, agent)
+            except Exception as exc:
+                logger.error(
+                    "Failed to rename %s identity for agent %s to %s; the bridge "
+                    "catches up when it next starts",
+                    collaboration_core.bridge_type,
+                    old_name,
+                    agent.name,
+                    exc_info=True,
+                )
+                failures.append(f"{collaboration_core.bridge_type}: {exc}")
+        return failures
+
+    async def rename_agent(
+        self, *, agent_id: str, new_name: str, display_name: str | None
+    ) -> AgentRenameResult:
+        """Change an agent's name, the identifier people type and mention, and
+        its display name, the label people read, in one step.
+
+        `display_name` is what the label becomes: pass the current one to keep
+        it, and None or a blank string to clear it. The two travel together
+        because a label is usually the name written out ("Notes Helper" for
+        notes-helper), and renaming one without the other leaves the agent
+        reading under its old name everywhere it is shown.
+
+        Everything that points at the agent by id (rooms, roles, aliases,
+        tasks, credentials) follows on its own. What carries the name is
+        updated here: the agent row, the name its messages are sent under (in
+        the database and in the running actor, at once, because bridges
+        recognise an agent's own messages by it), paused runs that will wake
+        it by name, and its handle on each chat platform. An agent wearing the
+        avatar its name generates keeps that avatar.
+
+        Checked before anything is written, so a refusal changes nothing:
+        the name's format, that it is free, that it clashes with no alias or
+        role in the agent's rooms, and that no chat platform has something
+        else under the handle it would need. A platform that fails after the
+        write is reported in the result, not raised: the rename stands.
+
+        Raises:
+            ValueError: the name is malformed or reserved, the display name is
+                unsafe to render (InvalidDisplayName), or no such agent.
+            AgentExistsError: another agent has the name.
+            AgentRenameRefused: a clash in a room or on a platform, or an agent
+                that cannot be renamed (a subagent, a parent of subagents, or
+                one a server connector discovered).
+            RuntimeError: no tenant is bound.
+        """
+        (
+            tenant_id,
+            new_display_name,
+            old_name,
+            old_display_name,
+        ) = await self._prepare_rename(agent_id, new_name, display_name)
+        if old_name == new_name:
+            if old_display_name == new_display_name:
+                return AgentRenameResult(
+                    agent_id, old_name, new_name, new_display_name, [], []
+                )
+            async with self.session_factory() as session:
+                await self.agent_store.update(
+                    session, agent_id, display_name=new_display_name
+                )
+                await session.commit()
+            failures = await self.update_bridge_identities(agent_id)
+            return AgentRenameResult(
+                agent_id, old_name, new_name, new_display_name, failures, []
+            )
+
+        async with self.session_factory() as session:
+            await self.agent_store.lock_name(session, new_name)
+            agent = await self.agent_store.get(session, agent_id)
+            if agent is None:
+                raise ValueError(f"Agent not found: {agent_id}")
+            await self._check_renamable(session, agent, new_name)
+            columns: dict[str, object] = {
+                "name": new_name,
+                "display_name": new_display_name,
+            }
+            # Only where avatars are generated at all: with third-party
+            # avatars off there is no generated face to keep.
+            if agent.icon_url is None and self.config.third_party_avatars_enabled:
+                columns["icon_url"] = generated_icon_url(old_name)
+            await self.agent_store.update(session, agent_id, **columns)
+            client = await session.get(Client, agent.client_id)
+            if client is not None:
+                client.display_name = new_name
+            await self._rename_in_run_controls(session, old_name, new_name)
+            templates = await self._templates_mentioning(session, old_name)
+            await session.commit()
+            await session.refresh(agent)
+            identity = agent_identity(agent)
+
+        actor = self.client_lifecycle.get(agent.client_id)
+        if actor is not None:
+            await actor.set_display_name(new_name)
+            # The running agent decides whether a message addresses it from the
+            # row it holds, so it has to hold the renamed one now, not after
+            # the next message that already matched its old name.
+            if isinstance(actor, AgentActor):
+                actor.set_agent(agent)
+        # Every other process re-reads the tenant's clients, so its copy of the
+        # agent and the bridges it holds take the new name too.
+        self.client_lifecycle.announce(tenant_id)
+        if self._agent_rename_listener is not None:
+            await self._agent_rename_listener(tenant_id, agent_id, old_name)
+        await self._agent_profile_changed(agent_id)
+        bridge_failures = await self._rename_bridge_identities(
+            tenant_id, old_name, identity
+        )
+        logger.info(
+            "Renamed agent %s from %s to %s%s",
+            agent_id,
+            old_name,
+            new_name,
+            f" ({len(bridge_failures)} platform(s) behind)" if bridge_failures else "",
+        )
+        return AgentRenameResult(
+            agent_id=agent_id,
+            old_name=old_name,
+            new_name=new_name,
+            display_name=new_display_name,
+            bridge_failures=bridge_failures,
+            templates_mentioning_old_name=templates,
+        )
+
+    async def check_rename(
+        self, *, agent_id: str, new_name: str, display_name: str | None
+    ) -> None:
+        """Raise whatever `rename_agent` would refuse with, without changing
+        anything, so a caller doing more than a rename can check it first."""
+        await self._prepare_rename(agent_id, new_name, display_name)
+
+    async def _prepare_rename(
+        self, agent_id: str, new_name: str, display_name: str | None
+    ) -> tuple[str, str | None, str, str | None]:
+        """Every check a rename makes before it writes. Returns the tenant, the
+        display name as it will be stored, and the agent's current name and
+        display name."""
+        if not _VALID_NAME_RE.match(new_name):
+            raise ValueError(
+                f"Invalid agent name: {new_name!r}. "
+                "Use only lowercase letters, digits, dots, hyphens, and underscores."
+            )
+        reject_reserved_mention_name(new_name, kind="Agent name")
+        new_display_name = normalise_display_name(display_name)
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError("rename_agent requires a bound tenant")
+
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, agent_id)
+            if agent is None:
+                raise ValueError(f"Agent not found: {agent_id}")
+            old_name, old_display_name = agent.name, agent.display_name
+            if old_name != new_name:
+                await self._check_renamable(session, agent, new_name)
+
+        if old_name != new_name:
+            for collaboration_core in self.collab_lifecycle.bridges_for_tenant(
+                tenant_id
+            ):
+                try:
+                    await collaboration_core.adapter.check_agent_identity_name(
+                        agent_id, new_name
+                    )
+                except AgentIdentityConflict as exc:
+                    raise AgentRenameRefused(str(exc)) from exc
+        return tenant_id, new_display_name, old_name, old_display_name
+
+    async def request_agent_deletion(
+        self, *, caller_agent_id: str, target_agent_id: str, room_id: str
+    ) -> str:
+        """Ask, on an agent's behalf, for another agent to be deleted.
+
+        Nothing is deleted here. The request is posted in the room, and only a
+        person (the owner or a workspace admin) can carry it out, by confirming
+        with `!delete-agent <name> confirm` within two minutes. The caller's
+        "can manage agents" capability is the operation's to check; these are
+        the limits on which agent may be asked for. Returns the target's name.
+
+        Raises:
+            PermissionError: the target belongs to another owner.
+            AgentRenameRefused: the target is the caller itself, an agent that
+                can manage agents, or one a server connector found.
+            ValueError: no such agent or room.
+            RuntimeError: deletion requests are not wired in this process.
+        """
+        if self.deletion_requests is None:
+            raise RuntimeError(
+                "Agent deletion requests are not available: the process wiring "
+                "did not set them up"
+            )
+        await self.require_same_owner(caller_agent_id, target_agent_id)
+        tenant_id = require_tenant_id()
+        async with self.session_factory() as session:
+            caller = await self.agent_store.get(session, caller_agent_id)
+            target = await self.agent_store.get(session, target_agent_id)
+            room = await self.room_store.get(session, room_id)
+            if caller is None or target is None:
+                raise ValueError(f"Agent not found: {target_agent_id}")
+            if room is None:
+                raise ValueError(f"Room not found: {room_id}")
+            if target.id == caller.id:
+                raise AgentRenameRefused("An agent cannot ask for its own deletion.")
+            if target.can_manage_agents:
+                raise AgentRenameRefused(
+                    f"Agent '{target.name}' can manage agents itself, so another "
+                    "agent cannot ask for it to be deleted. Its owner can delete "
+                    "it from the gateway or with `!delete-agent`."
+                )
+            if (target.metadata_ or {}).get("server_connector_id"):
+                raise AgentRenameRefused(
+                    f"Agent '{target.name}' was found by a server connector, which "
+                    "would bring it back. Remove it at its source."
+                )
+            await record_audit_event(
+                session,
+                tenant_id=tenant_id,
+                actor_user_id=None,
+                action=AuditAction.AGENT_DELETION_REQUESTED,
+                target_type="agent",
+                target_id=target.id,
+                details={
+                    "agent_name": target.name,
+                    "requested_by_agent_id": caller.id,
+                    "requested_by_agent_name": caller.name,
+                    "room_id": room.id,
+                },
+            )
+            await session.commit()
+            target_name, caller_name = target.name, caller.name
+            caller_label = agent_label_with_identifier(caller.display_name, caller.name)
+            target_label = agent_label_with_identifier(target.display_name, target.name)
+            transport_room_id = room.transport_room_id
+
+        self.deletion_requests.add(room_id, target_agent_id, caller_name)
+        admin = next(
+            (
+                c
+                for c in self.client_lifecycle.get_by_type("admin", tenant_id)
+                if isinstance(c, SystemActor)
+            ),
+            None,
+        )
+        if admin is None:
+            raise RuntimeError("No admin client is running to post the request")
+        await admin.send_admin(
+            transport_room_id,
+            f"🗑️ **{caller_label}** asks to delete **{target_label}**. Nothing has "
+            "been deleted. The agent's owner or a workspace admin can confirm with "
+            f"`!delete-agent {target_name} confirm` within 2 minutes; otherwise "
+            "the request lapses.",
+            message_type=AdminMessageType.AGENT_LIFECYCLE,
+            thread_root_id=None,
+        )
+        logger.info(
+            "Agent %s asked to delete agent %s in room %s",
+            caller_agent_id,
+            target_agent_id,
+            room_id,
+        )
+        return target_name
+
+    async def _check_renamable(
+        self, session: AsyncSession, agent: Agent, new_name: str
+    ) -> None:
+        if (agent.metadata_ or {}).get("server_connector_id"):
+            raise AgentRenameRefused(
+                f"Agent '{agent.name}' was found by a server connector, which "
+                "would bring it back under its old name. Rename it at its source."
+            )
+        if agent.parent_agent_id is not None:
+            raise AgentRenameRefused(
+                f"Agent '{agent.name}' is a subagent; its name comes from its "
+                "parent's, so it cannot be renamed on its own."
+            )
+        if await self.agent_store.get_children(session, [agent.id]):
+            raise AgentRenameRefused(
+                f"Agent '{agent.name}' has subagents named after it, so it "
+                "cannot be renamed yet."
+            )
+        clash = await self.agent_store.get_by_name_insensitive(session, new_name)
+        if clash is not None and clash.id != agent.id:
+            raise AgentExistsError(f"Agent already exists: {new_name!r}.")
+        low = new_name.lower()
+        rooms = await self.room_store.get_rooms_for_agent(
+            session, agent.id, include_archived=True
+        )
+        for room in rooms:
+            aliases = await self.room_store.list_aliases(session, room.id)
+            if any(
+                other != agent.id and alias.lower() == low
+                for other, alias in aliases.items()
+            ):
+                raise AgentRenameRefused(
+                    f"'{new_name}' is another agent's alias in room '{room.name}'."
+                )
+            roles = await self.room_role_store.list_roles(session, room.id)
+            if any(role.name.lower() == low for role in roles):
+                raise AgentRenameRefused(
+                    f"'{new_name}' is the name of a role in room '{room.name}'."
+                )
+
+    async def _rename_in_run_controls(
+        self, session: AsyncSession, old_name: str, new_name: str
+    ) -> None:
+        """Paused runs record which agent to wake by name; move them over."""
+        result = await session.execute(
+            select(Room).where(Room.run_control["paused_agent_name"].astext == old_name)
+        )
+        for room in result.scalars().all():
+            room.run_control = {
+                **(room.run_control or {}),
+                "paused_agent_name": new_name,
+            }
+
+    async def _templates_mentioning(
+        self, session: AsyncSession, name: str
+    ) -> list[str]:
+        result = await session.execute(
+            select(Template.name, Template.content).where(
+                Template.content.contains(name)
+            )
+        )
+        word = re.compile(rf"(?<![A-Za-z0-9._-]){re.escape(name)}(?![A-Za-z0-9._-])")
+        return sorted(
+            {tname for tname, content in result.all() if word.search(content)}
+        )
 
     async def delete_agent(
         self,
         *,
         agent_id: str | None = None,
         agent_name: str | None = None,
-    ) -> None:
+    ) -> AgentDeletionResult:
         """Delete an agent and clean up all associated state.
+
+        Returns the chat platforms whose clean-up failed. The agent is deleted
+        regardless, since leaving it half torn down is worse; each bridge
+        retires what was left behind when it next starts.
 
         Provide exactly one of ``agent_id`` or ``agent_name``.
 
@@ -995,7 +1445,7 @@ class AgentCore:
 
         client_id = agent.client_id
         resolved_id = agent.id
-        resolved_name = agent.name
+        identity = agent_identity(agent)
         # Captured before the row goes: afterwards there is nothing left to
         # describe what was removed, and "an agent was deleted" without its
         # runtime or its age says almost nothing.
@@ -1005,22 +1455,49 @@ class AgentCore:
             "had_parent": agent.parent_agent_id is not None,
         }
         removed["room_count"] = await self._room_count_for(resolved_id)
+        room_ids: list[str] = []
+        if self._room_agents_listener is not None:
+            async with self.session_factory() as session:
+                room_ids = list(
+                    (
+                        await session.execute(
+                            select(room_agents.c.room_id).where(
+                                room_agents.c.agent_id == resolved_id
+                            )
+                        )
+                    ).scalars()
+                )
         if self._agent_removal_listener is not None:
             await self._agent_removal_listener(tenant_id, resolved_id)
         await self.client_lifecycle.stop(client_id)
-        self.event_buffer.remove(resolved_id)
+        try:
+            self.event_buffer.remove(resolved_id)
 
-        await self._remove_bridge_identities(tenant_id, resolved_name)
+            bridge_failures = await self._remove_bridge_identities(tenant_id, identity)
 
-        # One transaction for the agent and its client, stopped above; see
-        # `ClientLifecycleService.delete_record`.
-        async with self.session_factory() as session:
-            await self.agent_store.delete(session, resolved_id)
-            await self.client_lifecycle.delete_record(session, client_id)
-            await session.commit()
+            # One transaction for the agent and its client, stopped above; see
+            # `ClientLifecycleService.delete_record`.
+            async with self.session_factory() as session:
+                await self.agent_store.delete(session, resolved_id)
+                await self.client_lifecycle.delete_record(session, client_id)
+                await session.commit()
+        except BaseException:
+            # A deletion that did not commit leaves the agent in place, and
+            # its client must not stay stopped here.
+            self.client_lifecycle.deletion_failed(client_id)
+            raise
+        self.client_lifecycle.announce(tenant_id)
         self.api_key_cache.invalidate_agent(resolved_id)
+        # Its connections end with it, here and in whichever process holds
+        # one: their rows went with its row. After its key is dropped, so a
+        # client told cannot open another.
+        await self.connections.agent_deleted(resolved_id)
+        if self._room_agents_listener is not None:
+            for room_id in room_ids:
+                await self._room_agents_listener(tenant_id, room_id)
 
         emit_safely(self.telemetry, "agent_deleted", removed)
+        return AgentDeletionResult(bridge_failures=bridge_failures)
 
     async def _room_count_for(self, agent_id: str) -> int:
         """How many rooms an agent is in, for reporting only.
@@ -1123,8 +1600,6 @@ class AgentCore:
             alias_by_agent = await self.room_store.list_aliases(session, room_id)
         result: list[ParticipantDescriptor] = []
         for agent in agents:
-            profile = agent.integration_profile or {}
-            task_protocol = profile.get("task_protocol", {})
             result.append(
                 ParticipantDescriptor(
                     id=agent.id,
@@ -1132,8 +1607,6 @@ class AgentCore:
                     type="agent",
                     agent_type=agent.agent_type,
                     display_name=agent.display_name,
-                    can_delegate=bool(task_protocol.get("can_delegate", False)),
-                    can_accept=bool(task_protocol.get("can_accept", False)),
                     status=statuses[agent.id],
                     room_role=room_role_by_agent.get(agent.id),
                     alias=alias_by_agent.get(agent.id),
@@ -1227,28 +1700,44 @@ class AgentCore:
             )
 
     async def _enforce_trust(
-        self, room: RoomDescriptor, content: str, thread_root_id: str | None
-    ) -> str:
+        self,
+        room: RoomDescriptor,
+        content: str,
+        thread_root_id: str | None,
+        client: AgentActor,
+    ) -> tuple[str, tuple[str, TrustOutcome] | None]:
         """Check agent-authored content against Switch Trust before it is
-        sent. Returns the content to actually send — unchanged, redacted, or
-        carrying a short non-blocking annotation. Raises
-        `GuardrailBlockedError` on a BLOCKED verdict, having already posted a
-        notice in the room in place of the real content."""
+        sent. Returns the content to actually send — unchanged or redacted —
+        and, on an ALERTED/ERRORED verdict, an (annotation, outcome) pair for
+        the caller to post as a notice once the real content has actually been
+        sent (`_post_trust_alert_notice`, threaded under that send's own
+        event_id rather than under this call's pre-send `thread_root_id`, so
+        the notice reads as a reply to the flagged message, not to whatever
+        thread the agent happened to be posting in). Raises
+        `GuardrailBlockedError` on a BLOCKED verdict, or on a REDACTED verdict
+        Switch Trust gave us nothing to redact with — sending the original
+        content then would be indistinguishable from not checking at all —
+        having already posted a notice in the room in place of the real
+        content."""
         check = await check_message(
-            self.trust_client, role="assistant", content=content
+            self.trust_client,
+            role="assistant",
+            content=content,
+            room_id=room.id,
         )
-        if check.blocked:
-            await self._post_trust_blocked_notice(room, thread_root_id)
+        if check.blocked or (
+            check.outcome == "redacted" and check.redacted_content is None
+        ):
+            await self._post_trust_blocked_notice(room, thread_root_id, client)
             raise GuardrailBlockedError(check)
         if check.redacted_content is not None:
             content = check.redacted_content
         annotation = trust_annotation(check)
-        if annotation is not None:
-            content = f"{content}\n\n{annotation}"
-        return content
+        pending_alert = (annotation, check.outcome) if annotation is not None else None
+        return content, pending_alert
 
     async def _post_trust_blocked_notice(
-        self, room: RoomDescriptor, thread_root_id: str | None
+        self, room: RoomDescriptor, thread_root_id: str | None, client: AgentActor
     ) -> None:
         """Tell the room a response was blocked, in place of sending it."""
         admin = next(
@@ -1264,13 +1753,62 @@ class AgentCore:
         try:
             await admin.send_admin(
                 room.transport_room_id,
-                "🚫 A response was blocked by Switch Trust and was not sent.",
+                f"🚫 A response from @{client.agent.name} was blocked by Switch "
+                "Trust and was not sent.",
                 message_type=AdminMessageType.TRUST_BLOCKED,
                 thread_root_id=thread_root_id,
             )
         except Exception:
             logger.warning(
                 "Could not post a Switch Trust blocked notice in %s",
+                room.id,
+                exc_info=True,
+            )
+
+    async def _post_trust_alert_notice(
+        self,
+        room: RoomDescriptor,
+        reply_to_event_id: str,
+        annotation: str,
+        outcome: TrustOutcome,
+    ) -> None:
+        """Tell the room a response was flagged (or could not be fully
+        checked), as its own notice threaded under the flagged reply's own
+        event id — not the pre-send thread the agent happened to be posting
+        in — rather than appended to the reply itself. Mirrors how
+        `CollaborationCore._post_trust_notice` threads an ALERTED/ERRORED
+        human-authored message under the message that triggered it."""
+        admin = next(
+            (
+                c
+                for c in self.client_lifecycle.get_by_type("admin", require_tenant_id())
+                if isinstance(c, SystemActor)
+            ),
+            None,
+        )
+        if admin is None:
+            logger.warning(
+                "No admin client running for %s; dropping a Switch Trust %s "
+                "notice that would have been posted there",
+                room.id,
+                outcome,
+            )
+            return
+        message_type = (
+            AdminMessageType.TRUST_ALERTED
+            if outcome == "alerted"
+            else AdminMessageType.TRUST_ERRORED
+        )
+        try:
+            await admin.send_admin(
+                room.transport_room_id,
+                annotation,
+                message_type=message_type,
+                thread_root_id=reply_to_event_id,
+            )
+        except Exception:
+            logger.warning(
+                "Could not post a Switch Trust alert notice in %s",
                 room.id,
                 exc_info=True,
             )
@@ -1336,7 +1874,9 @@ class AgentCore:
             thread_root_id = await self._resolve_thread_root(
                 client, room.transport_room_id, thread_id
             )
-        content = await self._enforce_trust(room, content, thread_root_id)
+        content, pending_alert = await self._enforce_trust(
+            room, content, thread_root_id, client
+        )
         event_id = await client.send_message(
             room.transport_room_id,
             content,
@@ -1351,6 +1891,9 @@ class AgentCore:
             event_id,
             room.transport_room_id,
         )
+        if pending_alert is not None:
+            annotation, outcome = pending_alert
+            await self._post_trust_alert_notice(room, event_id, annotation, outcome)
         # The agent has replied, so clear any typing indicator raised when the
         # inbound message arrived. The message itself is already delivered, so a
         # failure here is degraded-but-functional, not a reason to fail the send.
@@ -1454,34 +1997,6 @@ class AgentCore:
             "mxc": posted[0]["mxc"],
             "attachments": posted,
         }
-
-    async def _require_can_address(
-        self,
-        session: AsyncSession,
-        target: Agent,
-        *,
-        room_id: str,
-        group_id: str | None,
-        sender_agent_id: str,
-    ) -> None:
-        """Raise unless `sender_agent_id` may address `target` in this room.
-
-        For delegation, which creates a row someone is expected to work. A
-        message the target can decline in the room is checked with
-        :meth:`_can_address` and reported instead.
-        """
-        if await self._can_address(
-            session,
-            target,
-            room_id=room_id,
-            group_id=group_id,
-            sender_agent_id=sender_agent_id,
-        ):
-            return
-        raise PermissionError(
-            f"Agent {sender_agent_id} is not permitted to address "
-            f"{target.name} in this room."
-        )
 
     async def _can_address(
         self,
@@ -1633,8 +2148,6 @@ class AgentCore:
         # happens to an `@name` in a plain message. Refusing here would make
         # the same request succeed or fail depending on which tool sent it, and
         # would leave the sender's account of it the only one on record.
-        # Delegation is the exception, and raises: a task is a row someone is
-        # expected to work, not something a room can decline.
         async with self.session_factory() as session:
             room_row = await self.room_store.get(session, room_id)
         group_id = room_row.group_id if room_row is not None else None
@@ -1805,10 +2318,21 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        detail = await self._enforce_trust(room, detail, None)
-        await client.send_message(
+        detail, pending_alert = await self._enforce_trust(room, detail, None, client)
+        event_id = await client.send_message(
             room.transport_room_id, f"*{detail}*", format="markdown", metered=True
         )
+        if pending_alert is not None:
+            if event_id is None:
+                logger.warning(
+                    "Status update to %s failed to send; dropping its pending "
+                    "Switch Trust %s notice along with it",
+                    room.id,
+                    pending_alert[1],
+                )
+            else:
+                annotation, outcome = pending_alert
+                await self._post_trust_alert_notice(room, event_id, annotation, outcome)
 
     async def set_runtime_state(
         self,
@@ -1845,8 +2369,8 @@ class AgentCore:
         for the same reason. When `GATEWAY_PUBLIC_URL` is unset the raw deeplink
         is left untouched whatever the platform.
 
-        The result is what gets persisted and emitted, so the bridged status
-        message and the `!status` command surface the same link.
+        The result is what gets persisted and emitted, so the `!status` command
+        and the command acknowledgements surface the same link.
         """
         room = await self.require_room_member(agent_id, room_id)
         async with self.session_factory() as session:
@@ -2266,15 +2790,16 @@ class AgentCore:
         without the same check this call would hand over events from a room
         the agent has since been removed from.
 
-        `AgentConsumer.on_removed` already empties the buffer of a removed
-        room's events, so this is the second of two answers. It is the
-        authoritative one: that signal is in-process, and this reads the table
-        the removal wrote.
+        The removal deletes the agent's events in the room it left
+        (`MessageRouter.remove`), so this is the second of two answers, and
+        the one that holds whatever wrote the events, an older release's
+        consumer included: it reads the membership the removal wrote.
         """
         async with self.session_factory() as session:
             await self.agent_session_store.touch_heartbeat(session, agent_id, None)
             await session.commit()
         return await self.event_buffer.poll(
+            require_tenant_id(),
             agent_id,
             timeout=timeout,
             rooms=await self._rooms_agent_is_in(agent_id),
@@ -2285,7 +2810,7 @@ class AgentCore:
     ) -> list[AgentEvent]:
         """Long-poll the agent's notification stream across all its rooms.
 
-        Returns only notifiable events (addressed messages, task events, and
+        Returns only notifiable events (addressed messages and the
         room_join events the agent listens for) — see EventBuffer. Unlike
         `poll_events`, this does NOT touch any heartbeat: an auto_session
         connector maintains its "watching" presence via the dedicated
@@ -2298,6 +2823,7 @@ class AgentCore:
         agent.
         """
         return await self.event_buffer.poll_notifications(
+            require_tenant_id(),
             agent_id,
             timeout=timeout,
             rooms=await self._rooms_agent_is_in(agent_id),
@@ -2327,7 +2853,9 @@ class AgentCore:
         the long-poll cadence so the TTL can stay short.
         """
         await self.require_room_member(agent_id, room_id)
-        return await self.event_buffer.poll_room(agent_id, room_id, timeout=timeout)
+        return await self.event_buffer.poll_room(
+            require_tenant_id(), agent_id, room_id, timeout=timeout
+        )
 
     async def report_events(
         self,
@@ -2373,282 +2901,6 @@ class AgentCore:
                     "com.switch.report.llm_call",
                     llm_event.model_dump(exclude_none=True),
                 )
-
-    # ── Tasks ──────────────────────────────────────────────────────────────────
-
-    async def delegate_task(
-        self,
-        requester_id: str,
-        room_id: str,
-        performer_id: str,
-        summary: str,
-        description: str,
-    ) -> DelegateTaskResult:
-        """Delegate a task from one agent to another.
-
-        Returns task_id and the performer's reachability status at delegation time.
-        Raises ValueError if agents or room not found, or agents not in room,
-        and `BudgetExceeded` if either agent has reached a budget covering it.
-        """
-        room = await self.require_room_poster(requester_id, room_id)
-
-        async with self.session_factory() as session:
-            performer = await self.agent_store.get(session, performer_id)
-            room_row = await self.room_store.get(session, room.id)
-        if performer is None:
-            raise ValueError(f"Performer agent not found: {performer_id}")
-
-        await self.require_room_member(performer_id, room_id)
-
-        # Scoped addressing policy: delegating a task addresses the performer,
-        # so it is subject to the same allow-list as a message. Unlike the
-        # message path (which demotes to unaddressed) a task is explicit, so a
-        # denied delegation fails loud rather than silently vanishing.
-        async with self.session_factory() as session:
-            await self._require_can_address(
-                session,
-                performer,
-                room_id=room.id,
-                group_id=room_row.group_id if room_row is not None else None,
-                sender_agent_id=requester_id,
-            )
-            await self.budget_guard.require_within(
-                session, tenant_id=require_tenant_id(), agent_id=performer_id
-            )
-
-        async with self.session_factory() as session:
-            task = Task(
-                room_id=room.id,
-                requester_agent_id=requester_id,
-                performer_agent_id=performer_id,
-                summary=summary,
-                description=description,
-                status="pending",
-                updates=[],
-            )
-            await self.task_store.create(session, task)
-            await session.commit()
-            task_id = task.id
-
-        client = self.client_lifecycle.get_by_agent_id(requester_id)
-        if client and client.transport:
-            await client.send_event(
-                room.transport_room_id,
-                "com.switch.task.delegate",
-                {
-                    "task_id": task_id,
-                    "requester_agent_id": requester_id,
-                    "performer_agent_id": performer_id,
-                    "summary": summary,
-                    "description": description,
-                },
-            )
-
-        target_status = await self.get_agent_status(performer_id, room_id)
-        return DelegateTaskResult(task_id=task_id, target_status=target_status)
-
-    async def accept_task(self, agent_id: str, task_id: str) -> None:
-        """Accept a pending task (performer only)."""
-        async with self.session_factory() as session:
-            task = await self.task_store.get(session, task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.performer_agent_id != agent_id:
-            raise PermissionError("Only the performer can accept the task")
-        if task.status != "pending":
-            raise ValueError(f"Task not in pending state: {task.status}")
-
-        room = await self.get_room(task.room_id)
-        await self.require_room_member(agent_id, task.room_id)
-
-        async with self.session_factory() as session:
-            await self.task_store.accept(session, task_id)
-            await session.commit()
-
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.transport:
-            await client.send_event(
-                room.transport_room_id,
-                "com.switch.task.accept",
-                {
-                    "task_id": task_id,
-                    "requester_agent_id": task.requester_agent_id,
-                    "performer_agent_id": agent_id,
-                },
-            )
-
-    async def update_task(
-        self,
-        agent_id: str,
-        task_id: str,
-        update: str,
-    ) -> None:
-        """Append a progress update to a task (performer only)."""
-        async with self.session_factory() as session:
-            task = await self.task_store.get(session, task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.performer_agent_id != agent_id:
-            raise PermissionError("Only the performer can update the task")
-
-        room = await self.get_room(task.room_id)
-        await self.require_room_member(agent_id, task.room_id)
-
-        async with self.session_factory() as session:
-            await self.task_store.append_update(session, task_id, update)
-            await session.commit()
-
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.transport:
-            await client.send_event(
-                room.transport_room_id,
-                "com.switch.task.update",
-                {
-                    "task_id": task_id,
-                    "requester_agent_id": task.requester_agent_id,
-                    "performer_agent_id": agent_id,
-                    "update": update,
-                },
-            )
-
-    async def finalise_task(
-        self,
-        agent_id: str,
-        task_id: str,
-        outcome: str,
-    ) -> None:
-        """Finalise a task with an outcome (performer only)."""
-        async with self.session_factory() as session:
-            task = await self.task_store.get(session, task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.performer_agent_id != agent_id:
-            raise PermissionError("Only the performer can finalise the task")
-
-        room = await self.get_room(task.room_id)
-        await self.require_room_member(agent_id, task.room_id)
-
-        async with self.session_factory() as session:
-            await self.task_store.finalise(session, task_id, outcome)
-            await session.commit()
-
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.transport:
-            outcome = await self._enforce_trust(room, outcome, None)
-            await client.send_event(
-                room.transport_room_id,
-                "com.switch.task.finalise",
-                {
-                    "task_id": task_id,
-                    "requester_agent_id": task.requester_agent_id,
-                    "performer_agent_id": agent_id,
-                    "outcome": outcome,
-                },
-            )
-            await client.send_message(
-                room.transport_room_id, outcome, format="markdown", metered=True
-            )
-
-    async def cancel_task(self, agent_id: str, task_id: str, reason: str) -> None:
-        """Cancel a task (requester only)."""
-        async with self.session_factory() as session:
-            task = await self.task_store.get(session, task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.requester_agent_id != agent_id:
-            raise PermissionError("Only the requester can cancel the task")
-
-        room = await self.get_room(task.room_id)
-        await self.require_room_member(agent_id, task.room_id)
-
-        async with self.session_factory() as session:
-            await self.task_store.cancel(session, task_id, reason)
-            await session.commit()
-
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.transport:
-            await client.send_event(
-                room.transport_room_id,
-                "com.switch.task.cancel",
-                {
-                    "task_id": task_id,
-                    "requester_agent_id": agent_id,
-                    "performer_agent_id": task.performer_agent_id,
-                    "reason": reason,
-                },
-            )
-
-    async def get_task(self, agent_id: str, task_id: str) -> Task:
-        """Get a task (requester or performer only)."""
-        async with self.session_factory() as session:
-            task = await self.task_store.get(session, task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {task_id}")
-        if task.requester_agent_id != agent_id and task.performer_agent_id != agent_id:
-            raise PermissionError("Only the requester or performer can view the task")
-        return task
-
-    async def list_tasks(
-        self,
-        agent_id: str,
-        room_id: str | None = None,
-        role: str | None = None,
-        status: str | None = None,
-    ) -> list[Task]:
-        """List tasks for an agent. role: 'delegated' (requester) or 'assigned' (performer)."""
-        async with self.session_factory() as session:
-            if role == "delegated":
-                # Tasks the agent requested
-                query = await session.execute(
-                    select(Task).where(Task.requester_agent_id == agent_id)
-                )
-                tasks = list(query.scalars().all())
-            elif role == "assigned":
-                # Tasks assigned to the agent
-                query = await session.execute(
-                    select(Task).where(Task.performer_agent_id == agent_id)
-                )
-                tasks = list(query.scalars().all())
-            else:
-                # Both
-                tasks = await self.task_store.get_by_agent(session, agent_id)
-
-            if room_id:
-                tasks = [t for t in tasks if t.room_id == room_id]
-            if status:
-                tasks = [t for t in tasks if t.status == status]
-        return tasks
-
-    async def list_delegatable_agents(
-        self, agent_id: str, room_id: str
-    ) -> list[ParticipantDescriptor]:
-        """List the agents in a room (the candidates for task delegation)."""
-        await self.require_room_member(agent_id, room_id)
-        async with self.session_factory() as session:
-            agent_ids = await self.room_store.get_agent_ids(session, room_id)
-            agents: list[Agent] = []
-            for aid in agent_ids:
-                agent = await self.agent_store.get(session, aid)
-                if agent is not None:
-                    agents.append(agent)
-            statuses = await self._compute_statuses(session, agents, room_id)
-        result = []
-        for agent in agents:
-            profile = agent.integration_profile or {}
-            task_protocol = profile.get("task_protocol", {})
-            result.append(
-                ParticipantDescriptor(
-                    id=agent.id,
-                    name=agent.name,
-                    type="agent",
-                    agent_type=agent.agent_type,
-                    display_name=agent.display_name,
-                    can_delegate=bool(task_protocol.get("can_delegate", False)),
-                    can_accept=bool(task_protocol.get("can_accept", False)),
-                    status=statuses[agent.id],
-                )
-            )
-        return result
 
     # ── Moderation ────────────────────────────────────────────────────────────
 
@@ -2876,6 +3128,51 @@ class AgentCore:
         except ValueError as e:
             raise ValueError(f"Failed to add users: {str(e)}") from e
 
+    async def remove_agent_from_room(
+        self, agent_id: str, room_id: str, agent_name: str
+    ) -> None:
+        """Remove an agent from a room on the calling agent's behalf.
+
+        Allowed when the caller may address the target in that room, or when
+        the caller can manage agents and the target belongs to the caller's
+        owner. Membership of the room is not required: an owner's assistant
+        tidies rooms it was never in.
+        """
+        async with self.session_factory() as session:
+            caller = await self.agent_store.get(session, agent_id)
+            if caller is None:
+                raise ValueError(f"Unknown agent: {agent_id}")
+            room = await self.room_store.get(session, room_id)
+            if room is None:
+                raise ValueError(f"Room not found: {room_id}")
+            target = await self.agent_store.get_by_name(session, agent_name)
+            if target is None:
+                raise ValueError(f"Failed to remove agent: unknown agent {agent_name}")
+            if target.id not in await self.room_store.get_agent_ids(session, room_id):
+                raise ValueError(
+                    f"Failed to remove agent: {agent_name} is not in this room"
+                )
+            manages_target = (
+                caller.can_manage_agents
+                and caller.owner_id is not None
+                and caller.owner_id == target.owner_id
+            )
+            if not manages_target and not await self._can_address(
+                session,
+                target,
+                room_id=room_id,
+                group_id=room.group_id,
+                sender_agent_id=agent_id,
+            ):
+                raise PermissionError(
+                    f"Not permitted to remove {agent_name}: you may not address "
+                    "it, and it is not an agent of your owner's that you manage "
+                    "(that needs 'can manage agents')."
+                )
+        await self.room_service.remove_agents_from_room(
+            room_id, [target.id], removed_by_kind="agent"
+        )
+
     def run_service(self) -> RunService:
         """Runs over this service's stores; see ``agent_runs``."""
         from switch_core.agent_runs import RunService
@@ -2961,7 +3258,7 @@ class AgentCore:
         Changing WHO is in a room must not be granted by a public
         ``write_visibility``: that would let any agent add itself to any
         default-visibility room and unlock the member-gated operations (read
-        context, post, tasks). Confine roster changes to the room's owner, an
+        context, post). Confine roster changes to the room's owner, an
         admin, or an agent that is already a member.
         """
         _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
@@ -3700,25 +3997,26 @@ class AgentCore:
         """Write a validated profile update to an agent and return its fresh
         detail.
 
-        Owner-only, as `require_same_owner`. A cloud agent's launch spec, which
-        registers it again, is kept on the same values, as the gateway routes
-        for each field do.
+        Owner-only, as `require_same_owner`.
         """
         await self.require_same_owner(agent_id, target_agent_id)
         async with self.session_factory() as session:
             target = await self.agent_store.get(session, target_agent_id)
             if target is None:
                 raise ValueError(f"Agent not found: {target_agent_id}")
+            profile_changed = any(
+                key in update.columns and update.columns[key] != getattr(target, key)
+                for key in ("icon_url", "display_name")
+            )
             if update.columns:
                 await self.agent_store.update(
                     session, target_agent_id, **update.columns
                 )
-                launch_id = hosted_launch_of(target.metadata_)
-                if launch_id is not None:
-                    await HostedLaunchStore().merge_spec(
-                        session, launch_id, update.columns
-                    )
                 await session.commit()
+                if {"description", "display_name"} & update.columns.keys():
+                    await self.update_bridge_identities(target_agent_id)
+            if profile_changed:
+                await self._agent_profile_changed(target_agent_id)
 
             refreshed = await self.agent_store.get(session, target_agent_id)
             assert refreshed is not None

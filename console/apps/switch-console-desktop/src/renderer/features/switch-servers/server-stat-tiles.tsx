@@ -2,11 +2,13 @@ import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import {
+  useManagedAgents,
+  withoutManaged,
+} from '@renderer/features/managed-agents/use-managed-agents';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import { switchRoomsStore } from './switch-rooms-store';
-import { useCloudLaunches } from './use-cloud-launches';
+import { useReadableRoomsInWorkspace } from './use-listed-rooms';
 
 /**
  * How much of this server Switch Console is holding: the agents onboarded
@@ -21,7 +23,6 @@ export const ServerStatTiles = observer(function ServerStatTiles({
 }: {
   serverId: string;
 }) {
-  const cloud = useCloudLaunches(serverId);
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
 
   // Shares the key every other bridge reader uses, so the list is already in
@@ -38,30 +39,21 @@ export const ServerStatTiles = observer(function ServerStatTiles({
     if (!agentsStore.loaded) void agentsStore.load();
   }, []);
 
+  // Counted the way the Your Agents page lists them: this Console's agents,
+  // less the ones the server runs, plus every agent the server runs.
+  const managed = useManagedAgents(serverId);
+  const rooms = useReadableRoomsInWorkspace(workspaceId);
+  const agentCount =
+    !agentsStore.loaded || managed.isLoading
+      ? null
+      : withoutManaged(agentsStore.agentsOnServer(serverId), managed.data).length +
+        (managed.data?.length ?? 0);
+
   return (
     <div className="grid grid-cols-3 gap-3">
-      <StatTile
-        label="Your Agents"
-        // A server without cloud agents answers with none, which counts as zero;
-        // a failed ask leaves the total unknown rather than reporting the local
-        // agents alone as all of them.
-        value={
-          agentsStore.loaded && cloud.isSuccess && cloud.data
-            ? agentsStore.agentsOnServer(serverId).length + cloud.data.length
-            : null
-        }
-        failure={cloud.error ? failureText(cloud.error, 'Could not count cloud agents.') : null}
-      />
-      <StatTile
-        label="Your Rooms"
-        value={
-          workspaceId === null
-            ? null
-            : switchRoomsStore.readableRoomsInWorkspace(workspaceId).length
-        }
-        failure={null}
-      />
-      <StatTile label="Messaging apps" value={bridgesQuery.data?.length ?? null} failure={null} />
+      <StatTile label="Your Agents" value={agentCount} />
+      <StatTile label="Your Rooms" value={workspaceId === null ? null : rooms.length} />
+      <StatTile label="Messaging apps" value={bridgesQuery.data?.length ?? null} />
     </div>
   );
 });
@@ -69,24 +61,11 @@ export const ServerStatTiles = observer(function ServerStatTiles({
 /** A number that is not known yet reads as an em dash rather than as zero:
  * "no messaging apps" is a fact worth acting on and must not be faked while
  * the list is still loading. */
-function StatTile({
-  label,
-  value,
-  failure,
-}: {
-  label: string;
-  value: number | null;
-  failure: string | null;
-}) {
+function StatTile({ label, value }: { label: string; value: number | null }) {
   return (
     <div className="bg-card rounded-lg border border-border px-4 py-3">
       <p className="text-xs text-foreground-muted">{label}</p>
       <p className="mt-1 text-2xl text-foreground">{value ?? '—'}</p>
-      {failure && (
-        <p role="alert" className="mt-1 text-xs text-destructive">
-          {failure}
-        </p>
-      )}
     </div>
   );
 }

@@ -48,6 +48,7 @@ class Purpose(StrEnum):
     INSTALL_STATE = "messaging-install-state"
     INSTALL_CONFIRM = "messaging-install-confirm"
     BRIDGE_CALLBACK = "collaboration-callback"
+    TEAMS_CLIENT_STATE = "teams-graph-client-state"
 
 
 class KeyringError(ValueError):

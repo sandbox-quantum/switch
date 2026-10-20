@@ -28,8 +28,8 @@ module, never directly through a store any endpoint could declare for itself.
 **A raw `session_factory()` call** is the other surface. It inherits whatever
 is ambient, which in background code is nothing at all, since the long-lived
 tasks deliberately unbind (see `tenant_context.no_tenant`). Such a session can
-now only read the tables that carry no policy — `users`, `oidc_identities`,
-`feature_flags` — so it is no longer a way to cross a tenant boundary, but it
+now only read the tables that carry no policy — `users`, `oidc_identities`
+and the installation's telemetry records — so it is no longer a way to cross a tenant boundary, but it
 is still a session whose call site did not say what it was for.
 
 A module failing either check is not a bug in the test. It means someone
@@ -61,10 +61,25 @@ _ALLOWED_MODULES = {
     # old activity lines in every tenant: enumerate, then bind each tenant and
     # work under its own policy, the same shape as the runtime-state sweep.
     "switch_core.session_activity.maintenance",
+    # Service-token upkeep revokes tokens whose grant or owner is gone and
+    # prunes issuance records past retention, in every tenant: enumerate,
+    # then bind each tenant and work under its own policy, the same shape as
+    # session-activity upkeep above.
+    "switch_core.connections.maintenance",
+    # The operator's Connectors page counts who is connected through each
+    # app, and who would have to reconnect if it were replaced, across every
+    # workspace: enumerate, then read each one's connections under its own
+    # policy, the same shape as service-token upkeep above.
+    "switch_core.gateway.connector_apps",
     # The runtime-state sweep reads every tenant's stale rows, one tenant at a
     # time; `register_agent_with_token` resolves a registration credential by
     # its globally unique hash, which is the read that produces a tenant.
     "switch_core.bridges.agent.protocol.agent_core",
+    # Each process keeps a copy of every other process's agent connections, so
+    # its periodic pass over the recorded rows reads every tenant's: enumerate
+    # the tenants, then read each one's rows under its own policy, the same
+    # shape as the runtime-state sweep.
+    "switch_core.bridges.agent.protocol.connection_rows",
     # Bearer and OIDC authentication: the credential's tenant, before its row.
     "switch_core.bridges.agent.auth",
     # Agent-controller enrollment and token exchange carry their secret (a
@@ -78,12 +93,22 @@ _ALLOWED_MODULES = {
     # tenants, then read each one's definitions under its own policy, the same
     # boot-style fan-out `main` does.
     "switch_core.management.bindings",
+    # Each process keeps its own copy of which process holds each
+    # controller's socket, and reads every tenant's controllers again at
+    # startup, on resync and on each re-check in case a signal was lost: the
+    # same fan-out as the bindings.
+    "switch_core.management.signals",
     # The gateway's JWT subject resolves to its membership, and
     # `tenant_members` is scoped, so nothing else can answer it. In the
     # authentication module itself rather than on an injected store: a store
     # is reachable by any endpoint that declares it, which would make this
     # list name one module while the exemption was open to every route.
     "switch_core.gateway.auth",
+    # A user's cloud machine is global and the cloud controller acts for no
+    # tenant: which workspaces a machine serves comes from
+    # `tenants_of_cloud_machine`, and each one's row on the machine is then
+    # read with that workspace bound.
+    "switch_core.db.stores.hosted_machine_store",
     # Enumerating tenants at boot, and starting one bridge or one connector by
     # id from a context bound to somebody else's tenant.
     "switch_core.clients.client_lifecycle_service",
@@ -99,6 +124,12 @@ _ALLOWED_MODULES = {
     # the tenant it produced, so a wrong answer here is a miss rather than a
     # cross-tenant read.
     "switch_core.bridges.collaboration.install_service",
+    # A sign-in's browser steps (leaving for the vendor, coming back,
+    # continuing to Switch Console) carry no Switch session, only the flow's
+    # state, and may reach any process. The state is the one thing that names
+    # the flow's tenant, and the flow is then read scoped to it, so a wrong
+    # answer is a missing flow rather than a cross-tenant read.
+    "switch_core.connections.sign_in_flows",
     # `switch_core.transport.postgres` and `switch_core.clients.agent_consumer`
     # came off this list with `tenant_of_client`: both were built from a
     # `clients` row that already named the tenant, so they carry it instead of
@@ -142,7 +173,7 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.bridges.collaboration.collaboration_core",
     "switch_core.bridges.collaboration.lifecycle_service",
     "switch_core.bridges.agent.server_connectors.lifecycle",
-    "switch_core.clients.agent_consumer",
+    "switch_core.delivery.recipient",
     "switch_core.clients.command_consumer",
     "switch_core.clients.client_lifecycle_service",
     "switch_core.provisioning.postgres",
@@ -157,6 +188,10 @@ _RAW_SESSION_FACTORY_MODULES = {
     # table here would be the one check that passes in development and raises
     # under the restricted runtime role in production.
     "switch_core.observability.health",
+    # ── The signal sender, which calls `pg_notify` and reads no table. A
+    # signal is for every process regardless of tenant, so there is no tenant
+    # to bind.
+    "switch_core.signals",
     # `switch_core.transport.postgres` and `switch_core.bridges.agent.auth`
     # came off this list with the runtime role: the transport learned its own
     # tenant from its client row and the middleware learned a credential's
@@ -178,7 +213,37 @@ _RAW_SESSION_FACTORY_MODULES = {
     # This process's lease in `switch_core_processes`, a table with no tenant
     # and no policy (`rls_ddl.GLOBAL_TABLES`): a process serves every tenant,
     # so its lease belongs to none. It touches only that table.
-    "switch_core.management.process_lease",
+    "switch_core.process_lease",
+    # Which process runs each piece of work that must run once: it reads
+    # `switch_core_processes` and claims and releases `ownership_leases`, both
+    # tables with no tenant and no policy (`rls_ddl.GLOBAL_TABLES`). One
+    # process holds work for every tenant at once.
+    "switch_core.ownership",
+    # The boot-time re-encryption sweep's per-tenant pass binds a tenant
+    # (`tenant_session`); this raw call is its separate pass over
+    # the global tables' encrypted values (`trust_settings`'s key,
+    # `service_oauth_clients`' secrets), tables with no tenant and no policy
+    # (`rls_ddl.GLOBAL_TABLES`) that a per-tenant loop would otherwise sweep
+    # once per tenant for no reason.
+    "switch_core.db.key_rotation",
+    # `DynamicTrustClient` reads `trust_settings` on every check, including
+    # from agent- and bridge-originated sends that have no request to inherit
+    # a tenant from. A table with no tenant and no policy
+    # (`rls_ddl.GLOBAL_TABLES`): one guardrails policy covers the whole
+    # deployment, so there is no tenant for a policy to narrow on.
+    "switch_core.trust.client",
+    #
+    # ── The OAuth client Core registers for itself at a vendor that offers
+    # no other (`service_oauth_clients`, in `rls_ddl.GLOBAL_TABLES`). The
+    # vendor sees one Switch, so the client is the deployment's, not a
+    # tenant's: read and written in a session bound to none, and re-encrypted
+    # once at boot by the global pass above.
+    "switch_core.connections.oauth_clients",
+    # The apps the operator registered at connectors' vendors
+    # (`service_app_credentials`, in `rls_ddl.GLOBAL_TABLES`): one per
+    # deployment and service, shared by every tenant's sign-ins, so read at
+    # boot and after the operator changes one, in a session bound to none.
+    "switch_core.connections.app_credentials",
 }
 
 # Calls that end in `session_factory` but hand one back rather than open a

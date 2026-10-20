@@ -7,7 +7,12 @@ from types import SimpleNamespace
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.addressing import parse_policy
+from switch_core.addressing import (
+    default_agent_policy,
+    owner_and_owner_agents_policy,
+    owner_only_policy,
+    parse_policy,
+)
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.models import TENANT_ZERO_ID, ApiKey
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
@@ -55,7 +60,7 @@ async def _policy_of(
 
 
 class TestRegistrationDefaultPolicy:
-    async def test_new_agent_is_owner_only(
+    async def test_new_agent_admits_its_owner_and_the_owners_agents(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         svc = make_service(session_factory)
@@ -63,78 +68,78 @@ class TestRegistrationDefaultPolicy:
         agent_id = await register(svc, "fresh", owner_id)
 
         raw = await _policy_of(svc, session_factory, agent_id)
+        assert raw == default_agent_policy().model_dump()
+        assert raw == owner_and_owner_agents_policy().model_dump()
         policy = parse_policy(raw)
         assert policy.is_open() is False
-        assert policy.requires_owner_identity() is True
-        # The owner gets in from anywhere; nobody else does.
-        assert (
-            policy.allows(
+
+        def allows(**sender: object) -> bool:
+            return policy.allows(
                 room_id="any-room",
                 group_id=None,
-                sender_kind="user",
-                sender_id="ext-3",
-                sender_user_ids=[owner_id],
-                sender_owner_user_id=None,
                 owner_user_id=owner_id,
+                **sender,  # type: ignore[arg-type]
             )
-            is True
+
+        # The owner gets in from anywhere, and so do the owner's own agents.
+        assert allows(
+            sender_kind="user",
+            sender_id="ext-3",
+            sender_user_ids=[owner_id],
+            sender_owner_user_id=None,
         )
-        assert (
-            policy.allows(
-                room_id="any-room",
-                group_id=None,
-                sender_kind="agent",
-                sender_id="other-agent",
-                sender_user_ids=[],
-                sender_owner_user_id=None,
-                owner_user_id=owner_id,
-            )
-            is False
+        assert allows(
+            sender_kind="agent",
+            sender_id="sibling-agent",
+            sender_user_ids=[],
+            sender_owner_user_id=owner_id,
+        )
+        # Other people and their agents do not.
+        assert not allows(
+            sender_kind="user",
+            sender_id="ext-4",
+            sender_user_ids=["someone-else"],
+            sender_owner_user_id=None,
+        )
+        assert not allows(
+            sender_kind="agent",
+            sender_id="other-agent",
+            sender_user_ids=[],
+            sender_owner_user_id="someone-else",
         )
 
-    async def test_addressable_by_agent_ids_are_admitted(
+    async def test_an_explicit_owner_only_choice_is_kept(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         svc = make_service(session_factory)
         owner_id = await make_owner(session_factory)
         agent_id = await register(
-            svc, "dispatched", owner_id, addressable_by_agent_ids=["dispatcher"]
+            svc, "private", owner_id, addressing_policy=owner_only_policy([])
         )
 
-        policy = parse_policy(await _policy_of(svc, session_factory, agent_id))
+        raw = await _policy_of(svc, session_factory, agent_id)
+        assert raw == owner_only_policy([]).model_dump()
         assert (
-            policy.allows(
+            parse_policy(raw).allows(
                 room_id="any-room",
                 group_id=None,
                 sender_kind="agent",
-                sender_id="dispatcher",
+                sender_id="sibling-agent",
                 sender_user_ids=[],
-                sender_owner_user_id=None,
-                owner_user_id=owner_id,
-            )
-            is True
-        )
-        assert (
-            policy.allows(
-                room_id="any-room",
-                group_id=None,
-                sender_kind="agent",
-                sender_id="stranger",
-                sender_user_ids=[],
-                sender_owner_user_id=None,
+                sender_owner_user_id=owner_id,
                 owner_user_id=owner_id,
             )
             is False
         )
 
-    async def test_owner_only_false_leaves_the_agent_open(
+    async def test_no_policy_leaves_the_agent_open(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         # A service the deployment offers everyone (a server-side connector
         # agent) is owned by someone only in the bookkeeping sense.
         svc = make_service(session_factory)
         owner_id = await make_owner(session_factory)
-        agent_id = await register(svc, "shared", owner_id, owner_only=False)
+        agent_id = await register(svc, "shared", owner_id, addressing_policy=None)
 
         raw = await _policy_of(svc, session_factory, agent_id)
         assert raw is None
@@ -145,7 +150,7 @@ class TestRegistrationDefaultPolicy:
     ) -> None:
         svc = make_service(session_factory)
         owner_id = await make_owner(session_factory)
-        agent_id = await register(svc, "kept", owner_id, owner_only=False)
+        agent_id = await register(svc, "kept", owner_id, addressing_policy=None)
 
         async with session_factory() as session:
             await svc.agent_store.update(
@@ -162,7 +167,7 @@ class TestRegistrationDefaultPolicy:
 
 
 class TestRegisterWithTokenPassesThrough:
-    async def test_token_registration_defaults_to_owner_only(
+    async def test_token_registration_uses_the_default_policy(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         svc = make_service(session_factory)
@@ -186,8 +191,7 @@ class TestRegisterWithTokenPassesThrough:
             connector_type="test",
             integration_profile=PROFILE,
         )
-        assert captured["owner_only"] is True
-        assert captured["addressable_by_agent_ids"] is None
+        assert captured["addressing_policy"] == default_agent_policy()
 
     async def test_token_registration_forwards_the_overrides(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -212,11 +216,9 @@ class TestRegisterWithTokenPassesThrough:
             description="d",
             connector_type="test",
             integration_profile=PROFILE,
-            owner_only=False,
-            addressable_by_agent_ids=["dispatcher"],
+            addressing_policy=owner_only_policy(["dispatcher"]),
         )
-        assert captured["owner_only"] is False
-        assert captured["addressable_by_agent_ids"] == ["dispatcher"]
+        assert captured["addressing_policy"] == owner_only_policy(["dispatcher"])
 
 
 def _stub_key(owner_id: str):  # type: ignore[no-untyped-def]

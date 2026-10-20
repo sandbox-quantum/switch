@@ -1577,6 +1577,27 @@ def test_starting_begins_polling_and_learns_the_bot_id() -> None:
     ]
 
 
+def test_a_quiet_copy_calls_the_bot_api_without_polling() -> None:
+    """Another switch-core process holds the bridge and polls Telegram for it:
+    Telegram hands each update to one poller, so this copy must not take a
+    share. It still knows its bot, for the Bot API calls it serves."""
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
+    )
+    adapter.set_listening(False)
+    app = _FakeApplication()
+
+    with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
+        _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
+        assert app.started is False
+        assert app.updater.polling_kwargs is None
+        assert adapter._bot_user_id == BOT_USER_ID
+        _run(adapter.stop())
+
+    assert app.updater.stopped is False
+    assert app.shut_down is True
+
+
 def test_a_second_poller_on_the_same_token_is_named(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

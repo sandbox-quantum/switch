@@ -45,6 +45,11 @@ _AWKWARD_DOCUMENT = (
 )
 
 
+def _stored(listing: list[dict]) -> list[dict]:
+    """A listing without the templates that come with Switch."""
+    return [t for t in listing if not t["official"]]
+
+
 def _config() -> SwitchConfig:
     return SwitchConfig(  # type: ignore[call-arg]
         db_host="localhost",
@@ -225,7 +230,7 @@ class TestOverTheWire:
 
         # The point of it: nothing was created by asking.
         listing = await client.get("/templates")
-        assert listing.json() == []
+        assert _stored(listing.json()) == []
 
     async def test_a_document_that_is_not_yaml_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
@@ -252,7 +257,7 @@ class TestOverTheWire:
         )
         assert refused.status_code == 422
         assert "Not valid YAML" in refused.json()["detail"]
-        assert (await client.get("/templates")).json() == []
+        assert _stored((await client.get("/templates")).json()) == []
 
     async def test_everything_else_it_says_is_advice(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
@@ -371,7 +376,10 @@ class TestOverTheWire:
         for who in ("alice", "bob"):
             listing = await _client(session_factory, users[who]).get("/templates")
             assert listing.status_code == 200
-            assert {t["name"] for t in listing.json()} == {"alice-room", "bob-room"}
+            assert {t["name"] for t in _stored(listing.json())} == {
+                "alice-room",
+                "bob-room",
+            }
 
     async def test_search_narrows_the_catalogue(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
@@ -436,7 +444,7 @@ class TestOverTheWire:
         await _upload(_client(session_factory, users["bob"]), name="deploy-room")
 
         listing = await _client(session_factory, users["alice"]).get("/templates")
-        assert len(listing.json()) == 2
+        assert len(_stored(listing.json())) == 2
 
     async def test_replacing_the_document_bumps_the_revision(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
@@ -548,7 +556,7 @@ class TestOverTheWire:
         assert response.status_code == 422
 
         listing = await client.get("/templates", params={"q": "smuggled"})
-        assert listing.json() == []
+        assert _stored(listing.json()) == []
 
     async def test_a_body_naming_the_owner_is_refused_outright(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
@@ -565,3 +573,29 @@ class TestOverTheWire:
 
         unchanged = await client.get(f"/templates/{created['id']}")
         assert unchanged.json()["owner_id"] == users["alice"].id
+
+
+@pytest.mark.asyncio
+async def test_an_official_template_is_listed_served_and_never_changed(
+    session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+) -> None:
+    client = _client(session_factory, users["alice"])
+    listing = (await client.get("/templates")).json()
+    (official,) = [t for t in listing if t["official"]]
+    assert (official["id"], official["owner_name"], official["can_edit"]) == (
+        "official:switch-expert",
+        "Switch",
+        False,
+    )
+    detail = (await client.get("/templates/official:switch-expert")).json()
+    # The test config leaves agent management off: the Console-run document.
+    assert detail["content"].startswith("version: 1")
+    content = await client.get("/templates/official:switch-expert/content")
+    assert content.status_code == 200
+    patched = await client.patch(
+        "/templates/official:switch-expert", json={"description": "mine"}
+    )
+    assert patched.status_code == 403
+    deleted = await client.delete("/templates/official:switch-expert")
+    assert deleted.status_code == 403
+    assert (await client.get("/templates/official:nope")).status_code == 404

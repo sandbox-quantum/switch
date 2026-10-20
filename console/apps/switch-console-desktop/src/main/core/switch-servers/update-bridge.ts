@@ -20,6 +20,7 @@ export async function updateBridgeOnServer(
   try {
     const bridge = await updateBridge(server, params.bridgeId, {
       channelCreationEnabled: params.channelCreationEnabled,
+      connectionConfig: params.connectionConfig,
     });
     return { kind: 'updated', bridge };
   } catch (cause) {
@@ -31,6 +32,14 @@ export async function updateBridgeOnServer(
       // own case.
       if (cause.kind === 'http' && (cause.status === 400 || cause.status === 422)) {
         return { kind: 'invalid', message: cause.detail ?? cause.message };
+      }
+      // A distributed Teams bridge editing its default team can also fail with
+      // 503 (restarting right now) or 502 (Microsoft Graph itself refusing
+      // the request) — both recoverable and both already written for a human
+      // in `detail`, so they get the same treatment as 400/422 rather than
+      // falling through to the generic throw below.
+      if (cause.kind === 'http' && (cause.status === 503 || cause.status === 502)) {
+        return { kind: 'error', message: cause.detail ?? cause.message };
       }
       if (cause.kind === 'network') return { kind: 'error', message: cause.message };
     }

@@ -37,9 +37,9 @@ export async function ensureRemoteWatcher(agentId: string): Promise<void> {
   await applyControllerState(agentId, 'restore', 'host');
   remoteSessionReconciler.start(agentId);
 }
-/** {@link ensureRemoteWatcher}, but writing this Console's auto-approve to the
- * host instead of adopting the host's. */
-export async function pushRemoteAutoApprove(agentId: string): Promise<void> {
+/** {@link ensureRemoteWatcher}, but writing this Console's permission settings
+ * to the host instead of adopting the host's. */
+export async function pushRemotePermissions(agentId: string): Promise<void> {
   await applyControllerState(agentId, 'restore', 'this-console');
   remoteSessionReconciler.start(agentId);
 }

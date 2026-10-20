@@ -1,15 +1,14 @@
-import { mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { prepareCodexSessionHome } from '../codex/home';
 import {
-  fetchHostedProvider,
-  hostedRequest,
-  materializeHostedProvider,
-  type HostedCredential,
-} from './hosted-provider';
-import type { SharedHostConfig } from './shared-config';
+  AUTHORIZED_USER_FIXTURE,
+  SERVICE_ACCOUNT_KEY_FIXTURE,
+  vertexCredentialFixture,
+} from '../testing/vertex-fixtures';
+import { materializeHostedProvider, type HostedCredential } from './hosted-provider';
 
 let root: string;
 beforeEach(async () => {
@@ -20,72 +19,6 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-async function hostedConfig(
-  endpoint = 'https://switch.invalid/api/agent'
-): Promise<SharedHostConfig> {
-  const credentialsPath = join(root, 'switch.json');
-  await writeFile(
-    credentialsPath,
-    JSON.stringify({
-      env: {
-        SWITCH_API_ENDPOINT: endpoint,
-        SWITCH_API_TOKEN: 'switch-token-fixture',
-        SWITCH_AGENT_ID: 'agent-id',
-      },
-    })
-  );
-  return {
-    session: { agentId: 'agent-id' },
-    start: { provider: 'claude' },
-    execution: { credentialsPath },
-  } as unknown as SharedHostConfig;
-}
-
-it('reads a connected credential and refuses one for another provider', async () => {
-  const body = {
-    status: 'connected',
-    revision: 'revision-one',
-    provider: 'claude',
-    kind: 'api-key',
-    credential: 'fixture-key',
-  };
-  const request = vi.fn(async () => new Response(JSON.stringify(body)));
-  vi.stubGlobal('fetch', request);
-  const config = await hostedConfig();
-  expect(await fetchHostedProvider(config)).toEqual(body);
-  expect(request).toHaveBeenCalledWith(
-    'https://switch.invalid/api/agent/hosted/provider-credential',
-    expect.objectContaining({
-      method: 'POST',
-      headers: { Authorization: 'Bearer switch-token-fixture' },
-    })
-  );
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () => new Response(JSON.stringify({ ...body, provider: 'codex' })))
-  );
-  await expect(fetchHostedProvider(config)).rejects.toThrow('do not match this session');
-});
-
-it('reports a forbidden credential read as revoked and other failures loudly', async () => {
-  const config = await hostedConfig();
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () => new Response('', { status: 403 }))
-  );
-  expect(await fetchHostedProvider(config)).toEqual({ status: 'revoked' });
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () => new Response('', { status: 500 }))
-  );
-  await expect(fetchHostedProvider(config)).rejects.toThrow('HTTP 500');
-  await expect(hostedRequest(config, '/provider-status', {})).rejects.toThrow('HTTP 500');
-});
-
-it('refuses a non-HTTPS Switch origin', async () => {
-  const config = await hostedConfig('http://switch.invalid/api/agent');
-  await expect(fetchHostedProvider(config)).rejects.toThrow('HTTPS');
-});
 const credential = (value: string): Extract<HostedCredential, { status: 'connected' }> => ({
   status: 'connected',
   revision: 'revision-one',
@@ -103,7 +36,7 @@ it('preserves a native token refresh until the owner replaces the source credent
     'fixture-cli'
   );
   const path = join(env.CODEX_HOME!, 'auth.json');
-  expect((await stat(path)).mode & 0o777).toBe(0o600);
+  if (process.platform !== 'win32') expect((await stat(path)).mode & 0o777).toBe(0o600);
   await writeFile(path, '{"tokens":{"access_token":"fixture-refreshed"}}');
   await materializeHostedProvider(
     root,
@@ -163,7 +96,6 @@ it('keeps the prepared Codex home and refreshes its auth before provider startup
     sessionId: 'session',
     sourceHome,
     config: 'model = "fixture-model"',
-    auth: 'refresh',
   });
   env.CODEX_HOME = home;
   await writeFile(join(home, 'auth.json'), '{"fixture":"native-refresh"}');
@@ -179,4 +111,68 @@ it('keeps the prepared Codex home and refreshes its auth before provider startup
   expect(env.CODEX_HOME).toBe(home);
   expect(await readFile(join(home, 'auth.json'), 'utf8')).toContain('replacement');
   expect(await readFile(join(home, 'config.toml'), 'utf8')).toContain('fixture-model');
+});
+
+const vertex = (credentials: object): Extract<HostedCredential, { status: 'connected' }> => ({
+  ...credential(vertexCredentialFixture(credentials)),
+  provider: 'claude',
+  kind: 'vertex',
+});
+
+it('writes a Vertex AI login’s Google credential under the root, and signs Claude in with it', async () => {
+  const env: Record<string, string> = {
+    ANTHROPIC_API_KEY: 'sk-ant-inherited',
+    CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-inherited',
+  };
+  await materializeHostedProvider(root, env, vertex(SERVICE_ACCOUNT_KEY_FIXTURE), 'fixture-cli');
+  const path = join(root, 'provider-home', 'google-credentials.json');
+  expect(env).toEqual({
+    CLAUDE_CODE_USE_VERTEX: '1',
+    ANTHROPIC_VERTEX_PROJECT_ID: 'cg-vertexai',
+    CLOUD_ML_REGION: 'global',
+    GOOGLE_APPLICATION_CREDENTIALS: path,
+  });
+  if (process.platform !== 'win32') expect((await stat(path)).mode & 0o777).toBe(0o600);
+  if (process.platform !== 'win32')
+    expect((await stat(join(root, 'provider-home'))).mode & 0o777).toBe(0o700);
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(SERVICE_ACCOUNT_KEY_FIXTURE);
+
+  await materializeHostedProvider(root, env, vertex(AUTHORIZED_USER_FIXTURE), 'fixture-cli');
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(AUTHORIZED_USER_FIXTURE);
+  expect((await readdir(join(root, 'provider-home'))).sort()).toEqual([
+    'google-credentials.json',
+    'google-credentials.json.switch-credential',
+  ]);
+});
+
+it('clears the Vertex AI variables when Claude is given another login', async () => {
+  const env: Record<string, string> = {};
+  await materializeHostedProvider(root, env, vertex(SERVICE_ACCOUNT_KEY_FIXTURE), 'fixture-cli');
+  await materializeHostedProvider(
+    root,
+    env,
+    { ...credential('sk-ant-oat-given'), provider: 'claude', kind: 'setup-token' },
+    'fixture-cli'
+  );
+  expect(env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-given' });
+});
+
+it('refuses a Vertex AI login for another provider than Claude, or one that is not valid', async () => {
+  await expect(
+    materializeHostedProvider(
+      root,
+      {},
+      { ...vertex(SERVICE_ACCOUNT_KEY_FIXTURE), provider: 'codex' },
+      'fixture-cli'
+    )
+  ).rejects.toThrow(/Only Claude/);
+  await expect(
+    materializeHostedProvider(
+      root,
+      {},
+      vertex({ ...SERVICE_ACCOUNT_KEY_FIXTURE, type: 'external_account' }),
+      'fixture-cli'
+    )
+  ).rejects.toThrow(/Only a service account key/);
+  await expect(stat(join(root, 'provider-home'))).rejects.toMatchObject({ code: 'ENOENT' });
 });

@@ -4,6 +4,7 @@ import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
@@ -26,6 +27,7 @@ import type {
   RemoteAgentSummary,
   RemoteRoomDetail,
 } from '@shared/core/switch-servers/switch-servers';
+import { channelOnDeleteSummary } from './room-delete-wording';
 import { membershipSummary, roomTitle } from './room-labels';
 import { openRoomChannel } from './room-links';
 
@@ -33,6 +35,17 @@ import { openRoomChannel } from './room-links';
  * server's answer straight back into what the page is reading. */
 function roomDetailKey(workspaceId: string, roomId: string) {
   return ['remote-room-detail', workspaceId, roomId] as const;
+}
+
+/** One room read from its server; `workspaceId` is null until the room list has loaded. */
+function useRoomDetail(roomId: string) {
+  const workspaceId = switchRoomsStore.roomWorkspaceId(roomId);
+  const query = useQuery({
+    queryKey: roomDetailKey(workspaceId ?? '', roomId),
+    queryFn: () => rpc.workspaces.getRoomDetail({ workspaceId: workspaceId as string, roomId }),
+    enabled: workspaceId !== null,
+  });
+  return { workspaceId, query };
 }
 
 /**
@@ -48,12 +61,7 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
 }: {
   roomId: string;
 }) {
-  const workspaceId = switchRoomsStore.roomWorkspaceId(roomId);
-  const query = useQuery({
-    queryKey: roomDetailKey(workspaceId ?? '', roomId),
-    queryFn: () => rpc.workspaces.getRoomDetail({ workspaceId: workspaceId as string, roomId }),
-    enabled: workspaceId !== null,
-  });
+  const { workspaceId, query } = useRoomDetail(roomId);
 
   if (workspaceId === null) {
     return <PanelNotice title="This room’s workspace is still loading." />;
@@ -128,8 +136,10 @@ const DeleteRoomSection = observer(function DeleteRoomSection({
         <div className="space-y-0.5">
           <h3 className="text-sm font-medium text-foreground">Delete room</h3>
           <p className="text-xs text-foreground-muted">
-            Removes the room and its conversation for everyone in it
-            {room.bridgeType ? `, and its ${bridgePlatformLabel(room.bridgeType)} channel` : ''}.
+            Removes the room and its conversation for everyone in it.
+            {room.bridgeType
+              ? ` ${channelOnDeleteSummary(bridgePlatformLabel(room.bridgeType), room.channelOnDelete) ?? ''}`
+              : ''}
           </p>
         </div>
         <Button
@@ -334,12 +344,6 @@ const ParticipantsSection = observer(function ParticipantsSection({
   const [adding, setAdding] = useState(false);
   const showAddAgentsToRoomModal = useShowModal('addAgentsToRoomModal');
 
-  // Names for agents belonging to other installs, which this computer has no
-  // local record of. Shares its key with the rest of the app, so it is usually
-  // already in hand.
-  const remoteAgents = useWorkspaceAgents(workspaceId);
-  const remoteById = new Map((remoteAgents.data ?? []).map((a) => [a.id, a]));
-
   async function refresh() {
     await queryClient.invalidateQueries({ queryKey: roomDetailKey(workspaceId, room.id) });
     await switchRoomsStore.refreshRoomState();
@@ -375,37 +379,51 @@ const ParticipantsSection = observer(function ParticipantsSection({
         </div>
       </div>
 
-      {room.agentIds.length === 0 && room.connectedUserNames.length === 0 ? (
-        <p className="text-sm text-foreground-muted">Nobody is in this room yet.</p>
-      ) : (
-        <div className="grid grid-cols-2 gap-2.5">
-          {room.agentIds.map((agentId) => (
-            <ParticipantCard
-              key={agentId}
-              mark={
-                <AgentMark agentId={agentId} workspaceId={workspaceId} remoteById={remoteById} />
-              }
-              name={agentNameFor(agentId, workspaceId, remoteById)}
-              detail={agentKindFor(agentId, workspaceId, remoteById)}
-            />
-          ))}
-          {room.connectedUserNames.map((name) => (
-            <ParticipantCard
-              key={`user:${name}`}
-              mark={
-                <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] text-xs font-medium text-foreground">
-                  {name.charAt(0).toUpperCase()}
-                </span>
-              }
-              name={name}
-              detail="person"
-            />
-          ))}
-        </div>
-      )}
+      <ParticipantList workspaceId={workspaceId} room={room} />
 
       {adding && <AddAgentPanel workspaceId={workspaceId} room={room} onAdded={refresh} />}
     </section>
+  );
+});
+
+/** The room's members as cards, agents first. */
+const ParticipantList = observer(function ParticipantList({
+  workspaceId,
+  room,
+}: {
+  workspaceId: string;
+  room: Pick<RemoteRoomDetail, 'agentIds' | 'connectedUserNames'>;
+}) {
+  // Names for agents belonging to other installs, which this computer has no
+  // local record of. Shares its key with the rest of the app, so it is usually
+  // already in hand.
+  const remoteAgents = useWorkspaceAgents(workspaceId);
+  const remoteById = new Map((remoteAgents.data ?? []).map((a) => [a.id, a]));
+  return room.agentIds.length === 0 && room.connectedUserNames.length === 0 ? (
+    <p className="text-sm text-foreground-muted">Nobody is in this room yet.</p>
+  ) : (
+    <div className="grid grid-cols-2 gap-2.5">
+      {room.agentIds.map((agentId) => (
+        <ParticipantCard
+          key={agentId}
+          mark={<AgentMark agentId={agentId} workspaceId={workspaceId} remoteById={remoteById} />}
+          name={agentNameFor(agentId, workspaceId, remoteById)}
+          detail={agentKindFor(agentId, workspaceId, remoteById)}
+        />
+      ))}
+      {room.connectedUserNames.map((name) => (
+        <ParticipantCard
+          key={`user:${name}`}
+          mark={
+            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] text-xs font-medium text-foreground">
+              {name.charAt(0).toUpperCase()}
+            </span>
+          }
+          name={name}
+          detail="person"
+        />
+      ))}
+    </div>
   );
 });
 
@@ -529,6 +547,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
                 <AgentAvatar
                   name={agent.name}
                   iconUrl={remoteById.get(switchAgentId)?.iconUrl ?? null}
+                  serverId={agent.serverId}
                   size={22}
                 />
                 <span className="min-w-0 flex-1 truncate text-sm text-foreground">
@@ -586,6 +605,7 @@ function AgentMark({
       <AgentAvatar
         name={agentNameFor(agentId, workspaceId, remoteById)}
         iconUrl={remote?.iconUrl ?? null}
+        serverId={workspacesStore.serverIdFor(workspaceId)}
         size={26}
       />
     </span>

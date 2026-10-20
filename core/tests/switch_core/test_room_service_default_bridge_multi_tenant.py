@@ -103,9 +103,14 @@ class _FakeCollaborationCore:
 class _FakeLifecycle:
     def __init__(self, bridges: dict[str, _FakeCollaborationCore]) -> None:
         self._bridges = bridges
+        # Bridges whose rooms changed, announced for the other processes.
+        self.rooms_changed_for: list[str] = []
 
     def get(self, bridge_id: str) -> Any:
         return self._bridges.get(bridge_id)
+
+    def rooms_changed(self, bridge_id: str) -> None:
+        self.rooms_changed_for.append(bridge_id)
 
 
 class _NoRunningClients:

@@ -2,7 +2,14 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { buildEnvFile, keysDisagreeing, readStackEnv, telemetryRequested } from './env-file';
+import {
+  buildEnvFile,
+  keysDisagreeing,
+  MANAGED_SERVER_FEATURE_FLAGS,
+  managedServerFeatureFlags,
+  readStackEnv,
+  telemetryRequested,
+} from './env-file';
 import type { LocalServerSecrets } from './secret-values';
 
 const secrets: LocalServerSecrets = {
@@ -11,6 +18,7 @@ const secrets: LocalServerSecrets = {
   agentRegistrationToken: 'agent-token',
   jwtSecretKey: 'jwt-key',
   secretKeys: 'console:secret-keys-value',
+  controllerTokenSecret: 'controller-token-secret-value',
   gatewayAdminPassword: 'gw-admin',
   mattermostAdminPassword: 'mm-admin',
   mattermostUserPassword: 'mm-user',
@@ -68,9 +76,25 @@ describe('buildEnvFile', () => {
     expect(vars.AGENT_REGISTRATION_TOKEN).toBe('agent-token');
     expect(vars.JWT_SECRET_KEY).toBe('jwt-key');
     expect(vars.SECRET_KEYS).toBe('console:secret-keys-value');
+    expect(vars.CONTROLLER_TOKEN_SECRET).toBe('controller-token-secret-value');
     expect(vars.GATEWAY_ADMIN_PASSWORD).toBe('gw-admin');
     expect(vars.MATTERMOST_ADMIN_PASSWORD).toBe('mm-admin');
     expect(vars.MATTERMOST_USER_PASSWORD).toBe('mm-user');
+  });
+
+  it("starts a managed stack with this build's feature flags", () => {
+    expect(vars.FEATURE_FLAGS_ENABLED).toBe(MANAGED_SERVER_FEATURE_FLAGS.join(','));
+  });
+
+  it('turns on what switch-buddy needs only in a build with the new first run', () => {
+    expect(managedServerFeatureFlags(true)).toEqual([
+      'agent_management',
+      'agent_chats',
+      'switch_buddy',
+      'follow_the_conversation',
+      'service_connections',
+    ]);
+    expect(managedServerFeatureFlags(false)).toEqual([]);
   });
 
   it('runs switch-core as the restricted runtime role, not the schema owner', () => {
@@ -122,16 +146,36 @@ describe('buildEnvFile', () => {
       'DISCORD_APP_CLIENT_SECRET',
       'DISCORD_APP_BOT_TOKEN',
       'DISCORD_APP_APPLICATION_ID',
-      // Agent management is off unless a server opts in, and the compose file
-      // defaults it off. A managed stack does not opt in yet: the pinned
-      // switch-core release predates it, and turning it on also needs a
-      // controller token secret generated for the stack.
+      // Telegram's distributed bot is deployment config too, and Telegram
+      // delivers its updates to a webhook on MESSAGING_PUBLIC_URL, which a
+      // loopback stack cannot offer (see above).
+      'TELEGRAM_APP_BOT_TOKEN',
+      'TELEGRAM_APP_WEBHOOK_SECRET',
+      // The variable the agent_management feature flag replaced. switch-core
+      // refuses to start with it on, so it is left to the compose default.
       'AGENT_MANAGEMENT_ENABLED',
-      'CONTROLLER_TOKEN_SECRET',
       // Private hosts Switch may reach at a tenant- or agent-supplied URL. The
       // compose file always allows the bundled Mattermost; a managed stack
       // allows nothing more until its operator says so.
       'OUTBOUND_ALLOWED_PRIVATE_HOSTS',
+      // The distributed Teams app's credential, notification keypair and
+      // package pages are deployment config too, and a loopback stack can
+      // hold none of them for the same reason.
+      'TEAMS_APP_CLIENT_ID',
+      'TEAMS_APP_TENANT_ID',
+      'TEAMS_APP_CLIENT_SECRET',
+      'TEAMS_APP_CERTIFICATE',
+      'TEAMS_APP_CERTIFICATE_PRIVATE_KEY',
+      'TEAMS_APP_FEDERATED_TOKEN_FILE',
+      'TEAMS_APP_NOTIFICATION_CERTIFICATE',
+      'TEAMS_APP_NOTIFICATION_PRIVATE_KEY',
+      'TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY',
+      'TEAMS_APP_PRIVACY_URL',
+      'TEAMS_APP_TERMS_URL',
+      'TEAMS_APP_NAME',
+      // Written, and empty on purpose in a build without the new first run
+      // (MANAGED_SERVER_FEATURE_FLAGS).
+      'FEATURE_FLAGS_ENABLED',
     ]);
 
     const missing = [...interpolated]

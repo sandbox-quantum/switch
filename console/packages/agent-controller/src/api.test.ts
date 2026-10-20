@@ -63,6 +63,7 @@ const assignment: Assignment = {
         advanced_config: {},
         instructions: '',
         auto_approve: false,
+        auto_mode: false,
         directory: null,
         isolation: 'shared',
       },
@@ -381,7 +382,12 @@ function statusReport() {
   return {
     seq: 1,
     observed_at: new Date().toISOString(),
-    controller: { version: '0.1.0', protocol: 2 as const, assignment_revision: 0 },
+    controller: {
+      version: '0.1.0',
+      protocol: 2 as const,
+      assignment_revision: 0,
+      updated_by: 'self' as const,
+    },
     machine: {
       platform: { os: 'linux', arch: 'x64', os_version: '6.1' },
       disk_free_bytes: 1,

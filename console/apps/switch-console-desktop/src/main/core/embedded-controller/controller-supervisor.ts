@@ -1,5 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
+import {
+  isProviderRecheckReply,
+  PROVIDER_RECHECK_KIND,
+  type ProviderRecheckRequest,
+  STOP_MESSAGE,
+} from '@switch-console/agent-providers';
 import type { EmbeddedControllerPhase } from '@shared/core/embedded-controller/embedded-controller';
 
 /** The controller's exit codes (see the agent-controller README). */
@@ -22,15 +29,20 @@ export interface ControllerChild {
   readonly stdin: Writable | null;
   readonly stdout: Readable | null;
   readonly stderr: Readable | null;
+  /** Whether its IPC channel is open: how it is asked to stop on Windows. */
+  readonly connected: boolean;
+  send(message: unknown): boolean;
   kill(signal?: NodeJS.Signals): boolean;
   once(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
   once(event: 'error', listener: (error: Error) => void): this;
+  on(event: 'message', listener: (message: unknown) => void): this;
+  off(event: 'message', listener: (message: unknown) => void): this;
 }
 
 export type SpawnController = (
   command: string,
   args: string[],
-  options: { env: NodeJS.ProcessEnv; stdio: ['pipe', 'pipe', 'pipe'] }
+  options: { env: NodeJS.ProcessEnv; stdio: ['pipe', 'pipe', 'pipe', 'ipc']; windowsHide: true }
 ) => ControllerChild;
 
 /** How to start the controller this time: read afresh before every start. */
@@ -117,9 +129,11 @@ export class ControllerSupervisor {
   }
 
   /**
-   * Stops supervising and asks the process to end (SIGTERM). The agents keep
-   * running: the controller leaves its watchers up, and they reconnect when a
-   * controller comes back. Escalates to SIGKILL after `timeoutMs`.
+   * Stops supervising and asks the process to end: SIGTERM, or on Windows,
+   * where SIGTERM would end it on the spot, a stop message over its IPC
+   * channel. The agents keep running: the controller leaves its watchers up,
+   * and they reconnect when a controller comes back. Escalates to SIGKILL
+   * after `timeoutMs`.
    */
   async stop(timeoutMs: number): Promise<void> {
     this.stopping = true;
@@ -127,10 +141,46 @@ export class ControllerSupervisor {
     const child = this.child;
     const exited = this.exited;
     if (!child || !exited) return;
-    child.kill('SIGTERM');
+    if (process.platform === 'win32' && child.connected) child.send(STOP_MESSAGE);
+    else child.kill('SIGTERM');
     if (await within(exited, timeoutMs)) return;
     child.kill('SIGKILL');
     await within(exited, 2_000);
+  }
+
+  /**
+   * Asks the running controller to check every provider again now, and
+   * resolves once it has reported the result to Switch. Fails when no
+   * controller is running, it does not answer within `timeoutMs`, or it could
+   * not check or report.
+   */
+  recheckProviders(timeoutMs: number): Promise<void> {
+    const child = this.child;
+    if (!child || !child.connected)
+      return Promise.reject(new Error('The agents controller on this computer is not running.'));
+    const id = randomUUID();
+    return new Promise<void>((resolve, reject) => {
+      const done = () => {
+        clearTimeout(timer);
+        child.off('message', onMessage);
+      };
+      const timer = setTimeout(() => {
+        done();
+        reject(new Error('The agents controller on this computer did not answer in time.'));
+      }, timeoutMs);
+      const onMessage = (message: unknown) => {
+        if (!isProviderRecheckReply(message) || message.id !== id) return;
+        done();
+        if (message.error === null) resolve();
+        else reject(new Error(message.error));
+      };
+      child.on('message', onMessage);
+      const request: ProviderRecheckRequest = { kind: PROVIDER_RECHECK_KIND, id };
+      if (!child.send(request)) {
+        done();
+        reject(new Error('Could not reach the agents controller on this computer.'));
+      }
+    });
   }
 
   /**
@@ -161,7 +211,8 @@ export class ControllerSupervisor {
     this.recent = [];
     const child = this.deps.spawn(launch.executable, launch.args, {
       env: launch.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+      windowsHide: true,
     });
     this.child = child;
     let resolveExited!: () => void;

@@ -21,11 +21,15 @@ import type {
 import { z } from 'zod';
 import { ProviderConversationUnavailableError } from '../adapter';
 import type { ProviderAdapter, ProviderSessionStartInput, TurnAttachment } from '../adapter';
-import type { TokenUsage, UserInputAnswers } from '../events';
+import type { TokenUsage, TurnOutcome, UserInputAnswers } from '../events';
 import type { ProviderRuntimeEvent } from '../events';
 import { ChatProjector } from '../session-v1/chat-projector';
 import { ATTACHMENT_MIME_TYPES } from './attachments';
 import { Journal } from './journal';
+import { fitModelCatalog } from './model-catalog';
+import { ReasoningBuffer, type HostReasoningList } from './reasoning-buffer';
+import type { Redactions } from './redaction';
+import { ToolDetailBuffer } from './tool-detail-buffer';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
@@ -52,6 +56,8 @@ export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('reset-started') }),
   z.object({ type: z.literal('reset-completed') }),
   z.object({ type: z.literal('model'), id: z.string(), options: z.record(z.string(), z.string()) }),
+  /** The host posts this turn's reply to its room itself: decided once, before posting. */
+  z.object({ type: z.literal('room-reply'), commandId: z.string() }),
 ]);
 type RecordEntry = z.infer<typeof hostInboxRecordSchema>;
 export type HostSessionStart = {
@@ -62,7 +68,21 @@ export type HostSessionStart = {
   epochAuthority?: 'server';
   resetEpoch?: () => Promise<string>;
   stageAttachments?: (attachments: Attachment[]) => Promise<TurnAttachment[]>;
+  /**
+   * Posts to a room as the agent, raising when the post did not land. Absent
+   * where the host has no way to reach the agent's rooms.
+   */
+  replyToRoom?: (reply: RoomReply) => Promise<void>;
+  /** Service tokens to scrub from every event before it is recorded; none when absent. */
+  redactions?: Redactions;
+  /**
+   * Told each time the provider asks to run a connector's tool, before the
+   * request is published, so a notice it raises comes ahead of the card.
+   */
+  connectorApproval?: (connector: string) => void;
 };
+/** What the host posts for a turn a room message started that ended without the agent posting. */
+export type RoomReply = { roomId: string; threadId: string | null; body: string };
 type PendingQuestion = { request: Request; options: Map<string, string> };
 /**
  * What Switch recorded for a request: for an approval, `answer` is the chosen
@@ -85,11 +105,17 @@ export class HostedSession {
   private readonly commands = new Map<string, Command>();
   private readonly dispatched = new Set<string>();
   private readonly finished = new Set<string>();
+  private readonly roomReplies = new Set<string>();
+  private readonly postedTurns = new Set<string>();
   private readonly usage = new Map<string, TokenUsage[]>();
   private readonly resumeOperations = new Set<string>();
   private readonly queue: Command[] = [];
   private readonly questions = new Map<string, PendingQuestion>();
   private readonly listeners = new Set<(event: ServerEvent) => void>();
+  /** Recent reasoning, in memory only: never published, journaled or replayed. */
+  private readonly reasoningBuffer = new ReasoningBuffer();
+  /** Recent tool input and output, in memory only, under the same rules as reasoning. */
+  private readonly toolDetails = new ToolDetailBuffer();
   private activeTurn: string | null = null;
   private serial: Promise<unknown> = Promise.resolve();
   private eventSerial: Promise<unknown> = Promise.resolve();
@@ -158,10 +184,13 @@ export class HostedSession {
       }
       if (record.type === 'reset-completed') this.resetPending = false;
       if (record.type === 'model') config.input.model = { id: record.id, options: record.options };
+      if (record.type === 'room-reply') this.roomReplies.add(record.commandId);
     }
-    this.projector = new ChatProjector(config.session);
+    this.projector = new ChatProjector(config.session, config.redactions ?? null);
     this.unsubscribe = adapter.subscribe((event) => {
       if (event.sessionId !== config.session.sessionId) return;
+      this.reasoningBuffer.ingest(event, this.config.session.epoch, Date.now());
+      this.toolDetails.ingest(event, this.config.session.epoch);
       // Process cleanup leaves this conversation available for recovery.
       // An explicit session.stop is handled before shutdown and remains terminal.
       if (
@@ -256,11 +285,14 @@ export class HostedSession {
           );
           return host;
         }
-        if (!host.nativeId)
+        // A session whose provider never opened a conversation (its first
+        // start failed) has nothing to resume: it starts one below.
+        if (!host.nativeId && host.providerAnswered())
           throw new Error('Cannot recover a session without its native provider ID.');
         if (config.epochAuthority !== 'server') config.session.epoch = randomUUID();
         const next = host.replica.snapshot();
         config.session.models = next.session.models;
+        config.session.context = next.session.context;
         next.session = structuredClone(config.session);
         host.replica = new SessionReplica(next);
       }
@@ -379,6 +411,28 @@ export class HostedSession {
     await this.publish({ type: 'notice', level: 'error', code, message });
   }
 
+  /** Reads how full the context window is and publishes it; unknown when the read fails. */
+  private async refreshContext(): Promise<void> {
+    if (!this.adapter.contextUsage) return;
+    const { sessionId, epoch } = this.config.session;
+    let usage: Awaited<ReturnType<NonNullable<ProviderAdapter['contextUsage']>>> = null;
+    try {
+      usage = await this.adapter.contextUsage(sessionId);
+    } catch (error) {
+      console.warn(`Could not read context usage for session ${sessionId}: ${String(error)}`);
+    }
+    if (this.shuttingDown || this.resetting || epoch !== this.config.session.epoch) return;
+    this.config.session.context = usage
+      ? {
+          usedTokens: Math.max(0, Math.round(usage.usedTokens)),
+          windowTokens:
+            usage.windowTokens && usage.windowTokens > 0 ? Math.round(usage.windowTokens) : null,
+          updatedAt: new Date().toISOString(),
+        }
+      : null;
+    await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
+  }
+
   private async refreshModels(): Promise<void> {
     const generation = ++this.modelGeneration;
     const compact =
@@ -406,13 +460,26 @@ export class HostedSession {
           'The provider did not return a model catalog on resume. Showing the last known choices; the provider will validate each change.',
       });
     }
-    this.config.session.models = models;
-    this.config.session.model = this.config.input.model
+    const selected = this.config.input.model
       ? { id: this.config.input.model.id, options: this.config.input.model.options ?? {} }
       : null;
-    this.config.session.capabilities.modelChange = Boolean(models.length && this.adapter.setModel);
+    const fitted = fitModelCatalog(models, selected?.id ?? null);
+    this.config.session.models = fitted.models;
+    this.config.session.model = selected;
+    this.config.session.capabilities.modelChange = Boolean(
+      fitted.models.length && this.adapter.setModel
+    );
     this.updateAttachmentCapabilities();
     await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
+    if (fitted.omitted || fitted.optionsDropped)
+      await this.publish({
+        type: 'notice',
+        level: 'warning',
+        code: 'MODEL_CATALOG_TRUNCATED',
+        message: fitted.omitted
+          ? `The provider offers ${models.length} models, more than a session can list: only ${fitted.models.length} are offered here, without their options. Narrow the providers it is signed in to, or pick a model in its own settings.`
+          : `The provider offers ${models.length} models: they are listed without their options, which would not fit. The selected model keeps its own.`,
+      });
   }
 
   private updateAttachmentCapabilities(): void {
@@ -427,6 +494,11 @@ export class HostedSession {
 
   notice(message: string): Promise<void> {
     return this.publish({ type: 'notice', level: 'error', code: 'ROOM_DELIVERY_FAILED', message });
+  }
+
+  /** A service the session reaches some other way than through Switch: said, not silent. */
+  serviceFallback(message: string): Promise<void> {
+    return this.publish({ type: 'notice', level: 'warning', code: 'SERVICE_FALLBACK', message });
   }
 
   roomDeliveryResumed(): Promise<void> {
@@ -469,6 +541,17 @@ export class HostedSession {
   snapshot(): Snapshot {
     return this.replica.snapshot();
   }
+  /**
+   * The reasoning and tool details still held for `turnIds` (all buffered
+   * turns when null), for this epoch.
+   */
+  reasoning(turnIds: string[] | null): HostReasoningList {
+    const epoch = this.config.session.epoch;
+    return {
+      ...this.reasoningBuffer.list(epoch, turnIds),
+      tools: this.toolDetails.list(epoch, turnIds),
+    };
+  }
   replay(after: number): { events: ServerEvent[]; throughSequence: number } {
     return {
       events: structuredClone(this.events.records.filter((event) => event.sequence > after)),
@@ -485,6 +568,14 @@ export class HostedSession {
   /** What `turnId` spent, as its provider reported when it ended. */
   usageOf(turnId: string): TokenUsage[] {
     return this.usage.get(turnId) ?? [];
+  }
+
+  /**
+   * The agent posted to a room, through one of the Switch tools: the running
+   * turn has answered, so the host has nothing to post for it.
+   */
+  agentPostedToRoom(): void {
+    if (this.activeTurn) this.postedTurns.add(this.activeTurn);
   }
 
   /** Where the command that started `turnId` came from, if a command started it. */
@@ -759,6 +850,7 @@ export class HostedSession {
             type: 'session.upsert',
             session: structuredClone(this.config.session),
           });
+          void this.refreshContext().catch((error: unknown) => this.fail(error));
         } catch (error) {
           await this.fail(error);
           throw error;
@@ -801,6 +893,7 @@ export class HostedSession {
           const epoch = this.config.resetEpoch ? await this.config.resetEpoch() : randomUUID();
           this.config.session.epoch = epoch;
           this.config.session.status = 'starting';
+          this.config.session.context = null;
           const snapshot = this.snapshot();
           snapshot.session = structuredClone(this.config.session);
           this.replica = new SessionReplica(snapshot);
@@ -942,13 +1035,75 @@ export class HostedSession {
         code: 'TURN_FAILED',
         message: String(error),
       });
+      await this.replyIfUnposted(command.commandId, 'error', String(error));
       this.activeTurn = null;
       void this.runNext().catch((error: unknown) => this.fail(error));
     }
   }
 
+  /**
+   * Tells the room when a turn a room message started failed without the
+   * agent posting anywhere — a provider that ended on a quota or sign-in
+   * error — since the room would otherwise hear nothing about it. A turn that
+   * simply ended without a post says nothing (`unpostedReply`), and one the
+   * host cut short on purpose (stopping, parking, a reset) is left alone.
+   *
+   * Decided once per turn and recorded before the post, so a restart never
+   * posts it twice. The post runs beside the session; one that fails is
+   * logged and noted in the transcript, and nothing else.
+   */
+  private async replyIfUnposted(
+    turnId: string,
+    outcome: TurnOutcome,
+    detail: string | null
+  ): Promise<void> {
+    const posted = this.postedTurns.delete(turnId);
+    const reply = this.config.replyToRoom;
+    if (!reply || posted || this.shuttingDown || this.stopped || this.resetting) return;
+    if (this.roomReplies.has(turnId)) return;
+    const origin = this.commands.get(turnId)?.origin;
+    if (!origin?.roomId || !origin.messageId) return;
+    const roomId = origin.roomId;
+    const body = unpostedReply(outcome, detail);
+    if (body === null) return;
+    await this.inbox.append({ type: 'room-reply', commandId: turnId });
+    this.roomReplies.add(turnId);
+    void reply({ roomId, threadId: origin.threadId, body })
+      .then(
+        () =>
+          this.publish({
+            type: 'notice',
+            level: 'info',
+            code: 'ROOM_REPLY_POSTED',
+            message: `The turn ended without the agent posting to room ${roomId}, so the host posted there for it.`,
+          }),
+        async (error: unknown) => {
+          const reason = error instanceof Error ? error.message : String(error);
+          console.warn(
+            `Could not tell room ${roomId} that turn ${turnId} ended without a reply: ${reason}`
+          );
+          await this.publish({
+            type: 'notice',
+            level: 'warning',
+            code: 'ROOM_REPLY_FAILED',
+            message: `The turn ended without the agent posting to room ${roomId}, and the host could not post there for it: ${reason}`,
+          });
+        }
+      )
+      .catch((error: unknown) =>
+        console.warn(`Could not record the room reply for turn ${turnId}: ${String(error)}`)
+      );
+  }
+
   private async providerEvent(event: ProviderRuntimeEvent): Promise<void> {
-    if (this.resetting && event.type === 'session.exited') return;
+    // A reset stops the old conversation on the way to a fresh one. That stop
+    // is not the session's: shown, it reads as the session ending.
+    if (
+      this.resetting &&
+      (event.type === 'session.exited' ||
+        (event.type === 'session.state.changed' && event.status === 'stopped'))
+    )
+      return;
     if (event.type === 'session.exited') {
       for (const request of this.snapshot().requests)
         if (request.state === 'open' || request.state === 'submitting')
@@ -1019,6 +1174,8 @@ export class HostedSession {
               },
       };
       this.questions.set(request.requestId, { request, options });
+      if (event.type === 'request.opened' && event.connector !== undefined)
+        this.config.connectorApproval?.(event.connector);
       await this.publish({ type: 'request.opened', request });
     }
     if (event.type === 'request.resolved' || event.type === 'user-input.resolved') {
@@ -1053,8 +1210,10 @@ export class HostedSession {
     }
     await this.publishAll(this.projector.ingest(event, Date.now()));
     if (event.type === 'turn.completed') {
+      await this.replyIfUnposted(event.turnId, event.outcome, event.message ?? null);
       this.activeTurn = null;
       void this.runNext().catch((error: unknown) => this.fail(error));
+      void this.refreshContext().catch((error: unknown) => this.fail(error));
     }
   }
 
@@ -1128,7 +1287,9 @@ export class HostedSession {
         sessionId: this.config.session.sessionId,
         sequence: this.events.records.length + 1,
         occurredAt: new Date().toISOString(),
-        body,
+        // Scrubbed here, once: the journal, Console's view and the activity
+        // rows Switch shows on the bridges are all made from what is recorded.
+        body: this.config.redactions ? this.config.redactions.value(body) : body,
       };
       if (eventBytes(event) > 64 * 1024)
         throw new Error('PAYLOAD_TOO_LARGE: event exceeds 64 KiB.');
@@ -1146,7 +1307,18 @@ export class HostedSession {
     this.fault = error instanceof Error ? error : new Error(String(error));
     this.config.session.status = 'error';
     try {
-      await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
+      try {
+        await this.publish({
+          type: 'session.upsert',
+          session: structuredClone(this.config.session),
+        });
+      } catch (upsertError) {
+        // The failure is recorded even when the session record is what could
+        // not be: without its model catalog it is a few hundred bytes.
+        console.error('SDK host could not record its session:', String(upsertError));
+        const { models: _models, ...session } = structuredClone(this.config.session);
+        await this.publish({ type: 'session.upsert', session });
+      }
       await this.publish({
         type: 'notice',
         level: 'error',
@@ -1168,6 +1340,28 @@ export class HostedSession {
     await this.publishing;
     this.unsubscribe();
   }
+}
+
+/**
+ * What the host posts for a room turn that ended without the agent posting:
+ * only that it failed, and why, so a crash is not silent. A turn that
+ * finished, or that someone stopped, posts nothing: the agent chose not to
+ * answer, and its final text was never meant for the room.
+ */
+export function unpostedReply(outcome: TurnOutcome, detail: string | null): string | null {
+  if (outcome !== 'error') return null;
+  const reason = detail?.trim() ? `: ${cap(detail.trim(), 1000)}` : '.';
+  return `I finished without replying. The turn failed${reason}`;
+}
+
+function cap(text: string, limit: number): string {
+  const characters = Array.from(text);
+  return characters.length <= limit
+    ? text
+    : `${characters
+        .slice(0, limit - 1)
+        .join('')
+        .trimEnd()}…`;
 }
 
 type QuestionsContent = Extract<Request['content'], { kind: 'questions' }>;

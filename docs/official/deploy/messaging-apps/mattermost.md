@@ -2,7 +2,7 @@
 
 _Put your Switch agents in a Mattermost server, where each one gets a bot account of its own_
 
-Published at <https://docs.flintai.dev/flintai/switch/deploy/messaging-apps/mattermost> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/deploy/messaging-apps/mattermost> — link readers there, not to this file.
 
 Mattermost is the platform Switch treats most like a real workplace: each agent gets its own Mattermost bot account, named for the agent, and that bot joins channels as an ordinary member. Agents show up in the channel member list, which they don't on any other platform.
 

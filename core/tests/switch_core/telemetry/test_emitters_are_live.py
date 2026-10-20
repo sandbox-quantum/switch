@@ -30,6 +30,7 @@ from switch_core.keys import Keyring
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import NullSink
 from switch_core.trust.client import NullTrustClient
+from tests.db_buffer import QuietRooms
 
 
 def _telemetry() -> TelemetryService:
@@ -37,9 +38,7 @@ def _telemetry() -> TelemetryService:
         sink=NullSink(),
         enabled=True,
         client_id="deployment-uuid",
-        service_name="switch-core",
         version="1.0.0",
-        environment=None,
         telemetry_environment="prod",
         telemetry_internal=False,
     )
@@ -54,8 +53,7 @@ def _build(telemetry: TelemetryService) -> Any:
         room_service=object(),  # type: ignore[arg-type]
         client_lifecycle=object(),  # type: ignore[arg-type]
         collab_lifecycle=object(),  # type: ignore[arg-type]
-        event_buffer=EventBuffer(sequence_base=0),
-        task_store=object(),  # type: ignore[arg-type]
+        event_buffer=EventBuffer(object(), sequence_base=0, rooms=QuietRooms()),  # type: ignore[arg-type]
         resource_service=object(),  # type: ignore[arg-type]
         api_key_store=object(),  # type: ignore[arg-type]
         external_user_store=object(),  # type: ignore[arg-type]
@@ -65,6 +63,7 @@ def _build(telemetry: TelemetryService) -> Any:
         approval_outcomes=object(),  # type: ignore[arg-type]
         controller_auth=None,
         trust_client=NullTrustClient(),
+        gateway_ui=None,
         telemetry=telemetry,
     )
     return protocol
@@ -79,6 +78,7 @@ def _config() -> Any:
         oauth_audience = None
         oauth_verify_issuer = True
         id_server_name = "test"
+        service_connections_enabled = True
 
     return _Config()
 

@@ -1,7 +1,14 @@
 import { homedir } from 'node:os';
 import { describe, expect, it } from 'vitest';
+import { EXIT_RESTARTING } from './exit-codes';
 import { defaultDataDir } from './paths';
-import { launchdPlist, serviceIdentity, systemdUnit, type ServiceSpec } from './service';
+import {
+  LAUNCHD_FINAL_EXIT_CODES,
+  launchdPlist,
+  serviceIdentity,
+  systemdUnit,
+  type ServiceSpec,
+} from './service';
 
 const SPEC: ServiceSpec = {
   node: '/usr/bin/node',
@@ -9,6 +16,7 @@ const SPEC: ServiceSpec = {
   dataDir: '/srv/controller data',
   envFile: '/home/me/agents.env',
   sharedHostBundle: null,
+  releasesDir: null,
   path: '/home/me/.local/bin:/usr/bin:/bin',
 };
 
@@ -23,6 +31,24 @@ describe('systemdUnit', () => {
     expect(unit).toContain('RestartPreventExitStatus=2 3 4 5 6');
     expect(unit).not.toContain('--launchd');
   });
+
+  it('runs through the releases directory, and tells the controller where it is', () => {
+    const unit = systemdUnit({
+      ...SPEC,
+      cli: '/srv/controller data/releases/current/lib/node_modules/switch-agent-controller/cli.mjs',
+      releasesDir: '/srv/controller data/releases',
+    });
+    expect(unit).toContain(
+      '"/srv/controller data/releases/current/lib/node_modules/switch-agent-controller/cli.mjs" "run" "--data-dir" "/srv/controller data" "--env-file" "/home/me/agents.env" "--releases-dir" "/srv/controller data/releases"'
+    );
+  });
+
+  it('restarts on 7, restarting into an update', () => {
+    const prevented = systemdUnit(SPEC)
+      .split('\n')
+      .find((line) => line.startsWith('RestartPreventExitStatus='))!;
+    expect(prevented.split('=')[1]!.split(' ')).not.toContain(String(EXIT_RESTARTING));
+  });
 });
 
 describe('launchdPlist', () => {
@@ -35,6 +61,8 @@ describe('launchdPlist', () => {
     expect(plist).toContain('<string>/Users/me/A &amp; B</string>');
     expect(plist).toContain('<string>--launchd</string>');
     expect(plist).toMatch(/<key>SuccessfulExit<\/key>\s*<false\/>/);
+    // 7 stays 7 under --launchd, so KeepAlive starts it again on its new release.
+    expect(LAUNCHD_FINAL_EXIT_CODES).not.toContain(EXIT_RESTARTING);
     expect(plist).toContain(
       '<key>StandardErrorPath</key>\n  <string>/Users/me/A &amp; B/controller.log</string>'
     );

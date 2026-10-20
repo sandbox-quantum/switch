@@ -278,27 +278,21 @@ def test_the_folded_log_stays_out_of_the_notification_and_the_fallback() -> None
 
 
 def test_the_log_does_not_repeat_the_state_line_it_is_folded_under() -> None:
-    """The status sits immediately above and carries the turn's state and its
-    Console link. Printing both again as the log's first line is the card
-    showing the same sentence twice, a centimetre apart."""
+    """The status sits immediately above and carries the turn's state.
+    Printing it again as the log's first line is the card showing the same
+    sentence twice, a centimetre apart."""
     adapter, connector = _teams()
 
     _run(
         adapter.post_rich(
             CHANNEL,
             AGENT,
-            TurnActivity(
-                [_item(title="Ran a test")],
-                _turn("completed"),
-                session_url="https://console.example.test/s/1",
-            ),
+            TurnActivity([_item(title="Ran a test")], _turn("completed")),
             ROOT,
         )
     )
 
-    card = _posted(connector)
-    assert "console.example.test" in _card_text(connector.sends[0]["activity"])
-    assert _log_lines(card) == ["⌗ ✓ Ran a test"]
+    assert _log_lines(_posted(connector)) == ["⌗ ✓ Ran a test"]
 
 
 def test_host_text_in_the_log_goes_through_the_platforms_own_escape() -> None:

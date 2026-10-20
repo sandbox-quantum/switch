@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
+import { tokenForms } from './redaction';
 import {
   connectParent,
   HOST_HUNG_UP_MS,
@@ -161,6 +162,7 @@ it('serves requests on the host side once it has handlers', async () => {
     room: async () => null,
     snapshot: async () => 'snapshot',
     approvals: async () => null,
+    reasoning: async () => null,
   });
   served.ready();
   served.push(event(3) as never);
@@ -228,6 +230,51 @@ it("carries a host's question up to the watcher answering for its agent, and the
   await expect(host.ask({ type: 'tools' })).rejects.toThrow('No room watcher is running');
 });
 
+it("shares a token answered to one host with its agent's other hosts, and only theirs", async () => {
+  const links = new SessionLinks();
+  const pipe = (root: string) => {
+    const child = fakeChild();
+    links.attach(root, child as unknown as ChildProcess);
+    const { port } = fakePort();
+    port.send = (message: unknown) => {
+      child.emit('message', message);
+      return true;
+    };
+    child.send = (message, callback) => {
+      port.emit('message', message);
+      callback(null);
+      return true;
+    };
+    const host = connectParent(port);
+    const shared: string[] = [];
+    host.onRedactions((values) => shared.push(...values));
+    return { host, shared };
+  };
+  const token = 'synthetic-service-token';
+  links.answer('agent', async (_caller, ask) =>
+    ask.type === 'service-token'
+      ? { kind: 'token', token, expiresAt: '2026-10-08T12:00:00Z' }
+      : null
+  );
+
+  const asking = pipe('a1');
+  const sibling = pipe('a2');
+  const other = pipe('b1');
+  asking.host.identify(IDENTITY);
+  sibling.host.identify({ ...IDENTITY, sessionId: 'sibling' });
+  other.host.identify({ ...IDENTITY, agentId: 'other-agent', sessionId: 'other' });
+
+  await asking.host.ask({ type: 'service-token', service: 'github', rejected: null });
+
+  expect(sibling.shared).toEqual([...new Set(tokenForms(token))]);
+  expect(asking.shared).toEqual([...new Set(tokenForms(token))]);
+  expect(other.shared).toEqual([]);
+  // A host that starts (or resumes) later is handed what its agent already has.
+  const resumed = pipe('a3');
+  resumed.host.identify({ ...IDENTITY, sessionId: 'resumed' });
+  expect(resumed.shared).toEqual([...new Set(tokenForms(token))]);
+});
+
 it('refuses a question from a host that has not said who it is, and tells who exited', async () => {
   const links = new SessionLinks();
   const child = fakeChild();
@@ -272,7 +319,7 @@ it('keeps what a host last said about being busy, and answers a barrier once it 
   child.emit('exit', 0, null);
   await expect(lost).rejects.toThrow(SessionUnavailableError);
   expect(links.busy('root')).toBeNull();
-  expect(heard).toEqual(['root', 'root', 'root']);
+  expect(heard).toEqual(['root', 'root', 'root', 'root']);
 });
 
 it('answers a busy barrier on the host side with the settled state', async () => {
@@ -318,24 +365,28 @@ it('stops sending to a host that hung up, and waits for the next one', async () 
   expect(await next).toBe('fresh');
 });
 
-it('kills a host that hung up and stays alive, with what it started', async () => {
-  vi.useFakeTimers();
-  try {
-    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
-    const links = new SessionLinks();
-    const hung = fakeChild();
-    links.attach('root', hung as unknown as ChildProcess);
-    hung.emit('disconnect');
+// Windows has no process groups; the tree kill it does instead is tested in windows-processes.
+it.skipIf(process.platform === 'win32')(
+  'kills a host that hung up and stays alive, with what it started',
+  async () => {
+    vi.useFakeTimers();
+    try {
+      const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      const links = new SessionLinks();
+      const hung = fakeChild();
+      links.attach('root', hung as unknown as ChildProcess);
+      hung.emit('disconnect');
 
-    await vi.advanceTimersByTimeAsync(HOST_HUNG_UP_MS - 1);
-    expect(kill).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    // Its group: the provider it started is in it.
-    expect(kill).toHaveBeenCalledWith(-4242, 'SIGKILL');
-  } finally {
-    vi.useRealTimers();
+      await vi.advanceTimersByTimeAsync(HOST_HUNG_UP_MS - 1);
+      expect(kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      // Its group: the provider it started is in it.
+      expect(kill).toHaveBeenCalledWith(-4242, 'SIGKILL');
+    } finally {
+      vi.useRealTimers();
+    }
   }
-});
+);
 
 it('leaves a host that hung up and then exited on its own', async () => {
   vi.useFakeTimers();
@@ -365,4 +416,95 @@ it('tells a request waiting on a host that the host stopped, rather than at its 
 
   await expect(waiting).rejects.toThrow('stopped before it was ready');
   expect(Date.now() - started).toBeLessThan(5000);
+});
+
+const REASONING = {
+  epoch: 'epoch',
+  turns: [
+    {
+      turnId: 'turn',
+      text: 'thinking',
+      startedAt: '2026-09-24T12:00:00.000Z',
+      completedAt: '2026-09-24T12:00:03.000Z',
+    },
+  ],
+};
+
+it('asks a ready host for its reasoning, and asks nothing of a host that is not ready', async () => {
+  const links = new SessionLinks();
+  expect(await links.reasoning('nowhere', null)).toBeNull();
+  const child = fakeChild();
+  links.attach('root', child as unknown as ChildProcess);
+  expect(await links.reasoning('root', null)).toBeNull();
+  expect(child.sent).toEqual([]);
+  child.emit('message', { kind: 'ready' });
+  const answer = links.reasoning('root', ['turn']);
+  await vi.waitFor(() => expect(child.sent).toHaveLength(1));
+  const [request] = child.sent as { id: number; request: unknown }[];
+  expect(request!.request).toEqual({ type: 'reasoning', turnIds: ['turn'] });
+  child.emit('message', { kind: 'reply', id: request!.id, ok: true, value: REASONING });
+  expect(await answer).toEqual(REASONING);
+});
+
+it('reads an unreadable or refused reasoning answer as none', async () => {
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const links = new SessionLinks();
+  const child = fakeChild();
+  links.attach('root', child as unknown as ChildProcess);
+  child.emit('message', { kind: 'ready' });
+  const unreadable = links.reasoning('root', null);
+  await vi.waitFor(() => expect(child.sent).toHaveLength(1));
+  child.emit('message', { kind: 'reply', id: (child.sent[0] as { id: number }).id, ok: true });
+  expect(await unreadable).toBeNull();
+  const refused = links.reasoning('root', null);
+  await vi.waitFor(() => expect(child.sent).toHaveLength(2));
+  child.emit('message', {
+    kind: 'reply',
+    id: (child.sent[1] as { id: number }).id,
+    ok: false,
+    error: 'no',
+  });
+  expect(await refused).toBeNull();
+});
+
+it('stops asking a host that predates reasoning, and asks the next host again', async () => {
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.useFakeTimers();
+  try {
+    const links = new SessionLinks();
+    // An older host cannot parse the request, so it only warns and never answers.
+    const child = fakeChild();
+    links.attach('root', child as unknown as ChildProcess);
+    child.emit('message', { kind: 'ready' });
+    const answer = links.reasoning('root', null);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(await answer).toBeNull();
+    expect(child.sent).toHaveLength(1);
+    expect(await links.reasoning('root', null)).toBeNull();
+    expect(child.sent).toHaveLength(1);
+    // The link still works for everything else.
+    const snapshot = links.request('root', { type: 'snapshot' }, 1000);
+    child.emit('message', {
+      kind: 'reply',
+      id: (child.sent[1] as { id: number }).id,
+      ok: true,
+      value: 's',
+    });
+    expect(await snapshot).toBe('s');
+
+    const next = fakeChild();
+    links.attach('root', next as unknown as ChildProcess);
+    next.emit('message', { kind: 'ready' });
+    const again = links.reasoning('root', null);
+    await vi.waitFor(() => expect(next.sent).toHaveLength(1));
+    next.emit('message', {
+      kind: 'reply',
+      id: (next.sent[0] as { id: number }).id,
+      ok: true,
+      value: REASONING,
+    });
+    expect(await again).toEqual(REASONING);
+  } finally {
+    vi.useRealTimers();
+  }
 });

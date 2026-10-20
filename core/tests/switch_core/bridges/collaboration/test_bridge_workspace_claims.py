@@ -41,6 +41,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.tenant_context import tenant_scope
+from tests.ownership import SoleOwner
 
 _SLACK = {"bot_token": "xoxb-test", "app_token": "xapp-test", "workspace_id": "T1"}
 _DISCORD = {"bot_token": "discord-test", "guild_id": "111"}
@@ -71,6 +72,8 @@ def _service(
         session_activity_listener=MagicMock(),
         session_activity_service=MagicMock(),
         connections=MagicMock(),
+        ownership=SoleOwner(),
+        cursor_writer=SoleOwner.cursor_writer(session_factory),
     )
     service.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
     service.register_adapter("discord", DiscordAdapter, DiscordConnectionConfig)

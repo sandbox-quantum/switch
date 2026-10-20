@@ -7,7 +7,7 @@ import {
 } from '@switch-console/core/agents/plugins/helpers';
 import type { HostDependencyDescriptor, InstallOption } from '@switch-console/core/deps';
 import { icon } from './icon';
-import { codexLaunchProfile, codexLaunchProfileFields, codexProfilePaths } from './profile';
+import { codexLaunchProfile, codexLaunchProfileSettings, codexProfilePaths } from './profile';
 
 const CODEX_WINDOWS_INSTALL_SCRIPT =
   'powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"';
@@ -117,6 +117,8 @@ export const provider = registerPluginBehavior(plugin, {
         // permissions" promises unattended approval, not unattended filesystem
         // and network access.
         autoApproveFlag: '-c approval_policy="never"',
+        // Codex's automatic reviewer answers what the sandbox escalates.
+        autoModeFlag: '-c approval_policy="on-request" -c approvals_reviewer="auto_review"',
         initialPromptFlag: '',
         resumeFlag: 'resume',
         sessionIdFlag: ' ',
@@ -133,6 +135,6 @@ export const provider = registerPluginBehavior(plugin, {
     // Switch Console's.
     launchProfile: codexLaunchProfile,
     launchProfilePaths: codexProfilePaths,
-    launchProfileFields: codexLaunchProfileFields,
+    launchProfileSettings: codexLaunchProfileSettings,
   },
 });

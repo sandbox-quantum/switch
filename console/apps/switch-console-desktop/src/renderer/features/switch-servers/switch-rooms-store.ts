@@ -2,9 +2,11 @@ import { makeAutoObservable, runInAction } from 'mobx';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import type {
-  RemoteAgentRoom,
-  RemoteRoomSummary,
+import {
+  dashboardOrigin,
+  type RemoteAgentRoom,
+  type RemoteRoomSummary,
+  type RetireOutcome,
 } from '@shared/core/switch-servers/switch-servers';
 import { UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
 import { serverAvailability } from './server-availability';
@@ -13,6 +15,25 @@ import { switchServersStore } from './switch-servers-store';
 /** Cache key for an agent's room membership: workspace + Switch agent id. */
 function key(workspaceId: string, switchAgentId: string): string {
   return `${workspaceId}:${switchAgentId}`;
+}
+
+/**
+ * The messaging-app values worth offering as a room filter for these rooms:
+ * the bridge types actually in use, plus the unbridged sentinel when some room
+ * has no messaging app. Offering a platform with no rooms behind it would be a
+ * filter that can only ever empty the list.
+ */
+export function bridgeFilterValues(rooms: readonly RemoteRoomSummary[]): string[] {
+  const present = new Set<string>();
+  for (const room of rooms) {
+    present.add(room.bridgeType ?? UNBRIDGED_FILTER_VALUE);
+  }
+  // The sentinel sorts last so the real platforms lead the menu.
+  return [...present].sort((a, b) => {
+    if (a === UNBRIDGED_FILTER_VALUE) return 1;
+    if (b === UNBRIDGED_FILTER_VALUE) return -1;
+    return a.localeCompare(b);
+  });
 }
 
 /**
@@ -66,6 +87,14 @@ export class SwitchRoomsStore {
    * set rather than only the keys that happen to be cached — an agent created
    * after the sidebar mounted is otherwise never fetched. */
   private trackedIdentities: { workspaceId: string; switchAgentId: string }[] = [];
+  /** Agents whose membership is on screen outside the sidebar's own list, such
+   * as a managed agent's page, with how many views show each. The tracked list
+   * holds only this install's local agents, so without these a page's rooms are
+   * read once and a room the agent joins later never appears. */
+  private readonly watchedIdentities = new Map<
+    string,
+    { workspaceId: string; switchAgentId: string; views: number }
+  >();
 
   constructor() {
     makeAutoObservable(this);
@@ -111,7 +140,7 @@ export class SwitchRoomsStore {
     if (!serverId) return null;
     const server = switchServersStore.servers.find((s) => s.id === serverId);
     if (!server) return null;
-    const base = server.gatewayUrl.replace(/\/+$/, '');
+    const base = dashboardOrigin(server).replace(/\/+$/, '');
     return `${base}/rooms/${roomId}`;
   }
 
@@ -123,7 +152,7 @@ export class SwitchRoomsStore {
   gatewayAgentUrl(serverId: string, switchAgentId: string): string | null {
     const server = switchServersStore.servers.find((s) => s.id === serverId);
     if (!server) return null;
-    const base = server.gatewayUrl.replace(/\/+$/, '');
+    const base = dashboardOrigin(server).replace(/\/+$/, '');
     return `${base}/agents/${switchAgentId}`;
   }
 
@@ -190,25 +219,6 @@ export class SwitchRoomsStore {
     return listed.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  /**
-   * The messaging-app values worth offering as a room filter in the active
-   * workspace: the bridge types actually in use, plus the unbridged sentinel
-   * when some room has no messaging app. Offering a platform with no rooms
-   * behind it would be a filter that can only ever empty the list.
-   */
-  get bridgeFilterValuesInActiveScope(): string[] {
-    const present = new Set<string>();
-    for (const room of this.listedRoomsInActiveScope) {
-      present.add(room.bridgeType ?? UNBRIDGED_FILTER_VALUE);
-    }
-    // The sentinel sorts last so the real platforms lead the menu.
-    return [...present].sort((a, b) => {
-      if (a === UNBRIDGED_FILTER_VALUE) return 1;
-      if (b === UNBRIDGED_FILTER_VALUE) return -1;
-      return a.localeCompare(b);
-    });
-  }
-
   /** Full detail for a room, when its workspace's room list has been loaded. */
   roomSummaryById(roomId: string): RemoteRoomSummary | null {
     const workspaceId = this.roomWorkspaceById.get(roomId);
@@ -234,15 +244,27 @@ export class SwitchRoomsStore {
   }
 
   /**
-   * Delete a room in its workspace, then re-read what is left.
+   * Delete a room in its workspace, then re-read what is left. Resolves to
+   * what became of its platform channel: null when it had none or it was kept,
+   * which it is unless `retireChannel` asks for it to be archived, deleted or
+   * left as its platform allows.
    *
    * Throws on refusal rather than reporting a boolean: the caller is a
    * confirmation dialog, and a delete that quietly did nothing would leave the
    * room on screen with no account of why.
    */
-  async deleteRoom(workspaceId: string, roomId: string): Promise<void> {
-    await rpc.workspaces.deleteRoom({ workspaceId, roomId });
+  async deleteRoom(
+    workspaceId: string,
+    roomId: string,
+    options: { retireChannel: boolean }
+  ): Promise<RetireOutcome | null> {
+    const channel = await rpc.workspaces.deleteRoom({
+      workspaceId,
+      roomId,
+      retireChannel: options.retireChannel,
+    });
     await this.refreshRoomState();
+    return channel;
   }
 
   /**
@@ -366,13 +388,13 @@ export class SwitchRoomsStore {
    * Not a fault and not retryable — the user has to sign in. Reporting it as a
    * failure with a retry button offers an action that cannot work.
    */
-  get workspacesNotSignedIn(): { id: string; name: string }[] {
-    return this.namedWorkspacesInScope(
-      this.unreachableWorkspaceIds.filter((id) => {
-        const serverId = workspacesStore.serverIdFor(id);
-        return serverId !== null && serverAvailability(serverId) === 'signed-out';
-      })
-    );
+  get workspacesNotSignedIn(): { id: string; name: string; serverId: string }[] {
+    return this.namedWorkspacesInScope(this.unreachableWorkspaceIds).flatMap((workspace) => {
+      const serverId = workspacesStore.serverIdFor(workspace.id);
+      return serverId !== null && serverAvailability(serverId) === 'signed-out'
+        ? [{ ...workspace, serverId }]
+        : [];
+    });
   }
 
   private namedWorkspacesInScope(workspaceIds: string[]): { id: string; name: string }[] {
@@ -462,9 +484,33 @@ export class SwitchRoomsStore {
     runInAction(() => {
       this.trackedIdentities = agents;
     });
+    const identities = new Map(agents.map((a) => [key(a.workspaceId, a.switchAgentId), a]));
+    for (const [k, watched] of this.watchedIdentities)
+      if (!identities.has(k)) identities.set(k, watched);
     await Promise.all(
-      agents.map((a) => this.fetchAgentRooms(a.workspaceId, a.switchAgentId, options))
+      [...identities.values()].map((a) =>
+        this.fetchAgentRooms(a.workspaceId, a.switchAgentId, options)
+      )
     );
+  }
+
+  /**
+   * Keep an agent's membership current while a view shows it: read it now, and
+   * again on every refresh until the returned function is called.
+   */
+  watchMembership(workspaceId: string, switchAgentId: string): () => void {
+    const k = key(workspaceId, switchAgentId);
+    const watched = this.watchedIdentities.get(k);
+    if (watched) watched.views += 1;
+    else this.watchedIdentities.set(k, { workspaceId, switchAgentId, views: 1 });
+    void this.fetchAgentRooms(workspaceId, switchAgentId, { force: true });
+    return () =>
+      runInAction(() => {
+        const current = this.watchedIdentities.get(k);
+        if (!current) return;
+        if (current.views > 1) current.views -= 1;
+        else this.watchedIdentities.delete(k);
+      });
   }
 
   isLoading(workspaceId: string, switchAgentId: string): boolean {

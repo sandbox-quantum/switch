@@ -55,6 +55,7 @@ export async function adoptSubagent(
     apiEndpoint: parent.apiEndpoint,
     workspaceId: parent.workspaceId,
     autoApprove: parent.autoApprove,
+    autoMode: parent.autoMode,
     ownerName: remote.ownerName,
     providerConfig: parent.providerConfig,
   });

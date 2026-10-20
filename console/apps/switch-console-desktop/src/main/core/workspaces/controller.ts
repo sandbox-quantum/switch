@@ -1,16 +1,29 @@
+import { appService } from '@main/core/app/service';
 import { backfillAgentIcons } from '@main/core/switch-servers/backfill-agent-icons';
 import { withResolvedHomeUrls } from '@main/core/switch-servers/bridge-home-url';
 import { createBridgeOnServer } from '@main/core/switch-servers/create-bridge';
 import { createRoomOnServer } from '@main/core/switch-servers/create-room';
 import {
+  bridgeInstallState,
+  disconnectBridgeOnServer,
+} from '@main/core/switch-servers/disconnect-bridge';
+import {
+  addBridgeTeam,
   addRoomAgents,
   agentExistsOnServer,
+  checkSlackTokens,
+  fetchSlackOwnAppSetup,
+  beginChatClaim,
   changeTemplateRun,
   createRoomFromTemplate,
+  runTemplateDocument,
+  runTemplateWithAgents,
+  type TemplateRunAgent,
+  type TemplateRunResult,
   createTemplate,
-  deleteBridge,
   deleteRoom,
   deleteTemplate,
+  disconnectChat,
   exportRoomYaml,
   fetchAddressingPolicy,
   fetchAgentManagementAccess,
@@ -18,9 +31,11 @@ import {
   fetchAgents,
   fetchAllExternalUsers,
   fetchBridges,
+  fetchBridgeTeams,
   beginMessagingAppInstall,
   fetchBridgeTypes,
-  fetchInstallablePlatforms,
+  fetchConnectedChats,
+  fetchMessagingApps,
   fetchMyIdentities,
   fetchRoomAgentIds,
   fetchRoomDetail,
@@ -34,6 +49,7 @@ import {
   GatewayError,
   ownsOwnerAddressedAgent,
   releaseBridgeIdentity,
+  removeBridgeTeam,
   removeRoomAgent,
   type StoredTemplateDetail,
   type StoredTemplateSummary,
@@ -41,9 +57,21 @@ import {
   type TemplateRun,
   type TemplateVisibility,
   updateAddressingPolicy,
+  fetchConnectionAgents,
+  fetchServiceGrants,
+  fetchWorkspaceServices,
+  getConnectionCatalog,
+  getGitHubConnection,
+  connectServiceWithKey,
+  disconnectGitHub,
+  disconnectService,
+  setServiceGrant,
+  setWorkspaceService,
+  removeServiceGrant,
   updateCanManageAgents,
   updateAgentDescription,
   updateAgentDisplayName,
+  renameAgent,
   updateAgentIcon,
   updateRoom,
   updateTemplate,
@@ -54,6 +82,12 @@ import {
 } from '@main/core/switch-servers/identities';
 import { hostUnreachable } from '@main/core/switch-servers/require-server';
 import { serverKindOf } from '@main/core/switch-servers/servers-store';
+import {
+  cancelServiceBrowserFlow,
+  getServiceBrowserFlow,
+  startServiceBrowserFlow,
+} from '@main/core/switch-servers/service-browser-flow';
+import { saveTeamsPackage } from '@main/core/switch-servers/teams-package';
 import { updateBridgeOnServer } from '@main/core/switch-servers/update-bridge';
 import { bridgePlatformOfType } from '@main/core/telemetry/bridge-platform';
 import type {
@@ -67,11 +101,21 @@ import type {
 import { roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import type {
+  SlackOwnAppSetup,
+  SlackTokensChecked,
+} from '@shared/core/switch-servers/own-app-setup';
+import type { ServiceGrants } from '@shared/core/switch-servers/service-grants';
+import type {
+  BridgeInstallState,
   AddressingPolicy,
+  AgentRenameOutcome,
+  AddTeamsTeamResult,
   AgentIconBackfill,
   AgentVerifyResult,
   BridgeDirectorySearchResult,
+  ChatClaim,
   ClaimIdentityParams,
+  ConnectedChat,
   ClaimIdentityResult,
   CreateBridgeParams,
   CreateBridgeResult,
@@ -80,6 +124,7 @@ import type {
   DeleteBridgeParams,
   DeleteBridgeResult,
   LinkedIdentity,
+  MessagingApps,
   RemoteAgentRoom,
   RemoteAgentSummary,
   RemoteBridge,
@@ -89,7 +134,10 @@ import type {
   RemoteRoomGroup,
   RemoteRoomRole,
   RemoteRoomSummary,
+  RemoveTeamsTeamResult,
+  RetireOutcome,
   SwitchServer,
+  TeamsTeamsResult,
   UpdateBridgeParams,
   UpdateBridgeResult,
   UpdateRoomParams,
@@ -272,13 +320,47 @@ export const workspacesController = createRPCController({
   listBridgeTypes: (workspaceId: string): Promise<RemoteBridgeType[]> =>
     withReachableWorkspaceSession(workspaceId, fetchBridgeTypes),
 
-  listInstallablePlatforms: (workspaceId: string): Promise<string[]> =>
-    withReachableWorkspaceSession(workspaceId, fetchInstallablePlatforms),
+  listMessagingApps: (workspaceId: string): Promise<MessagingApps> =>
+    withReachableWorkspaceSession(workspaceId, fetchMessagingApps),
+
+  /** Slack's create-app page, filled in with the app this server needs. */
+  slackOwnAppSetup: (workspaceId: string): Promise<SlackOwnAppSetup> =>
+    withReachableWorkspaceSession(workspaceId, fetchSlackOwnAppSetup),
+
+  /** Whether a Slack app's tokens work, and its workspace. Do not log the tokens. */
+  checkSlackTokens: (params: {
+    workspaceId: string;
+    botToken: string;
+    appToken: string;
+  }): Promise<SlackTokensChecked> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      checkSlackTokens(server, { botToken: params.botToken, appToken: params.appToken })
+    ),
 
   /** Returns the platform's consent URL for the renderer to open in the browser. */
   beginMessagingAppInstall: (params: { workspaceId: string; platform: string }): Promise<string> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       beginMessagingAppInstall(server, params.platform)
+    ),
+
+  /** A one-time link and code that connect a chat; the chat itself is where it lands. */
+  beginChatClaim: (params: { workspaceId: string; platform: string }): Promise<ChatClaim> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      beginChatClaim(server, params.platform)
+    ),
+
+  listConnectedChats: (params: {
+    workspaceId: string;
+    bridgeId: string;
+  }): Promise<ConnectedChat[]> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      fetchConnectedChats(server, params.bridgeId)
+    ),
+
+  /** Open to members: a chat is a room, and rooms are members'. */
+  disconnectChat: (params: { workspaceId: string; installId: string }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      disconnectChat(server, params.installId)
     ),
 
   /**
@@ -331,10 +413,16 @@ export const workspacesController = createRPCController({
     ),
 
   /**
-   * Disconnect a messaging app from the chosen workspace. Admin-only, and the
-   * gateway deletes every Switch room on the bridge on the way — see
-   * `deleteBridge`. The renderer owns the confirmation; by the time this runs
-   * the rooms are being given up deliberately.
+   * Disconnect a messaging app from the chosen workspace. Admin-only.
+   *
+   * For a bridge created by pasting in credentials, the gateway deletes every
+   * Switch room on the bridge on the way — see `deleteBridge`. For one created
+   * by approving Switch's own app (an "install"), there are no rooms taken
+   * with it: `disconnectBridgeOnServer` ends the install instead, which only
+   * stops Switch listening in that organisation and leaves the rooms as
+   * internal-only. Either way the renderer owns the confirmation, with copy
+   * matching which of the two is about to happen; by the time this runs it is
+   * deliberate.
    */
   deleteBridge: (params: DeleteBridgeParams): Promise<DeleteBridgeResult> =>
     withReachableWorkspaceSession(params.workspaceId, async (server) => {
@@ -344,13 +432,85 @@ export const workspacesController = createRPCController({
       // workspace. A disconnect is a confirmed, destructive action, not a hot
       // path, so it can afford the round trip.
       const platform = await bridgePlatformOnServer(server, params.bridgeId);
-      const result = await deleteBridge(server, params.bridgeId);
+      const result = await disconnectBridgeOnServer(server, params.bridgeId);
       trackEvent('bridge_disconnected', {
         bridge_platform: platform,
         outcome: result.kind === 'deleted' ? 'success' : 'failure',
       });
       return result;
     }),
+
+  /** Whether a bridge is backed by a live install, which decides what the
+   * disconnect dialog says happens to its rooms. Admin-only. */
+  bridgeInstallState: (params: {
+    workspaceId: string;
+    bridgeId: string;
+  }): Promise<BridgeInstallState> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      bridgeInstallState(server, params.bridgeId)
+    ),
+
+  /** A distributed Teams bridge's team placement — which teams Switch can see,
+   * which it is already in, and its chosen default. Admin-only. */
+  listBridgeTeams: (params: { workspaceId: string; bridgeId: string }): Promise<TeamsTeamsResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      fetchBridgeTeams(server, params.bridgeId)
+    ),
+
+  /** Add Switch's distributed app to a team. Admin-only. */
+  addBridgeTeam: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    teamId: string;
+  }): Promise<AddTeamsTeamResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      addBridgeTeam(server, params.bridgeId, params.teamId)
+    ),
+
+  /** Remove Switch's distributed app from a team. Admin-only. */
+  removeBridgeTeam: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    teamId: string;
+  }): Promise<RemoveTeamsTeamResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      removeBridgeTeam(server, params.bridgeId, params.teamId)
+    ),
+
+  /**
+   * Choose a distributed Teams bridge's default team — the one a channel
+   * lands in when a room is created without naming one. Picking a default
+   * also turns channel creation on: an installed bridge starts with it off,
+   * and a default team with no way to create a channel in it would be a
+   * setting with nothing it could do.
+   */
+  setDefaultTeamsTeam: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    teamId: string;
+  }): Promise<UpdateBridgeResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateBridgeOnServer(server, {
+        bridgeId: params.bridgeId,
+        channelCreationEnabled: true,
+        connectionConfig: { team_id: params.teamId },
+      })
+    ),
+
+  /**
+   * Save the distributed Teams app's install package to disk, for a Teams
+   * admin to upload by hand when the app is not yet in the organisation's
+   * catalogue. Returns the saved path, or null if the user cancelled the save
+   * dialog.
+   */
+  downloadTeamsPackage: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    defaultFileName: string;
+  }): Promise<string | null> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      saveTeamsPackage(server, params.bridgeId, params.defaultFileName)
+    ),
 
   /**
    * Create a room in the chosen workspace, owned by the signed-in user. Room
@@ -409,6 +569,34 @@ export const workspacesController = createRPCController({
     withWorkspaceSession(workspaceId, (server) =>
       createRoomFromTemplate(server, yamlText, inputs, templateName)
     ),
+
+  /**
+   * Run a template that creates agents in one request: the agents as managed
+   * agents on the signed-in person's machines, then its rooms. Nothing is
+   * kept when it is refused; the result says why, per agent.
+   */
+  runTemplateWithAgents: (
+    workspaceId: string,
+    body: {
+      agents: TemplateRunAgent[];
+      yamlText: string | null;
+      inputs: Record<string, string | number | boolean>;
+      templateName: string;
+    }
+  ): Promise<TemplateRunResult> =>
+    withWorkspaceSession(workspaceId, (server) => runTemplateWithAgents(server, body)),
+
+  /** Run a template from its document: the server works the agents and rooms out of it. */
+  runTemplateDocument: (
+    workspaceId: string,
+    body: {
+      template: string;
+      inputs: Record<string, string | number | boolean>;
+      filled: Record<string, string>;
+      templateName: string;
+    }
+  ): Promise<TemplateRunResult> =>
+    withWorkspaceSession(workspaceId, (server) => runTemplateDocument(server, body)),
 
   /** The runs the user may see, or null when the server does not record runs. */
   listTemplateRuns: (params: { workspaceId: string }): Promise<TemplateRun[] | null> =>
@@ -543,8 +731,14 @@ export const workspacesController = createRPCController({
       removeRoomAgent(server, params.roomId, params.agentId)
     ),
 
-  /** Delete a room and everything in it. The gateway enforces who may. */
-  deleteRoom: async (params: { workspaceId: string; roomId: string }): Promise<void> => {
+  /** Delete a room and everything in it, resolving to what became of its
+   * platform channel (see `deleteRoom` in the gateway client). The channel is
+   * kept unless `retireChannel` is true. The gateway enforces who may. */
+  deleteRoom: async (params: {
+    workspaceId: string;
+    roomId: string;
+    retireChannel?: boolean;
+  }): Promise<RetireOutcome | null> => {
     const known = await workspaceServer(params.workspaceId);
     const report = (outcome: TelemetryOutcome) =>
       trackEvent('room_deleted', { server_kind: serverKindOf(known), outcome });
@@ -557,14 +751,18 @@ export const workspacesController = createRPCController({
       throw unreachable;
     }
 
-    await withWorkspaceSession(params.workspaceId, async (server) => {
+    return withWorkspaceSession(params.workspaceId, async (server) => {
+      let channel: RetireOutcome | null;
       try {
-        await deleteRoom(server, params.roomId);
+        channel = await deleteRoom(server, params.roomId, {
+          retireChannel: params.retireChannel ?? false,
+        });
       } catch (error) {
         report('failure');
         throw error;
       }
       report('success');
+      return channel;
     });
   },
 
@@ -632,6 +830,111 @@ export const workspacesController = createRPCController({
    * about. One agent-list read, so callers need not ration it. */
   ownsOwnerAddressedAgent: (workspaceId: string): Promise<boolean> =>
     withWorkspaceSession(workspaceId, ownsOwnerAddressedAgent),
+
+  /**
+   * The agent's service grants and whether anyone can address it; null when
+   * it is not the signed-in person's agent.
+   */
+  getServiceGrants: (params: {
+    workspaceId: string;
+    agentId: string;
+  }): Promise<ServiceGrants | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchServiceGrants(server, params.agentId)
+    ),
+
+  /** The signed-in person's GitHub link in this workspace and the repositories it reaches. */
+  getGitHubConnection: (workspaceId: string) =>
+    withWorkspaceSession(workspaceId, getGitHubConnection),
+
+  /** Every catalog service with the signed-in person's connection to it, in this workspace. */
+  getServiceConnections: (workspaceId: string) =>
+    withWorkspaceSession(workspaceId, getConnectionCatalog),
+
+  /**
+   * Start signing in to `service` for this workspace: the browser opens at the
+   * vendor, and this Console's listener takes the result back. Resolves to the
+   * flow's id.
+   */
+  startServiceConnection: (params: { workspaceId: string; service: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      startServiceBrowserFlow(server, params.service, (url) => appService.openExternal(url))
+    ),
+
+  getServiceFlow: (params: { workspaceId: string; service: string; flowId: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      getServiceBrowserFlow(server, params.service, params.flowId)
+    ),
+
+  cancelServiceConnection: (params: { workspaceId: string; service: string; flowId: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      cancelServiceBrowserFlow(server, params.service, params.flowId)
+    ),
+
+  /** Connect `service` with a key, or replace the key it has; Switch checks it with the vendor. */
+  connectServiceWithKey: (params: {
+    workspaceId: string;
+    service: string;
+    fields: Record<string, string>;
+  }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      connectServiceWithKey(server, params.service, params.fields)
+    ),
+
+  /** Disconnect `service` in this workspace: its grants go with it. */
+  disconnectService: (params: { workspaceId: string; service: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) => disconnectService(server, params.service)),
+
+  disconnectGitHub: (workspaceId: string) =>
+    withWorkspaceSession(workspaceId, (server) => disconnectGitHub(server)),
+
+  /** The signed-in person's own agents in this workspace, and which are granted `service`. */
+  getConnectionAgents: (params: { workspaceId: string; service: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchConnectionAgents(server, params.service)
+    ),
+
+  /**
+   * The workspace's switch for each service, for a workspace admin; null when
+   * its server has no workspace switch.
+   */
+  getWorkspaceServices: (workspaceId: string) =>
+    withWorkspaceSession(workspaceId, fetchWorkspaceServices),
+
+  /** Switch a service on or off for everyone in this workspace; workspace admins only. */
+  setWorkspaceService: (params: { workspaceId: string; service: string; enabled: boolean }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      setWorkspaceService(server, params.service, params.enabled)
+    ),
+
+  /**
+   * Create or replace the agent's grant on a service; owner only. Resolves to
+   * a warning or null. `access` is left out of an on/off grant (a service
+   * whose agents use the owner's own token), which takes the connection's.
+   */
+  setServiceGrant: (params: {
+    workspaceId: string;
+    agentId: string;
+    service: string;
+    access: 'read' | 'write' | null;
+    resources: Record<string, unknown>;
+  }): Promise<string | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      setServiceGrant(server, params.agentId, params.service, {
+        access: params.access,
+        resources: params.resources,
+      })
+    ),
+
+  /** Remove the agent's grant on a service; owner only. Resolves to a warning or null. */
+  removeServiceGrant: (params: {
+    workspaceId: string;
+    agentId: string;
+    service: string;
+  }): Promise<string | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      removeServiceGrant(server, params.agentId, params.service)
+    ),
 
   getAddressingPolicy: (params: {
     workspaceId: string;
@@ -706,6 +1009,21 @@ export const workspacesController = createRPCController({
   }): Promise<RemoteAgentSummary> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       updateAgentDisplayName(server, params.agentId, params.displayName)
+    ),
+
+  /**
+   * Rename an agent on its Switch server, with its display name in the same
+   * step. Only the server's half: a Console agent's own files follow through
+   * `agents.renameLocal`.
+   */
+  renameAgent: (params: {
+    workspaceId: string;
+    agentId: string;
+    name: string;
+    displayName: string | null;
+  }): Promise<AgentRenameOutcome> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      renameAgent(server, params.agentId, params.name, params.displayName)
     ),
 
   verifyAgent: (params: { workspaceId: string; agentId: string }): Promise<AgentVerifyResult> =>

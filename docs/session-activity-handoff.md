@@ -406,7 +406,7 @@ map. No Node/npx and no credentials in the CLI's environment.
 - `session_activity/bridge_publisher.py` draws each turn from its rows
   (`bridge_turns.py` builds the `TurnUpsert` / `Item`s) through the adapters'
   own `post_rich` / `update_rich`, with the stop control naming the session's
-  running turn, the elapsed time, and the Console link; the queued/working
+  running turn and the elapsed time; the queued/working
   marker; the attention message (`separate_attention_slot`); the frozen-stream
   notice; question cards; answered-card removal; the unconfirmed-card search
   or notice; and the "host offline" card state. A 5-second tick redraws

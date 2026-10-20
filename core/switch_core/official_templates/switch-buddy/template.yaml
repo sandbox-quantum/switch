@@ -1,0 +1,48 @@
+# switch-buddy, as a template.
+#
+# Each person's own assistant in Switch. Switch Console creates one for every
+# person the first time they use a workspace, on their own computer, and opens
+# a private chat with it. It is a managed agent: it only exists on a server
+# with agent management, so this template has no Console-run version.
+#
+# The agent's instructions are AGENT.md, next to this file.
+version: 2
+params:
+  agent_name:
+    type: string
+    label: Agent name
+    description: The name it is created under and shown by. One per person, so Switch Console adds the person's name.
+    default: switch-buddy
+  provider:
+    type: provider
+    description: The coding agent that runs it. The first one ready on its machine is chosen.
+    default: [claude, codex, opencode, cursor, antigravity]
+    input: advanced
+  machine:
+    type: machine
+    description: The machine it runs on. Switch Console picks this computer.
+    default: [$first]
+    input: advanced
+  directory:
+    type: directory
+    description: Its working directory. The Switch repository is cloned inside it.
+    default: "{$agents_dir}/{buddy.name}"
+    input: advanced
+form:
+  advanced: { label: Advanced, open: false }
+
+resources:
+  buddy:
+    type: agent
+    name: "{agent_name}"
+    # Switch Console shows its bundled copy for this exact URL (BUDDY_ICON_URL).
+    icon_url: https://raw.githubusercontent.com/sandbox-quantum/switch/main/assets/switch-buddy.png
+    description: >-
+      Your assistant in Switch. Creates agents and rooms for you, answers
+      anything about Switch, and helps with any task.
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{directory}"
+    repo: https://github.com/sandbox-quantum/switch
+    can_manage_agents: true
+    addressing: owner-agents

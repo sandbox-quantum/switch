@@ -1,0 +1,398 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+import {
+  type GitHubGrantChoice,
+  connectedGitHub,
+  emptyGitHubGrant,
+  githubGrantResources,
+} from '@renderer/features/connectors/github-grant';
+import { GitHubGrantPicker } from '@renderer/features/connectors/github-grant-picker';
+import {
+  ownerOnlyRequest,
+  ownerOnlyWarningText,
+} from '@renderer/features/managed-agents/agent-connections';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
+import { rpc } from '@renderer/lib/ipc';
+import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
+import { Badge } from '@renderer/lib/ui/badge';
+import { Button } from '@renderer/lib/ui/button';
+import { Spinner } from '@renderer/lib/ui/spinner';
+import { Switch } from '@renderer/lib/ui/switch';
+import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import type { GitHubConnection } from '@shared/core/switch-servers/github-connection';
+import type { ServiceGrant } from '@shared/core/switch-servers/service-grants';
+import {
+  CLOUD_GITHUB_GRANT_NOTES,
+  GITHUB_GRANT_NOTES,
+  REMOVED_GRANT_NOTE,
+  grantedRepositoryIds,
+  grantedRepositoryNames,
+  onOffGrantBlock,
+  onOffGrantNote,
+} from './service-grants';
+
+type Access = 'read' | 'write';
+
+/**
+ * What the agent may use of its owner's service connections: its grants, who
+ * else can reach it and so its grants, and what a GitHub grant does on the
+ * machine it runs on. GitHub's grant names repositories, from its picker; a
+ * service whose agents use the owner's own token is on or off. Hidden for an
+ * agent with no Switch registration.
+ */
+export function ServiceGrantsSettingsSection({
+  locationId,
+  agentId,
+}: {
+  locationId: string;
+  /** The local agent; none yet while the location's agents load. */
+  agentId: string | undefined;
+}) {
+  const { data: agents } = useQuery({
+    queryKey: ['location-agents', locationId],
+    queryFn: () => rpc.agents.getAgents(locationId),
+  });
+  const agent = (agents ?? []).find(
+    (candidate) => candidate.id === agentId && candidate.workspaceId && candidate.switchAgentId
+  );
+  if (!agent) return null;
+  return (
+    <ServiceGrantsRow
+      serverId={agent.serverId}
+      workspaceId={agent.workspaceId as string}
+      agentId={agent.switchAgentId as string}
+      agentName={agent.name}
+      cloud={false}
+    />
+  );
+}
+
+/**
+ * One agent's Service access. `cloud` is for a cloud agent, whose sessions
+ * have no GitHub sign-in of their own and run on no machine of the owner's.
+ */
+export function ServiceGrantsRow({
+  serverId,
+  workspaceId,
+  agentId,
+  agentName,
+  cloud,
+}: {
+  /** Its server, whose `service_connections` flag shows the row at all. */
+  serverId: string | null;
+  workspaceId: string;
+  /** The agent's id in Switch. */
+  agentId: string;
+  agentName: string;
+  cloud: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const [notice, setNotice] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const shown = useFeatureFlags(serverId).service_connections;
+  const grantsKey = ['agent-service-grants', workspaceId, agentId];
+  const grants = useQuery({
+    queryKey: grantsKey,
+    queryFn: () => rpc.workspaces.getServiceGrants({ workspaceId, agentId }),
+    enabled: shown,
+    retry: false,
+  });
+  // The agent's workspace, not whichever one is active on its server.
+  const github = useQuery({
+    queryKey: ['workspace-github', workspaceId],
+    queryFn: () => rpc.workspaces.getGitHubConnection(workspaceId),
+    enabled: shown,
+    retry: false,
+  });
+  const services = useQuery({
+    queryKey: ['workspace-service-connections', workspaceId],
+    queryFn: () => rpc.workspaces.getServiceConnections(workspaceId),
+    enabled: shown,
+    retry: false,
+  });
+
+  const change = useMutation({
+    mutationFn: async (run: () => Promise<string | null | void>) => run(),
+    onSuccess: async (warning) => {
+      setNotice(warning ?? null);
+      setEditing(false);
+      await queryClient.invalidateQueries({ queryKey: grantsKey });
+    },
+  });
+  const set = (service: string, access: Access | null, resources: Record<string, unknown>) =>
+    change.mutate(() =>
+      rpc.workspaces.setServiceGrant({ workspaceId, agentId, service, access, resources })
+    );
+  const remove = (service: string) =>
+    change.mutate(async () => {
+      const warning = await rpc.workspaces.removeServiceGrant({ workspaceId, agentId, service });
+      return [warning, cloud ? null : REMOVED_GRANT_NOTE].filter(Boolean).join(' ') || null;
+    });
+
+  if (!shown) return null;
+  if (grants.isPending)
+    return (
+      <p className="flex items-center gap-2 text-sm">
+        <Spinner /> Loading service access…
+      </p>
+    );
+  if (grants.isError)
+    return (
+      <span className="text-xs text-destructive">
+        {failureText(grants.error, 'Could not load service access.')}
+      </span>
+    );
+  // Only the agent's owner sees its grants; anyone else is shown nothing.
+  if (grants.data === null) return null;
+  const current = grants.data;
+
+  const githubGrant = grants.data.grants.find((grant) => grant.service === 'github') ?? null;
+  // Services whose agents use the owner's own token: on or off, nothing to choose.
+  const onOff = (services.data ?? []).filter((service) => service.enabled && service.pass_through);
+  const onOffSlugs = new Set(onOff.map((service) => service.slug));
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <span className="text-sm font-medium">Service access</span>
+        <p className="text-sm text-foreground-muted">
+          What {agentName} may use of your own connections. Its sessions are given short-lived
+          access for what you turn on, and nothing else.
+        </p>
+      </div>
+      {change.isError && (
+        <span className="text-xs text-destructive">
+          {failureText(change.error, 'Could not change its access.')}
+        </span>
+      )}
+      {notice && <span className="text-xs text-foreground-muted">{notice}</span>}
+
+      {grants.data.addressing_open && grants.data.grants.length > 0 && (
+        <Alert variant="warning">
+          <AlertDescription>{ownerOnlyWarningText(agentName)}</AlertDescription>
+          <AlertAction>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={change.isPending}
+              onClick={() =>
+                change.mutate(async () => {
+                  await rpc.workspaces.updateAddressingPolicy(
+                    ownerOnlyRequest(workspaceId, agentId)
+                  );
+                  await queryClient.invalidateQueries({
+                    queryKey: ['agent-addressing-policy', workspaceId, agentId],
+                  });
+                })
+              }
+            >
+              Make owner-only
+            </Button>
+          </AlertAction>
+        </Alert>
+      )}
+
+      {grants.data.grants
+        .filter((grant) => !onOffSlugs.has(grant.service))
+        .map((grant) => (
+          <GrantCard
+            key={grant.service}
+            grant={grant}
+            github={github.data}
+            busy={change.isPending}
+            onChange={grant.service === 'github' ? () => setEditing(true) : null}
+            removeNote={cloud ? null : REMOVED_GRANT_NOTE}
+            onRemove={() => remove(grant.service)}
+          />
+        ))}
+
+      {services.isError && (
+        <span className="text-xs text-destructive">
+          {failureText(services.error, 'Could not load your other connections.')}
+        </span>
+      )}
+      {onOff.map((service) => (
+        <OnOffGrant
+          key={service.slug}
+          service={service}
+          grant={current.grants.find((grant) => grant.service === service.slug) ?? null}
+          agentName={agentName}
+          busy={change.isPending}
+          onTurnOn={() => set(service.slug, null, {})}
+          onTurnOff={() => remove(service.slug)}
+        />
+      ))}
+
+      {(editing || !githubGrant) && (
+        <GitHubGrantForm
+          github={github}
+          current={githubGrant}
+          agentName={agentName}
+          busy={change.isPending}
+          onCancel={githubGrant ? () => setEditing(false) : null}
+          onSave={(access, resources) => set('github', access, resources)}
+        />
+      )}
+
+      <ul className="list-disc space-y-1 pl-5 text-xs text-foreground-muted">
+        {(cloud ? CLOUD_GITHUB_GRANT_NOTES : GITHUB_GRANT_NOTES).map((note) => (
+          <li key={note}>{note}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * A service whose agents use the owner's own token: the grant is on or off,
+ * at the connection's level, and says what that means.
+ */
+export function OnOffGrant({
+  service,
+  grant,
+  agentName,
+  busy,
+  onTurnOn,
+  onTurnOff,
+}: {
+  service: ConnectionCatalogEntry;
+  grant: ServiceGrant | null;
+  agentName: string;
+  busy: boolean;
+  onTurnOn: () => void;
+  onTurnOff: () => void;
+}) {
+  const block = onOffGrantBlock(service, grant !== null);
+  return (
+    <div className="rounded-lg border border-border p-3">
+      <div className="flex items-center gap-2">
+        <span className="flex-1 text-sm font-medium">{service.name}</span>
+        <Badge variant="outline">{grant ? 'On' : 'Off'}</Badge>
+        <Switch
+          aria-label={`${service.name} for ${agentName}`}
+          checked={grant !== null}
+          disabled={busy || block?.blocksOn === true}
+          onCheckedChange={(on) => (on ? onTurnOn() : onTurnOff())}
+        />
+      </div>
+      {grant && <p className="mt-1 text-sm text-foreground-muted">{grant.summary}</p>}
+      {block && <p className="mt-1 text-sm text-foreground-muted">{block.reason}</p>}
+      <p className="mt-1 text-xs text-foreground-muted">{onOffGrantNote(agentName, service)}</p>
+    </div>
+  );
+}
+
+export function GrantCard({
+  grant,
+  github,
+  busy,
+  onChange,
+  removeNote,
+  onRemove,
+}: {
+  grant: ServiceGrant;
+  github: GitHubConnection | undefined;
+  busy: boolean;
+  onChange: (() => void) | null;
+  /** What removing it does on the owner's own machine; null in the cloud. */
+  removeNote: string | null;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-border p-3">
+      <div className="flex items-center gap-2">
+        <span className="flex-1 text-sm font-medium">{grant.name}</span>
+        <Badge variant="outline">{grant.access === 'write' ? 'Read and push' : 'Read'}</Badge>
+        {onChange && (
+          <Button size="sm" variant="ghost" disabled={busy} onClick={onChange}>
+            Change
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={busy}
+          title={removeNote ?? undefined}
+          onClick={onRemove}
+        >
+          Remove
+        </Button>
+      </div>
+      <p className="mt-1 text-sm text-foreground-muted">{grant.summary}</p>
+      {grant.service === 'github' && (
+        <p className="mt-1 text-sm">{grantedRepositoryNames(github, grant.resources).join(', ')}</p>
+      )}
+    </div>
+  );
+}
+
+export function GitHubGrantForm({
+  github,
+  current,
+  agentName,
+  busy,
+  onCancel,
+  onSave,
+}: {
+  github: { data: GitHubConnection | undefined; isError: boolean; error: unknown };
+  current: ServiceGrant | null;
+  agentName: string;
+  busy: boolean;
+  onCancel: (() => void) | null;
+  onSave: (access: Access, resources: Record<string, unknown>) => void;
+}) {
+  const [choice, setChoice] = useState<GitHubGrantChoice>(() =>
+    current
+      ? {
+          access: current.access ?? 'read',
+          installationId:
+            typeof current.resources.installation_id === 'number'
+              ? current.resources.installation_id
+              : null,
+          repositoryIds: grantedRepositoryIds(current.resources),
+        }
+      : emptyGitHubGrant(github.data)
+  );
+
+  if (github.isError)
+    return (
+      <span className="text-xs text-destructive">
+        {failureText(github.error, 'Could not load your GitHub repositories.')}
+      </span>
+    );
+  if (!github.data) return <Spinner />;
+  if (github.data.status === 'not_connected')
+    return (
+      <p className="text-sm text-foreground-muted">
+        To turn GitHub on, first connect your GitHub account from Connectors.
+      </p>
+    );
+
+  const reach = connectedGitHub(github.data);
+  const resources = githubGrantResources(choice);
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
+      <span className="text-sm font-medium">
+        {current
+          ? `Change which repositories ${agentName} reaches`
+          : `Turn GitHub on for ${agentName}`}
+      </span>
+      {reach && <GitHubGrantPicker github={reach} value={choice} onChange={setChoice} />}
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          disabled={busy || resources === null}
+          onClick={() => resources && onSave(choice.access, resources)}
+        >
+          {current ? 'Save' : 'Turn on'}
+        </Button>
+        {onCancel && (
+          <Button size="sm" variant="ghost" onClick={onCancel}>
+            Cancel
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -6,6 +6,7 @@ import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import type { MattermostTheme } from '@shared/core/switch-rooms/mattermost-theme';
 import {
+  bridgeCanEmbed,
   channelUrlFromDeeplink,
   mattermostPartition,
   type RoomEmbed,
@@ -154,14 +155,11 @@ export async function resolveChannelEmbed(params: {
     };
   }
 
-  if (bridgeType !== 'mattermost') {
+  if (!bridgeCanEmbed(bridgeType)) {
     if (externalChannelUrl) {
       return { kind: 'external', url: externalChannelUrl, platform: bridgeType };
     }
-    return {
-      kind: 'unavailable',
-      reason: `This room is bridged to ${bridgeType}, which cannot be shown inside Switch Console.`,
-    };
+    return { kind: 'unlinked', platform: bridgeType };
   }
 
   const origin = await mattermostOriginFor(serverId);
@@ -169,9 +167,13 @@ export async function resolveChannelEmbed(params: {
     if (externalChannelUrl) {
       return { kind: 'external', url: externalChannelUrl, platform: bridgeType };
     }
+    // The server sends no link both for a room with no channel and while its
+    // Mattermost bridge is not running, which on a local server is the minutes
+    // Mattermost takes to come up after the server does.
     return {
       kind: 'unavailable',
-      reason: 'No Mattermost channel is linked to this room yet.',
+      reason:
+        'This room’s Mattermost channel can’t be reached right now. If the server has just started, Mattermost can take a few minutes to come up.',
     };
   }
 

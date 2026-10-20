@@ -16,7 +16,6 @@ import {
 import { KV } from '@main/db/kv';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
 import {
   type ConnectRemoteServerResult,
   type DockerAvailability,
@@ -38,9 +37,10 @@ import {
   remoteServerLogChannel,
   remoteServerStatusChannel,
 } from '@shared/events/remoteSwitchServerEvents';
+import { coreStartedAt } from './compose';
 import { hostAccount, readRegister, writeRecord } from './console-register';
 import { readVersionStatus } from './deployed-version';
-import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
+import { managedServerAddresses, type LocalServerPorts } from './free-port';
 import { createRemoteServerHost, type RemoteServerHost } from './host/remote-host';
 import { hostSlug, remoteSecretsKey } from './host/remote-identity';
 import {
@@ -61,6 +61,7 @@ import {
 } from './pipeline';
 import { clearPorts } from './ports';
 import { clearSecrets } from './secrets';
+import { managedSwitchVersion } from './server-version';
 import {
   acquireServerLock,
   CONSOLE_INSTANCE,
@@ -100,9 +101,10 @@ function initialStatus(sshHost: string): RemoteServerStatus {
   return {
     sshHost,
     phase: 'stopped',
+    checked: false,
     upgrade: null,
     serverId: null,
-    version: COMPATIBLE_SWITCH_VERSION,
+    version: managedSwitchVersion(),
     deployedVersion: null,
     drift: null,
     // A remote host builds nothing: its stack always runs the pinned released
@@ -111,6 +113,7 @@ function initialStatus(sshHost: string): RemoteServerStatus {
     deployedTelemetry: null,
     message: null,
     error: null,
+    failedTo: null,
     notice: null,
     recordWarning: null,
     waitingFor: null,
@@ -220,7 +223,12 @@ export class RemoteServerService {
   }
 
   private setStatus(sshHost: string, patch: Partial<RemoteServerStatus>): void {
-    const next = { ...this.getStatus(sshHost), ...patch, sshHost };
+    // A phase is only ever written once the stack has been looked at.
+    const current = this.getStatus(sshHost);
+    const checked = patch.phase !== undefined || current.checked;
+    // Any change of phase settles what failed, unless the patch says.
+    const failedTo = patch.phase !== undefined ? (patch.failedTo ?? null) : current.failedTo;
+    const next = { ...current, ...patch, sshHost, checked, failedTo };
     this.statuses.set(sshHost, next);
     events.emit(remoteServerStatusChannel, next);
   }
@@ -330,6 +338,38 @@ export class RemoteServerService {
     } catch (error) {
       log.warn(`remote-switch-server: could not read the server lock on ${host.label}`, { error });
       return null;
+    }
+  }
+
+  /** Whether the stack on `sshHost` is down, read over a fresh connection.
+   * False when it is running or could not be read: only a stack seen down
+   * counts as stopped. */
+  private async stoppedAfterAll(sshHost: string): Promise<boolean> {
+    if (hostReachabilityService.isBlocked(sshHost)) return false;
+    let host: RemoteServerHost | null = null;
+    try {
+      host = await createRemoteServerHost(sshHost);
+      const stack = await inspectStack(host);
+      return stack.kind === 'absent' || (stack.kind === 'present' && !stack.running);
+    } catch (error) {
+      log.warn(`remote-switch-server: could not look at ${sshHost} after a failed stop`, { error });
+      return false;
+    } finally {
+      host?.dispose();
+    }
+  }
+
+  /** When the stack on `sshHost` started, or null when it is not running here. */
+  async startedAt(sshHost: string): Promise<string | null> {
+    if (this.getStatus(sshHost).phase !== 'running') return null;
+    hostReachabilityService.requireReachable(sshHost);
+    const live = this.hosts.get(sshHost);
+    if (live) return coreStartedAt(live);
+    const host = await createRemoteServerHost(sshHost);
+    try {
+      return await coreStartedAt(host);
+    } finally {
+      host.dispose();
     }
   }
 
@@ -541,7 +581,7 @@ export class RemoteServerService {
           );
         });
       }
-      const version = await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION);
+      const version = await readVersionStatus(host, managedSwitchVersion());
       let journal: UpgradeJournal | null;
       try {
         journal = await readUpgradeJournal(host);
@@ -551,7 +591,7 @@ export class RemoteServerService {
           upgrade: {
             state: 'failed',
             from: version.deployedVersion ?? 'an unknown version',
-            to: COMPATIBLE_SWITCH_VERSION,
+            to: managedSwitchVersion(),
             error: error instanceof Error ? error.message : String(error),
           },
         });
@@ -630,6 +670,7 @@ export class RemoteServerService {
       // A host that became the live one owns its forward; any other is throwaway.
       if (!kept) host?.dispose();
       this.busy.delete(sshHost);
+      this.setStatus(sshHost, { checked: true });
     }
     if (!upgradeNow) return;
     try {
@@ -683,19 +724,16 @@ export class RemoteServerService {
     serverId: string,
     ports: LocalServerPorts
   ): Promise<boolean> {
-    const gatewayUrl = gatewayUrlFor(ports);
-    const apiUrl = apiUrlFor(ports);
+    const addresses = managedServerAddresses(ports);
     const record = await getRemoteManagedServer(sshHost);
-    if (!record || (record.gatewayUrl === gatewayUrl && record.apiUrl === apiUrl)) return false;
+    if (!record || (record.url === addresses.url && record.dashboardUrl === addresses.dashboardUrl))
+      return false;
     log.info(`remote-switch-server: the stack on ${sshHost} now publishes different ports`, {
       serverId,
-      from: record.gatewayUrl,
-      to: gatewayUrl,
+      from: record.url,
+      to: addresses.url,
     });
-    await ensureManagedServer(
-      { name: record.name, gatewayUrl, apiUrl },
-      { kind: 'remote', sshHost }
-    );
+    await ensureManagedServer({ name: record.name, ...addresses }, { kind: 'remote', sshHost });
     return true;
   }
 
@@ -806,7 +844,7 @@ export class RemoteServerService {
           serverId: result.serverId,
           message: null,
           error: null,
-          deployedVersion: COMPATIBLE_SWITCH_VERSION,
+          deployedVersion: managedSwitchVersion(),
           drift: null,
           upgrade: null,
           deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
@@ -918,7 +956,7 @@ export class RemoteServerService {
         // Sessions and watchers turned away while an update was owed can run
         // now; the ones waiting out that update carry on by themselves.
         this.releaseRefused(sshHost, result.serverId);
-        this.setStatus(sshHost, await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION));
+        this.setStatus(sshHost, await readVersionStatus(host, managedSwitchVersion()));
         this.setStatus(sshHost, { deployedTelemetry: await readDeployedTelemetry(host) });
         this.removedHere.delete(sshHost);
         await this.record(sshHost, host, 'connected');
@@ -973,7 +1011,7 @@ export class RemoteServerService {
         return {
           kind: 'connected',
           serverId: result.serverId,
-          deployedVersion: COMPATIBLE_SWITCH_VERSION,
+          deployedVersion: managedSwitchVersion(),
         };
       case 'docker-unavailable':
       case 'cancelled':
@@ -1096,11 +1134,33 @@ export class RemoteServerService {
         host = null;
         throw error;
       }
+      reportManagedServerOutcome('stop', 'remote', 'failure');
+      // A stop that errors — most often because the connection dropped under
+      // it — may still have stopped the containers. Look again over a fresh
+      // connection, and say what is true rather than what the command reported.
+      if (await this.stoppedAfterAll(sshHost)) {
+        log.warn(
+          `remote-switch-server: stop on ${sshHost} reported an error, but the stack is down`,
+          {
+            error,
+          }
+        );
+        const upgrade = this.getStatus(sshHost).upgrade;
+        this.setStatus(sshHost, {
+          phase: 'stopped',
+          message: null,
+          error: null,
+          deployedTelemetry: null,
+          upgrade: upgrade && upgradeState(upgrade, false),
+          notice: `The stop on ${sshHost} reported an error, but the server's containers are down.`,
+        });
+        return;
+      }
       this.setStatus(sshHost, {
         phase: 'error',
+        failedTo: 'stop',
         error: error instanceof Error ? error.message : String(error),
       });
-      reportManagedServerOutcome('stop', 'remote', 'failure');
       throw error;
     } finally {
       await lease?.release();
@@ -1155,6 +1215,7 @@ export class RemoteServerService {
       }
       this.setStatus(sshHost, {
         phase: 'error',
+        failedTo: 'reset',
         error: error instanceof Error ? error.message : String(error),
       });
       reportManagedServerOutcome('reset', 'remote', 'failure');

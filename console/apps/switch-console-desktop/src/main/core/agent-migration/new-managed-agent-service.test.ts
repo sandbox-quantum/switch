@@ -16,10 +16,12 @@ const PARAMS: AddManagedAgentParams = {
   description: 'Writes PRDs',
   displayName: 'PM',
   iconUrl: null,
+  autoMode: true,
   autoApprove: true,
   instructions: 'Be brief.',
   model: 'opus',
   advancedConfig: { effort: 'high', tools: ['Read'] },
+  isolation: 'isolated',
   entryPoint: 'sidebar',
 };
 
@@ -99,8 +101,10 @@ describe('NewManagedAgentService.add', () => {
           model: 'opus',
           advanced_config: { effort: 'high', tools: ['Read'] },
           instructions: 'Be brief.',
+          auto_mode: true,
           auto_approve: true,
           directory: '/work/pm',
+          isolation: 'isolated',
         },
       },
     ]);
@@ -138,14 +142,20 @@ describe('NewManagedAgentService.add', () => {
     });
   });
 
-  it('refuses an advanced configuration field the provider does not offer, naming it', async () => {
+  it('leaves the advanced configuration for Switch to judge against its own fields', async () => {
+    h.set({
+      createOutcome: {
+        kind: 'refused',
+        message: "advanced_config: codex has no setting 'tools' (it takes effort, verbosity)",
+      },
+    });
     const result = await new NewManagedAgentService(h.deps).add({
       ...PARAMS,
       providerId: 'codex',
       advancedConfig: { tools: ['Read'] },
     });
+    expect(h.created).toHaveLength(1);
     expect(result).toEqual({ kind: 'error', message: expect.stringContaining("'tools'") });
-    expect(h.created).toEqual([]);
   });
 
   it('refuses instructions longer than a managed agent takes, before creating anything', async () => {

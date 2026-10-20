@@ -16,10 +16,10 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.db.models import User, require_tenant_id
+from switch_core.connections.broker import ServiceBroker, get_service_broker
+from switch_core.db.models import ServiceTokenIssuance, User, require_tenant_id
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_protocol, get_session
-from switch_core.management.advanced_config import advanced_config_schema
 from switch_core.management.dependencies import get_management
 from switch_core.management.errors import ManagementRoute
 from switch_core.management.schemas import (
@@ -32,6 +32,7 @@ from switch_core.management.schemas import (
     UpdateControllerRequest,
     wire_time,
 )
+from switch_core.management.sealed_logins import PutSealedLoginRequest
 from switch_core.management.service import ManagementService, placement_from
 
 router = APIRouter(route_class=ManagementRoute, tags=["agent management"])
@@ -40,6 +41,21 @@ Management = Annotated[ManagementService, Depends(get_management)]
 Session = Annotated[AsyncSession, Depends(get_session)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 Protocol = Annotated[AgentCore, Depends(get_protocol)]
+Broker = Annotated[ServiceBroker, Depends(get_service_broker)]
+
+
+async def _revoke_controller_tokens(
+    session: AsyncSession, broker: ServiceBroker, *conditions: Any
+) -> None:
+    """Revoke, now, the service tokens a controller change left orphaned.
+
+    The periodic pass would find them too; this saves the wait. A failure is
+    logged by the broker and left queued for that pass.
+    """
+    await session.commit()
+    await broker.revoke_pending(
+        session, (ServiceTokenIssuance.principal == "controller", *conditions)
+    )
 
 
 @router.post("/enrollment-codes", status_code=201)
@@ -107,19 +123,61 @@ async def update_controller(
 
 @router.delete("/controllers/{controller_id}")
 async def revoke_controller(
-    controller_id: str, session: Session, user: CurrentUser, management: Management
+    controller_id: str,
+    session: Session,
+    user: CurrentUser,
+    management: Management,
+    broker: Broker,
 ) -> dict[str, bool]:
     await management.revoke_controller(
         session, require_tenant_id(), user.id, controller_id
     )
+    await _revoke_controller_tokens(
+        session, broker, ServiceTokenIssuance.controller_id == controller_id
+    )
     return {"ok": True}
 
 
-@router.get("/advanced-config")
-async def get_advanced_config(user: CurrentUser) -> dict[str, Any]:
-    """Each provider's advanced-configuration fields, which a definition's
-    `advanced_config` is checked against."""
-    return advanced_config_schema()
+@router.get("/controllers/{controller_id}/provider-logins")
+async def list_sealed_logins(
+    controller_id: str, session: Session, user: CurrentUser, management: Management
+) -> list[dict[str, Any]]:
+    """The provider logins given to this machine: which, and which revision;
+    never what they hold."""
+    return await management.list_sealed_logins(
+        session, require_tenant_id(), user.id, controller_id
+    )
+
+
+@router.put("/controllers/{controller_id}/provider-logins/{provider}")
+async def give_sealed_login(
+    controller_id: str,
+    provider: str,
+    body: PutSealedLoginRequest,
+    session: Session,
+    user: CurrentUser,
+    management: Management,
+) -> dict[str, Any]:
+    """Give this machine a provider login, sealed to its `public_key` by the
+    caller's client. Returns the login and the `provider.login` operation
+    whose result says whether the provider signs in with it."""
+    return await management.give_sealed_login(
+        session, require_tenant_id(), user.id, controller_id, provider, body.sealed
+    )
+
+
+@router.delete("/controllers/{controller_id}/provider-logins/{provider}")
+async def withdraw_sealed_login(
+    controller_id: str,
+    provider: str,
+    session: Session,
+    user: CurrentUser,
+    management: Management,
+) -> dict[str, bool]:
+    await management.withdraw_sealed_login(
+        session, require_tenant_id(), user.id, controller_id, provider
+    )
+    return {"ok": True}
 
 
 @router.get("/agents")
@@ -159,8 +217,9 @@ async def put_managed_agent(
     user: CurrentUser,
     management: Management,
     protocol: Protocol,
+    broker: Broker,
 ) -> dict[str, Any]:
-    return await management.put_managed_agent(
+    view = await management.put_managed_agent(
         session,
         require_tenant_id(),
         user.id,
@@ -168,6 +227,10 @@ async def put_managed_agent(
         placement_from(body.controller_id, body.desired_state, body.definition),
         protocol,
     )
+    await _revoke_controller_tokens(
+        session, broker, ServiceTokenIssuance.agent_id == agent_id
+    )
+    return view
 
 
 @router.patch("/agents/{agent_id}")
@@ -178,8 +241,9 @@ async def patch_managed_agent(
     user: CurrentUser,
     management: Management,
     protocol: Protocol,
+    broker: Broker,
 ) -> dict[str, Any]:
-    return await management.patch_managed_agent(
+    view = await management.patch_managed_agent(
         session,
         require_tenant_id(),
         user.id,
@@ -190,14 +254,25 @@ async def patch_managed_agent(
         controller_id_given="controller_id" in body.model_fields_set,
         protocol=protocol,
     )
+    await _revoke_controller_tokens(
+        session, broker, ServiceTokenIssuance.agent_id == agent_id
+    )
+    return view
 
 
 @router.delete("/agents/{agent_id}")
 async def delete_managed_agent(
-    agent_id: str, session: Session, user: CurrentUser, management: Management
+    agent_id: str,
+    session: Session,
+    user: CurrentUser,
+    management: Management,
+    broker: Broker,
 ) -> dict[str, bool]:
     await management.delete_managed_agent(
         session, require_tenant_id(), user.id, agent_id
+    )
+    await _revoke_controller_tokens(
+        session, broker, ServiceTokenIssuance.agent_id == agent_id
     )
     return {"ok": True}
 

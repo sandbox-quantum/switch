@@ -44,7 +44,367 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.31.0] - 2026-10-20
+
 #### Added
+- **switch-core can run as multiple replicas.** The multi-pod stack lets more
+  than one switch-core replica serve a deployment: membership and signals cross
+  pods, agent events are read from Postgres rather than an in-memory buffer so
+  any replica serves them, and cross-replica idempotency ids keep a retried
+  write from being applied twice (#886, #815, #858).
+- **One address per Switch server.** A deployment is reached at a single address
+  instead of separate gateway and API hosts, simplifying ingress and the public
+  URL configuration (#753).
+- **Agents can follow a conversation without being `@`-mentioned.** An agent can
+  be set to pick up messages in a thread it is part of without being tagged each
+  time (#869).
+- **Templates create managed agents through agent management** (#851).
+- **Event-loop stall probe.** switch-core measures event-loop stalls with a
+  100 ms probe and reports them, so a blocked loop is visible (#713).
+- **The server's operator sets up connector apps from the dashboard.** A
+  Connectors page, beside Users and for the operator alone, sets up the
+  GitHub App and Google Workspace's OAuth client (and any static client the
+  catalog adds) with no restart. Each save is checked with the vendor first,
+  and stored, encrypted, only if the vendor accepts it; GitHub's App name is
+  read from GitHub. A secret or private key can be rotated without
+  disconnecting anyone; switching to a different app says first how many
+  people in how many workspaces must reconnect. The variables that set them
+  today (`GITHUB_APP_CONFIG_PATH` and `GITHUB_APP_PRIVATE_KEY_PATH`,
+  `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`) keep working and win over a saved
+  app, and **Copy into Switch** moves one into the dashboard with nothing
+  retyped. Changes are recorded in a new server-wide audit log
+  (`server_audit_events`). Members of a server without an app are told to ask
+  whoever runs it to add it under Connectors; `GET /service-connections`
+  gains `server_setup_needed`. The page and its routes are there only with
+  the `service_connections` flag on, like the rest of service connections;
+  without it the page says what to turn on. A connection made under an app since removed
+  can still be disconnected; the disconnect then says Switch could not revoke
+  the sign-in and where to revoke it. A change reaches every switch-core
+  replica within seconds, and one that missed it within half a minute. See
+  `docs/old/github-app-setup.md` and `docs/old/google-workspace-setup.md`.
+- **A connection knows the app it signed in through.** A connection made
+  through an app the operator has since replaced shows as needing
+  reconnection, and an agent asking for its token is told to reconnect
+  rather than handed the vendor's refusal. A sign-in that started before the
+  app was replaced is asked to start again. Connections made before this
+  release are unaffected.
+- **Confluence through the Atlassian connection.** Connecting Atlassian now
+  also asks for Confluence's read, search and (for writing) write scopes, so a
+  granted agent reaches Confluence pages beside Jira issues. People who
+  connected before connect again to consent to them; until then Atlassian
+  shows no Confluence tools. Rovo search and Teamwork Graph, which spend the
+  organization's Rovo credits on every call, are still not asked for; four
+  Confluence write tools (infographics and apps on a page) spend 15-30 credits
+  a request, and the skill tells agents to use them only when asked.
+- **Operators can keep names away from outside avatar services.** An agent with
+  no icon of its own is drawn by api.dicebear.com with its name as the seed, and
+  a person relayed from another platform by ui-avatars.com with their name in the
+  URL. Chat clients load those images, so the services see the name and each
+  reader's address. With `THIRD_PARTY_AVATARS_ENABLED=false` (Helm:
+  `switchCore.thirdPartyAvatars.enabled`), no bridge sends such a URL, icons
+  already stored on those services included, and each platform shows its own
+  default: Slack the app's icon, Discord its default avatar, Teams no image,
+  while a Mattermost bot keeps the image it already has. People and agents
+  without an icon of their own then share that default. New managed agents get
+  no generated icon, and an agent created or registered with an icon on those
+  services gets none. Setting one later is refused with the reason, rather than
+  stored to never show. `GET /agents/icon-choices` offers none and says why, and
+  `GET /agents/avatar-settings` tells Switch Console the setting. The default is
+  unchanged. A server Switch Console runs for you always uses the default.
+- **The Helm chart can take the invitation SMTP username from its Secret.**
+  Some relays issue usernames that are credentials in their own right (an
+  Amazon SES SMTP username is an access key id). With
+  `switchCore.smtp.usernameFromSecret: true`, the chart reads it from
+  `secrets.gatewaySmtpUsername`, or from `GATEWAY_SMTP_USERNAME` in
+  `secrets.existingSecret`, instead of `switchCore.smtp.username`. Setting
+  both is refused at render time.
+- **Agents controllers update to the release Core names.** With
+  `CONTROLLER_RELEASE_VERSION`, `CONTROLLER_RELEASE_URL` and
+  `CONTROLLER_RELEASE_SHA256` (Helm `switchCore.controllerRelease`; all three or
+  none, refused at startup and at render otherwise), the status answer carries
+  `controller_release: {version, url, sha256}` (null for a Switch Console
+  controller, which updates with Console), and a controller on another
+  version fetches that package, checks its SHA-256 and installs it once idle.
+  `GET /gateway/management/controllers` shows each controller's `release`
+  (`{wanted, running, current}`, null when none is named), and its status keeps
+  the `update` the controller reports. A Switch release now also
+  publishes the controller at its version as `switch-agent-controller-v<version>`,
+  and its chart names that package; a release candidate and a dev build of main
+  do the same as a prerelease, so the controllers of a deployment running an RC,
+  and the dev environment's, follow it. A controller
+  run as a service installs a release beside the one it runs and keeps the one
+  before. Roll back by pointing the values at the previous release.
+- **Workspace admins can switch each service off for their workspace.** With
+  the `service_connections` flag on, `GET /gateway/workspace/services` lists
+  every connectable service with whether the workspace has it on, who last
+  changed it and when, and how many members are connected and agents granted;
+  `PUT /gateway/workspace/services/{service}` with `{"enabled": false}` switches
+  it off (workspace admins and owners, audited). Off, nobody in the workspace
+  can start a sign-in, paste a key, connect, grant or be issued a token for it,
+  and the refusal says who can turn it back on and where. A running session
+  loses the service within half a minute: its grants list leaves it out, and
+  its host restarts it without the service. A token already handed out may be
+  used until then, except GitHub's, which is revoked before the switch
+  answers. Grants are kept, so switching it on again needs no re-grant. A
+  service with no setting is on, so an upgraded server behaves as before. The
+  service list now says `workspace_enabled` for each service, and
+  `GET /gateway/service-connections/{service}/agents` lists the caller's own
+  agents with whether each holds a grant and whether others can address it.
+
+#### Changed
+- **A caller repeating a refused request is answered with 429 from memory,**
+  rather than re-doing the refused work each time (#750).
+- **Console links work on chat platforms.** A `switchdash://open/...` link an
+  agent posts reaches Slack, Discord, Telegram and Teams as a clickable https
+  link to the new public `GET /deeplink/open/{page}`, which opens that page in
+  Switch Console. A server with no public address (`GATEWAY_PUBLIC_URL`) sends
+  the link's label and the page's name instead. Mattermost servers that allow
+  the `switchdash` scheme get the link unchanged.
+- **Deleting a room can retire its channel.** `DELETE /gateway/rooms/{id}`
+  and bulk delete take `retire_channel` (default false). When it is set,
+  Switch archives the room's Slack or Mattermost channel, deletes its Discord
+  channel, or has the bot leave its Telegram chat; Teams channels and direct
+  messages stay. Without it, the channel is left as it is. The delete
+  responses say what happened (`channel`), and room detail says what retiring
+  would do (`channel_on_delete`). A channel that could not be retired is
+  reported, and the room is still deleted. Disconnecting a messaging app
+  leaves channels as they are.
+- **The Switch expert is offered only where switch-buddy is not.** A server
+  with agent management and switch-buddy on serves switch-buddy alone; every
+  other server keeps the official Switch expert. Agents made from it are
+  unchanged.
+- **Usage telemetry goes to `telemetry.switchagents.ai` by default.** The
+  default `TELEMETRY_ENDPOINT` (Helm `switchCore.telemetry.endpoint`) was
+  `https://telemetry.flintai.dev`, an older name for the same relay that is
+  being retired. A deployment that sets the endpoint explicitly is unaffected;
+  one relying on the default moves to the new host on upgrade. Nothing is sent
+  unless `TELEMETRY_ENABLED=true`.
+- **Documentation links point at `docs.switchagents.ai`.** Links in the docs
+  and the synced `docs/official` pages used `docs.flintai.dev`, the older name
+  for the same site. Old links still redirect.
+- **A sign-in that returns through the server goes straight back to Switch
+  Console.** Google Workspace and GitHub send the browser back to the server
+  rather than to the computer it left from. The server used to stop there on
+  a page naming the Switch account and asking the person to continue; it now
+  sends the browser on to Switch Console at once. The page remains only when
+  the return cannot be verified or the consent was cancelled. What ties a
+  sign-in to the browser and the Console that started it is unchanged.
+
+- **Signing in to a service connects it without a confirm step.** Once the
+  browser returns, the server exchanges the code, reads the account and keeps
+  the connection in one step, and Switch Console shows the result. It used to
+  hold the sign-in until the person confirmed the account in Console. The
+  account is chosen at the vendor, and Disconnect undoes a wrong one. The
+  flow's `complete` route now answers with the account and any warning, its
+  status reads `connected` or `failed` with the reason, and the `confirm`
+  route is gone, for GitHub's flow as well; a Switch Console from before this
+  release cannot finish a sign-in against this server, so update both
+  together. Migration `bf016e18bc16`, expand-only.
+- **New agents answer their owner and the owner's own agents.** Every path
+  that creates an agent without an addressing choice (registration,
+  `create_agent`, template runs, switch-buddy's template) now gives it the
+  "me and my agents" policy instead of owner-only, so the agents one person
+  creates can address each other out of the box. A template agent with no
+  `addressing` gets `owner-agents`. Other people and their agents stay out,
+  an explicit owner-only choice is kept, and existing agents keep their
+  policy. The "others can use these grants" warning no longer counts the
+  owner's own agents.
+#### Removed
+- **The `/admin` command.** It did nothing and is no longer offered in rooms
+  or registered with Slack, Discord or Telegram; a command without a handler
+  is never registered.
+- **Breaking (agent-facing): the task protocol is removed.** The
+  `delegate_task`, `accept_task`, `update_task`, `finalise_task`,
+  `cancel_task` and `list_tasks` tools are gone from MCP and the operations
+  door, the `/agents/{id}/tasks…` HTTP routes answer `404`, and no task events
+  are delivered. The documentation has said not to use them since 0.9.x. Agents
+  coordinate with `post_message` and `send_targeted_message`, and the
+  instructions they receive no longer mention tasks. `connect_to_room` drops
+  each participant's `can_delegate` and `can_accept`, and neither `!status`
+  nor the dashboard shows them. Stored
+  integration profiles that still carry `task_protocol` load as before, with
+  the key ignored. Existing rows in the `tasks` table are left in place; no
+  migration.
+#### Security
+- **An agent icon URL must spell its host plainly.** A link with a backslash,
+  or a host with percent-encoding or non-ASCII characters, is refused: browsers
+  and chat clients read such a host differently from Switch, so its checks
+  could not tell where the image would be loaded from.
+
+#### Fixed
+- **A controller Switch Console runs on an SSH host is no longer shown as behind.**
+  It enrolls like a standalone controller, so Core named it the release and the
+  Machines page marked it behind, though it runs Console's bundle and cannot
+  follow Core. Console now starts it with `--updated-by-console`; it follows no
+  release, reports `controller.updated_by: "console"` in its status, and Core
+  names it none, as for Console's own controller. One started from an older
+  Console bundle shows behind until Console replaces that bundle.
+- **Usage telemetry no longer carries the `ENVIRONMENT` or `SERVICE_NAME`
+  settings.** From 0.28.0 through 0.30.0, with `TELEMETRY_ENABLED=true`, every
+  event sent to the Flint relay carried both, as `deployment.environment`,
+  `service.name` and the OTLP scope name. They are free text an operator sets
+  for their own logs (Helm `switchCore.logging.environment` and `serviceName`),
+  so a value such as a company name left the deployment despite the promise of
+  no free text. Usage events now always say `switch-core` and omit the
+  environment; `flint_env` still says which Amplitude project they belong in.
+  The operational OTLP export to your own collector is unchanged.
+
+### [0.30.0] - 2026-10-12
+
+#### Added
+- **Multi-tenancy.** Several workspaces per person, with sign-up, invitations,
+  workspace roles, per-workspace usage budgets, and Switch Cloud sign-in (#627).
+- **Distributed Telegram app.** One Telegram app any workspace connects, like
+  the other platforms (#583).
+- **Distributed Teams app.** A Teams app any organisation installs for itself
+  (#632).
+- **Switch Trust guardrails.** Every message is checked before it is sent;
+  blocked, redacted and alerted/errored outcomes are handled, blocked senders
+  are named and redacted senders notified. Configurable from a Switch Trust
+  settings panel backed by a gateway API (#679, #739, #747).
+- **Per-message telemetry and activity tiers.** switch-core reports per-message
+  events and rolls activity into tiers for the dashboards, on top of an events
+  refactor and dashboard-accuracy fixes (#719, #610, #558).
+- **Room-wide mention.** A mention that pages a room's people on its platform
+  and wakes no agent (#542).
+- **Windows support for managed agents and the controller** (#765).
+- **Self-contained integration points.** Adding a messaging platform (#720) or
+  an agent CLI (#763) is now a single plugin entry.
+- **Build provenance and usage reporting.** switch-core reports the commit it
+  was built from with its metrics and logs (#710), how long garbage collection
+  pauses the process by generation (#711), and the count of active staff
+  accounts in the usage snapshot (#724).
+- **Deploy-time feature flags.** Capabilities are gated by a feature-flag
+  setting (`FEATURE_FLAGS_ENABLED`, Helm `switchCore.featureFlags.enabled`)
+  rather than per-capability environment variables. Known flags:
+  `agent_management`, `hosted_agents`, `switch_cloud`, and
+  `ecosystem.show_owners`.
+- **An agent or controller that keeps repeating a refused request is answered
+  429 from memory.** After 8 identical refusals (401, 403, 404 or 426 for the
+  same bearer token, or the same controller credential, on the same method and
+  path of an agent or controller route) within two minutes, Switch answers that request 429 with
+  `Retry-After` for a minute without looking up its credential or touching
+  the database. One request goes through when the wait is over; refused
+  again, the wait doubles, up to 15 minutes, and any other answer clears it.
+  It protects the server from old clients that retry a refusal forever. New
+  metric `switch.http.refusals_throttled`, with a panel on the dashboard.
+- **Switch cloud machines that run the agents controller sleep when idle,
+  and wake on a message.** Such a machine is stopped once its status reports
+  say no session has run for `HOSTED_IDLE_STOP_MINUTES` (released, as before,
+  when no agent is placed on it). A message addressed to one of its agents
+  starts it again; the room is told once that the machine is starting, and
+  Switch keeps the message for the agent until it is back. Placing an agent on
+  a sleeping machine starts it too, and is judged by its last report. A
+  machine its owner stopped stays stopped, and says so.
+- **Switch cloud machines can run the agents controller.** With
+  `HOSTED_MACHINE_RUNTIME=controller` (Helm `switchCore.hostedMachineRuntime`)
+  and agent management on, a cloud machine claimed from then on enrolls the
+  standard `switch-agent-controller` with a one-time code Core hands the hosted
+  controller at prepare (the same code on every retry of a revision, valid 30
+  minutes), instead of running the hosted worker. The controller it enrolls as
+  becomes the machine's (`hosted_machines.controller_id`, kind `ec2`, "Switch
+  cloud"); its status reports make the machine ready; the managed agents placed
+  on it are the machine's agents, and keep it from being retained. Launches are
+  refused in that mode, and such machines are not stopped when idle yet.
+  Machines claimed before keep the worker runtime. Migration `e7a2c4b9d013`.
+- **Provider logins sealed to a machine.** A controller registers an X25519
+  public key (at enrollment, or once afterwards); its owner gives the machine a
+  provider login sealed to that key, which Switch stores and relays as
+  ciphertext it cannot open (`PUT/GET/DELETE
+  /gateway/management/controllers/{id}/provider-logins/{provider}`, and
+  `GET /v1/management/controllers/{id}/provider-credentials/{provider}` for the
+  controller). Giving one queues a `provider.login` operation the machine takes
+  it up with; revoking the machine deletes its logins. Migration
+  `d41c7a9e2b58` adds `sealed_provider_logins`.
+- **The `service_connections` feature flag** shows or hides service
+  connections. Off, which is the default, the routes for connections,
+  sign-ins, keys and grants are not mounted: agent hosts read that as no
+  grants, and Switch Console and the dashboard offer GitHub's link alone, as
+  before. Turn it on with `FEATURE_FLAGS_ENABLED=service_connections` (Helm:
+  `switchCore.featureFlags.enabled`) for everything below.
+- **Agents use their owner's GitHub through grants.** A person connects their
+  GitHub account once; an agent's owner then grants it repositories, to read or
+  to read and push, from the agent's page in the gateway or in Switch Console.
+  The agent's sessions get installation tokens for exactly those repositories,
+  valid for at most an hour, each issue recorded. They are revoked when the
+  grant narrows or goes, the owner disconnects GitHub or re-links another
+  account, the agent is deleted, or its owner leaves the workspace. Agents with
+  a runtime of their own cannot be granted anything yet. New routes:
+  `GET /agents/{id}/service-grants` and `POST /agents/{id}/service-tokens/{service}`
+  for agents and their controllers, and `/gateway/service-connections` and
+  `/gateway/agents/{id}/service-grants` for people. Pushes, pull requests and
+  comments made this way appear as the GitHub App.
+- **Agents can use their owner's Jira, through the Atlassian connection.** A
+  person connects Atlassian from Switch Console; nothing needs configuring on
+  the server, which registers its own OAuth client with Atlassian on the first
+  connect. An agent's owner then turns Atlassian on for it: on or off, at the
+  level the person consented to when connecting (read, or read and write).
+  The agent acts as its owner in Jira, through Atlassian's MCP tools, which its
+  sessions call without the token ever reaching the coding tool. Only Jira's
+  scopes are asked for. Connecting from the web dashboard is not possible yet.
+- **Services beyond GitHub from the catalog.** A catalog entry can name the
+  generic OAuth/MCP adapter: its sign-in, the vendor's MCP servers, and whether
+  its tokens are minted per issue or the owner's own, passed through with a
+  lifetime cap. A service whose OAuth client the operator registers reads it
+  from the JSON file `<PREFIX>_CLIENT_CONFIG_PATH` names; unset, the service is
+  shown as not set up on this server, and set but unusable, the server does not
+  start. Connecting goes through `/gateway/service-connections/{service}/flows`.
+- **Agents can use their owner's Google Drive, Docs, Sheets, Slides and
+  Calendar, on self-hosted servers.** The server's operator registers an
+  internal Google app and names its client in
+  `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH` (see
+  `docs/old/google-workspace-setup.md`); without it, Google Workspace is listed
+  as not set up. A person connects from Switch Console, signing in to Google
+  through the server's own callback; their agents' sessions then run Google's
+  `gws` command-line tool with the person's access, on/off like Atlassian.
+  Gmail is not offered. Disconnecting revokes the sign-in at Google.
+- **A catalog service's tools can be the vendor's command-line tool.** An
+  `oauth` entry (the generic adapter, formerly `oauth-mcp`) names either the
+  vendor's MCP servers or a `cli` block: the binary and its pinned builds with
+  their SHA-256s, the commands and flags allowed and refused, which arguments
+  are local files, an output cap, a timeout, and how a run says the vendor
+  refused its token. `auth.oauth.authorization_params` sends extra sign-in
+  parameters a vendor needs, from a fixed allowlist. The grants answer gains
+  `cli_tools`, additively.
+- **Services people connect with a key, starting with Datadog.** A catalog
+  entry with `adapter: api_key` names the fields a person pastes (one to three
+  secret keys) or picks (a site or region, never free text), a call that
+  checks them, and header or environment templates that put them into the
+  vendor's MCP requests or CLI runs. Core checks a key with its vendor before
+  storing it, encrypted, through
+  `PUT /gateway/service-connections/{service}/key`, and hands it to sessions an
+  hour at a time like any pass-through token; the coding tool never sees it.
+  Keys are not refreshed, and disconnecting forgets one but cannot revoke it
+  at the vendor, which the answer says. The grants answer's MCP servers carry
+  their `headers` templates and a CLI its `env` ones (both additive). Datadog
+  needs MCP access turned on for the organization and an application key with
+  `mcp_read`.
+- **`DISABLED_SERVICES`** switches catalog services off on a server, as JSON
+  mapping each to the reason people are shown (an empty one reads "Switched off
+  on this server."). A switched-off service is listed with its reason and
+  cannot be connected, granted or issued a token; disconnecting still works.
+- The service token answer gains `expires_in` and `use_until`: a holder asks
+  again by `use_until`, at most an hour away, whatever the vendor's token
+  lifetime. The grants answer gains each service's `mcp_servers`. Both are
+  additive.
+- **A grant change reaches running sessions within a minute.** The grants
+  answer carries each grant's `revision` and the token answer the
+  `grant_revision` it was issued under (both additive). An agent host holding a
+  token reads the grants again at most every 30 seconds and asks for a new
+  token once its grant has moved on, so a widened grant, one turned off, or
+  one removed and made again applies without restarting the session. A
+  service first granted after a session started reaches it when it next
+  starts, as its tools are set up then.
+- The dashboard's Service access shows services such as Atlassian as on/off
+  switches beside GitHub's grant, and says why one cannot be turned on: not
+  connected yet, or switched off or not set up on this server.
+- **`GITHUB_APP_CONFIG_PATH` and `GITHUB_APP_PRIVATE_KEY_PATH`** configure the
+  GitHub App (both or neither; the key path absolute). The Helm chart sets
+  them from `switchCore.githubConnectionsSecret` and the new
+  `switchCore.githubAppPrivateKeyPath`, the signing key's path in a Secret the
+  chart mounts.
+  `SERVICE_TOKEN_RETENTION_DAYS` (default 30) sets how long issue records are
+  kept; tokens' values are dropped as soon as they expire.
 - **The Helm chart turns agent management on from its values.**
   `switchCore.agentManagement.enabled` and `secrets.controllerTokenSecret` (or
   `CONTROLLER_TOKEN_SECRET` in `secrets.existingSecret`) set
@@ -54,8 +414,95 @@ version of their own to them without also giving them a release of their own.
   pods twice. Rendering fails when the secret is missing or shorter than 32
   characters. Remove variables set by hand before the first upgrade that renders
   them (see the chart README).
+- **`global.preStopSleepSeconds`** (default `5`): the gateway waits that long
+  in a `preStop` hook before SIGTERM, so a roll stops sending it requests
+  before it shuts down while its replacement is already serving. Rendered only
+  on Kubernetes 1.30+ (the native `sleep` action); `0` turns it off.
+  switch-core and Mattermost roll with `Recreate`, so they get no hook.
+
+#### Changed
+- **The published Helm chart pins its images by digest.** The release writes
+  each image's registry digest into the chart's values before packaging, so
+  `switchCore.image`, `gateway.image` and `setup.image` default to
+  `<image>:<version>@sha256:…`, and `global.imageRegistry` defaults to the
+  registry the release published to. Pinning the chart version now pins the
+  exact images; a deployment no longer needs to set the three image values.
+- **Breaking for some values files: `global.imageRegistry` now has a default.**
+  An image value that names a registry (`ghcr.io/acme/switch-core:1.0`,
+  `localhost/…`, `host:5000/…`) is used as written, as before. One that names a
+  Docker Hub namespace without a registry (`acme/switch-core:1.0`) now gets the
+  default registry prepended; write it as `docker.io/acme/switch-core:1.0`.
+- **`imagePullPolicy` for switch-core, gateway and setup defaults to `""`**:
+  `IfNotPresent` for a digest-pinned image, `Always` for anything else, so an
+  install that opts out of the pin with a mutable tag keeps pulling it. An
+  explicit policy still wins.
+- **Every merge to main publishes a dev build** of the images and chart, under
+  `ghcr.io/<owner>/dev/` and `<next patch>-dev.<run>.g<sha>`: never `latest`,
+  apart from the release packages, and pruned after 30 days beyond the newest
+  20. Each publishing run records every digest in its summary and in a
+  `release-pins` artifact, and a version already in the registry is never
+  published again.
+- **The hosted controller is published with every release and dev build**: its
+  image as `switch-hosted-controller` and its chart as
+  `charts/switch-hosted-controller`, versioned with switch-core and pinned to
+  its image by digest (`image.repository`, `image.digest`). The dev charts also
+  carry a `main` tag that follows the newest build of main.
+
+#### Changed
+- **The agent connection runs over a single WebSocket** between the server and
+  the runtime, replacing the previous connection (#652, #687).
+- **Room access-permission changes are restricted to owners/admins** (#638).
+- **The bundled Mattermost no longer calls Mattermost Inc.** (#733).
+- **Agent icons switched to DiceBear gaze** (#685).
+- **Faster startup and fewer requests.** Agents and rooms are read in bulk at
+  startup (#743), the room and agent list queries are batched so they don't grow
+  with the data (#709), and Console makes fewer managed-agent requests with one
+  query for their machines (#702).
+- **Agent management moved behind the `agent_management` feature flag.** The old
+  `AGENT_MANAGEMENT_ENABLED` setting is gone: switch-core refuses to start when
+  it is still set to true, and the Helm chart refuses to render with
+  `switchCore.agentManagement.enabled: true`. Enable the `agent_management` flag
+  instead.
+- **Hosted launches require `agent_management`.** `HOSTED_LAUNCH_CAPACITY` above
+  0 now needs the `agent_management` flag enabled.
+- **GitHub moves onto service connections when the new release first starts,**
+  once per workspace: each GitHub connection. A connection that cannot be read
+  is skipped and logged, and its owner connects GitHub again. So is a second
+  person linked to the same GitHub account as someone else: they must connect a
+  different GitHub account, or the first must disconnect theirs. A workspace
+  whose move fails is logged and tried again at the next start; the others
+  still move. The old table is left as it was, but nothing is written back to
+  it: after rolling back to the previous release, people connect GitHub again
+  (GitHub renews sign-ins by replacing them, so the copies there stop working
+  within hours), and disconnects and removed grants made on this release do
+  not carry back. Rolling back means downgrading this release's migrations,
+  which drops the service connection, grant and token record tables and
+  everything made in them on this release. Tokens already handed out then stay
+  valid until they expire, within the hour, as nothing is left to revoke them.
+
+#### Removed
+- **The `feature_flags` table is dropped.** The migration logs which flags were
+  on at upgrade so they can be re-expressed through the feature-flag setting.
+- A new migration adds `service_oauth_clients`, where the server keeps the
+  OAuth clients it registered with vendors such as Atlassian, encrypted with
+  the server keys and re-encrypted when they rotate. Downgrading it drops the
+  table; the server registers again on the next connect.
+
+#### Deprecated
+- `HOSTED_GITHUB_CONFIG_PATH` still configures the GitHub App's sign-in, with a
+  warning, for this release. It names no signing key, so GitHub can then be
+  connected but not granted.
+
+#### Security
+- **Multi-tenant security hardening** across the server and gateway (#641).
 
 #### Fixed
+- **A silent Mattermost no longer freezes all of switch-core** (#660).
+- **Teams no longer adds users to the whole team** when a private channel is
+  mistaken for public (#591).
+- **A client that fails on the database at start is retried** instead of being
+  dropped (#742).
+- **The clock no longer redraws turns for offline agents** (#715).
 - **The Helm chart's Ingress now routes every agent API path to switch-core.**
   `/agent-sessions` (session starts, turn activity, approval requests and their
   answers), `/version` and `/deeplink` were missing from
@@ -1381,7 +1828,277 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.40.0] - 2026-10-20
+
+#### Added
+- **Chat-first Console backed by Switch rooms.** Console leads with agents and
+  rooms and a chat view, with a room summary shown in place and quieter tool
+  activity in chats (#716, #934).
+- **Guided first-run onboarding with switch-buddy.** A fresh install walks
+  through onboarding and ends in a chat with switch-buddy — an assistant that
+  knows its context and can hand you Console links — with an intro animation
+  and page entrances (#879, #915, #942, #932, #930).
+- **Run a local Switch server without Docker** (#915).
+- **Delete my account** from Console (#915).
+- **Stable ships with onboarding and the managed server's feature flags on
+  (Switch Cloud off).** A stable build now shows the first-run onboarding, and
+  the Switch server Console manages starts with agent management, agent chats,
+  switch-buddy, follow-the-conversation and service connections enabled. Switch
+  Cloud stays off in stable.
+- **The server's operator sets up connector apps in Console.** For the
+  operator, the Admin page has a Connector apps section under Server, below
+  the workspace's switches: the GitHub App and Google Workspace's OAuth
+  client as tiles, the
+  ones needing attention first, each with its state and the one thing to do
+  next. A tile opens the app's page, with its client, its secret's last four
+  characters or its key's fingerprint, who uses it and a check with the
+  vendor; updating a secret, switching to a different app and removing it are
+  in its menu. Setting one up walks through creating it at the vendor, with
+  the values to paste and copy buttons, then checks and saves it in one step,
+  marking the value the vendor refused. It is the dashboard's Connectors page,
+  which stays for now. Needs a server from this release.
+- **Console follows a server that keeps names away from avatar services.** On a
+  server with `THIRD_PARTY_AVATARS_ENABLED=false`, Console no longer loads
+  DiceBear or ui-avatars.com images for that server's agents and shows their
+  initials instead. Its icon picker offers only an image link and refuses one
+  to either service, new agents are created without a generated icon, and it
+  no longer writes generated icons onto existing agents. Until it has heard
+  from a server, Console shows initials rather than send a name, and it reads
+  the setting again every few minutes, so a server restarted with it changed
+  needs no Console restart. A setting it cannot read counts as off: the icon
+  picker says so and offers to ask again, and a new agent is still created,
+  without a generated icon. Agents on servers that leave the setting on look as
+  before. Older versions of Console load those images whatever the server says.
+
+#### Changed
+- **Link your account right after adding a messaging app.** Every way into
+  connecting an app, including a Console link from switch-buddy, now ends by
+  offering to link your own account on it (Telegram explains how instead).
+  The server's Home page keeps a **Link your … account** prompt until you do.
+- **The delete-room dialog asks about the channel.** Deleting a room keeps
+  its channel unless you tick **Also archive the … channel** (or delete it on
+  Discord, or have the bot leave on Telegram); the dialog says what will
+  happen either way, and shows what to clean up by hand when the server could
+  not retire it. Teams channels always stay. Needs a server from this
+  release; an older one gets "the channel may remain".
+- **A new agent starts on "Me and my agents".** "Who can talk to your agent"
+  now opens on **Me and my agents (default)**: you and any agent you own.
+  **Only me** is still one choice away, and agents that already exist keep
+  their setting. A template agent with no `addressing` is created the same
+  way.
+- **Usage data goes to `telemetry.switchagents.ai`.** Console reported to
+  `telemetry.flintai.dev`, an older name for the same relay that is being
+  retired. Only where it is sent changes; what is sent, and the opt-out, do not.
+- **A sign-in comes back to Console on its own.** When the browser returns
+  from a service's sign-in, Console comes to the front with the next step
+  showing, and the browser's page says the sign-in is done and the tab can be
+  closed. It used to stay behind the browser, with a page telling the person
+  to return to it and confirm. Services whose sign-in returns through the
+  server (Google Workspace, GitHub) also no longer stop on the server's
+  "Continue in Switch Console" page, with a server from the same release.
+- **A sign-in connects without a confirm step.** Once the browser returns,
+  the server keeps the connection and Console shows the result: a service
+  whose agents are added from its page opens that page with the search ready,
+  and any other shows "connected" in the dialog. Console no longer asks to
+  confirm the account first; the account is chosen at the vendor, and
+  Disconnect undoes a wrong one. A sign-in the server refuses, such as an
+  account already linked to someone else in the workspace, shows the reason in
+  the dialog, and the browser's page says to look there. GitHub's sign-in
+  works the same way. Needs a server from this release.
+- **A connector's agents are managed on its page, the way a room's
+  participants are.** The connector's page lists the agents using it as
+  cards, with each agent's avatar and what runs it, under an "Agents" heading
+  with the count. "Add agent" opens a search of your other agents under the
+  cards, and choosing one turns the service on for it at once. Connecting a
+  service now lands on its page with that search open, instead of a checklist
+  in the connect dialog. An agent others can address is offered with a note
+  that it would act as you. A cross on a card, shown on hover, turns the
+  service off for that agent again, so one agent's access can be taken away
+  without disconnecting from every agent.
+- **GitHub is connected, and handed to agents, from its page like any other
+  connector.** Its page has a Repositories section: one card per account the
+  App is installed on, with its count, opening to a directory of names in
+  columns that is searched rather than scrolled once it is long, re-read as
+  the window regains focus. The section's "Choose repositories", "Change
+  repositories" once there are some, goes straight to GitHub. The connect
+  dialog ends with Done once GitHub is connected, the page behind already
+  current; it no longer offers Back or Disconnect, which the page has. "Add
+  agent" is offered for GitHub too: what every added agent gets is chosen
+  above the search, and the page says so while nothing is chosen, since no
+  agent can be added until something is. "Choose repositories" opens the
+  choice in place: the account where there are several, the repositories as
+  chips, added one by one from a search or all at once and removed with a
+  cross, and whether the agent may push. An agent's own choice is changed on
+  its Connections tab, whose form is the same choice in place of the account
+  dropdown and checkbox list.
+- **A workspace's service switches are on an Admin page.** They were a
+  "Workspace" tab on the Connectors page, beside Yours and Discover. An Admin
+  entry in the sidebar, shown to the workspace's admins and the server's
+  operator where service connections are on, opens a page laid out like
+  Settings: its sections down the side, grouped under what they reach
+  ("Workspace" and the workspace's name). Its Connectors section shows the
+  switches as tiles like Discover's: each service with its category, how many
+  members have connected it and agents use it, and who last changed it, with
+  its switch. A tile keeps its place when it flips, and switching one off
+  still asks first when anyone uses it. The Connectors page has Yours and
+  Discover again, with "Manage in Admin" in its header for an admin, and its
+  search now fills the row.
+- **Connector tools ask in approval-required and auto-accept-edits mode.**
+  Calls to a granted service's tools (Jira and Confluence through Atlassian,
+  Datadog, Google Workspace) used to run without asking in every mode. They now
+  follow the agent's mode, as its other tools do: an approval card asks first,
+  and declining tells the agent the call was refused. Full access still allows
+  them, and Switch's own room tools never ask. The first such card in a session
+  comes with a notice saying why. Claude Code, Codex and OpenCode cards name the
+  server and tool and show what the call will send, so the text of a comment
+  can be read before it is posted; a long input is cut and the card says how
+  much is not shown. Codex cards can be approved for the rest of the session. A
+  session started before the update keeps allowing them until it restarts.
+- **A Console session in "approval required" no longer inherits your own
+  Claude Code default mode.** Console now starts a Claude Code session in that
+  mode with Claude Code's `default` permission mode. It used to leave the mode
+  unset, so a `defaultMode` such as `auto` in your own Claude Code settings
+  applied, and tools, connector tools among them, could run without the
+  approval card the mode promises.
+- **A session says which services it lost or gained.** When a running session
+  restarts because its agent's services changed, it shows a notice naming
+  them, for example "Datadog was removed from this agent's tools: it was
+  switched off for the workspace, or its grant was removed." The agent is told
+  the same as it resumes, so it does not look for tools it no longer has.
+
 #### Fixed
+- **Switch buddy stops waiting on a Claude Code it cannot check.** A Claude
+  Code from before `claude auth status` left the AI provider screen on
+  "Checking" until its timeout; it now asks to sign in and says the CLI may be
+  too old. A login that is there but cannot answer a test prompt shows Claude's
+  own error next to Sign in.
+- **Settings → Agent providers finds a CLI installed since Console started.**
+  Console now looks in `~/.local/bin`, where the Claude Code and OpenCode
+  installers put their CLI, at start and on every refresh, as this computer's
+  agents controller already did. Before, a Claude Code installed by hand showed
+  "CLI not installed" there while Switch buddy was using it.
+- **Settings → Agent providers and Switch buddy agree on this computer's
+  providers.** When this computer's agents controller has reported to a
+  signed-in server, Settings shows that report, the one buddy and Switch go
+  by, and its refresh asks the controller to check again. Console's own check
+  is used only when there is no such report. Install and update still run
+  through Console's own check.
+- **A failed agent install says why.** Installing Claude Code, Codex or another
+  provider from Switch buddy showed only "Install command failed." It now says
+  when the disk is full, and otherwise adds the line of the install output that
+  says what failed.
+- **Signing in to a service through Core works on a server whose gateway and
+  API are on different hosts.** Core sends the browser through its own
+  authorize step at its public address, the API's host, where the vendor
+  returns it; Console only accepted the gateway's host and refused the sign-in
+  as an invalid URL. It now accepts either of the server's own origins, over
+  HTTPS. Google Workspace connects this way.
+- **The usage-data note says what a "yes" does on a shared server.** The
+  consent dialog and Settings said the answer applies to a server Console runs
+  for you. On a server other people also run from their own Console, a "no"
+  turns sharing off for everyone at your next start, while a "yes" leaves it as
+  it is — on stays on, off stays off — unless none of them has used the server
+  in the last 14 days. The note now says so.
+
+### [0.39.0] - 2026-10-12
+
+#### Added
+- **Service connections follow the server's `service_connections` flag,**
+  apart from cloud machines. With it off, Your Agents offers no Connections,
+  no agent shows Service access, and setting up Switch Cloud goes straight
+  from signing in to the first cloud agent; turning it on reaches a running
+  Console without a restart.
+- **Agents / Rooms sidebar and a reworked workspace menu.** On a server with
+  agent management, Console leads with Agents and Rooms above the legacy
+  Sessions, behind the server's feature flags, and the workspace menu is
+  restyled (#751).
+- **Managed server status and a Server page.** A managed server shows status
+  dots, has its own Server page, and surfaces a frozen-workspace state (#762).
+- **Switch Trust settings.** Guardrails are configured from a settings panel in
+  Console, backed by the gateway's Switch Trust API (#747).
+- **Windows support for managed agents and the controller** (#765).
+- **Canary has its own switch-core pin.** The canary build can bundle and run a
+  different switch-core release for the servers it manages than stable does — a
+  pre-release can be tried on canary without moving stable. The canary pin can
+  never be older than the stable one. Canary and stable share their managed
+  servers on one computer, so once canary has updated one, stable will not start
+  it again until stable's pin catches up (#764).
+- **Switch cloud on the agents controller.** On a server whose cloud machines
+  run the agents controller, choosing Switch cloud in the New agent form starts
+  your cloud machine and waits for it to come online (its first start takes a
+  few minutes), then creates the agent as a managed agent on it, like on any
+  machine. Once online, the machine is listed as "Switch cloud" among your
+  machines. A server whose machines run the hosted worker works as before.
+- **Give a machine a provider login.** In the New agent form, a machine with
+  a provider installed but not signed in offers to give it a login: a Claude
+  setup token or API key, a Codex or Cursor API key, or this computer's own
+  Codex, OpenCode or Antigravity sign-in. Console seals it to the machine's own
+  key before it leaves, so the server only relays it, and shows whether the
+  provider signs in with it on the machine.
+- **Agents granted GitHub can use it in every session.** Git's credential
+  helper and a `gh` wrapper are set up for `https://github.com` in the session
+  alone, and ask the agent host for a short-lived token; SSH remotes and other
+  hosts keep your own setup. Nothing is set up for an agent without a GitHub
+  grant, or on Windows yet. A token GitHub refuses is replaced on the next
+  command. Tokens are scrubbed from session logs, transcripts, activity shown
+  on messaging platforms and anything the agent posts to a room.
+- **Service access in an agent's settings and on a managed agent's page,**
+  Switch cloud agents included: its grants, the GitHub repositories they
+  reach, and a warning, with "Make owner-only", when anyone can address the
+  agent.
+- The skills of an agent's granted services reach each session, and a session
+  is told when its agent's grants could not be loaded.
+- A server's Connections show a connection that needs reconnecting, and why a
+  service cannot be granted on that server.
+- Connecting GitHub says when an organization's single sign-on hides its
+  installation of the App, and what to do, instead of waiting on access that
+  cannot appear.
+- **Connect Atlassian, and any other service the server offers, from
+  Connections.** Signing in happens in your browser and comes back to Switch
+  Console, which confirms the account with you before the server keeps it.
+  Atlassian takes a sign-in back only on a few fixed ports on your computer;
+  if all are in use, Switch Console says which to free.
+- **Agents granted a service whose tools are a command-line tool, such as
+  Google Workspace, get that tool in every session.** The session host runs
+  the vendor's pinned build itself, never through a shell, after checking each
+  command against the service's catalog entry, and keeps every file it reads or
+  writes inside the session's folder. Each run works in a folder of its own,
+  with your token in its environment for that run alone; the coding tool never
+  sees the token, and it is scrubbed from the output. The build is downloaded
+  on first use and checked against its pinned SHA-256; the agents controller
+  reports it among its tools.
+- **Agents granted a service such as Atlassian get its tools in every
+  session,** as an MCP server of their own beside Switch's. The session host
+  calls the service with your token, which never reaches the coding tool, and
+  scrubs it from everything the session records. A service that is slow or
+  failing shows as one failed server, and Switch's tools keep working. Only
+  text from a service's tools is passed on; anything else is replaced by a
+  line saying what was left out.
+- Service access in an agent's settings shows services such as Atlassian as an
+  on/off switch, saying what on means and how soon off takes effect.
+- **Connect a service with a key, such as Datadog, from Connections.** You
+  paste its keys and pick its site in a form; Switch checks the key with the
+  service before keeping it, and never shows it again. Agents granted the
+  service use it with your key, which the session host puts in each request or
+  run as the service's catalog entry says, and scrubs each key from everything
+  the session records.
+
+#### Changed
+- The agents controller reports `git` and `gh` as found, missing, or not
+  supported on Windows.
+- **An idle session now parks after a day rather than 30 minutes.** Set
+  `SWITCH_SESSION_PARK_AFTER_MS` on the session host to choose another
+  timeout, or `off` to never park.
+
+#### Fixed
+- **A session whose provider offers hundreds of models no longer dies on its
+  next message.** OpenCode signed in to many providers lists more models than
+  a session event can hold, so every update to the session was refused and
+  the host stopped when the next message arrived, leaving the room
+  unanswered. The catalog is now cut to fit (without the models' options
+  first, then without the models past what fits, the selected one kept), and
+  the session says so. A host that fails also records its failure without the
+  catalog, rather than failing again on it.
 - **A machine whose controller Switch refuses for good says so instead of
   restarting it forever.** When the server needs a newer agents controller than
   Console carries, "This computer as a machine" shows that Console needs an
@@ -1389,16 +2106,13 @@ version of their own to them without also giving them a release of their own.
   its credential, Console forgets it as it does for a removed machine, and
   enrolls the machine again on the next check. SSH hosts set up by Console
   stop restarting on either and enroll again on the second.
+- A session's helper endpoint for GitHub no longer hands out the token of any
+  other service the agent was granted.
 - **A Claude Code session is no longer parked while its background subagents
   are still working.** The idle timer only looked at turns, so a session whose
   turn had ended with subagents still running in the background was stopped
   after the idle timeout, taking the subagents with it. Those subagents now
   count as activity, and the idle wait starts again when the last one stops.
-
-#### Changed
-- **An idle session now parks after a day rather than 30 minutes.** Set
-  `SWITCH_SESSION_PARK_AFTER_MS` on the session host to choose another
-  timeout, or `off` to never park.
 
 ### [0.38.1] - 2026-10-01
 
@@ -3053,7 +3767,55 @@ tags; see RELEASING.md.
 
 ### [Unreleased]
 
+#### Added
+- **Provider logins given to the machine, on demand.** The controller makes an
+  X25519 keypair at enrollment (or on its next run, for one enrolled before)
+  and registers the public half. When its owner gives the machine a login
+  sealed to it, a `provider.login` operation has the controller open it, check
+  the provider signs in with it, and report whether it does. The machine's own
+  login still comes first; agents of a provider it has none for get the given
+  one, run in a process of their own, and restart when it changes or is
+  withdrawn. Status reports `auth_source: "sealed"` for it.
+
+- **Each agent as a Linux user of its own.** On Linux with systemd and polkit,
+  `sudo switch-agent-controller install-service --separate-users` sets up, once,
+  a pool of agent users, a unit template that runs an agent as one of them, a
+  polkit rule that lets the controller start only those units, and the
+  controller as a system service. Each agent then runs as its own user and sees
+  only its own directory. It cannot see the home directories, the controller's
+  data, the other agents or the cloud instance metadata, and the rest of the
+  system is read-only to it. Agents get provider keys from the controller's
+  `--env-file`, not its user's own logins. `--agent-users` sets how many agents
+  can run (16 by default).
+
 #### Fixed
+- **A Claude Code login that is there but does not work is reported as not
+  signed in.** `claude auth status` only says a login or key is present, so a
+  key left by an old install read as signed in while every session failed.
+  When setting up, on a recheck, and whenever a login was not yet known to
+  work, the controller now sends Claude Code one short test prompt and reports
+  what it said if it fails. A Claude Code too old to have `auth status` is
+  reported as such instead of as a check that never finished.
+- **A controller updates to the release Switch names while sessions sit idle.**
+  It waited until no session existed on the machine, and a session connected to
+  a room counted even with nothing to do, so a machine with long-lived sessions
+  stayed `waiting_idle` for good. It now waits only until no session is in the
+  middle of a turn. Each agent host reports which of its sessions are busy (one
+  that has not said yet counts as busy), and the controller looks again every
+  few seconds while it waits rather than at the next status report. Idle
+  sessions in the controller's own process are restarted with it and resume
+  their conversations; agents running in a process of their own keep running
+  through it. An agent host too old to report busy sessions still holds the
+  update while it has any session.
+- **Agents running in a process of their own move onto the release the
+  controller updated to.** Such an agent host (detached, or a systemd unit with
+  separate users, as on Switch cloud machines) outlives the controller and kept
+  the shared-host bundle it started with, so a fix in it reached the agent only
+  when the agent was restarted by hand. Each agent host now records the bundle
+  it runs (by SHA-256) in its `health.json`, and the controller restarts one on
+  another bundle, or too old to say, once none of its sessions is mid-turn;
+  idle sessions resume their conversations. A host that comes back still
+  outdated is tried again after 10 minutes.
 - **A refusal that cannot pass stops the controller instead of retrying it
   forever.** The server answers `protocol_unsupported` when it no longer speaks
   the controller's protocol and `invalid_credential` when it knows no controller
@@ -3294,6 +4056,11 @@ The remote runtime Switch Console deploys to an agent host. Versioned in
 published on its own.
 
 ### [Unreleased]
+
+#### Added
+- Serves the session-side half of service grants: granted skills in each
+  session, the GitHub credential helper and `gh` wrapper, and scrubbing of
+  issued tokens, as Switch Console does.
 
 ### [1.9.12] - 2026-10-01
 

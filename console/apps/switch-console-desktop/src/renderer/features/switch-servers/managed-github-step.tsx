@@ -11,13 +11,28 @@ import {
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import type { GitHubConnection, GitHubFlow } from '@shared/core/switch-servers/github-connection';
+import { cn } from '@renderer/utils/utils';
+import type { GitHubConnection } from '@shared/core/switch-servers/github-connection';
+
+const SSO_HIDDEN =
+  'An organization’s single sign-on hides its installation of the app from this GitHub connection. Disconnect and connect GitHub again, and authorize the organization when GitHub asks.';
+const NO_NEW_ACCESS =
+  'No new repository access appeared. If you installed the app on an organization, an owner may still need to approve it, or its single sign-on may hide it from this connection: disconnect and connect GitHub again, authorizing the organization when GitHub asks.';
+
+/** Whether an organization's single sign-on hides installations from this connection. */
+function ssoHidden(connection: GitHubConnection | null): boolean {
+  return (
+    connection?.status === 'connected' && (connection.sso_hidden_organizations?.length ?? 0) > 0
+  );
+}
 
 export function ManagedGitHubStep({
   serverId,
   onBack,
   onSkip,
   onContinue,
+  onConnected,
+  onDone,
 }: {
   serverId: string;
   onBack: () => void;
@@ -25,10 +40,16 @@ export function ManagedGitHubStep({
   onSkip?: () => void;
   /** Offers Continue to agent once repositories are accessible. */
   onContinue?: () => void;
+  /** Runs as the sign-in connects, with the warning Switch gave. */
+  onConnected?: (warning: string | null) => void;
+  /**
+   * Offers Done once connected, in place of Back and Disconnect, and Cancel
+   * before: for a page that has those of its own, as a connector's does.
+   */
+  onDone?: () => void;
 }) {
   const [connection, setConnection] = useState<GitHubConnection | null>(null);
   const [flowId, setFlowId] = useState<string | null>(null);
-  const [flow, setFlow] = useState<GitHubFlow | null>(null);
   const [busy, setBusy] = useState(false);
   const [warning, setWarning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +69,7 @@ export function ManagedGitHubStep({
   useEffect(() => {
     void load();
   }, [load]);
+  // The sign-in is over once the server has kept the connection, or failed it.
   useEffect(() => {
     if (!flowId) return;
     let alive = true;
@@ -56,14 +78,17 @@ export function ManagedGitHubStep({
       try {
         const result = await rpc.switchServers.getGitHubFlow(serverId, flowId);
         if (!alive) return;
-        setFlow(result);
         if (result.status === 'failed')
-          setError('GitHub authorization failed. Cancel and try again.');
-        else if (result.status !== 'ready') timer = setTimeout(() => void poll(), 2000);
+          setError(result.error ?? 'GitHub authorization failed. Cancel and try again.');
+        else if (result.status === 'connected') {
+          setFlowId(null);
+          setWarning(result.warning);
+          await load();
+          onConnected?.(result.warning);
+        } else timer = setTimeout(() => void poll(), 2000);
       } catch (cause) {
         if (alive) {
           setFlowId(null);
-          setFlow(null);
           setError(failureText(cause, 'Could not check GitHub authorization.'));
         }
       }
@@ -73,7 +98,7 @@ export function ManagedGitHubStep({
       alive = false;
       clearTimeout(timer);
     };
-  }, [serverId, flowId]);
+  }, [serverId, flowId, load, onConnected]);
   useEffect(() => {
     if (!watching) return;
     let alive = true;
@@ -84,7 +109,7 @@ export function ManagedGitHubStep({
       clearTimeout(timer);
       if (Date.now() >= watching.expiresAt) {
         setWatching(null);
-        setError('Repository selection timed out. Choose repositories again to continue.');
+        setError(NO_NEW_ACCESS);
         return;
       }
       checking = true;
@@ -92,7 +117,7 @@ export function ManagedGitHubStep({
         const result = await rpc.switchServers.getGitHubConnection(serverId);
         if (!alive) return;
         setConnection(result);
-        if (JSON.stringify(result) !== watching.baseline) setWatching(null);
+        if (JSON.stringify(result) !== watching.baseline || ssoHidden(result)) setWatching(null);
         else timer = setTimeout(() => void check(), 5000);
       } catch (cause) {
         if (alive) {
@@ -132,28 +157,14 @@ export function ManagedGitHubStep({
   const connected = connection?.status === 'connected';
   return (
     <>
-      <DialogHeader showCloseButton={!busy && !flowId}>
+      <DialogHeader showCloseButton={!flowId}>
         <DialogTitle>{connected && !flowId ? 'GitHub connected' : 'Connect GitHub'}</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-5 pt-0">
         {flowId ? (
-          <div className="space-y-3">
-            {flow?.status === 'ready' ? (
-              <>
-                <p className="flex items-center gap-2 text-sm">
-                  <CircleCheck className="size-5 text-foreground-success" />
-                  Authorized as <strong>{flow.login}</strong>
-                </p>
-                <p className="text-sm text-foreground-muted">
-                  Confirm this is the GitHub account you want to connect to Switch.
-                </p>
-              </>
-            ) : (
-              <p className="flex items-center gap-2 text-sm">
-                <Spinner /> Complete authorization in your browser, then return here.
-              </p>
-            )}
-          </div>
+          <p className="flex items-center gap-2 text-sm">
+            <Spinner /> Complete authorization in your browser, then return here.
+          </p>
         ) : connected ? (
           <>
             <p className="flex items-center gap-2 text-sm">
@@ -200,15 +211,22 @@ export function ManagedGitHubStep({
                 Choose repositories <ExternalLink className="size-4" />
               </Button>
             </div>
+            {ssoHidden(connection) && (
+              <p role="alert" className="text-sm text-foreground-warning">
+                {SSO_HIDDEN}
+              </p>
+            )}
             {watching && (
               <p role="status" className="flex items-center gap-2 text-xs text-foreground-muted">
                 <Spinner /> Choose repositories in GitHub. Access will update here automatically.
               </p>
             )}
-            <p className="text-xs text-foreground-muted">
-              Disconnecting removes credentials saved by Switch. You can also revoke authorization
-              or uninstall the app in GitHub settings. No cloud agent has been started.
-            </p>
+            {!onDone && (
+              <p className="text-xs text-foreground-muted">
+                Disconnecting removes credentials saved by Switch. You can also revoke authorization
+                or uninstall the app in GitHub settings. No cloud agent has been started.
+              </p>
+            )}
           </>
         ) : (
           <>
@@ -250,11 +268,13 @@ export function ManagedGitHubStep({
             </div>
           </>
         )}
-        {busy && (
-          <p className="flex items-center gap-2 text-sm">
-            <Spinner /> Checking GitHub…
-          </p>
-        )}
+        <p
+          role="status"
+          aria-hidden={!busy}
+          className={cn('flex items-center gap-2 text-sm', !busy && 'invisible')}
+        >
+          <Spinner /> Checking GitHub…
+        </p>
         {warning && (
           <p role="status" className="rounded-md border p-3 text-sm text-foreground-muted">
             {warning}
@@ -273,46 +293,28 @@ export function ManagedGitHubStep({
       </DialogContentArea>
       <DialogFooter>
         {flowId ? (
-          <>
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() =>
-                void act(async () => {
-                  await rpc.switchServers.cancelGitHubConnection(serverId, flowId);
-                  setFlowId(null);
-                  setFlow(null);
-                })
-              }
-            >
-              Cancel
-            </Button>
-            {flow?.status === 'ready' && (
-              <Button
-                disabled={busy}
-                onClick={() =>
-                  void act(async () => {
-                    const result = await rpc.switchServers.confirmGitHubConnection(
-                      serverId,
-                      flowId
-                    );
-                    setFlowId(null);
-                    setFlow(null);
-                    setWarning(result.warning ?? null);
-                    await load();
-                  })
-                }
-              >
-                Connect {flow.login}
-              </Button>
-            )}
-          </>
+          <Button
+            variant="outline"
+            disabled={busy}
+            onClick={() =>
+              void act(async () => {
+                await rpc.switchServers.cancelGitHubConnection(serverId, flowId);
+                setFlowId(null);
+              })
+            }
+          >
+            Cancel
+          </Button>
+        ) : onDone && connected && !error ? (
+          <Button onClick={onDone} disabled={busy}>
+            Done
+          </Button>
         ) : (
           <>
             <Button variant="outline" onClick={onBack} disabled={busy}>
-              Back
+              {onDone ? 'Cancel' : 'Back'}
             </Button>
-            {connected && (
+            {connected && !onDone && (
               <Button
                 variant="ghost"
                 disabled={busy}
@@ -350,7 +352,6 @@ export function ManagedGitHubStep({
                 disabled={busy}
                 onClick={() =>
                   void act(async () => {
-                    setFlow(null);
                     setFlowId(await rpc.switchServers.startGitHubConnection(serverId));
                   })
                 }

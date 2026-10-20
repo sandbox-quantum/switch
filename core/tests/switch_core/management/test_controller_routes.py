@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.config import ControllerRelease
 from switch_core.db.models import AgentControllerEnrollmentCode
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.management.bindings import load_bindings
@@ -29,9 +30,12 @@ from tests.switch_core.management.harness import (
     create_managed_agent,
     definition,
     enroll_console,
+    enroll_daemon,
+    ensure_connected,
     fixture,
     provider,
     report_status,
+    status_report,
 )
 
 
@@ -376,7 +380,12 @@ class TestStatus:
                 "/gateway/management/controllers", cookies=cookies_for(owner)
             )
         assert response.status_code == 200, response.text
-        assert response.json() == {"assignment_revision": 0, "report_within_s": 60}
+        assert response.json() == {
+            "assignment_revision": 0,
+            "report_within_s": 60,
+            "controller_release": None,
+        }
+        assert online.json()[0]["release"] is None
         assert online.json()[0]["state"] == "online"
         assert online.json()[0]["status"]["seq"] == 5
         assert stale.json()[0]["state"] == "online"
@@ -452,6 +461,132 @@ class TestStatus:
         assert response.headers["Switch-Controller-Protocol-Accepts"] == "2-2"
         assert accepted.status_code == 200
         assert accepted.headers["Switch-Controller-Protocol-Accepts"] == "2-2"
+
+
+_RELEASE = ControllerRelease(
+    version="0.31.0",
+    url="https://example.com/switch-agent-controller-0.31.0.tgz",
+    sha256="b" * 64,
+)
+
+
+class TestControllerRelease:
+    @pytest.fixture
+    def harness(self, session_factory: async_sessionmaker[AsyncSession]) -> Harness:
+        return build_harness(session_factory, controller_release=_RELEASE)
+
+    async def test_the_status_answer_names_the_release_and_the_owner_sees_it(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        report = status_report(1)
+        report["update"] = {"target": "0.31.0", "state": "waiting_idle"}
+        async with harness.client() as client:
+            controller = await enroll_daemon(harness, client, owner)
+            await ensure_connected(client, controller)
+            response = await client.put(
+                f"/v1/management/controllers/{controller.controller_id}/status",
+                json=report,
+                headers=controller.headers,
+            )
+            listed = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(owner)
+            )
+        assert response.status_code == 200, response.text
+        assert response.json()["controller_release"] == {
+            "version": "0.31.0",
+            "url": "https://example.com/switch-agent-controller-0.31.0.tgz",
+            "sha256": "b" * 64,
+        }
+        view = listed.json()[0]
+        assert view["release"] == {
+            "wanted": "0.31.0",
+            "running": "0.1.0",
+            "current": False,
+        }
+        assert view["status"]["update"] == {"target": "0.31.0", "state": "waiting_idle"}
+
+    async def test_a_controller_on_the_release_is_current(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        report = status_report(1)
+        report["controller"]["version"] = "0.31.0"
+        async with harness.client() as client:
+            controller = await enroll_daemon(harness, client, owner)
+            await ensure_connected(client, controller)
+            await client.put(
+                f"/v1/management/controllers/{controller.controller_id}/status",
+                json=report,
+                headers=controller.headers,
+            )
+            listed = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(owner)
+            )
+        view = listed.json()[0]
+        assert view["version"] == "0.31.0"
+        assert view["release"] == {
+            "wanted": "0.31.0",
+            "running": "0.31.0",
+            "current": True,
+        }
+        assert "update" not in view["status"]
+
+    async def test_a_console_controller_is_told_no_release(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            response = await report_status(client, controller, 1)
+            listed = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(owner)
+            )
+        assert response.status_code == 200, response.text
+        assert response.json()["controller_release"] is None
+        assert listed.json()[0]["release"] is None
+
+    async def test_a_controller_console_updates_is_told_no_release(
+        self, harness: Harness
+    ) -> None:
+        """One Switch Console runs on an SSH host enrolls as a daemon, but
+        follows Console's bundle, not the release Core names."""
+        owner = await add_member(harness.session_factory, "ada")
+        report = status_report(1)
+        report["controller"]["updated_by"] = "console"
+        async with harness.client() as client:
+            controller = await enroll_daemon(harness, client, owner)
+            await ensure_connected(client, controller)
+            response = await client.put(
+                f"/v1/management/controllers/{controller.controller_id}/status",
+                json=report,
+                headers=controller.headers,
+            )
+            listed = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(owner)
+            )
+        assert response.status_code == 200, response.text
+        assert response.json()["controller_release"] is None
+        view = listed.json()[0]
+        assert view["release"] is None
+        assert view["status"]["controller"]["updated_by"] == "console"
+
+    async def test_a_controller_that_updates_itself_is_told_the_release(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        report = status_report(1)
+        report["controller"]["updated_by"] = "self"
+        async with harness.client() as client:
+            controller = await enroll_daemon(harness, client, owner)
+            await ensure_connected(client, controller)
+            response = await client.put(
+                f"/v1/management/controllers/{controller.controller_id}/status",
+                json=report,
+                headers=controller.headers,
+            )
+        assert response.status_code == 200, response.text
+        assert response.json()["controller_release"]["version"] == "0.31.0"
 
 
 async def _placed_agent(
@@ -868,6 +1003,7 @@ def test_definition_helper_is_the_v1_shape() -> None:
         "provider",
         "model",
         "instructions",
+        "auto_mode",
         "auto_approve",
         "directory",
         "isolation",

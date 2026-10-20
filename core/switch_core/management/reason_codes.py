@@ -27,6 +27,8 @@ PROVIDER_LOGIN_MISSING = "provider_login_missing"
 PROVIDER_LOGIN_EXPIRED = "provider_login_expired"
 CONNECTOR_NOT_CONNECTED = "connector_not_connected"
 CONNECTOR_REVOKED = "connector_revoked"
+GRANT_MISSING = "grant_missing"
+GRANT_ACCOUNT_CHANGED = "grant_account_changed"
 DEFINITION_INVALID = "definition_invalid"
 REPO_CLONE_FAILED = "repo_clone_failed"
 CRASH_LOOP = "crash_loop"
@@ -63,6 +65,8 @@ ALL_REASON_CODES = frozenset(
         PROVIDER_LOGIN_EXPIRED,
         CONNECTOR_NOT_CONNECTED,
         CONNECTOR_REVOKED,
+        GRANT_MISSING,
+        GRANT_ACCOUNT_CHANGED,
         DEFINITION_INVALID,
         REPO_CLONE_FAILED,
         CRASH_LOOP,

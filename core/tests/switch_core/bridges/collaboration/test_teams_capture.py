@@ -9,6 +9,7 @@ import json
 import os
 from typing import Any
 
+import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
@@ -22,11 +23,13 @@ from switch_core.bridges.collaboration.models import InboundMessage
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
+    _parse_graph_time,
 )
 from switch_core.bridges.collaboration.teams.crypto import (
     ResourceDataError,
     decrypt_resource_data,
     load_certificate_der_b64,
+    load_private_key,
 )
 
 
@@ -111,7 +114,7 @@ def test_decrypt_resource_data_round_trip() -> None:
     payload = {"id": "m1", "body": {"content": "hello world"}}
 
     encrypted = _encrypt_like_graph(payload, cert)
-    decrypted = decrypt_resource_data(encrypted, key_pem)
+    decrypted = decrypt_resource_data(encrypted, load_private_key(key_pem))
 
     assert decrypted == payload
 
@@ -122,7 +125,7 @@ def test_decrypt_rejects_tampered_signature() -> None:
     encrypted["dataSignature"] = base64.b64encode(b"not-the-signature").decode()
 
     try:
-        decrypt_resource_data(encrypted, key_pem)
+        decrypt_resource_data(encrypted, load_private_key(key_pem))
         raised = False
     except ResourceDataError:
         raised = True
@@ -180,6 +183,26 @@ def test_validation_handshake_echoes_token() -> None:
     assert resp.text == "tok-xyz"
 
 
+def test_a_notification_that_fails_to_handle_does_not_fail_the_whole_batch() -> None:
+    """Graph gets a 202 either way: raising here would have it retry a batch
+    where only one item was bad, instead of the one that failed."""
+    key_pem, cert_pem, _ = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+
+    async def _raise(item: dict[str, Any]) -> None:
+        raise RuntimeError("boom")
+
+    adapter.receive_notification = _raise  # type: ignore[method-assign]
+
+    resp = _run(
+        adapter._handle_http_notifications(
+            _FakeRequest(body={"value": [{"anything": "goes"}]})  # type: ignore[arg-type]
+        )
+    )
+
+    assert resp.status == 202
+
+
 def test_notification_decrypts_and_delivers_message() -> None:
     key_pem, cert_pem, cert = _make_key_and_cert()
     adapter = _adapter(key_pem, cert_pem)
@@ -198,7 +221,7 @@ def test_notification_decrypts_and_delivers_message() -> None:
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
 
-    _run(adapter._dispatch_graph_notification(item))
+    _run(adapter.receive_notification(item))
 
     assert len(captured) == 1
     msg = captured[0]
@@ -235,7 +258,7 @@ def test_notification_sets_self_mention_token_for_bot_mention() -> None:
         "clientState": "s3cr3t",
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
-    _run(adapter._dispatch_graph_notification(item))
+    _run(adapter.receive_notification(item))
 
     assert len(captured) == 1
     assert captured[0].content == "@Bot hi"
@@ -266,7 +289,7 @@ def test_notification_no_self_mention_token_for_human_mention() -> None:
         "clientState": "s3cr3t",
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
-    _run(adapter._dispatch_graph_notification(item))
+    _run(adapter.receive_notification(item))
 
     assert len(captured) == 1
     assert captured[0].content == "@Bob hi"
@@ -295,7 +318,7 @@ def test_graph_message_attachment_is_disclosed() -> None:
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
 
-    _run(adapter._dispatch_graph_notification(item))
+    _run(adapter.receive_notification(item))
 
     assert len(captured) == 1
     content = captured[0].content
@@ -313,7 +336,7 @@ def test_notification_rejects_bad_client_state() -> None:
         "clientState": "WRONG",
         "encryptedContent": _encrypt_like_graph({"id": "m1"}, cert),
     }
-    _run(adapter._dispatch_graph_notification(item))
+    _run(adapter.receive_notification(item))
 
     assert captured == []
 
@@ -335,7 +358,7 @@ def test_own_bot_message_is_not_delivered() -> None:
         "clientState": "s3cr3t",
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
-    _run(adapter._dispatch_graph_notification(item))
+    _run(adapter.receive_notification(item))
 
     assert captured == []
 
@@ -357,11 +380,94 @@ def test_graph_capture_dedupes_with_bot_framework_path() -> None:
         "clientState": "s3cr3t",
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
-    _run(adapter._dispatch_graph_notification(item))
+    _run(adapter.receive_notification(item))
     # The same message id already seen via one path is ignored on the other.
-    _run(adapter._dispatch_graph_notification(item))
+    _run(adapter.receive_notification(item))
 
     assert len(captured) == 1
+
+
+def _mention_activity(message_id: str) -> dict[str, Any]:
+    return {
+        "type": "message",
+        "id": message_id,
+        "serviceUrl": "https://smba.trafficmanager.net/amer/",
+        "text": "<at>Switch</at> hi",
+        "from": {"aadObjectId": "aad-u", "name": "Alice"},
+        "conversation": {
+            "id": f"19:c@thread.tacv2;messageid={message_id}",
+            "conversationType": "channel",
+        },
+        "channelData": {"channel": {"id": "19:c@thread.tacv2"}},
+    }
+
+
+def _graph_message(message_id: str) -> dict[str, Any]:
+    return {
+        "id": message_id,
+        "messageType": "message",
+        "from": {"user": {"id": "aad-u", "displayName": "Alice"}},
+        "channelIdentity": {"teamId": "t1", "channelId": "19:c@thread.tacv2"},
+        "body": {"contentType": "text", "content": "hi"},
+    }
+
+
+def test_a_mention_heard_both_ways_reaches_the_room_once() -> None:
+    """A message mentioning the bot arrives as a Bot Framework activity and
+    as a Graph notification, under the same id; the second is the same
+    message, whichever comes first."""
+    key_pem, cert_pem, cert = _make_key_and_cert()
+    for activity_first in (True, False):
+        adapter = _adapter(key_pem, cert_pem)
+        captured = _capture(adapter)
+        adapter._channel_type["19:c@thread.tacv2"] = "channel_public"
+        notification = {
+            "clientState": "s3cr3t",
+            "encryptedContent": _encrypt_like_graph(_graph_message("m-1"), cert),
+        }
+        steps = [
+            adapter._dispatch_activity(_mention_activity("m-1")),
+            adapter.receive_notification(notification),
+        ]
+        if not activity_first:
+            steps.reverse()
+        for step in steps:
+            _run(step)
+
+        assert len(captured) == 1
+
+
+def test_an_encrypted_notification_with_no_key_to_open_it_is_dropped_loudly(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A subscription can outlive the key it was made with; what it then
+    delivers cannot be read, and says so."""
+    _, _, cert = _make_key_and_cert()
+    adapter = TeamsAdapter(
+        config=TeamsConnectionConfig(
+            app_id="app-123",
+            app_password="secret",
+            tenant_id="tenant-1",
+            team_id="team-1",
+            public_base_url="https://switch.example",
+            client_state="s3cr3t",
+        )
+    )
+    assert adapter._me.keyring is None
+    captured = _capture(adapter)
+    caplog.set_level("ERROR")
+
+    _run(
+        adapter.receive_notification(
+            {
+                "clientState": "s3cr3t",
+                "encryptedContent": _encrypt_like_graph(_graph_message("m-2"), cert),
+            }
+        )
+    )
+
+    assert captured == []
+    assert any("no private key" in r.getMessage() for r in caplog.records)
 
 
 def test_reply_sets_root_id_from_reply_to_id() -> None:
@@ -382,7 +488,7 @@ def test_reply_sets_root_id_from_reply_to_id() -> None:
         "clientState": "s3cr3t",
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
-    _run(adapter._dispatch_graph_notification(item))
+    _run(adapter.receive_notification(item))
 
     assert captured[0].root_id == "root-1"
 
@@ -402,7 +508,7 @@ def test_system_event_message_is_ignored() -> None:
         "clientState": "s3cr3t",
         "encryptedContent": _encrypt_like_graph(chat_message, cert),
     }
-    _run(adapter._dispatch_graph_notification(item))
+    _run(adapter.receive_notification(item))
 
     assert captured == []
 
@@ -447,6 +553,34 @@ def test_ensure_channel_subscription_creates_with_expected_resource() -> None:
     )
     assert fake.created[0]["client_state"] == "s3cr3t"
     assert adapter._subscriptions["19:c@thread.tacv2"] == "SUB-1"
+
+
+class _ExpiringGraph(_FakeGraph):
+    async def create_subscription(self, **kwargs: Any) -> dict[str, Any]:
+        self.created.append(kwargs)
+        return {"id": "SUB-1", "expirationDateTime": "2026-01-01T00:00:00Z"}
+
+
+def test_an_unparseable_graph_timestamp_is_read_as_unknown_rather_than_raised() -> None:
+    assert _parse_graph_time("not-a-timestamp") is None
+    assert _parse_graph_time(None) is None
+    assert _parse_graph_time(12345) is None
+
+
+def test_ensure_channel_subscription_records_when_the_new_one_runs_out() -> None:
+    """The renewal loop reads this back to decide whether a subscription is
+    close enough to running out to renew; a new one has to record it the same
+    as one adopted on restart does."""
+    key_pem, cert_pem, _ = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+    adapter._graph = _ExpiringGraph()  # type: ignore[assignment]
+    adapter._team_of_channel["19:c@thread.tacv2"] = "team-9"
+
+    _run(adapter._ensure_channel_subscription("19:c@thread.tacv2"))
+
+    assert adapter._subscription_expiry["19:c@thread.tacv2"] == datetime.datetime(
+        2026, 1, 1, tzinfo=datetime.UTC
+    )
 
 
 def test_ensure_channel_subscription_skips_without_certificate() -> None:
@@ -504,7 +638,7 @@ def test_adopt_existing_subscriptions_deletes_stale_and_keeps_current() -> None:
     # recreated cleanly.
     key_pem, cert_pem, _ = _make_key_and_cert()
     adapter = _adapter(key_pem, cert_pem)
-    current = adapter._notification_url
+    current = adapter._me.notification_url
     fake = _FakeGraph(
         existing=[
             {
@@ -532,6 +666,43 @@ def test_adopt_existing_subscriptions_deletes_stale_and_keeps_current() -> None:
     assert fake.deleted == ["OLD"]
 
 
+def test_adopt_existing_subscriptions_records_a_readable_expiry() -> None:
+    """A subscription adopted on restart is handed to the renewal loop the
+    same as one this process made itself, so it has to carry when the
+    adopted one actually runs out."""
+    key_pem, cert_pem, _ = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+    current = adapter._me.notification_url
+    fake = _FakeGraph(
+        existing=[
+            {
+                "id": "CUR",
+                "resource": "teams/t/channels/19:keep@thread.tacv2/messages",
+                "notificationUrl": current,
+                "expirationDateTime": "2026-01-01T00:00:00Z",
+            }
+        ]
+    )
+    adapter._graph = fake  # type: ignore[assignment]
+
+    _run(adapter._adopt_existing_subscriptions())
+
+    assert adapter._subscription_expiry["19:keep@thread.tacv2"] == datetime.datetime(
+        2026, 1, 1, tzinfo=datetime.UTC
+    )
+
+
+def test_renewing_a_subscription_with_no_graph_client_yet_is_a_no_op() -> None:
+    """Reached only if a renewal round somehow outlives `stop()` clearing the
+    graph client; nothing to renew against, so this is a no-op rather than an
+    attribute error on a bridge mid-shutdown."""
+    key_pem, cert_pem, _ = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+    assert adapter._graph is None
+
+    _run(adapter._renew_subscription("19:c@thread.tacv2", "SUB-1"))
+
+
 def test_channel_from_resource_parses_channel_id() -> None:
     assert (
         TeamsAdapter._channel_from_resource(
@@ -548,7 +719,7 @@ def test_lifecycle_reauthorization_renews_subscription() -> None:
     adapter._graph = fake  # type: ignore[assignment]
 
     _run(
-        adapter._dispatch_graph_notification(
+        adapter.receive_notification(
             {
                 "lifecycleEvent": "reauthorizationRequired",
                 "subscriptionId": "SUB-42",
@@ -571,7 +742,7 @@ def test_lifecycle_event_with_bad_client_state_is_rejected() -> None:
     adapter._graph = fake  # type: ignore[assignment]
 
     _run(
-        adapter._dispatch_graph_notification(
+        adapter.receive_notification(
             {
                 "lifecycleEvent": "reauthorizationRequired",
                 "subscriptionId": "SUB-42",
@@ -594,7 +765,7 @@ def test_lifecycle_subscription_removed_recreates() -> None:
     adapter._subscriptions["19:c@thread.tacv2"] = "SUB-OLD"
 
     _run(
-        adapter._dispatch_graph_notification(
+        adapter.receive_notification(
             {
                 "lifecycleEvent": "subscriptionRemoved",
                 "subscriptionId": "SUB-OLD",
@@ -608,7 +779,7 @@ def test_lifecycle_subscription_removed_recreates() -> None:
     assert adapter._subscriptions["19:c@thread.tacv2"] == "SUB-1"
 
 
-def test_renew_all_subscriptions_renews_each() -> None:
+def test_renew_due_subscriptions_renews_each_with_no_known_expiry() -> None:
     key_pem, cert_pem, _ = _make_key_and_cert()
     adapter = _adapter(key_pem, cert_pem)
     fake = _FakeGraph()
@@ -618,6 +789,6 @@ def test_renew_all_subscriptions_renews_each() -> None:
         "19:c2@thread.tacv2": "S2",
     }
 
-    _run(adapter._renew_all_subscriptions())
+    _run(adapter._renew_due_subscriptions())
 
     assert {r["subscription_id"] for r in fake.renewed} == {"S1", "S2"}

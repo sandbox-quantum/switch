@@ -51,7 +51,7 @@ export const gatewayManagementPort: ManagementPort = {
     try {
       return await withReachableWorkspaceSession(workspaceId, async (server) => {
         const enrolled = await enrollConsoleController(server, body);
-        return { serverId: server.id, apiUrl: server.apiUrl, ...enrolled };
+        return { serverId: server.id, apiUrl: server.url, ...enrolled };
       });
     } catch (error) {
       if (error instanceof AgentManagementUnavailableError) throw error;

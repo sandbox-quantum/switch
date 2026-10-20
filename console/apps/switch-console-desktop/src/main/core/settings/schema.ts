@@ -1,6 +1,6 @@
 import z from 'zod';
 import { BROWSER_ISOLATED_PROFILE_ID } from '@shared/browser';
-import { AGENT_PROVIDER_IDS } from '@shared/core/providers/agent-provider-registry';
+import { isValidProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { AppSettingsKeyName } from '@shared/core/settings/setting-keys';
 import { openInAppIdSchema } from '@shared/openInApps';
 import { DEFAULT_AGENT_ID } from './settings-registry';
@@ -31,7 +31,11 @@ export const themeSchema = z
   .optional()
   .default(null);
 
-export const defaultAgentSchema = z.optional(z.enum(AGENT_PROVIDER_IDS)).default(DEFAULT_AGENT_ID);
+export const defaultAgentSchema = z
+  .optional(
+    z.string().refine((id) => isValidProviderId(id), { message: 'Unknown agent provider.' })
+  )
+  .default(DEFAULT_AGENT_ID);
 
 /**
  * Per-provider execution settings stored as host-agnostic overrides.

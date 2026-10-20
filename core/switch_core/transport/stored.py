@@ -55,6 +55,7 @@ def to_inbound(
             sender=sender,
             timestamp=timestamp,
             content=content,
+            seq=row.seq,
             state_key=row.sender_id,
             membership=text_field(content.get("membership")) or "join",
             # Only an arrival is ever written, so there is no previous state
@@ -71,6 +72,7 @@ def to_inbound(
             sender=sender,
             timestamp=timestamp,
             content=content,
+            seq=row.seq,
             event_type=row.event_type,
             thread_root_id=row.thread_root_event_id,
         )
@@ -82,6 +84,7 @@ def to_inbound(
             sender=sender,
             timestamp=timestamp,
             content=content,
+            seq=row.seq,
             body=row.body or "",
             sender_name=row.sender_name,
             formatted_body=row.formatted_body,
@@ -97,6 +100,7 @@ def to_inbound(
         sender=sender,
         timestamp=timestamp,
         content=content,
+        seq=row.seq,
         body=row.body or "",
         sender_name=row.sender_name,
         formatted_body=row.formatted_body,

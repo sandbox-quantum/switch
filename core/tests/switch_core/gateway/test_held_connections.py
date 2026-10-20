@@ -30,6 +30,7 @@ import pytest
 from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.agent_core import AgentDeletionResult
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
@@ -57,7 +58,7 @@ from switch_core.gateway.auth import (
 )
 from switch_core.gateway.auth_routes import router as auth_router
 from switch_core.gateway.collaborations import router as bridges_router
-from switch_core.gateway.hosted_launches import hosted_settings
+from switch_core.gateway.hosted_machines import hosted_settings
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.keys import Keyring
 from switch_core.room_service import RoomService
@@ -138,8 +139,16 @@ class _Adapter:
     async def install_note(self) -> str | None:
         return None
 
+    places_app_in_teams = False
+
+    async def attention(self) -> str | None:
+        return None
+
     async def channel_deeplink(self, external_channel_id: str) -> str | None:
         self._calls.record("platform channel deeplink")
+        return None
+
+    def channel_ids_refused(self) -> str | None:
         return None
 
 
@@ -165,11 +174,25 @@ class _CollabLifecycle:
     def supports_directory_search(self, bridge_type: str) -> bool:
         return True
 
+    def receives_webhooks(self, bridge_type: str) -> bool:
+        return False
+
+    def webhook_url(self, bridge_id: str, bridge_type: str) -> str | None:
+        return None
+
     async def check_edited_connection_config(self, **_: Any) -> None:
         self._calls.record("platform credential check")
 
     async def check_start_guards(self, **_: Any) -> None:
         self._calls.record("start guards")
+
+    def editable_config_keys(
+        self, bridge_type: str, connection_config: dict[str, object]
+    ) -> frozenset[str] | None:
+        return None
+
+    async def check_config_edit(self, **_: Any) -> None:
+        self._calls.record("platform edit check")
 
     async def restart(self, bridge_id: str) -> None:
         self._calls.record("bridge restart")
@@ -199,10 +222,11 @@ class _Protocol:
 
     async def delete_agent(
         self, *, agent_id: str | None = None, agent_name: str | None = None
-    ) -> None:
+    ) -> AgentDeletionResult:
         async with self._session_factory() as session:
             await AgentStore().get(session, agent_id or "")
         self._calls.record("bridge identity removal")
+        return AgentDeletionResult(bridge_failures=[])
 
     async def get_agent_statuses_by_ids_in_session(
         self, session: AsyncSession, room_id: str, agent_ids: list[str]
@@ -553,6 +577,7 @@ class TestBridgeRoutes:
         assert [what for what, _ in calls.held] == [
             "platform credential check",
             "start guards",
+            "platform edit check",
             "bridge restart",
             "platform directory search",
             "platform directory search",

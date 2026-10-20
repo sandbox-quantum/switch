@@ -57,20 +57,14 @@ from switch_core.sessions.contract import (
 from . import (
     CLOSED,
     NO_OPTIONS,
-    SURFACES,
     Drawn,
     Markup,
     RequestReference,
     example_value,
+    surface_label,
     turn_state,
     unanswerable,
 )
-
-# Only these reach a reader as a link. A scheme outside the set is printed as
-# the plain text it is rather than wrapped in link syntax: `javascript:` in an
-# anchor is the one thing a rendered URL must never become, and a platform
-# that refuses an unknown scheme would render the syntax instead of the link.
-_LINK_SCHEMES = ("https://", "http://", "switchdash://")
 
 _CONSOLE = "Open in Switch Console"
 
@@ -271,7 +265,6 @@ def turn_status(
     limit: int,
     markup: Markup,
     elapsed_seconds: float | None = None,
-    session_url: str | None = None,
     mention: str | None = None,
     error_summary: str | None = None,
     tool_detail: bool,
@@ -287,15 +280,14 @@ def turn_status(
 
     Three lines at most, and usually one:
 
-    - where the turn got to and how long it has taken, with one Console link;
+    - where the turn got to and how long it has taken;
     - what it is doing right now, while it is still doing something;
     - how the tool calls went, once there is more than one outcome to report.
 
     `tool_detail` says whether this platform reports tool activity at all, and
     a platform can decline it. Where the status shares the conversation with
     everything else that is said there, the tool of the moment and a count of
-    healthy calls are both noise: the state, its duration and its link are the
-    record, and what the turn did is in Console.
+    healthy calls are both noise: the state and its duration are the record.
 
     What survives declining it is what a reader has to act on — a call that
     failed or was declined is an outcome, not chatter about progress, and it
@@ -304,29 +296,19 @@ def turn_status(
     `error_summary` is the attention slot rather than the status: a distinct
     problem somebody has to act on, said in one sentence with the mention that
     makes it reach them. It stands in for the state line, which under it would
-    only be reporting a turn that is, by definition, not getting anywhere — but
-    not for the Console link. The message asking somebody to act is the one they
-    most need to be able to ask what happened from, and a reader sent to look at
-    a turn with no way to see what it did is being asked to act on a sentence.
+    only be reporting a turn that is, by definition, not getting anywhere.
 
     `mention` is already in the platform's own syntax and is not escaped: it is
     the adapter's, resolved from an id Switch holds, never host text.
     """
     budget = _room(limit, mention)
     if error_summary:
-        warning = _truncate(f"⚠️ {error_summary}", budget)
-        link = _link(_CONSOLE, session_url, markup)
-        if link and len(warning) + 3 + len(link) <= budget:
-            warning = f"{warning} · {link}"
-        return _mentioned(mention, warning)
+        return _mentioned(mention, _truncate(f"⚠️ {error_summary}", budget))
 
     state = turn_state(
         items, turn, tool_detail=tool_detail, elapsed_seconds=elapsed_seconds
     )
     head = markup.bold(state)
-    link = _link(_CONSOLE, session_url, markup)
-    if link and len(head) + 3 + len(link) <= budget:
-        head = f"{head} · {link}"
 
     lines = [head]
     spent = len(head)
@@ -432,7 +414,6 @@ def activity_log(
     limit: int,
     markup: Markup,
     elapsed_seconds: float | None,
-    session_url: str | None,
     heading: bool,
 ) -> str:
     """What a turn did and what it said, one to a line, oldest cut first.
@@ -456,24 +437,14 @@ def activity_log(
     a turn that only made those calls.
 
     `heading` says whether the log has to name the turn it belongs to. It does
-    wherever it is read apart from that turn's own message. The Console link
-    rides on that heading, so a caller declining it is saying the status
-    directly above already carries both — and one that declines the heading and
-    hands over a link is asking for the link to be dropped without being told.
+    wherever it is read apart from that turn's own message; a caller declining
+    it is saying the status directly above already names the turn.
     """
-    if session_url is not None and not heading:
-        raise ValueError(
-            "An activity log with no heading has nowhere to put the Console "
-            "link, and the status it sits under is what carries it."
-        )
     head = None
     if heading:
         head = markup.bold(
             turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
         )
-        link = _link(_CONSOLE, session_url, markup)
-        if link and len(head) + 3 + len(link) <= limit:
-            head = f"{head} · {link}"
 
     shown = [item for item in items if in_activity_log(item)]
     if not shown:
@@ -1019,7 +990,7 @@ def _actor(
     it only exists when the answer was given on this very platform, so where
     there is none the Switch identity is the only true thing to say.
     """
-    where = SURFACES[decided_by.surface]
+    where = surface_label(decided_by.surface)
     if responder:
         return f"{responder} from {where}"
     return f"{_fit(decided_by.actor_id, _share(limit, 200, 8), escape=escape)} from {where}"
@@ -1078,13 +1049,6 @@ def _mentioned(mention: str | None, body: str) -> str:
 
 def _room(limit: int, mention: str | None) -> int:
     return max(1, limit - (len(mention) + 1 if mention else 0))
-
-
-def _link(label: str, url: str | None, markup: Markup) -> str:
-    """`url` as a link, or nothing at all if it is not a scheme worth linking."""
-    if not url or not url.startswith(_LINK_SCHEMES):
-        return ""
-    return markup.link(label, url)
 
 
 def _label_budget(limit: int) -> int:

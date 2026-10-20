@@ -1,16 +1,11 @@
 /**
- * "Your Agents" adds the cloud agents to the local ones. A server that has no
- * cloud agents counts them as zero; a server whose cloud list could not be
- * read leaves the total unknown and says so, rather than showing the local
- * agents alone as if they were all of them.
+ * "Your Agents" counts the agents onboarded through Switch Console on the
+ * server, the same ones the sidebar and the Your Agents page list.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { CloudAgent } from '@shared/core/cloud-agents/cloud-agents';
-
-const sdkHost = vi.hoisted(() => ({ cloudAgents: vi.fn() }));
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -22,20 +17,34 @@ vi.hoisted(() => {
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { sdkHost, workspaces: { listBridges: async () => [] } },
+  rpc: { workspaces: { listBridges: async () => [] } },
 }));
+
+const managed = vi.hoisted(() => ({ data: undefined as unknown[] | undefined }));
 
 vi.mock('@renderer/features/locations/stores/agents-store', () => ({
-  agentsStore: { loaded: true, load: async () => {}, agentsOnServer: () => [{}, {}] },
+  agentsStore: {
+    loaded: true,
+    load: async () => {},
+    agentsOnServer: () => [{ switchAgentId: 'a' }, { switchAgentId: 'b' }],
+  },
 }));
 
+vi.mock('@renderer/features/managed-agents/use-managed-agents', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useManagedAgents: () => ({ data: managed.data, isLoading: false }),
+}));
+
+const roomsData = vi.hoisted(() => ({ rooms: [] as unknown[] }));
+
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
-  switchRoomsStore: { workspacesNotSignedIn: [], readableRoomsInWorkspace: () => [] },
+  switchRoomsStore: { workspacesNotSignedIn: [], readableRoomsInWorkspace: () => roomsData.rooms },
 }));
 
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: {
     idOnServerInScope: (serverId: string | null) => (serverId === 'server' ? 'workspace' : null),
+    serverIdFor: (workspaceId: string) => (workspaceId === 'workspace' ? 'server' : null),
   },
 }));
 
@@ -43,39 +52,22 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: { servers: [], statusFor: () => null },
 }));
 
-import { ServerStatTiles } from '@renderer/features/switch-servers/server-stat-tiles';
+const featureFlags = vi.hoisted(() => ({ agent_chats: false }));
 
-function cloudAgent(): CloudAgent {
-  return {
-    key: 'cloud:server:launch',
-    launch: {
-      request_id: '00000000-0000-4000-8000-000000000001',
-      name: 'reviewer',
-      provider: 'claude',
-      state: 'ready',
-      desired_state: 'running',
-      revision: 1,
-      agent_id: 'agent',
-      error: null,
-      error_code: null,
-      sleeping: false,
-      machine_id: null,
-      process_state: null,
-      process_restarts: 0,
-      oom_kills: 0,
-    },
-    machine: null,
-    sessions: null,
-    problem: null,
-  };
-}
+vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
+  useFeatureFlags: () => featureFlags,
+}));
+
+import { ServerStatTiles } from '@renderer/features/switch-servers/server-stat-tiles';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 beforeEach(() => {
+  managed.data = undefined;
+  roomsData.rooms = [];
+  featureFlags.agent_chats = false;
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
-  sdkHost.cloudAgents.mockReset();
 });
 
 afterEach(async () => {
@@ -108,23 +100,27 @@ function agentsTile(el: HTMLElement): HTMLElement {
   return [...el.querySelectorAll('p')].find((p) => p.textContent === 'Your Agents')!.parentElement!;
 }
 
-it('adds the cloud agents to the local ones', async () => {
-  sdkHost.cloudAgents.mockResolvedValue([cloudAgent()]);
-  const tile = agentsTile(await render());
-  expect(tile.querySelectorAll('p')[1].textContent).toBe('3');
-  expect(tile.querySelector('[role="alert"]')).toBeNull();
-});
+function roomsTile(el: HTMLElement): HTMLElement {
+  return [...el.querySelectorAll('p')].find((p) => p.textContent === 'Your Rooms')!.parentElement!;
+}
 
-it('counts a server without cloud agents as having none', async () => {
-  sdkHost.cloudAgents.mockResolvedValue(null);
+it('counts the agents onboarded on the server', async () => {
   const tile = agentsTile(await render());
   expect(tile.querySelectorAll('p')[1].textContent).toBe('2');
-  expect(tile.querySelector('[role="alert"]')).toBeNull();
 });
 
-it('leaves the total unknown and shows the failure when the cloud list fails', async () => {
-  sdkHost.cloudAgents.mockRejectedValue(new Error('Request failed with status 500'));
+it('counts the agents the server runs too, once each, as the Your Agents page lists them', async () => {
+  managed.data = [{ agentId: 'b' }, { agentId: 'c' }, { agentId: 'd' }];
   const tile = agentsTile(await render());
-  expect(tile.querySelectorAll('p')[1].textContent).toBe('—');
-  expect(tile.querySelector('[role="alert"]')?.textContent).toMatch(/cloud agents/i);
+  expect(tile.querySelectorAll('p')[1].textContent).toBe('4');
+});
+
+it('hides 1-1 chats when agent_chats flag is on', async () => {
+  roomsData.rooms = [
+    { channelType: 'direct', bridgeType: null, agentCount: 1 },
+    { channelType: 'group', bridgeType: null, agentCount: 2 },
+  ];
+  featureFlags.agent_chats = true;
+  const tile = roomsTile(await render());
+  expect(tile.querySelectorAll('p')[1].textContent).toBe('1');
 });

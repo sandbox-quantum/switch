@@ -40,7 +40,7 @@ class _RecordingSink:
     def __init__(self) -> None:
         self.sent: list[TelemetryRecord] = []
 
-    async def send(self, record: TelemetryRecord) -> None:
+    def send(self, record: TelemetryRecord) -> None:
         self.sent.append(record)
 
     async def aclose(self) -> None:
@@ -52,9 +52,7 @@ def _telemetry(sink: _RecordingSink, *, enabled: bool) -> TelemetryService:
         sink=sink,  # type: ignore[arg-type]
         enabled=enabled,
         client_id="11111111-1111-1111-1111-111111111111",
-        service_name="switch-core",
         version=None,
-        environment=None,
         telemetry_environment="prod",
         telemetry_internal=False,
     )

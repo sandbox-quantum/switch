@@ -55,6 +55,41 @@ export type RendererTelemetryEvents = {
    * adding your second, and one funnel covering both could not tell them apart.
    */
   add_server_step: { step: AddServerStepName; choice: AddServerChoiceName; first_run: boolean };
+  /**
+   * A page of the first-run flow opened. The last page an install reaches is
+   * where it stopped; `path` is how it is running Switch, once chosen.
+   */
+  onboarding_page: {
+    page:
+      | 'welcome'
+      | 'how_to_run'
+      | 'local_setup'
+      | 'server_address'
+      | 'sign_in'
+      | 'choose_workspace'
+      | 'create_workspace'
+      | 'meet_buddy'
+      | 'provider_setup';
+    path: 'none' | 'cloud' | 'local' | 'external';
+  };
+  /** Something done on the way to switch-buddy, and with which provider. */
+  buddy_step: {
+    action:
+      | 'start'
+      | 'skip'
+      | 'setup_opened'
+      | 'install'
+      | 'sign_in'
+      | 'check_again'
+      | 'created'
+      | 'create_failed'
+      | 'opened_existing'
+      | 'intro_opened'
+      | 'intro_dismissed';
+    provider: 'claude' | 'codex' | 'opencode' | 'cursor' | 'antigravity' | 'none';
+  };
+  /** A message sent to the person's own switch-buddy: the how-manyth, from its chats. */
+  buddy_message_sent: { nth: '1' | '2' | '3' | '4' | '5' | '6+' };
   /** A screen failed and the error boundary caught it. */
   renderer_crashed: Record<never, never>;
 };

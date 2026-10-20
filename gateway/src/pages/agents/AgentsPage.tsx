@@ -2,6 +2,7 @@ import AddCircleOutline from "@mui/icons-material/AddCircleOutline";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import SearchIcon from "@mui/icons-material/Search";
 import {
+  Alert,
   Autocomplete,
   Box,
   Button,
@@ -38,6 +39,10 @@ export default function AgentsPage() {
   const { user, canAdminTenant: isAdmin } = useAuth();
   const { data: agents, loading, refetch } = useAgents();
   const [deleteTarget, setDeleteTarget] = useState<AgentSummary | null>(null);
+  const [deleteNotice, setDeleteNotice] = useState<{
+    severity: "warning" | "error";
+    text: string;
+  } | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [ownerFilter, setOwnerFilter] = useState<string>("");
@@ -127,7 +132,23 @@ export default function AgentsPage() {
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
     setDeleting(true);
-    await deleteAgent(deleteTarget.id);
+    const result = await deleteAgent(deleteTarget.id);
+    if (result === null) {
+      setDeleteNotice({
+        severity: "error",
+        text: `Could not delete agent "${deleteTarget.name}".`,
+      });
+    } else if (result.bridge_cleanup_failures.length > 0) {
+      setDeleteNotice({
+        severity: "warning",
+        text:
+          `Deleted "${deleteTarget.name}", but its chat platform clean-up did not ` +
+          `finish (${result.bridge_cleanup_failures.join("; ")}). It will be ` +
+          "finished when that bridge next starts.",
+      });
+    } else {
+      setDeleteNotice(null);
+    }
     setDeleteTarget(null);
     setDeleting(false);
     refetch();
@@ -218,6 +239,16 @@ export default function AgentsPage() {
           Register Agent
         </Button>
       </Stack>
+
+      {deleteNotice && (
+        <Alert
+          severity={deleteNotice.severity}
+          onClose={() => setDeleteNotice(null)}
+          sx={{ mb: 2 }}
+        >
+          {deleteNotice.text}
+        </Alert>
+      )}
 
       <Stack
         direction="row"

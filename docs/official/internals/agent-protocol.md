@@ -2,7 +2,7 @@
 
 _The wire protocol a Switch agent client implements — SSE down, HTTP up, every event frame and every operation_
 
-Published at <https://docs.flintai.dev/flintai/switch/internals/agent-protocol> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/internals/agent-protocol> — link readers there, not to this file.
 
 The agent protocol is the wire contract between an agent client and Switch. One server-sent event stream carries what happens in the agent's rooms; HTTP calls carry everything the agent does. Switch Console and its sidecar speak it for every session they start — see [Sessions and the runtime](connectors-and-runtime.md). A client written from scratch implements what follows directly.
 

@@ -88,10 +88,25 @@ export type EmbeddedControllerDeps = {
   stopTimeoutMs: number;
   /** The Console agents moved onto this computer's controller for the server, by name. */
   movedAgents: (serverId: string) => Promise<string[]>;
+  /** Provider checks made ahead of the controller, for it to take, or null when there are none. */
+  providerSeed: () => string | null;
 };
 
-export const WINDOWS_UNSUPPORTED =
-  'Managed agents run through the shared host, which needs macOS or Linux. This computer runs Windows.';
+const SUPPORTED_PLATFORMS: readonly NodeJS.Platform[] = ['darwin', 'linux', 'win32'];
+
+/** Every provider's sign-in check runs at once; the slowest allows itself 15 seconds. */
+const RECHECK_TIMEOUT_MS = 60_000;
+
+function providerSeedArgs(file: string | null): string[] {
+  return file === null ? [] : ['--provider-seed', file];
+}
+
+/** Why managed agents cannot run on `platform`, or null when they can. */
+export function unsupportedPlatformReason(platform: NodeJS.Platform): string | null {
+  return SUPPORTED_PLATFORMS.includes(platform)
+    ? null
+    : `Managed agents run on macOS, Linux and Windows. This computer runs ${platform}.`;
+}
 
 type Runner = { supervisor: ControllerSupervisor; phase: EmbeddedControllerPhase };
 
@@ -115,7 +130,7 @@ export class EmbeddedControllerService {
   constructor(private readonly deps: EmbeddedControllerDeps) {}
 
   get unsupportedReason(): string | null {
-    return this.deps.platform === 'win32' ? WINDOWS_UNSUPPORTED : null;
+    return unsupportedPlatformReason(this.deps.platform);
   }
 
   /** Starts the controller of every server this Console is enrolled with. */
@@ -192,6 +207,18 @@ export class EmbeddedControllerService {
     return record?.kind === 'enrolled' ? record.controllerId : null;
   }
 
+  /**
+   * The servers this computer runs a controller for now: enrolled, and its
+   * controller started in this session. Only these can have a fresh report of
+   * this computer's providers on the server.
+   */
+  async runningServerIds(): Promise<string[]> {
+    const records = await this.deps.records.all();
+    return Object.entries(records)
+      .filter(([serverId, record]) => record.kind === 'enrolled' && this.runners.has(serverId))
+      .map(([serverId]) => serverId);
+  }
+
   /** Turns it on: enrolls through the signed-in session of `workspaceId`, then starts the controller. */
   async enable(serverId: string, workspaceId: string): Promise<void> {
     if (this.unsupportedReason) throw new Error(this.unsupportedReason);
@@ -242,6 +269,17 @@ export class EmbeddedControllerService {
       this.phases.delete(serverId);
       this.startRunner(serverId);
     });
+  }
+
+  /**
+   * Has this computer's controller for `serverId` check every provider again
+   * now and report it, after the user installed or signed in to one. Resolves
+   * once Switch holds the fresh report.
+   */
+  async recheckProviders(serverId: string): Promise<void> {
+    const runner = this.runners.get(serverId);
+    if (!runner) throw new Error('This computer does not run managed agents for this server.');
+    await runner.supervisor.recheckProviders(RECHECK_TIMEOUT_MS);
   }
 
   /**
@@ -459,6 +497,7 @@ export class EmbeddedControllerService {
         '--credential-stdin',
         '--shared-host-bundle',
         this.deps.bundles.sharedHost(),
+        ...providerSeedArgs(this.deps.providerSeed()),
       ],
       env: {
         ...this.deps.env(),

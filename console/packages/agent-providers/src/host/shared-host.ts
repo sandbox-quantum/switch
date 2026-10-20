@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { commandSchema } from '@switch-console/shared/session-v1';
 import type { Command, CommandStatus, Session, Snapshot } from '@switch-console/shared/session-v1';
@@ -7,8 +7,15 @@ import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { ActivityReporter, type Report } from './activity-reporter';
 import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
+import { cliToolsBase, pinnedBinary } from './cli-binaries';
 import { HostWaker } from './handoff';
-import { followupCommandId, roomControlFollowup } from './room-control-followup';
+import { agentHasOwnUser } from './host-permissions';
+import { Redactions } from './redaction';
+import {
+  followupCommandId,
+  roomControlFollowup,
+  roomControlRefusal,
+} from './room-control-followup';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
   planAttachments,
@@ -17,6 +24,13 @@ import {
   roomMessageSchema,
   type RoomAttachmentSource,
 } from './room-prompt';
+import { type ServiceEndpointServer, startServiceEndpoint } from './service-endpoint';
+import { githubRepositoryVisible } from './service-github';
+import {
+  CONNECTOR_APPROVAL_NOTICE,
+  serviceFallbackNotice,
+  ServiceNotices,
+} from './service-notices';
 import {
   connectParent,
   type BusyReason,
@@ -27,13 +41,25 @@ import {
 import { HostedSession } from './session-host';
 import { startSessionMcp } from './session-mcp';
 import { owedSessionStart, settleSessionStart, type OwedSessionStart } from './session-start';
-import { prepareSharedConfig, type SharedHostConfig } from './shared-config';
+import {
+  needsGitHubHelpers,
+  prepareSharedConfig,
+  type SessionServices,
+  type SharedHostConfig,
+} from './shared-config';
 import { SharedState } from './shared-state';
 import {
   instructionsChangedNote,
   readToldInstructions,
   recordToldInstructions,
 } from './told-instructions';
+import { startVendorClis } from './vendor-cli';
+import {
+  CALL_TIMEOUT_MS,
+  LIST_TIMEOUT_MS,
+  startVendorServers,
+  type VendorServers,
+} from './vendor-mcp';
 
 /**
  * A session run on behalf of its agent.
@@ -71,6 +97,10 @@ export type SharedHostOptions = {
    * configuration written before they were recorded apart.
    */
   instructions: string | null;
+  /** The service tokens this session has been handed, scrubbed from every event it records. */
+  redactions: Redactions;
+  /** Its services falling back to the machine's own sign-in, shown in the session once it is up. */
+  serviceNotices: ServiceNotices;
 };
 
 /** How long a session sits idle before its host parks, unless the environment says otherwise. */
@@ -93,9 +123,9 @@ export function parkAfterMs(): number | null {
 }
 
 /**
- * How long a session waiting on a fresh-conversation decision keeps its worker
- * awake. Past it the decision and the room messages it holds stay recorded,
- * but no longer count as busy, so the worker may sleep.
+ * How long a session waiting on a fresh-conversation decision keeps its host
+ * busy. Past it the decision and the room messages it holds stay recorded,
+ * but no longer count as busy, so the host may park.
  */
 export const RESET_HOLD_MS = 15 * 60_000;
 
@@ -103,9 +133,8 @@ export const RESET_HOLD_MS = 15 * 60_000;
 export type ResetHold = 'none' | 'holding' | 'ended';
 
 /**
- * Why a session is busy, if it is: what keeps a hosted worker awake and what
- * keeps a host from parking. A session that is stopped or failed with nothing
- * left to decide is not busy. Work the provider is still doing after its turn
+ * Why a session is busy, if it is: what keeps a host from parking. A session
+ * that is stopped or failed with nothing left to decide is not busy. Work the provider is still doing after its turn
  * ended, such as background subagents, counts as a running turn.
  */
 export function sessionBusy(
@@ -125,6 +154,28 @@ export function sessionBusy(
   add('reset_waiting', reset === 'holding' ? 1 : 0);
   add('room_pending', reset === 'ended' ? 0 : roomsPending);
   return { busy: reasons.length > 0, reasons };
+}
+
+/**
+ * The Switch tools that put something the agent wrote in front of a room: a
+ * turn that called one of them has answered. Each posts to the room the
+ * session is connected to (only `send_attachment` can name another), so a
+ * call counts whichever room it reached.
+ */
+export const ROOM_POSTING_TOOLS = new Set([
+  'post_message',
+  'send_targeted_message',
+  'send_attachment',
+]);
+
+/** Whether a Switch tool result is a post that landed. */
+export function postedToRoom(name: string, result: unknown): boolean {
+  if (!ROOM_POSTING_TOOLS.has(name)) return false;
+  return (
+    typeof result === 'object' &&
+    result !== null &&
+    (result as { isError?: unknown }).isError !== true
+  );
 }
 
 class TransportError extends Error {}
@@ -187,6 +238,7 @@ export async function runSharedHost(
   let failure: unknown = null;
   let shutdown: Promise<void> | null = null;
   let reporting: Promise<void> | null = null;
+  let stopHearingTools: (() => void) | null = null;
 
   const callOnce = async (
     route: string,
@@ -316,13 +368,23 @@ export async function runSharedHost(
       return { data, sha256: createHash('sha256').update(data).digest('hex') };
     };
 
+    const parentChannel = options.parent;
     host = await HostedSession.start(
       options.root,
       {
+        ...(parentChannel && options.roomConnection
+          ? {
+              replyToRoom: async (reply) => {
+                await parentChannel.ask({ type: 'room-reply', ...reply });
+              },
+            }
+          : {}),
         session: options.session,
         input: options.input,
         resumeOperationId: options.resumeOperationId,
         authenticate: options.authenticate,
+        redactions: options.redactions,
+        connectorApproval: () => options.serviceNotices.raise(CONNECTOR_APPROVAL_NOTICE),
         stageAttachments: (attachments) =>
           Promise.all(
             attachments.map((attachment) =>
@@ -342,6 +404,15 @@ export async function runSharedHost(
       },
       adapter
     );
+    // Every Switch tool call the provider makes goes up this pipe, whatever
+    // the provider calls the tool in its own transcript.
+    const hosted = host;
+    stopHearingTools =
+      parentChannel?.onToolAnswered((name, result) => {
+        if (postedToRoom(name, result)) hosted.agentPostedToRoom();
+      }) ?? null;
+
+    options.serviceNotices.attach((message) => host!.serviceFallback(message));
 
     // ── What the host reports ────────────────────────────────────────────────
     const reporter = await ActivityReporter.load(options.root);
@@ -546,7 +617,7 @@ export async function runSharedHost(
       if (key === announcedBusy) return;
       if (resetHold() === 'ended')
         console.warn(
-          `Session ${options.session.sessionId} has waited ${RESET_HOLD_MS / 60_000} min for a fresh-conversation decision; it no longer keeps its worker awake. The decision and its ${rooms?.pending().length ?? 0} held room message(s) are kept for when it next runs.`
+          `Session ${options.session.sessionId} has waited ${RESET_HOLD_MS / 60_000} min for a fresh-conversation decision; it no longer keeps its host busy. The decision and its ${rooms?.pending().length ?? 0} held room message(s) are kept for when it next runs.`
         );
       announcedBusy = key;
       options.parent?.busy(state, null);
@@ -605,6 +676,9 @@ export async function runSharedHost(
       const owed = followupFor(command, requesterName);
       if (owed && !followups().some((record) => record.commandId === command.commandId))
         await state.journal.append(owed);
+      const repeated = host!
+        .snapshot()
+        .commandStatuses.some((entry) => entry.commandId === command.commandId);
       try {
         await host!.command(command);
       } catch (error) {
@@ -614,6 +688,26 @@ export async function runSharedHost(
         .snapshot()
         .commandStatuses.find((entry) => entry.commandId === command.commandId);
       if (owed && status?.status === 'applied') await sendFollowup(owed);
+      // Switch already told the room the control is under way; a refusal is answered there too.
+      if (
+        owed &&
+        status?.status === 'rejected' &&
+        !repeated &&
+        parentChannel &&
+        options.roomConnection
+      )
+        void parentChannel
+          .ask({
+            type: 'room-reply',
+            roomId: owed.roomId,
+            threadId: owed.threadId,
+            body: roomControlRefusal(owed.action, status.message),
+          })
+          .catch((error: unknown) =>
+            console.warn(
+              `Could not tell room ${owed.roomId} that its ${owed.action} was refused: ${String(error)}`
+            )
+          );
       // A fresh conversation starts with the instructions this host was given.
       if (command.body.type === 'session.reset' && status?.status === 'applied')
         await instructionsTold();
@@ -656,6 +750,7 @@ export async function runSharedHost(
           surface: 'switch-web',
           attachments,
           preface: instructionsNote,
+          firstOfConversation: host!.snapshot().turns.length === 0,
         });
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
@@ -727,6 +822,7 @@ export async function runSharedHost(
         return { accepted: true };
       },
       snapshot: async () => host!.snapshot(),
+      reasoning: async ({ turnIds }) => host!.reasoning(turnIds),
       approvals: async () => {
         active();
         waker.approvalsWaiting();
@@ -859,6 +955,7 @@ export async function runSharedHost(
   } catch (error) {
     if (!signal.aborted) failure ??= error;
   } finally {
+    stopHearingTools?.();
     stopped.abort();
     await reporting;
     try {
@@ -889,13 +986,95 @@ export async function hostSessionProcess(input: {
   adapter: ProviderAdapter;
   port: ParentPort;
   authenticate: ((input: ProviderSessionStartInput) => Promise<void>) | null;
+  /** The agent's service grants, as this session starts. */
+  services: SessionServices;
+  /**
+   * What the session is told about services that went or came since its
+   * previous host (`servicesChangeSince`); null for nothing.
+   */
+  servicesChange: string | null;
+  /** This host's bundle, which the session's service helpers run from. */
+  entrypoint: string;
   signal: AbortSignal;
 }): Promise<void> {
   const { config } = input;
   const parent = connectParent(input.port);
   const mcp = await startSessionMcp(parent);
+  const redactions = new Redactions();
+  parent.onRedactions((values) => redactions.addListed(values));
+  const serviceNotices = new ServiceNotices();
+  // An agent run as a user of its own has no sign-in of the owner's to fall back to.
+  const fallback = !agentHasOwnUser();
+  let endpoint: ServiceEndpointServer | null = null;
+  let vendors: VendorServers | null = null;
+  let clis: VendorServers | null = null;
   try {
-    const prepared = await prepareSharedConfig(input.root, config, mcp.spec);
+    const { grants, unavailable } = input.services;
+    vendors = await startVendorServers({
+      grants,
+      ask: parent.ask,
+      redactions,
+      listTimeoutMs: LIST_TIMEOUT_MS,
+      callTimeoutMs: CALL_TIMEOUT_MS,
+      fetch,
+    });
+    clis = await startVendorClis({
+      grants,
+      ask: parent.ask,
+      redactions,
+      cwd: config.start.input.cwd,
+      stateDir: join(input.root, 'service-cli'),
+      binary: pinnedBinary({
+        base: cliToolsBase(),
+        platform: process.platform,
+        arch: process.arch,
+        fetch,
+        tar: 'tar',
+      }),
+      hostEnv: process.env,
+      platform: process.platform,
+    });
+    for (const name of Object.keys(clis.specs))
+      if (name in vendors.specs) throw new Error(`Two granted services' tools are named ${name}.`);
+    if (unavailable !== null)
+      serviceNotices.raise(
+        serviceFallbackNotice('github', `its grants could not be read: ${unavailable}`, fallback)
+      );
+    if (needsGitHubHelpers(input.services)) {
+      if (process.platform === 'win32')
+        serviceNotices.raise(
+          serviceFallbackNotice('github', "Switch's GitHub helpers do not run on Windows yet", true)
+        );
+      else
+        endpoint = await startServiceEndpoint({
+          services: grants.map((grant) => grant.service),
+          unavailable,
+          ask: parent.ask,
+          redactions,
+          notices: serviceNotices,
+          fallback,
+          repositoryVisible: githubRepositoryVisible,
+          now: Date.now,
+        });
+    }
+    const prepared = await prepareSharedConfig(
+      input.root,
+      config,
+      mcp.spec,
+      input.services,
+      endpoint && { endpoint, execPath: process.execPath, entrypoint: input.entrypoint },
+      { ...vendors.specs, ...clis.specs }
+    );
+    for (const notice of prepared.notices) serviceNotices.raise(notice);
+    // The people watching see it as a notice; the agent reads it with the
+    // context it resumes under, so it does not go looking for tools it no
+    // longer has.
+    if (input.servicesChange !== null) {
+      serviceNotices.raise(input.servicesChange);
+      prepared.input.systemContext = [prepared.input.systemContext, input.servicesChange]
+        .filter(Boolean)
+        .join('\n\n');
+    }
     const authenticate = input.authenticate;
     await runSharedHost(
       {
@@ -911,11 +1090,16 @@ export async function hostSessionProcess(input: {
         parent,
         parkAfterMs: parkAfterMs(),
         instructions: config.execution?.instructions ?? null,
+        redactions,
+        serviceNotices,
       },
       input.adapter,
       input.signal
     );
   } finally {
+    await clis?.close();
+    await vendors?.close();
+    await endpoint?.close();
     await mcp.close();
   }
 }

@@ -100,6 +100,20 @@ class OtlpSendError(RuntimeError):
     """A payload did not reach the collector."""
 
 
+class OtlpPartialRejection(OtlpSendError):
+    """The collector took the payload but refused `rejected` of its records.
+
+    A subclass, so a caller that only cares whether everything arrived can
+    keep catching :class:`OtlpSendError`; one that batches can tell how much
+    of the batch was lost.
+    """
+
+    def __init__(self, url: str, rejected: int, reason: str) -> None:
+        super().__init__(f"POST {url} rejected {rejected} record(s): {reason}")
+        self.rejected = rejected
+        self.reason = reason
+
+
 def _otlp_value(value: AttributeValue) -> dict[str, Any]:
     # `bool` first: it subclasses `int`, and as 1/0 a yes/no becomes something
     # a receiver will average.
@@ -123,6 +137,11 @@ class OtlpResource:
     version, and is then omitted rather than placeheld — a dashboard filtered
     by version should show the record missing, not attribute it to a release
     nobody built. ``commit_sha`` and ``repository_url`` follow the same rule.
+
+    ``instance_id`` is the process (`process_identity.py`), so a deployment of
+    several pods reports one series per pod rather than one series every pod
+    overwrites. ``None`` for a resource that describes no single process, as
+    product telemetry's does.
     """
 
     service_name: str
@@ -131,6 +150,7 @@ class OtlpResource:
     deployment_id: str
     commit_sha: str | None
     repository_url: str | None
+    instance_id: str | None
 
     def attributes(self) -> dict[str, AttributeValue]:
         values: dict[str, AttributeValue] = {
@@ -141,6 +161,8 @@ class OtlpResource:
         }
         if self.service_version:
             values["service.version"] = self.service_version
+        if self.instance_id:
+            values["service.instance.id"] = self.instance_id
         if self.environment:
             # Datadog maps this onto `env`.
             values["deployment.environment"] = self.environment
@@ -414,7 +436,6 @@ def _raise_on_partial_rejection(url: str, response: httpx.Response) -> None:
     if not rejected or int(rejected) == 0:
         return
 
-    raise OtlpSendError(
-        f"POST {url} rejected {rejected} record(s): "
-        f"{partial.get('errorMessage') or 'no reason given'}"
+    raise OtlpPartialRejection(
+        url, int(rejected), partial.get("errorMessage") or "no reason given"
     )

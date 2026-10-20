@@ -180,6 +180,7 @@ export class LocationManagerStore {
         dir,
         sshHost: data.remote?.sshHost,
         autoApprove: data.autoApprove,
+        autoMode: data.autoMode,
       });
       if (!onboarded.success) {
         result = err(onboarded.error);

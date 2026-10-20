@@ -17,7 +17,13 @@ import httpx
 import pytest
 
 from switch_core.observability.otlp import OtlpClient
-from switch_core.telemetry.catalogue import BOOLEAN, CATALOGUE, NUMBER, PropertyType
+from switch_core.telemetry.catalogue import (
+    BOOLEAN,
+    CATALOGUE,
+    NUMBER,
+    PropertyType,
+    event_spec,
+)
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import OtlpRelaySink, TelemetryRecord
 
@@ -37,7 +43,7 @@ class _Capture:
     def __init__(self) -> None:
         self.sent: list[TelemetryRecord] = []
 
-    async def send(self, record: TelemetryRecord) -> None:
+    def send(self, record: TelemetryRecord) -> None:
         self.sent.append(record)
 
     async def aclose(self) -> None:
@@ -72,13 +78,11 @@ async def _attributes_on_the_wire(
         sink=capture,  # type: ignore[arg-type]
         enabled=True,
         client_id="11111111-1111-1111-1111-111111111111",
-        service_name="switch-core",
         version="1.0.0",
-        environment=None,
         telemetry_environment="prod",
         telemetry_internal=False,
     )
-    service.emit(event, **{key: value(kind) for key, kind in CATALOGUE[event].items()})
+    service.emit(event, **{key: value(kind) for key, kind in event_spec(event).items()})
     await service.aclose()
 
     body: dict[str, Any] = {}
@@ -89,9 +93,14 @@ async def _attributes_on_the_wire(
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
     [record] = capture.sent
-    await OtlpRelaySink(client=OtlpClient("https://relay.example", 5, {}, http)).send(
-        record
+    sink = OtlpRelaySink(
+        client=OtlpClient("https://relay.example", 5, {}, http),
+        flush_interval_seconds=60.0,
+        max_batch=200,
+        max_buffered=10_000,
     )
+    sink.send(record)
+    await sink.aclose()
     await http.aclose()
     return body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["attributes"]
 

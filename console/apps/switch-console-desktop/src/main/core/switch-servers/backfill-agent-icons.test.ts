@@ -5,6 +5,7 @@ import type { RemoteAgentSummary, SwitchServer } from '@shared/core/switch-serve
 const fetchAgents = vi.fn();
 const updateAgentIcon = vi.fn();
 const getAgents = vi.fn();
+const fetchAvatarSettings = vi.fn();
 
 /** Stands in for the real `GatewayError`, which the module narrows on by
  * `instanceof` and by `status`. */
@@ -21,6 +22,7 @@ class FakeGatewayError extends Error {
 vi.mock('./gateway-client', () => ({
   fetchAgents: (...args: unknown[]) => fetchAgents(...args),
   updateAgentIcon: (...args: unknown[]) => updateAgentIcon(...args),
+  fetchAvatarSettings: (...args: unknown[]) => fetchAvatarSettings(...args),
   GatewayError: FakeGatewayError,
 }));
 
@@ -83,6 +85,7 @@ beforeEach(() => {
   fetchAgents.mockReset().mockResolvedValue([]);
   getAgents.mockReset().mockResolvedValue([]);
   updateAgentIcon.mockReset().mockResolvedValue(agent({}));
+  fetchAvatarSettings.mockReset().mockResolvedValue({ thirdPartyAvatarsEnabled: true });
 });
 
 describe('backfillAgentIcons', () => {
@@ -149,10 +152,20 @@ describe('backfillAgentIcons', () => {
     expect(await backfill('ws-1', server('s-1'))).toEqual({ kind: 'written', written: 0 });
   });
 
+  it('writes nothing, and says so, when the server disables third-party avatars', async () => {
+    given([agent({ id: 'a-1', name: 'switch_worker' })]);
+    fetchAvatarSettings.mockResolvedValue({ thirdPartyAvatarsEnabled: false });
+    const backfill = await loadFresh();
+
+    expect(await backfill('ws-1', server('s-1'))).toEqual({ kind: 'disabled' });
+    expect(fetchAgents).not.toHaveBeenCalled();
+    expect(updateAgentIcon).not.toHaveBeenCalled();
+  });
+
   it('reports a server with no icon endpoint', async () => {
     // Every write 404ing means the route does not exist, not that the agents
     // vanished — they came from that same server one request earlier. The user
-    // has to be told, because the app draws its own bots and looks correct.
+    // has to be told, because the app draws its own avatars and looks correct.
     given([agent({ id: 'a-1' }), agent({ id: 'a-2' })]);
     updateAgentIcon.mockRejectedValue(new FakeGatewayError('http', 'not found', 404));
     const backfill = await loadFresh();

@@ -60,6 +60,44 @@ rooms:
   });
 });
 
+describe('summarizeTemplate on a version 2 document', () => {
+  const expert = `
+version: 2
+params:
+  start_in: { type: enum, enum: [nowhere, new_room], default: nowhere }
+  existing_room: { type: room, if: "{start_in} == existing_room" }
+  topic: { type: string }
+  machine: { type: machine, default: [$first] }
+resources:
+  expert:
+    type: agent
+    display_name: Switch expert
+    description: Knows Switch
+  expert_room:
+    type: room
+    if: "{start_in} == new_room"
+    name: Ask the expert
+`;
+
+  it('counts what every run creates and asks, not what only some answers do', () => {
+    expect(counts(summarizeTemplate(expert))).toEqual({
+      kind: 'agent',
+      rooms: 0,
+      agents: 1,
+      inputs: 1,
+    });
+  });
+
+  it('lists the conditional room, saying it is created only for some answers', () => {
+    const s = summarizeTemplate(expert);
+    expect(s.creates.map((c) => [c.kind, c.name])).toEqual([
+      ['room', 'Ask the expert'],
+      ['agent', 'Switch expert'],
+    ]);
+    expect(s.creates[0].description).toBe('A room. Created only for some answers.');
+  });
+});
+
 describe('summarizeTemplate creates', () => {
   it('lists rooms then agents, with the template spelling', () => {
     const s = summarizeTemplate(`

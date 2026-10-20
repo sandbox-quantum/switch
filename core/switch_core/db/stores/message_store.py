@@ -1,7 +1,7 @@
 from collections.abc import Collection
 from datetime import datetime
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Message, MessageAttachment
@@ -30,6 +30,33 @@ class MessageStore:
             session.add(attachment)
         await session.flush()
         return message
+
+    async def create_unless_stored(
+        self,
+        session: AsyncSession,
+        message: Message,
+        attachments: list[MessageAttachment],
+    ) -> bool:
+        """`create`, unless a message with the same `transport_event_id` is
+        already stored, in which case nothing is written. Returns whether the
+        message was written.
+
+        For writes whose id is derived from what caused them, so causing them
+        twice writes once. The check runs under the room's lock, which every
+        writer to the room holds to commit, so an earlier write of the same
+        message has either committed and is found, or has not started.
+        """
+        message.seq = await self._next_seq(session, message.room_id)
+        if await self.get_by_transport_event_id(session, message.transport_event_id):
+            return False
+        session.add(message)
+        await session.flush()
+        for position, attachment in enumerate(attachments):
+            attachment.message_id = message.id
+            attachment.position = position
+            session.add(attachment)
+        await session.flush()
+        return True
 
     async def create_historical(
         self,
@@ -144,6 +171,25 @@ class MessageStore:
         )
         return max(int(result.scalar_one()), 0)
 
+    async def head_seqs(
+        self, session: AsyncSession, room_ids: list[str]
+    ) -> dict[str, int]:
+        """`head_seq` for many rooms in one query, 0 for a room with nothing sent.
+
+        For a client starting up in all its rooms at once: one round trip
+        rather than one per room, which at boot is several hundred at the same
+        moment.
+        """
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(Message.room_id, func.max(Message.seq))
+            .where(Message.room_id.in_(room_ids))
+            .group_by(Message.room_id)
+        )
+        heads = {room_id: max(int(seq or 0), 0) for room_id, seq in result.all()}
+        return {room_id: heads.get(room_id, 0) for room_id in room_ids}
+
     async def get_by_transport_event_id(
         self, session: AsyncSession, transport_event_id: str
     ) -> Message | None:
@@ -198,6 +244,45 @@ class MessageStore:
         if before is not None:
             query = query.where(Message.sent_at < before)
         result = await session.execute(query.order_by(Message.seq.desc()).limit(limit))
+        return list(result.scalars().all())
+
+    async def list_thread_newest_first(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        *,
+        thread_root_event_id: str,
+        limit: int,
+    ) -> list[Message]:
+        """A thread's newest messages, its root included, newest first."""
+        result = await session.execute(
+            select(Message)
+            .where(
+                Message.room_id == room_id,
+                or_(
+                    Message.thread_root_event_id == thread_root_event_id,
+                    Message.transport_event_id == thread_root_event_id,
+                ),
+            )
+            .order_by(Message.seq.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_top_level_newest_first(
+        self, session: AsyncSession, room_id: str, *, limit: int
+    ) -> list[Message]:
+        """The room's newest top-level messages, newest first. Replies inside
+        threads are left out."""
+        result = await session.execute(
+            select(Message)
+            .where(
+                Message.room_id == room_id,
+                Message.thread_root_event_id.is_(None),
+            )
+            .order_by(Message.seq.desc())
+            .limit(limit)
+        )
         return list(result.scalars().all())
 
     async def list_by_transport_event_ids(

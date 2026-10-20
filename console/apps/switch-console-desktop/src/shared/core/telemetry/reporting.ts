@@ -27,6 +27,7 @@ export const UI_ENTRY_POINTS = [
   'agent_page',
   'session_list',
   'room_row',
+  'link',
   'unknown',
 ] as const;
 

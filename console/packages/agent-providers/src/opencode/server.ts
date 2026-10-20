@@ -1,8 +1,9 @@
-import { type ChildProcess, spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { ProviderUnavailableError } from '../adapter';
+import { spawnProvider, stopProvider } from '../provider-process';
 import type { OpencodeConfigFile } from './config';
 import { prepareOpencodeHome } from './home';
 
@@ -60,15 +61,19 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
   const port = await findFreePort();
   const configHome = await prepareOpencodeHome(input.config, input.skills, input.env);
 
-  const child = spawn(input.binaryPath, ['serve', '--hostname=127.0.0.1', `--port=${port}`], {
-    cwd: input.cwd,
-    env: {
-      ...input.env,
-      XDG_CONFIG_HOME: configHome,
-      OPENCODE_SERVER_PASSWORD: password,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const child = spawnProvider(
+    input.binaryPath,
+    ['serve', '--hostname=127.0.0.1', `--port=${port}`],
+    {
+      cwd: input.cwd,
+      env: {
+        ...input.env,
+        XDG_CONFIG_HOME: configHome,
+        OPENCODE_SERVER_PASSWORD: password,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }
+  );
 
   try {
     const url = await new Promise<string>((resolve, reject) => {
@@ -82,7 +87,7 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
       };
       const timer = setTimeout(() => {
         finish(() => {
-          child.kill('SIGKILL');
+          stopProvider(child, 'SIGKILL');
           reject(
             new ProviderUnavailableError(
               'opencode',
@@ -137,7 +142,7 @@ export async function stopOpencodeServer(
   const child = server.process;
   if (child.pid && child.exitCode === null && child.signalCode === null) {
     await new Promise<void>((resolve, reject) => {
-      const kill = setTimeout(() => child.kill('SIGKILL'), 2000);
+      const kill = setTimeout(() => stopProvider(child, 'SIGKILL'), 2000);
       const timeout = setTimeout(() => {
         cleanup();
         reject(new Error('OpenCode process did not exit after termination.'));
@@ -152,7 +157,7 @@ export async function stopOpencodeServer(
         resolve();
       };
       child.once('exit', exited);
-      child.kill('SIGTERM');
+      stopProvider(child, 'SIGTERM');
     });
   }
   await rm(server.configHome, { recursive: true, force: true });

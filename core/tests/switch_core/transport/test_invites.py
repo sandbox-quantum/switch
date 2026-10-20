@@ -29,6 +29,7 @@ class _Listener:
     def __init__(self) -> None:
         self.rooms: list[str] = []
         self.removed: list[str] = []
+        self.reconciled = 0
 
     async def on_invited(self, transport_room_id: str) -> None:
         self.rooms.append(transport_room_id)
@@ -36,13 +37,16 @@ class _Listener:
     async def on_removed(self, transport_room_id: str) -> None:
         self.removed.append(transport_room_id)
 
+    async def reconcile(self) -> None:
+        self.reconciled += 1
+
 
 async def test_the_newest_registration_is_the_one_that_hears() -> None:
     bus = InviteBus()
     old, new = _Listener(), _Listener()
 
-    bus.register("client-1", old.on_invited, old.on_removed)
-    bus.register("client-1", new.on_invited, new.on_removed)
+    bus.register("client-1", old.on_invited, old.on_removed, old.reconcile)
+    bus.register("client-1", new.on_invited, new.on_removed, new.reconcile)
 
     assert await bus.invite("client-1", "!room:test") is True
     assert (old.rooms, new.rooms) == ([], ["!room:test"])
@@ -51,10 +55,10 @@ async def test_the_newest_registration_is_the_one_that_hears() -> None:
 async def test_a_superseded_listener_cannot_unregister_the_live_one() -> None:
     bus = InviteBus()
     old, new = _Listener(), _Listener()
-    bus.register("client-1", old.on_invited, old.on_removed)
-    bus.register("client-1", new.on_invited, new.on_removed)
+    bus.register("client-1", old.on_invited, old.on_removed, old.reconcile)
+    bus.register("client-1", new.on_invited, new.on_removed, new.reconcile)
 
-    bus.unregister("client-1", old.on_invited, old.on_removed)
+    bus.unregister("client-1", old.on_invited, old.on_removed, old.reconcile)
 
     assert await bus.invite("client-1", "!room:test") is True, (
         "the superseded transport's teardown deafened the live client"
@@ -73,10 +77,10 @@ async def test_a_superseded_listener_cannot_unregister_the_live_removal() -> Non
     """
     bus = InviteBus()
     old, new = _Listener(), _Listener()
-    bus.register("client-1", old.on_invited, old.on_removed)
-    bus.register("client-1", new.on_invited, new.on_removed)
+    bus.register("client-1", old.on_invited, old.on_removed, old.reconcile)
+    bus.register("client-1", new.on_invited, new.on_removed, new.reconcile)
 
-    bus.unregister("client-1", old.on_invited, old.on_removed)
+    bus.unregister("client-1", old.on_invited, old.on_removed, old.reconcile)
 
     await bus.remove("client-1", "!room:test")
     assert (old.removed, new.removed) == ([], ["!room:test"])
@@ -85,9 +89,13 @@ async def test_a_superseded_listener_cannot_unregister_the_live_removal() -> Non
 async def test_the_live_listener_can_still_unregister_itself() -> None:
     bus = InviteBus()
     listener = _Listener()
-    bus.register("client-1", listener.on_invited, listener.on_removed)
+    bus.register(
+        "client-1", listener.on_invited, listener.on_removed, listener.reconcile
+    )
 
-    bus.unregister("client-1", listener.on_invited, listener.on_removed)
+    bus.unregister(
+        "client-1", listener.on_invited, listener.on_removed, listener.reconcile
+    )
 
     assert await bus.invite("client-1", "!room:test") is False
     await bus.remove("client-1", "!room:test")
@@ -97,7 +105,9 @@ async def test_the_live_listener_can_still_unregister_itself() -> None:
 async def test_unregistering_a_client_nobody_registered_is_a_no_op() -> None:
     bus = InviteBus()
     listener = _Listener()
-    bus.unregister("client-1", listener.on_invited, listener.on_removed)
+    bus.unregister(
+        "client-1", listener.on_invited, listener.on_removed, listener.reconcile
+    )
     assert await bus.invite("client-1", "!room:test") is False
 
 
@@ -127,3 +137,21 @@ async def test_a_client_listening_only_for_invitations_is_reported(
         await bus.remove("client-1", "!room:test")
 
     assert "not for removals" in caplog.text
+
+
+async def test_a_reconcile_reaches_only_the_live_listener() -> None:
+    """How a membership change made in another process reaches this one's
+    copy of the client: through the same slot, given up the same way."""
+    bus = InviteBus()
+    old, new = _Listener(), _Listener()
+    bus.register("client-1", old.on_invited, old.on_removed, old.reconcile)
+    bus.register("client-1", new.on_invited, new.on_removed, new.reconcile)
+    bus.unregister("client-1", old.on_invited, old.on_removed, old.reconcile)
+
+    await bus.reconcile("client-1")
+    await bus.reconcile("client-2")
+
+    assert (old.reconciled, new.reconciled) == (0, 1)
+    assert bus.client_ids() == ["client-1"]
+    assert bus.is_listening("client-1")
+    assert not bus.is_listening("client-2")

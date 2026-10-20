@@ -88,7 +88,7 @@ vi.mock('@main/core/workspaces/workspaces-store', () => ({
 const mockServer = vi.hoisted(() => ({
   id: 'srv-1',
   name: 'Switch',
-  apiUrl: 'https://switch.example.com',
+  url: 'https://switch.example.com',
 }));
 vi.mock('@main/core/workspaces/workspace-session', () => ({
   withWorkspaceSession: (_workspaceId: string, fn: (server: unknown) => unknown) => fn(mockServer),
@@ -150,6 +150,14 @@ describe('attachConfiguredAgents', () => {
         apiEndpoint: 'https://switch.example.com',
         locationId: 'loc-1',
       })
+    );
+  });
+
+  it('starts an attached agent on a host in auto mode with bypass off', async () => {
+    await attachConfiguredAgents(params([{ name: 'theirs', providerId: 'codex' }]));
+
+    expect(h.createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ autoApprove: false, autoMode: true })
     );
   });
 

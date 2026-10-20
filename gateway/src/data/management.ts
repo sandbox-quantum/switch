@@ -1,18 +1,32 @@
 // Agent management: the machines (agent controllers) that run managed agents,
 // the agents placed on them, and the operations sent to them. Served under
-// /gateway/management only when the server runs with AGENT_MANAGEMENT_ENABLED;
-// every failure comes back as {"error": {"code", "message", "retryable"}}.
+// /gateway/management only when the server turns on its agent_management flag,
+// except the provider list and advanced-configuration fields, which are always
+// served; every failure comes back as {"error": {"code", "message", "retryable"}}.
 
 const BASE = "/gateway/management";
 
-export type Provider = "claude" | "codex" | "opencode" | "antigravity" | "cursor";
-export const PROVIDERS: { value: Provider; label: string }[] = [
-  { value: "claude", label: "Claude Code" },
-  { value: "codex", label: "Codex" },
-  { value: "opencode", label: "OpenCode" },
-  { value: "antigravity", label: "Antigravity" },
-  { value: "cursor", label: "Cursor CLI" },
-];
+/** A provider's id, one of those `fetchProviders` lists. */
+export type Provider = string;
+
+/** One field of a provider's advanced configuration, as the server describes it. */
+export interface AdvancedField {
+  key: string;
+  label: string;
+  type: "text" | "textarea" | "number" | "boolean" | "list" | "select";
+  help: string | null;
+  placeholder: string | null;
+  /** A select's choices, the first (value "") meaning unset; null for other types. */
+  options: { value: string; label: string }[] | null;
+  catalogue: { kind: "model" | "model-variant"; model_field?: string } | null;
+}
+
+/** A provider a definition can name. */
+export interface ProviderInfo {
+  id: Provider;
+  label: string;
+  advanced_fields: AdvancedField[];
+}
 
 export type DesiredState = "running" | "stopped";
 export type Isolation = "shared" | "isolated";
@@ -69,7 +83,13 @@ export interface AgentStatus {
 export interface StatusReport {
   seq: number;
   observed_at: string;
-  controller: { version: string; protocol: number; assignment_revision: number };
+  controller: {
+    version: string;
+    protocol: number;
+    assignment_revision: number;
+    /** Who moves it onto another release; absent from older controllers. */
+    updated_by?: "self" | "console";
+  };
   machine: {
     platform: Platform;
     disk_free_bytes: number;
@@ -82,6 +102,23 @@ export interface StatusReport {
   providers: ProviderStatus[];
   tools: { tool: string; state: string; reason?: string | null }[];
   agents: AgentStatus[];
+  /** Why the controller does not run the release Switch names yet; absent when it does, and from older controllers. */
+  update?: ControllerUpdate | null;
+}
+
+export interface ControllerUpdate {
+  /** The version it is moving to. */
+  target: string;
+  state: "waiting_idle" | "failed" | "restart_needed";
+  problem?: string | null;
+}
+
+/** The controller release Switch tells a machine to run, and whether it runs it. */
+export interface ControllerReleaseState {
+  wanted: string;
+  /** The version it last reported; null before it has reported one. */
+  running: string | null;
+  current: boolean;
 }
 
 export interface Controller {
@@ -98,6 +135,8 @@ export interface Controller {
   /** Null when it has never connected. */
   connection: ControllerConnection | null;
   status: StatusReport | null;
+  /** Null when Switch names no release for it, as for a Switch Console machine, which updates with Console. */
+  release: ControllerReleaseState | null;
   assignment_revision: number;
   created_at: string;
   revoked_at: string | null;
@@ -107,6 +146,9 @@ export interface Definition {
   provider: Provider;
   model: string | null;
   instructions: string;
+  /** The provider's own automatic review: safe actions run, risky ones still ask. */
+  auto_mode: boolean;
+  /** Bypass: every permission check skipped. Wins over `auto_mode`. */
   auto_approve: boolean;
   directory: string | null;
   isolation: Isolation;
@@ -234,6 +276,16 @@ export async function revokeController(controllerId: string): Promise<void> {
   await request<{ ok: boolean }>(`/controllers/${encodeURIComponent(controllerId)}`, {
     method: "DELETE",
   });
+}
+
+/** Every provider the server runs, in the order to offer them. */
+export async function fetchProviders(): Promise<ProviderInfo[]> {
+  return (await request<{ providers: ProviderInfo[] }>("/providers")).providers;
+}
+
+/** The provider's label, or its id when the server does not list it. */
+export function providerLabel(providers: ProviderInfo[], provider: Provider): string {
+  return providers.find((p) => p.id === provider)?.label ?? provider;
 }
 
 export function fetchManagedAgents(): Promise<ManagedAgent[]> {

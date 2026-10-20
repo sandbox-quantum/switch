@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { basename } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
+import { parse } from 'smol-toml';
 import { z } from 'zod';
 import {
   type ModelSelection,
@@ -31,14 +33,16 @@ import {
   type ProviderLogger,
 } from '../transport/stdio-json-rpc';
 import { CumulativeUsage, mergeUsage, type UsageCounts } from '../usage';
-import { featureArgs, mcpServerConfigArgs } from './config-args';
+import { featureArgs, mcpServerConfigArgs, tomlString } from './config-args';
 import { mapCodexItem } from './item-mapping';
 import {
   CODEX_CLIENT_METHODS,
   CODEX_CLIENT_NOTIFICATIONS,
   CODEX_SERVER_NOTIFICATIONS,
   CODEX_SERVER_REQUESTS,
+  type CodexApprovalsReviewer,
   type CodexAskForApproval,
+  type CodexSandboxMode,
   type CodexThreadTokenUsageUpdatedNotification,
   type CodexTokenUsageBreakdown,
   type CodexCommandExecutionApprovalParams,
@@ -48,6 +52,7 @@ import {
   type CodexInitializeParams,
   type CodexItemNotification,
   type CodexMcpElicitationParams,
+  type CodexMcpToolCallMeta,
   type CodexPermissionsApprovalParams,
   type CodexThreadItem,
   type CodexThreadOpenResponse,
@@ -117,21 +122,97 @@ interface CodexSessionState {
    */
   usage: CumulativeUsage;
   unreportedUsage: TokenUsage[];
+  /** The last model call's size against the window, cleared when a compaction makes it stale. */
+  context?: { usedTokens: number; windowTokens: number | null };
+  /** Servers whose tool calls Codex asks about, rather than approving them itself. */
+  connectorMcpServers: Set<string>;
 }
 
 interface ThreadModeConfig {
-  approvalPolicy: CodexAskForApproval;
+  /** Sent with the thread; null leaves the policy to the configuration the process was started with. */
+  approvalPolicy: CodexAskForApproval | null;
+  /** Who answers an approval request: the person, or Codex's own automatic review. */
+  approvalsReviewer: CodexApprovalsReviewer;
+  /** `-c` overrides for the `codex app-server` process. */
+  configArgs: string[];
 }
 
-function threadModeConfig(mode: RuntimeMode): ThreadModeConfig {
+/**
+ * How each runtime mode reaches Codex.
+ *
+ * Approval-required once sent `approvalPolicy: "untrusted"`, which asked
+ * before every command outside Codex's small safe list. Codex retired that
+ * value (0.162 refuses it in configuration, and its migration guide says to
+ * remove it); the replacement it documents is marking the working directory
+ * `trust_level = "untrusted"`, under which commands need approval unless an
+ * execution-policy rule allows them. `on-request` is not that: it runs
+ * anything the sandbox permits without asking. The mark goes on this
+ * process's command line as an inline table, which replaces the user's own
+ * `projects` entries for the process, so the `trusted` entry Console writes
+ * for the directory does not override it. Verified against 0.162.1: a plain
+ * `date` and an MCP tool call both ask, and a symlinked directory matches as
+ * long as `cwd` is spelt the same way in both places. One consequence named
+ * in Codex's guide: an untrusted project does not load its own `.codex/`
+ * configuration.
+ *
+ * Auto is `on-request` with Codex's automatic reviewer (`auto_review`)
+ * answering the approval requests the sandbox raises, which is why auto never
+ * runs unsandboxed (see `sandboxFor`).
+ */
+function threadModeConfig(mode: RuntimeMode, cwd: string): ThreadModeConfig {
   switch (mode) {
     case 'approval-required':
-      return { approvalPolicy: 'untrusted' };
+      return {
+        approvalPolicy: null,
+        approvalsReviewer: 'user',
+        configArgs: ['-c', `projects={${tomlString(cwd)}={trust_level="untrusted"}}`],
+      };
     case 'auto-accept-edits':
-      return { approvalPolicy: 'on-request' };
+      return { approvalPolicy: 'on-request', approvalsReviewer: 'user', configArgs: [] };
+    case 'auto':
+      return { approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', configArgs: [] };
     case 'full-access':
-      return { approvalPolicy: 'never' };
+      return { approvalPolicy: 'never', approvalsReviewer: 'user', configArgs: [] };
   }
+}
+
+const SANDBOX_MODES = new Set<CodexSandboxMode>([
+  'read-only',
+  'workspace-write',
+  'danger-full-access',
+]);
+
+/**
+ * The `sandbox_mode` the session's Codex configuration names, passed with the
+ * thread as well: a resumed thread otherwise keeps the sandbox it started
+ * with, whatever the configuration says now. Null when it names none, so Codex
+ * applies its own default.
+ */
+async function configuredSandbox(codexHome: string | undefined): Promise<CodexSandboxMode | null> {
+  if (!codexHome) return null;
+  let text: string;
+  try {
+    text = await readFile(join(codexHome, 'config.toml'), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  const mode = parse(text).sandbox_mode;
+  return typeof mode === 'string' && SANDBOX_MODES.has(mode as CodexSandboxMode)
+    ? (mode as CodexSandboxMode)
+    : null;
+}
+
+/**
+ * The sandbox a thread runs in. Auto mode never runs unsandboxed: in
+ * `danger-full-access` nothing asks for approval, so Codex's automatic review
+ * would never see a request and auto would quietly be full access.
+ */
+function sandboxFor(
+  mode: RuntimeMode,
+  configured: CodexSandboxMode | null
+): CodexSandboxMode | null {
+  return mode === 'auto' && configured === 'danger-full-access' ? 'workspace-write' : configured;
 }
 
 function sessionStatusOf(status: CodexThreadStatusChangedNotification['status']): SessionStatus {
@@ -156,6 +237,27 @@ function turnOutcomeOf(status: CodexTurnNotification['turn']['status']): TurnOut
     default:
       return 'error';
   }
+}
+
+/**
+ * The card for Codex asking to run an MCP tool: the server and tool in the
+ * title, the arguments as the detail. Codex names the tool only in its
+ * message, so a message worded otherwise leaves the tool out of the title.
+ */
+function mcpToolCallContent(
+  serverName: string,
+  message: string,
+  meta: CodexMcpToolCallMeta
+): { title: string; detail?: string } {
+  const tool = /run tool "([^"]+)"/.exec(message)?.[1];
+  const title = tool ? `${serverName} wants to run ${tool}` : `${serverName} wants to run a tool`;
+  const detail = (meta.tool_params_display ?? [])
+    .map(({ name, display_name, value }) => {
+      const shown = typeof value === 'string' ? value : JSON.stringify(value);
+      return `${display_name ?? name}: ${shown}`;
+    })
+    .join('\n');
+  return detail ? { title, detail } : { title };
 }
 
 function approvalOptions(decisions: ApprovalDecision[]): ApprovalOption[] {
@@ -248,8 +350,9 @@ export class CodexAdapter implements ProviderAdapter {
     if (this.sessions.has(input.sessionId)) {
       throw new ProviderSessionError(PROVIDER, input.sessionId, 'session already started');
     }
-    const mcp = mcpServerConfigArgs(input.mcpServers);
-    const args = ['app-server', ...featureArgs(this.features), ...mcp.args];
+    const mode = threadModeConfig(input.runtimeMode, input.cwd);
+    const mcp = mcpServerConfigArgs(input.mcpServers, input.connectorMcpServers, input.runtimeMode);
+    const args = ['app-server', ...featureArgs(this.features), ...mode.configArgs, ...mcp.args];
     const client = new StdioJsonRpcClient({
       command: this.binaryPath,
       args,
@@ -275,11 +378,13 @@ export class CodexAdapter implements ProviderAdapter {
       exited: false,
       usage: new CumulativeUsage(),
       unreportedUsage: [],
+      connectorMcpServers: new Set(input.connectorMcpServers),
     };
     this.sessions.set(input.sessionId, state);
     this.registerHandlers(state);
     this.emit(state, { type: 'session.state.changed', status: 'starting' });
 
+    let sandboxWarning: string | undefined;
     try {
       const initializeParams: CodexInitializeParams = {
         clientInfo: { name: CLIENT_NAME, title: 'Switch Console', version: CLIENT_VERSION },
@@ -293,11 +398,15 @@ export class CodexAdapter implements ProviderAdapter {
       if (!account.account && account.requiresOpenaiAuth)
         throw new Error('Sign in on the execution machine with codex login.');
 
-      const mode = threadModeConfig(input.runtimeMode);
+      const configured = await configuredSandbox(input.env.CODEX_HOME);
+      const sandbox = sandboxFor(input.runtimeMode, configured);
+      if (sandbox !== configured)
+        sandboxWarning = `Auto mode runs Codex in the ${sandbox} sandbox instead of the configured ${configured}: unsandboxed, nothing would reach its automatic review.`;
       const config = {
         cwd: input.cwd,
-        approvalPolicy: mode.approvalPolicy,
-        approvalsReviewer: 'user' as const,
+        ...(mode.approvalPolicy ? { approvalPolicy: mode.approvalPolicy } : {}),
+        ...(sandbox ? { sandbox } : {}),
+        approvalsReviewer: mode.approvalsReviewer,
         ...(input.model?.id ? { model: input.model.id } : {}),
         ...(input.systemContext ? { developerInstructions: input.systemContext } : {}),
       };
@@ -329,6 +438,10 @@ export class CodexAdapter implements ProviderAdapter {
     }
 
     this.emit(state, { type: 'session.started', nativeSessionId: state.threadId });
+    if (sandboxWarning) {
+      this.logger.warn(sandboxWarning, { sessionId: input.sessionId });
+      this.emit(state, { type: 'runtime.warning', message: sandboxWarning });
+    }
     this.emit(state, { type: 'session.state.changed', status: 'ready' });
     return { sessionId: input.sessionId, nativeSessionId: state.threadId, provider: PROVIDER };
   }
@@ -451,6 +564,12 @@ export class CodexAdapter implements ProviderAdapter {
     });
   }
 
+  async contextUsage(
+    sessionId: string
+  ): Promise<{ usedTokens: number; windowTokens: number | null } | null> {
+    return this.requireSession(sessionId).context ?? null;
+  }
+
   async compactSession(sessionId: string): Promise<void> {
     const state = this.requireSession(sessionId);
     if (state.activeNativeTurnId || state.compaction) throw new Error('SESSION_BUSY');
@@ -463,6 +582,7 @@ export class CodexAdapter implements ProviderAdapter {
     void promise.catch(() => {});
     const pending = { promise, resolve, reject };
     state.compaction = pending;
+    state.context = undefined;
     try {
       await state.client.request('thread/compact/start', { threadId: state.threadId });
       await pending.promise;
@@ -586,6 +706,12 @@ export class CodexAdapter implements ProviderAdapter {
       const payload = params as CodexThreadTokenUsageUpdatedNotification;
       if (!this.isOwnThread(state, payload.threadId)) return;
       const { total, last } = payload.tokenUsage;
+      // The compaction call's own report measures the history it replaced.
+      if (!state.compaction)
+        state.context = {
+          usedTokens: last.totalTokens,
+          windowTokens: payload.tokenUsage.modelContextWindow,
+        };
       if (!state.usage.started) {
         state.usage.startFrom(
           new Map([['', subtractCodexUsage(codexCounts(total), codexCounts(last))]])
@@ -773,16 +899,29 @@ export class CodexAdapter implements ProviderAdapter {
 
     client.onServerRequest(CODEX_SERVER_REQUESTS.mcpElicitation, (params) => {
       const payload = params as CodexMcpElicitationParams;
+      const toolCall =
+        payload._meta?.codex_approval_kind === 'mcp_tool_call' ? payload._meta : null;
+      // Codex keeps an approval for the thread only when the answer says so
+      // in `_meta`; the same `persist` inside `content` does nothing.
+      const forSession = toolCall?.persist?.includes('session') ?? false;
       return this.openApproval(state, {
         turnId: payload.turnId ?? state.activeNativeTurnId ?? '',
         requestType: 'mcp_tool_approval',
-        title: `${payload.serverName} needs a decision`,
-        detail: payload.message,
-        options: approvalOptions(['accept', 'decline', 'cancel']),
+        ...(toolCall
+          ? mcpToolCallContent(payload.serverName, payload.message, toolCall)
+          : { title: `${payload.serverName} needs a decision`, detail: payload.message }),
+        options: approvalOptions(
+          forSession
+            ? ['accept', 'acceptForSession', 'decline', 'cancel']
+            : ['accept', 'decline', 'cancel']
+        ),
+        ...(state.connectorMcpServers.has(payload.serverName)
+          ? { connector: payload.serverName }
+          : {}),
         respond: (decision) => ({
           action: decision === 'decline' ? 'decline' : decision === 'cancel' ? 'cancel' : 'accept',
           content: decision === 'accept' || decision === 'acceptForSession' ? {} : null,
-          _meta: null,
+          _meta: decision === 'acceptForSession' ? { persist: 'session' } : null,
         }),
       });
     });
@@ -820,6 +959,7 @@ export class CodexAdapter implements ProviderAdapter {
       title: string;
       detail?: string;
       options: ApprovalOption[];
+      connector?: string;
       respond: (decision: ApprovalDecision) => unknown;
     }
   ): Promise<unknown> {
@@ -835,6 +975,7 @@ export class CodexAdapter implements ProviderAdapter {
         title: spec.title,
         ...(spec.detail ? { detail: spec.detail } : {}),
         options: spec.options,
+        ...(spec.connector ? { connector: spec.connector } : {}),
       });
     });
   }

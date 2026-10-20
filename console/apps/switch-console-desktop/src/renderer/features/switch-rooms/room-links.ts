@@ -1,7 +1,8 @@
+import { openServerPage } from '@renderer/features/switch-servers/open-server-page';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { rpc } from '@renderer/lib/ipc';
-import { openExternalUrl, reportOpenAttempt, reportOpenFailure } from '@renderer/lib/open-external';
+import { reportOpenAttempt, reportOpenFailure } from '@renderer/lib/open-external';
 
 /**
  * Open a room's bridged channel in the messaging app it lives in, falling back
@@ -34,5 +35,6 @@ export function openRoomChannel(roomId: string): void {
 /** Open a room's detail page in the gateway web app. */
 export function openRoomGatewayPage(roomId: string): void {
   const url = switchRoomsStore.gatewayRoomUrl(roomId);
-  if (url) void openExternalUrl(url, 'Could not open the room in the gateway');
+  const serverId = switchRoomsStore.roomServerId(roomId);
+  if (url && serverId) void openServerPage(serverId, url);
 }

@@ -91,7 +91,6 @@ export function SharedSessionPanel({
       <SessionV1Chat
         client={client}
         startup={startup}
-        hostState={null}
         stopHost={() => rpc.sdkHost.stop(agentId, sessionId)}
         initialPromptDelivery={initialPromptDelivery}
         restartHost={() => rpc.sessions.restartAgent(sessionId)}

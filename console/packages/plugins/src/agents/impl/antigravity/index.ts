@@ -9,6 +9,8 @@ export const plugin = definePlugin(
     description:
       'Google Antigravity ACP with native authentication, approvals and persistent conversations.',
     websiteUrl: 'https://github.com/agentclientprotocol/registry/tree/main/antigravity-acp',
+    cliLabel: 'Antigravity ACP',
+    sessionStartMaySignIn: true,
   },
   {
     autoApprove: {

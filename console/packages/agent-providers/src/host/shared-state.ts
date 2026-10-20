@@ -5,7 +5,7 @@ import { sessionSchema, snapshotSchema } from '@switch-console/shared/session-v1
 import { z } from 'zod';
 import { Journal } from './journal';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
-import { fenceDeadOwner, ownProcessGroup } from './process-fence';
+import { fenceDeadOwner, ownProcessGroup, ownStartTime } from './process-fence';
 import type { SharedHostOptions } from './shared-host';
 
 export const sharedStateRecordSchema = z.discriminatedUnion('type', [
@@ -78,13 +78,19 @@ export class SharedState {
     readonly journal: Journal<Record>,
     private readonly lock: string,
     private readonly root: string,
-    private readonly owner: { pid: number; group: number | null; token: string }
+    private readonly owner: { pid: number; group: number | null; token: string; started?: number }
   ) {}
 
   static async open(options: SharedHostOptions): Promise<SharedState> {
     await mkdir(options.root, { recursive: true, mode: 0o700 });
     const lock = join(options.root, 'shared-owner.lock');
-    const owner = { pid: process.pid, group: await ownProcessGroup(), token: randomUUID() };
+    const started = ownStartTime();
+    const owner = {
+      pid: process.pid,
+      group: await ownProcessGroup(),
+      token: randomUUID(),
+      ...(started === null ? {} : { started }),
+    };
     await withOwnershipLock(options.root, async () => {
       try {
         const owner = z
@@ -92,9 +98,10 @@ export class SharedState {
             token: z.string().optional(),
             pid: z.number().int().positive(),
             group: z.number().int().positive().nullable(),
+            started: z.number().int().positive().optional(),
           })
           .parse(JSON.parse(await readFile(lock, 'utf8')));
-        await fenceDeadOwner(owner.pid, owner.group);
+        await fenceDeadOwner(owner.pid, owner.group, owner.started ?? null);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }

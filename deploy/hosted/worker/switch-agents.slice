@@ -1,5 +1,0 @@
-[Unit]
-Description=Switch hosted agents
-
-[Slice]
-MemoryAccounting=yes

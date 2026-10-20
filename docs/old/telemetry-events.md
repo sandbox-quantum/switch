@@ -111,6 +111,8 @@ signals tell it apart, none of them an identifier:
   server Console runs for the user is given Console's answer.
 - **`user_internal_count`** in the daily snapshot: accounts on those domains,
   so a deployment that serves both staff and customers can be split.
+  `user_internal_active_1d` / `_7d` do the same for the active counts, so
+  customer activity is `user_active_*` minus them.
 - Each deployment's `flint.client_id`, for the company's own deployments by
   name.
 
@@ -161,8 +163,10 @@ Specifically never sent, in addition to any identifier:
 - error messages and stack traces — an enumerated reason code instead
 
 Free text never reaches the wire at all: every property is a number, a boolean,
-or a value from a closed set fixed in the catalogue. A property carrying an
-unexpected value is a bug to be raised, not a string to be passed through.
+or a value from a closed set fixed in code. Almost every set is written out in
+the catalogue; `bridge_platform` is the platforms this build registers, which
+are code too. A property carrying an unexpected value is a bug to be raised,
+not a string to be passed through.
 
 ## Deployment identity and the install clock
 
@@ -212,18 +216,21 @@ On every event:
 
 | Attribute | Value |
 |---|---|
-| `service.name` | `switch-core` |
-| `service.version` | the running version, as `/version` reports it |
+| `service.name` | `switch-core`, always |
+| `service.version` | the running version, as `/version` reports it; omitted when unknown |
 | `flint.client_id` | the per-deployment id |
-| `deployment.environment` | from the existing `ENVIRONMENT` setting |
+| `flint_env` | `prod` \| `staging` \| `dev` \| `local`, from `TELEMETRY_ENVIRONMENT` |
+| `flint_internal` | `true` \| `false`, from `TELEMETRY_INTERNAL` |
 
-`deployment.environment` is the OpenTelemetry-conventional name and is already a
-server setting. The Console instead sends a bespoke `build` attribute
-(`dev`/`canary`/`stable`), which is a desktop release-channel notion with no
-server equivalent. The two are deliberately different fields rather than one
-field meaning different things on each side.
+The rule against free text holds here too. `service.name` is a constant rather
+than the `SERVICE_NAME` setting, and the `ENVIRONMENT` setting is not sent as
+`deployment.environment`: both are free text an operator sets for their own log
+pipeline, and either could name their company. The operational OTLP export
+(`OTLP_ENDPOINT`) still carries both, because it goes to the operator's own
+collector. A test sets both to a company name and checks the whole request body
+the relay receives for it.
 
-## Three kinds of event
+## Four kinds of event
 
 **A daily snapshot**, one per deployment, carrying the counts that describe the
 installation. This answers "how much".
@@ -235,28 +242,42 @@ seconds elapsed since install. This answers "how fast to value".
 failure: which platforms are in use, how often a bridge drops, whether one
 connector fails repeatedly before it works.
 
+**Message events**, one per message, the only high-volume kind. These carry how
+much is said and between whom — people to agents, agents back, people among
+themselves — and the size of the room it was said in.
+
 The snapshot exists because of the identifier rule. Without room ids,
 per-occurrence events can tell you *how much* happened but never *across how
 many rooms* — counting distinct anything in Amplitude requires an identifier for
 the thing being counted. Counting locally and reporting the total sidesteps it.
 
-### Why there is no `message_sent` event
+### Message events, and what they cannot tell you
 
-Message volume is reported as a count in the daily snapshot, not as an event per
-message. Three reasons, in order of weight:
+An earlier version of this note argued against an event per message, for three
+reasons. Each is now answered rather than ignored:
 
-1. **Volume.** The relay path has no batching, no retry and no queue — one HTTP
-   request per event, fire-and-forget, because a desktop app emits a handful an
-   hour. A busy server emits thousands of messages an hour. Per-message events
-   would be a different class of load on a component not built for it.
-2. **It answers nothing extra.** Without a room id, a per-message event supports
-   the same charts the snapshot count does.
-3. **Content risk.** An event shaped around a message is the one most likely to
-   grow a property that reveals something about the message. Not having it
-   removes the temptation.
+1. **Volume.** The relay path used to post one request per event. The relay
+   sink now batches: events wait up to five seconds, or until two hundred are
+   queued, and go as one request. Its buffer is bounded, so a relay that is down
+   costs events, never memory.
+2. **The sender must not pay for it.** The transport and the router hand a
+   small record to a queue and return. One worker looks up the room and
+   the sender — cached, so a busy room is read once every five minutes rather
+   than once per message — and emits. That queue is bounded too, and drops with
+   a warning when it falls behind.
+3. **Content risk.** The events carry the same kind of property as every
+   other: closed sets, booleans and counts. There is no property a message body,
+   a name or an id could reach, and the catalogue test enforces it.
 
-If per-message granularity is ever genuinely needed, it should arrive with
-batching on the export path first.
+**They count messages, not people.** No user id is ever sent, so in Amplitude
+every event from a deployment belongs to one subject — the deployment — and
+Amplitude's own "active users" counts deployments. How many *people* are active
+comes only from the snapshot, which counts distinct people locally and reports
+the total: `chat_identity_in_room_count` (seen in a room at all),
+`chat_identity_posted_*` (said anything) and `chat_identity_active_*` (said
+something in a room with an agent), with `user_active_*` counting the same
+last tier as Switch accounts. The message events say how much those people
+said, and to whom.
 
 ## Definitions
 
@@ -325,9 +346,14 @@ never invisible.
 | `user_internal_count` | number | of those, accounts on the company's own email domains — see "Internal usage" |
 | `user_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h: an account counts when a chat account it has claimed spoke. One person on two platforms is one account |
 | `user_active_7d` | number | same over 7 days |
+| `user_internal_active_1d` | number | of `user_active_1d`, accounts on the company's own email domains |
+| `user_internal_active_7d` | number | same over 7 days |
 | `chat_identity_count` | number | chat identities — Slack, Mattermost and other platform accounts — that exist, claimed by an account or not |
 | `chat_identity_active_1d` | number | distinct chat identities that used a room with an agent in 24h. Most belong to no Switch account and one person may have several, which is why this runs above `user_active_1d`. Servers released before this change reported this figure as `user_active_1d` |
 | `chat_identity_active_7d` | number | same over 7 days |
+| `chat_identity_posted_1d` | number | distinct chat identities that said anything in any room in 24h, agent or no agent |
+| `chat_identity_posted_7d` | number | same over 7 days |
+| `chat_identity_in_room_count` | number | distinct chat identities Switch has seen in a room: a member of at least one unarchived room of any origin, or anyone who said anything in the last 7 days. Not a channel's whole audience — see "Tiers of activity" |
 | `room_count` | number | **the headline figure** — unarchived rooms a *person* created |
 | `room_agent_created_count` | number | unarchived rooms an agent created for itself |
 | `room_system_created_count` | number | unarchived channels Switch adopted after being invited to them on a platform |
@@ -345,11 +371,7 @@ never invisible.
 | `agent_opencode_count` | number | |
 | `agent_other_count` | number | including agents with no known runtime |
 | `session_live_count` | number | connections open at snapshot time |
-| `connector_slack_count` | number | **configured** bridges by platform |
-| `connector_mattermost_count` | number | |
-| `connector_discord_count` | number | |
-| `connector_teams_count` | number | |
-| `connector_telegram_count` | number | |
+| `connector_<platform>_count` | number | **configured** bridges by platform: one property per platform this build registers (`connector_slack_count`, `connector_teams_count`, …), so a new platform adds its own |
 | `connector_configured_count` | number | configured, whether or not connected |
 | `message_count_1d` | number | messages in 24h |
 | `message_from_human_1d` | number | of those, sent by humans |
@@ -379,6 +401,28 @@ above (`user_active_*`, `room_active_*`, `agent_active_7d`) read only what a
 participant *said*: chat messages, and commands a person typed on a platform.
 The automatic notice Switch posts under an agent's name when it cannot take a
 request is excluded as well — the agent did not say it.
+
+**Tiers of activity.** `chat_identity_in_room_count`,
+`chat_identity_posted_7d` and `chat_identity_active_7d` nest: everyone Switch
+has seen in a room, those who said anything, and those who said something in a
+room with an agent. The nesting holds by construction — anyone who posted in
+the last 7 days counts as seen, even if they have since left the room or it
+was archived. `chat_identity_posted_7d - chat_identity_active_7d` is people
+talking only to each other. All three count chat identities, so someone on both
+Slack and Teams counts twice; only the top tier is also counted as accounts
+(`user_active_*`). "In a room with an agent" stands in for "talked to an
+agent": whether a message addressed one is decided per agent as it is
+delivered, and is not stored where a count can read it.
+`agent_message_received` is the per-message measure of that.
+
+**What "seen in a room" cannot see.** Switch records a person in a room only
+when they post, are added by name, or join the channel after Switch adopted
+it. Nothing lists the members a channel already had, so someone who has only
+ever read an adopted channel is in no count here, and
+`chat_identity_in_room_count - chat_identity_posted_7d` is **not** the passive
+audience: it is the people Switch happens to know about who stayed quiet,
+usually a small fraction of the real one. Counting readers would take a
+member sync on each platform, which no bridge does today.
 
 **Turns rather than senders.** A turn is one message classified by who sent the
 message *before* it in the same room. That is the only way to tell an agent
@@ -478,7 +522,7 @@ when Switch is first told about the bridge.
 | Property | Type |
 |---|---|
 | `channel_type` | `channel_public` \| `channel_private` \| `direct` \| `none` |
-| `bridge_platform` | platform, or `none` for internal-only |
+| `bridge_platform` | platform, or `none` for internal-only, or `unknown` for a bridge whose platform is not registered in this build |
 | `agent_count` | number |
 | `human_count` | number |
 | `has_instructions` | boolean |
@@ -508,9 +552,9 @@ a slow average.
 (tri-state: `true` | `false` | `unknown` — `unknown` when the activity count
 itself could not be run, which is not evidence the room was never used).
 
-**`room_agents_added`** — `agent_count` (number), `added_by_kind`.
+**`room_agents_added`** — `agent_count` (number), `added_by_kind` (`user` | `agent` | `system`).
 
-**`room_agents_removed`** — `agent_count` (number), `removed_by_kind`.
+**`room_agents_removed`** — `agent_count` (number), `removed_by_kind` (as above).
 
 ### Removals
 
@@ -545,7 +589,7 @@ that as `false` would misfile a lookup failure as a failed setup.
 
 | Property | Type |
 |---|---|
-| `agent_type` | `always_on` \| `session_addressable` \| `session_passive` |
+| `agent_type` | `always_on` \| `session_addressable` \| `session_passive` \| `auto_session` |
 | `known_agent_type` | `claude-code` \| `codex` \| `opencode` \| `other` \| `none` |
 | `registration_path` | `bootstrap` \| `personal_key` \| `gateway` \| `other` |
 | `has_parent` | boolean — a subagent rather than a top-level agent |
@@ -585,8 +629,9 @@ The connection registry already records a reason on every close, which is where
 these values come from; the set is closed here so a new reason string added in
 the code does not silently become a new Amplitude value.
 
-**`bridge_connected`** — `bridge_platform`, `outcome`, `failure_reason`,
-`duration_ms`.
+**`bridge_connected`** — `bridge` (`collaboration` \| `agent`), `bridge_platform`,
+`outcome`, `failure_reason`, `duration_ms`. `bridge` is always `collaboration`
+today; `agent` is declared so the agent bridge can report the same events.
 
 Fires for every attempt, including the ones that fail before the bridge's task
 is ever scheduled — an unregistered adapter type, a stored config that no
@@ -602,9 +647,9 @@ failure half is the more interesting one, because a timeout and a refusal carry
 the same `failure_reason` and nothing alike in the time. `-1` if no reading was
 taken, following the convention below.
 
-**`bridge_disconnected`** — `bridge_platform`, `reason`
+**`bridge_disconnected`** — `bridge` (as above), `bridge_platform`, `reason`
 (`shutdown` \| `restart` \| `auth_failed` \| `network` \| `platform_error` \|
-`unknown`).
+`config_invalid` \| `unknown`).
 
 Bridge drops are worth having as events rather than only as a snapshot count:
 the snapshot says two bridges are down right now, the events say one platform
@@ -618,21 +663,153 @@ migrations run in a different event loop from the server, so the answer would
 have to be carried across on a module global, and it is operational trivia
 rather than something the product wants to know.
 
+### Message events — one per message
+
+All three come from `telemetry/messages.py`, reported off the sender's path as
+described [above](#message-events-and-what-they-cannot-tell-you). A post with
+several files is one message. Room facts are cached for five minutes, so a
+member count can be that far behind. A room, sender or agent whose lookup
+fails is not looked up again for five seconds, and its events report it as
+`unknown` meanwhile; every other room carries on. Three failures in a row,
+with no lookup succeeding between them, pause every lookup for five seconds.
+Either way a database incident shows in the charts as a burst of `unknown`
+rather than as missing messages.
+
+**`room_message_sent`** — everything a participant chose to say in a room: the
+population the tenant is metered for, reported by the transport after the
+write commits. What Switch posts on a participant's behalf — greetings, command
+replies, offline and refusal notices, a template's kickoff — is not in it.
+Neither is a command a person types (`!reset`, a slash command): commands are
+not metered, although the snapshot's activity counts treat one as something
+the person said.
+
+| Property | Type |
+|---|---|
+| `sender_kind` | `user` \| `agent` — only people and agents are metered, so `platform` does not occur here |
+| `bridge_platform` | platform, `none` for an internal room, `unknown` if the room could not be read |
+| `channel_type` | channel type, or `unknown` if the room could not be read |
+| `room_user_count` | number — human members of the room, `-1` if it could not be read |
+| `room_agent_count` | number — agent members, `-1` if it could not be read |
+| `has_attachment` | boolean |
+| `in_thread` | boolean |
+
+The average of `room_user_count` over these events is the room size a typical
+message is said to — weighted by messages, not by rooms. **Filter out
+`bridge_platform = unknown` before averaging**: those are rooms that could not
+be read, and their `-1` would pull the mean down. Every property is required on
+every event and the catalogue has no empty value, so `-1` is the marker. The
+snapshot's `room_users_mean` is the per-room figure.
+
+**`agent_message_received`** — a message an agent was asked to act on:
+addressed to it (by name, alias, role, or a direct room) *and* let through its
+addressing policy and budget, whether or not the agent was there to take it.
+Reported by the agent's consumer, where that is decided, so a message naming
+two agents is two of these and one `room_message_sent`. Switch's own
+auto-replies are excluded; a request Switch carries on a person's behalf is
+included, as `platform`. A message a hosted agent's mailbox already holds — the
+same message seen again — is not counted twice, and nor is a multi-file post
+whose files arrive too far apart to be delivered together: it is counted with
+its first file. A typed command addressed to an agent is not counted.
+`agent_live` splits being asked from being there: filter on it to count only
+the requests an agent could act on as they arrived.
+
+| Property | Type |
+|---|---|
+| `sender_kind` | `user` \| `agent` \| `platform` \| `unknown` |
+| `known_agent_type` | the receiving agent's runtime |
+| `bridge_platform` | platform |
+| `channel_type` | channel type |
+| `has_attachment` | boolean |
+| `agent_live` | boolean — the agent had a live session for the room when the message arrived. False when it was offline, still starting, or its cloud worker refused the message (stopped, broken, or a full mailbox); always false for a `session_passive` agent, which reads its messages later rather than live |
+
+**`agent_message_sent`** — a message an agent posted: its replies, status
+updates, anything it chose to say. Every one is also a `room_message_sent` with
+`sender_kind = agent`; this one carries the runtime as well. `room_user_count`
+separates an agent answering people from agents talking among themselves.
+
+| Property | Type |
+|---|---|
+| `known_agent_type` | the sending agent's runtime, or `unknown` if the agent could not be looked up |
+| `bridge_platform` | platform |
+| `channel_type` | channel type |
+| `room_user_count` | number, `-1` if the room could not be read |
+| `has_attachment` | boolean |
+| `in_thread` | boolean |
+
+### Resources, keys, groups and the rest
+
+What each one is for, and how to make it fire, is under
+[Every event, and how to make it fire](#every-event-and-how-to-make-it-fire).
+This is what each carries.
+
+| Event | Properties |
+|---|---|
+| `reference_created` | `reference_type`; `read_visibility` (`private` \| `public`); `created_by_kind` (`user` \| `agent` \| `system`) |
+| `reference_attached_to_room` | `reference_type` |
+| `reference_detached_from_room` | `reference_type` |
+| `reference_deleted` | `reference_type`; `age_days` (number) |
+| `document_created` | `scope` (`library` \| `room`); `created_by_kind` (`user` \| `agent` \| `system`); `has_instructions` (boolean) |
+| `document_attached_to_room` | none |
+| `document_detached_from_room` | none |
+| `document_deleted` | `scope` (`library` \| `room`); `age_days` (number) |
+| `package_created` | `created_by_kind` (`user` \| `agent` \| `system`) |
+| `package_attached_to_room` | `reference_count` (number); `document_count` (number) |
+| `package_detached_from_room` | none |
+| `package_deleted` | `age_days` (number) |
+| `reference_type_created` | none |
+| `reference_type_deleted` | `age_days` (number) |
+| `api_key_created` | `key_type` (`agent` \| `registration` \| `bootstrap` \| `other`) |
+| `api_key_revoked` | `key_type` (`agent` \| `registration` \| `bootstrap` \| `other`); `age_days` (number) |
+| `room_group_created` | `has_parent` (boolean) |
+| `room_group_deleted` | `room_count` (number); `age_days` (number) |
+| `template_created` | `template_kind` (`room` \| `group` \| `agent` \| `other`) |
+| `template_deleted` | `template_kind` (`room` \| `group` \| `agent` \| `other`); `age_days` (number) |
+| `agent_request_refused` | `operation` (`list_templates` \| `get_template` \| `run_template` \| `save_template` \| `update_template` \| `delete_template` \| `create_room` \| `create_room_from_yaml`); `reason` (`not_found` \| `not_yours` \| `name_taken` \| `visibility_not_allowed` \| `invalid` \| `too_large` \| `has_warnings` \| `missing_agents` \| `agent_creation_console_only` \| `agents_not_created` \| `run_undone` \| `busy` \| `run_paused` \| `run_stopped` \| `repeat` \| `kickoff_ignored`) |
+| `room_link_created` | none |
+| `room_link_removed` | none |
+| `room_role_defined` | `exclusive` (boolean) |
+| `room_role_deleted` | none |
+| `room_users_added` | `user_count` (number) |
+| `server_connector_registered` | `connector_kind` (`opencode` \| `other`) |
+| `server_connector_removed` | `connector_kind` (`opencode` \| `other`) |
+| `connector_configured` | `bridge_platform`; `is_preconfigured` (boolean) |
+| `invitation_sent` | `delivery` (`sent` \| `not_configured` \| `failed` \| `not_requested`) |
+| `invitation_accepted` | `age_hours` (number) |
+
 ### Closed value sets
 
-`bridge_platform`: `slack` | `mattermost` | `discord` | `teams` | `telegram` |
-`none` | `unknown`. `none` is "no bridge" (an internal-only room); `unknown` is
-"there is one and the lookup that would have named it failed" — the two are
-kept apart because collapsing them would misreport a Slack-bridged room as
-internal-only whenever that lookup has a transient error.
+`bridge_platform`: a platform this build registers — today `slack` |
+`mattermost` | `discord` | `teams` | `telegram` — or `none` | `unknown`. The
+set is read from the platform registry when an event is checked, so a new
+platform adds its own value; a platform key is code, a short lowercase name,
+never anything an operator typed. `none` is "no bridge" (an internal-only
+room); `unknown` is "there is one and it could not be named", because the
+lookup failed or its platform is no longer registered. The two are kept apart
+because collapsing them would misreport a Slack-bridged room as internal-only
+whenever that lookup has a transient error.
+
+`channel_type`: `channel_public` | `channel_private` | `direct` | `none` |
+`unknown`, with `unknown` meaning what it does for `bridge_platform`. Every
+event with a `channel_type` accepts `unknown`, but only the message events send
+it today; the room events read the type from a row they already hold.
+
+`reference_type`: `google_drive` | `confluence` | `github` | `jira` | `other`. The
+four built-in types; a user-defined type's slug is free text, so it reports as
+`other`.
+
+`sender_kind`: `user` | `agent` | `platform` | `unknown`. `platform` is Switch
+itself speaking; `unknown` a sender whose client could not be looked up.
 
 `outcome`: `success` | `failure`. `failure_reason` is an enumerated code per
 event, `none` on success — never an exception message.
 
-`bridge_connected.failure_reason` and `bridge_disconnected.reason` share one
-set, because one classifier feeds both. A value that classifier can produce and
-only one of the two declares is an event that fails validation at the moment a
-bridge drops — which is precisely the event worth not losing.
+`bridge_connected.failure_reason` is `none` | `auth_failed` | `network` |
+`platform_error` | `config_invalid` | `unknown`. `bridge_disconnected.reason`
+takes the same failure codes without `none`, plus `shutdown` and `restart`. The
+failure codes are shared because one classifier feeds both: a value that
+classifier can produce and only one of the two declares is an event that fails
+validation at the moment a bridge drops — which is precisely the event worth
+not losing.
 
 **Tri-state facts**: `true` | `false` | `unknown`, for a yes/no property the
 server can fail to establish (`room_archived`/`room_deleted`.`was_ever_active`,
@@ -725,6 +902,13 @@ the operational export follows. A value carrying the signal path is refused at
 startup, because posting to `/v1/logs/v1/logs` would be a 404 the relay reports
 once per event into a log nobody is reading.
 
+Product events are batched: they arrive at the sink up to five seconds after
+they happen, several to a request. Whatever is buffered at shutdown is posted
+on the way out, several batches at once, within a one-second shutdown budget:
+the message worker's drain takes at most 0.4 seconds of it and the sink has
+the rest. What cannot be posted in that time is lost, and the server log says
+how many events that was.
+
 The same sink serves the operational export, so one process shows both streams. Every event is printed as it arrives, decoded, with all of its
 properties. Create a room, register an
 agent, connect a bridge, send a message, and watch. The first snapshot lands
@@ -752,7 +936,7 @@ that tests the vendor's own filtering.
 
 ### Every event, and how to make it fire
 
-Twenty-two events. Work down the list against a local sink
+Work down the list against a local sink
 (`python scripts/otlp_sink.py`) and each one prints as it arrives with all of
 its properties.
 
@@ -818,6 +1002,17 @@ Two things to set up first, or a third of the list cannot fire at all:
 - `session_started` — `POST /agent-sessions/{id}/started` from a session host
   (`bridges/agent/api/activity_routes.py`), with a UUID id. A repeat for the
   same agent and session emits nothing, across restarts, for 7 days.
+
+**Messages** — `telemetry/messages.py`, fed by `transport/postgres.py` and
+`delivery/recipient.py`
+
+- `room_message_sent` — any person or agent posting in any room. A post with
+  three files is one event. A command reply or an offline notice is none.
+- `agent_message_sent` — an agent posting, through its MCP tool or the HTTP
+  API. Arrives beside a `room_message_sent` for the same message.
+- `agent_message_received` — tag an agent, or write in a direct room with one.
+  Tag two agents and there are two. Tag an agent whose policy refuses you and
+  there are none.
 
 **Connectors** — `bridges/collaboration/lifecycle_service.py`
 

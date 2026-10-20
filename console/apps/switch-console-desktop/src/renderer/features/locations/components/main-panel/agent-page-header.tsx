@@ -1,12 +1,17 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
+import { AgentIdentityActions } from '@renderer/features/agent-identity/agent-identity-actions';
+import { directChats } from '@renderer/features/chats/start-direct-chat';
+import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
-import { useParams } from '@renderer/lib/layout/navigation-provider';
+import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import {
   workspaceAgentsQueryKey,
@@ -29,7 +34,10 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
     params: { locationId, agentName },
   } = useParams('location');
   const showCreateSessionModal = useShowModal('sessionModal');
+  const { navigate } = useNavigate();
   const showAddToRoom = useShowModal('addAgentToRoomModal');
+  const showRename = useShowModal('renameAgentModal');
+  const confirmDeleteAgent = useConfirmDeleteAgent();
 
   const agent = agentsStore.agentAtLocation(locationId, agentName);
   // Never the location's name: a directory is not an agent, and standing its
@@ -53,6 +61,12 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const switchAgentId = agent?.switchAgentId ?? null;
+  // A managed agent's page is where its chats are.
+  const managedAgents = useManagedAgents(agent?.serverId ?? null);
+  const chatsEnabled = useFeatureFlags(agent?.serverId).agent_chats;
+  const chatsTab =
+    chatsEnabled && (managedAgents.data ?? []).some((managed) => managed.agentId === switchAgentId);
+  const newChat = chatsEnabled && agent?.serverId != null && switchAgentId !== null;
 
   /** The icon is stored on the Switch server, not locally, so a change is a
    * request that can fail. It is reported rather than swallowed: a picture
@@ -74,6 +88,44 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
 
   const editableIcon = workspaceId !== null && switchAgentId !== null;
 
+  // Renaming is the server's to do first: an agent not registered on one has
+  // nothing to rename there yet.
+  const rename =
+    workspaceId !== null && switchAgentId !== null && agent
+      ? () =>
+          showRename({
+            workspaceId,
+            switchAgentId,
+            currentName: agentMachineName,
+            currentDisplayName: remote?.displayName ?? null,
+            localAgentId: agent.id,
+            onSuccess: ({ outcome, localProblem }) => {
+              void queryClient.invalidateQueries({
+                queryKey: workspaceAgentsQueryKey(workspaceId),
+              });
+              const lines = [
+                ...outcome.bridgeFailures.map((failure) => `Not yet updated on ${failure}.`),
+                ...(localProblem ? [localProblem] : []),
+              ];
+              toast({
+                title: `Renamed to ${outcome.agent.displayName ?? outcome.agent.name}`,
+                description: lines.length > 0 ? lines.join(' ') : undefined,
+                variant: lines.length > 0 ? 'destructive' : undefined,
+              });
+              navigate('location', { locationId, agentName: outcome.agent.name });
+            },
+          })
+      : null;
+  const remove = agent
+    ? () =>
+        void confirmDeleteAgent({
+          locationId,
+          agentId: agent.id,
+          locationLabel: title,
+          onDeleted: () => navigate('home'),
+        })
+    : null;
+
   return (
     <AgentHeaderLayout
       avatar={
@@ -88,7 +140,7 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
         ) : (
           // Not registered on a server yet, so there is nothing to change the
           // icon on — shown, but not offered as editable.
-          <AgentAvatar name={title} iconUrl={null} size={88} />
+          <AgentAvatar name={title} iconUrl={null} serverId={agent?.serverId ?? null} size={88} />
         )
       }
       title={title}
@@ -99,17 +151,37 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
           </Badge>
         )
       }
+      titleActions={<AgentIdentityActions onRename={rename} onDelete={remove} disabled={false} />}
       machineName={showMachineName ? agentMachineName : null}
       description={description}
       actions={
         <>
-          <Button
-            onClick={() =>
-              showCreateSessionModal({ locationId, agentName, entryPoint: 'agent_page' })
-            }
-          >
-            New Session
-          </Button>
+          {!newChat && (
+            <Button
+              onClick={() =>
+                showCreateSessionModal({ locationId, agentName, entryPoint: 'agent_page' })
+              }
+            >
+              New Session
+            </Button>
+          )}
+          {newChat && (
+            <Button
+              onClick={async () => {
+                const serverId = agent.serverId as string;
+                const switchAgentId = agent.switchAgentId as string;
+                if (chatsTab) {
+                  navigate('managedAgent', { serverId, agentId: switchAgentId, name: title });
+                  return;
+                }
+                const chat = await directChats.start(serverId, switchAgentId);
+                if (chat)
+                  navigate('chat', { serverId, roomId: chat.roomId, agentId: switchAgentId });
+              }}
+            >
+              New chat
+            </Button>
+          )}
           {roomable && (
             <Button
               variant="outline"
@@ -140,6 +212,7 @@ export function AgentHeaderLayout({
   avatar,
   title,
   badges,
+  titleActions,
   machineName,
   description,
   actions,
@@ -147,6 +220,8 @@ export function AgentHeaderLayout({
   avatar: React.ReactNode;
   title: React.ReactNode;
   badges: React.ReactNode;
+  /** Small controls on the right of the title's line (Rename, Delete); null for none. */
+  titleActions: React.ReactNode;
   /** The agent's name, shown under a display name that differs from it; null to leave it out. */
   machineName: string | null;
   description: React.ReactNode;
@@ -156,11 +231,14 @@ export function AgentHeaderLayout({
     <header className="flex shrink-0 items-start gap-5 pt-10">
       <span className="flex size-[88px] shrink-0 items-center justify-center">{avatar}</span>
       <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1.5">
-          <h1 className="max-w-full shrink-0 text-3xl font-semibold tracking-tight [overflow-wrap:anywhere] text-foreground">
-            {title}
-          </h1>
-          {badges}
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-1.5">
+            <h1 className="max-w-full shrink-0 text-3xl font-semibold tracking-tight [overflow-wrap:anywhere] text-foreground">
+              {title}
+            </h1>
+            {badges}
+          </div>
+          {titleActions}
         </div>
         {machineName !== null && (
           <p className="text-sm text-foreground-muted">

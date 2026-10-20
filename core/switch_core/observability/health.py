@@ -5,10 +5,13 @@ probe, the gateway Deployment and the setup Job wait on it at boot, so anything
 it checked would become a boot-ordering dependency for them.
 
 ``/health/ready`` is the real one, and **what gates it is deliberately narrow.**
-switch-core runs as a single replica with `Recreate`, so a failing readiness
-probe does not shift traffic to a healthy pod — it empties the Service. Only
-the database gates, because without it every request is an error anyway. A
-crashed bridge is reported and alerted on but never fatal.
+With one replica, a failing readiness probe does not shift traffic to a
+healthy pod: it empties the Service. So on one replica only the database
+gates, because without it every request is an error anyway. With several
+(CORE_REPLICAS above 1), a process whose LISTEN connections are down is also
+taken out of service, since another replica can take its traffic and this one
+would answer it late. A crashed bridge is reported and alerted on but never
+fatal.
 
 The checks run on their own schedule; the kubelet and the metrics exporter read
 one cached answer. The cache carries its age, and one nobody is refreshing
@@ -52,7 +55,7 @@ class CheckOutcome:
 class HealthCheck:
     name: str
     # Whether a failure takes the server out of service. On a single-replica
-    # deployment that is a bigger decision than it looks — see the docstring.
+    # deployment that is a bigger decision than it looks; see the docstring.
     gates_readiness: bool
     probe: Callable[[], Awaitable[CheckOutcome]]
 
@@ -110,7 +113,20 @@ def database_check(session_factory: async_sessionmaker) -> HealthCheck:
     return HealthCheck(name="database", gates_readiness=True, probe=probe)
 
 
-def message_listener_check(is_connected: Callable[[], bool]) -> HealthCheck:
+def _listener_check(
+    name: str, is_connected: Callable[[], bool], gates_readiness: bool, detail: str
+) -> HealthCheck:
+    async def probe() -> CheckOutcome:
+        if is_connected():
+            return CheckOutcome(name=name, healthy=True, detail="")
+        return CheckOutcome(name=name, healthy=False, detail=detail)
+
+    return HealthCheck(name=name, gates_readiness=gates_readiness, probe=probe)
+
+
+def message_listener_check(
+    is_connected: Callable[[], bool], gates_readiness: bool
+) -> HealthCheck:
     """Whether room delivery is actually happening.
 
     Every room's fan-out is woken through this `LISTEN`. When it is down the
@@ -118,49 +134,74 @@ def message_listener_check(is_connected: Callable[[], bool]) -> HealthCheck:
     reconnects itself, so restarting the pod would not fix it faster and would
     drop every live session to find out.
     """
-
-    async def probe() -> CheckOutcome:
-        if is_connected():
-            return CheckOutcome(name="message_listener", healthy=True, detail="")
-        return CheckOutcome(
-            name="message_listener",
-            healthy=False,
-            detail=(
-                "The Postgres LISTEN connection is down, so no room message is "
-                "being delivered. It retries with backoff; if this persists, "
-                "the database is refusing connections."
-            ),
-        )
-
-    return HealthCheck(name="message_listener", gates_readiness=False, probe=probe)
+    return _listener_check(
+        "message_listener",
+        is_connected,
+        gates_readiness,
+        "The Postgres LISTEN connection is down, so no room message is being "
+        "delivered. It retries with backoff; if this persists, the database is "
+        "refusing connections.",
+    )
 
 
-def session_activity_listener_check(is_connected: Callable[[], bool]) -> HealthCheck:
+def session_activity_listener_check(
+    is_connected: Callable[[], bool], gates_readiness: bool
+) -> HealthCheck:
     """Whether session activity and approval answers are being pushed.
 
     Approval answers reach agents, and activity reaches messaging platforms,
     through this `LISTEN`. While it is down both are still recorded but nothing
     is pushed; it reconnects itself and subscribers resync when it does.
     """
+    return _listener_check(
+        "session_activity_listener",
+        is_connected,
+        gates_readiness,
+        "The Postgres LISTEN connection for session activity is down, so "
+        "approval answers and activity are recorded but not pushed. It retries "
+        "with backoff; if this persists, the database is refusing connections.",
+    )
 
-    async def probe() -> CheckOutcome:
-        if is_connected():
-            return CheckOutcome(
-                name="session_activity_listener", healthy=True, detail=""
-            )
-        return CheckOutcome(
-            name="session_activity_listener",
-            healthy=False,
-            detail=(
-                "The Postgres LISTEN connection for session activity is down, so "
-                "approval answers and activity are recorded but not pushed. It "
-                "retries with backoff; if this persists, the database is "
-                "refusing connections."
-            ),
-        )
 
-    return HealthCheck(
-        name="session_activity_listener", gates_readiness=False, probe=probe
+def agent_event_listener_check(
+    is_connected: Callable[[], bool], gates_readiness: bool
+) -> HealthCheck:
+    """Whether an agent's stream hears at once about events written elsewhere.
+
+    An agent's own events can be written by any process, and this `LISTEN` is
+    how the process holding the agent's stream learns of one. While it is down
+    the stream still finds them, but only at its next keepalive re-read, some
+    seconds late.
+    """
+    return _listener_check(
+        "agent_event_listener",
+        is_connected,
+        gates_readiness,
+        "The Postgres LISTEN connection for agent events is down, so agents "
+        "receive events written by another process only at their next "
+        "keepalive. It retries with backoff; if this persists, the database is "
+        "refusing connections.",
+    )
+
+
+def signal_bus_check(
+    is_connected: Callable[[], bool], gates_readiness: bool
+) -> HealthCheck:
+    """Whether signals from other switch-core processes are arriving.
+
+    A change made through another process (a controller given a new agent, a
+    controller revoked) reaches the client it concerns on this one through
+    this `LISTEN`. While it is down those changes wait for the reconnect, which
+    resyncs everything it missed.
+    """
+    return _listener_check(
+        "signal_bus",
+        is_connected,
+        gates_readiness,
+        "The Postgres LISTEN connection for signals between switch-core "
+        "processes is down, so changes made through another process reach "
+        "this one's clients only when it reconnects. It retries with backoff; "
+        "if this persists, the database is refusing connections.",
     )
 
 

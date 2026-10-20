@@ -29,7 +29,7 @@ from switch_core.db.stores.messaging_install_store import (
     MessagingInstallStore,
 )
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.gateway.collaborations import delete_bridge
+from switch_core.gateway.collaborations import _installed_refusal, delete_bridge
 
 _BRIDGE_STORE = CollaborationBridgeStore()
 _ROOM_STORE = RoomStore()
@@ -46,9 +46,12 @@ class _RecordingRoomService:
 
     def __init__(self) -> None:
         self.deleted: list[str] = []
+        self.retired: list[str] = []
 
-    async def delete_room(self, room_id: str) -> None:
+    async def delete_room(self, room_id: str, *, retire_channel: bool) -> None:
         self.deleted.append(room_id)
+        if retire_channel:
+            self.retired.append(room_id)
 
 
 class _RecordingLifecycle:
@@ -189,7 +192,7 @@ async def test_the_refusal_names_the_workspace_to_disconnect(
 
     detail = str(excinfo.value.detail)
     assert workspace in detail
-    assert "slack" in detail
+    assert "Slack workspace" in detail
     assert "Disconnect" in detail
 
 
@@ -217,6 +220,8 @@ async def test_a_bridge_registered_by_hand_still_deletes(
 
     assert result == {"ok": True}
     assert room_service.deleted == [room_id]
+    # The bot may already have lost its access, so the channels are left.
+    assert room_service.retired == []
     assert lifecycle.removed == [bridge_id]
 
 
@@ -250,3 +255,59 @@ async def test_a_bridge_whose_install_already_ended_still_deletes(
         )
 
     assert lifecycle.removed == [bridge_id]
+
+
+async def test_a_bridge_serving_several_installs_is_refused_for_all_of_them(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A tenant's Telegram chats share one bridge, so the guard reads every
+    live install behind it, not just the first."""
+    async with session_factory() as session:
+        admin = await _make_admin(session)
+        bridge_id = await _make_bridge(session)
+        for _ in range(2):
+            await _make_install(
+                session, bridge_id=bridge_id, status=INSTALL_ACTIVE, user_id=admin.id
+            )
+        await session.commit()
+
+    lifecycle = _RecordingLifecycle()
+    async with session_factory() as session:
+        with pytest.raises(HTTPException) as excinfo:
+            await delete_bridge(
+                bridge_id,
+                session,
+                _BRIDGE_STORE,
+                _ROOM_STORE,
+                _RecordingRoomService(),  # type: ignore[arg-type]
+                _INSTALL_STORE,
+                lifecycle,  # type: ignore[arg-type]
+                await _make_admin(session),
+            )
+
+    assert excinfo.value.status_code == 409
+    assert "2 Slack workspaces" in str(excinfo.value.detail)
+    assert lifecycle.removed == []
+
+
+@pytest.mark.parametrize(
+    ("platform", "said", "unsaid"),
+    [
+        ("slack", "revokes Switch's token at Slack", "then delete"),
+        ("discord", "remove it in Discord", "token"),
+        ("teams", "out of every team", "token"),
+        ("telegram", "then delete the connection here", "token"),
+    ],
+)
+def test_the_refusal_says_what_disconnecting_does_on_each_platform(
+    platform: str, said: str, unsaid: str
+) -> None:
+    """Only Slack has a token to revoke, and only a Telegram chat leaves its
+    connection behind to be deleted here afterwards."""
+    install = MessagingInstall(platform=platform, external_workspace_id="W1")
+
+    refusal = _installed_refusal([install])
+
+    assert "W1" in refusal
+    assert said in refusal
+    assert unsaid not in refusal

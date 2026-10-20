@@ -80,6 +80,13 @@ export function matchQuality(text: string, term: string): MatchQuality {
 
 export interface CommandPaletteQuery {
   query: string;
+  /**
+   * Whether Console's own sessions are results, as matches and as recents.
+   * Off on a server that runs agent management, where those sessions are the
+   * legacy way agents run and the palette offers agents, rooms and chats
+   * instead.
+   */
+  includeSessions: boolean;
   context?: {
     sessionId?: string;
     locationId?: string;

@@ -9,7 +9,6 @@ import pytest
 
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_LAPSED,
-    LAUNCH_SUPERSEDED,
     PROTOCOL_VERSION,
     ROOM_RELEASED_PROTOCOL_REVISION,
     AgentConnection,
@@ -18,8 +17,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     Released,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.protocol.hosted_workers import WorkerBinding
-from switch_core.bridges.agent.protocol.presence import agents_present_in
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.bridges.agent.protocol.stream import KEEPALIVE, event_frames
 
 AGENT = "agent-1"
@@ -41,7 +39,7 @@ def _open(
         scope=scope,  # type: ignore[arg-type]
         delivery_filter="all",
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=speaks),
         expected_generation=None,
     )
@@ -201,9 +199,11 @@ def test_two_sessions_in_one_room_are_refused_without_change() -> None:
     assert conn.rooms == {ROOM_B}
 
 
-async def test_the_displaced_stream_is_sent_room_released() -> None:
+async def test_the_displaced_stream_is_sent_room_released(
+    db_buffer: EventBuffer,
+) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     loser = _open(registry, "loser", speaks=PROTOCOL_VERSION, scope="all")
     winner = _open(registry, "winner", speaks=PROTOCOL_VERSION, scope="all")
     registry.replace_placements(loser, {"session-1": ROOM_A})
@@ -221,9 +221,11 @@ async def test_the_displaced_stream_is_sent_room_released() -> None:
     assert [name for name, _ in frames].count("room_released") == 1
 
 
-async def test_a_client_that_declared_nothing_is_not_sent_room_released() -> None:
+async def test_a_client_that_declared_nothing_is_not_sent_room_released(
+    db_buffer: EventBuffer,
+) -> None:
     registry = AgentConnectionRegistry()
-    buffer = EventBuffer(sequence_base=0)
+    buffer = db_buffer
     loser = _open(registry, "loser", speaks=None, scope="all")
     winner = _open(registry, "winner", speaks=PROTOCOL_VERSION, scope="all")
     registry.replace_placements(loser, {"session-1": ROOM_A})
@@ -242,40 +244,6 @@ async def test_a_client_that_declared_nothing_is_not_sent_room_released() -> Non
         "subscription_changed",
         {"rooms": [], "reason": "subscription updated"},
     ) in frames
-
-
-def test_a_closed_hosted_worker_leaves_no_session_in_its_rooms() -> None:
-    """A sleeping or stopped hosted agent is not present where it last worked.
-
-    Otherwise the agent client reads it as available and the room gets no
-    waking notice, and no unavailable reply after an explicit Stop.
-    """
-    registry = AgentConnectionRegistry()
-    worker = _open(
-        registry, "worker", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
-    )
-    registry.bind_worker(worker, WorkerBinding("launch-1", 1, "boot-a", "i-a"), {})
-    registry.replace_placements(worker, {"session-1": ROOM_A})
-    assert agents_present_in([AGENT], ROOM_A, registry) == {AGENT}
-
-    registry.supersede(AGENT, 2)
-
-    assert registry.placements(AGENT) == {}
-    assert agents_present_in([AGENT], ROOM_A, registry) == set()
-
-
-def test_closing_a_worker_keeps_placements_made_elsewhere() -> None:
-    registry = AgentConnectionRegistry()
-    worker = _open(
-        registry, "worker", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all"
-    )
-    registry.bind_worker(worker, WorkerBinding("launch-1", 1, "boot-a", "i-a"), {})
-    registry.replace_placements(worker, {"session-1": ROOM_A})
-    registry.place_session(AGENT, "session-2", ROOM_B, "mcp-transport")
-
-    registry.close(worker.id, LAUNCH_SUPERSEDED)
-
-    assert registry.placements(AGENT) == {"session-2": ROOM_B}
 
 
 def test_closing_a_local_connection_keeps_its_placements() -> None:

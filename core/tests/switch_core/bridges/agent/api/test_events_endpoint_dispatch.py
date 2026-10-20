@@ -14,12 +14,13 @@ from typing import Any
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.responses import StreamingResponse
 
 from switch_core.bridges.agent.api import session_reporter
 from switch_core.bridges.agent.api.handlers import (
     _open_connection,
-    _resolve_start_cursor,
+    _resolve_start_position,
     poll_events,
 )
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
@@ -30,16 +31,29 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
 )
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.event_buffer import TICKET_FLOOR, EventBuffer
+from switch_core.bridges.agent.protocol.positions import (
+    OWN_EVENTS,
+    Position,
+    room_source,
+)
+from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import TelemetryRecord
+from tests.db_buffer import seed_agent
 
 AGENT_ID = "agent-1"
 
 
+@pytest.fixture(autouse=True)
+async def _agent_row(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    """The agent these connections are for, so its events have a row to belong to."""
+    await seed_agent(session_factory, AGENT_ID)
+
+
 class _Protocol:
-    def __init__(self) -> None:
-        self.event_buffer = EventBuffer(sequence_base=0)
+    def __init__(self, event_buffer: EventBuffer) -> None:
+        self.event_buffer = event_buffer
         self.connections = AgentConnectionRegistry()
         # No approval outcomes: these tests are about opening the stream.
         self.approval_outcomes = None
@@ -74,7 +88,11 @@ class _Protocol:
 
 def _agent() -> Any:
     # `metadata_` carries the agent's runtime, which opening a stream reports.
-    return SimpleNamespace(id=AGENT_ID, metadata_={"known_agent_type": "claude-code"})
+    return SimpleNamespace(
+        id=AGENT_ID,
+        tenant_id=TENANT_ZERO_ID,
+        metadata_={"known_agent_type": "claude-code"},
+    )
 
 
 async def _call(protocol: _Protocol, **kw: Any) -> Any:
@@ -122,18 +140,22 @@ async def _call(protocol: _Protocol, **kw: Any) -> Any:
     return conn
 
 
-async def test_without_the_sse_accept_header_it_long_polls() -> None:
-    protocol = _Protocol()
+async def test_without_the_sse_accept_header_it_long_polls(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     resp = await _call(protocol, accept="application/json")
 
     assert protocol.polled
     assert resp.status_code == 204
 
 
-async def test_with_the_sse_accept_header_it_opens_the_event_stream() -> None:
+async def test_with_the_sse_accept_header_it_opens_the_event_stream(
+    db_buffer: EventBuffer,
+) -> None:
     """How a runtime built before the WebSocket connects, kept for a
     compatibility window."""
-    protocol = _Protocol()
+    protocol = _Protocol(db_buffer)
     resp = await poll_events(
         agent_id=AGENT_ID,
         agent=_agent(),
@@ -157,8 +179,8 @@ async def test_with_the_sse_accept_header_it_opens_the_event_stream() -> None:
     assert conn.stream_transport == "sse"
 
 
-async def test_opening_registers_the_connection() -> None:
-    protocol = _Protocol()
+async def test_opening_registers_the_connection(db_buffer: EventBuffer) -> None:
+    protocol = _Protocol(db_buffer)
     conn = await _call(
         protocol, accept="text/event-stream", connection_id="c1", scope="all"
     )
@@ -169,8 +191,10 @@ async def test_opening_registers_the_connection() -> None:
     assert conn.stream_transport == "websocket"
 
 
-async def test_streaming_without_a_connection_id_is_refused() -> None:
-    protocol = _Protocol()
+async def test_streaming_without_a_connection_id_is_refused(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     with pytest.raises(HTTPException) as excinfo:
         await _call(protocol, accept="text/event-stream")
 
@@ -178,12 +202,35 @@ async def test_streaming_without_a_connection_id_is_refused() -> None:
     assert "connection_id is required" in excinfo.value.detail
 
 
+async def test_streaming_with_an_over_long_connection_id_is_refused(
+    db_buffer: EventBuffer,
+) -> None:
+    """The id travels in the signals switch-core processes send each other,
+    which Postgres caps at 8000 bytes, so one this long cannot be opened."""
+    protocol = _Protocol(db_buffer)
+    with pytest.raises(HTTPException) as excinfo:
+        await poll_events(
+            agent_id=AGENT_ID,
+            agent=_agent(),
+            protocol=protocol,  # type: ignore[arg-type]
+            config=None,  # type: ignore[arg-type]
+            accept="text/event-stream",
+            connection_id="c" * 7900,
+        )
+
+    assert excinfo.value.status_code == 400
+    assert "connection_id" in excinfo.value.detail
+    assert protocol.connections.get("c" * 7900) is None
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [("scope", "everything"), ("event_filter", "some")],
 )
-async def test_bad_scope_or_filter_is_refused(field: str, value: str) -> None:
-    protocol = _Protocol()
+async def test_bad_scope_or_filter_is_refused(
+    field: str, value: str, db_buffer: EventBuffer
+) -> None:
+    protocol = _Protocol(db_buffer)
     with pytest.raises(HTTPException) as excinfo:
         await _call(
             protocol, accept="text/event-stream", connection_id="c1", **{field: value}
@@ -192,8 +239,10 @@ async def test_bad_scope_or_filter_is_refused(field: str, value: str) -> None:
     assert excinfo.value.status_code == 400
 
 
-async def test_an_incompatible_protocol_version_is_refused() -> None:
-    protocol = _Protocol()
+async def test_an_incompatible_protocol_version_is_refused(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     with pytest.raises(HTTPException) as excinfo:
         await _call(
             protocol,
@@ -209,13 +258,13 @@ async def test_an_incompatible_protocol_version_is_refused() -> None:
     assert excinfo.value.detail["remedy"] == "update switch-core"
 
 
-async def test_the_refusal_body_carries_both_ranges() -> None:
+async def test_the_refusal_body_carries_both_ranges(db_buffer: EventBuffer) -> None:
     """The refused client never gets a connection_state frame.
 
     So the 409 is the only place it can learn what the server speaks, and it
     is structured rather than a sentence to parse (CHOO-1865).
     """
-    protocol = _Protocol()
+    protocol = _Protocol(db_buffer)
     with pytest.raises(HTTPException) as excinfo:
         await _call(
             protocol,
@@ -235,7 +284,9 @@ async def test_the_refusal_body_carries_both_ranges() -> None:
     assert detail["message"]
 
 
-async def test_a_client_that_declares_nothing_connects_and_records_unknown() -> None:
+async def test_a_client_that_declares_nothing_connects_and_records_unknown(
+    db_buffer: EventBuffer,
+) -> None:
     """Part 1 refuses nobody on silence.
 
     The parameter used to default to the server's own value, so a silent
@@ -243,7 +294,7 @@ async def test_a_client_that_declares_nothing_connects_and_records_unknown() -> 
     check had never fired at all. Absent must mean unknown, and unknown must
     still connect.
     """
-    protocol = _Protocol()
+    protocol = _Protocol(db_buffer)
     await _call(
         protocol,
         accept="text/event-stream",
@@ -257,8 +308,8 @@ async def test_a_client_that_declares_nothing_connects_and_records_unknown() -> 
     assert conn.declaration.declares_protocol is False
 
 
-async def test_a_declared_client_is_recorded_in_full() -> None:
-    protocol = _Protocol()
+async def test_a_declared_client_is_recorded_in_full(db_buffer: EventBuffer) -> None:
+    protocol = _Protocol(db_buffer)
     await _call(
         protocol,
         accept="text/event-stream",
@@ -283,13 +334,13 @@ async def test_a_declared_client_is_recorded_in_full() -> None:
     assert protocol.recorded == [(AGENT_ID, "c1", declared)]
 
 
-async def test_a_refused_client_is_not_recorded() -> None:
+async def test_a_refused_client_is_not_recorded(db_buffer: EventBuffer) -> None:
     """Recording happens after the connection opens.
 
     A bookkeeping failure must never be why an agent could not connect, and a
     client we refused is not one we are running.
     """
-    protocol = _Protocol()
+    protocol = _Protocol(db_buffer)
     with pytest.raises(HTTPException):
         await _call(
             protocol,
@@ -301,13 +352,15 @@ async def test_a_refused_client_is_not_recorded() -> None:
     assert protocol.recorded == []
 
 
-async def test_an_older_client_inside_the_server_range_is_accepted() -> None:
+async def test_an_older_client_inside_the_server_range_is_accepted(
+    db_buffer: EventBuffer,
+) -> None:
     """Overlap, not equality, is the test.
 
     The two numbers are equal today, so this pins the behaviour before a
     future bump makes it observable.
     """
-    protocol = _Protocol()
+    protocol = _Protocol(db_buffer)
     await _call(
         protocol,
         accept="text/event-stream",
@@ -319,30 +372,117 @@ async def test_an_older_client_inside_the_server_range_is_accepted() -> None:
     assert protocol.connections.get("c1") is not None
 
 
-# ── Start cursor ────────────────────────────────────────────────────────────
+# ── Start position ──────────────────────────────────────────────────────────
 
 
-def test_head_means_only_what_happens_next() -> None:
-    protocol = _Protocol()
-    protocol.event_buffer.enqueue(AGENT_ID, "room", _event())
-    assert _resolve_start_cursor(protocol, AGENT_ID, "head") == 1
+async def _start(
+    protocol: _Protocol,
+    *,
+    start_from: str = "head",
+    start_at: str | None = None,
+    last_event_id: str | None = None,
+    reads_conversation: bool = False,
+) -> tuple[Position, int | None]:
+    return await _resolve_start_position(
+        protocol,  # type: ignore[arg-type]
+        _agent(),
+        start_at=start_at,
+        start_from=start_from,
+        last_event_id=last_event_id,
+        reads_conversation=reads_conversation,
+    )
 
 
-def test_last_event_id_wins_over_start_from() -> None:
-    protocol = _Protocol()
-    assert _resolve_start_cursor(protocol, AGENT_ID, "head", "42") == 42
+async def _keep(protocol: _Protocol) -> int:
+    """One of the agent's own events, so its head is somewhere."""
+    return await protocol.event_buffer.enqueue(
+        TENANT_ZERO_ID, AGENT_ID, "room", _event(), room_seq=0, message_key="$e"
+    )
 
 
-def test_explicit_start_from_is_honoured() -> None:
-    protocol = _Protocol()
-    assert _resolve_start_cursor(protocol, AGENT_ID, "17") == 17
+async def test_head_means_only_what_happens_next(db_buffer: EventBuffer) -> None:
+    protocol = _Protocol(db_buffer)
+    seq = await _keep(protocol)
+    assert await _start(protocol) == ({OWN_EVENTS: seq}, None)
+    assert await _start(protocol, start_at="head") == ({OWN_EVENTS: seq}, None)
 
 
-def test_a_nonsense_cursor_is_refused_rather_than_guessed() -> None:
-    protocol = _Protocol()
+async def test_last_event_id_wins_over_start_from(db_buffer: EventBuffer) -> None:
+    protocol = _Protocol(db_buffer)
+    assert await _start(protocol, start_from="head", last_event_id="42") == (
+        {OWN_EVENTS: 42},
+        None,
+    )
+
+
+async def test_explicit_start_from_is_honoured(db_buffer: EventBuffer) -> None:
+    protocol = _Protocol(db_buffer)
+    assert await _start(protocol, start_from="17") == ({OWN_EVENTS: 17}, None)
+
+
+async def test_a_nonsense_cursor_is_refused_rather_than_guessed(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
     with pytest.raises(HTTPException) as excinfo:
-        _resolve_start_cursor(protocol, AGENT_ID, "banana")
+        await _start(protocol, start_from="banana")
     assert excinfo.value.status_code == 400
+
+
+async def test_a_client_that_keeps_a_position_starts_from_it(
+    db_buffer: EventBuffer,
+) -> None:
+    """One number per source it has read. The agent's own events, when it
+    names none of them, start at head like any fresh stream."""
+    protocol = _Protocol(db_buffer)
+    seq = await _keep(protocol)
+    assert await _start(protocol, start_at='{"s": 3, "r:room": 7}') == (
+        {OWN_EVENTS: 3, room_source("room"): 7},
+        None,
+    )
+    assert await _start(protocol, start_at='{"r:room": 7}') == (
+        {OWN_EVENTS: seq, room_source("room"): 7},
+        None,
+    )
+
+
+async def test_a_position_that_cannot_be_read_is_refused(
+    db_buffer: EventBuffer,
+) -> None:
+    """A typo is an error the client sees, not a position that never moves."""
+    protocol = _Protocol(db_buffer)
+    with pytest.raises(HTTPException) as excinfo:
+        await _start(protocol, start_at='{"room": 7}')
+    assert excinfo.value.status_code == 400
+
+
+async def test_a_ticket_resumes_the_position_it_stands_for(
+    db_buffer: EventBuffer,
+) -> None:
+    """A client that keeps one number, on a stream that reads the conversation
+    too, was handed tickets, and sends back the last one it saw."""
+    protocol = _Protocol(db_buffer)
+    position = {OWN_EVENTS: 4, room_source("room"): 9}
+    (ticket,) = await db_buffer.mint_tickets(TENANT_ZERO_ID, AGENT_ID, [position])
+    assert await _start(protocol, start_from=str(ticket), reads_conversation=True) == (
+        position,
+        None,
+    )
+
+
+async def test_an_unknown_ticket_starts_at_head_and_is_kept_to_say_so(
+    db_buffer: EventBuffer,
+) -> None:
+    """Expired, or never this server's: where it stood is not known, so the
+    stream opens at head, and the number is returned for the gap it opens
+    with."""
+    protocol = _Protocol(db_buffer)
+    seq = await _keep(protocol)
+    lost = TICKET_FLOOR + 12345
+    assert await _start(protocol, start_from=str(lost), reads_conversation=True) == (
+        {OWN_EVENTS: seq},
+        lost,
+    )
 
 
 def _event() -> Any:
@@ -374,15 +514,17 @@ class TestDeclaringARoomAtOpenTakesOver:
     and retries forever while the session sits silent.
     """
 
-    async def test_an_incumbent_is_evicted_from_the_room(self) -> None:
-        protocol = _Protocol()
+    async def test_an_incumbent_is_evicted_from_the_room(
+        self, db_buffer: EventBuffer
+    ) -> None:
+        protocol = _Protocol(db_buffer)
         incumbent = protocol.connections.open(
             agent_id=AGENT_ID,
             connection_id="in-session-runtime",
             scope="single",
             delivery_filter="all",
             spawn_capable=False,
-            cursor=0,
+            position={OWN_EVENTS: 0},
             declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
             expected_generation=None,
         )
@@ -403,8 +545,9 @@ class TestDeclaringARoomAtOpenTakesOver:
 
 async def test_reconnect_during_bookkeeping_cannot_detach_the_new_stream(
     monkeypatch: pytest.MonkeyPatch,
+    db_buffer: EventBuffer,
 ) -> None:
-    protocol = _Protocol()
+    protocol = _Protocol(db_buffer)
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -435,7 +578,7 @@ async def test_reconnect_during_bookkeeping_cannot_detach_the_new_stream(
     conn = protocol.connections.get("c1")
     assert conn is not None
     assert protocol.connections.beat(
-        AGENT_ID, "c1", 0, conn.stream_generation
+        AGENT_ID, "c1", conn.stream_generation
     ).stream_attached
     await newer.body_iterator.aclose()
 
@@ -444,7 +587,7 @@ class _RecordingSink:
     def __init__(self) -> None:
         self.sent: list[TelemetryRecord] = []
 
-    async def send(self, record: TelemetryRecord) -> None:
+    def send(self, record: TelemetryRecord) -> None:
         self.sent.append(record)
 
     async def aclose(self) -> None:
@@ -456,25 +599,27 @@ class TestOpeningAStreamReportsASession:
     decided here, so a gate that never opens silences both session events
     while every test of the reporter alone stays green."""
 
-    def _reporting(self) -> tuple[_Protocol, TelemetryService, _RecordingSink]:
+    def _reporting(
+        self, db_buffer: EventBuffer
+    ) -> tuple[_Protocol, TelemetryService, _RecordingSink]:
         sink = _RecordingSink()
         service = TelemetryService(
             sink=sink,  # type: ignore[arg-type]
             enabled=True,
             client_id="11111111-1111-1111-1111-111111111111",
-            service_name="switch-core",
             version="1.0.0",
-            environment=None,
             telemetry_environment="prod",
             telemetry_internal=False,
         )
-        protocol = _Protocol()
+        protocol = _Protocol(db_buffer)
         protocol.sessions = SessionReporter(service, protocol.connections)
         protocol.connections.set_close_listener(protocol.sessions.on_close)
         return protocol, service, sink
 
-    async def test_a_new_connection_reports_a_session_start(self) -> None:
-        protocol, service, sink = self._reporting()
+    async def test_a_new_connection_reports_a_session_start(
+        self, db_buffer: EventBuffer
+    ) -> None:
+        protocol, service, sink = self._reporting(db_buffer)
 
         await _call(protocol, accept="text/event-stream", connection_id="c1")
         await service.aclose()
@@ -482,9 +627,9 @@ class TestOpeningAStreamReportsASession:
         assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
 
     async def test_a_reattach_to_the_same_connection_is_not_another_start(
-        self,
+        self, db_buffer: EventBuffer
     ) -> None:
-        protocol, service, sink = self._reporting()
+        protocol, service, sink = self._reporting(db_buffer)
 
         await _call(protocol, accept="text/event-stream", connection_id="c1")
         await _call(protocol, accept="text/event-stream", connection_id="c1")
@@ -492,10 +637,12 @@ class TestOpeningAStreamReportsASession:
 
         assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
 
-    async def test_a_refused_open_then_a_retry_is_one_start(self) -> None:
+    async def test_a_refused_open_then_a_retry_is_one_start(
+        self, db_buffer: EventBuffer
+    ) -> None:
         """The room claim refuses the first attempt; nothing began, so only the
         retry that gets a stream reports."""
-        protocol, service, sink = self._reporting()
+        protocol, service, sink = self._reporting(db_buffer)
         refusals = [PermissionError("not a member yet")]
 
         async def member(agent_id: str, room_id: str) -> None:
@@ -516,12 +663,12 @@ class TestOpeningAStreamReportsASession:
         assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
 
     async def test_an_open_that_failed_after_registering_is_counted_on_retry(
-        self,
+        self, db_buffer: EventBuffer
     ) -> None:
         """An unexpected failure leaves the connection registered, so the retry
         on the same id reattaches to it. It is still the session's first
         stream."""
-        protocol, service, sink = self._reporting()
+        protocol, service, sink = self._reporting(db_buffer)
         failures = [RuntimeError("database went away")]
 
         async def member(agent_id: str, room_id: str) -> None:
@@ -543,12 +690,12 @@ class TestOpeningAStreamReportsASession:
         assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
 
     async def test_closing_the_only_connection_ends_the_session(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, db_buffer: EventBuffer
     ) -> None:
         """The end is reported only for a connection the start was reported
         on, so a start that never fires takes the end down with it."""
         monkeypatch.setattr(session_reporter, "_RECONNECT_GRACE_SECONDS", 0)
-        protocol, service, sink = self._reporting()
+        protocol, service, sink = self._reporting(db_buffer)
 
         await _call(protocol, accept="text/event-stream", connection_id="c1")
         protocol.connections.close("c1", HEARTBEAT_LAPSED)

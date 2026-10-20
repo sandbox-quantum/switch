@@ -1,13 +1,12 @@
 /** Session interaction wire contract, version 1. */
 export type Id = string;
-export type Surface =
-  | 'console'
-  | 'switch-web'
-  | 'slack'
-  | 'mattermost'
-  | 'discord'
-  | 'teams'
-  | 'telegram';
+/**
+ * Where something was done: Switch's own two surfaces, or a messaging platform
+ * by its key (`slack`, `teams`, `google_chat`, …). Any platform key is accepted
+ * rather than a fixed list, so a newly registered platform needs no contract
+ * change. The validator holds a key to the same pattern switch-core does.
+ */
+export type Surface = 'console' | 'switch-web' | (string & {});
 export type Provider = string;
 export type Origin = {
   surface: Surface;
@@ -70,6 +69,8 @@ export type Request = {
   expiresAt: string | null;
 };
 export type SessionModel = { id: string; options: Record<string, string> };
+/** How full the provider's context window was when last measured; `windowTokens` null when the provider does not say. */
+export type SessionContext = { usedTokens: number; windowTokens: number | null; updatedAt: string };
 export type ModelChoice = {
   id: string;
   label: string;
@@ -90,6 +91,7 @@ export type Session = {
   pendingRequestIds: Id[];
   models?: ModelChoice[];
   model?: SessionModel | null;
+  context?: SessionContext | null;
 };
 export type HostBody =
   | { type: 'session.upsert'; session: Session }

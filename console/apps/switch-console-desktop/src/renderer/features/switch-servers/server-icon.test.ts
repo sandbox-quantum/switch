@@ -3,8 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
 vi.mock('./switch-cloud-store', () => ({
-  isSwitchCloudServer: (server: SwitchServer) =>
-    server.gatewayUrl === 'https://cloud.example.invalid',
+  isSwitchCloudServer: (server: SwitchServer) => server.url === 'https://cloud.example.invalid',
 }));
 
 const { serverIcon } = await import('./server-icon');
@@ -13,8 +12,8 @@ function server(patch: Partial<SwitchServer>): SwitchServer {
   return {
     id: 'srv',
     name: 'srv',
-    gatewayUrl: 'https://srv.example.invalid',
-    apiUrl: 'https://srv.example.invalid',
+    url: 'https://srv.example.invalid',
+    dashboardUrl: null,
     managed: false,
     managementKind: null,
     sshHost: null,
@@ -26,7 +25,7 @@ function server(patch: Partial<SwitchServer>): SwitchServer {
 
 describe('the icon for a server', () => {
   it('is a cloud for Switch Cloud', () => {
-    expect(serverIcon(server({ gatewayUrl: 'https://cloud.example.invalid' }))).toBe(Cloud);
+    expect(serverIcon(server({ url: 'https://cloud.example.invalid' }))).toBe(Cloud);
   });
 
   it('is a globe for any other server reached by URL', () => {

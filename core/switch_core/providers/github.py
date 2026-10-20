@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import json
 import re
-import secrets
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
@@ -26,6 +24,40 @@ class GitHubAuthorizationError(GitHubError):
     pass
 
 
+class GitHubNotFoundError(GitHubError):
+    pass
+
+
+# How far a check of one installation pages before it gives up: 10,000
+# repositories, against the 1,000 the picker lists across them all.
+INSTALLATION_PAGES = 100
+
+
+def _repository(repo: object) -> dict:
+    if (
+        not isinstance(repo, dict)
+        or type(repo.get("id")) is not int
+        or not isinstance(repo.get("full_name"), str)
+    ):
+        raise GitHubError("GitHub returned an invalid repository.")
+    permissions = repo.get("permissions", {})
+    return {
+        "id": repo["id"],
+        "name": repo["full_name"],
+        "permissions": {
+            key: isinstance(permissions, dict) and permissions.get(key) is True
+            for key in ("push", "maintain", "admin")
+        },
+    }
+
+
+def repository_writable(repository: dict) -> bool:
+    permissions = repository.get("permissions")
+    return isinstance(permissions, dict) and any(
+        permissions.get(key) is True for key in ("push", "maintain", "admin")
+    )
+
+
 def rate_limited(response: httpx.Response) -> bool:
     return response.status_code == 429 or (
         response.status_code == 403
@@ -37,35 +69,40 @@ def rate_limited(response: httpx.Response) -> bool:
     )
 
 
-def repository_writable(repository: dict) -> bool:
-    permissions = repository.get("permissions")
-    return isinstance(permissions, dict) and any(
-        permissions.get(key) is True for key in ("push", "maintain", "admin")
-    )
+def sso_hidden_organizations(header: str | None) -> list[int]:
+    """The organization ids an `X-GitHub-SSO: partial-results` header names:
+    those whose single sign-on this token is not authorized for, so a list
+    GitHub answered leaves out what they hold."""
+    if not header:
+        return []
+    kind, _, rest = header.partition(";")
+    if kind.strip() != "partial-results":
+        return []
+    for part in rest.split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == "organizations":
+            return [int(v) for v in value.split(",") if v.strip().isdigit()]
+    return []
 
 
-@dataclass
-class GitHubFlow:
-    tenant_id: str
-    user_id: str
-    expires_at: float
-    verifier: str
-    browser_nonce: str
-    port: int
-    completion_secret: str
-    owner_label: str
-    status: str = "pending"
-    login: str = ""
-    credentials: dict = field(default_factory=dict)
+@dataclass(frozen=True)
+class GitHubReach:
+    """The App's installations a person reaches, and the organizations whose
+    single sign-on hid installations from their sign-in (`sso_hidden`), which
+    a new sign-in that authorizes them shows."""
+
+    installations: list[dict]
+    sso_hidden: list[int]
 
 
 class GitHubConnections:
-    def __init__(self, config_path: str):
-        config = json.loads(Path(config_path).read_text())
-        self.client_id = config["client_id"]
-        self.client_secret = config["client_secret"]
-        self.slug = config["slug"]
-        self.origin = config["origin"].rstrip("/")
+    def __init__(
+        self, *, client_id: str, client_secret: str, slug: str, origin: str
+    ) -> None:
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.slug = slug
+        self.origin = origin.rstrip("/")
         url = urlsplit(self.origin)
         if (
             url.scheme != "https"
@@ -82,7 +119,16 @@ class GitHubConnections:
             raise ValueError("GitHub connection configuration is invalid")
         self.callback = self.origin + "/gateway/provider-connections/github/callback"
         self.install_url = f"https://github.com/apps/{self.slug}/installations/new"
-        self.flows: dict[str, GitHubFlow] = {}
+
+    @classmethod
+    def from_file(cls, config_path: str) -> GitHubConnections:
+        config = json.loads(Path(config_path).read_text())
+        return cls(
+            client_id=config["client_id"],
+            client_secret=config["client_secret"],
+            slug=config["slug"],
+            origin=config["origin"],
+        )
 
     async def revoke(self, token: str) -> None:
         try:
@@ -99,56 +145,10 @@ class GitHubConnections:
         except httpx.HTTPError:
             raise GitHubError("Could not reach GitHub to revoke the sign-in.") from None
 
-    def start(
-        self,
-        tenant_id: str,
-        user_id: str,
-        port: int,
-        completion_secret: str,
-        flow_id: str,
-        owner_label: str,
-    ) -> str:
-        self.flows = {k: v for k, v in self.flows.items() if v.expires_at > time.time()}
-        if flow_id in self.flows:
-            raise GitHubError(
-                "This authorization has already been used. Connect again."
-            )
-        for key in list(self.flows):
-            flow = self.flows[key]
-            if (flow.tenant_id, flow.user_id) == (tenant_id, user_id):
-                del self.flows[key]
-        if len(self.flows) >= 256:
-            raise GitHubError("GitHub connection is busy. Please try again shortly.")
-        self.flows[flow_id] = GitHubFlow(
-            tenant_id,
-            user_id,
-            time.time() + 600,
-            secrets.token_urlsafe(48),
-            secrets.token_urlsafe(32),
-            port,
-            completion_secret,
-            owner_label,
-        )
-        return flow_id
-
-    def flow(self, flow_id: str) -> GitHubFlow:
-        flow = self.flows.get(flow_id)
-        if flow is None or flow.expires_at <= time.time():
-            self.flows.pop(flow_id, None)
-            raise GitHubError(
-                "Sign-in was interrupted. Start it again from Switch Console."
-            )
-        return flow
-
-    def authorize_url(self, flow_id: str) -> str:
-        flow = self.flow(flow_id)
-        if flow.status != "pending":
-            raise GitHubError(
-                "This authorization has already been used. Connect again."
-            )
-        flow.status = "authorizing"
+    def authorize_url(self, state: str, verifier: str) -> str:
+        """Where the browser signs in at GitHub for the flow under `state`."""
         challenge = (
-            base64.urlsafe_b64encode(hashlib.sha256(flow.verifier.encode()).digest())
+            base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
             .decode()
             .rstrip("=")
         )
@@ -156,7 +156,7 @@ class GitHubConnections:
             {
                 "client_id": self.client_id,
                 "redirect_uri": self.callback,
-                "state": flow_id,
+                "state": state,
                 "code_challenge": challenge,
                 "code_challenge_method": "S256",
                 "prompt": "select_account",
@@ -166,6 +166,12 @@ class GitHubConnections:
     async def request(
         self, method: str, url: str, *, token: str, data: dict | None
     ) -> dict:
+        result, _ = await self.request_with_headers(method, url, token=token, data=data)
+        return result
+
+    async def request_with_headers(
+        self, method: str, url: str, *, token: str, data: dict | None
+    ) -> tuple[dict, httpx.Headers]:
         headers = {"Accept": "application/json", "X-GitHub-Api-Version": "2022-11-28"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -184,6 +190,10 @@ class GitHubConnections:
                 raise GitHubError(
                     "GitHub access was refused. Check repository permissions, organization sign-in, and the App installation."
                 )
+            if response.status_code == 404:
+                raise GitHubNotFoundError(
+                    "GitHub could not complete the request. Check access and try again."
+                )
             if not response.is_success:
                 raise GitHubError(
                     "GitHub could not complete the request. Check access and try again."
@@ -201,7 +211,7 @@ class GitHubConnections:
                 raise GitHubError(
                     "GitHub authorization was not completed. Connect again."
                 )
-            return result
+            return result, response.headers
         except (httpx.HTTPError, ValueError):
             raise GitHubUnavailableError(
                 "Could not reach GitHub or read its response. Please try again."
@@ -236,44 +246,27 @@ class GitHubConnections:
             "refresh_expires_at": time.time() + result["refresh_token_expires_in"],
         }
 
-    async def complete(self, flow_id: str, completion_secret: str, code: str) -> None:
-        flow = self.flow(flow_id)
-        if (
-            not secrets.compare_digest(flow.completion_secret, completion_secret)
-            or flow.status != "delivered"
-        ):
-            raise GitHubError(
-                "GitHub authorization could not be verified. Connect again."
-            )
-        flow.status = "checking"
-        try:
-            credentials = await self.exchange(
-                {
-                    "code": code,
-                    "redirect_uri": self.callback,
-                    "code_verifier": flow.verifier,
-                }
-            )
-            user = await self.request(
-                "GET",
-                "https://api.github.com/user",
-                token=credentials["access_token"],
-                data=None,
-            )
-            if not isinstance(user.get("login"), str) or not isinstance(
-                user.get("id"), int
-            ):
-                raise GitHubError("GitHub did not return a valid account.")
-            flow.login = user["login"]
-            flow.credentials = {
-                **credentials,
-                "login": user["login"],
-                "user_id": user["id"],
+    async def sign_in(self, code: str, verifier: str) -> dict:
+        """Exchange the code the browser brought back, and read whose account
+        it signed in to: the credentials a connection stores."""
+        credentials = await self.exchange(
+            {
+                "code": code,
+                "redirect_uri": self.callback,
+                "code_verifier": verifier,
             }
-            flow.status = "ready"
-        except (GitHubError, asyncio.CancelledError):
-            flow.status = "failed"
-            raise
+        )
+        user = await self.request(
+            "GET",
+            "https://api.github.com/user",
+            token=credentials["access_token"],
+            data=None,
+        )
+        if not isinstance(user.get("login"), str) or not isinstance(
+            user.get("id"), int
+        ):
+            raise GitHubError("GitHub did not return a valid account.")
+        return {**credentials, "login": user["login"], "user_id": user["id"]}
 
     async def pages(self, path: str, key: str, token: str) -> list[dict]:
         values = []
@@ -294,8 +287,32 @@ class GitHubConnections:
             "Too many GitHub results to display. Limit the app's repository access and try again."
         )
 
-    async def repositories(self, token: str) -> list[dict]:
-        installations = await self.pages("/user/installations", "installations", token)
+    async def _installations(self, token: str) -> tuple[list[dict], list[int]]:
+        """The App's installations the person reaches, and the organizations
+        whose single sign-on hid theirs from this token (GitHub's
+        `X-GitHub-SSO: partial-results; organizations=…`)."""
+        values: list[dict] = []
+        hidden: set[int] = set()
+        for page in range(1, 11):
+            result, headers = await self.request_with_headers(
+                "GET",
+                f"https://api.github.com/user/installations?per_page=100&page={page}",
+                token=token,
+                data=None,
+            )
+            hidden.update(sso_hidden_organizations(headers.get("x-github-sso")))
+            batch = result.get("installations")
+            if not isinstance(batch, list):
+                raise GitHubError("GitHub returned an invalid installation list.")
+            values.extend(batch)
+            if len(batch) < 100:
+                return values, sorted(hidden)
+        raise GitHubError(
+            "Too many GitHub results to display. Limit the app's repository access and try again."
+        )
+
+    async def repositories(self, token: str) -> GitHubReach:
+        installations, sso_hidden = await self._installations(token)
         result = []
         for installation in installations:
             if not isinstance(installation, dict):
@@ -316,26 +333,7 @@ class GitHubConnections:
                 "repositories",
                 token,
             )
-            selected = []
-            for repo in repositories:
-                if (
-                    not isinstance(repo, dict)
-                    or type(repo.get("id")) is not int
-                    or not isinstance(repo.get("full_name"), str)
-                ):
-                    raise GitHubError("GitHub returned an invalid repository.")
-                permissions = repo.get("permissions", {})
-                selected.append(
-                    {
-                        "id": repo["id"],
-                        "name": repo["full_name"],
-                        "permissions": {
-                            key: isinstance(permissions, dict)
-                            and permissions.get(key) is True
-                            for key in ("push", "maintain", "admin")
-                        },
-                    }
-                )
+            selected = [_repository(repo) for repo in repositories]
             result.append(
                 {
                     "id": installation_id,
@@ -343,4 +341,64 @@ class GitHubConnections:
                     "repositories": selected,
                 }
             )
-        return result
+        return GitHubReach(installations=result, sso_hidden=sso_hidden)
+
+    async def installation_repositories(
+        self, token: str, installation_id: int, wanted: set[int]
+    ) -> list[dict] | None:
+        """Those of `wanted` the person reaches through one installation of
+        the App, or None when they no longer reach the installation.
+
+        Pages only that installation, and stops once every one of `wanted` is
+        found, so a large installation elsewhere costs nothing. A suspended
+        installation is refused with its own reason, as the full listing
+        passes over one.
+        """
+        installation = next(
+            (
+                item
+                for item in await self.pages(
+                    "/user/installations", "installations", token
+                )
+                if isinstance(item, dict) and item.get("id") == installation_id
+            ),
+            None,
+        )
+        if installation is None:
+            return None
+        if installation.get("suspended_at"):
+            account = installation.get("account")
+            login = account.get("login") if isinstance(account, dict) else None
+            raise GitHubError(
+                f"The GitHub App's installation on {login or 'this account'} is "
+                "suspended. Unsuspend it in GitHub's settings to use it."
+            )
+        missing = set(wanted)
+        found: list[dict] = []
+        for page in range(1, INSTALLATION_PAGES + 1):
+            if not missing:
+                return found
+            try:
+                result = await self.request(
+                    "GET",
+                    f"https://api.github.com/user/installations/{installation_id}"
+                    f"/repositories?per_page=100&page={page}",
+                    token=token,
+                    data=None,
+                )
+            except GitHubNotFoundError:
+                return None
+            batch = result.get("repositories")
+            if not isinstance(batch, list):
+                raise GitHubError("GitHub returned an invalid repository list.")
+            for repo in map(_repository, batch):
+                if repo["id"] in missing:
+                    missing.discard(repo["id"])
+                    found.append(repo)
+            if len(batch) < 100:
+                return found
+        raise GitHubError(
+            "This GitHub App installation reaches more than "
+            f"{INSTALLATION_PAGES * 100} repositories. Limit the app's repository "
+            "access and try again."
+        )

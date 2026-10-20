@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { accessSync, constants } from 'node:fs';
+import { accessSync, constants, existsSync } from 'node:fs';
 import { access, readdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -15,8 +15,14 @@ import type {
   SDKMessage,
   SDKResultMessage,
   SDKUserMessage,
+  SpawnedProcess,
+  SpawnOptions,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { ModelChoice } from '@switch-console/shared/session-v1';
+import {
+  getWindowsEnvValue,
+  resolveWindowsCommandPath,
+} from '@switch-console/shared/windows-spawn';
 import type {
   ModelSelection,
   ProviderAdapter,
@@ -42,6 +48,7 @@ import type {
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
+import { spawnProvider, stopProvider } from '../provider-process';
 import { CumulativeUsage, mergeUsage } from '../usage';
 import {
   approvalContent,
@@ -199,8 +206,14 @@ interface SessionState {
   drained: Promise<void>;
   compaction?: { resolve: () => void; reject: (error: Error) => void; boundary: boolean };
   runtimeMode: ProviderSessionStartInput['runtimeMode'];
-  /** `mcp__<server>__` prefixes for the servers the caller registered. */
-  registeredMcpPrefixes: string[];
+  /**
+   * `mcp__<server>__` prefixes for the registered servers whose tools are
+   * allowed without asking: all but the connectors, whose tools follow
+   * `runtimeMode`.
+   */
+  autoApprovedMcpPrefixes: string[];
+  /** The connectors' prefixes, by server name, to say which one a request is for. */
+  connectorMcpPrefixes: Map<string, string>;
   input: PromptQueue;
   turn: ActiveTurn | null;
   pendingApprovals: Map<string, PendingApproval>;
@@ -285,6 +298,14 @@ export function resolveClaudeExecutable(
   env: Record<string, string>
 ): string | undefined {
   if (configured !== undefined) return configured;
+  if (process.platform === 'win32') {
+    const onPath = resolveWindowsCommandPath({ command: 'claude', env, fileExists: existsSync });
+    if (onPath) return onPath;
+    // Where Claude Code's own installer puts it on Windows.
+    const profile = getWindowsEnvValue(env, 'USERPROFILE');
+    const installed = profile ? join(profile, '.local', 'bin', 'claude.exe') : null;
+    return installed && existsSync(installed) ? installed : undefined;
+  }
   const candidates: string[] = [];
   for (const dir of (env.PATH ?? '').split(delimiter)) {
     if (dir.length > 0) candidates.push(join(dir, 'claude'));
@@ -299,6 +320,26 @@ export function resolveClaudeExecutable(
     }
   }
   return undefined;
+}
+
+/**
+ * Starts Claude Code for the SDK on Windows through `spawnProvider`, which can
+ * start the `claude.cmd` an npm install leaves. The SDK aborts `signal` once
+ * its own graceful close (stdin closed, then a grace period) has run; the
+ * CLI's whole tree goes then, `cmd.exe` and all.
+ */
+function spawnClaudeOnWindows(
+  options: SpawnOptions,
+  onStderr: (data: string) => void
+): SpawnedProcess {
+  const child = spawnProvider(options.command, options.args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  child.stderr?.on('data', (chunk: Buffer) => onStderr(chunk.toString('utf8')));
+  options.signal.addEventListener('abort', () => stopProvider(child, 'SIGTERM'), { once: true });
+  return child as SpawnedProcess;
 }
 
 function effortFrom(model: ModelSelection | undefined): EffortLevel | undefined {
@@ -318,6 +359,13 @@ export function mcpToolPrefixes(names: string[]): string[] {
   return names.map((name) => `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}__`);
 }
 
+/** `{ connector }` when `toolName` is one of the session's connectors' tools. */
+function connectorOf(session: SessionState, toolName: string): { connector?: string } {
+  for (const [name, prefix] of session.connectorMcpPrefixes)
+    if (toolName.startsWith(prefix)) return { connector: name };
+  return {};
+}
+
 /** Rescoped so "allow for this session" never writes a rule to the user's settings. */
 function sessionScoped(suggestions: readonly PermissionUpdate[] | undefined): PermissionUpdate[] {
   return (suggestions ?? []).map((suggestion) => ({ ...suggestion, destination: 'session' }));
@@ -326,6 +374,33 @@ function sessionScoped(suggestions: readonly PermissionUpdate[] | undefined): Pe
 function turnStatusMessage(result: SDKResultMessage, outcome: TurnOutcome): string | undefined {
   if (outcome === 'completed') return undefined;
   return resultMessageText(result) ?? `Claude turn ended: ${result.subtype}`;
+}
+
+/**
+ * The settings a session adds to the person's own Claude Code settings.
+ *
+ * The tools of the servers the host registers are allowed outright. `canUseTool`
+ * allows them too, but Claude Code's auto mode, when it is the person's
+ * default, asks its classifier before `canUseTool` is ever reached, and the
+ * classifier refuses a Switch tool that hands out access as a permission grant,
+ * whatever Switch itself allows. An allow rule is settled before the classifier.
+ *
+ * The connector plugin Switch used to ship would add a second Switch server with
+ * its own connection; it is kept off for installs that still have it.
+ */
+function sessionSettings(
+  mcpServers: Record<string, McpServerConfig>
+): { settings: Record<string, unknown> } | Record<string, never> {
+  const names = Object.keys(mcpServers);
+  if (names.length === 0) return {};
+  return {
+    settings: {
+      ...(mcpServers.switch
+        ? { enabledPlugins: { 'switch-connector@switch-plugins': false } }
+        : {}),
+      permissions: { allow: names.map((name) => `mcp__${name}`) },
+    },
+  };
 }
 
 export class ClaudeAdapter implements ProviderAdapter {
@@ -409,21 +484,24 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     filterShadowedWarningOnce();
 
-    // SDK 0.3.260 otherwise inserts --permission-mode default before spawning the CLI.
-    const options: Options & { resolvePermissionModeInCli: boolean } = {
-      resolvePermissionModeInCli: true,
+    const options: Options = {
       cwd: input.cwd,
       env: input.env,
-      ...(permissionMode ? { permissionMode } : {}),
+      permissionMode,
       strictMcpConfig: false,
-      // The connector plugin Switch used to ship would add a second Switch
-      // server with its own connection; kept off for installs that still have it.
-      ...(mcpServers.switch
-        ? { settings: { enabledPlugins: { 'switch-connector@switch-plugins': false } } }
-        : {}),
+      ...sessionSettings(mcpServers),
       canUseTool: this.makeCanUseTool(input.sessionId),
       ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
+      // An npm install is `claude.cmd` on Windows, which the SDK cannot start itself.
+      ...(process.platform === 'win32'
+        ? {
+            spawnClaudeCodeProcess: (spawnOptions: SpawnOptions) =>
+              spawnClaudeOnWindows(spawnOptions, (data) =>
+                this.logger?.debug('claude stderr', { sessionId: input.sessionId, data })
+              ),
+          }
+        : {}),
       ...(input.agentName ? { agent: input.agentName } : {}),
       ...(input.agentName && input.agentDefinition
         ? { agents: { [input.agentName]: input.agentDefinition } }
@@ -459,7 +537,12 @@ export class ClaudeAdapter implements ProviderAdapter {
       query: running,
       drained: Promise.resolve(),
       runtimeMode: input.runtimeMode,
-      registeredMcpPrefixes: mcpToolPrefixes(Object.keys(mcpServers)),
+      autoApprovedMcpPrefixes: mcpToolPrefixes(
+        Object.keys(mcpServers).filter((name) => !input.connectorMcpServers.includes(name))
+      ),
+      connectorMcpPrefixes: new Map(
+        input.connectorMcpServers.map((name) => [name, mcpToolPrefixes([name])[0]!])
+      ),
       input: prompt,
       turn: null,
       pendingApprovals: new Map(),
@@ -608,6 +691,11 @@ export class ClaudeAdapter implements ProviderAdapter {
       if (model.supportedEffortLevels?.length) options.effort = model.supportedEffortLevels;
       return { id: model.value, label: model.displayName, options };
     });
+  }
+
+  async contextUsage(sessionId: string): Promise<{ usedTokens: number; windowTokens: number }> {
+    const usage = await this.requireSession(sessionId).query.getContextUsage({ detail: 'summary' });
+    return { usedTokens: usage.totalTokens, windowTokens: usage.maxTokens };
   }
 
   async setModel(sessionId: string, model: ModelSelection): Promise<void> {
@@ -1047,7 +1135,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         });
         return { behavior: 'allow' };
       }
-      if (session.registeredMcpPrefixes.some((prefix) => toolName.startsWith(prefix))) {
+      if (session.autoApprovedMcpPrefixes.some((prefix) => toolName.startsWith(prefix))) {
         return { behavior: 'allow' };
       }
       return this.requestApproval(session, toolName, toolInput, options);
@@ -1149,6 +1237,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         requestType: requestTypeForTool(toolName),
         ...approvalContent(toolName, toolInput, options.title, options.description),
         options: APPROVAL_OPTIONS,
+        ...connectorOf(session, toolName),
         raw: { source: 'claude', payload: { toolName, toolInput } },
       });
     });

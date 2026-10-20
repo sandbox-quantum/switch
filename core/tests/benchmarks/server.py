@@ -35,14 +35,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.agent_event_listener import AgentEventListener
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
-    TaskProtocolConfig,
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import Actor, AgentActor, HumanActor
-from switch_core.clients.agent_consumer import AgentConsumer
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.engine import create_unpooled_engine
@@ -52,17 +51,27 @@ from switch_core.db.models import (
     ApprovalRequest,
     Message,
     User,
+    agent_event_boot_sequence,
 )
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.hosted_launch_store import HostedLaunchStore
+from switch_core.db.stores.budget_store import BudgetStore
+from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
+from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
+from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.tenant_store import TenantStore
+from switch_core.db.stores.usage_store import UsageStore
+from switch_core.delivery.conversation import ConversationRules, ConversationSettings
+from switch_core.delivery.recipient import RecipientServices
+from switch_core.delivery.router import MessageRouter
 from switch_core.main import (
+    _agent_event_retention_loop,
     _connection_sweep_loop,
     _runtime_state_sweep_loop,
     _seed_agent_registration_bootstrap_key,
 )
 from switch_core.messages.notify import MessageListener
 from switch_core.observability.runtime import EventLoopLag
+from switch_core.ownership import Ownership
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomCreateConfig, RoomService
@@ -70,7 +79,12 @@ from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.session_activity.service import AgentSessionActivityService, SwitchUser
 from switch_core.sessions.contract import ApprovalResult
+from switch_core.signals import SignalBus
+from switch_core.telemetry.messages import MessageTelemetry
+from switch_core.telemetry.service import TelemetryService
+from switch_core.telemetry.sink import NullSink
 from switch_core.tenant_context import bind_tenant_id, tenant_scope
+from switch_core.transport.cursors import CursorWriter
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
@@ -89,6 +103,7 @@ from tests.integration.conftest import (
     _NoBridges,
     _truncate_all,
 )
+from tests.ownership import process_lease_on
 
 # Agents driven by a host process, which is what the benchmark spawns. The
 # profile has to say so: `session_passive` would suppress the addressed
@@ -99,7 +114,6 @@ BENCH_PROFILE = IntegrationProfile(
     pre_invocation_mediation=[],
     post_invocation_mediation=[],
     event_reporting=[],
-    task_protocol=TaskProtocolConfig(can_delegate=False, can_accept=False),
 )
 
 
@@ -250,7 +264,7 @@ class BenchServer:
             integration_profile=BENCH_PROFILE,
             owner_id=self.owner_id,
             overwrite=True,
-            owner_only=False,
+            addressing_policy=None,
         )
         agent = BenchAgent(agent_id=result.agent_id, name=name, api_key=result.api_key)
         self._agents.append(agent)
@@ -263,7 +277,7 @@ class BenchServer:
             client = await self._await_client(agent.agent_id, deadline)
             await client.wait_ready()
 
-    async def _await_client(self, agent_id: str, deadline: float) -> AgentConsumer:
+    async def _await_client(self, agent_id: str, deadline: float) -> AgentActor:
         while asyncio.get_event_loop().time() < deadline:
             client = self.client_lifecycle.get_by_agent_id(agent_id)
             if client is not None:
@@ -445,12 +459,27 @@ async def _serve(
     # and left from different asyncio contexts, where resetting the token
     # raises instead of unbinding.
     bind_tenant_id(TENANT_ZERO_ID)
-    event_buffer = EventBuffer(sequence_base=0)
+    # Numbered from this boot's base as `main` numbers it, so a Core that
+    # replaces another starts above every number the last one handed out and
+    # a host's cursor from before the restart reads as older, as it would in
+    # production. The events themselves are rows and outlive the restart.
+    async with session_env.engine.begin() as connection:
+        event_boot = await connection.scalar(agent_event_boot_sequence.next_value())
+    message_listener = MessageListener(lambda: create_unpooled_engine(config))
+    await message_listener.start()
+    event_buffer = EventBuffer(
+        session_factory,
+        sequence_base=event_boot << 32,
+        rooms=message_listener,
+        retention_seconds=config.agent_event_retention_seconds,
+    )
+    agent_event_listener = AgentEventListener(
+        lambda: create_unpooled_engine(config), event_buffer
+    )
     connections = AgentConnectionRegistry()
     collab_lifecycle = _NoBridges()
 
-    message_listener = MessageListener(lambda: create_unpooled_engine(config))
-    await message_listener.start()
+    await agent_event_listener.start()
     activity_listener = AgentSessionActivityListener(
         lambda: create_unpooled_engine(config)
     )
@@ -468,11 +497,52 @@ async def _serve(
         session_factory=session_factory,
     )
 
+    # Telemetry off: these flows are not about reporting, but the
+    # message hook must still be wired for the clients to build.
+    message_telemetry = MessageTelemetry(
+        telemetry=TelemetryService(
+            sink=NullSink(),
+            enabled=False,
+            client_id="",
+            version=None,
+            telemetry_environment="dev",
+            telemetry_internal=True,
+        ),
+        session_factory=session_factory,
+    )
+
+    router = MessageRouter(
+        services=RecipientServices(
+            session_factory=session_factory,
+            event_buffer=event_buffer,
+            agent_store=session_env.agent_store,
+            room_store=session_env.room_store,
+            document_store=session_env.document_store,
+            reference_store=session_env.reference_store,
+            agent_session_store=session_env.agent_session_store,
+            room_role_store=session_env.room_role_store,
+            external_user_store=session_env.external_user_store,
+            connections=connections,
+            frontend_base_url=config.dashboard_base_url,
+            message_telemetry=message_telemetry,
+        ),
+        message_store=session_env.message_store,
+        client_store=session_env.client_store,
+        budget_store=BudgetStore(),
+        conversation=ConversationRules(
+            settings=ConversationSettings.from_config(config),
+            message_store=session_env.message_store,
+            room_store=session_env.room_store,
+            agent_store=session_env.agent_store,
+            room_role_store=session_env.room_role_store,
+        ),
+    )
+
     provisioning: Provisioning = PostgresProvisioning(
         session_factory=session_factory,
         room_store=session_env.room_store,
         client_store=session_env.client_store,
-        message_store=session_env.message_store,
+        router=router,
         invites=invites,
     )
 
@@ -493,32 +563,23 @@ async def _serve(
         config=config,
         room_store=session_env.room_store,
         message_store=session_env.message_store,
+        usage_store=UsageStore(),
         media_store=session_env.media_store,
         listener=message_listener,
         invites=invites,
         ephemeral=ephemeral,
         room_cache=room_cache,
+        message_observer=message_telemetry,
+        router=router,
     )
-    client_factory.register(
-        "agent",
-        AgentActor,
-        AgentConsumer,
-        event_buffer=event_buffer,
-        agent_store=session_env.agent_store,
-        room_store=session_env.room_store,
-        bridge_store=session_env.bridge_store,
-        document_store=session_env.document_store,
-        reference_store=session_env.reference_store,
-        agent_session_store=session_env.agent_session_store,
-        room_role_store=session_env.room_role_store,
-        external_user_store=session_env.external_user_store,
-        hosted_launch_store=HostedLaunchStore(),
-        connections=connections,
-        frontend_base_url=config.frontend_base_url,
-    )
+    client_factory.register("agent", AgentActor)
     client_factory.register("user", HumanActor)
     client_factory.register("bridge", Actor)
 
+    # This process's lease and what it owns, as `main` wires them. Only agent
+    # clients run here, which have no consumer, so nothing is ever claimed;
+    # the signal bus is never started.
+    lease = process_lease_on(session_factory)
     client_lifecycle = ClientLifecycleService(
         provisioning=provisioning,
         client_store=session_env.client_store,
@@ -527,6 +588,23 @@ async def _serve(
         session_factory=session_factory,
         config=config,
         tenants_isolated=True,
+        ownership=Ownership(
+            lease=lease,
+            session_factory=session_factory,
+            bus=SignalBus(
+                session_factory,
+                lambda: create_unpooled_engine(config),
+                process_id=lease.process_id,
+            ),
+            store=OwnershipLeaseStore(),
+            processes=SwitchCoreProcessStore(),
+        ),
+        cursor_writer=CursorWriter(
+            session_factory=session_factory,
+            cursors=DeliveryCursorStore(),
+            leases=OwnershipLeaseStore(),
+            process_id=lease.process_id,
+        ),
     )
 
     room_service = RoomService(
@@ -549,7 +627,6 @@ async def _serve(
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
         event_buffer=event_buffer,
-        task_store=session_env.task_store,
         resource_service=resource_service,
         api_key_store=session_env.api_key_store,
         external_user_store=session_env.external_user_store,
@@ -559,6 +636,7 @@ async def _serve(
         approval_outcomes=ApprovalOutcomes(activity_listener, activity),
         controller_auth=None,
         trust_client=NullTrustClient(),
+        gateway_ui=None,
         connections=connections,
     )
 
@@ -601,6 +679,7 @@ async def _serve(
     sweeps = [
         asyncio.create_task(_connection_sweep_loop(protocol, EventLoopLag())),
         asyncio.create_task(_runtime_state_sweep_loop(protocol)),
+        asyncio.create_task(_agent_event_retention_loop(session_factory, event_buffer)),
     ]
 
     bench = BenchServer(
@@ -631,6 +710,7 @@ async def _serve(
         detach_statements()
         await client_lifecycle.stop_all()
         await activity_listener.stop()
+        await agent_event_listener.stop()
         await message_listener.stop()
         await provisioning.close()
 

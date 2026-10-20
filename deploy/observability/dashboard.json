@@ -288,14 +288,35 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Delivery failures per second",
-        "show_legend": false,
+        "title": "Delivery, routing and message-observer failures, and rows too old to replay, per second",
+        "show_legend": true,
         "requests": [
           {
             "q": "sum:switch.messages.delivery_failures{$env,$service}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
+            }
+          },
+          {
+            "q": "sum:switch.messages.routing_failures{$env,$service} by {stage}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "purple"
+            }
+          },
+          {
+            "q": "sum:switch.messages.observer_failures{$env,$service} by {actor}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "orange"
+            }
+          },
+          {
+            "q": "sum:switch.messages.backlog_skipped{$env,$service} by {actor}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "cool"
             }
           }
         ]
@@ -460,12 +481,17 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Event-loop lag (ms)",
-        "show_legend": false,
+        "title": "Event-loop lag (ms) and stalls of 50 ms or more",
+        "show_legend": true,
         "requests": [
           {
             "q": "max:switch.runtime.event_loop_lag{$env,$service}",
             "display_type": "bars"
+          },
+          {
+            "q": "count:switch.runtime.event_loop_stalls{$env,$service}.as_count()",
+            "display_type": "line",
+            "on_right_yaxis": true
           }
         ]
       },
@@ -696,7 +722,26 @@
       "layout": {
         "x": 0,
         "y": 55,
-        "width": 12,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Publications held back by a rate limit p95 (s) by platform and delivery \u2014 needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.bridge.throttle.held{$env,$service} by {platform,delivery}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 55,
+        "width": 6,
         "height": 4
       }
     },
@@ -715,7 +760,26 @@
       "layout": {
         "x": 0,
         "y": 59,
-        "width": 12,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Messaging events from unclaimed chats, by platform",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.messaging.events_ignored{$env,$service} by {platform,reason}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 59,
+        "width": 6,
         "height": 4
       }
     },
@@ -782,6 +846,28 @@
     {
       "definition": {
         "type": "timeseries",
+        "title": "Repeated refusals answered 429 per second, by the route that refused them",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.http.refusals_throttled{$env,$service} by {route}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "warm"
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 71,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
         "title": "Database sessions for this server's role, by state (the database's view)",
         "show_legend": true,
         "requests": [
@@ -793,7 +879,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 71,
+        "y": 75,
         "width": 6,
         "height": 4
       }
@@ -812,7 +898,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 71,
+        "y": 75,
         "width": 6,
         "height": 4
       }
@@ -835,7 +921,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 75,
+        "y": 79,
         "width": 6,
         "height": 4
       }
@@ -858,7 +944,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 75,
+        "y": 79,
         "width": 6,
         "height": 4
       }
@@ -881,7 +967,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 79,
+        "y": 83,
         "width": 6,
         "height": 4
       }
@@ -904,7 +990,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 79,
+        "y": 83,
         "width": 6,
         "height": 4
       }
@@ -923,7 +1009,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 83,
+        "y": 87,
         "width": 6,
         "height": 4
       }
@@ -942,7 +1028,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 83,
+        "y": 87,
         "width": 6,
         "height": 4
       }
@@ -962,7 +1048,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 87,
+        "y": 91,
         "width": 12,
         "height": 2
       }
@@ -981,7 +1067,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 89,
+        "y": 93,
         "width": 6,
         "height": 4
       }
@@ -1008,7 +1094,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 89,
+        "y": 93,
         "width": 6,
         "height": 4
       }
@@ -1031,7 +1117,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 93,
+        "y": 97,
         "width": 6,
         "height": 4
       }
@@ -1050,8 +1136,27 @@
       },
       "layout": {
         "x": 6,
-        "y": 93,
+        "y": 97,
         "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Service tokens per second, by connector and outcome (issued, or the refusal's reason code)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.service_tokens.requests{$env,$service} by {connector,outcome}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 97,
+        "width": 12,
         "height": 4
       }
     }

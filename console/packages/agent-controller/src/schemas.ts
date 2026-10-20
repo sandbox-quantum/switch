@@ -1,4 +1,6 @@
+import { sealedLoginSchema } from '@switch-console/agent-providers';
 import { z } from 'zod';
+import { PROVIDERS } from './providers';
 
 /**
  * The wire messages between this controller and Management, as v1 uses them.
@@ -13,11 +15,12 @@ import { z } from 'zod';
 
 export const PROTOCOL_VERSION = 2;
 
-export const PROVIDERS = ['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const;
-export type Provider = (typeof PROVIDERS)[number];
+export { PROVIDERS };
+/** A provider id this controller has both a plugin and a runtime for. */
+export type Provider = string;
 
 export function isProvider(value: string): value is Provider {
-  return (PROVIDERS as readonly string[]).includes(value);
+  return PROVIDERS.includes(value);
 }
 
 /** The contract's reason codes, plus the ones v1 adds. */
@@ -97,6 +100,8 @@ export const enrollRequestSchema = z.object({
     platform: platformSchema,
     version: z.string().min(1),
   }),
+  /** The key the provider logins its owner gives this machine are sealed to. */
+  public_key: z.object({ alg: z.literal('X25519'), key: z.string().min(1) }).optional(),
 });
 export type EnrollRequest = z.infer<typeof enrollRequestSchema>;
 
@@ -114,6 +119,8 @@ export const credentialRotateResponseSchema = z.object({ credential: id });
 export const controllerInfoRequestSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   description: z.string().max(500).nullable().optional(),
+  /** Registered once, by a controller enrolled before it made a key. */
+  public_key: z.object({ alg: z.literal('X25519'), key: z.string().min(1) }).optional(),
 });
 export type ControllerInfoChange = z.infer<typeof controllerInfoRequestSchema>;
 
@@ -124,6 +131,14 @@ export const controllerInfoResponseSchema = z.object({
   description: z.string().nullable(),
 });
 export type ControllerInfo = z.infer<typeof controllerInfoResponseSchema>;
+
+/** `GET .../provider-credentials/{provider}`: the login given to this machine, sealed to its key. */
+export const sealedLoginResponseSchema = z.object({
+  provider: z.string(),
+  revision: z.number().int().positive(),
+  sealed: sealedLoginSchema,
+});
+export type SealedLoginResponse = z.infer<typeof sealedLoginResponseSchema>;
 
 // §2 Assignment (v1 definition)
 
@@ -146,6 +161,8 @@ export const agentDefinitionSchema = z.object({
   ),
   instructions: z.string(),
   auto_approve: z.boolean(),
+  /** The provider's own automatic review. Absent from servers older than the setting. */
+  auto_mode: z.boolean().default(false),
   directory: z.string().nullable(),
   /** `shared`: the agent host runs in this controller's process; `isolated`: in a process of its own. */
   isolation: receivedEnum(['shared', 'isolated']),
@@ -183,21 +200,28 @@ export type ProcessState = (typeof PROCESS_STATES)[number];
 const reasonCode = z.enum(REASON_CODES);
 
 export const providerStatusSchema = z.object({
-  provider: z.enum(PROVIDERS),
+  provider: z.string().refine(isProvider, { message: 'Not a provider this controller runs.' }),
   installed: z.boolean(),
   version: z.string().nullable(),
   auth: z.enum(['ok', 'expired', 'missing', 'unknown']),
   auth_source: z.enum(['local', 'sealed']).nullable(),
   checked_at: time,
   reason: reasonCode.optional(),
+  /** Why no version was read from an installed CLI. */
+  version_problem: z.string().max(300).optional(),
+  /** Why the provider's login does not work, or a login given to the machine is not used, in so many words. */
+  auth_problem: z.string().max(300).optional(),
 });
 export type ProviderStatus = z.infer<typeof providerStatusSchema>;
 
 export const toolStatusSchema = z.object({
   tool: z.string().min(1),
-  state: z.enum(['ok', 'missing', 'unauthenticated', 'unknown']),
+  /** `unsupported`: Switch's helper for the tool does not run on this machine (GitHub's on Windows). */
+  state: z.enum(['ok', 'missing', 'unauthenticated', 'unsupported', 'unknown']),
   reason: reasonCode.optional(),
 });
+
+export type ToolStatus = z.infer<typeof toolStatusSchema>;
 
 export const agentStatusSchema = z
   .object({
@@ -220,6 +244,13 @@ export const agentStatusSchema = z
   );
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
 
+/**
+ * Who moves this controller onto another release: itself, following the one
+ * Switch names, or Switch Console, which runs it and replaces its bundle.
+ */
+export const updatedBySchema = z.enum(['self', 'console']);
+export type UpdatedBy = z.infer<typeof updatedBySchema>;
+
 export const statusReportSchema = z.object({
   seq: z.number().int().positive(),
   observed_at: time,
@@ -227,6 +258,7 @@ export const statusReportSchema = z.object({
     version: z.string().min(1),
     protocol: z.literal(PROTOCOL_VERSION),
     assignment_revision: revision,
+    updated_by: updatedBySchema,
   }),
   machine: z.object({
     platform: platformSchema,
@@ -242,12 +274,26 @@ export const statusReportSchema = z.object({
   providers: z.array(providerStatusSchema),
   tools: z.array(toolStatusSchema),
   agents: z.array(agentStatusSchema),
+  /** Why this controller does not run the release Switch names, when it does not. */
+  update: z
+    .object({
+      target: z.string().min(1),
+      state: z.enum(['waiting_idle', 'failed', 'restart_needed']),
+      problem: z.string().max(500).optional(),
+    })
+    .optional(),
 });
 export type StatusReport = z.infer<typeof statusReportSchema>;
 
 export const statusResponseSchema = z.object({
   assignment_revision: revision,
   report_within_s: z.number().int().positive(),
+  /**
+   * The release Switch wants this controller to run, or null/absent for none.
+   * Kept unread here so a malformed one cannot fail the whole response:
+   * `readControllerRelease` reads it.
+   */
+  controller_release: z.unknown().optional(),
 });
 export type StatusResponse = z.infer<typeof statusResponseSchema>;
 
@@ -371,6 +417,9 @@ export const agentSessionCommandFrameSchema = z.object({
   command: z.looseObject({ commandId: z.string().min(1) }),
 });
 export type AgentSessionCommandFrame = z.infer<typeof agentSessionCommandFrameSchema>;
+
+export const agentWarmFrameSchema = z.object({ agent_id: id, room_id: id });
+export type AgentWarmFrame = z.infer<typeof agentWarmFrameSchema>;
 
 export const agentApprovalOutcomeFrameSchema = z.object({
   agent_id: id,

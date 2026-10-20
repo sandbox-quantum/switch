@@ -11,7 +11,10 @@ import {
 } from '@sandboxaq/switch-agent-runtime/hosted';
 import { z } from 'zod';
 import type { PlacementMap, SessionPlacements } from './placements';
-import type { AskHandler, Caller } from './session-channel';
+import type { Redactions } from './redaction';
+import { issueServiceToken, readServiceGrants } from './service-access';
+import { AgentServiceTokens } from './service-tokens';
+import type { AskHandler, Caller, HostAsk } from './session-channel';
 import { sharedConfigSchema } from './shared-config';
 
 /**
@@ -24,6 +27,10 @@ import { sharedConfigSchema } from './shared-config';
  * generation. `connect_to_room` is also a local move: the room is placed with
  * the calling session before Switch is asked, so the room's next message
  * reaches it, and put back as it was if Switch refuses.
+ *
+ * It also answers the sessions' asks for service tokens (`AgentServiceTokens`),
+ * and scrubs every token handed out from the arguments of every call it makes,
+ * so a token an agent echoes into a room message never reaches Switch.
  */
 export function sessionToolAnswerer(deps: {
   identity: SwitchIdentity;
@@ -31,7 +38,16 @@ export function sessionToolAnswerer(deps: {
   placements: SessionPlacements;
   /** States every placement to Switch; raises when Switch does not take them. */
   publish: () => Promise<void>;
+  /** The service tokens handed out in this process, added to as more are. */
+  redactions: Redactions;
 }): AskHandler {
+  const services = new AgentServiceTokens({
+    endpoint: deps.identity,
+    redactions: deps.redactions,
+    now: Date.now,
+    issue: issueServiceToken,
+    readGrants: readServiceGrants,
+  });
   let catalog: Promise<SwitchToolCatalog> | null = null;
   const tools = (): Promise<SwitchToolCatalog> => {
     catalog ??= loadOperations(deps.identity).then(
@@ -122,11 +138,38 @@ export function sessionToolAnswerer(deps: {
     };
   };
 
+  /**
+   * Posts, as the session, a reply its turn left unposted. Only into the room
+   * the turn came from, and only while the session still attends it: a post
+   * goes to whichever room the session holds, and one it has moved to since
+   * did not ask.
+   */
+  const roomReply = async (
+    caller: Caller,
+    catalog: SwitchToolCatalog,
+    ask: Extract<HostAsk, { type: 'room-reply' }>
+  ): Promise<null> => {
+    const attended = deps.placements.roomOf(caller.sessionId);
+    if (attended !== ask.roomId)
+      throw new Error(
+        `Session ${caller.sessionId} no longer attends room ${ask.roomId}${attended ? ` (it attends ${attended})` : ''}, so its reply was not posted there.`
+      );
+    const posted = await catalog.call(await context(caller), 'post_message', {
+      body: deps.redactions.text(ask.body),
+      ...(ask.threadId ? { thread_id: ask.threadId } : {}),
+    });
+    if (posted.isError) throw new Error(resultText(posted));
+    return null;
+  };
+
   return async (caller, ask) => {
+    if (ask.type === 'service-token') return services.answer(ask.service, ask.rejected);
     const catalog = await tools();
     if (ask.type === 'tools') return catalog.tools();
-    if (ask.name === 'connect_to_room') return connect(caller, catalog, ask.arguments);
-    return catalog.call(await context(caller), ask.name, ask.arguments);
+    if (ask.type === 'room-reply') return roomReply(caller, catalog, ask);
+    const args = deps.redactions.value(ask.arguments);
+    if (ask.name === 'connect_to_room') return connect(caller, catalog, args);
+    return catalog.call(await context(caller), ask.name, args);
   };
 }
 
@@ -277,6 +320,11 @@ export const watcherHealthSchema = z.object({
   since: z.string(),
   /** Session id → room id, as the watcher routes now. Empty while it is not running. */
   placements: z.record(z.string(), z.string()),
+  /**
+   * The agent's sessions whose host runs here and is mid-turn, or has not yet
+   * said whether it is. Absent from a watcher too old to report it.
+   */
+  busy: z.array(z.string()).optional(),
 });
 export type WatcherHealth = z.infer<typeof watcherHealthSchema>;
 
@@ -284,6 +332,7 @@ export type WatcherHealth = z.infer<typeof watcherHealthSchema>;
 export type WatcherHandlers = {
   place: (sessionId: string, roomId: string) => Promise<PlaceOutcome>;
   forget: (sessionId: string) => Promise<void>;
+  warm: (roomId: string) => Promise<string | null>;
 };
 
 /**
@@ -339,6 +388,18 @@ export class WatcherControl {
     return this.handlers.place(sessionId, roomId);
   }
 
+  /**
+   * Start the session a message to this room would start, or confirm the one
+   * placed there, without a message: a chat just created or reopened.
+   * Resolves to that session, or null when the agent may not start one.
+   * Refused when no watcher is running.
+   */
+  warm(roomId: string): Promise<string | null> {
+    if (!this.handlers)
+      return Promise.reject(new Error("The agent's room watcher is not running."));
+    return this.handlers.warm(roomId);
+  }
+
   health(): WatcherHealth {
     return this.current;
   }
@@ -357,6 +418,7 @@ export class WatcherControl {
     state?: WatcherState;
     detail?: string | null;
     placements?: PlacementMap;
+    busy?: string[];
   }): void {
     const state = change.state ?? this.current.state;
     const same = state === this.current.state;
@@ -365,11 +427,17 @@ export class WatcherControl {
       detail: change.detail !== undefined ? change.detail : same ? this.current.detail : null,
       since: same ? this.current.since : new Date().toISOString(),
       placements: change.placements ? { ...change.placements } : this.current.placements,
+      ...(change.busy
+        ? { busy: [...change.busy].sort() }
+        : this.current.busy
+          ? { busy: this.current.busy }
+          : {}),
     };
     if (
       same &&
       next.detail === this.current.detail &&
-      samePlacements(next.placements, this.current.placements)
+      samePlacements(next.placements, this.current.placements) &&
+      sameList(next.busy, this.current.busy)
     )
       return;
     this.current = next;
@@ -381,6 +449,11 @@ export class WatcherControl {
       }
     }
   }
+}
+
+function sameList(a: string[] | undefined, b: string[] | undefined): boolean {
+  if (!a || !b) return a === b;
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 function samePlacements(a: PlacementMap, b: PlacementMap): boolean {

@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from switch_core.bridges.collaboration.models import RetireOutcome
 from switch_core.room_service import RoomService
 
 
@@ -35,9 +36,26 @@ class _FakeRoomStore:
         self.deleted.append(room_id)
 
 
-class _FakeCollaborationCore:
-    def __init__(self, events: list[Any]) -> None:
+class _FakeAdapter:
+    def __init__(self, events: list[Any], outcome: RetireOutcome | Exception) -> None:
         self._events = events
+        self._outcome = outcome
+
+    async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
+        self._events.append(("retire", external_channel_id))
+        if isinstance(self._outcome, Exception):
+            raise self._outcome
+        return self._outcome
+
+
+class _FakeCollaborationCore:
+    def __init__(
+        self,
+        events: list[Any],
+        outcome: RetireOutcome | Exception = RetireOutcome(outcome="archived"),
+    ) -> None:
+        self._events = events
+        self.adapter = _FakeAdapter(events, outcome)
 
     def remove_room_mapping(self, room_id: str, transport_room_id: str) -> None:
         self._events.append(("remove_room_mapping", room_id, transport_room_id))
@@ -46,9 +64,14 @@ class _FakeCollaborationCore:
 class _FakeLifecycle:
     def __init__(self, bridges: dict[str, Any]) -> None:
         self._bridges = bridges
+        # Bridges whose rooms changed, announced for the other processes.
+        self.rooms_changed_for: list[str] = []
 
     def get(self, bridge_id: str) -> Any:
         return self._bridges.get(bridge_id)
+
+    def rooms_changed(self, bridge_id: str) -> None:
+        self.rooms_changed_for.append(bridge_id)
 
 
 class _FakeClientLifecycle:
@@ -106,6 +129,7 @@ class TestDeleteRoom:
             transport_room_id="!mx:switch.local",
             bridge_id="bridge-x",
             external_channel_id="chan-x",
+            channel_type="channel_private",
         )
         bridge = _FakeCollaborationCore(events)
         svc, room_store = _build_service(
@@ -116,11 +140,13 @@ class TestDeleteRoom:
             events=events,
         )
 
-        await svc.delete_room("room-1")
+        await svc.delete_room("room-1", retire_channel=True)
 
         assert room_store.deleted == ["room-1"]
         assert ("delete_room", "!mx:switch.local") in events
         assert ("remove_room_mapping", "room-1", "!mx:switch.local") in events
+        # And every other process unmaps it too.
+        assert svc._collab_lifecycle.rooms_changed_for == ["bridge-x"]  # type: ignore[attr-defined]
 
     async def test_non_bridged_room_does_not_touch_collaboration_core(self) -> None:
         events: list[Any] = []
@@ -139,7 +165,7 @@ class TestDeleteRoom:
             events=events,
         )
 
-        await svc.delete_room("room-1")
+        await svc.delete_room("room-1", retire_channel=True)
 
         assert room_store.deleted == ["room-1"]
         assert not any(e[0] == "remove_room_mapping" for e in events)
@@ -152,6 +178,7 @@ class TestDeleteRoom:
             transport_room_id="!mx:switch.local",
             bridge_id="bridge-gone",
             external_channel_id="chan-x",
+            channel_type="channel_private",
         )
         svc, room_store = _build_service(
             room=room,
@@ -161,7 +188,7 @@ class TestDeleteRoom:
             events=events,
         )
 
-        await svc.delete_room("room-1")
+        await svc.delete_room("room-1", retire_channel=True)
 
         assert room_store.deleted == ["room-1"]
         assert not any(e[0] == "remove_room_mapping" for e in events)
@@ -187,7 +214,7 @@ class TestDeleteRoom:
             events=events,
         )
 
-        await svc.delete_room("room-1")
+        await svc.delete_room("room-1", retire_channel=True)
 
         kick_idx = max(i for i, e in enumerate(events) if e[0] == "kick")
         delete_idx = events.index(("delete_room", "!mx:switch.local"))
@@ -206,7 +233,7 @@ class TestDeleteRoom:
         )
 
         with pytest.raises(ValueError, match="Room not found"):
-            await svc.delete_room("nope")
+            await svc.delete_room("nope", retire_channel=True)
 
     async def test_drops_the_rooms_shared_delivery_reads(self) -> None:
         """Members still running here are kicked, which empties the room's
@@ -223,7 +250,135 @@ class TestDeleteRoom:
             room=room, client_ids=[], clients={}, bridges={}, events=events
         )
 
-        await svc.delete_room("room-1")
+        await svc.delete_room("room-1", retire_channel=True)
 
         assert room_store.deleted == ["room-1"]
         assert svc._room_cache.invalidated == [("room-tenant", "room-1")]  # type: ignore[attr-defined]
+
+
+def _bridged_room(channel_type: str = "channel_private") -> SimpleNamespace:
+    return SimpleNamespace(
+        id="room-1",
+        tenant_id="room-tenant",
+        transport_room_id="!mx:switch.local",
+        bridge_id="bridge-x",
+        external_channel_id="chan-x",
+        channel_type=channel_type,
+    )
+
+
+class TestDeleteRoomRetiresChannel:
+    async def test_archives_the_channel_between_kicks_and_unmapping(self) -> None:
+        events: list[Any] = []
+        svc, room_store = _build_service(
+            room=_bridged_room(),
+            client_ids=["c1"],
+            clients={"c1": SimpleNamespace(transport_user_id="@a:switch.local")},
+            bridges={"bridge-x": _FakeCollaborationCore(events)},
+            events=events,
+        )
+
+        channel = await svc.delete_room("room-1", retire_channel=True)
+
+        assert channel == RetireOutcome(outcome="archived")
+        assert room_store.deleted == ["room-1"]
+        kinds = [e[0] for e in events]
+        assert kinds.index("kick") < kinds.index("retire")
+        assert kinds.index("retire") < kinds.index("remove_room_mapping")
+        assert ("retire", "chan-x") in events
+
+    async def test_a_refused_retire_still_deletes_the_room(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        events: list[Any] = []
+        refused = RetireOutcome.failed("not_in_channel")
+        svc, room_store = _build_service(
+            room=_bridged_room(),
+            client_ids=[],
+            clients={},
+            bridges={"bridge-x": _FakeCollaborationCore(events, refused)},
+            events=events,
+        )
+
+        with caplog.at_level("WARNING"):
+            channel = await svc.delete_room("room-1", retire_channel=True)
+
+        assert channel == refused
+        assert room_store.deleted == ["room-1"]
+        assert ("remove_room_mapping", "room-1", "!mx:switch.local") in events
+        assert "not retired: not_in_channel" in caplog.text
+
+    async def test_a_raising_adapter_is_reported_as_failed(self) -> None:
+        events: list[Any] = []
+        svc, room_store = _build_service(
+            room=_bridged_room(),
+            client_ids=[],
+            clients={},
+            bridges={"bridge-x": _FakeCollaborationCore(events, RuntimeError("boom"))},
+            events=events,
+        )
+
+        channel = await svc.delete_room("room-1", retire_channel=True)
+
+        assert channel == RetireOutcome.failed("boom")
+        assert room_store.deleted == ["room-1"]
+
+    async def test_a_stopped_bridge_is_reported_as_failed(self) -> None:
+        events: list[Any] = []
+        svc, room_store = _build_service(
+            room=_bridged_room(), client_ids=[], clients={}, bridges={}, events=events
+        )
+
+        channel = await svc.delete_room("room-1", retire_channel=True)
+
+        assert channel is not None and channel.outcome == "failed"
+        assert room_store.deleted == ["room-1"]
+
+    async def test_a_direct_message_is_kept_without_asking_the_platform(
+        self,
+    ) -> None:
+        events: list[Any] = []
+        svc, room_store = _build_service(
+            room=_bridged_room("direct"),
+            client_ids=[],
+            clients={},
+            bridges={"bridge-x": _FakeCollaborationCore(events)},
+            events=events,
+        )
+
+        channel = await svc.delete_room("room-1", retire_channel=True)
+
+        assert channel == RetireOutcome(outcome="kept")
+        assert not any(e[0] == "retire" for e in events)
+        assert room_store.deleted == ["room-1"]
+
+    async def test_disconnecting_the_app_leaves_the_channel(self) -> None:
+        events: list[Any] = []
+        svc, room_store = _build_service(
+            room=_bridged_room(),
+            client_ids=[],
+            clients={},
+            bridges={"bridge-x": _FakeCollaborationCore(events)},
+            events=events,
+        )
+
+        channel = await svc.delete_room("room-1", retire_channel=False)
+
+        assert channel is None
+        assert not any(e[0] == "retire" for e in events)
+        assert room_store.deleted == ["room-1"]
+
+    async def test_an_unbridged_room_has_no_channel_outcome(self) -> None:
+        events: list[Any] = []
+        room = SimpleNamespace(
+            id="room-1",
+            tenant_id="room-tenant",
+            transport_room_id="!mx:switch.local",
+            bridge_id=None,
+            external_channel_id=None,
+        )
+        svc, _ = _build_service(
+            room=room, client_ids=[], clients={}, bridges={}, events=events
+        )
+
+        assert await svc.delete_room("room-1", retire_channel=True) is None

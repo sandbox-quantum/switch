@@ -8,6 +8,7 @@ starting listeners.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Mapping
 
@@ -106,3 +107,29 @@ async def test_an_edit_can_be_checked_before_it_is_stored(
     )
 
     assert seen == [{"guild_id": "2"}]
+
+
+async def test_is_connected_is_false_until_the_bridge_finishes_starting(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`_run_bridge` marks a bridge connected only once its adapter's `start`
+    has returned and its own client loop is live, the moment traffic can
+    safely reach it. Before that — and for a bridge nobody ever started — it
+    is not."""
+    _, bridge_id = await _bridge(session_factory)
+    service = _service(session_factory)
+    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+
+    assert service.is_connected(bridge_id) is False
+
+    async def _run(started_id: str, *_: object) -> None:
+        service._connected.add(started_id)
+
+    service._run_bridge = _run  # type: ignore[method-assign]
+
+    await service.start(bridge_id)
+    # `start` schedules the task and returns; let it run.
+    await asyncio.sleep(0)
+
+    assert service.is_connected(bridge_id) is True
+    await service.stop_all()

@@ -5,8 +5,7 @@ import type { AgentVerifyResult } from '@shared/core/switch-servers/switch-serve
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { addAgent, type AddAgentParams } from './add-agent';
 import {
-  getAgentAdvancedFields,
-  getAgentAdvancedSurface,
+  getAgentAdvancedSettings,
   readAgentAdvancedConfig,
   updateAgentAdvancedConfig,
 } from './agent-advanced-config';
@@ -21,7 +20,6 @@ import {
   attachConfiguredAgents,
   type AttachConfiguredAgentsParams,
 } from './attach-configured-agents';
-import { getAgentDefinitionFields } from './definition-fields';
 import { deleteAgent, type DeleteAgentOptions } from './deleteAgent';
 import {
   discoverLoadableAgentsInDir,
@@ -33,22 +31,20 @@ import { getAgents } from './getAgents';
 import { onboardAgent } from './onboard-agent';
 import type { RemoveLoadableAgentConfigParams } from './remove-loadable-agent-config';
 import { removeLoadableAgentConfig } from './remove-loadable-agent-config';
+import { renameLocalAgent } from './renameAgent';
 import { resetRemoteAgent } from './reset-remote-agent';
-import { setAgentAutoApprove, type AgentAutoApproveParams } from './setAgentAutoApprove';
+import { setAgentPermission, type AgentPermissionParams } from './setAgentPermission';
 
 export const agentsController = createRPCController({
   addAgent: (params: AddAgentParams) => addAgent(params),
-  definitionFields: (params: { providerId: AgentProviderId }) =>
-    Promise.resolve(getAgentDefinitionFields(params.providerId)),
   /**
-   * The per-agent advanced configuration, wherever the provider keeps it —
-   * a repo-agent definition (Claude) or a launch profile (Codex). One form,
-   * one editor; see `agent-advanced-config.ts`.
+   * Where the provider keeps the per-agent advanced configuration — a
+   * repo-agent definition (Claude) or a launch profile (Codex) — and which of
+   * the server's fields it applies. One form, one editor; see
+   * `agent-advanced-config.ts`.
    */
-  advancedFields: (params: { providerId: AgentProviderId }) =>
-    Promise.resolve(getAgentAdvancedFields(params.providerId)),
-  advancedSurface: (params: { providerId: AgentProviderId }) =>
-    Promise.resolve(getAgentAdvancedSurface(params.providerId)),
+  advancedSettings: (params: { providerId: AgentProviderId }) =>
+    Promise.resolve(getAgentAdvancedSettings(params.providerId)),
   /**
    * The models the agent's own host offers, for the advanced-configuration
    * fields that declare a catalogue binding. Reports why it could not be read
@@ -83,6 +79,13 @@ export const agentsController = createRPCController({
   removeLoadableAgentConfig: (params: RemoveLoadableAgentConfigParams) =>
     removeLoadableAgentConfig(params),
   getAgents: (locationId?: string) => getAgents(locationId),
+  /**
+   * Give a Console agent its new name locally, after its Switch server has
+   * renamed it (`workspaces.renameAgent`): the row and the files keyed by the
+   * name. Throws `RenameLocalAgentFailed` before writing anything when the
+   * name is taken here.
+   */
+  renameLocal: (params: { agentId: string; newName: string }) => renameLocalAgent(params),
   getAgentById: (agentId: string) => getAgentById(agentId),
   deleteAgent: (params: { agentId: string } & DeleteAgentOptions) =>
     deleteAgent(params.agentId, {
@@ -93,6 +96,5 @@ export const agentsController = createRPCController({
   resetRemoteAgent: (params: { agentId: string }) => resetRemoteAgent(params.agentId),
   assignServer: (params: { agentId: string; serverId: string }): Promise<AgentVerifyResult> =>
     assignAgentServer(params),
-  setAgentAutoApprove: (params: AgentAutoApproveParams): Promise<void> =>
-    setAgentAutoApprove(params),
+  setAgentPermission: (params: AgentPermissionParams): Promise<void> => setAgentPermission(params),
 });

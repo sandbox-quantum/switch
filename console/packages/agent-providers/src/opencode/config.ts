@@ -55,10 +55,12 @@ function editAction(mode: RuntimeMode): OpencodePermissionAction {
 
 /**
  * The permission keys covering the tools of the MCP servers the caller
- * registered. OpenCode names an MCP permission `<server>_<tool>` and matches a
- * permission key as a glob, so one entry per server covers its whole surface.
+ * registered and auto-approves. OpenCode names an MCP permission
+ * `<server>_<tool>` and matches a permission key as a glob, so one entry per
+ * server covers its whole surface.
  *
- * Only explicitly supplied servers receive these rules. Native user MCP
+ * Only explicitly supplied servers receive these rules, and not a connector's,
+ * whose tools fall under `'*' → ask` like any other tool. Native user MCP
  * registrations retain their own permissions. Switch's room protocol must be
  * available so the agent can ask the room for help.
  */
@@ -76,14 +78,29 @@ export function permissionConfigFor(
   mcpNames: string[]
 ): Record<string, OpencodePermissionAction> {
   if (mode === 'full-access') return { '*': 'allow', external_directory: 'allow' };
-  const config: Record<string, OpencodePermissionAction> = { '*': 'ask', edit: editAction(mode) };
+  const config: Record<string, OpencodePermissionAction> =
+    mode === 'auto' ? {} : { '*': 'ask', edit: editAction(mode) };
   for (const permission of NEVER_ASK) config[permission] = 'allow';
   for (const permission of mcpPermissionKeys(mcpNames)) config[permission] = 'allow';
+  if (mode === 'auto') return config;
   for (const permission of ASK_UNLESS_ALLOWED) config[permission] = 'ask';
   return config;
 }
 
-/** The per-session ruleset passed to `session.create` and re-asserted on resume. */
+function allowRules(permissions: readonly string[]): OpencodePermissionRule[] {
+  return permissions.map((permission) => ({ permission, pattern: '*', action: 'allow' }));
+}
+
+/**
+ * The per-session ruleset passed to `session.create` and re-asserted on resume
+ * (an update replaces the session's ruleset rather than adding to it).
+ *
+ * OpenCode evaluates the last matching rule across the agent's configuration
+ * and then this ruleset, so a rule here overrides the person's own. Auto mode
+ * is OpenCode's `--auto`: every ask is approved by the adapter, and only what
+ * the person's configuration denies stays denied, so its ruleset carries no
+ * catch-all that would turn those denials back into asks.
+ */
 export function permissionRulesFor(
   mode: RuntimeMode,
   mcpNames: string[]
@@ -94,15 +111,11 @@ export function permissionRulesFor(
       { permission: 'external_directory', pattern: '*', action: 'allow' },
     ];
   }
+  if (mode === 'auto') return allowRules([...NEVER_ASK, ...mcpPermissionKeys(mcpNames)]);
   return [
     { permission: '*', pattern: '*', action: 'ask' },
     { permission: 'edit', pattern: '*', action: editAction(mode) },
-    ...NEVER_ASK.map((permission) => ({ permission, pattern: '*', action: 'allow' as const })),
-    ...mcpPermissionKeys(mcpNames).map((permission) => ({
-      permission,
-      pattern: '*',
-      action: 'allow' as const,
-    })),
+    ...allowRules([...NEVER_ASK, ...mcpPermissionKeys(mcpNames)]),
     ...ASK_UNLESS_ALLOWED.map((permission) => ({
       permission,
       pattern: '*',
@@ -135,13 +148,15 @@ export function mcpConfigFor(
   return entries;
 }
 
+/** `autoApproved` names the servers whose tools are allowed without asking. */
 export function buildConfigFile(
   mode: RuntimeMode,
-  servers: Record<string, McpServerSpec>
+  servers: Record<string, McpServerSpec>,
+  autoApproved: string[]
 ): OpencodeConfigFile {
   return {
     $schema: 'https://opencode.ai/config.json',
-    permission: permissionConfigFor(mode, Object.keys(servers)),
+    permission: permissionConfigFor(mode, autoApproved),
     mcp: mcpConfigFor(servers),
   };
 }

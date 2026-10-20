@@ -108,7 +108,7 @@ describe('the consent gate', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url] = fetchMock.mock.calls[0] as [string];
-    expect(url).toBe('https://telemetry.flintai.dev/v1/logs');
+    expect(url).toBe('https://telemetry.switchagents.ai/v1/logs');
   });
 });
 

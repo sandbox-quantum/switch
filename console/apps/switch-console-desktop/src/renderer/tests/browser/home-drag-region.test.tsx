@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HomeMainPanel } from '@renderer/app/home-view';
 import { appSettingsMetaQueryKey } from '@renderer/features/settings/app-settings-client';
 import { ThemeContext } from '@renderer/lib/providers/theme-provider';
@@ -19,6 +19,14 @@ import { ThemeContext } from '@renderer/lib/providers/theme-provider';
  * The imports above must stay static; `setup-electron-bridge.ts` exists so they
  * can be, and explains what importing this module at runtime does to React.
  */
+
+// The checklist is what these tests look at, and builds with the first-run
+// flow leave it out (switch-buddy takes its place): test it as a build
+// without that flow shows it.
+vi.mock('@shared/core/feature-flags/feature-flags', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  BUILD_FEATURE_FLAGS: { onboarding: false, switch_cloud: false },
+}));
 
 let container: HTMLDivElement | null = null;
 

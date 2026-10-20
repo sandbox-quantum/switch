@@ -60,7 +60,10 @@ SECRET_KEYS: {{ required "secrets.secretKeys is required (\"<id>:<secret>\", see
 JWT_SECRET_KEY: {{ . | b64enc | quote }}
 {{- end }}
 {{- if .Values.switchCore.agentManagement.enabled }}
-{{- $controllerSecret := required "secrets.controllerTokenSecret is required when switchCore.agentManagement.enabled" .Values.secrets.controllerTokenSecret }}
+{{- fail "switchCore.agentManagement.enabled has been replaced by a feature flag: remove it and add \"agent_management\" to switchCore.featureFlags.enabled." }}
+{{- end }}
+{{- if has "agent_management" .Values.switchCore.featureFlags.enabled }}
+{{- $controllerSecret := required "secrets.controllerTokenSecret is required with the agent_management feature flag on" .Values.secrets.controllerTokenSecret }}
 {{- if lt (len $controllerSecret) 32 }}
 {{- fail "secrets.controllerTokenSecret must be at least 32 characters; switch-core refuses to start with a shorter one." }}
 {{- end }}
@@ -75,8 +78,11 @@ MATTERMOST_USER_PASSWORD: {{ .Values.secrets.mattermostUserPassword | default .V
 {{- if .Values.switchCore.oidc.enabled }}
 GATEWAY_OIDC_CLIENT_SECRET: {{ required "secrets.gatewayOidcClientSecret is required when switchCore.oidc.enabled" .Values.secrets.gatewayOidcClientSecret | b64enc | quote }}
 {{- end }}
-{{- if and .Values.switchCore.smtp.enabled .Values.switchCore.smtp.username }}
-GATEWAY_SMTP_PASSWORD: {{ required "secrets.gatewaySmtpPassword is required when switchCore.smtp.username is set" .Values.secrets.gatewaySmtpPassword | b64enc | quote }}
+{{- if and .Values.switchCore.smtp.enabled (or .Values.switchCore.smtp.username .Values.switchCore.smtp.usernameFromSecret) }}
+GATEWAY_SMTP_PASSWORD: {{ required "secrets.gatewaySmtpPassword is required when an SMTP username is set" .Values.secrets.gatewaySmtpPassword | b64enc | quote }}
+{{- end }}
+{{- if and .Values.switchCore.smtp.enabled .Values.switchCore.smtp.usernameFromSecret }}
+GATEWAY_SMTP_USERNAME: {{ required "secrets.gatewaySmtpUsername is required when switchCore.smtp.usernameFromSecret is true" .Values.secrets.gatewaySmtpUsername | b64enc | quote }}
 {{- end }}
 {{- if .Values.secrets.otlpHeaders }}
 OTLP_HEADERS: {{ .Values.secrets.otlpHeaders | b64enc | quote }}
@@ -88,6 +94,24 @@ SLACK_APP_SIGNING_SECRET: {{ required "secrets.slackAppSigningSecret is required
 {{- if .Values.switchCore.discordApp.enabled }}
 DISCORD_APP_CLIENT_SECRET: {{ required "secrets.discordAppClientSecret is required when switchCore.discordApp.enabled" .Values.secrets.discordAppClientSecret | b64enc | quote }}
 DISCORD_APP_BOT_TOKEN: {{ required "secrets.discordAppBotToken is required when switchCore.discordApp.enabled" .Values.secrets.discordAppBotToken | b64enc | quote }}
+{{- end }}
+{{- if .Values.switchCore.teamsApp.enabled }}
+{{- if eq .Values.switchCore.teamsApp.credential "secret" }}
+TEAMS_APP_CLIENT_SECRET: {{ required "secrets.teamsAppClientSecret is required when switchCore.teamsApp.credential is secret" .Values.secrets.teamsAppClientSecret | b64enc | quote }}
+{{- end }}
+{{- if eq .Values.switchCore.teamsApp.credential "certificate" }}
+TEAMS_APP_CERTIFICATE: {{ required "secrets.teamsAppCertificate is required when switchCore.teamsApp.credential is certificate" .Values.secrets.teamsAppCertificate | b64enc | quote }}
+TEAMS_APP_CERTIFICATE_PRIVATE_KEY: {{ required "secrets.teamsAppCertificatePrivateKey is required when switchCore.teamsApp.credential is certificate" .Values.secrets.teamsAppCertificatePrivateKey | b64enc | quote }}
+{{- end }}
+TEAMS_APP_NOTIFICATION_CERTIFICATE: {{ required "secrets.teamsAppNotificationCertificate is required when switchCore.teamsApp.enabled" .Values.secrets.teamsAppNotificationCertificate | b64enc | quote }}
+TEAMS_APP_NOTIFICATION_PRIVATE_KEY: {{ required "secrets.teamsAppNotificationPrivateKey is required when switchCore.teamsApp.enabled" .Values.secrets.teamsAppNotificationPrivateKey | b64enc | quote }}
+{{- if .Values.secrets.teamsAppNotificationPreviousPrivateKey }}
+TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY: {{ .Values.secrets.teamsAppNotificationPreviousPrivateKey | b64enc | quote }}
+{{- end }}
+{{- end }}
+{{- if .Values.switchCore.telegramApp.enabled }}
+TELEGRAM_APP_BOT_TOKEN: {{ required "secrets.telegramAppBotToken is required when switchCore.telegramApp.enabled" .Values.secrets.telegramAppBotToken | b64enc | quote }}
+TELEGRAM_APP_WEBHOOK_SECRET: {{ required "secrets.telegramAppWebhookSecret is required when switchCore.telegramApp.enabled" .Values.secrets.telegramAppWebhookSecret | b64enc | quote }}
 {{- end }}
 {{- end }}
 
@@ -414,14 +438,59 @@ than something you discover hours later at Graph subscription time.
 {{- end }}
 
 {{/*
-Prepend the global image registry if set.
+preStop drain for a pod that rolls with a surge (a new pod is Ready before the
+old one stops): hold the old pod for a few seconds after it is marked
+terminating, so endpoint and load-balancer deregistration land before the
+process gets SIGTERM. Not for a Recreate Deployment, where nothing else is
+serving and the wait only lengthens the outage. Not for switch-core either:
+with more than one replica it drains itself after SIGTERM, first handing the
+work it owns to the other pods and then serving on for a few seconds out of
+readiness, and a sleep here would only hold that hand-over back. The native
+`sleep` action needs no shell (the images are distroless) but needs Kubernetes
+1.30+, so nothing renders on an older cluster.
+Usage: {{- include "switch.preStopDrain" . | nindent 10 }}
+*/}}
+{{- define "switch.preStopDrain" -}}
+{{- if and .Values.global.preStopSleepSeconds (semverCompare ">=1.30-0" .Capabilities.KubeVersion.Version) -}}
+lifecycle:
+  preStop:
+    sleep:
+      seconds: {{ .Values.global.preStopSleepSeconds }}
+{{- end }}
+{{- end }}
+
+{{/*
+Prepend the global image registry if set, unless the reference already names
+a registry: a first path component with a "." or ":" in it, or "localhost",
+which is how a container runtime tells a registry host from a repository
+namespace. So `ghcr.io/acme/switch-core:1.0` is used as written whatever
+global.imageRegistry says.
 Usage: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
 */}}
 {{- define "switch.image" -}}
-{{- if .global.imageRegistry -}}
+{{- $parts := splitList "/" .image -}}
+{{- $host := first $parts -}}
+{{- $hasRegistry := and (gt (len $parts) 1) (or (contains "." $host) (contains ":" $host) (eq $host "localhost")) -}}
+{{- if and .global.imageRegistry (not $hasRegistry) -}}
 {{- printf "%s/%s" .global.imageRegistry .image }}
 {{- else -}}
 {{- .image }}
+{{- end -}}
+{{- end }}
+
+{{/*
+Pull policy for a first-party image. An explicit policy wins. Otherwise a
+digest-pinned reference cannot change, so IfNotPresent; anything else may be a
+mutable tag, so Always, or nodes would keep running a stale cached image.
+Usage: {{ include "switch.imagePullPolicy" (dict "policy" .Values.switchCore.imagePullPolicy "image" .Values.switchCore.image) }}
+*/}}
+{{- define "switch.imagePullPolicy" -}}
+{{- if .policy -}}
+{{- .policy -}}
+{{- else if contains "@sha256:" .image -}}
+IfNotPresent
+{{- else -}}
+Always
 {{- end -}}
 {{- end }}
 
@@ -547,6 +616,30 @@ rather than from a CrashLoopBackOff.
 {{- end }}
 
 {{/*
+Refuse a controller release switch-core would refuse at startup: all three
+values or none, an x.y.z or x.y.z-<prerelease> version, an https URL, a lowercase
+SHA-256.
+*/}}
+{{- define "switch.validateControllerRelease" -}}
+{{- with .Values.switchCore.controllerRelease }}
+{{- if or .version .url .sha256 -}}
+{{- if not (and .version .url .sha256) -}}
+{{- fail "switchCore.controllerRelease.version, .url and .sha256 are set all together or not at all: switch-core refuses to start with only some of them." -}}
+{{- end -}}
+{{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z]+(\\.[0-9A-Za-z]+)*)?$" .version) -}}
+{{- fail (printf "switchCore.controllerRelease.version must be x.y.z or x.y.z-<prerelease>, got %q." .version) -}}
+{{- end -}}
+{{- if not (regexMatch "^https://[^/?#\\s]+" .url) -}}
+{{- fail (printf "switchCore.controllerRelease.url must be an https URL, got %q." .url) -}}
+{{- end -}}
+{{- if not (regexMatch "^[0-9a-f]{64}$" .sha256) -}}
+{{- fail (printf "switchCore.controllerRelease.sha256 must be 64 lowercase hex characters, got %q." .sha256) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 switch-core container env. Shared by the switch-core Deployment and the
 pre-upgrade migration Job so they always run against the same configuration
 (env.py builds a full SwitchConfig, so the migration Job needs every var too).
@@ -619,6 +712,17 @@ the owner's password.
 {{- end }}
 - name: DB_MIGRATION_LOCK_TIMEOUT
   value: {{ .Values.postgresql.migrationLockTimeout | quote }}
+{{- /* The pod's own name names the process on its lease, its signals, its
+logs and its metrics, so one pod can be told from another. */}}
+- name: POD_NAME
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.name
+{{- /* How many replicas share the database: sizes the connection budget
+switch-core checks at boot, and decides whether a dead LISTEN connection takes
+a pod out of service. */}}
+- name: CORE_REPLICAS
+  value: {{ .Values.switchCore.replicaCount | quote }}
 - name: AGENT_AUTH_CACHE_TTL_SECONDS
   value: {{ .Values.switchCore.authCache.ttlSeconds | quote }}
 - name: ID_SERVER_NAME
@@ -643,17 +747,23 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
       name: {{ include "switch.secretName" . }}
       key: JWT_SECRET_KEY
       optional: true
-{{- with .Values.switchCore.agentManagement }}
-{{- if .enabled }}
-- name: AGENT_MANAGEMENT_ENABLED
-  value: "true"
+{{- if has "agent_management" .Values.switchCore.featureFlags.enabled }}
 - name: CONTROLLER_TOKEN_SECRET
   valueFrom:
     secretKeyRef:
-      name: {{ include "switch.secretName" $ }}
+      name: {{ include "switch.secretName" . }}
       key: CONTROLLER_TOKEN_SECRET
 - name: CONTROLLER_STATUS_INTERVAL_SECONDS
-  value: {{ .statusIntervalSeconds | quote }}
+  value: {{ .Values.switchCore.agentManagement.statusIntervalSeconds | quote }}
+{{- end }}
+{{- with .Values.switchCore.controllerRelease }}
+{{- if .version }}
+- name: CONTROLLER_RELEASE_VERSION
+  value: {{ .version | quote }}
+- name: CONTROLLER_RELEASE_URL
+  value: {{ .url | quote }}
+- name: CONTROLLER_RELEASE_SHA256
+  value: {{ .sha256 | quote }}
 {{- end }}
 {{- end }}
 - name: GATEWAY_ADMIN_EMAIL
@@ -684,6 +794,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ $oidcScopes | quote }}
 - name: GATEWAY_OIDC_PROVIDER_LABEL
   value: {{ .Values.switchCore.oidc.providerLabel | quote }}
+{{- with .Values.switchCore.oidc.loginOptions }}
+- name: GATEWAY_OIDC_LOGIN_OPTIONS
+  value: {{ toJson . | quote }}
+{{- end }}
 {{- if .Values.switchCore.oidc.redirectUrl }}
 - name: GATEWAY_OIDC_REDIRECT_URL
   value: {{ .Values.switchCore.oidc.redirectUrl | quote }}
@@ -719,10 +833,17 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: OUTBOUND_ALLOWED_PRIVATE_HOSTS
   value: {{ join "," $outboundHosts | quote }}
 {{- end }}
+{{- with .Values.switchCore.featureFlags.enabled }}
+- name: FEATURE_FLAGS_ENABLED
+  value: {{ join "," . | quote }}
+{{- end }}
+{{- if not (or .Values.gateway.enabled .Values.switchCore.serveDashboard) }}
+{{- fail "gateway.enabled and switchCore.serveDashboard are both off, so nothing serves the operator dashboard. Turn one of them on." }}
+{{- end }}
 {{- with .Values.switchCore.smtp }}
 {{- if .enabled }}
-{{- if not $.Values.switchCore.frontendBaseUrl }}
-{{- fail "switchCore.frontendBaseUrl is required when switchCore.smtp.enabled — invitation e-mails link to the dashboard at that origin." }}
+{{- if not (or $.Values.switchCore.frontendBaseUrl (and $.Values.switchCore.serveDashboard $.Values.switchCore.gatewayPublicUrl)) }}
+{{- fail "switchCore.frontendBaseUrl is required when switchCore.smtp.enabled — invitation e-mails link to the dashboard at that origin. (With switchCore.serveDashboard on, switchCore.gatewayPublicUrl does instead.)" }}
 {{- end }}
 {{- if not (has .tls (list "starttls" "tls" "none")) }}
 {{- fail (printf "switchCore.smtp.tls must be one of starttls, tls, none. Got %q." .tls) }}
@@ -737,9 +858,19 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ required "switchCore.smtp.from is required when smtp.enabled" .from | quote }}
 - name: GATEWAY_INVITE_EMAILS_PER_DAY
   value: {{ .emailsPerDayPerWorkspace | quote }}
-{{- if .username }}
+{{- if and .username .usernameFromSecret }}
+{{- fail "switchCore.smtp.username and switchCore.smtp.usernameFromSecret are mutually exclusive: set one." }}
+{{- end }}
+{{- if or .username .usernameFromSecret }}
 - name: GATEWAY_SMTP_USERNAME
+{{- if .usernameFromSecret }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" $ }}
+      key: GATEWAY_SMTP_USERNAME
+{{- else }}
   value: {{ .username | quote }}
+{{- end }}
 - name: GATEWAY_SMTP_PASSWORD
   valueFrom:
     secretKeyRef:
@@ -799,6 +930,8 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: TELEMETRY_INTERNAL
   value: {{ .Values.switchCore.telemetry.internal | quote }}
 {{- end }}
+- name: THIRD_PARTY_AVATARS_ENABLED
+  value: {{ .Values.switchCore.thirdPartyAvatars.enabled | quote }}
 # switch-core sits behind the cluster/ALB and enforces its own
 # BearerAuthMiddleware, so fastmcp's browser-oriented DNS-rebinding
 # Host/Origin guard (default-on since mcp 1.28) only rejects the
@@ -813,9 +946,16 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: GATEWAY_PUBLIC_URL
   value: {{ .Values.switchCore.gatewayPublicUrl | quote }}
 {{- end }}
-{{- if .Values.switchCore.slackApp.enabled }}
+{{- if not .Values.switchCore.serveDashboard }}
+{{- /* The image points it at its dashboard build; empty serves none. */}}
+- name: GATEWAY_UI_DIR
+  value: ""
+{{- end }}
+{{- if or .Values.switchCore.slackApp.enabled .Values.switchCore.discordApp.enabled .Values.switchCore.teamsApp.enabled .Values.switchCore.telegramApp.enabled }}
 - name: MESSAGING_PUBLIC_URL
-  value: {{ required "switchCore.slackApp.messagingPublicUrl is required when switchCore.slackApp.enabled" .Values.switchCore.slackApp.messagingPublicUrl | quote }}
+  value: {{ required "switchCore.messagingPublicUrl is required when a distributed messaging app is enabled" (include "switch.messagingPublicUrl" .) | quote }}
+{{- end }}
+{{- if .Values.switchCore.slackApp.enabled }}
 - name: SLACK_APP_CLIENT_ID
   value: {{ required "switchCore.slackApp.clientId is required when switchCore.slackApp.enabled" .Values.switchCore.slackApp.clientId | quote }}
 - name: SLACK_APP_CLIENT_SECRET
@@ -830,10 +970,6 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
       key: SLACK_APP_SIGNING_SECRET
 {{- end }}
 {{- if .Values.switchCore.discordApp.enabled }}
-{{- if not .Values.switchCore.slackApp.enabled }}
-- name: MESSAGING_PUBLIC_URL
-  value: {{ required "switchCore.discordApp.messagingPublicUrl is required when switchCore.discordApp.enabled" .Values.switchCore.discordApp.messagingPublicUrl | quote }}
-{{- end }}
 - name: DISCORD_APP_CLIENT_ID
   value: {{ required "switchCore.discordApp.clientId is required when switchCore.discordApp.enabled" .Values.switchCore.discordApp.clientId | quote }}
 - name: DISCORD_APP_APPLICATION_ID
@@ -857,6 +993,97 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: "true"
 {{- end }}
 {{- end }}
+{{- if .Values.switchCore.teamsApp.enabled }}
+- name: TEAMS_APP_CLIENT_ID
+  value: {{ required "switchCore.teamsApp.clientId is required when switchCore.teamsApp.enabled" .Values.switchCore.teamsApp.clientId | quote }}
+- name: TEAMS_APP_TENANT_ID
+  value: {{ required "switchCore.teamsApp.tenantId is required when switchCore.teamsApp.enabled" .Values.switchCore.teamsApp.tenantId | quote }}
+- name: TEAMS_APP_PRIVACY_URL
+  value: {{ required "switchCore.teamsApp.privacyUrl is required when switchCore.teamsApp.enabled" .Values.switchCore.teamsApp.privacyUrl | quote }}
+- name: TEAMS_APP_TERMS_URL
+  value: {{ required "switchCore.teamsApp.termsUrl is required when switchCore.teamsApp.enabled" .Values.switchCore.teamsApp.termsUrl | quote }}
+{{- with .Values.switchCore.teamsApp.name }}
+- name: TEAMS_APP_NAME
+  value: {{ . | quote }}
+{{- end }}
+{{- if eq .Values.switchCore.teamsApp.credential "secret" }}
+- name: TEAMS_APP_CLIENT_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TEAMS_APP_CLIENT_SECRET
+{{- else if eq .Values.switchCore.teamsApp.credential "certificate" }}
+- name: TEAMS_APP_CERTIFICATE
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TEAMS_APP_CERTIFICATE
+- name: TEAMS_APP_CERTIFICATE_PRIVATE_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TEAMS_APP_CERTIFICATE_PRIVATE_KEY
+{{- else if eq .Values.switchCore.teamsApp.credential "federated" }}
+- name: TEAMS_APP_FEDERATED_TOKEN_FILE
+  value: {{ include "switch.teamsAppTokenPath" . | quote }}
+{{- else }}
+{{- fail "switchCore.teamsApp.credential must be secret, certificate or federated" }}
+{{- end }}
+- name: TEAMS_APP_NOTIFICATION_CERTIFICATE
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TEAMS_APP_NOTIFICATION_CERTIFICATE
+- name: TEAMS_APP_NOTIFICATION_PRIVATE_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TEAMS_APP_NOTIFICATION_PRIVATE_KEY
+{{- if .Values.secrets.teamsAppNotificationPreviousPrivateKey }}
+- name: TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY
+{{- end }}
+{{- end }}
+{{- if .Values.switchCore.telegramApp.enabled }}
+- name: TELEGRAM_APP_BOT_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TELEGRAM_APP_BOT_TOKEN
+- name: TELEGRAM_APP_WEBHOOK_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: TELEGRAM_APP_WEBHOOK_SECRET
+{{- end }}
+{{- end }}
+
+{{/*
+The one public origin every distributed messaging app is reached on. Read
+from switchCore.messagingPublicUrl, falling back to the per-app values earlier
+releases took, so an existing Slack or Discord deployment keeps working.
+*/}}
+{{- define "switch.messagingPublicUrl" -}}
+{{- coalesce .Values.switchCore.messagingPublicUrl .Values.switchCore.slackApp.messagingPublicUrl .Values.switchCore.discordApp.messagingPublicUrl | default "" -}}
+{{- end }}
+
+{{/*
+Where the projected service-account token the distributed Teams app presents
+to Microsoft (a federated credential, so no secret) is mounted.
+*/}}
+{{- define "switch.teamsAppTokenDir" -}}
+/var/run/secrets/microsoft/teams-app
+{{- end }}
+
+{{- define "switch.teamsAppTokenPath" -}}
+{{ include "switch.teamsAppTokenDir" . }}/token
+{{- end }}
+
+{{- define "switch.teamsAppFederated" -}}
+{{- if and .Values.switchCore.teamsApp.enabled (eq .Values.switchCore.teamsApp.credential "federated") }}true{{- end }}
 {{- end }}
 
 {{/*

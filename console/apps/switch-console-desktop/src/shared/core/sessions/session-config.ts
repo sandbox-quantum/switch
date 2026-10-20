@@ -22,6 +22,7 @@ export type InitialPromptDelivery = z.infer<typeof initialPromptDeliverySchema>;
 
 const sessionConfigV0Schema = z.object({
   autoApprove: z.boolean().optional(),
+  autoMode: z.boolean().optional(),
   /** Provider-native session id for resuming the correct chat. */
   providerSessionId: z.string().optional(),
   /** Initial prompt to deliver on the first spawn; cleared from config after the session starts. */

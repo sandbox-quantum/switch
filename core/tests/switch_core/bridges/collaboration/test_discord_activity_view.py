@@ -33,7 +33,6 @@ from switch_core.bridges.collaboration.adapter import ActivitySnapshot
 from switch_core.bridges.collaboration.discord.adapter import (
     _ACTIVITY_LABEL,
     _ACTIVITY_VIEW_ID,
-    _CONSOLE_LABEL,
     _MAX_BUTTON_LABEL,
     _MAX_CUSTOM_ID,
     _REFRESH_LABEL,
@@ -68,7 +67,6 @@ READER_ID = 8181
 OTHER_READER_ID = 8282
 STATUS_MESSAGE_ID = 4004
 PRIVATE_THREAD_ID = 700
-CONSOLE_URL = "https://console.example.test/sessions/s-1"
 
 
 # ── Fakes ────────────────────────────────────────────────────────────────────
@@ -275,7 +273,6 @@ def _snapshot(**fields: Any) -> ActivitySnapshot:
         "items": items,
         "turn": _turn("completed"),
         "elapsed_seconds": 12.0,
-        "session_url": CONSOLE_URL,
         "read_at": datetime(2026, 9, 16, 12, 0, tzinfo=UTC),
     }
     return ActivitySnapshot(**{**defaults, **fields})
@@ -431,7 +428,7 @@ async def test_two_readers_get_their_own_snapshot_of_the_same_message() -> None:
     assert channel.sent == []
 
 
-async def test_the_private_copy_carries_refresh_and_the_console_link() -> None:
+async def test_the_private_copy_offers_only_refresh() -> None:
     adapter, channel = _guild_with({READER_ID})
     _resolving(adapter, _snapshot())
     press = _status_press(channel)
@@ -439,8 +436,7 @@ async def test_the_private_copy_carries_refresh_and_the_console_link() -> None:
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
     assert _buttons(press.shown[0]) == [
-        (_REFRESH_LABEL, f"swact:r:{CHANNEL_ID}:{STATUS_MESSAGE_ID}", None),
-        (_CONSOLE_LABEL, None, CONSOLE_URL),
+        (_REFRESH_LABEL, f"swact:r:{CHANNEL_ID}:{STATUS_MESSAGE_ID}", None)
     ]
 
 
@@ -930,18 +926,6 @@ async def test_a_turn_with_no_tool_calls_says_that_too() -> None:
     assert "No activity." in _shown(press)
 
 
-async def test_a_turn_with_no_console_link_offers_only_refresh() -> None:
-    adapter, channel = _guild_with({READER_ID})
-    _resolving(adapter, _snapshot(session_url=None))
-    press = _status_press(channel)
-
-    await adapter._handle_interaction(press)  # type: ignore[arg-type]
-
-    assert _buttons(press.shown[0]) == [
-        (_REFRESH_LABEL, f"swact:r:{CHANNEL_ID}:{STATUS_MESSAGE_ID}", None)
-    ]
-
-
 async def test_an_unpublished_bridge_answers_a_stale_button_rather_than_hanging(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -968,4 +952,3 @@ def test_the_activity_ids_fit_what_discord_carries() -> None:
     assert len(_refresh_id(f"{2**64 - 1}:{2**64 - 1}")) <= _MAX_CUSTOM_ID
     assert len(_ACTIVITY_LABEL) <= _MAX_BUTTON_LABEL
     assert len(_REFRESH_LABEL) <= _MAX_BUTTON_LABEL
-    assert len(_CONSOLE_LABEL) <= _MAX_BUTTON_LABEL

@@ -1,5 +1,4 @@
 import { log } from '@main/lib/logger';
-import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
 import type {
   RemoteStackProbe,
   ServerLockHolder,
@@ -17,6 +16,7 @@ import { classifyVersionDrift, imageTag } from './deployed-version';
 import { readStackEnv, type StackEnv } from './env-file';
 import { commandFailure, errorText } from './error-text';
 import type { ServerHost } from './host/types';
+import { managedSwitchVersion } from './server-version';
 import type { ServerLease } from './stack-lock';
 import { WHILE_HOLDING_SERVER_LOCK } from './state-mutex';
 
@@ -438,7 +438,7 @@ export function driftOf(
   stack: Extract<StackOnHost, { kind: 'present' }>
 ): SwitchVersionDrift | null {
   const version = stack.runningVersion ?? stack.env.version;
-  return version === null ? null : classifyVersionDrift(version, COMPATIBLE_SWITCH_VERSION);
+  return version === null ? null : classifyVersionDrift(version, managedSwitchVersion());
 }
 
 /** Enough for the renderer to choose between Connect and Start, and nothing

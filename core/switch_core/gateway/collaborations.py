@@ -5,11 +5,16 @@ import math
 from collections.abc import Iterable
 from typing import Annotated, Literal
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.bridges.collaboration.adapter import DirectorySearchBusy
+from switch_core import messaging_platforms
+from switch_core.bridges.collaboration.adapter import (
+    ConfigEditRefused,
+    DirectorySearchBusy,
+)
 from switch_core.bridges.collaboration.lifecycle_service import (
     BridgeClaimConflict,
     CollaborationBridgeLifecycleService,
@@ -17,13 +22,22 @@ from switch_core.bridges.collaboration.lifecycle_service import (
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeInstallLink,
+    BridgeNotRunning,
+    BridgeOperationError,
     BridgeStartRefused,
     DirectoryUser,
+)
+from switch_core.bridges.collaboration.own_app_setup import (
+    SetupCheckError,
+    check_slack,
+    slack_create_url,
+    slack_manifest,
 )
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     CollaborationBridge,
     ExternalUser,
+    MessagingInstall,
     User,
     require_tenant_id,
 )
@@ -57,6 +71,9 @@ from switch_core.gateway.schemas import (
     DirectoryUserSummary,
     ExternalUserSummary,
     IdentityClaimant,
+    SlackOwnAppSetup,
+    SlackTokensCheck,
+    SlackTokensChecked,
 )
 from switch_core.room_service import RoomService
 
@@ -119,6 +136,93 @@ async def _install_note(
         return None
 
 
+async def _attention(
+    bridge_id: str, collab_lifecycle: CollaborationBridgeLifecycleService
+) -> str | None:
+    """What a workspace admin must do for the bridge to keep working, from the
+    live adapter. None when the bridge is not running or nothing is wrong."""
+    adapter = collab_lifecycle.get_adapter(bridge_id)
+    if adapter is None:
+        return None
+    try:
+        return await adapter.attention()
+    except Exception:
+        logger.warning(
+            "Failed to read the attention note for bridge %s", bridge_id, exc_info=True
+        )
+        return None
+
+
+def _places_app_in_teams(
+    bridge_id: str, collab_lifecycle: CollaborationBridgeLifecycleService
+) -> bool:
+    adapter = collab_lifecycle.get_adapter(bridge_id)
+    return adapter is not None and adapter.places_app_in_teams
+
+
+#: What each platform calls the place its app is installed into, and how it
+#: is named to a person.
+_INSTALL_PLACES: dict[str, tuple[str, str]] = {
+    "slack": ("Slack", "workspace"),
+    "discord": ("Discord", "server"),
+    "teams": ("Microsoft Teams", "organisation"),
+    "telegram": ("Telegram", "chat"),
+}
+
+
+def _installed_refusal(installs: list[MessagingInstall]) -> str:
+    """Why a bridge live installs still use cannot be deleted, and what to do.
+
+    Said in what disconnecting does on the platform, which differs for each:
+    only Slack has a token to revoke, Discord's bot stays in the server, and a
+    Telegram chat leaves its connection behind to be deleted here afterwards.
+    Keyed by the platform's name rather than asked of its installer, which is
+    gone on a deployment whose app credentials were removed — exactly when the
+    installs left behind still have to protect their bridges.
+    """
+    platform = installs[0].platform
+    label, noun = _INSTALL_PLACES.get(platform, (platform, "workspace"))
+    where = (
+        f"{label} {noun} {installs[0].external_workspace_id}"
+        if len(installs) == 1
+        else f"{len(installs)} {label} {noun}s"
+    )
+    them = "it" if len(installs) == 1 else "them"
+    if platform == "telegram":
+        return (
+            f"The Switch bot is still in {where} through this connection. "
+            f"Disconnect {them} under Installed apps first, then delete the "
+            "connection here."
+        )
+    if platform == "discord":
+        return (
+            f"This connection was created by adding the Switch bot to {where}. "
+            f"Disconnect {them} under Installed apps instead: that stops Switch "
+            "using the server and removes this connection. The bot stays in the "
+            "server until you remove it in Discord."
+        )
+    if platform == "slack":
+        effect = "revokes Switch's token at Slack and removes this connection"
+    elif platform == "teams":
+        effect = "takes the app out of every team and removes this connection"
+    else:
+        effect = "removes this connection"
+    return (
+        f"This connection was created by installing the Switch app into "
+        f"{where}. Disconnect {them} under Installed apps instead: that "
+        f"{effect}."
+    )
+
+
+def _channel_ids_refused(
+    bridge_id: str, collab_lifecycle: CollaborationBridgeLifecycleService
+) -> str | None:
+    """Why the bridge binds no channel by id. None when it is not running,
+    where binding is refused anyway for want of a bridge to bind to."""
+    adapter = collab_lifecycle.get_adapter(bridge_id)
+    return None if adapter is None else adapter.channel_ids_refused()
+
+
 async def _detail(
     bridge: CollaborationBridge,
     *,
@@ -146,9 +250,14 @@ async def _detail(
             bridge.type
         ),
         channel_creation_enabled=bridge.channel_creation_enabled,
+        channel_ids_refused=_channel_ids_refused(bridge.id, collab_lifecycle),
         directory_search_supported=collab_lifecycle.supports_directory_search(
             bridge.type
         ),
+        attention=await _attention(bridge.id, collab_lifecycle),
+        team_placement_supported=_places_app_in_teams(bridge.id, collab_lifecycle),
+        receives_webhooks=collab_lifecycle.receives_webhooks(bridge.type),
+        webhook_url=collab_lifecycle.webhook_url(bridge.id, bridge.type),
     )
 
 
@@ -159,15 +268,56 @@ async def list_bridge_types(
     ],
     _user: Annotated[User, Depends(get_current_user)],
 ) -> list[BridgeTypeInfo]:
-    return [
-        BridgeTypeInfo(
-            key=t,
-            config_schema=collab_lifecycle.get_config_schema(t),
-            channel_creation_supported=collab_lifecycle.supports_channel_creation(t),
-            directory_search_supported=collab_lifecycle.supports_directory_search(t),
+    types: list[BridgeTypeInfo] = []
+    for t in collab_lifecycle.get_registered_types():
+        platform = messaging_platforms.lookup(t)
+        adapter_cls = collab_lifecycle.adapter_class(t)
+        if platform is None or adapter_cls is None:
+            raise RuntimeError(f"Bridge type {t!r} is registered but not described.")
+        types.append(
+            BridgeTypeInfo(
+                key=t,
+                display_name=platform.display_name,
+                docs_slug=platform.docs_slug,
+                icon_svg=platform.icon_svg,
+                receives_webhooks=adapter_cls.receives_webhooks,
+                config_schema=collab_lifecycle.get_config_schema(t),
+                channel_creation_supported=adapter_cls.supports_channel_creation,
+                directory_search_supported=adapter_cls.supports_directory_search,
+            )
         )
-        for t in collab_lifecycle.get_registered_types()
-    ]
+    return types
+
+
+@router.get("/setup/slack")
+async def slack_own_app_setup(
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> SlackOwnAppSetup:
+    """The Slack app this server needs, and Slack's create-app page filled in
+    with it, for someone connecting a Slack app of their own."""
+    manifest = slack_manifest()
+    return SlackOwnAppSetup(manifest=manifest, create_url=slack_create_url(manifest))
+
+
+@router.post("/setup/slack/check")
+async def check_slack_tokens(
+    req: SlackTokensCheck,
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> SlackTokensChecked:
+    """Whether both tokens of a Slack app work, and the workspace they are for,
+    so nobody has to look its id up."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            checked = await check_slack(
+                http, bot_token=req.bot_token.strip(), app_token=req.app_token.strip()
+            )
+    except SetupCheckError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return SlackTokensChecked(
+        workspace_id=checked.workspace_id,
+        workspace_name=checked.workspace_name,
+        bot_name=checked.bot_name,
+    )
 
 
 @router.post("")
@@ -335,6 +485,24 @@ async def update_bridge(
                 status_code=422,
                 detail="event_delivery cannot be changed on an existing connection.",
             )
+        # A connection on an app the deployment owns may hold settings that
+        # decide where the deployment's credential is pointed; only the ones
+        # its adapter names are anyone's to change.
+        editable = collab_lifecycle.editable_config_keys(bridge.type, current)
+        if editable is not None:
+            locked = sorted(
+                key
+                for key, value in payload.connection_config.items()
+                if key not in editable and current.get(key) != value
+            )
+            if locked:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"{', '.join(locked)} cannot be changed on this "
+                        "connection: Switch manages it for the installed app."
+                    ),
+                )
         # Not held across the platform's credential check; nothing is written
         # until it passes, so a refused edit still changes nothing.
         await session.commit()
@@ -357,6 +525,19 @@ async def update_bridge(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except (BridgeClaimConflict, BridgeCredentialError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            await collab_lifecycle.check_config_edit(
+                bridge_id=bridge_id,
+                bridge_type=bridge.type,
+                current=current,
+                connection_config=merged,
+            )
+        except ConfigEditRefused as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except BridgeNotRunning as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except BridgeOperationError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     if payload.agent_greetings_enabled is not None:
         bridge = await bridge_store.set_agent_greetings_enabled(
@@ -614,10 +795,7 @@ async def _require_directory_account(
     except NotImplementedError as e:
         raise HTTPException(
             status_code=501,
-            detail=(
-                f"{e} — so this account cannot be linked before it has been "
-                "seen. Send one message in the workspace, then link it."
-            ),
+            detail=f"{e}. This account cannot be linked until Switch has seen it.",
         ) from e
     except DirectorySearchBusy as e:
         raise _search_busy(e) from e
@@ -661,12 +839,16 @@ async def claim_bridge_identity(
     from ever being recognised by their own agents, so a second claim is
     ordinary rather than a conflict.
     """
+    # Read once: provisioning an unseen account expires everything this
+    # session holds, the caller included, and an expired row cannot be
+    # reloaded from synchronous attribute access.
+    caller_id = user.id
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
         raise HTTPException(status_code=404, detail="Bridge not found")
 
-    target_user_id = payload.user_id or user.id
-    if target_user_id != user.id and not is_admin:
+    target_user_id = payload.user_id or caller_id
+    if target_user_id != caller_id and not is_admin:
         raise HTTPException(
             status_code=403,
             detail="Only an admin may claim a messaging identity for another user",
@@ -727,7 +909,7 @@ async def claim_bridge_identity(
     await record_audit_event(
         session,
         tenant_id=external_user.tenant_id,
-        actor_user_id=user.id,
+        actor_user_id=caller_id,
         action=AuditAction.BRIDGE_IDENTITY_CLAIMED,
         target_type="external_user",
         target_id=external_user.id,
@@ -833,18 +1015,9 @@ async def delete_bridge(
     # real foreign key — so this delete would destroy every room on the bridge
     # and *then* be refused by Postgres, leaving the bridge running, the rooms
     # gone and a live credential nobody has revoked.
-    install = await install_store.get_for_bridge(session, bridge_id=bridge_id)
-    if install is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"This connection was created by installing the Switch app into "
-                f"{install.platform} workspace {install.external_workspace_id}, so "
-                "it cannot be deleted here — the app would stay installed and its "
-                "token would stay valid. Disconnect the app instead, which revokes "
-                "the token at the platform and then removes this connection."
-            ),
-        )
+    installs = await install_store.list_for_bridge(session, bridge_id=bridge_id)
+    if installs:
+        raise HTTPException(status_code=409, detail=_installed_refusal(installs))
 
     rooms = await room_store.get_by_bridge(session, bridge_id)
     tenant_id = bridge.tenant_id
@@ -855,8 +1028,9 @@ async def delete_bridge(
     }
     # Not held across the deletes, which open their own sessions and call Matrix.
     await session.commit()
+    # The channels stay: the bot may already have lost its access to them.
     for room in rooms:
-        await room_service.delete_room(room.id)
+        await room_service.delete_room(room.id, retire_channel=False)
 
     await collab_lifecycle.remove(bridge_id)
     await record_audit_event(

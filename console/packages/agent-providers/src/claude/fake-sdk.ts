@@ -67,6 +67,10 @@ export class FakeQuery {
     return Promise.resolve();
   }
 
+  getContextUsage(): Promise<{ totalTokens: number; maxTokens: number }> {
+    return Promise.resolve({ totalTokens: 134000, maxTokens: 1000000 });
+  }
+
   applyFlagSettings(settings: unknown): Promise<void> {
     this.flagSettingsCalls.push(settings);
     return Promise.resolve();

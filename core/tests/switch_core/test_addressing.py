@@ -7,6 +7,7 @@ from switch_core.addressing import (
     AddressingPolicy,
     AddressingRule,
     can_address,
+    default_agent_policy,
     owner_and_owner_agents_policy,
     owner_only_policy,
     parse_policy,
@@ -607,6 +608,69 @@ class TestRequiresOwnerIdentity:
 
     def test_true_for_owner_only_policy(self) -> None:
         assert owner_only_policy([]).requires_owner_identity() is True
+
+
+class TestAdmitsOthers:
+    """Whether anyone but the owner can address the agent."""
+
+    OWN = {"owner_identity_ids": {"ext-owner"}}
+
+    def test_open_policy_admits_others(self) -> None:
+        assert AddressingPolicy().admits_others(**self.OWN) is True
+
+    def test_the_owner_alone_does_not(self) -> None:
+        assert owner_only_policy([]).admits_others(**self.OWN) is False
+
+    def test_the_owners_agents_do_not(self) -> None:
+        assert owner_and_owner_agents_policy().admits_others(**self.OWN) is False
+        assert default_agent_policy().admits_others(**self.OWN) is False
+
+    def test_an_agent_named_by_id_does(self) -> None:
+        assert owner_only_policy(["own-agent"]).admits_others(**self.OWN) is True
+
+    def test_the_owners_agents_are_still_allowed_to_address_it(self) -> None:
+        assert owner_and_owner_agents_policy().allows(
+            room_id="room-x",
+            group_id=None,
+            sender_kind="agent",
+            sender_id="own-agent",
+            sender_user_ids=[],
+            sender_owner_user_id="owner",
+            owner_user_id="owner",
+        )
+
+    def test_anyone_in_one_room_does(self) -> None:
+        policy = AddressingPolicy(
+            rules=[
+                *owner_only_policy([]).rules,
+                AddressingRule(rooms=["room-x"], users="*", agents=[]),
+            ]
+        )
+        assert policy.admits_others(**self.OWN) is True
+
+    def test_another_persons_identity_or_agent_does(self) -> None:
+        assert (
+            AddressingPolicy(
+                rules=[AddressingRule(users=["ext-other"], agents=[])]
+            ).admits_others(**self.OWN)
+            is True
+        )
+        assert owner_only_policy(["their-agent"]).admits_others(**self.OWN) is True
+
+    def test_the_owners_own_identity_does_not(self) -> None:
+        policy = AddressingPolicy(
+            rules=[AddressingRule(users=["ext-owner"], agents=[])]
+        )
+        assert policy.admits_others(**self.OWN) is False
+
+    def test_a_platform_rule_does_not(self) -> None:
+        policy = AddressingPolicy(
+            rules=[
+                *owner_only_policy([]).rules,
+                *platform_allowed_policy().rules,
+            ]
+        )
+        assert policy.admits_others(**self.OWN) is False
 
 
 class TestValidation:

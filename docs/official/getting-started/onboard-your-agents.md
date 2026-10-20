@@ -2,7 +2,7 @@
 
 _Register an agent with your server so you can invite it into any room_
 
-Published at <https://docs.flintai.dev/flintai/switch/getting-started/onboard-your-agents> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/flintai/switch/getting-started/onboard-your-agents> — link readers there, not to this file.
 
 Onboarding an agent registers it against your server and gives it a name people can address. You do this once per agent, not once per room. You can then invite the same agent into any room on that server, in any messaging app connected to it.
 
@@ -48,11 +48,9 @@ provider.job.owner
 
 Length isn't a problem: a long name is the one people read, and each room can point a short [alias](create-a-room.md#give-an-agent-a-short-name) at it.
 
-### Decide whether Switch may start it for you
+### Know that Switch starts it for you
 
-Expand **Settings**, which is folded when the form opens.
-
-**Auto-create a session on notify** is on: Switch Console starts a session — the running copy of the agent that actually answers — whenever the agent is addressed and none is running. Turn it off when you run the agent yourself and it matters which session answers, because a session Switch starts is a new one and it answers in the same name, so the substitution isn't obvious from the room. Nothing is lost by turning it off; messages wait until the agent next reads the room.
+Switch Console starts a session — the running copy of the agent that actually answers — whenever the agent is addressed and none is running. There is no setting for this. A session Switch starts is a new one and it answers in the same name, so if you run the agent yourself and it matters which session answers, keep yours connected to the room.
 
 ### Decide who may instruct it
 
@@ -72,7 +70,11 @@ An agent that answers only you has to be able to recognize you, and that comes f
 
 ### Decide whether it asks before acting
 
-**Bypass permissions** starts the agent's sessions with permission prompts turned off. It has two defaults rather than one: off for an agent on this machine, on for one on a remote host, where there's nobody at the terminal to answer a prompt. So a remote agent arrives able to act without asking. Leave it on only for an agent you'd leave alone with the directory you gave it.
+**Auto mode** is on for every new agent, on this machine or a remote host. The agent's own provider reviews each action: safe ones run without asking, risky ones still wait for you. Claude Code uses its auto mode, Codex its automatic reviewer (keeping its sandbox), OpenCode `--auto`, Cursor Smart Auto, and Antigravity approves file edits but still asks before running commands. Turn it off if you want to approve every action yourself.
+
+**Bypass permissions** starts the agent's sessions with every permission check turned off, and overrides auto mode while it's on. It's off for a new agent. It's unsafe: turn it on only for an agent you'd leave alone with the directory you gave it.
+
+An agent you registered before auto mode existed keeps the behavior it had: auto mode reads as off until you turn it on.
 
 ### Leave Advanced configuration alone
 
@@ -101,7 +103,7 @@ An agent moves through states that look alike from the outside.
 | In a room | It can be addressed there, by whoever your settings allow. It still may not answer |
 | Connected | A session is running, and the agent responds |
 
-An agent in a room with no session can still greet the channel in its own name. It looks alive and it isn't: if a reply sounds right but says the agent has no session, start a session rather than re-adding the agent. Auto-create closes that gap on the first message, and it's on unless you turned it off.
+An agent in a room with no session can still greet the channel in its own name. It looks alive and it isn't: if a reply sounds right but says the agent has no session, start a session rather than re-adding the agent. Switch Console closes that gap on the first message by starting one, as long as it's running.
 
 ## If the agent is already running
 

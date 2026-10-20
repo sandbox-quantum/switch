@@ -12,18 +12,19 @@ and room come from `operations.context`.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
 from switch_core.agent_refusals import AgentRefused, record_refusal
 from switch_core.agent_template_ops import ActingFor, AgentTemplates
-from switch_core.agent_templates import room_document
+from switch_core.agent_templates import plan_template
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.agent_management import (
     management_permission,
     management_port,
     permitted_to_manage,
+    refuse_managing_self,
 )
 from switch_core.bridges.agent.operations.context import (
     bound_rooms,
@@ -41,20 +42,33 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ConnectionError_,
     evicted_session_warning,
 )
-from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.agent_core import (
+    AgentCore,
+    AgentExistsError,
+    AgentRenameRefused,
+)
 from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
-from switch_core.bridges.agent.protocol.hosted_workers import (
-    HOSTED_WORKER_ONLY_MESSAGE,
-    CodedPermissionError,
-    hosted_launch_of,
-)
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
-from switch_core.db.models import CollaborationBridge, User
+from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
+from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.stores.template_store import TemplateStore
+from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.rooms_yaml import GroupSpec, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
+from switch_core.template_runs import (
+    LISTEN_TIMEOUT_SECONDS,
+    AgentsNotCreated,
+    CheckedAgent,
+    CreatedAgent,
+    NewAgentPlan,
+    Problem,
+    TemplateAgents,
+    pending_addressing,
+    room_ids_of,
+)
+from switch_core.template_v2 import is_v2_text
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +255,7 @@ async def connect_to_room(
             transport room id. Calling again switches the active room for this session.
         include_general_instructions: When true (default) the `instructions`
             field carries the full room-onboarding text (interaction modes,
-            task protocol, agent statuses, room setup) followed by any
+            agent statuses, room setup) followed by any
             room-specific instructions. Set false if your host already
             injects the general Switch usage instructions out-of-band (e.g.
             via a Claude Code skill); the general sections are then omitted
@@ -293,17 +307,10 @@ async def connect_to_room(
         if room_model.bridge_id:
             bridge = await session.get(CollaborationBridge, room_model.bridge_id)
 
-    if hosted_launch_of(agent.metadata_) is not None:
-        key = session_key()
-        caller_connection = protocol.connections.get(key) if key else None
-        if caller_connection is None or caller_connection.worker is None:
-            raise CodedPermissionError("hosted_worker_only", HOSTED_WORKER_ONLY_MESSAGE)
-
     profile = IntegrationProfile(**agent.integration_profile)
     instructions = build_room_instructions(
         agent,
         room_model,
-        profile,
         participants,
         bridge,
         include_general=include_general_instructions,
@@ -340,18 +347,23 @@ async def connect_to_room(
             # then fails would send them somewhere the session is not — and the
             # rooms to vacate are the caller's own, read under the bind's lock
             # rather than from what it believed on arrival.
-            if caller is not None:
-                previous, displaced_session_id = protocol.connections.place_session(
-                    agent_id, caller.id, room.id, key
-                )
-            else:
-                previous = rooms_on_caller_connection(protocol, agent_id, key)
+            #
+            # Recorded, so the move is made on what every process holds and the
+            # process holding the caller's connection is told: its stream may
+            # be parked waiting for exactly this room.
+            async with protocol.connections.recorded(agent_id):
+                if caller is not None:
+                    previous, displaced_session_id = protocol.connections.place_session(
+                        agent_id, caller.id, room.id, key
+                    )
+                else:
+                    previous = rooms_on_caller_connection(protocol, agent_id, key)
 
-            evicted_connection_id = claim_room_on_caller_connection(
-                protocol, agent_id, key, room.id
-            )
-            for departed in previous - {room.id}:
-                release_room_on_caller_connection(protocol, agent_id, key, departed)
+                evicted_connection_id = claim_room_on_caller_connection(
+                    protocol, agent_id, key, room.id
+                )
+                for departed in previous - {room.id}:
+                    release_room_on_caller_connection(protocol, agent_id, key, departed)
 
             # Connecting is how an agent's occupancy of a room changes hands, and
             # the occupant is the one whose reading clears that room's unread
@@ -359,7 +371,9 @@ async def connect_to_room(
             # one agent share it, and each of them is in a room of its own.
             reader = counting_reader()
             if reader is not None:
-                protocol.event_buffer.hand_counting_to(agent_id, reader, room.id)
+                await protocol.event_buffer.hand_counting_to(
+                    require_tenant_id(), agent_id, reader, room.id
+                )
 
             await bind_room_for_connectionless_caller(
                 protocol,
@@ -380,8 +394,6 @@ async def connect_to_room(
                 "name": p.name,
                 "type": p.type,
                 "agent_type": p.agent_type,
-                "can_delegate": p.can_delegate,
-                "can_accept": p.can_accept,
                 "status": p.status.value if p.status is not None else None,
                 "room_role": p.room_role,
                 "alias": p.alias,
@@ -698,11 +710,13 @@ async def read_context(
     before_ms = parse_timestamp_ms(before) if before else None
 
     buffer = protocol.event_buffer
-    # Sampled before the read, because anything enqueued while the history
-    # response is in flight is not in that response. Clearing through the
-    # later head would report a zero for a message the agent never saw;
-    # clearing through this one can only leave something counted twice.
-    through = buffer.head(agent_id)
+    tenant_id = require_tenant_id()
+    # The room's newest `messages.seq`, taken before the history read because
+    # a message written while the read is in flight is not in its response.
+    # Recording the catch-up through a later number would mark such a message
+    # as read when the agent never saw it. Recording it through this number
+    # can at worst count a message twice.
+    through = (await buffer.room_heads(tenant_id, {room_id}))[room_id]
 
     context = await protocol.read_context(
         agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
@@ -713,7 +727,9 @@ async def read_context(
         # Catching up is the whole point of the unread count, so doing it
         # clears this room — and only this room. A read of somewhere else
         # leaves every count alone, including this one.
-        buffer.caught_up(agent_id, reader, room_id, through, session_key())
+        await buffer.caught_up(
+            tenant_id, agent_id, reader, room_id, through, session_key()
+        )
 
     return context
 
@@ -787,8 +803,7 @@ async def send_targeted_message(
     Prepends `@name` for each name target and `@role` for each role target so
     they receive it as an addressed event. Other participants still see the
     message as room context. Use when you need specific participants to act,
-    but the work is informal (a question, nudge, or handoff that doesn't need
-    task tracking).
+    such as a question, a nudge or a handoff.
 
     Args:
         body: The message text. Plain string — do not pre-add `@` prefixes;
@@ -855,215 +870,6 @@ async def send_targeted_message(
     }
 
 
-# ── Task Protocol ───────────────────────────────────────────────────────────
-
-
-@operation
-async def delegate_task(
-    performer_agent_id: str, summary: str, description: str
-) -> dict[str, str]:
-    """Delegate a task to a performer agent. Requires can_delegate capability.
-
-    Args:
-        performer_agent_id: The id of the agent to assign the task to. Must
-            be a participant in the connected room. Use list_participants to
-            find ids (the `id` field, not `name`).
-        summary: Short one-line title for the task (shown in lists/headers).
-        description: Full instructions: what to do, inputs, expected output,
-            constraints. The performer reads this when accepting.
-
-    Returns:
-        {"task_id": "<id>", "status": "pending", "target_status": "<status>"}.
-        `target_status` reports the performer's reachability at delegation
-        time; for `no_session`/`disconnected` the performer won't see the
-        task until they reconnect.
-    """
-    agent_id = get_agent_id()
-    room_id = await require_connected_room()
-
-    protocol = get_protocol()
-    result = await protocol.delegate_task(
-        agent_id, room_id, performer_agent_id, summary, description
-    )
-    return {
-        "task_id": result.task_id,
-        "status": "pending",
-        "target_status": result.target_status.value,
-    }
-
-
-@operation
-async def accept_task(task_id: str) -> dict[str, Any]:
-    """Accept a delegated task. Requires can_accept capability.
-
-    Args:
-        task_id: The id of the task to accept (from the task_delegate event
-            or list_tasks). Caller must be the assigned performer.
-
-    Returns:
-        {"status": "ongoing", "accepted_at": "<iso timestamp>"}.
-    """
-    agent_id = get_agent_id()
-    await require_connected_room()
-
-    protocol = get_protocol()
-    await protocol.accept_task(agent_id, task_id)
-    task = await protocol.get_task(agent_id, task_id)
-    accepted_at = None
-    if task.accepted_at:
-        accepted_at = (
-            task.accepted_at.isoformat()
-            if hasattr(task.accepted_at, "isoformat")
-            else str(task.accepted_at)
-        )
-    return {
-        "status": task.status,
-        "accepted_at": accepted_at,
-    }
-
-
-@operation
-async def update_task(task_id: str, update: str) -> dict[str, Any]:
-    """Post a progress update on an assigned task. Requires can_accept capability.
-
-    Args:
-        task_id: The id of an ongoing task you have accepted.
-        update: One-string progress note (what you've done, what's next, any
-            blockers). Appended to the task's update log; does not finalise.
-
-    Returns:
-        {"status": "updated", "updates_count": <int>} with the new total.
-    """
-    agent_id = get_agent_id()
-    await require_connected_room()
-
-    protocol = get_protocol()
-    await protocol.update_task(agent_id, task_id, update)
-    task = await protocol.get_task(agent_id, task_id)
-    return {"status": "updated", "updates_count": len(task.updates)}
-
-
-@operation
-async def finalise_task(task_id: str, outcome: str) -> dict[str, Any]:
-    """Complete a task with final outcome. Requires can_accept capability.
-
-    Args:
-        task_id: The id of an ongoing task you have accepted.
-        outcome: One-string final result — describe success or failure and
-            any output/links the requester needs. After this call the task
-            moves to `finalised` and cannot be updated further.
-
-    Returns:
-        {"status": "finalised", "finalised_at": "<iso timestamp>"}.
-    """
-    agent_id = get_agent_id()
-    await require_connected_room()
-
-    protocol = get_protocol()
-    await protocol.finalise_task(agent_id, task_id, outcome)
-    task = await protocol.get_task(agent_id, task_id)
-    finalised_at = None
-    if task.finalised_at:
-        finalised_at = (
-            task.finalised_at.isoformat()
-            if hasattr(task.finalised_at, "isoformat")
-            else str(task.finalised_at)
-        )
-    return {
-        "status": task.status,
-        "finalised_at": finalised_at,
-    }
-
-
-@operation
-async def cancel_task(task_id: str, reason: str) -> dict[str, str]:
-    """Abandon a task you delegated. Only the requester can cancel.
-
-    Args:
-        task_id: The id of a task this agent delegated.
-        reason: Why the task is no longer needed. Recorded on the task and
-            posted to the room so the performer learns it has been dropped.
-
-    Returns:
-        {"status": "cancelled", "reason": "<reason>"}.
-    """
-    agent_id = get_agent_id()
-    await require_connected_room()
-
-    protocol = get_protocol()
-    await protocol.cancel_task(agent_id, task_id, reason)
-    return {"status": "cancelled", "reason": reason}
-
-
-@operation
-async def list_tasks(
-    role: str | None = None, status: str | None = None
-) -> list[dict[str, Any]]:
-    """List tasks for the connected agent in the connected room.
-
-    Args:
-        role: Perspective filter.
-            - "delegated": tasks this agent created as requester
-            - "assigned": tasks assigned to this agent as performer
-            - None: both
-        status: Lifecycle filter. One of "pending", "ongoing", "finalised",
-            "cancelled", or None for all.
-
-    Returns:
-        List of task dicts {id, summary, description, status,
-        requester_agent_id, performer_agent_id, updates, outcome,
-        created_at, accepted_at, finalised_at}. Timestamps are ISO-8601
-        strings or null.
-    """
-    agent_id = get_agent_id()
-    room_id = await require_connected_room()  # type: ignore[arg-type]
-
-    protocol = get_protocol()
-    tasks = await protocol.list_tasks(
-        agent_id, room_id=room_id, role=role, status=status
-    )
-
-    result = []
-    for t in tasks:
-        created_at = None
-        if t.created_at:
-            created_at = (
-                t.created_at.isoformat()
-                if hasattr(t.created_at, "isoformat")
-                else str(t.created_at)
-            )
-        accepted_at = None
-        if t.accepted_at:
-            accepted_at = (
-                t.accepted_at.isoformat()
-                if hasattr(t.accepted_at, "isoformat")
-                else str(t.accepted_at)
-            )
-        finalised_at = None
-        if t.finalised_at:
-            finalised_at = (
-                t.finalised_at.isoformat()
-                if hasattr(t.finalised_at, "isoformat")
-                else str(t.finalised_at)
-            )
-        result.append(
-            {
-                "id": t.id,
-                "summary": t.summary,
-                "description": t.description,
-                "status": t.status,
-                "requester_agent_id": t.requester_agent_id,
-                "performer_agent_id": t.performer_agent_id,
-                "updates": t.updates,
-                "outcome": t.outcome,
-                "created_at": created_at,
-                "accepted_at": accepted_at,
-                "finalised_at": finalised_at,
-            }
-        )
-    return result
-
-
 # ── Moderation ───────────────────────────────────────────────────────────────
 
 
@@ -1108,8 +914,12 @@ async def create_room(
         agent_names: Names of agents to add to the room at creation. The
             calling agent is not added automatically — include its name here
             if it should join. Names must already exist in the registry.
-        user_names: Optional list of human user names to add. Only meaningful
-            for bridged rooms.
+        user_names: Optional list of people to add, each named by their
+            username on the room's messaging app, or by the e-mail address of
+            their account there (not on Discord, which never shares e-mail
+            addresses); their Switch name does not resolve. Your
+            owner's usernames are in `get_my_context` (`messaging_apps`,
+            `your_usernames`). Only meaningful for bridged rooms.
         channel_type: One of "channel_public", "channel_private", or "direct".
             Required when `bridge_id` is set; ignored for internal-only rooms.
             Use "direct" to open a 1:1 DM room — exactly one entry in
@@ -1580,6 +1390,31 @@ async def invite_agent_to_room(
 
 
 @operation
+async def remove_agent_from_room(room_id: str, agent_name: str) -> dict[str, bool]:
+    """Remove an agent from a room by name — the opposite of `invite_agent_to_room`.
+
+    The agent leaves the room and any bridged channel; a session it had
+    connected there is disconnected from it. You need not be in the room.
+
+    Allowed when you may address that agent (its addressing policy admits
+    you), or when you can manage agents and it belongs to your owner. Anything
+    else is refused with the reason — relay it rather than retrying.
+
+    Args:
+        room_id: The Switch room id (UUID string).
+        agent_name: Registry name of the agent to remove (its `name`, not its
+            display name).
+
+    Returns:
+        {"ok": true} on success.
+    """
+    agent_id = get_agent_id()
+    protocol = get_protocol()
+    await protocol.remove_agent_from_room(agent_id, room_id, agent_name)
+    return {"ok": True}
+
+
+@operation
 async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, Any]:
     """Add one or more human users to an existing bridged room by name.
 
@@ -1593,7 +1428,11 @@ async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, An
 
     Args:
         room_id: The Switch room id (UUID string).
-        user_names: Registry names of the users to add.
+        user_names: The people to add, each named by their username on the
+            room's messaging app, or by the e-mail address of their account
+            there (not on Discord, which never shares e-mail addresses); their
+            Switch name does not resolve. Your owner's usernames
+            are in `get_my_context` (`messaging_apps`, `your_usernames`).
 
     Returns:
         `{"ok": bool, "added": [...], "unresolved": [...]}`. `unresolved`
@@ -1713,7 +1552,8 @@ async def create_room_from_yaml(
     yaml: str,
     inputs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Provision a room, or a group of rooms, from a YAML template.
+    """Provision a room, or a group of rooms, from a YAML template; a
+    ``version: 2`` document creates its agents too, as ``run_template`` does.
 
     The agent-side mirror of the gateway's ``POST /rooms/from-yaml``: the
     document is parsed, its ``params:`` resolved from ``inputs``, and the
@@ -1744,7 +1584,11 @@ async def create_room_from_yaml(
         rooms: [...], errors: [...]}``.
     """
     async with _refusals_reported("create_room_from_yaml"):
-        return await _provision_as_agent(yaml, inputs)
+        if is_v2_text(yaml):
+            return await _run_document(yaml, inputs, {}, template_name=None)
+        return await _provision_as_agent(
+            yaml, inputs, template_name=None, new_agents=[], room_addressing={}
+        )
 
 
 async def _acting_for() -> ActingFor:
@@ -1786,20 +1630,56 @@ async def _refusals_reported(operation_name: str) -> AsyncIterator[None]:
 
 
 async def _provision_as_agent(
-    yaml: str,
+    yaml: str | None,
     inputs: dict[str, Any] | None,
     *,
-    template_name: str | None = None,
+    template_name: str | None,
+    new_agents: Sequence[NewAgentPlan],
+    room_addressing: dict[str, list[str]],
 ) -> dict[str, Any]:
-    """Create the rooms a document describes, as the calling agent: the one
-    path for a document an agent writes and a template it runs, so the run
-    guards in ``agent_runs`` apply the same to both."""
+    """Create the agents and rooms a document describes, as the calling
+    agent: the one path for a document an agent writes and a template it
+    runs, so the run guards in ``agent_runs`` apply the same to both.
+
+    ``new_agents`` are created first, as managed agents of the owner, once
+    every check of the agents and the rooms has passed; when the rooms then
+    fail, they are deleted again. ``yaml`` is None for a template that
+    creates agents and no room.
+    """
     protocol = get_protocol()
     acting = await _acting_for()
     agent, owner = acting.agent, acting.owner
     # An agent acts for its owner but not with the owner's admin reach: a
     # document it writes or a template it runs attaches only what the owner
     # could attach as a member, never another person's private reference.
+
+    tenant_id = require_tenant_id()
+    creator: TemplateAgents | None = None
+    checked: list[CheckedAgent] = []
+    if new_agents:
+        if management_port() is not None:
+            permission = await management_permission()
+            if isinstance(permission, str):
+                raise AgentsNotCreated(
+                    [
+                        Problem(p.slot, "cannot_manage_agents", permission)
+                        for p in new_agents
+                    ]
+                )
+        creator = TemplateAgents(
+            protocol=protocol,
+            management=management_port(),
+            broker=protocol.service_broker,
+            listen_timeout=LISTEN_TIMEOUT_SECONDS,
+        )
+        checked = await creator.check(tenant_id, owner.id, new_agents)
+    created_names = {plan.name for plan in new_agents}
+
+    if yaml is None:
+        if creator is None:
+            raise ValueError("The template describes no agent and no room")
+        created = await creator.create(tenant_id, owner.id, checked)
+        return {"created_agents": _created_view(created)}
 
     rooms_yaml = protocol.room_yaml_service()
     inputs = await rooms_yaml.resolve_defaults(yaml, inputs)
@@ -1808,12 +1688,15 @@ async def _provision_as_agent(
     )
     parsed = rooms_yaml.parse_template(yaml, inputs=inputs, builtins=builtins)
     await rooms_yaml.check_entity_params(parsed)
+    await rooms_yaml.check_bridges(parsed)
     room_specs = (
         [(r, r.kickoff) for r in parsed.spec.rooms]
         if isinstance(parsed.spec, GroupSpec)
         else [(parsed.spec, parsed.kickoff)]
     )
-    await _require_agents_exist([n for spec, _ in room_specs for n in spec.agents])
+    await _require_agents_exist(
+        [n for spec, _ in room_specs for n in spec.agents if n not in created_names]
+    )
     kickoffs = [
         (text, list(spec.agents), dict(spec.aliases or {}))
         for spec, text in room_specs
@@ -1824,27 +1707,61 @@ async def _provision_as_agent(
         owner_name=owner.name,
         from_room_id=await connected_room(),
         kickoffs=kickoffs,
+        pending=pending_addressing(new_agents, owner.id, room_addressing),
     ) as origin:
-        if isinstance(parsed.spec, GroupSpec):
-            group_result = await rooms_yaml.provision_group(
-                parsed.spec,
-                user_id=owner.id,
-                is_admin=False,
-                creator_name=builtins["$creator"],
-                origin=origin,
-                template_name=template_name,
-            )
-            return group_result.model_dump()
-        result = await rooms_yaml.provision(
-            parsed.spec,
-            kickoff=parsed.kickoff,
-            user_id=owner.id,
-            is_admin=False,
-            creator_name=builtins["$creator"],
-            origin=origin,
-            template_name=template_name,
+        created = (
+            []
+            if creator is None
+            else await creator.create(tenant_id, owner.id, checked)
         )
-    return result.model_dump()
+        try:
+            if isinstance(parsed.spec, GroupSpec):
+                group_result = await rooms_yaml.provision_group(
+                    parsed.spec,
+                    user_id=owner.id,
+                    is_admin=False,
+                    creator_name=builtins["$creator"],
+                    origin=origin,
+                    template_name=template_name,
+                )
+                result = group_result.model_dump()
+            else:
+                room_result = await rooms_yaml.provision(
+                    parsed.spec,
+                    kickoff=parsed.kickoff,
+                    user_id=owner.id,
+                    is_admin=False,
+                    creator_name=builtins["$creator"],
+                    origin=origin,
+                    template_name=template_name,
+                )
+                result = room_result.model_dump()
+            if creator is not None and room_addressing:
+                await creator.open_to_rooms(
+                    tenant_id, created, room_addressing, room_ids_of(result)
+                )
+        except Exception as error:
+            if creator is None or not created:
+                raise
+            raise await creator.undone(
+                created, f"the rooms could not be created: {error}"
+            ) from error
+    if new_agents:
+        result["created_agents"] = _created_view(created)
+    return result
+
+
+def _created_view(created: Sequence[CreatedAgent]) -> list[dict[str, Any]]:
+    return [
+        {
+            "slot": agent.slot,
+            "agent_id": agent.agent_id,
+            "name": agent.name,
+            "machine": agent.machine,
+            "listening": agent.listening,
+        }
+        for agent in created
+    ]
 
 
 async def _require_agents_exist(names: list[str]) -> None:
@@ -1867,7 +1784,12 @@ async def _require_agents_exist(names: list[str]) -> None:
 
 def _agent_templates() -> AgentTemplates:
     protocol = get_protocol()
-    return AgentTemplates(TemplateStore(), max_bytes=protocol.config.template_max_bytes)
+    return AgentTemplates(
+        TemplateStore(),
+        max_bytes=protocol.config.template_max_bytes,
+        agent_management=protocol.config.feature_flags[AGENT_MANAGEMENT],
+        switch_buddy=protocol.config.feature_flags[SWITCH_BUDDY],
+    )
 
 
 @operation
@@ -1922,16 +1844,26 @@ async def get_template(template_id: str) -> dict[str, Any]:
     Use it before ``run_template`` to know what to fill in. ``params`` are
     the inputs (``required`` is as the template writes it; a param with no
     default usually needs a value). ``agent_slots`` lists the agents an agent
-    or team template would create: the server cannot create agents, so to run
-    one you fill each slot with an existing agent.
+    or team template would create, as managed agents of your owner: each
+    slot's ``machine`` (or a ``machine`` param) says where it runs, and
+    ``provider``, ``model``, ``directory`` and ``connections`` what it is.
+    A slot with only a ``location`` (this computer or an SSH host) runs on
+    the machine of that name, or else the first online machine of your
+    owner's that can run it. ``allow_existing`` says whether an
+    existing agent may stand in for it instead (``run_template``'s
+    ``agents``).
 
     Args:
         template_id: The id from ``list_templates``.
 
     Returns:
         ``{id, name, description, kind, visibility, saved_by, can_edit,
-        params: [{name, type, description, default, required}],
-        agent_slots: [{name, description}], content}``.
+        params: [{name, type, description, default, required, if}],
+        agent_slots: [{name, description, allow_existing, provider, machine,
+        location, model, directory, connections: [{service, access,
+        repos}]}], content}``. Slot fields are as the template writes them,
+        ``{param}`` placeholders included (a setting a param says for every
+        agent shows as that ``{param}``); null where it says nothing.
     """
     protocol = get_protocol()
     async with _refusals_reported("get_template"):
@@ -1946,25 +1878,41 @@ async def run_template(
     inputs: dict[str, Any] | None = None,
     agents: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Create the rooms a saved template describes, as you, the same way
-    ``create_room_from_yaml`` does with a document you write.
+    """Create the agents and rooms a saved template describes, as you, the
+    same way ``create_room_from_yaml`` does with a document you write.
 
     Everything ``create_room_from_yaml`` says about kickoffs and refusals
     applies here too, and the run is listed under the template's name in
-    Switch Console. An agent or team template runs only when each agent it
-    would create is filled with an agent that already exists: creating agents
-    happens in Switch Console.
+    Switch Console.
+
+    An agent or team template creates its agents as managed agents of your
+    owner, each on the machine its entry names (``machine:`` or a ``machine``
+    param), before the rooms. That needs agent management on this server and
+    the "can manage agents" capability, and each machine online with the
+    provider installed and logged in. Everything is checked first: when
+    anything would fail, nothing is created and the refusal lists every
+    problem with its reason code. If the rooms then fail, the agents created
+    are deleted again. Confirm what will be created with the person asking
+    first: it starts real agents on their machines.
 
     Args:
         template_id: The id from ``list_templates``.
-        inputs: Values for the template's params (see ``get_template``).
-        agents: For an agent or team template, which existing agent fills
-            each slot: ``{slot name: agent name}``, the slot named as
-            ``get_template`` lists it or as it reads with your inputs.
+        inputs: Values for the template's params (see ``get_template``),
+            including a ``machine`` or ``provider`` param.
+        agents: Existing agents to stand in for slots instead of creating
+            them, ``{slot name: agent name}``, the slot named as
+            ``get_template`` lists it or as it reads with your inputs. Only a
+            slot whose entry says ``allow_existing: true`` takes one.
 
     Returns:
         As ``create_room_from_yaml``: for a room ``{room_id, room_name, ...}``,
-        for a group ``{group_id, group_name, rooms, errors}``.
+        for a group ``{group_id, group_name, rooms, errors}``; plus, when it
+        created agents, ``created_agents``: each ``{slot, agent_id, name,
+        machine, listening}``, ``listening`` false when the agent was not
+        taking events before its rooms were made, so the kickoff may not have
+        reached it. Check them with ``list_managed_agents`` as after
+        ``create_agent``. A template with no room returns only
+        ``created_agents``.
     """
     protocol = get_protocol()
     async with _refusals_reported("run_template"):
@@ -1972,10 +1920,59 @@ async def run_template(
         async with protocol.session_factory() as session:
             template = await _agent_templates().load(session, acting, template_id)
             content, name = template.content, template.name
-        document, run_inputs = room_document(content, agents or {}, inputs or {})
-        return await _provision_as_agent(
-            document, run_inputs or None, template_name=name
-        )
+        return await _run_document(content, inputs, agents or {}, template_name=name)
+
+
+async def _run_document(
+    content: str,
+    inputs: dict[str, Any] | None,
+    filled: dict[str, str],
+    *,
+    template_name: str | None,
+) -> dict[str, Any]:
+    """Work a template's agents and rooms out of its document and create
+    them, as the calling agent."""
+    protocol = get_protocol()
+    acting = await _acting_for()
+    rooms_yaml = protocol.room_yaml_service()
+    if is_v2_text(content):
+        # A version 2 condition may read a messaging app or room param
+        # whose value is the first candidate the server has.
+        inputs = await rooms_yaml.resolve_defaults(content, inputs)
+    builtins = await rooms_yaml.builtins_for(
+        user_id=acting.owner.id,
+        name=acting.owner.name,
+        email=acting.owner.email,
+        text=content,
+        inputs=inputs,
+    )
+    plan = plan_template(
+        content,
+        filled,
+        inputs or {},
+        builtins=builtins,
+        machines=await _owners_machines(),
+    )
+    return await _provision_as_agent(
+        plan.document,
+        plan.inputs or None,
+        template_name=template_name,
+        new_agents=plan.new_agents,
+        room_addressing=plan.room_addressing,
+    )
+
+
+async def _owners_machines() -> list[dict[str, Any]] | None:
+    """The owner's machines, for a template's machine and provider choices;
+    None when this agent cannot see them (no agent management, or no
+    capability), which the run's checks then report."""
+    port = management_port()
+    if port is None:
+        return None
+    permission = await management_permission()
+    if isinstance(permission, str):
+        return None
+    return await port.list_machines(permission.tenant_id, permission.owner.id)
 
 
 @operation
@@ -1984,6 +1981,7 @@ async def save_template(
     description: str,
     yaml: str,
     visibility: str = "private",
+    bypass_warnings: bool = False,
 ) -> dict[str, Any]:
     """Save a template to this workspace, so it can be found and run again.
 
@@ -1997,21 +1995,28 @@ async def save_template(
         yaml: The template document, as ``create_room_from_yaml`` takes it.
         visibility: ``private`` (only your owner sees it) or ``shared``
             (everyone on the workspace sees it, only you change it).
+        bypass_warnings: Leave false. A document with warnings, such as an
+            agent it never says which provider runs, is then refused and the
+            warnings listed, so you can fix them or advise whoever asked
+            first. Set true only to save it anyway: Switch Console will not
+            create an agent from it until what a warning names is fixed.
 
     Returns:
-        ``{id, name, kind, visibility}``.
+        ``{id, name, kind, visibility, warnings}``. ``warnings`` lists what
+        was saved past with ``bypass_warnings``; empty otherwise.
     """
     protocol = get_protocol()
     async with _refusals_reported("save_template"):
         acting = await _acting_for()
         async with protocol.session_factory() as session:
-            template = await _agent_templates().save(
+            template, warnings = await _agent_templates().save(
                 session,
                 acting,
                 name=name,
                 description=description,
                 content=yaml,
                 visibility=visibility,
+                bypass_warnings=bypass_warnings,
             )
             await session.commit()
             return {
@@ -2019,6 +2024,7 @@ async def save_template(
                 "name": template.name,
                 "kind": template.kind,
                 "visibility": visibility,
+                "warnings": warnings,
             }
 
 
@@ -2029,20 +2035,25 @@ async def update_template(
     description: str | None = None,
     yaml: str | None = None,
     visibility: str | None = None,
+    bypass_warnings: bool = False,
 ) -> dict[str, Any]:
     """Change a template you saved. Only the fields you pass change.
 
     Templates saved by a person, or by another agent, cannot be changed by
     you; save your own version under another name instead.
 
+    A new ``yaml`` with warnings is refused unless ``bypass_warnings`` is
+    true, as in ``save_template``.
+
     Returns:
-        ``{id, name, kind, visibility, version}``.
+        ``{id, name, kind, visibility, version, warnings}``. ``warnings``
+        lists what was saved past with ``bypass_warnings``; empty otherwise.
     """
     protocol = get_protocol()
     async with _refusals_reported("update_template"):
         acting = await _acting_for()
         async with protocol.session_factory() as session:
-            template = await _agent_templates().update(
+            template, warnings = await _agent_templates().update(
                 session,
                 acting,
                 template_id,
@@ -2050,6 +2061,7 @@ async def update_template(
                 description=description,
                 content=yaml,
                 visibility=visibility,
+                bypass_warnings=bypass_warnings,
             )
             await session.commit()
             return {
@@ -2060,6 +2072,7 @@ async def update_template(
                 if template.read_visibility == "public"
                 else "private",
                 "version": template.version,
+                "warnings": warnings,
             }
 
 
@@ -2147,8 +2160,48 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
 
 
 @operation
+async def request_agent_deletion(agent_id: str) -> dict[str, Any]:
+    """Ask for another agent of your owner's to be deleted. Nothing is deleted
+    by this call: a person has to confirm.
+
+    Requires the "can manage agents" capability. The request is posted in the
+    room you are connected to, and only the agent's owner or a workspace admin
+    can carry it out, by replying `!delete-agent <name> confirm` within two
+    minutes; otherwise it lapses. Confirm with the person asking before you
+    call this, and tell them what to send.
+
+    Refused for an agent of another owner, yourself, an agent that can manage
+    agents, and one a server connector found.
+
+    Args:
+        agent_id: The agent to delete (`id` from `list_agents`).
+
+    Returns:
+        {"agent_name", "status": "awaiting_confirmation", "confirm_with",
+        "expires_in_seconds"}.
+    """
+    caller_id = get_agent_id()
+    await permitted_to_manage()
+    room_id = await require_connected_room()
+    protocol = get_protocol()
+    try:
+        name = await protocol.request_agent_deletion(
+            caller_agent_id=caller_id, target_agent_id=agent_id, room_id=room_id
+        )
+    except AgentRenameRefused as exc:
+        raise ValueError(str(exc)) from exc
+    return {
+        "agent_name": name,
+        "status": "awaiting_confirmation",
+        "confirm_with": f"!delete-agent {name} confirm",
+        "expires_in_seconds": int(DELETE_CONFIRM_SECONDS),
+    }
+
+
+@operation
 async def update_agent_detail(
     agent_id: str,
+    name: str | None = None,
     description: str | None = None,
     display_name: str | None = None,
     icon_url: str | None = None,
@@ -2157,6 +2210,7 @@ async def update_agent_detail(
     model: str | None = None,
     advanced_config: dict[str, Any] | None = None,
     instructions: str | None = None,
+    auto_mode: bool | None = None,
     auto_approve: bool | None = None,
     directory: str | None = None,
     isolation: str | None = None,
@@ -2166,26 +2220,45 @@ async def update_agent_detail(
     """Change an agent your owner owns, and return its fresh detail.
 
     Owner-only: the agent's owner must be your own owner (a permission error
-    otherwise). Omit a field to leave it unchanged. An agent cannot be renamed.
+    otherwise), and never yourself: your own settings are your owner's to
+    change, in Switch Console. Omit a field to leave it unchanged.
 
     Any agent:
+        name: Rename it: the identifier people type and mention (lowercase
+            letters, digits, '.', '-', '_'). Requires the "can manage agents"
+            capability, like the managed fields below; without it the call is
+            refused with a sentence to relay. Pass `display_name` with it when
+            the label is the name written out ("Notes Writer" for
+            notes-writer); otherwise the label stays. Rooms, roles, aliases and
+            credentials follow; its handle on each chat platform is renamed
+            too. Refused for a name in use, one that clashes with an alias or
+            role in its rooms or a handle on a chat platform, a subagent or a
+            parent of subagents, and an agent a server connector found.
         description: What the agent is for.
         display_name: Human label shown next to its name; "" clears it.
-        icon_url: An https link to its icon; "" clears it.
+        icon_url: An https link to its icon; "" clears it. A server with
+            third-party avatars off refuses one on dicebear.com or
+            ui-avatars.com.
         addressing: Who can address it: "owner_only" (your owner alone, not
             even their other agents, you included), "owner_and_owner_agents"
             (your owner and any agent they own) or "anyone".
 
     A managed agent (one `list_managed_agents` shows) only, and only with the
     "can manage agents" capability:
-        provider: "claude", "codex", "opencode", "antigravity" or "cursor".
+        provider: A provider's id, as `list_machines` reports it, such as
+            "claude" for Claude Code.
         model: The model to run; "" for the provider's default.
         advanced_config: The provider's advanced settings, replacing the
             current ones whole, keyed by the fields `get_advanced_config`
             lists, e.g. {"effort": "high"}; {} clears them. When changing
             `provider`, pass the new provider's settings (or {}) too.
         instructions: Its system prompt (at most 32 KiB).
-        auto_approve: Bypass mode: run tools without asking for approval.
+        auto_mode: Auto mode: the provider's own automatic review lets safe
+            actions run without asking and still asks a person before risky
+            ones. On by default for new agents.
+        auto_approve: Bypass mode: run every tool without any permission
+            check; overrides `auto_mode`. Unsafe; turn it on only when the
+            person explicitly asks.
         directory: Working directory on its machine; "" for the machine's
             own workspace for the agent, whose path Switch fills in.
         isolation: "shared" (inside the machine's controller) or "isolated"
@@ -2202,29 +2275,55 @@ async def update_agent_detail(
     Returns:
         The `get_agent_detail` shape plus `managed`: for a managed agent, the
         entry `list_managed_agents` shows for it (provider, model,
-        advanced_config, machine, desired_state, actual, revision); null when
-        the agent is not managed or you cannot manage agents.
+        advanced_config, auto_mode, auto_approve, machine, desired_state,
+        actual, revision); null when
+        the agent is not managed or you cannot manage agents. Plus `renamed`
+        when `name` changed it: `{old_name, bridge_failures,
+        templates_mentioning_old_name}` — each chat platform that could not be
+        updated yet (the rename stands; it catches up when its bridge next
+        starts), and saved templates whose text still says the old name.
     """
     caller_id = get_agent_id()
     protocol = get_protocol()
+    refuse_managing_self(agent_id)
     await protocol.require_same_owner(caller_id, agent_id)
     profile = AgentProfileUpdate.parse(
         description=description,
         display_name=display_name,
         icon_url=icon_url,
         addressing=addressing,
+        third_party_avatars=protocol.config.third_party_avatars_enabled,
     )
     changes = ManagedAgentChanges(
         provider=provider,
         model=model,
         advanced_config=advanced_config,
         instructions=instructions,
+        auto_mode=auto_mode,
         auto_approve=auto_approve,
         directory=directory,
         isolation=isolation,
         machine=machine,
         desired_state=desired_state,
     )
+    rename_label: str | None = None
+    if name is not None:
+        # A rename changes what everyone types to reach the agent, so an agent
+        # may only do it with the same capability that lets it change an
+        # agent's model or machine. People rename from the gateway or with
+        # the chat commands, under the owner-or-admin rule.
+        await permitted_to_manage()
+        current = await protocol.get_agent_detail(caller_id, agent_id)
+        rename_label = current.display_name if display_name is None else display_name
+        # Checked before any managed change is made, and made after them: a
+        # refused rename then changes nothing, and a refused managed change
+        # leaves the name as it was.
+        try:
+            await protocol.check_rename(
+                agent_id=agent_id, new_name=name, display_name=rename_label
+            )
+        except AgentExistsError as exc:
+            raise ValueError(str(exc)) from exc
     port = management_port()
     managed: dict[str, Any] | None = None
     if not changes.is_empty():
@@ -2244,8 +2343,25 @@ async def update_agent_detail(
             managed = await port.managed_agent(
                 permission.tenant_id, permission.owner.id, agent_id
             )
+    renamed: dict[str, Any] | None = None
+    if name is not None:
+        try:
+            result = await protocol.rename_agent(
+                agent_id=agent_id, new_name=name, display_name=rename_label
+            )
+        except AgentExistsError as exc:
+            raise ValueError(str(exc)) from exc
+        if result.old_name != result.new_name:
+            renamed = {
+                "old_name": result.old_name,
+                "bridge_failures": result.bridge_failures,
+                "templates_mentioning_old_name": result.templates_mentioning_old_name,
+            }
     detail = await protocol.update_agent_detail(caller_id, agent_id, profile)
-    return {**detail.model_dump(), "managed": managed}
+    response = {**detail.model_dump(), "managed": managed}
+    if renamed is not None:
+        response["renamed"] = renamed
+    return response
 
 
 @operation

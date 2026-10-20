@@ -7,8 +7,8 @@ import type { SidebarGrouping } from '@shared/view-state';
  * room view lists rooms, which are still there, and reports its own filters
  * being too narrow itself. A server with nothing on it yet otherwise left the
  * panel blank, which reads as the list having failed to load rather than as
- * there being nothing to list; its cloud agents are listed below the tree, so
- * a server that has them is not empty.
+ * there being nothing to list; its managed agents are listed below the tree,
+ * so a server that has them is not empty.
  */
 export function sidebarEmptyState(input: {
   grouping: SidebarGrouping;
@@ -17,7 +17,7 @@ export function sidebarEmptyState(input: {
   activeServerId: string | null;
   locationCount: number;
   roomCount: number;
-  /** Agents listed from the server rather than Console rows: cloud and managed ones. */
+  /** Agents listed from the server rather than Console rows: the managed ones. */
   serverListedAgentCount: number;
 }): 'no-filter-match' | 'empty' | null {
   if (input.grouping !== 'room' && input.hasActiveFilters && input.filteredLocationCount === 0)
@@ -31,4 +31,18 @@ export function sidebarEmptyState(input: {
   )
     return 'empty';
   return null;
+}
+
+/**
+ * Whether the sidebar shows Agents / Rooms under agent management: once
+ * anything is managed, while switch-buddy waits on a provider (its row is the
+ * way back to its page), or with no agents at all, where there is nothing
+ * legacy to show instead.
+ */
+export function showsAgentsAndRooms(input: {
+  managedAgentCount: number;
+  buddyPending: boolean;
+  legacyAgentCount: number;
+}): boolean {
+  return input.managedAgentCount > 0 || input.buddyPending || input.legacyAgentCount === 0;
 }

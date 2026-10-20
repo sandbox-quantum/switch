@@ -11,6 +11,7 @@ import time as time_module
 from collections.abc import Iterator
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol import agent_connections as conn_module
 from switch_core.bridges.agent.protocol.agent_connections import (
@@ -19,8 +20,11 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     ClientDeclaration,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
+from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+from tests.db_buffer import age_events, seed_agent
 
 
 @pytest.fixture
@@ -56,39 +60,45 @@ def _event(index: int) -> AgentEvent:
     )
 
 
-def test_events_dropped_for_overflow_are_counted(registry):
-    buffer = EventBuffer(
-        max_events_per_agent=3, retention_seconds=3600, sequence_base=0
+async def _keep(buffer: EventBuffer, index: int) -> None:
+    """Message `index`, addressed to the agent and kept as one of its own."""
+    await buffer.enqueue(
+        TENANT_ZERO_ID,
+        "agent-1",
+        "room-1",
+        _event(index),
+        room_seq=index + 1,
+        message_key=f"m{index}",
     )
-    for index in range(6):
-        buffer.enqueue("agent-1", "room-1", _event(index))
 
-    # Three over the cap. The agent is told it missed them when it next reads,
-    # so the loss is disclosed — it simply was not countable.
+
+async def test_events_dropped_for_retention_are_counted(
+    registry, session_factory: async_sessionmaker[AsyncSession], db_buffer: EventBuffer
+):
+    """Each event retention deletes is counted, under its reason.
+
+    There is no per-agent cap any more, so retention is the only way an event
+    leaves the buffer unread. The reader is told it missed them when it next
+    reads, so the loss is disclosed; this is what makes it countable too.
+    """
+    await seed_agent(session_factory, "agent-1")
+    for index in range(3):
+        await _keep(db_buffer, index)
+    await age_events(session_factory, "agent-1", seconds=7200)
+
+    assert await db_buffer.expire(TENANT_ZERO_ID) == 3
     assert _counts(registry, "switch.agent.events_dropped") == {
-        (("reason", "overflow"),): 3.0
+        (("reason", "retention"),): 3.0
     }
 
 
-def test_events_dropped_for_retention_are_counted_separately(registry):
-    """An agent that cannot keep up and one that was away are different faults."""
-    buffer = EventBuffer(
-        max_events_per_agent=1000, retention_seconds=-1, sequence_base=0
-    )
-    buffer.enqueue("agent-1", "room-1", _event(0))
-    buffer.enqueue("agent-1", "room-1", _event(1))
+async def test_nothing_is_counted_when_nothing_is_dropped(
+    registry, session_factory: async_sessionmaker[AsyncSession], db_buffer: EventBuffer
+):
+    await seed_agent(session_factory, "agent-1")
+    await _keep(db_buffer, 0)
 
-    counts = _counts(registry, "switch.agent.events_dropped")
-    assert set(counts) == {(("reason", "retention"),)}
-    assert counts[(("reason", "retention"),)] >= 1.0
-
-
-def test_nothing_is_counted_when_nothing_is_dropped(registry):
-    buffer = EventBuffer(
-        max_events_per_agent=100, retention_seconds=3600, sequence_base=0
-    )
-    buffer.enqueue("agent-1", "room-1", _event(0))
-
+    assert await db_buffer.expire(TENANT_ZERO_ID) == 0
     assert _counts(registry, "switch.agent.events_dropped") == {}
 
 
@@ -101,7 +111,7 @@ def test_expired_connections_are_counted(registry, monkeypatch):
         scope="single",  # type: ignore[arg-type]
         delivery_filter="all",  # type: ignore[arg-type]
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
@@ -126,7 +136,7 @@ def test_a_quiet_sweep_counts_nothing(registry):
         scope="single",  # type: ignore[arg-type]
         delivery_filter="all",  # type: ignore[arg-type]
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
@@ -142,7 +152,7 @@ def _open(connections: AgentConnectionRegistry, connection_id: str = "c1") -> No
         scope="single",  # type: ignore[arg-type]
         delivery_filter="all",  # type: ignore[arg-type]
         spawn_capable=False,
-        cursor=0,
+        position={OWN_EVENTS: 0},
         declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         expected_generation=None,
     )
