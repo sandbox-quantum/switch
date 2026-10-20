@@ -87,6 +87,7 @@ describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)('native toolchain', () =
           telemetryEnabled: false,
           telemetryEnvironment: 'local',
           telemetryInternal: false,
+          telemetryEndpoint: 'https://relay.example.test',
         })
       );
       expect(await waitForHealth(nativeApiUrl(ports.api), { timeoutMs: 120_000 })).toBe(true);
@@ -113,6 +114,7 @@ describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)('native toolchain', () =
           telemetryEnabled: false,
           telemetryEnvironment: 'local',
           telemetryInternal: false,
+          telemetryEndpoint: 'https://relay.example.test',
         })
       );
       expect(await waitForHealth(nativeApiUrl(ports.api), { timeoutMs: 120_000 })).toBe(true);

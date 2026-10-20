@@ -99,10 +99,11 @@ import type {
   TelemetryOutcome,
   TelemetryRoomAgentsDirection,
   TelemetryRoomCreateFailure,
+  TelemetryRoomCreateSource,
   TelemetryServerKind,
 } from '@main/core/telemetry/events';
 import { entryPointOf, roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
-import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import { telemetryService, trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import type {
   SlackOwnAppSetup,
@@ -259,6 +260,7 @@ function reportRoomCreated(
     agent_count: number;
     has_instructions: boolean;
     failure_reason: TelemetryRoomCreateFailure;
+    source: TelemetryRoomCreateSource;
   }
 ): void {
   reportWithBridge(bridgePlatformOf(workspaceId, bridgeId), (bridge_platform) =>
@@ -266,7 +268,6 @@ function reportRoomCreated(
       ...rest,
       bridge_platform,
       outcome: rest.failure_reason === 'none' ? 'success' : 'failure',
-      source: 'dialog',
     })
   );
 }
@@ -277,91 +278,131 @@ function templateRoomIds(room: ProvisionFromTemplateResult | null): string[] {
   return room.kind === 'room' ? [room.roomId] : room.rooms.map((r) => r.roomId);
 }
 
-/**
- * Report each room a template run made, as `room_created` from a template.
- *
- * The run's result names the rooms and says nothing else about them, so each
- * is read back from the server for what the event carries — the same thing the
- * dialog reports from what was asked for. Like the platform lookup, these take
- * leases of their own and must be started after the run's has ended, and
- * nobody waits for them. A room that cannot be read back is logged rather
- * than reported with its agents and platform guessed.
- */
-function reportTemplateRooms(
-  workspaceId: string,
-  serverKind: TelemetryServerKind,
-  room: ProvisionFromTemplateResult | null
-): void {
-  for (const roomId of templateRoomIds(room)) {
-    void withWorkspaceSession(workspaceId, (server) => fetchRoomDetail(server, roomId))
-      .then((detail) =>
-        trackEvent('room_created', {
-          server_kind: serverKind,
-          bridge_platform: bridgePlatformOfType(detail.bridgeType),
-          agent_count: detail.agentCount,
-          has_instructions: (detail.instructions?.trim().length ?? 0) > 0,
-          outcome: 'success',
-          failure_reason: 'none',
-          source: 'template',
-        })
-      )
-      .catch((error: unknown) =>
-        log.warn('A room a template made could not be read back to report it', {
-          event: 'telemetry_template_room',
-          errorCode: error instanceof GatewayError ? error.kind : 'error',
-        })
-      );
-  }
-}
+type CreatedTemplateAgent = Extract<
+  TemplateRunResult,
+  { kind: 'created' }
+>['createdAgents'][number];
 
-/** Report what a template run made: its agents, then its rooms. Nothing for a refused run. */
-function reportTemplateRun(
-  workspaceId: string,
-  known: SwitchServer,
-  result: TemplateRunResult,
-  entryPoint: UiEntryPoint
-): void {
-  if (result.kind !== 'created') return;
-  reportTemplateAgents(workspaceId, known.id, result.createdAgents, entryPoint);
-  reportTemplateRooms(workspaceId, serverKindOf(known), result.room);
+/** What a template made, as the reports below need it. */
+type TemplateMade = {
+  room: ProvisionFromTemplateResult | null;
+  /** Null for a template that makes rooms only. */
+  agents: {
+    created: CreatedTemplateAgent[];
+    /** Each agent's provider by slot, where the caller declared it. */
+    declaredProviders: ReadonlyMap<string, string>;
+    /** Where the run was started. */
+    entryPoint: UiEntryPoint;
+  } | null;
+};
+
+function logUnreported(what: 'room' | 'agent' | 'room or agent', error: unknown): void {
+  log.warn(`A ${what} a template made could not be read back to report it`, {
+    event: 'telemetry_template_made',
+    errorCode: error instanceof GatewayError ? error.kind : 'error',
+  });
 }
 
 /**
- * Report each agent a template run made, as `agent_created`.
+ * Report what a template made: each room as `room_created` from a template,
+ * and each agent as `agent_created`.
  *
- * They are managed agents, placed by the server on the person's machines, so
- * each is read back for its provider and its machine, the way the Add agent
- * dialog's managed path reports what it was asked for. Started after the run's
- * lease, never awaited, and logged rather than guessed when the read fails.
+ * The run's result names what it made and little else, so what the events
+ * carry that nobody declared — a room's platform, agents and instructions, the
+ * provider of an agent a document run chose — is read back from the server.
+ * That is work done only to describe the run, so it is done only when an event
+ * could be sent, all under one lease taken after the run's own has ended, and
+ * nobody waits for it. What cannot be read back is logged, not guessed.
  */
-function reportTemplateAgents(
+async function reportTemplateMade(
   workspaceId: string,
-  serverId: string,
-  createdAgents: Extract<TemplateRunResult, { kind: 'created' }>['createdAgents'],
-  entryPoint: UiEntryPoint
-): void {
-  for (const created of createdAgents) {
-    void withWorkspaceSession(workspaceId, (server) => fetchManagedAgent(server, created.agentId))
-      .then(async (agent) => {
-        if (!agent) throw new Error('The agent the run made is not a managed agent.');
-        trackEvent('agent_created', {
-          agent_type: agentTypeOf(agent.provider),
-          location:
-            agent.controllerId === null
-              ? 'unknown'
-              : await managedAgentLocation(serverId, agent.controllerId),
-          outcome: 'success',
-          failure_reason: 'none',
-          entry_point: entryPointOf(entryPoint),
-        });
-      })
-      .catch((error: unknown) =>
-        log.warn('An agent a template made could not be read back to report it', {
-          event: 'telemetry_template_agent',
-          errorCode: error instanceof GatewayError ? error.kind : 'error',
+  server: SwitchServer,
+  made: TemplateMade
+): Promise<void> {
+  const roomIds = templateRoomIds(made.room);
+  const agents = made.agents;
+  if (roomIds.length === 0 && (agents === null || agents.created.length === 0)) return;
+  if (!(await telemetryService.canSend())) return;
+
+  const [rooms, providers] = await withWorkspaceSession(workspaceId, (leased) =>
+    Promise.all([
+      Promise.allSettled(roomIds.map((roomId) => fetchRoomDetail(leased, roomId))),
+      Promise.allSettled(
+        (agents?.created ?? []).map(async (agent) => {
+          const declared = agents?.declaredProviders.get(agent.slot);
+          if (declared !== undefined) return declared;
+          const managed = await fetchManagedAgent(leased, agent.agentId);
+          if (!managed) throw new Error('The agent the run made is not a managed agent.');
+          return managed.provider;
         })
-      );
+      ),
+    ])
+  );
+
+  const serverKind = serverKindOf(server);
+  for (const room of rooms) {
+    if (room.status === 'rejected') {
+      logUnreported('room', room.reason);
+      continue;
+    }
+    trackEvent('room_created', {
+      server_kind: serverKind,
+      bridge_platform: bridgePlatformOfType(room.value.bridgeType),
+      agent_count: room.value.agentCount,
+      has_instructions: (room.value.instructions?.trim().length ?? 0) > 0,
+      outcome: 'success',
+      failure_reason: 'none',
+      source: 'template',
+    });
   }
+
+  if (agents === null) return;
+  for (const [i, provider] of providers.entries()) {
+    if (provider.status === 'rejected') {
+      logUnreported('agent', provider.reason);
+      continue;
+    }
+    trackEvent('agent_created', {
+      agent_type: agentTypeOf(provider.value),
+      location: await managedAgentLocation(server.id, agents.created[i].machine.id),
+      outcome: 'success',
+      failure_reason: 'none',
+      entry_point: entryPointOf(agents.entryPoint),
+    });
+  }
+}
+
+/** Start {@link reportTemplateMade} without anyone waiting for it, or for its failure. */
+function reportTemplateMadeLater(
+  workspaceId: string,
+  server: SwitchServer,
+  made: TemplateMade
+): void {
+  void reportTemplateMade(workspaceId, server, made).catch((error: unknown) =>
+    logUnreported('room or agent', error)
+  );
+}
+
+/**
+ * Run a template that may create agents, and report what it made once the
+ * run's lease has ended. Nothing is reported for a refused run: it made nothing.
+ */
+async function runTemplateReported(
+  workspaceId: string,
+  agents: { entryPoint: UiEntryPoint; declaredProviders: ReadonlyMap<string, string> },
+  run: (server: SwitchServer) => Promise<TemplateRunResult>
+): Promise<TemplateRunResult> {
+  const { result, server } = await withWorkspaceSession(workspaceId, async (leased) => ({
+    result: await run(leased),
+    server: leased,
+  }));
+  if (result.kind === 'created') {
+    reportTemplateMadeLater(workspaceId, server, {
+      room: result.room,
+      agents: { created: result.createdAgents, ...agents },
+    });
+  }
+  return result;
 }
 
 /**
@@ -631,6 +672,7 @@ export const workspacesController = createRPCController({
         agent_count: params.agentIds.length,
         has_instructions: (params.instructions?.trim().length ?? 0) > 0,
         failure_reason,
+        source: 'dialog',
       });
 
     const unreachable = hostUnreachable(known);
@@ -665,11 +707,11 @@ export const workspacesController = createRPCController({
     inputs: Record<string, string | number | boolean>,
     templateName: string
   ): Promise<ProvisionFromTemplateResult> => {
-    const known = await workspaceServer(workspaceId);
-    const result = await withWorkspaceSession(workspaceId, (server) =>
-      createRoomFromTemplate(server, yamlText, inputs, templateName)
-    );
-    reportTemplateRooms(workspaceId, serverKindOf(known), result);
+    const { result, server } = await withWorkspaceSession(workspaceId, async (leased) => ({
+      result: await createRoomFromTemplate(leased, yamlText, inputs, templateName),
+      server: leased,
+    }));
+    reportTemplateMadeLater(workspaceId, server, { room: result, agents: null });
     return result;
   },
 
@@ -678,7 +720,7 @@ export const workspacesController = createRPCController({
    * agents on the signed-in person's machines, then its rooms. Nothing is
    * kept when it is refused; the result says why, per agent.
    */
-  runTemplateWithAgents: async (
+  runTemplateWithAgents: (
     workspaceId: string,
     body: {
       agents: TemplateRunAgent[];
@@ -690,16 +732,15 @@ export const workspacesController = createRPCController({
     }
   ): Promise<TemplateRunResult> => {
     const { entryPoint, ...run } = body;
-    const known = await workspaceServer(workspaceId);
-    const result = await withWorkspaceSession(workspaceId, (server) =>
+    // The caller named each agent's provider, so none has to be read back.
+    const declaredProviders = new Map(run.agents.map((agent) => [agent.slot, agent.provider]));
+    return runTemplateReported(workspaceId, { entryPoint, declaredProviders }, (server) =>
       runTemplateWithAgents(server, run)
     );
-    reportTemplateRun(workspaceId, known, result, entryPoint);
-    return result;
   },
 
   /** Run a template from its document: the server works the agents and rooms out of it. */
-  runTemplateDocument: async (
+  runTemplateDocument: (
     workspaceId: string,
     body: {
       template: string;
@@ -711,12 +752,13 @@ export const workspacesController = createRPCController({
     }
   ): Promise<TemplateRunResult> => {
     const { entryPoint, ...run } = body;
-    const known = await workspaceServer(workspaceId);
-    const result = await withWorkspaceSession(workspaceId, (server) =>
-      runTemplateDocument(server, run)
+    // The server chooses the agents from the document, so their providers are
+    // read back rather than declared.
+    return runTemplateReported(
+      workspaceId,
+      { entryPoint, declaredProviders: new Map() },
+      (server) => runTemplateDocument(server, run)
     );
-    reportTemplateRun(workspaceId, known, result, entryPoint);
-    return result;
   },
 
   /** The runs the user may see, or null when the server does not record runs. */

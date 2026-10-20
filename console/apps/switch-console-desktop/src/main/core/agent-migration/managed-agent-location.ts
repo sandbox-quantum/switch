@@ -1,5 +1,6 @@
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
 import type { TelemetryLocationKind } from '@main/core/telemetry/events';
+import { log } from '@main/lib/logger';
 
 /**
  * Where a managed agent runs, as `agent_created` reports it: `local` when its
@@ -9,7 +10,7 @@ import type { TelemetryLocationKind } from '@main/core/telemetry/events';
  *
  * Best effort, like the platform lookups beside other reports: it only
  * describes an agent that already exists, so a lookup that fails reports
- * `unknown` rather than failing anything.
+ * `unknown`, and says so in the log, rather than failing anything.
  */
 export async function managedAgentLocation(
   serverId: string,
@@ -18,7 +19,11 @@ export async function managedAgentLocation(
   try {
     const thisComputer = await embeddedControllerService.enrolledControllerId(serverId);
     return thisComputer === controllerId ? 'local' : 'remote';
-  } catch {
+  } catch (error) {
+    log.warn('Could not tell whether a managed agent runs on this computer; reporting unknown', {
+      event: 'telemetry_managed_agent_location',
+      error: String(error),
+    });
     return 'unknown';
   }
 }

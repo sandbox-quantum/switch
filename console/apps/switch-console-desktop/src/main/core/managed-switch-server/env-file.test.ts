@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { TELEMETRY_RELAY_ENDPOINT, TELEMETRY_RELAY_ORIGIN } from '../telemetry/config';
 import {
   buildEnvFile,
   keysDisagreeing,
@@ -42,6 +41,7 @@ describe('buildEnvFile', () => {
     telemetryEnabled: false,
     telemetryEnvironment: 'prod',
     telemetryInternal: false,
+    telemetryEndpoint: 'https://relay.example.test',
   });
   const vars = Object.fromEntries(
     env
@@ -206,6 +206,7 @@ describe('buildEnvFile', () => {
       telemetryEnabled: true,
       telemetryEnvironment: 'prod',
       telemetryInternal: false,
+      telemetryEndpoint: 'https://relay.example.test',
     });
     expect(sharing).toContain('TELEMETRY_ENABLED=true');
   });
@@ -222,6 +223,7 @@ describe('buildEnvFile', () => {
       telemetryEnabled: true,
       telemetryEnvironment: 'local',
       telemetryInternal: false,
+      telemetryEndpoint: 'https://relay.example.test',
     });
 
     expect(fromDevBuild).toContain('TELEMETRY_ENVIRONMENT=local');
@@ -240,6 +242,7 @@ describe('buildEnvFile', () => {
       telemetryEnabled: true,
       telemetryEnvironment: 'prod',
       telemetryInternal: true,
+      telemetryEndpoint: 'https://relay.example.test',
     });
 
     expect(forStaff).toContain('TELEMETRY_INTERNAL=true');
@@ -247,11 +250,10 @@ describe('buildEnvFile', () => {
     expect(composeYaml).toMatch(/^\s+TELEMETRY_INTERNAL:\s*$/m);
   });
 
-  it('sends the server’s usage to the relay this app reports to, not to its own default', () => {
-    // The server a stable build pins defaults to the relay's retired name, so
-    // leaving this to the server would leave its events going nowhere.
-    expect(vars.TELEMETRY_ENDPOINT).toBe(TELEMETRY_RELAY_ORIGIN);
-    expect(TELEMETRY_RELAY_ENDPOINT).toBe(`${vars.TELEMETRY_ENDPOINT}/v1/logs`);
+  it('names the relay the server reports to, rather than leaving it to the server’s default', () => {
+    // A server's default is whatever its version shipped with; the app knows
+    // where it reports now, and the two must be one pipeline.
+    expect(vars.TELEMETRY_ENDPOINT).toBe('https://relay.example.test');
     expect(composeYaml).toMatch(/^\s+TELEMETRY_ENDPOINT:\s*$/m);
   });
 
@@ -282,6 +284,7 @@ describe('readStackEnv', () => {
     telemetryEnabled: true,
     telemetryEnvironment: 'prod',
     telemetryInternal: false,
+    telemetryEndpoint: 'https://relay.example.test',
   });
 
   it('reads back exactly what buildEnvFile wrote', () => {
@@ -396,6 +399,7 @@ describe('keysDisagreeing', () => {
     telemetryEnabled: true,
     telemetryEnvironment: 'prod',
     telemetryInternal: false,
+    telemetryEndpoint: 'https://relay.example.test',
   });
 
   it('finds nothing wrong with a copy of the same settings', () => {

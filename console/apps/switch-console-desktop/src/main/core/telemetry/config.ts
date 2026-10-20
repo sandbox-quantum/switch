@@ -131,3 +131,21 @@ export function resolveTelemetryConfig(): TelemetryResolution {
     env: process.env,
   });
 }
+
+/**
+ * Where a Switch server this app runs sends its own usage: wherever this app
+ * sends its own, so the two are always one pipeline whatever server version
+ * is pinned, and a dev run pointed at a local listener sees both halves.
+ *
+ * An origin, because switch-core appends the signal path itself and refuses a
+ * value that already carries one. A build that sends nothing still names the
+ * relay: whether the server reports is the consent gate's to decide, not this.
+ */
+export function managedServerTelemetryEndpointFor(resolution: TelemetryResolution): string {
+  return resolution.enabled ? new URL(resolution.config.endpoint).origin : TELEMETRY_RELAY_ORIGIN;
+}
+
+/** The same, for the build that is actually running. */
+export function managedServerTelemetryEndpoint(): string {
+  return managedServerTelemetryEndpointFor(resolveTelemetryConfig());
+}

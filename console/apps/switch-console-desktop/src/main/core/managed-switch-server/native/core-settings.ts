@@ -1,6 +1,10 @@
-import { TELEMETRY_RELAY_ORIGIN, type TelemetryFlintEnv } from '../../telemetry/config';
+import type { TelemetryFlintEnv } from '../../telemetry/config';
 import { LOCAL_SERVER_ADMIN_EMAIL, LOCAL_SERVER_BIND_ADDR } from '../constants';
-import { MANAGED_SERVER_FEATURE_FLAGS, TELEMETRY_ENABLED_KEY } from '../env-file';
+import {
+  MANAGED_SERVER_FEATURE_FLAGS,
+  TELEMETRY_ENABLED_KEY,
+  TELEMETRY_ENDPOINT_KEY,
+} from '../env-file';
 import type { LocalServerSecrets } from '../secret-values';
 import { DATABASE, OWNER_ROLE, RUNTIME_ROLE } from './postgres-cluster';
 
@@ -15,6 +19,8 @@ export type NativeCoreSettingsParams = {
   telemetryEnabled: boolean;
   telemetryEnvironment: TelemetryFlintEnv;
   telemetryInternal: boolean;
+  /** The relay the server sends its usage to: the one the app reports to. */
+  telemetryEndpoint: string;
 };
 
 export function nativeApiUrl(apiPort: number): string {
@@ -61,7 +67,7 @@ export function buildNativeCoreSettings(params: NativeCoreSettingsParams): Recor
     TELEMETRY_ENVIRONMENT: params.telemetryEnvironment,
     TELEMETRY_INTERNAL: params.telemetryInternal ? 'true' : 'false',
     // Named for the same reason the Docker stack's `.env` names it.
-    TELEMETRY_ENDPOINT: TELEMETRY_RELAY_ORIGIN,
+    [TELEMETRY_ENDPOINT_KEY]: params.telemetryEndpoint,
     // Tells the server's agents that Switch Console runs it, as the Docker
     // stack's `.env` does.
     MANAGED_BY_CONSOLE: 'true',

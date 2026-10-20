@@ -19,6 +19,7 @@ vi.mock('@main/core/settings/settings-service', () => ({
 }));
 
 const { readDeployedTelemetry } = await import('./telemetry-consent');
+const { managedServerTelemetryEndpoint } = await import('../telemetry/config');
 
 function host(readFile: () => Promise<string | null>): ServerHost {
   return { label: 'this computer', readFile } as unknown as ServerHost;
@@ -34,7 +35,11 @@ describe('readDeployedTelemetry', () => {
   it('reads the running container, which is what is actually sending', async () => {
     runningServiceEnvMock.mockResolvedValue(new Map([['TELEMETRY_ENABLED', 'true']]));
 
-    expect(await readDeployedTelemetry(host(noEnvFile))).toEqual({ known: true, enabled: true });
+    expect(await readDeployedTelemetry(host(noEnvFile))).toEqual({
+      known: true,
+      enabled: true,
+      endpointCurrent: false,
+    });
   });
 
   it('prefers the container over a .env that disagrees with it', async () => {
@@ -47,7 +52,7 @@ describe('readDeployedTelemetry', () => {
       host(() => Promise.resolve('TELEMETRY_ENABLED=false\n'))
     );
 
-    expect(result).toEqual({ known: true, enabled: true });
+    expect(result).toEqual({ known: true, enabled: true, endpointCurrent: false });
   });
 
   it('treats a container without the variable as not sharing', async () => {
@@ -55,13 +60,21 @@ describe('readDeployedTelemetry', () => {
     // is genuinely not reporting — this is a reading, not a fallback.
     runningServiceEnvMock.mockResolvedValue(new Map([['SWITCH_VERSION', '0.11.0']]));
 
-    expect(await readDeployedTelemetry(host(noEnvFile))).toEqual({ known: true, enabled: false });
+    expect(await readDeployedTelemetry(host(noEnvFile))).toEqual({
+      known: true,
+      enabled: false,
+      endpointCurrent: false,
+    });
   });
 
   it.each(['1', 'TRUE', ' yes ', 'on'])('reads %s as sharing', async (value) => {
     runningServiceEnvMock.mockResolvedValue(new Map([['TELEMETRY_ENABLED', value]]));
 
-    expect(await readDeployedTelemetry(host(noEnvFile))).toEqual({ known: true, enabled: true });
+    expect(await readDeployedTelemetry(host(noEnvFile))).toEqual({
+      known: true,
+      enabled: true,
+      endpointCurrent: false,
+    });
   });
 
   it('falls back to the .env when no container is up', async () => {
@@ -71,7 +84,36 @@ describe('readDeployedTelemetry', () => {
       host(() => Promise.resolve('SWITCH_VERSION=0.11.0\nTELEMETRY_ENABLED=true\n'))
     );
 
-    expect(result).toEqual({ known: true, enabled: true });
+    expect(result).toEqual({ known: true, enabled: true, endpointCurrent: false });
+  });
+
+  it('reads whether the server sends to the relay this build names', async () => {
+    runningServiceEnvMock.mockResolvedValue(
+      new Map([
+        ['TELEMETRY_ENABLED', 'true'],
+        ['TELEMETRY_ENDPOINT', managedServerTelemetryEndpoint()],
+      ])
+    );
+
+    expect(await readDeployedTelemetry(host(noEnvFile))).toEqual({
+      known: true,
+      enabled: true,
+      endpointCurrent: true,
+    });
+  });
+
+  it('counts a server sending elsewhere, or on its own default, as not current', async () => {
+    for (const endpoint of ['https://relay.retired.example', null]) {
+      runningServiceEnvMock.mockResolvedValue(
+        new Map([
+          ['TELEMETRY_ENABLED', 'true'],
+          ...(endpoint === null ? [] : [['TELEMETRY_ENDPOINT', endpoint] as [string, string]]),
+        ])
+      );
+      expect(await readDeployedTelemetry(host(noEnvFile))).toMatchObject({
+        endpointCurrent: false,
+      });
+    }
   });
 
   it('reports a host it could not read, naming both failures', async () => {

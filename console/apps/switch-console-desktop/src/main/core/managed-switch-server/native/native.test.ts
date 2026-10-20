@@ -5,7 +5,6 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { TELEMETRY_RELAY_ORIGIN } from '../../telemetry/config';
 import { readLocalRuntime, writeLocalRuntime } from '../runtime';
 import { generateSecrets } from '../secret-values';
 import { buildNativeCoreSettings } from './core-settings';
@@ -31,6 +30,7 @@ describe('buildNativeCoreSettings', () => {
     telemetryEnabled: false,
     telemetryEnvironment: 'local',
     telemetryInternal: false,
+    telemetryEndpoint: 'https://relay.example.test',
   });
 
   it('holds every listener to loopback', () => {
@@ -64,8 +64,8 @@ describe('buildNativeCoreSettings', () => {
     expect(settings.TELEMETRY_ENABLED).toBe('false');
   });
 
-  it('sends the server’s usage to the relay this app reports to, as the Docker stack does', () => {
-    expect(settings.TELEMETRY_ENDPOINT).toBe(TELEMETRY_RELAY_ORIGIN);
+  it('names the relay the server reports to, as the Docker stack does', () => {
+    expect(settings.TELEMETRY_ENDPOINT).toBe('https://relay.example.test');
   });
 });
 

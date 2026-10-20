@@ -1379,7 +1379,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             instructions: slot.entry.instructions,
             definitionAttributes: {},
             providerConfig: null,
-            entryPoint: 'server_page',
+            entryPoint: 'template',
             // Only a single-agent template can be loaded again for this
             // agent's instructions; a team template has no one entry to offer.
             templateOrigin: loaded.singular ? loaded.origin : null,

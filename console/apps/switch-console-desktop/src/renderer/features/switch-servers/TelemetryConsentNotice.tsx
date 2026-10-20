@@ -32,15 +32,20 @@ export function TelemetryConsentNotice({
           title: "Can't tell whether this server shares usage data",
           body: `Reading the setting off the server failed (${notice.reason}). Restarting applies your current choice, and makes it certain.`,
         }
-      : notice.consent
+      : notice.kind === 'stale-endpoint'
         ? {
-            title: 'This server is not sharing usage data yet',
-            body: 'Your choice to share covers the servers Switch Console runs for you, but this one has been up since before you made it. Restart to apply it.',
+            title: 'This server may not be delivering its usage data',
+            body: 'It was set up before Switch Console told it where to send usage data, so it uses an address it shipped with that may no longer work. Restart to point it at the current one.',
           }
-        : {
-            title: 'This server is still sharing usage data',
-            body: 'You turned sharing off. This server has been up since before that and keeps the setting it started with until it restarts. Restart to apply your choice.',
-          };
+        : notice.consent
+          ? {
+              title: 'This server is not sharing usage data yet',
+              body: 'Your choice to share covers the servers Switch Console runs for you, but this one has been up since before you made it. Restart to apply it.',
+            }
+          : {
+              title: 'This server is still sharing usage data',
+              body: 'You turned sharing off. This server has been up since before that and keeps the setting it started with until it restarts. Restart to apply your choice.',
+            };
 
   return (
     <Alert variant="warning">

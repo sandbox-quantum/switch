@@ -1,4 +1,5 @@
 import type { AdvancedConfig } from '@switch-console/plugins/agents';
+import type { GatewayErrorKind } from '@main/core/switch-servers/gateway-client';
 import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -37,11 +38,45 @@ export type AddManagedAgentResult =
   | { kind: 'name-conflict' }
   | { kind: 'error'; message: string };
 
+/** Why Switch refused a managed agent, as `agent_created` reports it. */
+export type ManagedRefusal = Extract<
+  TelemetryAgentCreateFailure,
+  'unauthenticated' | 'invalid' | 'refused'
+>;
+
+/**
+ * What a failed create means: the name taken, a refusal and why, or null for
+ * a failure that is not either (the server unreachable, or a fault in it),
+ * which is thrown.
+ *
+ * Switch answers both a taken name and a placement it will not make with a
+ * 409, told apart by the reason code: a taken name is a validation error, a
+ * placement refusal names what is wrong with the machine. The refusals are
+ * kept apart because they mean different things to whoever reads the count —
+ * a session that expired, fields Switch would not accept, and a machine that
+ * cannot take the agent.
+ */
+export function managedCreateFailureOf(error: {
+  kind: GatewayErrorKind;
+  status: number | undefined;
+  /** The management API's reason code, when the response carried one. */
+  code: string | null;
+}): 'name-conflict' | ManagedRefusal | null {
+  if (error.status === undefined || error.status >= 500) return null;
+  if (error.kind === 'unauthorized') return 'unauthenticated';
+  if (error.status === 409) {
+    return error.code === 'validation_error' || error.code === null ? 'name-conflict' : 'refused';
+  }
+  if (error.code === 'validation_error' || error.code === 'definition_invalid') return 'invalid';
+  if (error.code === null && (error.status === 400 || error.status === 422)) return 'invalid';
+  return 'refused';
+}
+
 export type ManagedCreateOutcome =
   | { kind: 'created'; switchAgentId: string }
   | { kind: 'name-conflict' }
   /** Switch refused the agent or its placement, in its own words. */
-  | { kind: 'refused'; message: string };
+  | { kind: 'refused'; message: string; reason: ManagedRefusal };
 
 export type NewManagedAgentDeps = {
   /** The workspace the server's agents belong to. */
@@ -142,7 +177,7 @@ export class NewManagedAgentService {
       return { kind: 'name-conflict' };
     }
     if (created.kind === 'refused') {
-      this.deps.reportCreate(input, 'refused');
+      this.deps.reportCreate(input, created.reason);
       return { kind: 'error', message: created.message };
     }
     this.deps.log.info('Created a managed agent', {

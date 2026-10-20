@@ -94,7 +94,7 @@ id, no IP field, no Switch identity.
 | `location` | `local`, `remote`, `unknown`. **Never a path, directory or project name.** |
 | `server_kind` | `local`, `remote_managed`, `external`. **Never a server name or URL.** |
 | `bridge_platform` | A platform key the server lists as one of its registered platforms (`slack`, `mattermost`, `discord`, `teams`, `telegram`, and any platform added since), else `other`, or `unknown` when it cannot be read. Always a short lowercase key. **Never a workspace or channel name.** |
-| `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `link`, `template`, `unknown` |
+| `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `link`, `template`, `switch_buddy`, `unknown` |
 | `target` | `local`, `remote`, `unknown` |
 
 ### 3.3 Every event and its fields
@@ -131,7 +131,7 @@ id, no IP field, no Switch identity.
 
 | Event | Fields, with example values |
 |---|---|
-| `agent_created` | `agent_type`: `codex` · `location`: `remote` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `name_conflict` / `credentials_conflict` / `already_configured` / `invalid_name` / `directory_unusable` / `not_configured` / `agent_not_on_server` / `refused` / `error` · `entry_point`: `sidebar` |
+| `agent_created` | `agent_type`: `codex` · `location`: `remote` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `name_conflict` / `credentials_conflict` / `already_configured` / `invalid_name` / `directory_unusable` / `not_configured` / `agent_not_on_server` / `refused` / `invalid` / `error` · `entry_point`: `sidebar` |
 | `agent_removed` | `agent_type` · `location` · `delete_in_switch`: `true` · `trigger`: `user` / `server_teardown` · `outcome` · `failure_reason`: `none` / `not_linked_to_switch` / `gateway_unauthorized` / `gateway_http` / `gateway_network` / `error` |
 | `agent_reset` | `agent_type` · `outcome` · `failure_reason`: `none` / `agent_not_found` / `not_remote` / `connect` / `error` |
 | `agent_cli_action` | `agent_type` · `target`: `local` / `remote` · `install_method`: `homebrew` / `npm` / `winget` / `powershell` / `apt` / `curl` / `pip` / `cargo` / `installer-macos` / `installer-windows` / `installer-linux` / `other` / `unspecified` · `action`: `install` / `update` / `uninstall` · `outcome` · `failure_reason`: `none` / `unknown_dependency` / `no_install_command` / `no_update_strategy` / `no_uninstall_strategy` / `no_uninstall_command` / `permission_denied` / `command_failed` / `process_open_failed` / `not_detected_after_install` / `not_detected_after_update` / `still_present` / `error` · `duration_ms`: `8421` |
@@ -182,10 +182,12 @@ agents.
 
 `source` says whether the room came from the Create room dialog or from a
 template. A template run reports each room it made, and each agent as
-`agent_created` with `entry_point` `template` (or `onboarding` for the first
-agent the first run makes), with the platform, agent count, provider and machine
-read back from the server once they exist. A template run that fails reports
-nothing: it made nothing, and how many rooms it would have made is not known.
+`agent_created` with `entry_point` `template` — or, for switch-buddy, `onboarding`
+from the first run and `switch_buddy` from its chat later. What a run does not
+already say — a room's platform, agent count and whether it has instructions, the
+provider of an agent the server chose — is read back from the server once it
+exists, and only when sharing is on. A template run that fails reports nothing:
+it made nothing, and how many rooms it would have made is not known.
 
 **Remote hosts**
 
@@ -249,7 +251,9 @@ telemetry of its own, off unless its configuration turns it on, and the Console'
 toggle is what turns it on: the answer is written into the server's configuration
 every time the Console starts it, in both directions, together with the address
 to send to — the same relay the app reports to, rather than whatever the
-server's own version defaults to. "No" is written down
+server's own version defaults to. A server that was already running when the
+Console started naming the address is flagged on its page like any other
+out-of-step setting, with the restart offered. "No" is written down
 explicitly rather than left out, because a stack started under a "yes" would
 otherwise keep the setting it started with.
 

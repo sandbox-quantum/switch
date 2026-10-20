@@ -19,6 +19,7 @@ const runTemplateDocument = vi.hoisted(() => vi.fn());
 const fetchRoomDetail = vi.hoisted(() => vi.fn());
 const fetchManagedAgent = vi.hoisted(() => vi.fn());
 const managedAgentLocation = vi.hoisted(() => vi.fn(async () => 'local'));
+const canSend = vi.hoisted(() => vi.fn(async () => true));
 const getServer = vi.hoisted(() => vi.fn());
 const getSessionCookie = vi.hoisted(() => vi.fn());
 const requireWorkspace = vi.hoisted(() => vi.fn());
@@ -56,7 +57,10 @@ vi.mock('@main/core/agents/write-switch-settings', () => ({
 vi.mock('@main/core/fs/impl/ssh-fs', () => ({ SshFileSystem: vi.fn() }));
 vi.mock('@main/core/locations/location-transport', () => ({ sshConnectionIdForHost: vi.fn() }));
 vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({ ensureSshConnected: vi.fn() }));
-vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent }));
+vi.mock('@main/core/telemetry/telemetry-service', () => ({
+  trackEvent,
+  telemetryService: { canSend },
+}));
 // The provider registry is built at app startup; what is asserted below is that
 // the agent's provider reaches the event, not how an id is validated.
 vi.mock('@main/core/telemetry/agent-type', () => ({ agentTypeOf: (id: string) => id }));
@@ -339,8 +343,17 @@ describe('distributed Microsoft Teams team placement', () => {
 });
 
 describe('reporting what a template made', () => {
+  const createdAgent = {
+    slot: 'pm',
+    agentId: 'a1',
+    name: 'pm',
+    machine: { id: 'c1', name: 'laptop' },
+    listening: true,
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
+    canSend.mockResolvedValue(true);
     managedServerHostBlocked.mockReturnValue(null);
     getServer.mockResolvedValue(server({}));
     requireWorkspace.mockResolvedValue(workspace());
@@ -387,18 +400,38 @@ describe('reporting what a template made', () => {
     });
   });
 
-  it('reports the agents and the room a run made, with where the run started', async () => {
+  it('reports the agents a run made from what the run declared, reading none back', async () => {
+    runTemplateWithAgents.mockResolvedValue({
+      kind: 'created',
+      createdAgents: [createdAgent],
+      room: null,
+    });
+
+    await workspacesController.runTemplateWithAgents('ws', {
+      agents: [{ slot: 'pm', provider: 'codex' } as never],
+      yamlText: null,
+      inputs: {},
+      templateName: 'T',
+      entryPoint: 'template',
+    });
+
+    await vi.waitFor(() =>
+      expect(trackEvent).toHaveBeenCalledWith('agent_created', {
+        agent_type: 'codex',
+        location: 'local',
+        outcome: 'success',
+        failure_reason: 'none',
+        entry_point: 'template',
+      })
+    );
+    expect(managedAgentLocation).toHaveBeenCalledWith('srv', 'c1');
+    expect(fetchManagedAgent).not.toHaveBeenCalled();
+  });
+
+  it('reads back the provider of an agent a document run chose', async () => {
     runTemplateDocument.mockResolvedValue({
       kind: 'created',
-      createdAgents: [
-        {
-          slot: 'buddy',
-          agentId: 'a1',
-          name: 'buddy',
-          machine: { id: 'c1', name: 'laptop' },
-          listening: true,
-        },
-      ],
+      createdAgents: [createdAgent],
       room: { kind: 'room', roomId: 'r1', roomName: 'A', failedAttachments: [] },
     });
     fetchManagedAgent.mockResolvedValue({ agentId: 'a1', provider: 'claude', controllerId: 'c1' });
@@ -412,7 +445,6 @@ describe('reporting what a template made', () => {
     });
 
     await vi.waitFor(() => expect(trackEvent).toHaveBeenCalledTimes(2));
-    expect(managedAgentLocation).toHaveBeenCalledWith('srv', 'c1');
     expect(trackEvent).toHaveBeenCalledWith('agent_created', {
       agent_type: 'claude',
       location: 'local',
@@ -424,6 +456,29 @@ describe('reporting what a template made', () => {
       'room_created',
       expect.objectContaining({ source: 'template', agent_count: 2 })
     );
+  });
+
+  it('asks the server nothing when nothing it read could be sent', async () => {
+    canSend.mockResolvedValue(false);
+    runTemplateDocument.mockResolvedValue({
+      kind: 'created',
+      createdAgents: [createdAgent],
+      room: { kind: 'room', roomId: 'r1', roomName: 'A', failedAttachments: [] },
+    });
+
+    await workspacesController.runTemplateDocument('ws', {
+      template: 'version: 2',
+      inputs: {},
+      filled: {},
+      templateName: 'T',
+      entryPoint: 'template',
+    });
+
+    await vi.waitFor(() => expect(canSend).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetchRoomDetail).not.toHaveBeenCalled();
+    expect(fetchManagedAgent).not.toHaveBeenCalled();
+    expect(trackEvent).not.toHaveBeenCalled();
   });
 
   it('keeps the entry point out of what is sent to the server', async () => {
@@ -463,6 +518,7 @@ describe('reporting what a template made', () => {
     });
 
     await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(canSend).not.toHaveBeenCalled();
     expect(trackEvent).not.toHaveBeenCalled();
   });
 

@@ -13,6 +13,7 @@ import { cn } from '@renderer/utils/utils';
 import type { AgentInstallError } from '@shared/core/providers/agent-payload';
 import { agentProviders, requireProvider } from '@shared/core/providers/agent-provider-registry';
 import { linksIn } from '@shared/core/providers/provider-login';
+import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { providerLoginExitChannel, providerLoginLineChannel } from '@shared/events/appEvents';
 import { type BuddyProvider, buddyProviders } from './buddy-providers';
 import { reportBuddyStep } from './buddy-telemetry';
@@ -44,10 +45,13 @@ type Login = {
 export const ProviderSetup = observer(function ProviderSetup({
   serverId,
   workspaceId,
+  entryPoint,
   onCreated,
 }: {
   serverId: string;
   workspaceId: string;
+  /** Where this card is shown: the first run, or the buddy's chat later. */
+  entryPoint: UiEntryPoint;
   onCreated: (agent: { agentId: string; name: string }) => void;
 }) {
   const { state: computer, recheck } = useThisComputer(serverId, workspaceId);
@@ -147,6 +151,7 @@ export const ProviderSetup = observer(function ProviderSetup({
           machineId: computer.machine.id,
           provider: provider.id,
           person: { name: user?.name ?? null, email: user?.email ?? null },
+          entryPoint,
         })
       );
     } catch (cause) {

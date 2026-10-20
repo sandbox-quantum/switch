@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   flintEnvFor,
+  managedServerTelemetryEndpointFor,
   resolveTelemetryEnvironment,
   TELEMETRY_RELAY_ENDPOINT,
+  TELEMETRY_RELAY_ORIGIN,
   type TelemetryBuildChannel,
   type TelemetryEnvironment,
 } from './config';
@@ -96,5 +98,24 @@ describe('the Amplitude project a build reports to', () => {
     const resolution = resolve('stable', {}, false);
 
     expect(resolution.enabled && resolution.config.flintEnv).toBe('dev');
+  });
+});
+
+describe('where a server the app runs sends its usage', () => {
+  it('is the relay the app reports to, as the base the server appends its path to', () => {
+    expect(managedServerTelemetryEndpointFor(resolve('stable'))).toBe(TELEMETRY_RELAY_ORIGIN);
+    expect(TELEMETRY_RELAY_ENDPOINT).toBe(`${TELEMETRY_RELAY_ORIGIN}/v1/logs`);
+  });
+
+  it('follows a dev run pointed at a local listener, path and all dropped', () => {
+    const resolution = resolve('dev', {
+      SWITCHDASH_TELEMETRY_DEV: '1',
+      SWITCHDASH_TELEMETRY_ENDPOINT: 'http://127.0.0.1:9009/v1/logs',
+    });
+    expect(managedServerTelemetryEndpointFor(resolution)).toBe('http://127.0.0.1:9009');
+  });
+
+  it('still names the relay for a build that sends nothing itself', () => {
+    expect(managedServerTelemetryEndpointFor(resolve('dev'))).toBe(TELEMETRY_RELAY_ORIGIN);
   });
 });

@@ -1,8 +1,9 @@
 import { appSettingsService } from '@main/core/settings/settings-service';
 import type { DeployedTelemetry } from '@shared/core/managed-switch-server/managed-switch-server';
+import { managedServerTelemetryEndpoint } from '../telemetry/config';
 import { runningServiceEnv } from './compose';
 import { CORE_SERVICE, ENV_FILE_NAME } from './constants';
-import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY } from './env-file';
+import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY, TELEMETRY_ENDPOINT_KEY } from './env-file';
 import { errorText } from './error-text';
 import type { ServerHost } from './host/types';
 
@@ -24,6 +25,22 @@ export async function telemetryConsent(): Promise<boolean> {
 }
 
 /**
+ * What a stack's settings say about usage data, read the same way wherever
+ * they were found: whether it shares, and whether it sends to the relay this
+ * build would name. A stack whose settings name no relay runs on its version's
+ * default, which this build has not chosen, so it is not counted as current.
+ */
+export function deployedTelemetryOf(
+  read: (key: string) => string | null | undefined
+): DeployedTelemetry {
+  return {
+    known: true,
+    enabled: envFlag(read(TELEMETRY_ENABLED_KEY)),
+    endpointCurrent: read(TELEMETRY_ENDPOINT_KEY) === managedServerTelemetryEndpoint(),
+  };
+}
+
+/**
  * Whether the stack on `host` is actually sharing usage data.
  *
  * Prefers the running core container's own environment — the only thing that
@@ -39,7 +56,7 @@ export async function readDeployedTelemetry(host: ServerHost): Promise<DeployedT
 
   try {
     const env = await runningServiceEnv(host, CORE_SERVICE);
-    if (env) return { known: true, enabled: envFlag(env.get(TELEMETRY_ENABLED_KEY)) };
+    if (env) return deployedTelemetryOf((key) => env.get(key));
     failures.push(`the ${CORE_SERVICE} service has no running container`);
   } catch (error) {
     failures.push(`container environment: ${errorText(error)}`);
@@ -48,7 +65,7 @@ export async function readDeployedTelemetry(host: ServerHost): Promise<DeployedT
   try {
     const env = await host.readFile(ENV_FILE_NAME);
     if (env !== null) {
-      return { known: true, enabled: envFlag(readEnvValue(env, TELEMETRY_ENABLED_KEY)) };
+      return deployedTelemetryOf((key) => readEnvValue(env, key));
     }
     failures.push(`${ENV_FILE_NAME}: not on the host`);
   } catch (error) {

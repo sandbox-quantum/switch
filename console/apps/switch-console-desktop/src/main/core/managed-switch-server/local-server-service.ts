@@ -527,7 +527,12 @@ export class LocalServerService {
           deployedVersion: checkoutRoot !== null ? CHECKOUT_IMAGE_TAG : managedSwitchVersion(),
           drift: null,
           upgrade: null,
-          deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
+          // The start just wrote this build's relay along with the answer.
+          deployedTelemetry: {
+            known: true,
+            enabled: result.telemetryEnabled,
+            endpointCurrent: true,
+          },
           notice:
             moveFailure !== null
               ? `Could not move this server off Docker, so it is still running on Docker: ` +

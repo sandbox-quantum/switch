@@ -4,6 +4,7 @@ import type { TargetLookup } from './agent-migration-service';
 import {
   type AddManagedAgentParams,
   type ManagedCreateOutcome,
+  managedCreateFailureOf,
   type NewManagedAgentDeps,
   NewManagedAgentService,
 } from './new-managed-agent-service';
@@ -141,7 +142,11 @@ describe('NewManagedAgentService.add', () => {
 
   it('shows a refusal of the agent or its placement in Switch’s words', async () => {
     h.set({
-      createOutcome: { kind: 'refused', message: 'Claude Code is not logged in on laptop.' },
+      createOutcome: {
+        kind: 'refused',
+        message: 'Claude Code is not logged in on laptop.',
+        reason: 'refused',
+      },
     });
     expect(await new NewManagedAgentService(h.deps).add(PARAMS)).toEqual({
       kind: 'error',
@@ -154,6 +159,7 @@ describe('NewManagedAgentService.add', () => {
       createOutcome: {
         kind: 'refused',
         message: "advanced_config: codex has no setting 'tools' (it takes effort, verbosity)",
+        reason: 'invalid',
       },
     });
     const result = await new NewManagedAgentService(h.deps).add({
@@ -192,10 +198,13 @@ describe('NewManagedAgentService.add reporting', () => {
     expect(h.reported).toEqual(['name_conflict']);
   });
 
-  it('reports a placement Switch would not make as refused, not as a fault', async () => {
-    h.set({ createOutcome: { kind: 'refused', message: 'The machine is offline.' } });
-    await new NewManagedAgentService(h.deps).add(PARAMS);
-    expect(h.reported).toEqual(['refused']);
+  it('reports a refusal under the reason Switch gave, not as a fault', async () => {
+    for (const reason of ['refused', 'invalid', 'unauthenticated'] as const) {
+      const run = harness();
+      run.set({ createOutcome: { kind: 'refused', message: 'No.', reason } });
+      await new NewManagedAgentService(run.deps).add(PARAMS);
+      expect(run.reported).toEqual([reason]);
+    }
   });
 
   it('reports instructions it turned away before asking the server', async () => {
@@ -210,6 +219,49 @@ describe('NewManagedAgentService.add reporting', () => {
     h.set({ createOutcome: new Error('connect ECONNREFUSED') });
     await expect(new NewManagedAgentService(h.deps).add(PARAMS)).rejects.toThrow('ECONNREFUSED');
     expect(h.reported).toEqual(['error']);
+  });
+});
+
+describe('managedCreateFailureOf', () => {
+  const failure = (
+    status: number | undefined,
+    code: string | null,
+    kind: 'http' | 'unauthorized' | 'network' = 'http'
+  ) => managedCreateFailureOf({ kind, status, code });
+
+  it('reads a 409 that is a validation error as the name taken', () => {
+    expect(failure(409, 'validation_error')).toBe('name-conflict');
+    expect(failure(409, null)).toBe('name-conflict');
+  });
+
+  it('reads a 409 that names the machine as a refused placement, not a taken name', () => {
+    for (const code of [
+      'controller_offline',
+      'controller_revoked',
+      'provider_not_installed',
+      'provider_login_expired',
+    ])
+      expect(failure(409, code)).toBe('refused');
+  });
+
+  it('files an expired session apart from a placement', () => {
+    expect(failure(401, null, 'unauthorized')).toBe('unauthenticated');
+  });
+
+  it('files fields Switch would not accept as invalid', () => {
+    expect(failure(422, 'validation_error')).toBe('invalid');
+    expect(failure(400, 'definition_invalid')).toBe('invalid');
+    expect(failure(400, null)).toBe('invalid');
+  });
+
+  it('files anything else Switch turned down as refused', () => {
+    expect(failure(403, 'forbidden')).toBe('refused');
+  });
+
+  it('is not a refusal when the server could not be reached or failed', () => {
+    expect(failure(undefined, null, 'network')).toBeNull();
+    expect(failure(undefined, null, 'unauthorized')).toBeNull();
+    expect(failure(503, 'internal')).toBeNull();
   });
 });
 

@@ -134,7 +134,13 @@ export type CheckoutBuild = {
  * unread host must not render as one that agrees.
  */
 export type DeployedTelemetry =
-  | { known: true; enabled: boolean }
+  | {
+      known: true;
+      enabled: boolean;
+      /** Whether it sends to the relay this build reports to. A stack set up by
+       * an older build may name none and run on its own version's default. */
+      endpointCurrent: boolean;
+    }
   | { known: false; reason: string };
 
 /**

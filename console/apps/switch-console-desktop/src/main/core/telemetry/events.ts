@@ -74,6 +74,8 @@ export type TelemetryAgentCreateFailure =
    * the provider, or is not the person's to use.
    */
   | 'refused'
+  /** A managed agent whose own fields Switch rejected: its name, description or settings. */
+  | 'invalid'
   | 'error';
 
 export type TelemetrySessionStartFailure =

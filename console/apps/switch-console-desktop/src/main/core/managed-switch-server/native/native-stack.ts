@@ -16,11 +16,11 @@ import {
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { MAX_START_FAILURE_LINE } from '@shared/core/managed-switch-server/start-failure';
 import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
-import { currentFlintEnv } from '../../telemetry/config';
+import { currentFlintEnv, managedServerTelemetryEndpoint } from '../../telemetry/config';
 import { currentInternalFlag } from '../../telemetry/internal-account';
 import { classifyVersionDrift, type DeployedVersion } from '../deployed-version';
 import { detectDocker } from '../docker';
-import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY } from '../env-file';
+import { readEnvValue } from '../env-file';
 import { errorText } from '../error-text';
 import type { LocalServerPorts } from '../free-port';
 import type { ServerHost } from '../host/types';
@@ -34,7 +34,7 @@ import { registerManagedServer } from '../pipeline';
 import { clearPorts, resolvePorts } from '../ports';
 import { clearSecrets, loadOrCreateSecrets } from '../secrets';
 import { managedSwitchVersion } from '../server-version';
-import { telemetryConsent } from '../telemetry-consent';
+import { deployedTelemetryOf, telemetryConsent } from '../telemetry-consent';
 import { materializeBundle, pruneBundleCopies, readLocalServerBundle } from './bundle';
 import {
   CORE_ENV_FILE,
@@ -412,6 +412,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       telemetryEnabled,
       telemetryEnvironment: currentFlintEnv(),
       telemetryInternal: (await currentInternalFlag()) === 'true',
+      telemetryEndpoint: managedServerTelemetryEndpoint(),
     });
     await writeDeployedVersion(layout, install.version);
     onMessage('Starting switch-core…');
@@ -580,7 +581,7 @@ export async function nativeStartedAt(layout: NativeLayout): Promise<string | nu
 export async function readNativeTelemetry(layout: NativeLayout): Promise<DeployedTelemetry> {
   try {
     const env = await readFile(path.join(layout.run, CORE_ENV_FILE), 'utf8');
-    return { known: true, enabled: envFlag(readEnvValue(env, TELEMETRY_ENABLED_KEY)) };
+    return deployedTelemetryOf((key) => readEnvValue(env, key));
   } catch (error) {
     return { known: false, reason: `${CORE_ENV_FILE}: ${errorText(error)}` };
   }
