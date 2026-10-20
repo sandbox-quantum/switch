@@ -295,6 +295,8 @@ def _passive_message(owner_handle: str | None, asker_handle: str) -> str:
 
 def _start_from_console_message(
     agent_name: str,
+    room_name: str,
+    sign_in_command: str,
     owner_handle: str | None,
     asker_handle: str,
     other_room_names: list[str] | None,
@@ -305,28 +307,36 @@ def _start_from_console_message(
     sessions in other rooms, or a session here that is not live.
 
     The fix is always to start or restart it from Switch Console, so that is
-    what the reply says. A CLI started by hand in a terminal gets none of the
-    Switch tools, which is why no terminal command is offered. The owner is
+    what the reply says, naming the room to connect the session to. A CLI
+    started by hand in a terminal gets none of the Switch tools, which is why
+    no terminal command is offered; the provider's sign-in command is, since a
+    signed-out CLI is the usual reason Console cannot start one. The owner is
     named where the action is, and called "you" when they are the one asking.
     """
     actor = _owner_actor(owner_handle, asker_handle)
     sentence_actor = actor if actor.startswith("@") else actor.capitalize()
     console = f"opening **{agent_name}** in Switch Console"
+    sign_in = (
+        "If Switch Console says I'm signed out, sign me in first with "
+        f"`{sign_in_command}` on the machine I run on."
+    )
     if connected_not_live:
         return (
             "I have a session connected to this room, but it isn't reporting as "
             "live, so I'm not receiving messages. "
-            f"{sentence_actor} can restart it by {console}."
+            f"{sentence_actor} can restart it by {console}. {sign_in}"
         )
     if other_room_names:
         return (
             "I don't have a session in this room right now, but I'm working in "
             f"{_join_room_names(other_room_names)}, so you can ask me there. "
-            f"Or {actor} can start one here by {console}."
+            f"Or {actor} can start one connected to **{room_name}** by {console}. "
+            f"{sign_in}"
         )
     return (
         "I don't have a session connected to this room. "
-        f"{sentence_actor} can start one by {console}."
+        f"{sentence_actor} can start one connected to **{room_name}** by "
+        f"{console}. {sign_in}"
     )
 
 
@@ -1397,12 +1407,14 @@ class AgentRecipient:
         owner-facing "I'm not online" reply: only its owner can act, so the
         message asks them and nobody else. A session_passive agent is never live
         in real time, so it gets `_passive_message`, which names its owner,
-        rather than being told it has no session. A known agent otherwise gets
-        `_start_from_console_message`, and an agent with no known-agent spec
-        falls back to the static `_UNAVAILABLE_MESSAGES` text keyed by
-        connection_model; `connected_not_live` selects the "bound here but not
-        live" fallback, and a connection_model with no text of its own is
-        treated as passive.
+        rather than being told it has no session. A known agent that Switch
+        Console starts or keeps live (auto_session, session_addressable)
+        otherwise gets `_start_from_console_message`. Anything else falls back
+        to the static `_UNAVAILABLE_MESSAGES` text keyed by connection_model:
+        an always_on agent is down because its connector is, whatever spec it
+        registered through, and starting a session would not fix that.
+        `connected_not_live` selects the "bound here but not live" fallback, and
+        a connection_model with no text of its own is treated as passive.
 
         `agent` is the row read for this routing, so option edits made through
         the gateway (e.g. `PATCH /agents/{id}/options`, `connection_model`)
@@ -1428,9 +1440,15 @@ class AgentRecipient:
                 await self.owner_handle_in(session, agent, meta.bridge_id),
                 asker_handle,
             )
-        if known_agent_for(agent) is not None:
+        spec_options = known_agent_for(agent)
+        if spec_options is not None and connection_model in (
+            "auto_session",
+            "session_addressable",
+        ):
             return _start_from_console_message(
                 agent.name,
+                meta.name,
+                spec_options[0].provider.sign_in_command,
                 await self.owner_handle_in(session, agent, meta.bridge_id),
                 asker_handle,
                 other_room_names,

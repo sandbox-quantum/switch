@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from switch_core.delivery.recipient import (
+    _CONNECTED_NOT_LIVE_MESSAGE,
+    _UNAVAILABLE_MESSAGES,
     AgentRecipient,
     _offline_owner_message,
     _passive_message,
@@ -192,16 +194,67 @@ class TestUnavailableReplyRouting:
         assert "in Switch Console" in msg
         assert "```" not in msg
 
-    async def test_every_other_provider_points_at_switch_console(self) -> None:
-        for agent_type in ("codex", "opencode", "antigravity", "cursor"):
+    async def test_every_provider_names_the_room_and_its_own_sign_in(self) -> None:
+        sign_in = {
+            "claude-code": "claude auth login",
+            "codex": "codex login",
+            "opencode": "opencode auth login",
+            "antigravity": "antigravity-acp --login",
+            "cursor": "agent login",
+        }
+        for agent_type, command in sign_in.items():
             agent = _agent(
                 "session_addressable",
                 {"known_agent_type": agent_type, "known_agent_options": {}},
             )
             msg = await _reply(_client("ownerhandle"), agent)
             assert "I don't have a session connected to this room." in msg, agent_type
+            assert "connected to **Some Room**" in msg, agent_type
             assert "in Switch Console" in msg, agent_type
+            assert f"`{command}`" in msg, agent_type
             assert "```" not in msg, agent_type
+
+    async def test_an_always_on_known_agent_says_its_connector_is_down(self) -> None:
+        # `connection_model` can be edited through the gateway. An always_on
+        # agent is offline because its connector is, so it is not told to
+        # start a session from Switch Console, whatever spec it registered
+        # through.
+        for agent_type in ("claude-code", "codex", "cursor"):
+            agent = _agent(
+                "always_on",
+                {"known_agent_type": agent_type, "known_agent_options": {}},
+            )
+            msg = await _reply(_client("ownerhandle"), agent)
+            assert msg == _UNAVAILABLE_MESSAGES["always_on"], agent_type
+
+    async def test_an_always_on_agent_with_sessions_elsewhere_keeps_its_text(
+        self,
+    ) -> None:
+        agent = _agent(
+            "always_on",
+            {"known_agent_type": "codex", "known_agent_options": {}},
+        )
+        msg = await _reply(_client("ownerhandle"), agent, other_room_names=["Hub"])
+        assert msg == _UNAVAILABLE_MESSAGES["always_on"]
+
+    async def test_an_agent_with_no_known_spec_gets_the_static_text(self) -> None:
+        for model in ("always_on", "session_addressable"):
+            msg = await _reply(_client("ownerhandle"), _agent(model, {}))
+            assert msg == _UNAVAILABLE_MESSAGES[model], model
+
+    async def test_an_agent_with_no_known_spec_bound_here_is_told_to_restart(
+        self,
+    ) -> None:
+        msg = await _reply(
+            _client("ownerhandle"),
+            _agent("session_addressable", {}),
+            connected_not_live=True,
+        )
+        assert msg == _CONNECTED_NOT_LIVE_MESSAGE
+
+    async def test_an_unknown_connection_model_is_treated_as_passive(self) -> None:
+        msg = await _reply(_client("ownerhandle"), _agent("not_a_model", {}))
+        assert "I read room messages asynchronously" in msg
 
 
 class TestPassiveMessage:
@@ -226,35 +279,57 @@ class TestStartFromConsoleMessage:
     a terminal command, since a CLI started by hand gets none of the Switch
     tools."""
 
-    def test_no_session_names_the_owner_and_offers_no_command(self) -> None:
-        msg = _start_from_console_message("worker.test", "cmcd", "louisa", None, False)
-        assert msg == (
+    @staticmethod
+    def _msg(
+        owner: str | None,
+        asker: str,
+        other_room_names: list[str] | None = None,
+        connected_not_live: bool = False,
+    ) -> str:
+        return _start_from_console_message(
+            "worker.test",
+            "Payments",
+            "agent login",
+            owner,
+            asker,
+            other_room_names,
+            connected_not_live,
+        )
+
+    def test_no_session_names_the_owner_room_and_sign_in(self) -> None:
+        assert self._msg("cmcd", "louisa") == (
             "I don't have a session connected to this room. "
-            "@cmcd can start one by opening **worker.test** in Switch Console."
+            "@cmcd can start one connected to **Payments** by opening "
+            "**worker.test** in Switch Console. If Switch Console says I'm "
+            "signed out, sign me in first with `agent login` on the machine I "
+            "run on."
         )
 
     def test_the_owner_asking_is_called_you(self) -> None:
-        msg = _start_from_console_message("worker.test", "cmcd", "cmcd", None, False)
-        assert "You can start one by opening **worker.test** in Switch Console." in msg
+        msg = self._msg("cmcd", "cmcd")
+        assert (
+            "You can start one connected to **Payments** by opening "
+            "**worker.test** in Switch Console." in msg
+        )
         assert "@cmcd" not in msg
 
     def test_an_unlinked_owner_is_named_without_a_mention(self) -> None:
-        msg = _start_from_console_message("worker.test", None, "louisa", None, False)
+        msg = self._msg(None, "louisa")
         assert "My owner can start one" in msg
         assert "@" not in msg
 
     def test_sessions_elsewhere_are_offered_first(self) -> None:
-        msg = _start_from_console_message(
-            "worker.test", "cmcd", "louisa", ["Hub", "Ops", "Triage"], False
-        )
+        msg = self._msg("cmcd", "louisa", ["Hub", "Ops", "Triage"])
         assert (
             "I'm working in **Hub**, **Ops** and **Triage**, so you can ask me there."
             in msg
         )
-        assert "Or @cmcd can start one here" in msg
+        assert "Or @cmcd can start one connected to **Payments**" in msg
+        assert "`agent login`" in msg
         assert "```" not in msg
 
     def test_a_session_here_that_is_not_live_asks_for_a_restart(self) -> None:
-        msg = _start_from_console_message("worker.test", "cmcd", "cmcd", None, True)
+        msg = self._msg("cmcd", "cmcd", connected_not_live=True)
         assert "isn't reporting as live" in msg
         assert "You can restart it by opening **worker.test** in Switch Console." in msg
+        assert "`agent login`" in msg

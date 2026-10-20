@@ -38,6 +38,11 @@ class AgentProvider:
     label: str
     """How people see it named."""
 
+    sign_in_command: str
+    """What its owner runs, on the machine an agent runs on, to sign the CLI
+    in: Switch Console's `loginCommand` for the provider, which a test holds
+    this to."""
+
     known_agent_type: str = ""
     """The known-agent spec its agents register through, stored on each agent
     as `known_agent_type`. Defaults to `id`."""
@@ -63,6 +68,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
     AgentProvider(
         id="claude",
         label="Claude Code",
+        sign_in_command="claude auth login",
         known_agent_type="claude-code",
         advanced_fields=CLAUDE_FIELDS,
         tools=(
@@ -85,6 +91,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
     AgentProvider(
         id="codex",
         label="Codex",
+        sign_in_command="codex login",
         connector_type="Codex CLI",
         advanced_fields=CODEX_FIELDS,
         tools=(
@@ -96,6 +103,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
     AgentProvider(
         id="opencode",
         label="OpenCode",
+        sign_in_command="opencode auth login",
         connector_type="OpenCode CLI",
         advanced_fields=OPENCODE_FIELDS,
         tools=(
@@ -113,6 +121,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
     AgentProvider(
         id="antigravity",
         label="Antigravity",
+        sign_in_command="antigravity-acp --login",
         connector_type="Antigravity CLI",
         tools=(
             ToolSpec(name="run_command", description="Executes shell commands"),
@@ -135,6 +144,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
     AgentProvider(
         id="cursor",
         label="Cursor CLI",
+        sign_in_command="agent login",
         tools=(
             ToolSpec(name="shell", description="Executes shell commands"),
             ToolSpec(name="read_file", description="Reads file contents"),

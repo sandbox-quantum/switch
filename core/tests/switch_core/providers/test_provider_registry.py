@@ -3,6 +3,8 @@ depends on which providers exist."""
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -72,6 +74,31 @@ def test_the_stored_identifiers_of_existing_providers_are_unchanged() -> None:
     }
 
 
+_AGENT_PROVIDERS_SRC = (
+    Path(__file__).resolve().parents[4] / "console/packages/agent-providers/src"
+)
+
+# Where Switch Console defines each provider's `loginCommand`.
+_CONSOLE_SIGN_IN = {
+    "claude": ("claude/sign-in.ts", r"CLAUDE_LOGIN = '([^']+)'"),
+    "codex": ("codex/sign-in.ts", r"CODEX_LOGIN = '([^']+)'"),
+    "opencode": ("opencode/sign-in.ts", r"OPENCODE_LOGIN = '([^']+)'"),
+    "antigravity": ("antigravity/antigravity-adapter.ts", r"loginCommand: '([^']+)'"),
+    "cursor": ("cursor/cursor-adapter.ts", r"CURSOR_LOGIN = '([^']+)'"),
+}
+
+
+def test_each_sign_in_command_is_the_one_switch_console_runs() -> None:
+    # An offline reply tells the owner to sign the CLI in with this command,
+    # and Switch Console tells them the same thing from its own table.
+    assert set(_CONSOLE_SIGN_IN) == set(provider_ids())
+    for provider in agent_providers():
+        path, pattern = _CONSOLE_SIGN_IN[provider.id]
+        found = re.search(pattern, (_AGENT_PROVIDERS_SRC / path).read_text())
+        assert found is not None, provider.id
+        assert provider.sign_in_command == found.group(1), provider.id
+
+
 def test_an_unknown_provider_is_refused_with_the_ones_there_are() -> None:
     with pytest.raises(UnknownProvider) as raised:
         agent_provider("gemini")
@@ -91,7 +118,7 @@ def test_only_claude_has_a_known_agent_of_its_own() -> None:
     )
 
 
-NEW = AgentProvider(id="newcli", label="New CLI")
+NEW = AgentProvider(id="newcli", label="New CLI", sign_in_command="newcli login")
 
 
 @pytest.fixture
