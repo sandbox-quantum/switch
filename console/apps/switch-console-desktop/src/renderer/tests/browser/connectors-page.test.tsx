@@ -66,6 +66,8 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
         { id: 'server', name: 'Dev Server', managed: server.managed, managementKind: 'local' },
       ];
     },
+    isConnected: () => true,
+    statusFor: () => undefined,
   },
 }));
 
@@ -579,7 +581,7 @@ it('shows a connection the workspace has switched off as off, not as connected',
   expect(page.querySelector('[aria-label="Atlassian connected"]')).toBeNull();
   expect(button(/^Atlassian/, grid(page)!)!.textContent).toContain('Off in this workspace');
   expect(button(/^Atlassian/, grid(page)!)!.textContent).toContain(
-    'A workspace admin has switched it off.'
+    'Ask a workspace admin to turn it on.'
   );
 });
 

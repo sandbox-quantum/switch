@@ -2,6 +2,7 @@ import { act, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import { OnboardingSurface, type WizardExit } from '@renderer/lib/ui/wizard-frame';
+import '@renderer/index.css';
 
 /**
  * The first-run pages fill a frameless window, and the centred page column

@@ -20,6 +20,7 @@ export class FakeAppServer extends EventEmitter {
   readonly stderr = new PassThrough();
   readonly received: FakeJsonRpcMessage[] = [];
   private buffer = '';
+  private exited = false;
 
   constructor() {
     super();
@@ -37,11 +38,20 @@ export class FakeAppServer extends EventEmitter {
         index = this.buffer.indexOf('\n');
       }
     });
+    // Like the real binary, which stops when its input closes. That is all a
+    // Windows shutdown sends before the kill that follows two seconds later.
+    this.stdin.on('finish', () => this.exit(0, null));
   }
 
   kill(signal?: NodeJS.Signals): boolean {
-    this.emit('exit', null, signal ?? 'SIGTERM');
+    this.exit(null, signal ?? 'SIGTERM');
     return true;
+  }
+
+  private exit(code: number | null, signal: NodeJS.Signals | null): void {
+    if (this.exited) return;
+    this.exited = true;
+    this.emit('exit', code, signal);
   }
 
   send(message: FakeJsonRpcMessage): void {
