@@ -1,3 +1,4 @@
+import { managedAgentLocation } from '@main/core/agent-migration/managed-agent-location';
 import { appService } from '@main/core/app/service';
 import { backfillAgentIcons } from '@main/core/switch-servers/backfill-agent-icons';
 import { withResolvedHomeUrls } from '@main/core/switch-servers/bridge-home-url';
@@ -35,6 +36,7 @@ import {
   beginMessagingAppInstall,
   fetchBridgeTypes,
   fetchConnectedChats,
+  fetchManagedAgent,
   fetchMessagingApps,
   fetchMyIdentities,
   fetchRoomAgentIds,
@@ -89,6 +91,7 @@ import {
 } from '@main/core/switch-servers/service-browser-flow';
 import { saveTeamsPackage } from '@main/core/switch-servers/teams-package';
 import { updateBridgeOnServer } from '@main/core/switch-servers/update-bridge';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { bridgePlatformOfType } from '@main/core/telemetry/bridge-platform';
 import type {
   TelemetryBridgeFailure,
@@ -98,8 +101,9 @@ import type {
   TelemetryRoomCreateFailure,
   TelemetryServerKind,
 } from '@main/core/telemetry/events';
-import { roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
+import { entryPointOf, roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import { log } from '@main/lib/logger';
 import type {
   SlackOwnAppSetup,
   SlackTokensChecked,
@@ -142,6 +146,7 @@ import type {
   UpdateBridgeResult,
   UpdateRoomParams,
 } from '@shared/core/switch-servers/switch-servers';
+import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import {
@@ -261,8 +266,102 @@ function reportRoomCreated(
       ...rest,
       bridge_platform,
       outcome: rest.failure_reason === 'none' ? 'success' : 'failure',
+      source: 'dialog',
     })
   );
+}
+
+/** The rooms a template run made: one, a group's, or none for a run with no room half. */
+function templateRoomIds(room: ProvisionFromTemplateResult | null): string[] {
+  if (room === null) return [];
+  return room.kind === 'room' ? [room.roomId] : room.rooms.map((r) => r.roomId);
+}
+
+/**
+ * Report each room a template run made, as `room_created` from a template.
+ *
+ * The run's result names the rooms and says nothing else about them, so each
+ * is read back from the server for what the event carries — the same thing the
+ * dialog reports from what was asked for. Like the platform lookup, these take
+ * leases of their own and must be started after the run's has ended, and
+ * nobody waits for them. A room that cannot be read back is logged rather
+ * than reported with its agents and platform guessed.
+ */
+function reportTemplateRooms(
+  workspaceId: string,
+  serverKind: TelemetryServerKind,
+  room: ProvisionFromTemplateResult | null
+): void {
+  for (const roomId of templateRoomIds(room)) {
+    void withWorkspaceSession(workspaceId, (server) => fetchRoomDetail(server, roomId))
+      .then((detail) =>
+        trackEvent('room_created', {
+          server_kind: serverKind,
+          bridge_platform: bridgePlatformOfType(detail.bridgeType),
+          agent_count: detail.agentCount,
+          has_instructions: (detail.instructions?.trim().length ?? 0) > 0,
+          outcome: 'success',
+          failure_reason: 'none',
+          source: 'template',
+        })
+      )
+      .catch((error: unknown) =>
+        log.warn('A room a template made could not be read back to report it', {
+          event: 'telemetry_template_room',
+          errorCode: error instanceof GatewayError ? error.kind : 'error',
+        })
+      );
+  }
+}
+
+/** Report what a template run made: its agents, then its rooms. Nothing for a refused run. */
+function reportTemplateRun(
+  workspaceId: string,
+  known: SwitchServer,
+  result: TemplateRunResult,
+  entryPoint: UiEntryPoint
+): void {
+  if (result.kind !== 'created') return;
+  reportTemplateAgents(workspaceId, known.id, result.createdAgents, entryPoint);
+  reportTemplateRooms(workspaceId, serverKindOf(known), result.room);
+}
+
+/**
+ * Report each agent a template run made, as `agent_created`.
+ *
+ * They are managed agents, placed by the server on the person's machines, so
+ * each is read back for its provider and its machine, the way the Add agent
+ * dialog's managed path reports what it was asked for. Started after the run's
+ * lease, never awaited, and logged rather than guessed when the read fails.
+ */
+function reportTemplateAgents(
+  workspaceId: string,
+  serverId: string,
+  createdAgents: Extract<TemplateRunResult, { kind: 'created' }>['createdAgents'],
+  entryPoint: UiEntryPoint
+): void {
+  for (const created of createdAgents) {
+    void withWorkspaceSession(workspaceId, (server) => fetchManagedAgent(server, created.agentId))
+      .then(async (agent) => {
+        if (!agent) throw new Error('The agent the run made is not a managed agent.');
+        trackEvent('agent_created', {
+          agent_type: agentTypeOf(agent.provider),
+          location:
+            agent.controllerId === null
+              ? 'unknown'
+              : await managedAgentLocation(serverId, agent.controllerId),
+          outcome: 'success',
+          failure_reason: 'none',
+          entry_point: entryPointOf(entryPoint),
+        });
+      })
+      .catch((error: unknown) =>
+        log.warn('An agent a template made could not be read back to report it', {
+          event: 'telemetry_template_agent',
+          errorCode: error instanceof GatewayError ? error.kind : 'error',
+        })
+      );
+  }
 }
 
 /**
@@ -560,43 +659,65 @@ export const workspacesController = createRPCController({
     return result;
   },
 
-  createRoomFromTemplate: (
+  createRoomFromTemplate: async (
     workspaceId: string,
     yamlText: string,
     inputs: Record<string, string | number | boolean>,
     templateName: string
-  ): Promise<ProvisionFromTemplateResult> =>
-    withWorkspaceSession(workspaceId, (server) =>
+  ): Promise<ProvisionFromTemplateResult> => {
+    const known = await workspaceServer(workspaceId);
+    const result = await withWorkspaceSession(workspaceId, (server) =>
       createRoomFromTemplate(server, yamlText, inputs, templateName)
-    ),
+    );
+    reportTemplateRooms(workspaceId, serverKindOf(known), result);
+    return result;
+  },
 
   /**
    * Run a template that creates agents in one request: the agents as managed
    * agents on the signed-in person's machines, then its rooms. Nothing is
    * kept when it is refused; the result says why, per agent.
    */
-  runTemplateWithAgents: (
+  runTemplateWithAgents: async (
     workspaceId: string,
     body: {
       agents: TemplateRunAgent[];
       yamlText: string | null;
       inputs: Record<string, string | number | boolean>;
       templateName: string;
+      /** Where the run was started, for the agents it makes. */
+      entryPoint: UiEntryPoint;
     }
-  ): Promise<TemplateRunResult> =>
-    withWorkspaceSession(workspaceId, (server) => runTemplateWithAgents(server, body)),
+  ): Promise<TemplateRunResult> => {
+    const { entryPoint, ...run } = body;
+    const known = await workspaceServer(workspaceId);
+    const result = await withWorkspaceSession(workspaceId, (server) =>
+      runTemplateWithAgents(server, run)
+    );
+    reportTemplateRun(workspaceId, known, result, entryPoint);
+    return result;
+  },
 
   /** Run a template from its document: the server works the agents and rooms out of it. */
-  runTemplateDocument: (
+  runTemplateDocument: async (
     workspaceId: string,
     body: {
       template: string;
       inputs: Record<string, string | number | boolean>;
       filled: Record<string, string>;
       templateName: string;
+      /** Where the run was started, for the agents it makes. */
+      entryPoint: UiEntryPoint;
     }
-  ): Promise<TemplateRunResult> =>
-    withWorkspaceSession(workspaceId, (server) => runTemplateDocument(server, body)),
+  ): Promise<TemplateRunResult> => {
+    const { entryPoint, ...run } = body;
+    const known = await workspaceServer(workspaceId);
+    const result = await withWorkspaceSession(workspaceId, (server) =>
+      runTemplateDocument(server, run)
+    );
+    reportTemplateRun(workspaceId, known, result, entryPoint);
+    return result;
+  },
 
   /** The runs the user may see, or null when the server does not record runs. */
   listTemplateRuns: (params: { workspaceId: string }): Promise<TemplateRun[] | null> =>

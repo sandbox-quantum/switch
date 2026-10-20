@@ -69,6 +69,11 @@ export type TelemetryAgentCreateFailure =
    */
   | 'not_configured'
   | 'agent_not_on_server'
+  /**
+   * A managed agent Switch would not place: the machine is offline, cannot run
+   * the provider, or is not the person's to use.
+   */
+  | 'refused'
   | 'error';
 
 export type TelemetrySessionStartFailure =
@@ -194,6 +199,9 @@ export type TelemetryRoomCreateFailure =
   | 'invalid'
   | 'unreachable'
   | 'error';
+
+/** How a room came to be made: the Create room dialog, or a template run. */
+export type TelemetryRoomCreateSource = 'dialog' | 'template';
 
 /** How someone signed in. Not a setting — which of the two forms they used. */
 export type TelemetryAuthMethod = 'password' | 'oidc' | 'signup';
@@ -469,6 +477,10 @@ export type TelemetryEventMap = {
   /**
    * A room was created on a server. `bridge_unavailable` is the failure worth
    * watching: it means the messaging platform, not the app, refused.
+   *
+   * A template run reports each room it made, read back from the server once it
+   * exists. It reports no failure: a run that fails has made no room, and how
+   * many it would have made is not known.
    */
   room_created: {
     server_kind: TelemetryServerKind;
@@ -477,6 +489,7 @@ export type TelemetryEventMap = {
     has_instructions: boolean;
     outcome: TelemetryOutcome;
     failure_reason: TelemetryRoomCreateFailure;
+    source: TelemetryRoomCreateSource;
   };
   room_deleted: {
     server_kind: TelemetryServerKind;
@@ -652,6 +665,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
     'has_instructions',
     'outcome',
     'failure_reason',
+    'source',
   ],
   room_deleted: ['server_kind', 'outcome'],
   room_agents_added: ['agent_count', 'direction'],

@@ -1,4 +1,5 @@
 import type { AdvancedConfig } from '@switch-console/plugins/agents';
+import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
@@ -60,6 +61,11 @@ export type NewManagedAgentDeps = {
       definition: ManagedDefinition & { isolation: 'shared' | 'isolated' };
     }
   ): Promise<ManagedCreateOutcome>;
+  /**
+   * Reports the attempt as `agent_created`, `none` for one that worked. Never
+   * awaited: describing the agent must not hold up making it.
+   */
+  reportCreate(input: AddManagedAgentParams, failure: TelemetryAgentCreateFailure): void;
   log: MigrationLog;
 };
 
@@ -94,11 +100,22 @@ export class NewManagedAgentService {
    * refuses it in its own words.
    */
   async add(input: AddManagedAgentParams): Promise<AddManagedAgentResult> {
+    try {
+      return await this.createAgent(input);
+    } catch (error) {
+      // What is not a typed return: the server unreachable, or a fault in it.
+      this.deps.reportCreate(input, 'error');
+      throw error;
+    }
+  }
+
+  private async createAgent(input: AddManagedAgentParams): Promise<AddManagedAgentResult> {
     const workspaceId = await this.deps.workspaceFor(input.serverId);
 
     try {
       assertInstructionsFit(input.instructions);
     } catch (error) {
+      this.deps.reportCreate(input, 'error');
       return { kind: 'error', message: message(error) };
     }
     const definition: ManagedDefinition = {
@@ -120,12 +137,19 @@ export class NewManagedAgentService {
       desired_state: 'running',
       definition: { ...definition, isolation: input.isolation },
     });
-    if (created.kind === 'name-conflict') return { kind: 'name-conflict' };
-    if (created.kind === 'refused') return { kind: 'error', message: created.message };
+    if (created.kind === 'name-conflict') {
+      this.deps.reportCreate(input, 'name_conflict');
+      return { kind: 'name-conflict' };
+    }
+    if (created.kind === 'refused') {
+      this.deps.reportCreate(input, 'refused');
+      return { kind: 'error', message: created.message };
+    }
     this.deps.log.info('Created a managed agent', {
       switchAgentId: created.switchAgentId,
       controllerId: input.machineId,
     });
+    this.deps.reportCreate(input, 'none');
     return {
       kind: 'created',
       serverId: input.serverId,

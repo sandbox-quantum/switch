@@ -94,7 +94,7 @@ id, no IP field, no Switch identity.
 | `location` | `local`, `remote`, `unknown`. **Never a path, directory or project name.** |
 | `server_kind` | `local`, `remote_managed`, `external`. **Never a server name or URL.** |
 | `bridge_platform` | A platform key the server lists as one of its registered platforms (`slack`, `mattermost`, `discord`, `teams`, `telegram`, and any platform added since), else `other`, or `unknown` when it cannot be read. Always a short lowercase key. **Never a workspace or channel name.** |
-| `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `link`, `unknown` |
+| `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `link`, `template`, `unknown` |
 | `target` | `local`, `remote`, `unknown` |
 
 ### 3.3 Every event and its fields
@@ -131,7 +131,7 @@ id, no IP field, no Switch identity.
 
 | Event | Fields, with example values |
 |---|---|
-| `agent_created` | `agent_type`: `codex` · `location`: `remote` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `name_conflict` / `credentials_conflict` / `already_configured` / `invalid_name` / `directory_unusable` / `not_configured` / `agent_not_on_server` / `error` · `entry_point`: `sidebar` |
+| `agent_created` | `agent_type`: `codex` · `location`: `remote` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `name_conflict` / `credentials_conflict` / `already_configured` / `invalid_name` / `directory_unusable` / `not_configured` / `agent_not_on_server` / `refused` / `error` · `entry_point`: `sidebar` |
 | `agent_removed` | `agent_type` · `location` · `delete_in_switch`: `true` · `trigger`: `user` / `server_teardown` · `outcome` · `failure_reason`: `none` / `not_linked_to_switch` / `gateway_unauthorized` / `gateway_http` / `gateway_network` / `error` |
 | `agent_reset` | `agent_type` · `outcome` · `failure_reason`: `none` / `agent_not_found` / `not_remote` / `connect` / `error` |
 | `agent_cli_action` | `agent_type` · `target`: `local` / `remote` · `install_method`: `homebrew` / `npm` / `winget` / `powershell` / `apt` / `curl` / `pip` / `cargo` / `installer-macos` / `installer-windows` / `installer-linux` / `other` / `unspecified` · `action`: `install` / `update` / `uninstall` · `outcome` · `failure_reason`: `none` / `unknown_dependency` / `no_install_command` / `no_update_strategy` / `no_uninstall_strategy` / `no_uninstall_command` / `permission_denied` / `command_failed` / `process_open_failed` / `not_detected_after_install` / `not_detected_after_update` / `still_present` / `error` · `duration_ms`: `8421` |
@@ -172,13 +172,20 @@ sign-in records `invalid_credentials` — not the username tried, not the server
 | `bridge_connected` | `bridge`: `collaboration` · `bridge_platform`: `slack` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `forbidden` / `invalid` / `error` |
 | `bridge_disconnected` | `bridge`: `collaboration` · `bridge_platform`: `mattermost` · `outcome` |
 | `bridge_identity_claimed` | `bridge_platform` · `outcome` |
-| `room_created` | `server_kind`: `local` · `bridge_platform`: `slack` · `agent_count`: `3` · `has_instructions`: `true` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `bridge_unavailable` / `invalid` / `unreachable` / `error` |
+| `room_created` | `server_kind`: `local` · `bridge_platform`: `slack` · `agent_count`: `3` · `has_instructions`: `true` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `bridge_unavailable` / `invalid` / `unreachable` / `error` · `source`: `dialog` / `template` |
 | `room_deleted` | `server_kind` · `outcome` |
 | `room_agents_added` | `agent_count`: `2` · `direction`: `agents_to_room` / `room_to_agents` |
 
 A room creation tells us *"someone made a Slack-bridged room with 3 agents and it
 worked"*. It does not tell us the room name, the channel, the workspace, or which
 agents.
+
+`source` says whether the room came from the Create room dialog or from a
+template. A template run reports each room it made, and each agent as
+`agent_created` with `entry_point` `template` (or `onboarding` for the first
+agent the first run makes), with the platform, agent count, provider and machine
+read back from the server once they exist. A template run that fails reports
+nothing: it made nothing, and how many rooms it would have made is not known.
 
 **Remote hosts**
 

@@ -55,6 +55,7 @@ async function createBuddyAgent(input: {
       inputs: { agent_name: name, provider: input.provider, machine: input.machineId },
       filled: {},
       templateName: template.name,
+      entryPoint: 'onboarding',
     });
     if (result.kind === 'created') {
       const created = result.createdAgents[0];

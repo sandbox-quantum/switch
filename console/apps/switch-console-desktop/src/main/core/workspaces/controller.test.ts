@@ -13,6 +13,12 @@ const addBridgeTeam = vi.hoisted(() => vi.fn());
 const removeBridgeTeam = vi.hoisted(() => vi.fn());
 const updateBridgeOnServer = vi.hoisted(() => vi.fn());
 const saveTeamsPackage = vi.hoisted(() => vi.fn());
+const createRoomFromTemplate = vi.hoisted(() => vi.fn());
+const runTemplateWithAgents = vi.hoisted(() => vi.fn());
+const runTemplateDocument = vi.hoisted(() => vi.fn());
+const fetchRoomDetail = vi.hoisted(() => vi.fn());
+const fetchManagedAgent = vi.hoisted(() => vi.fn());
+const managedAgentLocation = vi.hoisted(() => vi.fn(async () => 'local'));
 const getServer = vi.hoisted(() => vi.fn());
 const getSessionCookie = vi.hoisted(() => vi.fn());
 const requireWorkspace = vi.hoisted(() => vi.fn());
@@ -51,6 +57,10 @@ vi.mock('@main/core/fs/impl/ssh-fs', () => ({ SshFileSystem: vi.fn() }));
 vi.mock('@main/core/locations/location-transport', () => ({ sshConnectionIdForHost: vi.fn() }));
 vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({ ensureSshConnected: vi.fn() }));
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent }));
+// The provider registry is built at app startup; what is asserted below is that
+// the agent's provider reaches the event, not how an id is validated.
+vi.mock('@main/core/telemetry/agent-type', () => ({ agentTypeOf: (id: string) => id }));
+vi.mock('@main/core/agent-migration/managed-agent-location', () => ({ managedAgentLocation }));
 vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   isManagedServerRunning: vi.fn(() => true),
   managedServerHostBlocked,
@@ -83,7 +93,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   connectServiceWithKey,
   disconnectGitHub,
   disconnectService,
-  createRoomFromTemplate: vi.fn(),
+  createRoomFromTemplate,
   decodeJwtTenantId: vi.fn(() => null),
   deleteRoom,
   fetchAddressingPolicy: vi.fn(),
@@ -98,7 +108,8 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchWorkspaceServices,
   fetchMyIdentities: vi.fn(),
   fetchRoomAgentIds: vi.fn(),
-  fetchRoomDetail: vi.fn(),
+  fetchManagedAgent,
+  fetchRoomDetail,
   fetchRoomGroups: vi.fn(),
   fetchRoomRoles: vi.fn(),
   fetchRooms: vi.fn(),
@@ -108,6 +119,8 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   releaseBridgeIdentity: vi.fn(),
   removeBridgeTeam,
   removeRoomAgent: vi.fn(),
+  runTemplateDocument,
+  runTemplateWithAgents,
   setWorkspaceService,
   switchTenant,
   updateAddressingPolicy: vi.fn(),
@@ -325,6 +338,151 @@ describe('distributed Microsoft Teams team placement', () => {
   });
 });
 
+describe('reporting what a template made', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    managedServerHostBlocked.mockReturnValue(null);
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+    fetchRoomDetail.mockImplementation(async (_server: unknown, roomId: string) => ({
+      id: roomId,
+      agentCount: roomId === 'r1' ? 2 : 0,
+      bridgeType: roomId === 'r1' ? 'slack' : null,
+      instructions: roomId === 'r1' ? 'Triage incoming bugs.' : null,
+    }));
+  });
+
+  it('reports each room a template made, as the server holds it', async () => {
+    createRoomFromTemplate.mockResolvedValue({
+      kind: 'group',
+      groupId: 'g1',
+      groupName: 'G',
+      rooms: [
+        { roomId: 'r1', roomName: 'A', failedAttachments: [] },
+        { roomId: 'r2', roomName: 'B', failedAttachments: [] },
+      ],
+      errors: [],
+    });
+
+    await workspacesController.createRoomFromTemplate('ws', 'version: 1', {}, 'Triage');
+
+    await vi.waitFor(() => expect(trackEvent).toHaveBeenCalledTimes(2));
+    expect(trackEvent).toHaveBeenCalledWith('room_created', {
+      server_kind: 'remote_managed',
+      bridge_platform: 'slack',
+      agent_count: 2,
+      has_instructions: true,
+      outcome: 'success',
+      failure_reason: 'none',
+      source: 'template',
+    });
+    expect(trackEvent).toHaveBeenCalledWith('room_created', {
+      server_kind: 'remote_managed',
+      bridge_platform: 'unknown',
+      agent_count: 0,
+      has_instructions: false,
+      outcome: 'success',
+      failure_reason: 'none',
+      source: 'template',
+    });
+  });
+
+  it('reports the agents and the room a run made, with where the run started', async () => {
+    runTemplateDocument.mockResolvedValue({
+      kind: 'created',
+      createdAgents: [
+        {
+          slot: 'buddy',
+          agentId: 'a1',
+          name: 'buddy',
+          machine: { id: 'c1', name: 'laptop' },
+          listening: true,
+        },
+      ],
+      room: { kind: 'room', roomId: 'r1', roomName: 'A', failedAttachments: [] },
+    });
+    fetchManagedAgent.mockResolvedValue({ agentId: 'a1', provider: 'claude', controllerId: 'c1' });
+
+    await workspacesController.runTemplateDocument('ws', {
+      template: 'version: 2',
+      inputs: {},
+      filled: {},
+      templateName: 'Buddy',
+      entryPoint: 'onboarding',
+    });
+
+    await vi.waitFor(() => expect(trackEvent).toHaveBeenCalledTimes(2));
+    expect(managedAgentLocation).toHaveBeenCalledWith('srv', 'c1');
+    expect(trackEvent).toHaveBeenCalledWith('agent_created', {
+      agent_type: 'claude',
+      location: 'local',
+      outcome: 'success',
+      failure_reason: 'none',
+      entry_point: 'onboarding',
+    });
+    expect(trackEvent).toHaveBeenCalledWith(
+      'room_created',
+      expect.objectContaining({ source: 'template', agent_count: 2 })
+    );
+  });
+
+  it('keeps the entry point out of what is sent to the server', async () => {
+    runTemplateWithAgents.mockResolvedValue({ kind: 'created', createdAgents: [], room: null });
+
+    await workspacesController.runTemplateWithAgents('ws', {
+      agents: [],
+      yamlText: null,
+      inputs: {},
+      templateName: 'T',
+      entryPoint: 'template',
+    });
+
+    expect(runTemplateWithAgents).toHaveBeenCalledWith(expect.anything(), {
+      agents: [],
+      yamlText: null,
+      inputs: {},
+      templateName: 'T',
+    });
+  });
+
+  it('reports nothing for a run the server refused, which made nothing', async () => {
+    runTemplateDocument.mockResolvedValue({
+      kind: 'refused',
+      code: 'agents_not_created',
+      message: 'No.',
+      problems: [],
+      leftBehind: [],
+    });
+
+    await workspacesController.runTemplateDocument('ws', {
+      template: 'version: 2',
+      inputs: {},
+      filled: {},
+      templateName: 'T',
+      entryPoint: 'template',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(trackEvent).not.toHaveBeenCalled();
+  });
+
+  it('does not report a room it could not read back with its details guessed', async () => {
+    createRoomFromTemplate.mockResolvedValue({
+      kind: 'room',
+      roomId: 'r1',
+      roomName: 'A',
+      failedAttachments: [],
+    });
+    fetchRoomDetail.mockRejectedValue(new Error('no route to host'));
+
+    await workspacesController.createRoomFromTemplate('ws', 'version: 1', {}, 'T');
+
+    await vi.waitFor(() => expect(fetchRoomDetail).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(trackEvent).not.toHaveBeenCalled();
+  });
+});
+
 describe('an action a workspace whose host has gone down cannot take', () => {
   const blocked = {
     sshHost: 'h',
@@ -363,6 +521,7 @@ describe('an action a workspace whose host has gone down cannot take', () => {
         has_instructions: false,
         outcome: 'failure',
         failure_reason: 'unreachable',
+        source: 'dialog',
       })
     );
   });

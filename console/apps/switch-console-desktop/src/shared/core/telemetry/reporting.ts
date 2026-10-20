@@ -28,6 +28,8 @@ export const UI_ENTRY_POINTS = [
   'session_list',
   'room_row',
   'link',
+  /** The template Use page, which can create agents along with its rooms. */
+  'template',
   'unknown',
 ] as const;
 

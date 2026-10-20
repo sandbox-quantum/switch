@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
 import type { TargetLookup } from './agent-migration-service';
 import {
   type AddManagedAgentParams,
@@ -41,12 +42,14 @@ const READY: TargetLookup = {
 type Config = {
   lookup: TargetLookup;
   management: boolean;
-  createOutcome: ManagedCreateOutcome;
+  createOutcome: ManagedCreateOutcome | Error;
 };
 
 type Harness = {
   deps: NewManagedAgentDeps;
   created: unknown[];
+  /** The failure reason of every `agent_created` reported, in order. */
+  reported: TelemetryAgentCreateFailure[];
   set(patch: Partial<Config>): void;
 };
 
@@ -57,8 +60,10 @@ function harness(): Harness {
     createOutcome: { kind: 'created', switchAgentId: 'switch-9' },
   };
   const created: unknown[] = [];
+  const reported: TelemetryAgentCreateFailure[] = [];
   return {
     created,
+    reported,
     set: (patch) => Object.assign(config, patch),
     deps: {
       workspaceFor: async () => 'workspace-1',
@@ -66,8 +71,10 @@ function harness(): Harness {
       managementAvailable: async () => config.management,
       create: async (_workspaceId, body) => {
         created.push(body);
+        if (config.createOutcome instanceof Error) throw config.createOutcome;
         return config.createOutcome;
       },
+      reportCreate: (_input, failure) => reported.push(failure),
       log: { info: () => {}, warn: () => {}, error: () => {} },
     },
   };
@@ -165,6 +172,44 @@ describe('NewManagedAgentService.add', () => {
     });
     expect(result.kind).toBe('error');
     expect(h.created).toEqual([]);
+  });
+});
+
+describe('NewManagedAgentService.add reporting', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = harness();
+  });
+
+  it('reports an agent it created', async () => {
+    await new NewManagedAgentService(h.deps).add(PARAMS);
+    expect(h.reported).toEqual(['none']);
+  });
+
+  it('reports a taken name as a name conflict', async () => {
+    h.set({ createOutcome: { kind: 'name-conflict' } });
+    await new NewManagedAgentService(h.deps).add(PARAMS);
+    expect(h.reported).toEqual(['name_conflict']);
+  });
+
+  it('reports a placement Switch would not make as refused, not as a fault', async () => {
+    h.set({ createOutcome: { kind: 'refused', message: 'The machine is offline.' } });
+    await new NewManagedAgentService(h.deps).add(PARAMS);
+    expect(h.reported).toEqual(['refused']);
+  });
+
+  it('reports instructions it turned away before asking the server', async () => {
+    await new NewManagedAgentService(h.deps).add({
+      ...PARAMS,
+      instructions: 'x'.repeat(33 * 1024),
+    });
+    expect(h.reported).toEqual(['error']);
+  });
+
+  it('reports a create that threw, once, and still throws it', async () => {
+    h.set({ createOutcome: new Error('connect ECONNREFUSED') });
+    await expect(new NewManagedAgentService(h.deps).add(PARAMS)).rejects.toThrow('ECONNREFUSED');
+    expect(h.reported).toEqual(['error']);
   });
 });
 
