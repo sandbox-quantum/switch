@@ -27,6 +27,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.events import CommandEvent
 from switch_core.room_wide_mention import is_reserved_mention_name
 from switch_core.transport import InboundMessage, RoomRef
@@ -64,6 +65,7 @@ class CommandConsumer(Consumer[SystemActor]):
         reference_store: ReferenceStore,
         agent_session_store: AgentSessionStore,
         room_service: RoomService,
+        user_store: UserStore,
         frontend_base_url: str | None,
         follow_the_conversation_enabled: bool,
     ) -> None:
@@ -77,6 +79,7 @@ class CommandConsumer(Consumer[SystemActor]):
         self._reference_store = reference_store
         self._agent_session_store = agent_session_store
         self._room_service = room_service
+        self._user_store = user_store
         # Whether `!follow-ups` and `!assign-agent` mean anything here: with
         # the feature flag off they say so rather than claim a change.
         self._follow_the_conversation_enabled = follow_the_conversation_enabled

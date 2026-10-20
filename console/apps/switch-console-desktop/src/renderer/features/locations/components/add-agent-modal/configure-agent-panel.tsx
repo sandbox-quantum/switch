@@ -23,7 +23,7 @@ import type { ConfigureAgentFormState } from './modes';
 /**
  * Create form for a new Switch agent in a directory. Collects the target server,
  * Switch agent name, and description, then the managed-session options
- * (auto-session, bypass permissions, addressing policy). Switch Console always
+ * (bypass permissions, addressing policy). Switch Console always
  * registers the agent as a managed, session-addressable identity — there is no
  * run-mode or notify-handle choice (CHOO-1440); advanced definition attributes
  * live in the collapsed Advanced section.

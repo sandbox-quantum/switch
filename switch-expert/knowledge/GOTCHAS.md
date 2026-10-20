@@ -217,7 +217,7 @@ and have it write there first.
 
 **Where an agent runs is fixed when it is created.** Switch Console asks for a directory on
 the new-agent dialog and never asks again; its settings let you change the instructions, the
-model, auto-session and who may address it, but not the folder. To move an agent, remove it
+model and who may address it, but not the folder. To move an agent, remove it
 and add it again in the new place.
 
 What makes this confusing is that a **"Repo dir" field does exist and is editable** — on the

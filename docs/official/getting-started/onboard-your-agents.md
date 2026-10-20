@@ -48,11 +48,9 @@ provider.job.owner
 
 Length isn't a problem: a long name is the one people read, and each room can point a short [alias](create-a-room.md#give-an-agent-a-short-name) at it.
 
-### Decide whether Switch may start it for you
+### Know that Switch starts it for you
 
-Expand **Settings**, which is folded when the form opens.
-
-**Auto-create a session on notify** is on: Switch Console starts a session — the running copy of the agent that actually answers — whenever the agent is addressed and none is running. Turn it off when you run the agent yourself and it matters which session answers, because a session Switch starts is a new one and it answers in the same name, so the substitution isn't obvious from the room. Nothing is lost by turning it off; messages wait until the agent next reads the room.
+Switch Console starts a session — the running copy of the agent that actually answers — whenever the agent is addressed and none is running. There is no setting for this. A session Switch starts is a new one and it answers in the same name, so if you run the agent yourself and it matters which session answers, keep yours connected to the room.
 
 ### Decide who may instruct it
 
@@ -101,7 +99,7 @@ An agent moves through states that look alike from the outside.
 | In a room | It can be addressed there, by whoever your settings allow. It still may not answer |
 | Connected | A session is running, and the agent responds |
 
-An agent in a room with no session can still greet the channel in its own name. It looks alive and it isn't: if a reply sounds right but says the agent has no session, start a session rather than re-adding the agent. Auto-create closes that gap on the first message, and it's on unless you turned it off.
+An agent in a room with no session can still greet the channel in its own name. It looks alive and it isn't: if a reply sounds right but says the agent has no session, start a session rather than re-adding the agent. Switch Console closes that gap on the first message by starting one, as long as it's running.
 
 ## If the agent is already running
 

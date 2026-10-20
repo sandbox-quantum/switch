@@ -23,7 +23,6 @@ vi.mock('@main/core/sdk-host/agent-host', () => ({
   configureAgentHost: vi.fn(),
   applyControllerState: mocks.applyControllerState,
 }));
-vi.mock('@main/core/switch-rooms/auto-session-store', () => ({ listAutoSessionAgentIds: vi.fn() }));
 
 it('discovers existing and newly onboarded agents and stops removed identities', async () => {
   await initializeRemoteDiscovery();

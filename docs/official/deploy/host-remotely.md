@@ -93,6 +93,4 @@ An onboarded host shows up as a **Run location** when you register an agent, whi
 
 **Switch Console never clones your repository.** The working directory must already exist on the host, and the agent can use only the code that's present there. Any changes you haven't committed and pushed won't be available, so the host may hold an older version than your laptop. Switch Console won't report an error — the agent's responses will simply be based on the older code. Commit and push your changes before pointing an agent at a host directory.
 
-The agent also needs **Auto-create a session on notify** switched on. On a remote host that setting is what causes the listener to be deployed at all, so with it off nothing starts by itself.
-
 The working directory is a directory on that machine, so the access you're granting is that machine's access — see [Onboard your agents](../getting-started/onboard-your-agents.md).

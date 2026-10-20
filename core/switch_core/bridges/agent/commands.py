@@ -20,7 +20,8 @@ from switch_core.bridges.agent.protocol.types import (
     CommandPayload,
 )
 from switch_core.clients.mentions import mention_tokens as _mention_tokens
-from switch_core.db.models import CollaborationBridge, Room
+from switch_core.db.models import CollaborationBridge, Room, User
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
@@ -1120,6 +1121,103 @@ async def _cmd_invite(
     )
 
 
+async def _cmd_remove_agent(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+
+    tokens = _mention_tokens(event.args)
+    if not tokens:
+        await _reply(
+            client,
+            room,
+            event,
+            "Usage: `!remove-agent @agent-name` — the agent to remove from this room.",
+        )
+        return
+    token = tokens[0]
+
+    # `remove-agent` is admin-owned, so only the always-present admin client
+    # runs this handler.
+    host = cast("CommandConsumer", client)
+    async with tenant_session(host.session_factory, host.tenant_id) as session:
+        target = await _room_agent_by_name_or_alias(
+            client, session, meta.room_id, token
+        )
+        if target is None:
+            await _reply(
+                client,
+                room,
+                event,
+                f"No agent named `{token}` in this room. Run `!list-agents`.",
+            )
+            return
+        if not await _may_remove_agent(host, session, target, meta.room_id, event):
+            await _reply(
+                client,
+                room,
+                event,
+                f"You can't remove **{_label(target)}**: it doesn't take "
+                "instructions from you. Ask a workspace admin, or whoever it "
+                "answers to.",
+            )
+            return
+
+    await host._room_service.remove_agents_from_room(meta.room_id, [target.id])
+    await _reply(client, room, event, f"Removed **{_label(target)}** from this room.")
+
+
+async def _may_remove_agent(
+    host: CommandConsumer,
+    session: AsyncSession,
+    target: Agent,
+    room_id: str,
+    event: CommandEvent,
+) -> bool:
+    """Whether the command's sender may take `target` out of the room.
+
+    Anyone the agent would take instructions from may; so may a workspace
+    admin, and an agent that manages agents for the target's owner.
+    """
+    resolver = AddressingResolver(
+        room_store=host._room_store,
+        room_role_store=host._room_role_store,
+        client_store=host.client_store,
+        agent_store=host._agent_store,
+        external_user_store=host._external_user_store,
+        live_connection_ids=host._connections.live_connection_ids,
+    )
+    decision = await resolver.permitted(
+        session, agent=target, room_id=room_id, sender=event.user_id
+    )
+    if decision.allowed:
+        return True
+    principal = await resolver.resolve_sender(session, event.user_id)
+    if principal is None:
+        return False
+    if principal.kind == "user":
+        for user_id in principal.user_ids:
+            user = await session.get(User, user_id)
+            if user is not None and await host._user_store.administers(session, user):
+                return True
+        return False
+    if principal.kind == "agent":
+        sender = await host._agent_store.get(session, principal.id)
+        return (
+            sender is not None
+            and sender.can_manage_agents
+            and sender.owner_id is not None
+            and sender.owner_id == target.owner_id
+        )
+    return False
+
+
 # Emoji + label shown per status by the !status command.
 _STATUS_DISPLAY: dict[AgentStatus, tuple[str, str]] = {
     AgentStatus.LIVE: ("🟢", "live"),
@@ -1652,6 +1750,15 @@ COMMANDS: list[Command] = [
             CommandArg(
                 "agent", "The registered agent to add to this room", required=True
             ),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "remove-agent",
+        "Remove an agent from this room. Usage: `!remove-agent @agent-name`.",
+        _cmd_remove_agent,
+        args_spec=(
+            CommandArg("agent", "The agent to remove from this room", required=True),
         ),
         admin_owned=True,
     ),

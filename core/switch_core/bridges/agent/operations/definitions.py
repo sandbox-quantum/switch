@@ -1593,6 +1593,31 @@ async def invite_agent_to_room(
 
 
 @operation
+async def remove_agent_from_room(room_id: str, agent_name: str) -> dict[str, bool]:
+    """Remove an agent from a room by name — the opposite of `invite_agent_to_room`.
+
+    The agent leaves the room and any bridged channel; a session it had
+    connected there is disconnected from it. You need not be in the room.
+
+    Allowed when you may address that agent (its addressing policy admits
+    you), or when you can manage agents and it belongs to your owner. Anything
+    else is refused with the reason — relay it rather than retrying.
+
+    Args:
+        room_id: The Switch room id (UUID string).
+        agent_name: Registry name of the agent to remove (its `name`, not its
+            display name).
+
+    Returns:
+        {"ok": true} on success.
+    """
+    agent_id = get_agent_id()
+    protocol = get_protocol()
+    await protocol.remove_agent_from_room(agent_id, room_id, agent_name)
+    return {"ok": True}
+
+
+@operation
 async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, Any]:
     """Add one or more human users to an existing bridged room by name.
 

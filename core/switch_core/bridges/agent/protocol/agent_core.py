@@ -3033,6 +3033,51 @@ class AgentCore:
         except ValueError as e:
             raise ValueError(f"Failed to add users: {str(e)}") from e
 
+    async def remove_agent_from_room(
+        self, agent_id: str, room_id: str, agent_name: str
+    ) -> None:
+        """Remove an agent from a room on the calling agent's behalf.
+
+        Allowed when the caller may address the target in that room, or when
+        the caller can manage agents and the target belongs to the caller's
+        owner. Membership of the room is not required: an owner's assistant
+        tidies rooms it was never in.
+        """
+        async with self.session_factory() as session:
+            caller = await self.agent_store.get(session, agent_id)
+            if caller is None:
+                raise ValueError(f"Unknown agent: {agent_id}")
+            room = await self.room_store.get(session, room_id)
+            if room is None:
+                raise ValueError(f"Room not found: {room_id}")
+            target = await self.agent_store.get_by_name(session, agent_name)
+            if target is None:
+                raise ValueError(f"Failed to remove agent: unknown agent {agent_name}")
+            if target.id not in await self.room_store.get_agent_ids(session, room_id):
+                raise ValueError(
+                    f"Failed to remove agent: {agent_name} is not in this room"
+                )
+            manages_target = (
+                caller.can_manage_agents
+                and caller.owner_id is not None
+                and caller.owner_id == target.owner_id
+            )
+            if not manages_target and not await self._can_address(
+                session,
+                target,
+                room_id=room_id,
+                group_id=room.group_id,
+                sender_agent_id=agent_id,
+            ):
+                raise PermissionError(
+                    f"Not permitted to remove {agent_name}: you may not address "
+                    "it, and it is not an agent of your owner's that you manage "
+                    "(that needs 'can manage agents')."
+                )
+        await self.room_service.remove_agents_from_room(
+            room_id, [target.id], removed_by_kind="agent"
+        )
+
     def run_service(self) -> RunService:
         """Runs over this service's stores; see ``agent_runs``."""
         from switch_core.agent_runs import RunService

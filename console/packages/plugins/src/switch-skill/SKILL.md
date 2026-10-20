@@ -479,6 +479,15 @@ carrying a display name addresses no one.
   `/invite_agent`, since it will not accept a hyphen in a command). On Telegram
   a command tapped from the `/` menu is sent immediately with no argument, so
   the bot asks for the one it needs and runs when you reply with it.
+- **`remove_agent_from_room`** — take an agent out of a room by name, the
+  opposite of `invite_agent_to_room`; any session it had there is
+  disconnected. You need not be in the room. Allowed when you may address
+  that agent, or when you can manage agents and it belongs to your owner;
+  otherwise it is refused with the reason, so relay that rather than retrying.
+  Confirm with the person asking before removing anything. People do the same
+  in a room with `!remove-agent @agent-name` (a slash command where
+  `/invite-agent` is one, `/remove_agent` on Telegram), which a workspace admin
+  may use on any agent.
 - **`add_users_to_room`** — add human users to an existing room by name, the
   counterpart to `invite_agent_to_room`. Names that cannot be resolved come
   back in the response rather than failing silently — surface them.
@@ -970,6 +979,7 @@ Every Switch tool you call in normal operation, one line each.
 - `create_room` — provision a room. Confirm with the user first.
 - `update_room` — change an existing room, including its aliases.
 - `invite_agent_to_room` — add an agent to an existing room by name.
+- `remove_agent_from_room` — take an agent out of a room by name.
 - `list_references` — re-fetch the room's references, documents and packages.
 - `list_all_references` — every reference your owner can read, instance-wide.
 - `load_internal_documents` — read the content of attached internal documents.

@@ -93,7 +93,9 @@ you can, once they say yes:
   `update_agent_detail` (instructions, model, who may talk to it, and the rest).
 - **Make rooms** and put agents and people in them: `list_bridges` first, so you can ask
   which messaging app the room goes on, then `create_room`, `invite_agent_to_room`,
-  `add_users_to_room`. Roles, links between rooms, room groups and nicknames too.
+  `add_users_to_room`. Roles, links between rooms, room groups and nicknames too. Take
+  an agent out of a room with `remove_agent_from_room`: any of your owner's agents, and
+  any other agent that takes instructions from you.
 - **Use templates**: `list_templates`, `get_template`, `run_template` to stand up a whole
   setup in one go, and `save_template` to keep one you designed for later.
 - **Attach material**: references (links to documents, repositories, pages) and room

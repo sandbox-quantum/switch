@@ -62,6 +62,10 @@
                             "description": "Add an existing agent: /invite-agent @agent-name"
                         },
                         {
+                            "title": "/remove-agent",
+                            "description": "Remove an agent from this room: /remove-agent @agent-name"
+                        },
+                        {
                             "title": "/agents-greet",
                             "description": "Have the agents here introduce themselves"
                         },
@@ -120,6 +124,10 @@
                         {
                             "title": "invite-agent",
                             "description": "Add an existing agent: /invite-agent @agent-name"
+                        },
+                        {
+                            "title": "remove-agent",
+                            "description": "Remove an agent from this room: /remove-agent @agent-name"
                         },
                         {
                             "title": "agents-greet",

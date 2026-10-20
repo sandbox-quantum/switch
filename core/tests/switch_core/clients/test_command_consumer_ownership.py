@@ -45,6 +45,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.messages.notify import MessageListener
 from switch_core.ownership import Ownership
 from switch_core.process_lease import ProcessLease
@@ -129,6 +130,7 @@ async def _process(
         reference_store=ReferenceStore(),
         agent_session_store=AgentSessionStore(),
         room_service=MagicMock(),
+        user_store=UserStore(),
         connections=AgentConnectionRegistry(),
         frontend_base_url=None,
         follow_the_conversation_enabled=False,

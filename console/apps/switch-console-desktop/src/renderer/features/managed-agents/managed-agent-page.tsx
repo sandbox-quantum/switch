@@ -272,20 +272,6 @@ function ManagedAgentPageContent({
             />
             <section className="flex flex-col gap-6">
               <SectionLabel>General</SectionLabel>
-              <SettingRow
-                title="Auto-create a session on notify"
-                info={{
-                  label: 'More info about auto-created sessions',
-                  content:
-                    'A session starts by itself when the agent is addressed, so a message never waits for someone to open one.',
-                }}
-                description="Start a session when this agent is addressed."
-                control={
-                  <WithReason reason="Agents on a machine always start a session when addressed.">
-                    <Switch aria-label="Auto-create a session on notify" checked disabled />
-                  </WithReason>
-                }
-              />
               <AutoApproveRow
                 control={
                   <Switch

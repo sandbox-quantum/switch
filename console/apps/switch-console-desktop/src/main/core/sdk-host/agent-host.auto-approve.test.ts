@@ -33,7 +33,6 @@ vi.mock('@main/core/managed-switch-server/session-readiness', () => ({
 }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: vi.fn(async () => null) }));
 vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
-  listAutoSessionAgentIds: vi.fn(async () => []),
   listStoppedControllerAgentIds: vi.fn(async () => []),
 }));
 vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({ ensureSshConnected: vi.fn() }));

@@ -177,7 +177,7 @@ properly, and the person will hit the gaps later rather than sooner.
    and credentials.
 
    **The Directory is fixed once the agent exists — say so before they pick it.** Its
-   instructions, model, auto-session and who may address it can all be changed later; where
+   instructions, model and who may address it can all be changed later; where
    it runs cannot. Moving an agent to a different folder means removing it and adding it
    again there. Get this one right the first time.
 
