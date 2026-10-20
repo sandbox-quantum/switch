@@ -28,7 +28,7 @@ export type TelemetryBuildChannel = 'dev' | 'canary' | 'stable';
 export type TelemetryConfig = {
   endpoint: string;
   build: TelemetryBuildChannel;
-  flintEnv: TelemetryFlintEnv;
+  telemetryEnv: TelemetryEnv;
 };
 
 /**
@@ -42,13 +42,13 @@ export type TelemetryResolution =
   | { enabled: false; reason: TelemetryDisabledReason };
 
 /**
- * The Amplitude project an event belongs in, sent as the `flint_env` resource
+ * The Amplitude project an event belongs in, sent as the `switch_trust.env` resource
  * attribute. The relay keeps one project per environment and files each event
  * under the one this names, so a developer's app and a pre-release never land
  * in production's numbers. `build` stays on every event besides, for slicing
  * within a project.
  */
-export type TelemetryFlintEnv = 'prod' | 'staging' | 'dev' | 'local';
+export type TelemetryEnv = 'prod' | 'staging' | 'dev' | 'local';
 
 /**
  * Running from source is `local`. A packaged build that is not a release — a
@@ -56,21 +56,21 @@ export type TelemetryFlintEnv = 'prod' | 'staging' | 'dev' | 'local';
  * channel it was built as. Only a released canary is `staging`, and only a
  * released stable build is `prod`.
  */
-export function flintEnvFor({
+export function telemetryEnvFor({
   build,
   release,
 }: {
   build: TelemetryBuildChannel;
   release: boolean;
-}): TelemetryFlintEnv {
+}): TelemetryEnv {
   if (build === 'dev') return 'local';
   if (!release) return 'dev';
   return build === 'canary' ? 'staging' : 'prod';
 }
 
 /** The project for the build that is actually running. */
-export function currentFlintEnv(): TelemetryFlintEnv {
-  return flintEnvFor({ build: telemetryBuildChannel(), release: IS_RELEASE_BUILD });
+export function currentTelemetryEnv(): TelemetryEnv {
+  return telemetryEnvFor({ build: telemetryBuildChannel(), release: IS_RELEASE_BUILD });
 }
 
 export function telemetryBuildChannel(): TelemetryBuildChannel {
@@ -117,7 +117,7 @@ export function resolveTelemetryEnvironment({
     config: {
       endpoint: override || TELEMETRY_RELAY_ENDPOINT,
       build,
-      flintEnv: flintEnvFor({ build, release }),
+      telemetryEnv: telemetryEnvFor({ build, release }),
     },
   };
 }

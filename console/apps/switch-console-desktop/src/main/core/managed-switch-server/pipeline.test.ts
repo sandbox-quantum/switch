@@ -89,7 +89,7 @@ vi.mock('./managed-upgrade', () => ({
 }));
 
 const { startStack } = await import('./pipeline');
-const { currentFlintEnv } = await import('../telemetry/config');
+const { currentTelemetryEnv } = await import('../telemetry/config');
 const { ENV_FILE_NAME } = await import('./constants');
 
 function options() {
@@ -178,7 +178,7 @@ describe('startStack version guard', () => {
 
     expect(buildEnvFileMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        telemetryEnvironment: currentFlintEnv(),
+        telemetryEnvironment: currentTelemetryEnv(),
         telemetryInternal: true,
       })
     );

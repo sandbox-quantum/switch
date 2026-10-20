@@ -14,7 +14,7 @@ import {
   type StartLocalServerResult,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
-import { currentFlintEnv } from '../telemetry/config';
+import { currentTelemetryEnv } from '../telemetry/config';
 import { currentInternalFlag } from '../telemetry/internal-account';
 import { bundledComposeYaml } from './bundled-compose';
 import { checkoutBuildOverrideYaml } from './checkout-build';
@@ -601,7 +601,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
     ports: settings.ports,
     secrets: settings.secrets,
     telemetryEnabled,
-    telemetryEnvironment: currentFlintEnv(),
+    telemetryEnvironment: currentTelemetryEnv(),
     telemetryInternal: (await currentInternalFlag()) === 'true',
   });
   await host.writeFile(ENV_FILE_NAME, env, 0o600);

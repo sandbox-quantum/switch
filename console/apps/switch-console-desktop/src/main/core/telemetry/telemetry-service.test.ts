@@ -206,8 +206,8 @@ describe('the payload', () => {
       connected_to_room: false,
     });
 
-    expect(sentResource()['flint.client_id']).toBe('install-abc');
-    expect(sentResource()).not.toHaveProperty('flint.user_id');
+    expect(sentResource()['switch_trust.client_id']).toBe('install-abc');
+    expect(sentResource()).not.toHaveProperty('switch_trust.user_id');
   });
 
   it('stamps the event when it happened, not after the reads that describe it', async () => {
@@ -272,9 +272,9 @@ describe('the payload', () => {
     });
 
     expect(Object.keys(sentResource()).sort()).toEqual([
-      'flint.client_id',
-      'flint_env',
-      'flint_internal',
+      'switch_trust.client_id',
+      'switch_trust.env',
+      'switch_trust.internal',
       'os.type',
       'os.version',
       'service.name',

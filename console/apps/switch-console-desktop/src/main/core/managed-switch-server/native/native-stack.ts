@@ -20,7 +20,7 @@ import {
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { MAX_START_FAILURE_LINE } from '@shared/core/managed-switch-server/start-failure';
 import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
-import { currentFlintEnv } from '../../telemetry/config';
+import { currentTelemetryEnv } from '../../telemetry/config';
 import { currentInternalFlag } from '../../telemetry/internal-account';
 import { classifyVersionDrift, type DeployedVersion } from '../deployed-version';
 import { detectDocker } from '../docker';
@@ -413,7 +413,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       callbackPort: ports.gateway,
       secrets,
       telemetryEnabled,
-      telemetryEnvironment: currentFlintEnv(),
+      telemetryEnvironment: currentTelemetryEnv(),
       telemetryInternal: (await currentInternalFlag()) === 'true',
     });
     await writeDeployedVersion(layout, install.version);

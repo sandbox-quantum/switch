@@ -157,7 +157,7 @@ class OtlpResource:
             "service.name": self.service_name,
             # The relay's guard: it drops payloads without one, in silence and
             # with a 200. `SwitchConfig` refuses to start without it.
-            "flint.client_id": self.deployment_id,
+            "switch_trust.client_id": self.deployment_id,
         }
         if self.service_version:
             values["service.version"] = self.service_version

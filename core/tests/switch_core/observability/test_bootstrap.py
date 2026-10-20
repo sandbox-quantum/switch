@@ -307,7 +307,7 @@ async def test_metrics_reach_the_collector(monkeypatch):
         entry["key"]: entry["value"]
         for entry in body["resourceMetrics"][0]["resource"]["attributes"]
     }
-    assert attributes["flint.client_id"] == {"stringValue": DEPLOYMENT_ID}
+    assert attributes["switch_trust.client_id"] == {"stringValue": DEPLOYMENT_ID}
     assert attributes["service.version"] == {"stringValue": "9.9.9"}
 
 
