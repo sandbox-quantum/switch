@@ -30,6 +30,7 @@ describe('buildNativeCoreSettings', () => {
     telemetryEnabled: false,
     telemetryEnvironment: 'local',
     telemetryInternal: false,
+    telemetryEndpoint: 'https://relay.example.test',
   });
 
   it('holds every listener to loopback', () => {
@@ -61,6 +62,10 @@ describe('buildNativeCoreSettings', () => {
 
   it('says "no" to telemetry explicitly rather than by omission', () => {
     expect(settings.TELEMETRY_ENABLED).toBe('false');
+  });
+
+  it('names the relay the server reports to, as the Docker stack does', () => {
+    expect(settings.TELEMETRY_ENDPOINT).toBe('https://relay.example.test');
   });
 });
 

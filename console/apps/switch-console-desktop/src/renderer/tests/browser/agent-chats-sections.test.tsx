@@ -87,6 +87,11 @@ vi.mock('@renderer/features/managed-agents/managed-agent-page', () => ({
     </div>
   ),
 }));
+// The profile's avatar asks the server whether third-party avatars are on.
+vi.mock('@renderer/lib/stores/use-avatar-settings', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useAvatarSettings: () => ({ thirdPartyAvatarsEnabled: null, error: null, retry: () => {} }),
+}));
 vi.mock('@renderer/features/chats/components/chat-panel', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   ChatPanel: () => null,
@@ -194,6 +199,13 @@ it('calls the machine "This computer" when the agent runs here, keeping its name
         agent={{
           ...AGENT,
           machine: { id: 'machine-1', name: 'CC6G0XR0YF', kind: 'local', state: 'online' },
+          status: {
+            process: 'running',
+            attached: true,
+            reason: null,
+            detail: null,
+            directory: null,
+          },
         }}
       />
     )
@@ -237,7 +249,7 @@ const room = (roomId: string, roomName: string): RemoteAgentRoom => ({
 /** A row in the agent's Rooms list, by the room's name. */
 const roomRow = (name: string) =>
   [...container.querySelectorAll<HTMLElement>('section[aria-label="Rooms"] > div')].find(
-    (row) => row.textContent === name
+    (row) => row.textContent?.trim() === name
   )!;
 const embeddedRoom = () => container.querySelector<HTMLElement>('[data-testid="embedded-room"]');
 

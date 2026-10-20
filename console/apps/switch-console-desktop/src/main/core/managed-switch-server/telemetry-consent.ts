@@ -1,8 +1,9 @@
 import { appSettingsService } from '@main/core/settings/settings-service';
 import type { DeployedTelemetry } from '@shared/core/managed-switch-server/managed-switch-server';
+import { TELEMETRY_RELAY_ORIGIN } from '../telemetry/config';
 import { runningServiceEnv } from './compose';
 import { CORE_SERVICE, ENV_FILE_NAME } from './constants';
-import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY } from './env-file';
+import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY, TELEMETRY_ENDPOINT_KEY } from './env-file';
 import { errorText } from './error-text';
 import type { ServerHost } from './host/types';
 
@@ -23,6 +24,18 @@ export async function telemetryConsent(): Promise<boolean> {
   return (await appSettingsService.get('telemetry')).enabled;
 }
 
+/** Whether a stack's settings share, and send to `expected`; naming no address is not current. */
+export function deployedTelemetryOf(
+  read: (key: string) => string | null | undefined,
+  expected: string
+): DeployedTelemetry {
+  return {
+    known: true,
+    enabled: envFlag(read(TELEMETRY_ENABLED_KEY)),
+    endpointCurrent: read(TELEMETRY_ENDPOINT_KEY) === expected,
+  };
+}
+
 /**
  * Whether the stack on `host` is actually sharing usage data.
  *
@@ -39,7 +52,7 @@ export async function readDeployedTelemetry(host: ServerHost): Promise<DeployedT
 
   try {
     const env = await runningServiceEnv(host, CORE_SERVICE);
-    if (env) return { known: true, enabled: envFlag(env.get(TELEMETRY_ENABLED_KEY)) };
+    if (env) return deployedTelemetryOf((key) => env.get(key), TELEMETRY_RELAY_ORIGIN);
     failures.push(`the ${CORE_SERVICE} service has no running container`);
   } catch (error) {
     failures.push(`container environment: ${errorText(error)}`);
@@ -48,7 +61,7 @@ export async function readDeployedTelemetry(host: ServerHost): Promise<DeployedT
   try {
     const env = await host.readFile(ENV_FILE_NAME);
     if (env !== null) {
-      return { known: true, enabled: envFlag(readEnvValue(env, TELEMETRY_ENABLED_KEY)) };
+      return deployedTelemetryOf((key) => readEnvValue(env, key), TELEMETRY_RELAY_ORIGIN);
     }
     failures.push(`${ENV_FILE_NAME}: not on the host`);
   } catch (error) {

@@ -492,6 +492,8 @@ export class LocalServerService {
         // Nobody else shares the local stack, so there is nothing to lock.
         result = await startStack({ ...common, lease: null });
       }
+      // A move that worked leaves a native server; one that failed, the Docker one.
+      const ranNative = move ? moveFailure === null : native;
       if (result.kind === 'docker-unavailable') {
         this.setStatus({ phase: 'error', error: result.detail });
         this.failUpgrade(result.detail);
@@ -527,7 +529,10 @@ export class LocalServerService {
           deployedVersion: checkoutRoot !== null ? CHECKOUT_IMAGE_TAG : managedSwitchVersion(),
           drift: null,
           upgrade: null,
-          deployedTelemetry: { known: true, enabled: result.telemetryEnabled },
+          // Read back off the server, not assumed from what was written.
+          deployedTelemetry: ranNative
+            ? await readNativeTelemetry(layout)
+            : await readDeployedTelemetry(host),
           notice:
             moveFailure !== null
               ? `Could not move this server off Docker, so it is still running on Docker: ` +

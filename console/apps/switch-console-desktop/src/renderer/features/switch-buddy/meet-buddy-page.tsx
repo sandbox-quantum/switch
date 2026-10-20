@@ -136,6 +136,7 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
           machineId: computer.machine.id,
           provider: providerId,
           person: { name: user?.name ?? null, email: user?.email ?? null },
+          entryPoint: 'onboarding',
         })
       );
     } catch (cause) {
@@ -170,7 +171,12 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
         }
       >
         {header}
-        <ProviderSetup serverId={serverId} workspaceId={workspaceId} onCreated={onCreated} />
+        <ProviderSetup
+          serverId={serverId}
+          workspaceId={workspaceId}
+          entryPoint="onboarding"
+          onCreated={onCreated}
+        />
       </OnboardingSurface>
     );
 

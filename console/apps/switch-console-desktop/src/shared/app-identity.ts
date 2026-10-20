@@ -78,8 +78,8 @@ export const RELEASE_REPO_NAME = 'switch';
 // A dev build takes the canary pin: it runs canary's features (the new first
 // run among them, which starts the server with feature flags a stable release
 // may not know yet), so it needs the server canary runs.
-export const STABLE_SWITCH_VERSION = '0.30.0';
-export const CANARY_SWITCH_VERSION = '0.31.0-rc.7';
+export const STABLE_SWITCH_VERSION = '0.31.0';
+export const CANARY_SWITCH_VERSION = '0.31.0';
 export const COMPATIBLE_SWITCH_VERSION =
   isCanary || isDev ? CANARY_SWITCH_VERSION : STABLE_SWITCH_VERSION;
 
