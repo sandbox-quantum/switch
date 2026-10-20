@@ -160,7 +160,6 @@ class TestANewProvider:
             name="new.agent",
             metadata_={"known_agent_type": "newcli", "known_agent_options": {}},
         )
-        assert spec.connect_command(options, agent, "hub", None) is None  # type: ignore[arg-type]
         assert spec.start_session_instructions(options, agent, "hub", None) == (  # type: ignore[arg-type]
             "open **new.agent** in Switch Console and start a local session in **hub**."
         )

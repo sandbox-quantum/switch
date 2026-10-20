@@ -76,7 +76,7 @@ You need one Slack app for the whole bridge. There are two ways to create it —
             { "command": "/invite-agent", "description": "Add an existing agent to this room", "usage_hint": "@agent-name", "should_escape": true },
             { "command": "/rename-agent", "description": "Rename an agent (owner or admin)", "usage_hint": "@agent-name new-name [Display Name]", "should_escape": true },
             { "command": "/delete-agent", "description": "Delete an agent (owner or admin)", "usage_hint": "@agent-name [confirm]", "should_escape": true },
-            { "command": "/run-cmd", "description": "Show the terminal command to start a session for an agent", "usage_hint": "@agent-name [@role]", "should_escape": true },
+            { "command": "/run-cmd", "description": "Show how to start a session for an agent", "usage_hint": "@agent-name [@role]", "should_escape": true },
             { "command": "/agents-greet", "description": "Have agents in the room introduce themselves", "should_escape": false },
             { "command": "/room-url", "description": "Show the frontend URL for this room", "should_escape": false },
             { "command": "/follow-ups", "description": "Turn follow-ups without an @ on or off for this room", "usage_hint": "on | off", "should_escape": false },

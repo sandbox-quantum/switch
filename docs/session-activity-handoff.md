@@ -573,8 +573,7 @@ Switch no longer supports running an agent outside Console or its sidecar.
   package is private.
 - The skill is one file, `console/packages/plugins/src/switch-skill/SKILL.md`
   (`@switch-console/plugins/switch-skill`). Console puts it in
-  `execution.skill` for Codex (written into the session's Codex home) and
-  OpenCode (a managed skill, via `adapterFor(..., skill)` in the shared host),
-  and in `execution.context` (frontmatter stripped) for Claude Code, Cursor and
-  Antigravity. A host's own `switch` skill is not linked into Codex or OpenCode
+  `execution.skill` for OpenCode (a managed skill, via `adapterFor(..., skill)`
+  in the shared host), and in `execution.context` (frontmatter stripped) for
+  Claude Code, Codex, Cursor and Antigravity. A host's own `switch` skill is not linked into Codex or OpenCode
   session homes.

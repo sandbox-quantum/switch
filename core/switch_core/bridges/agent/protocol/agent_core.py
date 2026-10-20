@@ -4285,7 +4285,7 @@ class AgentCore:
 
         `arguments` is not inspected. It is accepted because a mediation
         decision that looks at what is being passed is the obvious next thing
-        to want, and because the hook already sends it.
+        to want, and because callers already send it.
         """
         await self.require_room_member(agent_id, room_id)
         verdict = await self.mediation.tool_access(agent_id, tool_name)

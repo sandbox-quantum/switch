@@ -745,6 +745,13 @@ is what recedes.
 
 ### 9.1 Local MCP (recommended)
 
+> **Superseded for distribution.** The connector plugins, their bundled
+> `.mcp.json`, the runtime's stdio binary and the `configure` skill described
+> below have all been removed. Every session is now started by Switch Console
+> or its agent controller, which serves the operation surface to the session
+> itself; a CLI started by hand has no Switch tools. The correlation argument
+> below still holds for the session host.
+
 One process holds the stream and serves MCP over stdio. A tool call arrives
 **inside the process that owns the connection**, so correlation is a variable
 in memory — nothing to transmit, leak or get wrong. The connection id never

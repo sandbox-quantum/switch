@@ -1791,9 +1791,9 @@ async def _cmd_run_cmd(
 
     spec, options = spec_options
 
-    # `!run-cmd @agent @role`: fold a real role into the connect prompt so the
-    # started session lands in the room AND assumes the role in one command.
-    # An unknown role is NOT folded in — we warn instead of silently dropping.
+    # `!run-cmd @agent @role`: name a real role in the instructions so the
+    # started session is asked to take it. An unknown role is left out, with a
+    # warning rather than silently dropped.
     role = _role_arg(event.args)
     async with client.session_factory() as session:
         role_obj = (
@@ -1820,8 +1820,8 @@ async def _cmd_run_cmd(
     if role is not None and not role_known:
         msg += (
             f"\n\n⚠️ Note: there is no role named **{role}** in **{meta.name}**, "
-            "so I left it out of the command — double-check the role name (see "
-            "the room's roles)."
+            "so I left it out — double-check the role name (see the room's "
+            "roles)."
         )
 
     await _reply(client, room, event, msg)
@@ -2081,16 +2081,16 @@ COMMANDS: list[Command] = [
     ),
     Command(
         "run-cmd",
-        "Show the terminal command to start a session for an agent. "
+        "Show how to start a session for an agent. "
         "Usage: `!run-cmd @agent-name`, `!run-cmd @role` (the role's holder), "
-        "or `!run-cmd @agent-name @role` to also assume that role on connect.",
+        "or `!run-cmd @agent-name @role` to also ask it to take that role.",
         _cmd_run_cmd,
         # `role` is second because the handler reads it from the second token,
         # so it cannot be given without `agent` — see the positional-gap check
         # in the Discord adapter, which rejects that combination loudly rather
         # than silently shifting the role into the agent slot.
         args_spec=(
-            CommandArg("agent", "Agent to show the start command for", required=False),
+            CommandArg("agent", "Agent to show how to start", required=False),
             CommandArg(
                 "role", "Role for that agent to assume on connect", required=False
             ),

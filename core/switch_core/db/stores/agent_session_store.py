@@ -46,7 +46,7 @@ class AgentSessionStore:
     # event handling, while a genuinely crashed agent still drops within 90s.
     ALWAYS_ON_TTL = timedelta(seconds=90)
 
-    # session_addressable agents (the Claude Code plugin) renew their heartbeat
+    # session_addressable agents on the old Claude Code plugin renew their heartbeat
     # on a dedicated fast cadence (POST /connection/renew every 2s from the
     # channel process), decoupled from polling. A much lower TTL is therefore
     # safe and desirable: a closed/crashed session drops to "no session" within
@@ -155,7 +155,7 @@ class AgentSessionStore:
         session-close signal, so the binding lingers after a session ends.
         Paired with a liveness check by the caller: a binding present while the
         agent is not live means a session_addressable session is connected but
-        not reporting in (e.g. launched without the dev-channels flag).
+        not reporting in.
         """
         result = await session.execute(
             select(AgentSession.agent_id)

@@ -331,8 +331,8 @@ async def register_known_agents_bulk_endpoint(
     # overrides them: they should run in the same channels mode and use the
     # same repo dir as their parent.
     # The bridge exposes no GET-profile endpoint, so inheriting here means the
-    # caller (the configure skill) doesn't have to recover these from the
-    # parent — passing just `parent_agent_id` is enough.
+    # caller doesn't have to recover these from the parent — passing just
+    # `parent_agent_id` is enough.
     parent_md = parent.metadata_ if isinstance(parent.metadata_, dict) else {}
     parent_opts = parent_md.get("known_agent_options")
     inherited: dict[str, Any] = {}

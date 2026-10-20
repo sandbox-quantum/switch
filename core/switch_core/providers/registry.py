@@ -31,14 +31,6 @@ class UnknownProvider(ValueError):
 
 
 @dataclass(frozen=True)
-class TerminalStart:
-    """The operator starts a session by running `command` in the agent's
-    directory; `{prompt}` in it stands for the connect prompt."""
-
-    command: str
-
-
-@dataclass(frozen=True)
 class ConsoleStart:
     """The operator starts a session from Switch Console. `runtime` names the
     runtime to enable in the agent's advanced settings there and
@@ -71,9 +63,7 @@ class AgentProvider:
     tools: tuple[ToolSpec, ...] = ()
     """The built-in tools its agents register."""
 
-    session_start: TerminalStart | ConsoleStart = ConsoleStart(
-        runtime=None, sign_in_command=None
-    )
+    session_start: ConsoleStart = ConsoleStart(runtime=None, sign_in_command=None)
     """How the operator starts a session when the agent is addressed with none
     running."""
 
@@ -85,8 +75,6 @@ class AgentProvider:
 
 
 AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
-    # Claude Code's known agent (`ClaudeCodeKnownAgent`) builds its own launch
-    # command, so `session_start` is not read for it.
     AgentProvider(
         id="claude",
         label="Claude Code",
@@ -108,6 +96,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="Monitor", description="Runs background watch commands"),
             ToolSpec(name="Skill", description="Executes a skill"),
         ),
+        session_start=ConsoleStart(runtime=None, sign_in_command="claude auth login"),
     ),
     AgentProvider(
         id="codex",
@@ -119,7 +108,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="ApplyPatch", description="Applies patches to files"),
             ToolSpec(name="Read", description="Reads file contents"),
         ),
-        session_start=TerminalStart(command='codex "{prompt}"'),
+        session_start=ConsoleStart(runtime=None, sign_in_command="codex login"),
     ),
     AgentProvider(
         id="opencode",
@@ -137,9 +126,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="WebFetch", description="Fetches web pages"),
             ToolSpec(name="Task", description="Spawns a sub-agent"),
         ),
-        # OpenCode reads its first positional argument as the project
-        # directory, so the prompt has to go through `--prompt`.
-        session_start=TerminalStart(command='opencode --prompt "{prompt}"'),
+        session_start=ConsoleStart(runtime=None, sign_in_command="opencode auth login"),
     ),
     AgentProvider(
         id="antigravity",

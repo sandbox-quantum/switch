@@ -227,18 +227,15 @@ _UNAVAILABLE_MESSAGES = {
 # the connector will spin a session up on demand to handle the message.
 _STARTING_SESSION_MESSAGE = "Starting a session to handle this — one moment."
 
-# Fallback (no known-agent connect command) for a session_addressable agent
-# that has a session bound to this room but is not reporting as live — the
-# usual cause is a session started without the dev-channels flag.
+# Fallback (no known-agent spec) for a session_addressable agent that has a
+# session bound to this room but is not reporting as live.
 _CONNECTED_NOT_LIVE_MESSAGE = (
     "I have a session connected to this room, but it isn't reporting as live, "
     "so I'm not receiving messages — my operator may need to restart it."
 )
 
 
-def _offline_owner_message(
-    owner_handle: str | None, asker_handle: str, cmd: str | None
-) -> str:
+def _offline_owner_message(owner_handle: str | None, asker_handle: str) -> str:
     """The reply for an auto_session agent addressed with nothing to start it.
 
     An auto_session agent is brought online by Switch Console watching on its
@@ -255,22 +252,16 @@ def _offline_owner_message(
     # the reason they should act reads as a stutter ("@me … and @me needs me").
     needs_me = "" if owner_handle == asker_handle else f", and @{asker_handle} needs me"
     if owner_handle:
-        opening = (
+        return (
             f"@{owner_handle} — I'm not online in this room{needs_me}. "
             "Open Switch Console to bring me online here."
         )
-        terminal = "If you'd rather do it from a terminal:"
-    else:
-        # No owner account on this platform to mention. Still name who has to
-        # act, so the message is not read as something the room can fix.
-        opening = (
-            f"I'm not online in this room{needs_me}. **My owner needs to open "
-            "Switch Console** to bring me online here."
-        )
-        terminal = "Or, from a terminal:"
-    if cmd is None:
-        return opening
-    return f"{opening} {terminal}\n\n```\n{cmd}\n```"
+    # No owner account on this platform to mention. Still name who has to act,
+    # so the message is not read as something the room can fix.
+    return (
+        f"I'm not online in this room{needs_me}. **My owner needs to open "
+        "Switch Console** to bring me online here."
+    )
 
 
 def _stopped_owner_message(owner_handle: str | None, asker_handle: str) -> str:
@@ -1342,8 +1333,8 @@ class AgentRecipient:
         An auto_session agent with nowhere else to point the asker gets the
         owner-facing "I'm not online" reply: only its owner can act, so the
         message asks them and nobody else. Every other case prefers the
-        per-known-agent `start_session_instructions` (e.g. the paste-ready
-        terminal command for Claude Code), falling back to the static
+        per-known-agent `start_session_instructions` (where in Switch Console
+        to start a session), falling back to the static
         `_UNAVAILABLE_MESSAGES` text keyed by connection_model when the agent
         has no known-agent spec or the spec returns None; `connected_not_live`
         selects the "bound here but not live" fallback.
@@ -1364,15 +1355,9 @@ class AgentRecipient:
             and not other_room_names
             and not connected_not_live
         ):
-            cmd = (
-                spec_options[0].connect_command(spec_options[1], agent, meta.name, None)
-                if spec_options is not None
-                else None
-            )
             return _offline_owner_message(
                 await self.owner_handle_in(session, agent, meta.bridge_id),
                 asker_handle,
-                cmd,
             )
         if spec_options is not None:
             spec, options = spec_options

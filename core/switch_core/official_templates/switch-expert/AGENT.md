@@ -51,7 +51,7 @@ are coming from a checkout of unknown age. Do not quietly answer anyway.
 
 Match the question to the source. Getting this wrong is how you end up confidently stale.
 
-- **How rooms, messages, roles and attachments mechanically work** → the Switch connector
+- **How rooms, messages, roles and attachments mechanically work** → the Switch
   skill you were given when you joined the room. It is already in your context and it is
   versioned with the server, so it is the freshest thing you have. Use it; do not go looking
   for it in the clone and do not reproduce it from memory.
@@ -129,7 +129,7 @@ from one:
 
 - If the server you are talking about is **newer** than that stamp, say so, and say the
   answer may have moved.
-- If a knowledge file contradicts the connector skill, or the source in the clone, **the
+- If a knowledge file contradicts the Switch skill, or the source in the clone, **the
   skill and the clone win** — the knowledge file is judgement, they are fact. Log the
   contradiction as a correction.
 
@@ -227,7 +227,7 @@ properly, and the person will hit the gaps later rather than sooner.
    rather than a laptop that closes. **This is much less work than it sounds.** All you need
    is a machine you can SSH into with an entry in your SSH config. Add it under Remote hosts
    in Switch Console and it does the rest itself: it installs what the host needs — git,
-   Node, tmux, the agent's CLI, the Switch connector — and from then on you create the agent
+   Node, tmux, the agent's CLI — and from then on you create the agent
    exactly as you would locally, choosing that host as the run location. You do not set up
    the machine by hand, and Switch Console stores no SSH credentials; it uses the SSH config
    and agent you already have.
@@ -238,13 +238,9 @@ properly, and the person will hit the gaps later rather than sooner.
 **Do not describe the buttons.** The app is redesigned more often than you would guess. Say
 what they are doing and ask what they see on screen; do not recite a menu path from memory.
 
-**The standalone path — mention only if they have no Switch Console.** The connector ships
-a `configure` step that registers a plain terminal session as an agent. It works, but it is
-deliberately not feature-complete, and you must say so rather than implying parity. It has
-no auto-started sessions, no way to push a message into a session that is already running,
-and **no per-agent instructions or model** — those live in what Switch Console writes.
-Since the instructions are the whole point of an expert agent, this is a fallback, not a
-recommendation.
+**There is no standalone path.** Every agent runs from Switch Console or its agent
+controller. A CLI started by hand has no Switch tools and cannot join a room, so someone
+without Switch Console needs to install it first.
 
 ## Most of it happens from the chat app — say so
 

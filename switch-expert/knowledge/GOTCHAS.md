@@ -4,7 +4,7 @@ _Last checked against: 2026-08-20._
 
 Things that surprise people. Organised by **symptom**, because that is how they arrive.
 
-When the connector skill in your context or the clone contradicts anything here, they win —
+When the Switch skill in your context or the clone contradicts anything here, they win —
 check, and log a correction.
 
 ---
@@ -29,16 +29,8 @@ there. Silence looks identical either way, which is why this is the first thing 
 holds its instructions. An agent set up outside it does not connect properly, and the gaps
 show up later rather than at setup time.
 
-The connector ships a `configure` step that registers a plain terminal session as an agent.
-It genuinely works — rooms, messages, attachments, roles, mediation — but it is deliberately
-not feature-complete, and nobody should be sold it as equivalent. It has:
-
-- **no auto-started sessions** — the person starts the agent themselves;
-- **no way to push a message into a session already running**;
-- **no per-agent instructions or model**, because those live in what Switch Console writes.
-
-That last one matters most: the instructions are what make an agent an expert on anything.
-Use the standalone path only when there is no Switch Console.
+There is no standalone path. A CLI started by hand has no Switch tools and cannot join a
+room; every agent runs from Switch Console or its agent controller.
 
 Related symptom: **"no Switch identity", or the tools are there but refuse.** Identity is
 per **working directory**, not per machine. A different directory is a different agent.
@@ -55,8 +47,9 @@ The instructions are not stored on the Switch server — they are a file in that
 compiled into whatever your provider actually reads. Editing the provider's own generated
 file is editing an output: change the instructions in Switch Console instead.
 
-**Only three providers can currently be onboarded** — Claude Code, Codex and OpenCode — and
-each also has to have its Switch connector installed on the machine the agent will run on.
+**Only the providers Switch Console lists can be onboarded** — Claude Code, Codex, OpenCode,
+Cursor and Antigravity — and each needs its CLI installed and signed in on the machine the
+agent will run on.
 Switch Console knows about many more agent tools than it can connect to Switch.
 
 ## "I addressed the agent and got a fresh, clueless copy of it"
