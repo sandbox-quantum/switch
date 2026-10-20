@@ -30,6 +30,10 @@ type PageSpec = {
 
 export const CONSOLE_PAGES = {
   home: { description: "The server's home: messaging apps, guardrails and who you are." },
+  server: {
+    description:
+      "This server's own settings, where this Switch Console runs it: start, stop, update, the Mattermost beside it.",
+  },
   agents: { description: 'Every agent on the server.' },
   'agents/new': { description: 'Add a new agent.' },
   agent: {
@@ -48,6 +52,11 @@ export const CONSOLE_PAGES = {
   },
   connections: { description: 'Connectors: services such as GitHub, for you and your agents.' },
   invite: { description: 'Invite people to the workspace.' },
+  admin: {
+    description:
+      "Admin, for the workspace's admins: which connectors the workspace offers, and the apps they sign in through.",
+    tabs: ['connectors', 'apps'],
+  },
   settings: {
     description: "Switch Console's settings.",
     tabs: ['general', 'clis-models', 'remote-hosts', 'managed-agents', 'interface'],

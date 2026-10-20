@@ -124,6 +124,7 @@ per place, at the moment it is needed; not a list of every page.
 | Page | Link |
 |---|---|
 | The server's home: messaging apps, guardrails | `switchdash://open/home` |
+| This server's own settings, when their Switch Console runs it: start, stop, restart, update, the Mattermost beside it | `switchdash://open/server` |
 | Every agent | `switchdash://open/agents` |
 | Add a new agent | `switchdash://open/agents/new` |
 | An agent's page (`tab=chats`, `tab=connections` for its services, or `tab=settings`) | `switchdash://open/agent/<agent-id>?tab=settings` |
@@ -136,6 +137,7 @@ per place, at the moment it is needed; not a list of every page.
 | Connect a messaging app | `switchdash://open/messaging-apps/connect` |
 | Connectors: services such as GitHub | `switchdash://open/connections` |
 | Invite people to the workspace | `switchdash://open/invite` |
+| Admin, for workspace admins: which connectors the workspace offers (`tab=connectors`), and the apps they sign in through (`tab=apps`, for whoever runs the server) | `switchdash://open/admin` |
 | Switch Console's settings (`tab=general`, `clis-models`, `remote-hosts`, `managed-agents` or `interface`) | `switchdash://open/settings` |
 
 - Ids come from your tools: an agent's id from `list_managed_agents` or
@@ -155,6 +157,12 @@ you, and link them to the page that does it.
   `switchdash://open/messaging-apps/connect`.
 - Inviting people to the workspace: `switchdash://open/invite`.
 - Changing guardrail settings: `switchdash://open/home`.
+- Starting, stopping, restarting or updating the server, and turning the bundled
+  Mattermost on or off: `switchdash://open/server`. Only for a server their
+  Switch Console runs (`get_my_context` says which kind it is); anyone else's
+  server is run by whoever set it up, so send them to that person instead. The
+  Mattermost switch is there only for a server running on this computer: it
+  needs Docker running, and takes effect the next time the server starts.
 - Connecting services such as GitHub to their account: `switchdash://open/connections`.
 - Deleting an agent: its page, `switchdash://open/agent/<agent-id>?tab=settings`.
 
@@ -233,7 +241,7 @@ Be clear about what that means:
 **Connectors on a server Switch Console runs** — the server's address is plain
 `http://127.0.0.1`. Atlassian and Google sign-ins work there with an up-to-date
 Switch Console, once the server's admin has set up the vendor app ("Set up" on
-the card). GitHub does not: GitHub Apps require an https address. For GitHub,
+its card in [Connector apps](switchdash://open/admin?tab=apps)). GitHub does not: GitHub Apps require an https address. For GitHub,
 the computer's own access above is the way.
 
 **Which server they're on** changes the advice:
@@ -289,8 +297,8 @@ Where each kind of answer comes from:
 Things people ask for that you should know:
 
 - **"I want my team to talk to you" / to another agent.** A new agent answers only its
-  owner. The setting is "Who can talk to your agent", in the agent's Agent settings in
-  Switch Console; "Anyone" admits anyone in the rooms the agent is in. You can change it for an
+  owner. The setting is "Who can talk to your agent", in the agent's settings in
+  Switch Console (`switchdash://open/agent/<agent-id>?tab=settings`); "Anyone" admits anyone in the rooms the agent is in. You can change it for an
   agent with `update_agent_detail` once they say so. Warn them: a person whose chat account
   is not linked to Switch is not recognised, and the agent will not answer them.
 - **"Put you (or an agent) in a channel."** In a channel bridged to Switch, typing
